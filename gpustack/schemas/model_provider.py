@@ -3,6 +3,7 @@ from typing import Tuple
 from urllib.parse import urlparse
 from enum import Enum
 from typing import (
+    Annotated,
     ClassVar,
     Optional,
     List,
@@ -599,41 +600,49 @@ class ZhipuaiConfig(BaseProviderConfig):
     _public_endpoint: str = "open.bigmodel.cn"
 
 
-ProviderConfigType = Union[
-    Ai360Config,
-    AzureOpenAIConfig,
-    BaichuanConfig,
-    BaiduConfig,
-    BedrockConfig,
-    ClaudeConfig,
-    CloudflareConfig,
-    CohereConfig,
-    CozeConfig,
-    DeeplConfig,
-    DeepseekConfig,
-    DifyConfig,
-    DoubaoConfig,
-    FireworksConfig,
-    GaladrielConfig,
-    GeminiConfig,
-    GithubConfig,
-    GrokConfig,
-    GroqConfig,
-    HunyuanConfig,
-    LongcatConfig,
-    MinimaxConfig,
-    MistralConfig,
-    MoonshotConfig,
-    OllamaConfig,
-    OpenAIConfig,
-    OpenrouterConfig,
-    QwenConfig,
-    SparkConfig,
-    StepfunConfig,
-    TogetherAIConfig,
-    TritonConfig,
-    YiConfig,
-    ZhipuaiConfig,
+# Discriminated on ``type`` so validation picks the single matching member
+# instead of trying all of them: an invalid field surfaces as one relevant
+# error rather than a ``literal_error`` per non-matching provider type, and an
+# unknown ``type`` value is rejected outright instead of falling through to
+# whichever member the smart-union matcher happens to prefer.
+ProviderConfigType = Annotated[
+    Union[
+        Ai360Config,
+        AzureOpenAIConfig,
+        BaichuanConfig,
+        BaiduConfig,
+        BedrockConfig,
+        ClaudeConfig,
+        CloudflareConfig,
+        CohereConfig,
+        CozeConfig,
+        DeeplConfig,
+        DeepseekConfig,
+        DifyConfig,
+        DoubaoConfig,
+        FireworksConfig,
+        GaladrielConfig,
+        GeminiConfig,
+        GithubConfig,
+        GrokConfig,
+        GroqConfig,
+        HunyuanConfig,
+        LongcatConfig,
+        MinimaxConfig,
+        MistralConfig,
+        MoonshotConfig,
+        OllamaConfig,
+        OpenAIConfig,
+        OpenrouterConfig,
+        QwenConfig,
+        SparkConfig,
+        StepfunConfig,
+        TogetherAIConfig,
+        TritonConfig,
+        YiConfig,
+        ZhipuaiConfig,
+    ],
+    PydanticField(discriminator="type"),
 ]
 
 
@@ -665,8 +674,13 @@ class ModelProviderBase(SQLModel):
     name: str = Field(index=True, nullable=False)
     description: Optional[str] = Field(default=None, nullable=True)
     timeout: int = Field(default=120, nullable=False)
-    config: ProviderConfigType = Field(
+    # The discriminator is declared here rather than on ``ProviderConfigType``
+    # itself (``Annotated[Union[...], Field(discriminator=...)]``) because
+    # SQLModel's Field strips Annotated metadata when it builds the FieldInfo,
+    # which silently reverts validation to the try-every-member union.
+    config: ProviderConfigType = Field(  # noqa: B008
         description="provider specific configuration",
+        discriminator="type",
         sa_column=Column(
             pydantic_column_type(
                 ProviderConfigType,
