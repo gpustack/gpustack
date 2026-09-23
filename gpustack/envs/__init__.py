@@ -333,11 +333,17 @@ GATEWAY_MIRROR_INGRESS_NAME = os.getenv(
 # health/inference checks, metadata & metrics scraping) to TLS.
 # Example: point GPUSTACK_INSTANCE_SCHEME at "https" after enabling
 # vLLM --ssl-keyfile/--ssl-certfile on model instances.
-GPUSTACK_INSTANCE_SCHEME = os.getenv("GPUSTACK_INSTANCE_SCHEME", "http")
-# When the scheme is https and instances use self-signed certificates,
-# disable peer certificate verification for internal health/metadata probes.
+GPUSTACK_INSTANCE_SCHEME = os.getenv("GPUSTACK_INSTANCE_SCHEME", "http").lower()
+if GPUSTACK_INSTANCE_SCHEME not in ("http", "https"):
+    raise ValueError(
+        "GPUSTACK_INSTANCE_SCHEME must be 'http' or 'https', "
+        f"got '{GPUSTACK_INSTANCE_SCHEME}'"
+    )
+# Peer certificate verification for internal https probes. Fail-closed by
+# default: operators must explicitly opt out (GPUSTACK_INSTANCE_TLS_INSECURE=true)
+# when model instances serve self-signed certificates.
 GPUSTACK_INSTANCE_TLS_INSECURE = (
-    os.getenv("GPUSTACK_INSTANCE_TLS_INSECURE", "true").lower() == "true"
+    os.getenv("GPUSTACK_INSTANCE_TLS_INSECURE", "false").lower() == "true"
 )
 
 # TLS protocol version floor and ceiling for the gateway's HTTPS listeners,
