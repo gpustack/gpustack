@@ -9,6 +9,7 @@ from kubernetes_asyncio.client import ApiException
 
 from gpustack import envs
 from gpustack.api.exceptions import NotFoundException
+from gpustack.gateway.utils import MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX
 from gpustack.gateway.utils import (
     RoutePrefix,
     cleanup_generic_proxy_router_spec_diff,
@@ -27,7 +28,6 @@ from gpustack.gateway.utils import (
     model_instances_registry_list,
     provider_proxy_plugin_spec,
     provider_registry,
-    MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX,
     router_header_key,
 )
 from gpustack.schemas.models import ModelInstance
@@ -985,10 +985,10 @@ class TestGetExpectedMatchList:
             "higress-system/ai-route-route-6.internal",
             "higress-system/ai-route-route-6.fallback.internal",
         ]
-        assert rule.config == {
-            "modelMapping": {"tmp1": "qwen3-0.6b"},
-            "enableOnPathSuffix": MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX,
-        }
+        assert rule.config["modelMapping"] == {"tmp1": "qwen3-0.6b"}
+        # The mapper config carries the explicit path whitelist so the
+        # wasm plugin rewrites aliases on tokenize/detokenize too.
+        assert rule.config["enableOnPathSuffix"] == MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX
         assert rule.service == ["model-1-1.static"]
 
     def test_no_main_path_rules_are_emitted(self):
