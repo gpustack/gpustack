@@ -28,7 +28,8 @@ SELECT
     json_extract(value, '$.temperature') AS 'temperature',
     json_extract(value, '$.power') AS 'power',
     json_extract(value, '$.power_used') AS 'power_used',
-    json_extract(value, '$.network') AS 'network'
+    json_extract(value, '$.network') AS 'network',
+    json_extract(value, '$.topology_hints') AS 'topology_hints'
 FROM
     workers w,
     json_each(w.status, '$.gpu_devices')
@@ -66,7 +67,8 @@ SELECT
     CAST(COALESCE(JSON_VALUE(gpu_device, '$.temperature'), '0') AS DECIMAL(10, 2)) AS `temperature`,
     CAST(JSON_VALUE(gpu_device, '$.power') AS DECIMAL(10, 2)) AS `power`,
     CAST(JSON_VALUE(gpu_device, '$.power_used') AS DECIMAL(10, 2)) AS `power_used`,
-    JSON_EXTRACT(gpu_device, '$.network') AS `network`
+    JSON_EXTRACT(gpu_device, '$.network') AS `network`,
+    JSON_EXTRACT(gpu_device, '$.topology_hints') AS `topology_hints`
 FROM
     workers w,
     JSON_TABLE(w.status, '$.gpu_devices[*]' COLUMNS(
@@ -107,7 +109,8 @@ SELECT
     (gpu_device::json->>'temperature')::FLOAT AS "temperature",
     (gpu_device::json->>'power')::FLOAT AS "power",
     (gpu_device::json->>'power_used')::FLOAT AS "power_used",
-    (gpu_device::json->>'network')::JSONB AS "network"
+    (gpu_device::json->>'network')::JSONB AS "network",
+    (gpu_device::json->>'topology_hints')::JSONB AS "topology_hints"
 FROM
     workers w,
     LATERAL json_array_elements(w.status::json->'gpu_devices') AS gpu_device
@@ -146,7 +149,8 @@ SELECT
     (w.status::jsonb->'gpu_devices'->s.idx->>'temperature')::FLOAT AS "temperature",
     (w.status::jsonb->'gpu_devices'->s.idx->>'power')::FLOAT AS "power",
     (w.status::jsonb->'gpu_devices'->s.idx->>'power_used')::FLOAT AS "power_used",
-    (w.status::jsonb->'gpu_devices'->s.idx->'network')::JSONB AS "network"
+    (w.status::jsonb->'gpu_devices'->s.idx->'network')::JSONB AS "network",
+    (w.status::jsonb->'gpu_devices'->s.idx->'topology_hints')::JSONB AS "topology_hints"
 FROM
     workers w,
     generate_series(0, jsonb_array_length(w.status::jsonb->'gpu_devices') - 1) AS s(idx)

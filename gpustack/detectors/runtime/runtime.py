@@ -115,6 +115,36 @@ class Runtime(GPUDetector):
                     gpudev_network.status = "up"
                     gpudev.network = gpudev_network
 
+            hints = _topology_hints(dev.appendix or {})
+            if hints:
+                gpudev.topology_hints = hints
+
             ret.append(gpudev)
 
         return ret
+
+
+# --------------------------------------------------------------------------- #
+# Where a device sits beyond the host, as the runtime reports it.             #
+# --------------------------------------------------------------------------- #
+
+NVIDIA_CLIQUE_KEY = "nvidia.com/gpu.clique"
+
+_ZERO_UUID = "00000000-0000-0000-0000-000000000000"
+
+
+def _topology_hints(appendix: dict) -> dict:
+    """Translate a device's appendix into topology label keys.
+
+    A single-host HGX (H100/H200 with NVSwitch) reports its fabric as
+    COMPLETED with an all-zero cluster UUID and clique 0; passing that through
+    would put every HGX in the fleet into one shared domain, so a zero UUID is
+    read as "no multi-node domain".
+    """
+    hints = {}
+    cluster_uuid = appendix.get("fabric_cluster_uuid")
+    clique = appendix.get("fabric_clique_id")
+    if cluster_uuid and cluster_uuid != _ZERO_UUID and clique is not None:
+        hints[NVIDIA_CLIQUE_KEY] = f"{cluster_uuid}.{clique}"
+
+    return hints
