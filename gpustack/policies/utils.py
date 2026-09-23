@@ -27,6 +27,7 @@ from gpustack.utils.lora_model_source import (
     lora_entry_to_model_source,
     normalized_lora_list,
 )
+from gpustack.utils.task import first_successful
 
 logger = logging.getLogger(__name__)
 
@@ -696,13 +697,16 @@ async def get_local_model_weight_size(
 
     # Concurrently try all workers and return the first successful result
     logger.info(f"Broadcasting model weight size request to {len(workers)} workers")
-    tasks = [try_get_size_from_worker(worker) for worker in workers]
-
-    # Use as_completed to get results as they finish
-    for completed_task in asyncio.as_completed(tasks):
-        result = await completed_task
-        if result is not None:
-            return result
+    weight_size = await first_successful(
+        (try_get_size_from_worker(worker) for worker in workers),
+        is_success=lambda size: size is not None,
+    )
+    if weight_size is None:
+        raise ValueError(
+            f"Failed to get model weight size from all {len(workers)} available "
+            f"worker(s) for path '{local_path}'."
+        )
+    return weight_size
 
 
 def group_worker_gpu_by_memory(
