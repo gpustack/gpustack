@@ -107,6 +107,12 @@ async def proxy(path: str, request: Request):  # noqa: C901
             headers=headers,
             data=content,
             timeout=timeout,
+            ssl=(
+                False
+                if envs.GPUSTACK_INSTANCE_TLS_INSECURE
+                and envs.GPUSTACK_INSTANCE_SCHEME == "https"
+                else None
+            ),
         )
 
         # Heuristic: treat a non-error HTTP status as a successful inference
