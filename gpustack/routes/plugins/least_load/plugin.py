@@ -3,7 +3,7 @@ policy table (keyed by capability name), gateway presence via the
 shared capability-band helpers."""
 
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,9 +48,6 @@ class LeastLoadPlugin(RoutePlugin):
     name = "least-load"
 
     RouteExtension = LeastLoadConfig
-
-    def watches(self) -> Set[type]:
-        return {ModelRoute}
 
     async def is_effective_on(self, route: ModelRoute, session: AsyncSession) -> bool:
         config = await _config_for_route(session, route.id)

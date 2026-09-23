@@ -34,6 +34,7 @@ from gpustack.schemas.deployment_document import (
     dump_deployments,
     load_deployments,
 )
+from gpustack.routes.plugins.capability_policy import CapabilityPolicy
 from gpustack.schemas.links import ModelRoutePrincipalLink
 from gpustack.schemas.model_routes import (
     AccessPolicyEnum,
@@ -378,6 +379,10 @@ TABLES = (
     ModelRoute.__table__,
     ModelRouteTarget.__table__,
     ModelRoutePrincipalLink.__table__,
+    # the deploy-time route creation enables the least-load capability
+    # for multi-replica models, which writes through the shared
+    # capability policy table
+    CapabilityPolicy.__table__,
 )
 
 # What a user would hand-write: a routed base model with a LoRA, explicit GPU

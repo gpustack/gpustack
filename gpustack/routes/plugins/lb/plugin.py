@@ -10,7 +10,7 @@ self-owned-storage pattern instead.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,8 +22,7 @@ from gpustack.routes.plugins import (
     register_route_plugin,
 )
 from gpustack.routes.plugins.lb.config import LBPolicyConfig
-from gpustack.schemas.models import ModelInstance
-from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget
+from gpustack.schemas.model_routes import ModelRoute
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +38,6 @@ class LBPlugin(RoutePlugin):
     name = "lb"
 
     RouteExtension = LBPolicyConfig
-
-    def watches(self) -> Set[type]:
-        # Only topology-bearing entities: candidates follow topology, not
-        # instance state (health/concurrency live in the gateway plugin).
-        return {ModelRoute, ModelRouteTarget, ModelInstance}
 
     # ---- CRUD hooks ----
 
@@ -210,8 +204,12 @@ class LBPlugin(RoutePlugin):
             model_route=ctx.model_route,
             ingress_name=ctx.ingress_name,
             event_is_delete=ctx.event_is_delete,
+            extensions_api=ctx.extensions_api,
         )
         if ctx.collector is None:
+            # The LB rule itself was already flushed (restricted to its
+            # own CR) inside sync_model_route_lb; this flush covers the
+            # remaining declarations of a bare context, if any.
             await collector.flush(ctx.cfg, ctx.extensions_api)
 
     # ---- gateway presence (static half; see gateway.py for specs) ----

@@ -1374,14 +1374,33 @@ def get_expected_match_list(
     ingress_prefix: str,
     ingress_name: str,
     fallback_model_name_to_registries: Dict[str, List[str]],
+    model_name_to_registries: Optional[Dict[str, List[str]]] = None,
 ) -> List[WasmPluginMatchRule]:
-    """Match rules the mapper sync owns: fallback traffic only. The
-    main-path model rewrite is the LB rule's job — its candidates carry
-    one model name per cluster, which a route-name-keyed ``modelMapping``
-    cannot express when a single upstream serves several models and the
-    rewrite must follow the LB selection."""
+    """Match rules the mapper sync owns: fallback traffic always, and —
+    only when ``model_name_to_registries`` is passed (the LB module is
+    unavailable, degraded mode) — the legacy main-path model rewrite.
+    With the LB module present the main-path rewrite is the LB rule's
+    job: its candidates carry one model name per cluster, which a
+    route-name-keyed ``modelMapping`` cannot express when a single
+    upstream serves several models and the rewrite must follow the LB
+    selection."""
     match_list: List[WasmPluginMatchRule] = []
     ingress_name = f"{ingress_prefix}{ingress_name}"
+    for model_name, service_names in (model_name_to_registries or {}).items():
+        if route_name == model_name:
+            # Skip self mapping
+            continue
+        # Degraded mode: the LB module is unavailable, so the legacy
+        # per-route main-path rewrite keeps the upstream model name
+        # correct until the plugins manifest is upgraded.
+        match_list.append(
+            WasmPluginMatchRule(
+                config={"modelMapping": {route_name: model_name}},
+                ingress=[ingress_name],
+                configDisable=False,
+                service=service_names,
+            )
+        )
     for model_name, service_names in fallback_model_name_to_registries.items():
         if route_name == model_name:
             # Skip self mapping
@@ -1696,14 +1715,16 @@ async def cleanup_ai_proxy_config(
 
     Kept: one entry per live external provider and one per live
     deployment. Dropped: everything else — including every legacy
-    per-route entry. Running this pass at all means control is already
-    on this server version, which writes per-deployment entries only;
-    the legacy entries are retired here in one deterministic write
-    rather than racing per-route retirements against sibling
-    reconciles. The accepted cost is the window until the replay writes
-    each deployment's own entry — bounded by the upgrade's own
-    recovery time, since a deployment whose instances are still
-    restarting has no traffic to authorize anyway.
+    per-route entry. The pass is leader-gated (see Server's
+    _start_leader_tasks): running it at all means this node holds
+    leadership, so the control plane is already on this server
+    version, which writes per-deployment entries only; the legacy
+    entries are retired here in one deterministic write rather than
+    racing per-route retirements against sibling reconciles. The
+    accepted cost is the window until the replay writes each
+    deployment's own entry — bounded by the upgrade's own recovery
+    time, since a deployment whose instances are still restarting has
+    no traffic to authorize anyway.
     """
     ids_to_keep = {model_ai_proxy_provider_id(model.id) for model in models}
     ids_to_keep.update({provider_registry_name(provider.id) for provider in providers})

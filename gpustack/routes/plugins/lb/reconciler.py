@@ -38,7 +38,11 @@ from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
 from gpustack.gateway.labels_annotations import managed_labels
 from gpustack.gateway.utils import DestinationTupleList
 from gpustack.routes.plugins.artifacts import RouteArtifactCollector
-from gpustack.routes.plugins.lb.config import LBPolicyConfig, lb_policy_from_meta
+from gpustack.routes.plugins.lb.config import (
+    LB_CONTEXT_CR_NAME as CONTEXT_CR_NAME,
+    LBPolicyConfig,
+    lb_policy_from_meta,
+)
 from gpustack.routes.plugins.lb.gateway import lb_module_available
 from gpustack.schemas.model_routes import (
     ModelRoute,
@@ -53,11 +57,6 @@ logger = logging.getLogger(__name__)
 # listener port is 80 whatever the backend speaks; the cluster name the
 # plugin wants is the full Envoy form of that service name.
 TARGET_CLUSTERS_HEADER = "x-higress-target-cluster"
-
-# The context role keeps the model-mapper CR name (in-place upgrade);
-# mirror of LB_CONTEXT_CR_NAME in gateway.py, aliased to avoid an
-# import cycle through the plugin package.
-CONTEXT_CR_NAME = "gpustack-model-mapper"
 
 
 def envoy_filter_name(ingress_name: str) -> str:
@@ -143,23 +142,26 @@ async def render_route(
     targets: List[ModelRouteTarget] = await ModelRouteTarget.all_by_field(
         session, "route_id", route.id
     )
-    active_targets = [
-        t
-        for t in targets
-        if t.deleted_at is None
-        and t.state == TargetStateEnum.ACTIVE
-        and not _is_fallback_target(t)
+    # The mixed-weights verdict is state-independent, exactly like
+    # _derive_lb_mode and the API's write-time check: the same set of
+    # candidate targets must classify identically everywhere, or the
+    # reported lb_mode and the actual render decision disagree as
+    # targets flap between ACTIVE and UNAVAILABLE.
+    candidate_targets = [
+        t for t in targets if t.deleted_at is None and not _is_fallback_target(t)
     ]
-    weighted = [t for t in active_targets if t.weight and t.weight > 0]
-    if weighted and len(weighted) != len(active_targets):
+    weighted = [t for t in candidate_targets if t.weight and t.weight > 0]
+    if weighted and len(weighted) != len(candidate_targets):
         logger.error(
-            "Route %s: refusing LB — %d of %d active targets carry a weight; "
+            "Route %s: refusing LB — %d of %d candidate targets carry a weight; "
             "either all targets are weighted or none may be",
             route.id,
             len(weighted),
-            len(active_targets),
+            len(candidate_targets),
         )
         return None
+
+    active_targets = [t for t in candidate_targets if t.state == TargetStateEnum.ACTIVE]
 
     candidates: List[Dict[str, Any]] = []
     model_mappers: Dict[str, Dict[str, str]] = {}
@@ -267,6 +269,7 @@ async def sync_model_route_lb(
     model_route: ModelRoute,
     ingress_name: str,
     event_is_delete: bool,
+    extensions_api: Optional[Any] = None,
 ) -> None:
     """Reconcile one route's LB gateway artifacts. ``ingress_name`` is
     the bare mcp-handler style name (``ai-route-route-<id>.internal``);
@@ -275,7 +278,10 @@ async def sync_model_route_lb(
 
     The matchRule is declared on the collector (one flush per CR across
     the mapper sync and every plugin) and the EnvoyFilter — a
-    single-owner, per-route resource — is written directly.
+    single-owner, per-route resource — is written directly. On the
+    create direction, the rule is flushed BEFORE the EnvoyFilter lands
+    (see the ordering note at the bottom) — whatever collector was
+    passed in, shared or local to one plugin.
     """
     ingress_prefix = f"{cfg.get_namespace()}/"
     if cfg.get_namespace() == cfg.gateway_namespace:
@@ -328,6 +334,20 @@ async def sync_model_route_lb(
             else []
         ),
     )
+    # Order by direction: on create the matchRule must land BEFORE the
+    # EnvoyFilter switches the route to cluster_header — writing the
+    # filter first opens a window (and, if the rule flush fails after
+    # its retries, a permanent state) where the route has no candidates.
+    # The early flush is restricted to this CR (only_cr), so it never
+    # touches another plugin's pending declarations and stays correct
+    # whatever the registration order. On delete the filter goes first,
+    # restoring the static weighted_clusters destination before the
+    # rule is stripped. The flush runs for a local collector too: the
+    # alternative flush site in ``reconcile_route`` (the bare-context
+    # fallback) is after the EnvoyFilter write, which reopens the very
+    # window this ordering closes.
+    if rule_config is not None:
+        await collector.flush(cfg, extensions_api, only_cr=CONTEXT_CR_NAME)
     await _ensure_envoy_filter(
         namespace=cfg.gateway_namespace,
         ingress_name=ingress_name,

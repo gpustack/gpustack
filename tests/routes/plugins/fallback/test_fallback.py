@@ -21,13 +21,21 @@ class _Registry:
 class _Cfg:
     gateway_namespace = "higress-system"
     gateway_ingress_class = "higress"
+    # the shape lb_module_available() reads; these tests run with the
+    # bundled manifest, which resolves the module, so degraded-mode
+    # tests monkeypatch lb_module_available directly
+    gateway_plugin = {}
+    gateway_plugin_server_url = None
+    gateway_mode = "external"
 
     def get_namespace(self):
         return "gpustack"
 
 
 class _Ctx:
-    def __init__(self, route, fallback_destinations=None, delete=False):
+    def __init__(
+        self, route, fallback_destinations=None, delete=False, destinations=None
+    ):
         self.cfg = _Cfg()
         self.session = None
         self.model_route = route
@@ -39,6 +47,7 @@ class _Ctx:
         self.networking_api = object()
         self.effective_name = "org1/route"
         self.fallback_destinations = fallback_destinations or []
+        self.destinations = destinations
 
 
 def _route(fallback_codes=None):
@@ -123,6 +132,49 @@ class TestMapperRuleDeclaration:
         route, target = _route()  # no fallback codes
         ctx = _Ctx(route, fallback_destinations=[])
         await _run(monkeypatch, [target], ctx)
+
+        kwargs = _declarations(ctx)
+        assert kwargs["rules"] == []
+
+    @pytest.mark.asyncio
+    async def test_degraded_mode_declares_main_path_mapping(self, monkeypatch):
+        # With the LB module unavailable, the legacy per-route main-path
+        # modelMapping rule is the only rewrite left — the mapper CR
+        # must carry it or the upstream sees the route name.
+        monkeypatch.setattr(
+            "gpustack.routes.plugins.lb.gateway.lb_module_available",
+            lambda cfg: False,
+        )
+        route, target = _route()
+        ctx = _Ctx(
+            route,
+            fallback_destinations=[],
+            destinations=[(1, "real-model", _Registry("svc-a.static"))],
+        )
+        await fallback_plugin._declare_mapper_rules(ctx, ctx.collector)
+
+        kwargs = _declarations(ctx)
+        rules = kwargs["rules"]
+        assert len(rules) == 1
+        assert rules[0].config == {"modelMapping": {"org1/route": "real-model"}}
+        assert rules[0].ingress == ["gpustack/ai-route-route-1.internal"]
+        assert rules[0].service == ["svc-a.static"]
+
+    @pytest.mark.asyncio
+    async def test_degraded_mode_skips_self_mapping(self, monkeypatch):
+        # A route whose model already answers to the route name needs no
+        # rewrite rule even in degraded mode.
+        monkeypatch.setattr(
+            "gpustack.routes.plugins.lb.gateway.lb_module_available",
+            lambda cfg: False,
+        )
+        route, target = _route()
+        ctx = _Ctx(
+            route,
+            fallback_destinations=[],
+            destinations=[(1, "org1/route", _Registry("svc-a.static"))],
+        )
+        await fallback_plugin._declare_mapper_rules(ctx, ctx.collector)
 
         kwargs = _declarations(ctx)
         assert kwargs["rules"] == []

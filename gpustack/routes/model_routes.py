@@ -409,7 +409,7 @@ async def _get_model_routes(
         # wants. The full plugin sections stay detail-only, and meta is
         # dropped: a browse view shows neither plugin storage nor the
         # row's grab-bag column.
-        _apply_route_lb_mode(result.items)
+        _strip_plugin_meta_keys(result.items)
         return result
 
 
@@ -485,17 +485,22 @@ def _drop_derived_meta_keys(meta: Optional[Dict[str, Any]]) -> Optional[Dict[str
 def _merge_meta_update(
     existing_meta: Optional[Dict[str, Any]], input_meta: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    """The meta an explicit update writes: the client's keys (derived
-    ones dropped, None meaning "clear"), with plugin-owned keys carried
+    """The meta an explicit update writes: the client's keys minus the
+    plugin-owned and derived ones, with the plugin-owned keys carried
     over from the stored row. Responses hide plugin-owned meta keys (see
     _strip_plugin_meta_keys), so a client round-tripping a response or
-    editing unrelated metadata sends a meta without them — deleting a
+    editing unrelated metadata sends a meta without them — and a client
+    that forges them anyway is dropped, because deleting or writing a
     policy is expressed through the plugins section, never through
     meta."""
     from gpustack.routes.plugins import route_plugins
 
-    cleaned = _drop_derived_meta_keys(input_meta) or {}
     reserved = {p.name for p in route_plugins()}
+    cleaned = {
+        k: v
+        for k, v in (_drop_derived_meta_keys(input_meta) or {}).items()
+        if k not in reserved
+    }
     preserved = {k: v for k, v in (existing_meta or {}).items() if k in reserved}
     return {**cleaned, **preserved}
 
@@ -602,31 +607,14 @@ async def _route_with_fresh_lb_mode(session: AsyncSession, route_id: int) -> Mod
     return route
 
 
-def _apply_route_lb_mode(items: List[Any]) -> None:
-    """Top-level ``lb_mode`` for list rows, read straight from the
-    passively-derived ``meta`` copy (written by the lb plugin's
-    reconcile — see refresh_lb_mode). The meta itself keeps its
-    user-owned keys with the plugin-owned ones stripped — the same
-    contract as the detail path, so a list response is not a breaking
-    change for clients that read route metadata from it. Written
-    through ``__dict__`` to keep the instances clean of column-level
-    dirt."""
-    for item in items:
-        item.__dict__["lb_mode"] = (item.meta or {}).get(LB_MODE_META_KEY)
-    _strip_plugin_meta_keys(items)
-    for item in items:
-        # the derived key is hidden alongside the plugin-owned ones —
-        # it is exposed as the top-level lb_mode above
-        meta = item.__dict__.get("meta")
-        if meta:
-            item.__dict__["meta"] = _drop_derived_meta_keys(meta)
-
-
 def _strip_plugin_meta_keys(items: List[Any]) -> None:
     """Hide plugin-owned meta keys from responses: ``plugins.*`` is the
     plugins' public face, and a visible storage copy invites clients to
-    write it directly. The stored row is untouched (``__dict__`` write,
-    like the other response rewrites)."""
+    write it directly. The derived ``lb_mode`` is hoisted to its
+    top-level response field and dropped from meta, so every path
+    (list, detail, create, update) exposes the same shape. The stored
+    row is untouched (``__dict__`` writes, like the other response
+    rewrites)."""
     from gpustack.routes.plugins import route_plugins
 
     plugin_keys = {p.name for p in route_plugins()}
@@ -635,6 +623,13 @@ def _strip_plugin_meta_keys(items: List[Any]) -> None:
         if any(k in meta for k in plugin_keys):
             item.__dict__["meta"] = {
                 k: v for k, v in meta.items() if k not in plugin_keys
+            }
+        item.__dict__["lb_mode"] = meta.get(LB_MODE_META_KEY)
+        if LB_MODE_META_KEY in meta:
+            if "meta" not in item.__dict__:
+                item.__dict__["meta"] = dict(meta)
+            item.__dict__["meta"] = {
+                k: v for k, v in item.__dict__["meta"].items() if k != LB_MODE_META_KEY
             }
 
 
@@ -801,7 +796,11 @@ async def create_model_route(
             message=f"Model route with name '{input.name}' already exists."
         )
     source = input.model_dump(exclude={"targets", "plugins"})
-    source["meta"] = _drop_derived_meta_keys(source.get("meta"))
+    # Same contract as an update: plugin-owned meta keys never come from
+    # a client (``plugins.*`` is their only entrance), and the derived
+    # lb_mode is server-side. On create nothing is carried over, so the
+    # client's copy of either is simply dropped.
+    source["meta"] = _merge_meta_update(None, source.get("meta")) or None
     targets = input.targets or []
     await validate_targets(session, targets, route_owner_principal_id=target_org_id)
     source["targets"] = len(targets)
@@ -836,6 +835,7 @@ async def create_model_route(
             targets=targets,
             auto_commit=False,
         )
+        await _assert_consistent_lb_weights(session, route.id)
         # Auto-grant the owning Org so the defaulted ALLOWED_PRINCIPALS
         # route is visible to its members out of the box. Users can add
         # or remove principals afterward via /principals — the Org grant
@@ -952,6 +952,10 @@ async def update_model_route(
         # already rolled back there
         raise
     except Exception as e:
+        # mirror the create path: plugin hooks and the commit can leave
+        # the session dirty, and the rollback keeps a retried request
+        # from inheriting a failed transaction
+        await session.rollback()
         raise InternalServerErrorException(f"Failed to update ModelRoute '{id}': {e}")
     return await _route_with_fresh_lb_mode(session, id)
 
@@ -991,6 +995,10 @@ async def delete_model_route(
         await ModelRouteService(session).delete(existing)
         await _notify_ai_proxy_models(session, deleted_model_ids)
     except Exception as e:
+        # the plugin hook and the pre-delete reads can leave the session
+        # dirty; the rollback keeps a later use of the request session
+        # from failing with PendingRollbackError
+        await session.rollback()
         raise InternalServerErrorException(f"Failed to delete ModelRoute '{id}': {e}")
 
 
@@ -1058,6 +1066,28 @@ async def add_model_route_targets(
     except Exception as e:
         raise InternalServerErrorException(
             f"Failed to add targets to ModelRoute '{id}': {e}"
+        )
+
+
+async def _assert_consistent_lb_weights(session: AsyncSession, route_id: int) -> None:
+    """Reject a route whose non-fallback targets mix weighted and
+    unweighted entries — LB cannot render that shape, and letting it
+    through would only record lb_mode "invalid" asynchronously after a
+    200. Validated on the post-write ROW state (staged, pre-commit), so
+    every write path shares one truth: no client-field-presence
+    inference, no divergence between what the check computes and what
+    the write persists. Fallback targets never count: their weight
+    column means nothing for the split."""
+    targets = await ModelRouteTarget.all_by_field(session, "route_id", route_id)
+    weights = [
+        target.weight or 0
+        for target in targets
+        if target.deleted_at is None and not target.fallback_status_codes
+    ]
+    if weights and any(w > 0 for w in weights) and not all(w > 0 for w in weights):
+        raise InvalidException(
+            "either every target of a route carries a positive weight or "
+            "none may — a mix leaves LB unable to render the route"
         )
 
 
@@ -1133,9 +1163,12 @@ async def batch_handle_targets(
             auto_commit=auto_commit,
         )
         targets_to_return.extend(created_targets)
+        # staged but uncommitted: the row state this reads is exactly
+        # what the caller is about to commit
+        await _assert_consistent_lb_weights(session, route_id)
     except InvalidException:
-        # a plugin-section 400 from the target hook dispatch — already
-        # rolled back there
+        # a 400 from the plugin-section dispatch or the weights check;
+        # the caller's handler (or teardown) discards the staged writes
         raise
     except Exception as e:
         raise InternalServerErrorException(
@@ -1468,9 +1501,15 @@ async def update_model_route_target(
             session=session,
             targets=targets,
             existing_target_map={id: existing},
-            auto_commit=True,
+            auto_commit=False,
         )
+        await _assert_consistent_lb_weights(session, existing.route_id)
+        await session.commit()
+    except InvalidException:
+        await session.rollback()
+        raise
     except Exception as e:
+        await session.rollback()
         raise InternalServerErrorException(
             f"Failed to update ModelRouteTarget '{id}': {e}"
         )
@@ -1545,8 +1584,14 @@ async def set_fallback_target(
             await unset_fallback_target(session, existing.route_id, auto_commit=False)
         existing.fallback_status_codes = input.fallback_status_codes
         await existing.update(session=session, auto_commit=False)
+        # clearing the codes turns the target back into an LB candidate
+        # — the post-write shape must still classify
+        await _assert_consistent_lb_weights(session, existing.route_id)
         await session.commit()
         await _refresh_route_lb_mode(session, existing.route_id)
+    except InvalidException:
+        await session.rollback()
+        raise
     except Exception as e:
         await session.rollback()
         raise InternalServerErrorException(
