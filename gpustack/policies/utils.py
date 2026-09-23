@@ -822,11 +822,13 @@ def get_model_ram_claim(model: Model) -> int:
     extended_kv_cache = model.extended_kv_cache
     if (
         extended_kv_cache
-        and extended_kv_cache.enabled
+        and extended_kv_cache.is_local()
         and extended_kv_cache.ram_size
         and extended_kv_cache.ram_size > 0
     ):
-        # When extended kv cache is enabled, reserve the ram for KV cache.
+        # The in-process cache lives in the engine's own address space, so
+        # the deployment claims it. Shared mode claims nothing: the cache
+        # is the cache server's, sized by the service's own capacity.
         return extended_kv_cache.ram_size * 1024**3
     return 0
 
@@ -841,12 +843,18 @@ def get_computed_ram_claim(
     2. If RAM size for extended KV cache is available, use it.
     3. If RAM ratio for extended KV cache is set and vram_claim is available, calculate RAM as ram_ratio * total_vram_claim.
     4. If neither is available, return None.
+
+    Only the in-process mode claims here. A deployment attached to a cache
+    service holds no CPU cache of its own — the worker skips the sizing
+    entirely and the cache lives in the cache server's container, under the
+    service's own capacity — so claiming for it would reserve host RAM
+    nothing uses, once per attached deployment.
     """
     if static_ram:
         return static_ram
 
     ext = model.extended_kv_cache
-    if not ext or not ext.enabled:
+    if not ext or not ext.is_local():
         return None
 
     claim = None
