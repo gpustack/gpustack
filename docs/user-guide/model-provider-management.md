@@ -32,6 +32,7 @@ The currently supported providers are:
 - Ollama
 - OpenAI
 - OpenRouter
+- OrcaRouter
 - Alibaba Qwen
 - iFLYTEK SparkDesk
 - StepFun
