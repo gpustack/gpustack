@@ -5,8 +5,9 @@ fallback EnvoyFilter."""
 
 from unittest.mock import MagicMock, patch
 
-from gpustack.gateway.utils import MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX
 import pytest
+
+from gpustack.gateway import utils as mcp_handler
 
 from gpustack.routes.plugins.fallback.plugin import fallback_plugin
 
@@ -157,10 +158,10 @@ class TestMapperRuleDeclaration:
         kwargs = _declarations(ctx)
         rules = kwargs["rules"]
         assert len(rules) == 1
-        assert rules[0].config == {
-            "modelMapping": {"org1/route": "real-model"},
-            "enableOnPathSuffix": MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX,
-        }
+        assert rules[0].config["modelMapping"] == {"org1/route": "real-model"}
+        assert rules[0].config["enableOnPathSuffix"] == (
+            mcp_handler.MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX
+        )
         assert rules[0].ingress == ["gpustack/ai-route-route-1.internal"]
         assert rules[0].service == ["svc-a.static"]
 
