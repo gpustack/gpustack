@@ -2,7 +2,7 @@ import logging
 import math
 import random
 import secrets
-from typing import Any, Callable, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 from urllib.parse import urlencode
 
 import aiohttp
@@ -14,6 +14,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    BadRequestException,
     ForbiddenException,
     InternalServerErrorException,
     NotFoundException,
@@ -608,8 +609,9 @@ def enforce_data_dir_mounts(input: Union[ClusterCreate, ClusterUpdate]):
     swallow the anomaly.
 
     What is *not* refused is leaving ``k8s_options`` out of an update
-    altogether: that is how the API says "unchanged" for every other field, and
-    it used to be the second half of this check's deadlock.
+    altogether: that is how the API says "unchanged" for every other field,
+    and refusing it here would deadlock every update that does not touch
+    Kubernetes options.
     """
     is_update = not isinstance(input, ClusterCreate)
     if is_update and "k8s_options" not in input.model_fields_set:
@@ -830,6 +832,7 @@ async def update_cluster(
         enforce_data_dir_mounts(input)
         await check_cluster_purpose_switch(session, cluster, input)
     hoist_system_default_container_registry(input)
+    await check_topology_layers_not_stranded(session, cluster, input)
 
     try:
         await cluster.update(session=session, source=input)
@@ -840,6 +843,60 @@ async def update_cluster(
         session,
         id,
         options=CLUSTER_LOAD_OPTIONS,
+    )
+
+
+async def check_topology_layers_not_stranded(
+    session, cluster: Cluster, input: ClusterUpdate
+):
+    """Refuse a save that deletes a topology layer a model still gathers on.
+
+    Saving the whole chain is the only delete there is — a layer is gone when
+    the next PUT arrives without it — so the check belongs here rather than
+    behind a delete endpoint that does not exist.
+
+    Refusing is the only honest option. Dropping the models' requirement
+    silently rewrites what someone asked for; leaving them pointing at nothing
+    is worse, because the solver stands an unresolvable gather down rather
+    than failing, so a `MustGather` would go on being stored while enforcing
+    nothing — a promise with no mechanism behind it, which is exactly what
+    `GatherSpec` refuses to allow anywhere else.
+    """
+    from gpustack.schemas.models import Model
+    from gpustack.topology.tree import NODE_LAYER
+    from gpustack.topology.vocabulary import VOCABULARY_IDS
+
+    if "topology" not in input.model_fields_set:
+        return
+
+    # A layer stops being a gather tier two ways, and both strand the models
+    # pointing at it: a custom one is deleted, a built-in one is switched off.
+    # The second is the easy one to miss because the row survives — but
+    # `ResolvedTopology.active()` drops it, so a `MustGather` on it would be a
+    # promise with no mechanism behind it, which is exactly what `GatherSpec`
+    # refuses to allow anywhere else.
+    declared = list(input.topology.layers) if input.topology else []
+    disabled = {layer.id for layer in declared if layer.disabled}
+    surviving = {layer.id for layer in declared if not layer.disabled}
+    surviving |= (set(VOCABULARY_IDS) | {NODE_LAYER}) - disabled
+
+    stranded: Dict[str, List[str]] = {}
+    for model in await Model.all_by_field(session, "cluster_id", cluster.id):
+        layer = getattr(getattr(model, "gather", None), "layer", None)
+        if layer and layer not in surviving:
+            stranded.setdefault(layer, []).append(model.name)
+    if not stranded:
+        return
+
+    detail = "; ".join(
+        f"{layer} is used by {', '.join(sorted(names))}"
+        for layer, names in sorted(stranded.items())
+    )
+    raise BadRequestException(
+        message=(
+            "Cannot remove or disable a topology layer that models still "
+            f"gather on: {detail}. Change those models first."
+        )
     )
 
 

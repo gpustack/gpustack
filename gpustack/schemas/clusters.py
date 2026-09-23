@@ -250,6 +250,138 @@ class OperatorOptions(BaseModel):
     )
 
 
+class GatherStrategyEnum(str, Enum):
+    """What to do when a group does not fit inside one domain of a layer.
+
+    Read as a *failure* policy, not a placement one: the group scheduler
+    already places into the tightest domain that fits. ``PreferGather`` lets it
+    keep widening until the cluster root; ``MustGather`` stops it at a declared
+    layer and refuses the deployment instead of quietly delivering a slower
+    one.
+    """
+
+    MUST_GATHER = "MustGather"
+    PREFER_GATHER = "PreferGather"
+
+
+class TopologyLayer(BaseModel):
+    """One declared layer between the cluster and the worker.
+
+    ``label_keys`` is any-of rather than a single key because the same physical
+    layer is spelled differently by every vendor and cloud, and a fleet that
+    mixes them should not have to be relabelled before topology works at all.
+    The first key present wins.
+
+    **Three fields for three jobs**, because one field could not hold them:
+    ``id`` is what other records point at, ``name`` is the canonical word and
+    the i18n lookup key, ``display_name`` is whatever the operator decided to
+    call it. Collapsing the first two is what left an operator unable to rename
+    a layer at all; collapsing the last two would mean a rename either breaks
+    every reference or is not a rename.
+
+    A row therefore reads on its own: which id, what it is, what they call it.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    id: str = PydanticField(
+        description=(
+            "Stable identity, fixed at creation and never changed. "
+            "`builtin-NNNNNN` for a vocabulary rung, `custom-<6 hex>` for one "
+            "the operator added. Referenced by `parentLayer` and by "
+            "`Model.gather.layer`, which is why renaming writes `displayName` "
+            "instead of touching this."
+        )
+    )
+    name: str = PydanticField(
+        description=(
+            "Canonical name: the vocabulary slug for a built-in rung, the "
+            "operator's original wording for a custom one. Set once at "
+            "creation and never rewritten — it is the i18n lookup key, so a "
+            "*translated* value here would freeze the row into whichever UI "
+            "language last saved it."
+        )
+    )
+    display_name: Optional[str] = PydanticField(
+        default=None,
+        alias="displayName",
+        description=(
+            "What the operator renamed this layer to. Unset means never "
+            "renamed, which is the only way to say so — the effective label "
+            "is `displayName or t(name)`. Shown verbatim, never translated: "
+            "these are the operator's words, not ours."
+        ),
+    )
+    label_keys: List[str] = PydanticField(
+        default_factory=list,
+        alias="labelKeys",
+        description=(
+            "Worker label keys for this layer, tried in order; the first one "
+            "present wins. A worker matching none of them is unclassified, "
+            "which costs placement resolution but never schedulability."
+        ),
+    )
+    parent_layer: Optional[str] = PydanticField(
+        default=None,
+        alias="parentLayer",
+        description=(
+            "The id of the layer above this one. Left unset on the topmost "
+            "layer, which hangs off the implicit cluster root. Stored as a "
+            "chain rather than an ordered list so inserting a layer does not "
+            "renumber the layers below it — these ids are referenced from "
+            "saved model configurations."
+        ),
+    )
+    disabled: bool = PydanticField(
+        default=False,
+        description=(
+            "Built-in rungs only: the operator does not want to group by this "
+            "layer even though workers carry its label. Distinct from a layer "
+            "nobody filled in, which is a fact about the data and comes back "
+            "the moment someone writes the label; this is a decision and "
+            "does not. A custom layer is deleted rather than disabled."
+        ),
+    )
+
+
+class ClusterTopology(BaseModel):
+    """How far apart this cluster's workers are, for the group scheduler.
+
+    **One chain, root to leaf.** The built-in rungs are zone, rack and the
+    host; anything else the fabric has — an NVLink/HCCS/UB domain, a blade, a
+    cage — is a custom layer the operator inserts where it belongs.
+
+    An accelerator domain is a rung on this chain, not a scope beside it: on
+    every shipping generation its boundary is a run of contiguous cabinets,
+    which orders against a rack like anything else does.
+
+    The built-in rungs are a fixed vocabulary (see
+    `topology.vocabulary`); a cluster fills in values, it does not
+    declare them. `layers` is therefore empty in the common case. A non-empty
+    list is the Advanced panel's work: an entry named after a vocabulary field
+    replaces that field's label keys, and any other entry is a custom layer
+    placed by its `parent_layer`.
+
+    Only the root and the leaf are built in. The leaf takes the worker's name
+    rather than a label, so a cluster that declares nothing still gets a usable
+    tree and still offers the tightest gather choice — every failure in this
+    structure costs resolution, never schedulability.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    layers: List[TopologyLayer] = PydanticField(
+        default_factory=list,
+        description=(
+            "Key overrides for vocabulary fields and custom layers, as a "
+            "parent chain. Empty means the vocabulary as-is (zone, rack)."
+        ),
+    )
+    # A cluster declares its shape here and nothing else: gather is per
+    # deployment. `MustGather` is a failure policy, so a cluster-wide default
+    # would be an operator pre-setting a rejection condition whose reason the
+    # deployer never sees, while the deploy form already derives its tiers from
+    # this declaration — the fabric knowledge reaches the deployer either way.
+
+
 # Value paths the server derives from the cluster's registration, and which a
 # caller therefore cannot set: each one decides what the deployment *is* rather
 # than how it is configured. Overriding `worker.serverURL` points the workers at
@@ -790,6 +922,45 @@ class ClusterUpdate(SQLModel):
             )
         ),
     )
+    # Per-cluster, because "how far apart are two workers" is a property of the
+    # fleet and a worker belongs to exactly one cluster. Stored alongside
+    # `k8s_options` and handled identically.
+    topology: Optional[ClusterTopology] = Field(
+        default=None,
+        sa_column=Column(
+            pydantic_column_type(
+                ClusterTopology,
+                exclude_none=True,
+                exclude_unset=True,
+                exclude_defaults=True,
+            )
+        ),
+    )
+
+    @field_validator("topology")
+    def validate_topology(cls, v: Optional[ClusterTopology]):
+        """Refuse a declaration that cannot become a tree.
+
+        Only the declaration is validated, never the data: a custom layer
+        naming a parent that does not exist, or taking a vocabulary id as its
+        name, means the operator's intent is unknowable, while a worker missing
+        a label is a normal state the tree already has a place for. Rejecting
+        the second would make labelling a precondition for saving, which is
+        exactly backwards — values are filled in *after*, using the tree to see
+        who is still missing.
+        """
+        if v is None:
+            return v
+
+        from gpustack.topology.tree import TopologyError
+        from gpustack.topology.vocabulary import validate_declaration
+
+        try:
+            validate_declaration(v)
+        except TopologyError as e:
+            raise ValueError(str(e)) from e
+
+        return v
 
     @field_validator("server_url")
     def validate_server_url(cls, v: Optional[str]) -> Optional[str]:

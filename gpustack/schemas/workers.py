@@ -163,6 +163,16 @@ class GPUDeviceStatus(GPUDeviceInfo):
     """
     Network information of the GPU device, mainly for Ascend devices.
     """
+    topology_hints: Optional[Dict[str, str]] = Field(
+        sa_column=Column(JSON), default=None
+    )
+    """
+    Where this device sits beyond the host, as the device itself reports it:
+    today the NVLink domain it belongs to, keyed by topology label key
+    (`nvidia.com/gpu.clique`). Per device; the worker-level
+    `WorkerStatus.topology_facts` is derived from these and is what the
+    scheduler reads.
+    """
 
 
 GPUDevicesStatus = List[GPUDeviceStatus]
@@ -282,6 +292,31 @@ class WorkerStatus(SystemInfo):
     rpc_servers: Optional[Dict[int, RPCServer]] = Field(
         sa_column=Column(JSON), default=None
     )
+    topology_facts: Optional[Dict[str, str]] = Field(
+        sa_column=Column(JSON), default=None
+    )
+    """
+    The worker's discovered position, keyed by topology label key: today the
+    NVLink domain its cards agree on. Read under `Worker.labels`, so a
+    hand-filled label always wins over a discovered fact.
+    """
+
+    kv_ifname: Optional[str] = None
+    """
+    What this worker was TOLD its KV-transfer NIC is -- `--kv-ifname`, verbatim,
+    and `None` when the operator set nothing.
+
+    Reported so the derivation can be told from the override. The rendered
+    `HCCL_SOCKET_IFNAME` on a running member equals `Worker.ifname` both when
+    the derivation supplies it (a control-plane recipe takes the management
+    NIC) and when an operator hand-fills the same name because a multi-NIC host
+    refuses to guess, so the rendered env alone cannot tell the two apart. Null
+    here with a non-null `ifname` there means derived; non-null means the
+    operator is still typing it in.
+
+    A worker-local setting, and deliberately not promoted to a cluster-wide
+    one: see `Config.kv_ifname` for why a NIC name must not be broadcast.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -414,7 +449,7 @@ class WorkerBase(WorkerCreate):
             return
 
         if self.unreachable:
-            address = self.advertise_address or self.ip
+            address = self.get_dial_address()
             healthz_url = f"http://{address}:{self.port}/healthz"
             msg = (
                 "Server cannot access the "
@@ -468,6 +503,20 @@ class WorkerBase(WorkerCreate):
         if self.proxy_mode != ModelInstanceProxyModeEnum.TUNNEL:
             return None
         return self.proxy_address
+
+    def get_dial_address(self) -> Optional[str]:
+        """The host the SERVER dials to reach this worker directly.
+
+        ``ip`` is what the worker reported about itself, and on a cloud host
+        that is routinely an address only that host's own network can route --
+        a VPC address such as ``10.0.0.37``. ``advertise_address`` is the one
+        the worker was told to publish for outside access, so it wins whenever
+        it is set.
+
+        NOT the address for the tunnel path: there the request leaves from the
+        worker's own side, where ``ip`` is exactly what resolves.
+        """
+        return self.advertise_address or self.ip
 
 
 class Worker(WorkerBase, BaseModelMixin, table=True):
