@@ -982,12 +982,69 @@ class ModelInstanceService:
             # resolution error — the instance starts without the shared
             # cache instead (same contract as the scheduler's re-resolve).
             model_instance.cache_config = await resolve_instance_cache_config_safe(
-                self.session, model
+                self.session, model, role=model_instance.role
             )
         result = await ModelInstance.create(self.session, model_instance)
         await delete_cache_by_key(self.get_running_instances, model_instance.model_id)
         await invalidate_workers_allocated([model_instance])
         return result
+
+    async def batch_create(self, model_instances: List[ModelInstance]):
+        """Create every instance in ONE transaction.
+
+        The mirror of ``batch_delete``, and it exists for the same reason that
+        one does: a PD group's members have to appear together. Kueue's
+        pod-group admission counts the members it can see against the declared
+        total, so a group whose rows land one commit at a time is repeatedly
+        seen as incomplete. The group's feasibility verdict also has to be
+        settled before any member row exists, which a per-row loop cannot
+        express.
+
+        Cache resolution is per instance and per the same degrading contract
+        as ``create``: a group must not fail to form because a shared cache
+        could not be resolved.
+        """
+        if not model_instances:
+            return []
+
+        model_ids = {mi.model_id for mi in model_instances}
+        models = {}
+        for model_id in model_ids:
+            models[model_id] = await Model.one_by_id(self.session, model_id)
+
+        try:
+            created = []
+            for model_instance in model_instances:
+                model = models.get(model_instance.model_id)
+                if model is not None:
+                    model_instance.cache_config = (
+                        await resolve_instance_cache_config_safe(
+                            self.session, model, role=model_instance.role
+                        )
+                    )
+                result = await ModelInstance.create(
+                    self.session, model_instance, auto_commit=False
+                )
+                created.append(result)
+            await self.session.commit()
+
+            # create(auto_commit=False) returns before invalidating cached_all,
+            # so the batch commit must do it — the same rule batch_delete
+            # follows, and for the same reason: subscribe()'s replay snapshot
+            # would otherwise not carry the new rows.
+            await ModelInstance._invalidate_cached_all()
+
+            for model_id in model_ids:
+                await delete_cache_by_key(self.get_running_instances, model_id)
+            await invalidate_workers_allocated(model_instances)
+
+            return created
+        except Exception as e:
+            await self.session.rollback()
+            names = [mi.name for mi in model_instances]
+            raise InternalServerErrorException(
+                message=f"Failed to create model instances {names}: {e}"
+            )
 
     async def update(
         self, model_instance: ModelInstance, source: Union[dict, SQLModel, None] = None

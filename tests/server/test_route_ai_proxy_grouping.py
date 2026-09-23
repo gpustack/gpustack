@@ -4,7 +4,7 @@ import pytest
 
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget, TargetStateEnum
-from gpustack.schemas.models import ModelInstanceStateEnum
+from gpustack.schemas.models import ModelInstanceStateEnum, RoleNameEnum, RoleSpec
 from gpustack.server.bus import Event, EventType
 from gpustack.server.controllers import (
     calculate_destinations,
@@ -284,3 +284,108 @@ async def test_native_anthropic_api_edit_reaches_the_route(
         )
 
     assert publish.await_count == (1 if should_notify else 0)
+
+
+@pytest.mark.asyncio
+async def test_pd_group_weights_only_the_router():
+    """A role-bearing group splits no traffic onto its prefill or decode.
+
+    The registry side (``_ensure_model_mcp_bridge``) already narrows to the
+    router, so a weight naming a GPU member points at an upstream Envoy has no
+    cluster for. Measured on a 1P1D Ascend group: the annotation read
+    ``34% router / 33% prefill / 33% decode``, the router's third answered
+    correctly and the other two never returned at all.
+    """
+    model = new_model(MODEL_ID, "asc-pd", model_scope_model_id="Qwen/Qwen3-30B-A3B")
+    model.cluster_id = CLUSTER_ID
+    model.roles = [
+        RoleSpec(name=RoleNameEnum.PREFILL.value, replicas=1),
+        RoleSpec(name=RoleNameEnum.DECODE.value, replicas=1),
+        RoleSpec(name=RoleNameEnum.ROUTER.value, replicas=1),
+    ]
+    prefill = _running_instance(1)
+    prefill.role = RoleNameEnum.PREFILL.value
+    decode = _running_instance(2)
+    decode.role = RoleNameEnum.DECODE.value
+    router = _running_instance(3)
+    router.role = RoleNameEnum.ROUTER.value
+
+    with (
+        patch(
+            "gpustack.server.controllers.ModelRouteTarget.all_by_field",
+            AsyncMock(return_value=[_target(1)]),
+        ),
+        patch(
+            "gpustack.server.controllers.Model.one_by_id",
+            AsyncMock(return_value=model),
+        ),
+        patch(
+            "gpustack.server.controllers.Cluster.one_by_id",
+            AsyncMock(return_value=_cluster()),
+        ),
+        patch(
+            "gpustack.server.controllers.ModelInstance.all_by_field",
+            AsyncMock(return_value=[prefill, decode, router]),
+        ),
+        patch(
+            "gpustack.server.controllers.Worker.all_by_fields",
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        destinations, _ = await calculate_destinations(
+            session=None, model_route=ModelRoute(id=1, name="asc-pd")
+        )
+
+    assert [registry.get_service_name() for _, _, registry in destinations] == [
+        f"model-{MODEL_ID}-3.static"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_group_without_a_running_router_weights_nothing():
+    """No router running means no destination, not a fall back to the members.
+
+    There is no member of a group that answers a whole request on its own, so
+    an empty destination list is the honest answer and the route reports the
+    deployment as unavailable.
+    """
+    model = new_model(MODEL_ID, "asc-pd", model_scope_model_id="Qwen/Qwen3-30B-A3B")
+    model.cluster_id = CLUSTER_ID
+    model.roles = [
+        RoleSpec(name=RoleNameEnum.PREFILL.value, replicas=1),
+        RoleSpec(name=RoleNameEnum.DECODE.value, replicas=1),
+        RoleSpec(name=RoleNameEnum.ROUTER.value, replicas=1),
+    ]
+    prefill = _running_instance(1)
+    prefill.role = RoleNameEnum.PREFILL.value
+    decode = _running_instance(2)
+    decode.role = RoleNameEnum.DECODE.value
+
+    with (
+        patch(
+            "gpustack.server.controllers.ModelRouteTarget.all_by_field",
+            AsyncMock(return_value=[_target(1)]),
+        ),
+        patch(
+            "gpustack.server.controllers.Model.one_by_id",
+            AsyncMock(return_value=model),
+        ),
+        patch(
+            "gpustack.server.controllers.Cluster.one_by_id",
+            AsyncMock(return_value=_cluster()),
+        ),
+        patch(
+            "gpustack.server.controllers.ModelInstance.all_by_field",
+            AsyncMock(return_value=[prefill, decode]),
+        ),
+        patch(
+            "gpustack.server.controllers.Worker.all_by_fields",
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        destinations, fallback = await calculate_destinations(
+            session=None, model_route=ModelRoute(id=1, name="asc-pd")
+        )
+
+    assert destinations == []
+    assert fallback == []

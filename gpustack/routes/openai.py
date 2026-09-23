@@ -26,7 +26,7 @@ from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.model_common import build_category_conditions
-from gpustack.schemas.models import Model
+from gpustack.schemas.models import Model, servable_instances
 from gpustack.schemas.model_routes import (
     ModelRoute,
     MyModel,
@@ -54,7 +54,6 @@ from gpustack.gateway.utils import (
     openai_model_prefixes,
     router_header_key,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -214,8 +213,9 @@ async def proxy_request_by_model(
         if not route_targets:
             # resolve_route_targets filters on TargetStateEnum.ACTIVE, so an
             # empty result means either no such route or every target sitting
-            # UNAVAILABLE while ready_replicas is 0 (any worker that misses
-            # /healthz does that to every model on it). 404 would tell the
+            # UNAVAILABLE because its model is not servable (any worker that
+            # misses /healthz does that to every model on it; a group with a
+            # role at zero ready members does it too). 404 would tell the
             # caller a deployed model is gone and not to retry, so split them.
             if await model_route_service.get_by_name(model_name) is None:
                 raise NotFoundException(
@@ -252,7 +252,7 @@ async def proxy_request_by_model(
         mutate_request(request, model_name, body_json, form_data)
 
         instance = await get_running_instance(
-            session, model.id, target.overridden_model_name
+            session, model, target.overridden_model_name
         )
         worker: Worker = await WorkerService(session).get_by_id(instance.worker_id)
         if not worker:
@@ -497,7 +497,7 @@ def filter_headers(headers):
 
 async def get_running_instance(
     session: AsyncSession,
-    model_id: int,
+    model: Model,
     overridden_model_name: Optional[str] = None,
 ):
     """Pick a RUNNING instance, narrowing by ``mounted_loras`` when a
@@ -506,8 +506,14 @@ async def get_running_instance(
     and never hot-reloaded
     """
     running_instances = await ModelInstanceService(session).get_running_instances(
-        model_id
+        model.id
     )
+    # Narrow to the members that can answer a whole request. For a
+    # disaggregated group that is the router alone: balancing across the group
+    # does not fail, it answers most requests wrongly — a prefill returns after
+    # one token and a decode runs without the prefix its KV was meant to carry,
+    # both with a 200.
+    running_instances = servable_instances(model, running_instances)
     if not running_instances:
         raise ServiceUnavailableException(
             message="No running instances available",

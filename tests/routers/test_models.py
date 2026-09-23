@@ -48,6 +48,7 @@ from gpustack.schemas.models import (
     ModelCreate,
     ModelInstance,
     ModelInstanceStateEnum,
+    ModelStateEnum,
     ModelUpdate,
     SourceEnum,
 )
@@ -295,13 +296,48 @@ async def test_update_model_rejects_missing_cluster(monkeypatch):
 def test_model_watch_filter_applies_state(
     monkeypatch, ready, replicas, state, expected
 ):
-    """The /models watch stream honors ``state`` via replica counts."""
+    """The /models watch stream honors ``state``. A payload carrying no
+    ``state`` field — a row from before the column existed — is still
+    filtered by the replica counts, unchanged."""
     monkeypatch.setattr(models_route, "cluster_scoped_system", lambda ctx: False)
 
     visible = models_route._make_model_watch_filter(
         ctx=None, categories=None, state=state
     )
     data = SimpleNamespace(ready_replicas=ready, replicas=replicas)
+    assert visible(data) is expected
+
+
+@pytest.mark.parametrize(
+    "model_state, replicas, state, expected",
+    [
+        (ModelStateEnum.RUNNING, 3, ModelStateFilterEnum.READY, True),
+        # A model scaling up, and a group with a role at zero ready members:
+        # both have members running, so both are "ready" to this filter.
+        (ModelStateEnum.PARTIAL, 3, ModelStateFilterEnum.READY, True),
+        (ModelStateEnum.PENDING, 3, ModelStateFilterEnum.READY, False),
+        (ModelStateEnum.ERROR, 3, ModelStateFilterEnum.READY, False),
+        (ModelStateEnum.PENDING, 3, ModelStateFilterEnum.NOT_READY, True),
+        (ModelStateEnum.ERROR, 3, ModelStateFilterEnum.NOT_READY, True),
+        (ModelStateEnum.RUNNING, 3, ModelStateFilterEnum.NOT_READY, False),
+        (ModelStateEnum.PENDING, 0, ModelStateFilterEnum.NOT_READY, False),
+        (ModelStateEnum.PENDING, 0, ModelStateFilterEnum.STOPPED, True),
+        (ModelStateEnum.RUNNING, 3, ModelStateFilterEnum.STOPPED, False),
+    ],
+)
+def test_model_watch_filter_reads_the_model_state_field(
+    monkeypatch, model_state, replicas, state, expected
+):
+    """Once the row carries a status field, the filter reads it instead of
+    re-deriving readiness from the counters."""
+    monkeypatch.setattr(models_route, "cluster_scoped_system", lambda ctx: False)
+
+    visible = models_route._make_model_watch_filter(
+        ctx=None, categories=None, state=state
+    )
+    # ready_replicas is deliberately inconsistent with model_state here: the
+    # filter must not fall back to it when a state is present.
+    data = SimpleNamespace(state=model_state, ready_replicas=0, replicas=replicas)
     assert visible(data) is expected
 
 
@@ -566,6 +602,9 @@ def test_entry_fields_are_pinned():
         "scaling_schedule",
         "generic_proxy",
         "lora_list",
+        "roles",
+        "disaggregation",
+        "gather",
         "enable_model_route",
     ]
     # An overwrite settles routes rather than writing a column, and never
