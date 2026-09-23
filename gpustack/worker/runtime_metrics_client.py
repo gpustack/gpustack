@@ -71,7 +71,7 @@ class Client:
         self.config = config or Config()
 
     def fetch_metrics_from_endpoint(self, endpoint):
-        url = f"{self.scheme}://{endpoint}/metrics"
+        url = f"{self.config.scheme}://{endpoint}/metrics"
 
         logger.trace(f"Fetching metrics from {url}")
 
@@ -132,7 +132,7 @@ class Client:
         error_msg = ""
         warning_msg = ""
         for path in paths:
-            url = f"{self.scheme}://{endpoint}/{path}"
+            url = f"{self.config.scheme}://{endpoint}/{path}"
             try:
                 resp = requests.get(
                     url,
