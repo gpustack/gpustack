@@ -2367,7 +2367,9 @@ def is_inference_ready(mi: ModelInstance, model: Model, timeout: int = 15) -> bo
     inference_url = f"{scheme}://{mi.worker_ip}:{mi.port}{endpoint_path}"
 
     try:
-        response = requests.post(inference_url, json=payload, timeout=timeout, verify=verify)
+        response = requests.post(
+            inference_url, json=payload, timeout=timeout, verify=verify
+        )
         if response.status_code == 200:
             return True
         else:
