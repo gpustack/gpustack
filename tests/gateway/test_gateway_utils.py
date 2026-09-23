@@ -27,6 +27,7 @@ from gpustack.gateway.utils import (
     model_instances_registry_list,
     provider_proxy_plugin_spec,
     provider_registry,
+    MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX,
     router_header_key,
 )
 from gpustack.schemas.models import ModelInstance
@@ -984,7 +985,10 @@ class TestGetExpectedMatchList:
             "higress-system/ai-route-route-6.internal",
             "higress-system/ai-route-route-6.fallback.internal",
         ]
-        assert rule.config == {"modelMapping": {"tmp1": "qwen3-0.6b"}}
+        assert rule.config == {
+            "modelMapping": {"tmp1": "qwen3-0.6b"},
+            "enableOnPathSuffix": MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX,
+        }
         assert rule.service == ["model-1-1.static"]
 
     def test_no_main_path_rules_are_emitted(self):
