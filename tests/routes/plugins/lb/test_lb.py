@@ -82,6 +82,52 @@ class TestBuildCandidate:
         assert candidate_cluster_name(portless) == "outbound|80||s.static"
 
 
+class TestRenderRoute:
+    def test_mixed_weights_refused_state_independently(self):
+        # The verdict set is the same as _derive_lb_mode's and the API's
+        # write-time check: all non-deleted candidate targets, whatever
+        # their state. A mix where the unweighted target happens to be
+        # UNAVAILABLE must still be refused — classifying it by the
+        # ACTIVE subset would make the reported mode and the render
+        # decision disagree as states flap.
+        import asyncio
+
+        from gpustack.routes.plugins.lb.reconciler import render_route
+        from gpustack.schemas.model_routes import (
+            ModelRoute,
+            ModelRouteTarget,
+            TargetStateEnum,
+        )
+
+        route = ModelRoute(id=1, name="r", targets=0, ready_targets=0)
+        targets = [
+            ModelRouteTarget(
+                id=1,
+                name="t1",
+                route_name="r",
+                route_id=1,
+                weight=70,
+                state=TargetStateEnum.ACTIVE,
+            ),
+            ModelRouteTarget(
+                id=2,
+                name="t2",
+                route_name="r",
+                route_id=1,
+                weight=0,
+                state=TargetStateEnum.UNAVAILABLE,
+            ),
+        ]
+
+        from unittest.mock import patch
+
+        async def shim(cls, session, field=None, value=None, **kw):
+            return targets
+
+        with patch.object(ModelRouteTarget, "all_by_field", classmethod(shim)):
+            assert asyncio.run(render_route(None, route)) is None
+
+
 class TestSyncModelRouteLb:
     """The LB matchRule is declared on the collector, not written
     directly: one declaration for the shared CR (upsert when candidates
@@ -123,6 +169,14 @@ class TestSyncModelRouteLb:
         monkeypatch.setattr(rec, "_ensure_envoy_filter", fake_filter)
 
         collector = RouteArtifactCollector()
+
+        # The restricted flush inside sync_model_route_lb now runs for a
+        # local collector too (the create-direction ordering); these
+        # tests assert the declarations, so the k8s write is stubbed.
+        async def fake_flush(self, cfg, extensions_api, only_cr=None):
+            return None
+
+        monkeypatch.setattr(RouteArtifactCollector, "flush", fake_flush)
         asyncio.run(
             sync_model_route_lb(
                 cfg=_Cfg(),

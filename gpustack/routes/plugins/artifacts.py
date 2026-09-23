@@ -139,10 +139,19 @@ class RouteArtifactCollector:
             )
         )
 
-    async def flush(self, cfg: Config, extensions_api: Any) -> None:
+    async def flush(
+        self, cfg: Config, extensions_api: Any, only_cr: Optional[str] = None
+    ) -> None:
+        """Write the collected declarations, one ensure per touched CR.
+        ``only_cr`` restricts the write to a single CR — used by a
+        plugin that needs its own rules on the gateway before it
+        applies an ordering-sensitive artifact, without touching other
+        plugins' pending declarations (which keeps the flush
+        registration-order-independent)."""
         from gpustack.gateway import utils as gateway_utils
 
-        for cr_name, updates in self._updates.items():
+        for cr_name in [c for c in self._updates if only_cr is None or c == only_cr]:
+            updates = self._updates[cr_name]
             create_base = next(
                 (u.create_base for u in updates if u.create_base is not None), None
             )
@@ -166,4 +175,6 @@ class RouteArtifactCollector:
                 namespace=cfg.gateway_namespace,
                 spec_diff=spec_diff,
             )
-        self._updates.clear()
+            # clear only what this pass wrote: a restricted flush leaves
+            # the other CRs' declarations pending for the next one
+            self._updates.pop(cr_name, None)

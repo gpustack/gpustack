@@ -1930,6 +1930,7 @@ async def sync_gateway(
             networking_api=networking_api,
             effective_name=effective_name,
             fallback_destinations=fallback_destinations,
+            destinations=destinations,
         )
     )
     # FIXME: Copy the fallback destination to the main ingress for now to make sure the fallback

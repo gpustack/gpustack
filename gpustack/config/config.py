@@ -196,13 +196,12 @@ class Config(WorkerConfig, BaseSettings):
     proxy_port: Optional[int] = 30079
     database_port: Optional[int] = 5432
     database_url: Optional[str] = None
-    # Redis URL for features that need shared, fast state (LB plugin's
-    # shared-state backend, and enterprise features when the enterprise
-    # edition is installed). May carry credentials
-    # (redis://host[:port][/db]; credentials are refused — they would be
-    # materialized in the gateway CR — and so is rediss://, the LB
-    # plugin's redis client has no TLS knob) —
-    # never log it verbatim; redact first like database_url.
+    # Redis URL for features that need shared, fast state (the LB
+    # plugin's shared-state backend, and enterprise features when the
+    # enterprise edition is installed). redis://host[:port][/db] only:
+    # credentialed urls are refused (they would be materialized in the
+    # gateway CR) and so is rediss:// (the LB plugin's redis client has
+    # no TLS knob).
     redis_url: Optional[str] = None
     disable_worker: Optional[bool] = None  # Deprecated
     enable_worker: bool = False

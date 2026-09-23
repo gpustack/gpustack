@@ -16,19 +16,19 @@ runs one ``calculate_destinations`` pass for everyone) and arrives via
 ``ctx.fallback_destinations``; what to do with it is this plugin's.
 """
 
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List
 
 from gpustack.routes.plugins import (
     RoutePlugin,
     RouteReconcileContext,
     register_route_plugin,
 )
-from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget
-from gpustack.schemas.models import ModelInstance
 
 # gpustack.gateway's package init imports this package, so anything under
 # it (and gpustack.server, which reaches back here through controllers)
 # is imported lazily at call time rather than at module import.
+from gpustack.schemas.model_routes import ModelRouteTarget
+
 MAPPER_RULE_OWNER = "mapper"
 
 
@@ -44,11 +44,6 @@ async def _has_fallback_target(ctx: RouteReconcileContext) -> bool:
 
 class FallbackPlugin(RoutePlugin):
     name = "fallback"
-
-    def watches(self) -> Set[type]:
-        # Target fallback codes and instance topology both change what the
-        # fallback path serves.
-        return {ModelRoute, ModelRouteTarget, ModelInstance}
 
     async def reconcile_route(self, ctx: RouteReconcileContext) -> None:
         from gpustack.routes.plugins.artifacts import RouteArtifactCollector
@@ -89,11 +84,23 @@ class FallbackPlugin(RoutePlugin):
             registries = fallback_model_name_to_registries.setdefault(model_name, [])
             registries.append(registry.get_service_name())
 
+        main_model_name_to_registries: Dict[str, List[str]] = {}
+        from gpustack.routes.plugins.lb.gateway import lb_module_available
+
+        if not lb_module_available(ctx.cfg):
+            # Degraded mode: no LB rule lands, so the legacy main-path
+            # modelMapping rule is the only rewrite — without it the
+            # upstream sees the route name instead of the model name.
+            for _, model_name, registry in ctx.destinations or []:
+                registries = main_model_name_to_registries.setdefault(model_name, [])
+                registries.append(registry.get_service_name())
+
         expected_rules = mcp_handler.get_expected_match_list(
             route_name=ctx.effective_name or ctx.model_route.name,
             ingress_prefix=prefix,
             ingress_name=ctx.ingress_name,
             fallback_model_name_to_registries=fallback_model_name_to_registries,
+            model_name_to_registries=main_model_name_to_registries,
         )
         collector.set_rules(
             cr_name=mcp_handler.gpustack_model_mapper_name,

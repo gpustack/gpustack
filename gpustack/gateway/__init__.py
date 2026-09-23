@@ -854,6 +854,12 @@ def _spec_diff_for(
     if plugin_name in route_plugin_diffs:
         entry = route_plugin_diffs[plugin_name]
         if entry.spec_diff is not None:
+            if entry.create_only:
+                logger.warning(
+                    "Route gateway entry '%s' carries both spec_diff and "
+                    "create_only; create_only is ignored",
+                    plugin_name,
+                )
             return entry.spec_diff
         return partial(
             spec_replace,
@@ -883,8 +889,19 @@ def _append_route_plugin_entries(
     built-in's is dropped, so one name is published exactly once and
     ownership is unambiguous."""
     route_plugin_diffs: Dict[str, Any] = {}
+    entry_owners: Dict[str, str] = {}
     for route_plugin in route_plugins():
         for entry in route_plugin.gateway_entries(cfg):
+            owner = entry_owners.get(entry.name)
+            if owner is not None:
+                # Same conflict policy as register_route_plugin's
+                # duplicate-name check: two plugins writing one CR is a
+                # packaging bug, and last-registered-wins would hide it.
+                raise ValueError(
+                    f"Route plugins '{owner}' and '{route_plugin.name}' both "
+                    f"declare the gateway entry '{entry.name}'"
+                )
+            entry_owners[entry.name] = route_plugin.name
             route_plugin_diffs[entry.name] = entry
     if route_plugin_diffs:
         plugin_list[:] = [

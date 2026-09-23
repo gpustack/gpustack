@@ -48,7 +48,6 @@ from typing import (
     Dict,
     List,
     Optional,
-    Set,
     Type,
 )
 
@@ -103,6 +102,12 @@ class RouteReconcileContext:
     ``calculate_destinations`` pass, so a plugin (the fallback one) does not
     have to recompute them."""
 
+    destinations: Optional[List[Any]] = None
+    """The route's main destination tuples from the same shared
+    ``calculate_destinations`` pass. Only the degraded paths need them —
+    the LB plugin renders the main-path rewrite from its own candidates,
+    so plugins read this only when the LB module is unavailable."""
+
 
 @dataclass
 class RouteGatewayEntry:
@@ -151,19 +156,12 @@ class RoutePlugin(ABC):
         on it."""
         return []
 
-    def watches(self) -> Set[type]:
-        """Entity classes whose changes the plugin wants to reconcile
-        on. The framework subscribes to the union over registered
-        plugins and calls :meth:`reconcile_route` for the affected
-        routes."""
-        return set()
-
     # The empty defaults below are intentional: a plugin implements
     # only the hooks it needs.
     async def reconcile_route(self, ctx: RouteReconcileContext) -> None:  # noqa: B027
         """Bring the gateway artifacts for one route in line with the
         plugin's own stored state. Called from the route gateway
-        reconcile when an entity in :meth:`watches` changed; the plugin
+        reconcile; the plugin
         decides internally what counts as a real change (the LB
         plugin's "candidates only follow topology" rule lives in its
         implementation, not here)."""

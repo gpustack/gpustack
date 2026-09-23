@@ -95,3 +95,9 @@ def lb_policy_from_meta(meta: Optional[Dict[str, Any]]) -> Optional["LBPolicyCon
     if not section:
         return None
     return LBPolicyConfig.model_validate(section)
+
+
+# The context role keeps the pre-plugin model-mapper CR name (in-place
+# upgrade: same CR, new module and role); the reconciler and the
+# gateway entries share this one definition.
+LB_CONTEXT_CR_NAME = "gpustack-model-mapper"

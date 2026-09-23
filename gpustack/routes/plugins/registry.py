@@ -114,11 +114,21 @@ def route_plugin_sections(payload: Any) -> Dict[str, Any]:
     """The plugins mapping the dispatcher fans out over — callers hand
     in the payload's ``plugins`` value directly (``input.plugins``),
     never the whole CRUD payload, so a plugin named ``plugins`` stays
-    addressable. Tolerates any non-mapping value the same way: a plugin
-    section the dispatcher cannot find reads as "not mentioned", which
-    is the no-op for every hook."""
-    if not isinstance(payload, dict):
+    addressable. An unknown key or a non-mapping payload is client
+    input the handling server cannot store (only registered plugins
+    have storage here), so it raises ValueError — mapped to a 400 by
+    the dispatch wrappers — instead of being dropped silently."""
+    if payload is None:
         return {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"plugins must be an object, got {type(payload).__name__}")
+    known = {p.name for p in route_plugins()}
+    unknown = set(payload) - known
+    if unknown:
+        raise ValueError(
+            f"unknown plugin section(s): {', '.join(sorted(unknown))}; "
+            f"known plugins: {', '.join(sorted(known))}"
+        )
     return payload
 
 

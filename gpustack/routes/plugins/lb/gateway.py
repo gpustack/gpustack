@@ -19,19 +19,19 @@ passes must not fight over one field.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from gpustack.config.config import Config
 from gpustack.gateway.client.extensions_higress_io_v1_api import WasmPluginSpec
 from gpustack.gateway.client.networking_higress_io_v1_api import McpBridgeRegistry
 from gpustack.gateway.plugins import plugin_spec_overrides
 from gpustack.routes.plugins import RouteGatewayEntry
+from gpustack.routes.plugins.lb.config import LB_CONTEXT_CR_NAME
 from gpustack.utils.network import is_ipaddress
 
 logger = logging.getLogger(__name__)
 
 LB_MODULE_NAME = "gpustack-lb"
-LB_CONTEXT_CR_NAME = "gpustack-model-mapper"
 LB_FINISHER_CR_NAME = "gpustack-lb"
 
 # The redis service registered in the default McpBridge; the plugin's
@@ -84,7 +84,12 @@ def _lb_cr(
         defaultConfigDisable=False,
         defaultConfig=default_config,
         matchRules=[],
-        failStrategy="FAIL_OPEN",
+        # FAIL_CLOSE, unlike the capability plugins' FAIL_OPEN: the
+        # cluster_header EnvoyFilter replaces the route's static
+        # destination, so a skipped LB role means no cluster header and a
+        # 503 either way — fail closed makes that failure attributable to
+        # the filter instead of masquerading as a routing problem.
+        failStrategy="FAIL_CLOSE",
     )
 
 
@@ -93,7 +98,12 @@ def lb_module_available(cfg: Config) -> bool:
     it cannot, the degraded gateway entries publish a plain
     gpustack-model-mapper CR instead — and candidates/modelMappers must
     not be rendered onto it: the mapper module cannot perform the LB
-    rewrite, and the legacy main-path modelMapping stays the rewrite."""
+    rewrite. In that state the fallback plugin re-emits the legacy
+    per-route main-path modelMapping rule, so the model-name rewrite
+    keeps working (round-robin over the ingress destinations) until the
+    manifest is upgraded (only reachable via an operator URL override
+    or a dependency skew — the pinned gpustack-higress-plugins version
+    always resolves the module). The degrade is loud-logged at init."""
     try:
         plugin_spec_overrides(LB_MODULE_NAME, cfg=cfg)
         return True
@@ -155,24 +165,38 @@ def _qualify_dns_host(host: Optional[str], namespace: Optional[str]) -> Optional
     return f"{host}.{namespace}.svc"
 
 
-def redis_registry_from_url(
-    redis_url: str, namespace: Optional[str] = None
-) -> Optional[McpBridgeRegistry]:
-    """The McpBridge registry entry for the redis service behind
-    ``--redis-url``: ``static`` for IP hosts (Higress resolves them
-    without DNS, address carried in the domain as ``host:port``), ``dns``
-    for hostnames. The registry name is fixed (:data:`REDIS_REGISTRY_NAME`)
-    so ``get_service_name()`` — what the plugin's ``redis.service_name``
-    points at — is stable across URL edits. None on an unusable URL:
-    the deployment stays on per-process shared data rather than
-    publishing a registry nothing can reach."""
+def _parse_redis_url(redis_url: str) -> Optional[Tuple[Any, int]]:
+    """One parse and one validation pass over ``--redis-url``, shared by
+    the registry and the plugin-config builders so the two can never
+    disagree about whether a URL is usable. Returns ``(parsed,
+    url_port)``, or None with the refusal logged: the deployment stays
+    on per-process shared data rather than publishing config nothing
+    can reach."""
     from urllib.parse import urlparse
 
     parsed = urlparse(redis_url)
+    if parsed.scheme == "rediss":
+        logger.error(
+            "redis_url uses rediss:// (TLS), which the gpustack-lb "
+            "plugin's redis block does not support; staying on "
+            "per-process shared data."
+        )
+        return None
     if parsed.scheme != "redis" or not parsed.hostname:
         logger.error(
             "Invalid redis_url (want redis://host[:port][/db], no "
             "credentials, no TLS); staying on per-process shared data."
+        )
+        return None
+    if parsed.username or parsed.password:
+        # The plugin's redis block would carry the credentials verbatim
+        # in the WasmPlugin CR spec, readable by any principal with
+        # gateway-extension access. Until a secret-backed mechanism
+        # exists, a credentialed URL is refused rather than leaked.
+        logger.error(
+            "redis_url carries credentials; the LB plugin would "
+            "materialize them in the WasmPlugin CR. Refusing; staying "
+            "on per-process shared data."
         )
         return None
     try:
@@ -183,6 +207,19 @@ def redis_registry_from_url(
         # "upgrade gpustack-higress-plugins" degrade.
         logger.error("Invalid redis_url port; staying on per-process shared data.")
         return None
+    return parsed, url_port
+
+
+def _redis_registry_from_parsed(
+    parsed: Any, url_port: int, namespace: Optional[str]
+) -> McpBridgeRegistry:
+    """The McpBridge registry entry for the redis service behind a
+    validated URL: ``static`` for IP hosts (Higress resolves them
+    without DNS, address carried in the domain as ``host:port``),
+    ``dns`` for hostnames. The registry name is fixed
+    (:data:`REDIS_REGISTRY_NAME`) so ``get_service_name()`` — what the
+    plugin's ``redis.service_name`` points at — is stable across URL
+    edits."""
     registry_type = "static" if is_ipaddress(parsed.hostname) else "dns"
     if registry_type == "static":
         # The static cluster Higress builds from this registry always
@@ -217,42 +254,24 @@ def redis_registry_from_url(
     )
 
 
-def _redis_config_from_url(
-    redis_url: Optional[str], namespace: Optional[str] = None
-) -> Optional[Dict[str, Any]]:
-    """``--redis-url`` into the plugin's ``redis`` config block, keyed on
+def redis_registry_from_url(
+    redis_url: str, namespace: Optional[str] = None
+) -> Optional[McpBridgeRegistry]:
+    """The McpBridge registry for ``--redis-url``, or None on an
+    unusable URL (see _parse_redis_url for every refusal reason)."""
+    parsed = _parse_redis_url(redis_url)
+    if parsed is None:
+        return None
+    return _redis_registry_from_parsed(parsed[0], parsed[1], namespace)
+
+
+def _redis_config_from_parsed(
+    parsed: Any, registry: McpBridgeRegistry
+) -> Dict[str, Any]:
+    """The plugin's ``redis`` config block for a validated URL, keyed on
     the McpBridge registry rather than a raw host: ``service_name`` is
     the registry's service name (``gpustack-redis.static`` /
-    ``.dns``), ``service_port`` the registry port. ``rediss://`` is
-    refused — the plugin's redis block has no TLS knob, and a plaintext
-    client against a TLS listener fails at runtime with no actionable
-    signal."""
-    if not redis_url:
-        return None
-    from urllib.parse import urlparse
-
-    parsed = urlparse(redis_url)
-    if parsed.scheme == "rediss":
-        logger.error(
-            "redis_url uses rediss:// (TLS), which the gpustack-lb "
-            "plugin's redis block does not support; staying on "
-            "per-process shared data."
-        )
-        return None
-    if parsed.username or parsed.password:
-        # The plugin's redis block would carry the credentials verbatim
-        # in the WasmPlugin CR spec, readable by any principal with
-        # gateway-extension access. Until a secret-backed mechanism
-        # exists, a credentialed URL is refused rather than leaked.
-        logger.error(
-            "redis_url carries credentials; the LB plugin would "
-            "materialize them in the WasmPlugin CR. Refusing; staying "
-            "on per-process shared data."
-        )
-        return None
-    registry = redis_registry_from_url(redis_url, namespace)
-    if registry is None:
-        return None
+    ``.dns``), ``service_port`` the registry port."""
     config: Dict[str, Any] = {
         "service_name": registry.get_service_name(),
         "service_port": registry.port,
@@ -261,6 +280,18 @@ def _redis_config_from_url(
     if db.isdigit():
         config["database"] = int(db)
     return config
+
+
+def _redis_config_from_url(
+    redis_url: Optional[str], namespace: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    if not redis_url:
+        return None
+    parsed = _parse_redis_url(redis_url)
+    if parsed is None:
+        return None
+    registry = _redis_registry_from_parsed(parsed[0], parsed[1], namespace)
+    return _redis_config_from_parsed(parsed[0], registry)
 
 
 def _lb_gateway_entries(cfg: Config) -> List[RouteGatewayEntry]:

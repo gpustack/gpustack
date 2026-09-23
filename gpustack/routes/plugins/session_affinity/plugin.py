@@ -3,7 +3,7 @@ policy table (keyed by capability name), gateway presence via the
 shared capability-band helpers."""
 
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,10 +34,12 @@ logger = logging.getLogger(__name__)
 # the convention is kept.
 CR_PRIORITY = 336
 
-# A config that parses but does nothing: an empty key chain yields no
-# session key, so the plugin publishes no opinion. Keeps the filter
-# chain membership stable on routes without a matchRule.
-INERT_DEFAULT = {"sessionKeys": []}
+# A config that parses but does nothing: a header no client sends
+# yields no session key, so the plugin publishes no opinion. Keeps the
+# filter chain membership stable on routes without a matchRule. An
+# empty ``sessionKeys`` chain would NOT be inert — the gateway rejects
+# it exactly like an omitted key (see SessionAffinityConfig).
+INERT_DEFAULT = {"sessionKeys": [{"header": "x-gpustack-no-session"}]}
 
 
 async def _config_for_route(
@@ -53,9 +55,6 @@ class SessionAffinityPlugin(RoutePlugin):
     name = "session-affinity"
 
     RouteExtension = SessionAffinityConfig
-
-    def watches(self) -> Set[type]:
-        return {ModelRoute}
 
     async def is_effective_on(self, route: ModelRoute, session: AsyncSession) -> bool:
         config = await _config_for_route(session, route.id)
