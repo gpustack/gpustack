@@ -108,8 +108,8 @@ def measured_stages(results: list) -> list:
     true value and its TTFT 6x the steady-state value at the same concurrency).
 
     Counting them as stages inflates every aggregate: "N stages", the request
-    total, and the success rate. This exists as ONE function because the rule was
-    previously spelled out at each call site with slightly different predicates —
+    total, and the success rate. This exists as ONE function because the rule
+    spelled out at each call site drifts into slightly different predicates —
     which is how the next call site gets it wrong.
     """
     return [r for r in results if r.get("rate") is not None]
@@ -320,11 +320,10 @@ def compute_validity(
 
     ``not_saturated`` and ``budget_exhausted`` are the same observation ("we never
     saw the curve turn over") split by WHAT limited the sweep, because the two need
-    opposite advice. They used to be one code whose message said "raise the bound /
-    budget", which was actively wrong whenever the ramp stopped below the user's
-    range of its own accord: telling someone who asked for 4..1024 and got points
-    up to 38 to raise the bound sends them to change the one number that was never
-    the constraint.
+    opposite advice. One code saying "raise the bound / budget" is actively
+    wrong whenever the ramp stopped below the user's range of its own accord:
+    telling someone who asked for 4..1024 and got points up to 38 to raise the
+    bound sends them to change the one number that was never the constraint.
     """
     warnings: list = []
 

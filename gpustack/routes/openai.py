@@ -193,14 +193,22 @@ async def proxy_request_by_model(
     after the initial lookups, preventing long-lived streaming inference
     responses from holding a database connection.
     """
-    endpoint = re.sub(r"^/(v1|v1-openai)/", "", request.url.path)
+    endpoint = re.sub(r"^.*/(?:v1|v1-openai)/", "", request.url.path)
     model_name, stream, body_json, form_data = await parse_request_body(request)
 
     async with async_session() as session:
-        if not await UserService(session).model_allowed_for_user(
-            model_name=model_name,
-            user_id=user.id,
-            api_key=getattr(request.state, "api_key", None),
+        # The per-user access list is a USER question, and one caller is not a
+        # user: the benchmark proxy is entered with a worker token, by a load
+        # generator this server told a worker to start. Its own prefix carries
+        # the exemption (see `internal_inference` in routes.py) rather than the
+        # check learning about principal kinds -- so nothing about `/v1`'s gate
+        # changes, and the exemption cannot be reached from `/v1`.
+        if not getattr(request.state, "internal_inference", False) and not (
+            await UserService(session).model_allowed_for_user(
+                model_name=model_name,
+                user_id=user.id,
+                api_key=getattr(request.state, "api_key", None),
+            )
         ):
             raise NotFoundException(
                 message="Model not found",

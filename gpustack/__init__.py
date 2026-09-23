@@ -12,5 +12,5 @@ __git_commit__ = 'HEAD'
 # --sla-* -> --slo-* and the `sla_failed` stop reason to `slo_failed`. An older
 # image rejects every flag this server sends for an SLO run, and would report a
 # stop reason the detail page has no text for.
-__benchmark_runner_version__ = 'v0.0.7'
+__benchmark_runner_version__ = 'v0.0.8'
 __operator_version__ = 'v0.8.6'

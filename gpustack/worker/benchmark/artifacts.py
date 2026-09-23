@@ -4,9 +4,9 @@ benchmark-runner writes its output as files under the benchmark directory, and
 the file NAME is the only thing that says what a given file is: a measured ramp
 point, a per-stage run, the saturation probe, or the ramp's diagnostic sidecar.
 That makes the naming an interface between two repositories, so it lives in one
-module here instead of being re-spelled at each call site — the collection pass,
-the ready-file count, the sidecar read and the index parsing used to carry four
-independent copies of the same string surgery.
+module here instead of being re-spelled at each call site — the collection
+pass, the ready-file count, the sidecar read and the index parsing would
+otherwise carry four independent copies of the same string surgery.
 
 The counterpart is benchmark-runner's output layout (``auto_tune.py`` writes
 ``{base}__p{index}.dual_json`` and ``{base}__satprobe.dual_json``, ``main.py``
@@ -86,6 +86,17 @@ def saturation_probe_path(benchmark_dir: str, benchmark_id: int) -> str:
     reported as a trailing row and excluded from peak / recommendation / validity.
     """
     return f"{benchmark_dir}/{benchmark_id}__satprobe.json"
+
+
+def curve_outcome_path(benchmark_dir: str, benchmark_id: int) -> str:
+    """The ladder sidecar a manual-stages run writes when it returns.
+
+    Counterpart to `ramp_facts_path` for the other multi-point shape. Same
+    signal value: it exists only once the runner has finished walking the
+    stages, so its presence distinguishes "the container is gone because the
+    run ended" from "the container is gone because it died".
+    """
+    return f"{benchmark_dir}/{benchmark_id}__curve.json"
 
 
 def ramp_facts_path(benchmark_dir: str, benchmark_id: int) -> str:
