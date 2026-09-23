@@ -62,7 +62,8 @@
             ]
           },
           "unit": "percentunit",
-          "max": 1
+          "max": 1,
+          "noValue": "No data — not the same as a 0% hit rate. Either no lookups happened in this window (the divisor is zero), or this cache service has no instance reporting."
         },
         "overrides": []
       },
@@ -98,7 +99,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(lmcache_mp_lookup_hit_tokens_total{cluster_name=\"$cluster_name\", cache_service_name=\"$cache_service_name\", worker_name=~\"$worker_name\"}[$__rate_interval])) / (sum(rate(lmcache_mp_lookup_requested_tokens_total{cluster_name=\"$cluster_name\", cache_service_name=\"$cache_service_name\", worker_name=~\"$worker_name\"}[$__rate_interval])) > 0)) or vector(0)",
+          "expr": "(sum(rate(lmcache_mp_lookup_hit_tokens_total{cluster_name=\"$cluster_name\", cache_service_name=\"$cache_service_name\", worker_name=~\"$worker_name\"}[$__rate_interval])) / (sum(rate(lmcache_mp_lookup_requested_tokens_total{cluster_name=\"$cluster_name\", cache_service_name=\"$cache_service_name\", worker_name=~\"$worker_name\"}[$__rate_interval])) > 0))",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -130,7 +131,8 @@
             ]
           },
           "unit": "percentunit",
-          "max": 1
+          "max": 1,
+          "noValue": "No data — not the same as an empty cache. No instance is reporting `lmcache_mp_l1_usage_ratio` (not deployed, not running, or not scraped)."
         },
         "overrides": []
       },
@@ -166,7 +168,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg(lmcache_mp_l1_usage_ratio{cluster_name=\"$cluster_name\", cache_service_name=\"$cache_service_name\", worker_name=~\"$worker_name\"}) or vector(0)",
+          "expr": "avg(lmcache_mp_l1_usage_ratio{cluster_name=\"$cluster_name\", cache_service_name=\"$cache_service_name\", worker_name=~\"$worker_name\"})",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -197,7 +199,8 @@
               }
             ]
           },
-          "unit": "bytes"
+          "unit": "bytes",
+          "noValue": "No data — not the same as zero bytes. No instance is reporting `lmcache_mp_l1_memory_usage_bytes` (not deployed, not running, or not scraped)."
         },
         "overrides": []
       },
@@ -233,7 +236,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(lmcache_mp_l1_memory_usage_bytes{cluster_name=\"$cluster_name\", cache_service_name=\"$cache_service_name\", worker_name=~\"$worker_name\"}) or vector(0)",
+          "expr": "sum(lmcache_mp_l1_memory_usage_bytes{cluster_name=\"$cluster_name\", cache_service_name=\"$cache_service_name\", worker_name=~\"$worker_name\"})",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -378,7 +381,8 @@
             ]
           },
           "unit": "percentunit",
-          "max": 1
+          "max": 1,
+          "noValue": "No data — not the same as a 0% hit rate. Either no lookups happened in this window (the divisor is zero), or this cache service has no instance reporting."
         },
         "overrides": []
       },
@@ -582,7 +586,8 @@
               }
             ]
           },
-          "unit": "bytes"
+          "unit": "bytes",
+          "noValue": "No data — not the same as zero bytes. No instance is reporting `lmcache_mp_l1_memory_usage_bytes` (not deployed, not running, or not scraped)."
         },
         "overrides": []
       },
@@ -679,7 +684,8 @@
             ]
           },
           "unit": "percentunit",
-          "max": 1
+          "max": 1,
+          "noValue": "No data — not the same as an empty cache. No instance is reporting `lmcache_mp_l1_usage_ratio` (not deployed, not running, or not scraped)."
         },
         "overrides": []
       },

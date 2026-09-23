@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, Tuple
 from cachetools import TTLCache
 from prometheus_client.core import (  # noqa: F401
     GaugeMetricFamily,
@@ -33,7 +33,6 @@ import logging
 import uuid
 from typing import Optional
 from gpustack.utils import version
-
 
 logger = logging.getLogger(__name__)
 
@@ -158,8 +157,21 @@ class RuntimeMetricsAggregator:
         if model_instance.api_detected_backend_version is not None:
             return model_instance.api_detected_backend_version
 
+        api_endpoint = f"{model_instance.worker_ip}:{_api_port(model_instance)}"
+        if api_endpoint != endpoint:
+            # The caller hands us the EXPOSITION endpoint, which for a router is a
+            # separate port band (see `_metrics_port`). `/version` does not live
+            # there. Worse than a 404: the router's exposition listener answers
+            # EVERY path with 200 + Prometheus text, so probing it returns a body
+            # that is not JSON and the parse raises once per scrape — an ERROR
+            # every few seconds that reads like metrics collection is broken when
+            # only the version probe is.
+            logger.trace(
+                f"Instance {model_instance.id} exposes metrics on a separate port; "
+                f"probing the API port {api_endpoint} for its runtime version."
+            )
         version = self._metrics_client.fetch_runtime_version_from_endpoint(
-            endpoint, model_instance.backend
+            api_endpoint, model_instance.backend
         )
         if version is not None:
             self._update_model_instance(
@@ -195,7 +207,7 @@ class RuntimeMetricsAggregator:
                 logger.trace(f"Skipping model instance {mi.id} in metrics aggregation.")
                 continue
 
-            endpoint = f"{mi.worker_ip}:{mi.ports[0]}"
+            endpoint = f"{mi.worker_ip}:{_metrics_port(mi)}"
             endpoints.add(endpoint)
             endpoint_to_instance[endpoint] = mi
             instance_id_to_model[mi.id] = model
@@ -236,6 +248,11 @@ class RuntimeMetricsAggregator:
             "model_instance_id": str(mi.id),
             "model_instance_name": mi.name,
             "runtime": runtime,
+            # Empty for a single-role deployment. Carried because under
+            # disaggregation the engine-level latencies are not one
+            # population: prefill owns TTFT and decode owns TPOT, and a
+            # figure averaged over both roles describes neither.
+            "role": mi.role or "",
         }
 
     def _process_endpoint_metrics(
@@ -308,9 +325,10 @@ class RuntimeMetricsAggregator:
 
         # unified metrics
         unified_family = None
-        unified_metric_family_name = get_unified_metric_family_name(
+        resolved = get_unified_metric_family_name(
             metrics_config, source_family_name, runtime, runtime_version
         )
+        unified_metric_family_name, unified_scale = resolved or (None, 1.0)
         if unified_metric_family_name:
             cfg = get_unified_metric_family_config(
                 metrics_config, unified_metric_family_name
@@ -355,6 +373,8 @@ class RuntimeMetricsAggregator:
             labels.update(base_labels)
 
             if keeps_sample_names:
+                # The raw passthrough is never scaled: it exists to be the
+                # engine's own numbers under the engine's own names.
                 raw_family.add_sample(
                     name=sample.name,
                     labels=labels,
@@ -365,10 +385,18 @@ class RuntimeMetricsAggregator:
                     new_name = sample.name.replace(
                         source_family_name, unified_metric_family_name
                     )
+                    unified_value, unified_labels = scale_sample(
+                        sample.name,
+                        source_family_name,
+                        family.type,
+                        labels,
+                        sample.value,
+                        unified_scale,
+                    )
                     unified_family.add_sample(
                         name=new_name,
-                        labels=labels,
-                        value=sample.value,
+                        labels=unified_labels,
+                        value=unified_value,
                         timestamp=sample.timestamp,
                     )
             else:
@@ -378,9 +406,17 @@ class RuntimeMetricsAggregator:
                     timestamp=sample.timestamp,
                 )
                 if unified_family:
+                    unified_value, _ = scale_sample(
+                        sample.name,
+                        source_family_name,
+                        family.type,
+                        labels,
+                        sample.value,
+                        unified_scale,
+                    )
                     unified_family.add_metric(
                         labels=label_values,
-                        value=sample.value,
+                        value=unified_value,
                         timestamp=sample.timestamp,
                     )
 
@@ -483,6 +519,41 @@ _METRIC_FAMILY_CLASS = {
 }
 
 
+def _api_port(mi) -> int:
+    """Where this instance serves its HTTP API.
+
+    Separate from `_metrics_port` because the two coincide for an engine and
+    diverge for a router. Anything asking a question of the SERVER (its version,
+    its health) belongs here; only the Prometheus scrape belongs on the other.
+    """
+    return mi.port or mi.ports[0]
+
+
+def _metrics_port(mi) -> int:
+    """Where this instance serves its Prometheus exposition.
+
+    Normally the serving port — an engine exposes `/metrics` on the same
+    listener as its API. A PD router does not: its exposition is a separate
+    listener on a band GPUStack allocates, because upstream's default port is
+    fixed and two routers on one host would collide. Scraping its API port
+    returns 404, and a 404 here is indistinguishable from "this instance has
+    no metrics" — the router's request counters are the denominator of the
+    PD-effectiveness ratio, so losing them silently costs the one signal that
+    separates "PD works" from "PD stopped disaggregating".
+
+    Keyed on the band's *name* rather than on the role, so this stays true for
+    any instance that separates its metrics listener, not just today's router.
+    """
+    band = (mi.named_ports or {}).get("prometheus") if mi.named_ports else None
+    if band is not None:
+        base = getattr(band, "base", None)
+        if base is None and isinstance(band, dict):
+            base = band.get("base")
+        if base:
+            return int(base)
+    return mi.ports[0]
+
+
 def create_prom_metric_family(type: str, name: str, description: str, labels=None):
     cls = _METRIC_FAMILY_CLASS.get(str(type).lower())
     if not cls:
@@ -493,21 +564,61 @@ def create_prom_metric_family(type: str, name: str, description: str, labels=Non
         return cls(name, description)
 
 
+def _parse_mapping_entry(entry) -> Optional[Tuple[str, float]]:
+    """A mapping value -> (unified name, scale).
+
+    Two accepted shapes, and the string one is the whole reason for this
+    function: every existing entry is `raw: unified`, and they must keep
+    meaning exactly what they meant (scale 1).
+
+        vllm:num_requests_running: gpustack:num_requests_running
+        sglang:kv_transfer_total_mb:
+          name: gpustack:pd_kv_transfer_bytes
+          scale: 1048576
+    """
+    if entry is None:
+        return None
+    if isinstance(entry, str):
+        return entry, 1.0
+    if isinstance(entry, dict):
+        name = entry.get("name")
+        if not name:
+            return None
+        try:
+            scale = float(entry.get("scale", 1.0))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring a non-numeric scale on metric mapping %r; using 1.0",
+                name,
+            )
+            scale = 1.0
+        return name, scale
+    return None
+
+
 def get_unified_metric_family_name(
     config: dict,
     source_metric_family_name: str,
     runtime: str,
     runtime_version: Optional[str],
-) -> Optional[str]:
+) -> Optional[Tuple[str, float]]:
     """
-    Return the unified (normalized) metric family name as a string. If not found, return an empty string.
+    Return (unified metric family name, scale) or None.
     Prefer version-specific mapping if matched, otherwise use the default '*'.
+
+    The scale converts the engine's unit into the unified metric's declared
+    one. It exists because renaming alone is only half a normalization: two
+    engines can report the same concept in different units, and a shared name
+    over mixed units is worse than two names — a reader can no longer tell
+    which they are looking at. Measured case: SGLang reports KV transfer
+    volume in megabytes and duration in milliseconds where vLLM reports bytes
+    and seconds.
     """
     runtime_cfg = get_runtime_metrics_config(config, runtime)
     if not runtime_cfg:
         return None
 
-    name = runtime_cfg.get("*", {}).get(source_metric_family_name, None)
+    entry = runtime_cfg.get("*", {}).get(source_metric_family_name, None)
     if runtime_version:
         is_valid_version = version.is_valid_version_str(runtime_version)
         for ver_range, mapping in runtime_cfg.items():
@@ -516,11 +627,62 @@ def get_unified_metric_family_name(
             if (is_valid_version and version.in_range(runtime_version, ver_range)) or (
                 not is_valid_version and runtime_version == ver_range
             ):
-                old_version_name = mapping.get(source_metric_family_name)
-                if old_version_name is not None:
-                    return old_version_name
+                old_version_entry = mapping.get(source_metric_family_name)
+                if old_version_entry is not None:
+                    return _parse_mapping_entry(old_version_entry)
 
-    return name
+    return _parse_mapping_entry(entry)
+
+
+def scale_sample(
+    sample_name: str,
+    family_name: str,
+    family_type: str,
+    labels: dict,
+    value: float,
+    scale: float,
+) -> Tuple[float, dict]:
+    """One sample's value and labels, converted into the unified unit.
+
+    A histogram cannot be multiplied through, and getting this wrong is
+    silent. The four sample kinds carry different dimensions:
+
+    - `_sum`      the sum of the observed values -> **scaled**
+    - `_count`    how many observations -> **never scaled**, it is a count
+    - `_bucket`   its value is also a count -> not scaled, but its `le` label
+                  is a bucket *boundary* in the observed unit -> **scaled**
+    - `_created`  a unix timestamp -> never scaled
+
+    Missing the `le` label is the trap: nothing errors, and the histogram
+    ends up with a sum in one unit and boundaries in another, so every
+    `histogram_quantile` over it is wrong by the scale factor.
+
+    A summary is the mirror image: its quantile samples carry an observed
+    *value*, so those are scaled, while `le`-style boundaries do not exist.
+    """
+    if scale == 1.0:
+        return value, labels
+
+    if sample_name.endswith("_count") or sample_name.endswith("_created"):
+        return value, labels
+
+    if sample_name.endswith("_sum"):
+        return value * scale, labels
+
+    if sample_name.endswith("_bucket"):
+        upper = labels.get("le")
+        if upper is None or upper in ("+Inf", "Inf"):
+            return value, labels
+        try:
+            scaled_labels = dict(labels)
+            scaled_labels["le"] = repr(float(upper) * scale)
+            return value, scaled_labels
+        except (TypeError, ValueError):
+            return value, labels
+
+    # A summary's quantile sample, or a plain counter/gauge: the value is an
+    # observation in the engine's unit.
+    return value * scale, labels
 
 
 def get_unified_metric_family_config(

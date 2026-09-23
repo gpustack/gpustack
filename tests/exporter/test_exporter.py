@@ -18,7 +18,7 @@ from gpustack.schemas.cache_services import (
     CacheServiceStateEnum,
 )
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
-from gpustack.schemas.models import ModelInstanceStateEnum
+from gpustack.schemas.models import ModelInstanceStateEnum, PDModeEnum
 from gpustack.schemas.workers import WorkerStateEnum
 
 
@@ -641,3 +641,91 @@ async def test_uncollectable_managed_instances_are_excluded(monkeypatch, instanc
     for is_proxy in (False, True):
         targets = await _metrics_targets(session=SimpleNamespace(), is_proxy=is_proxy)
         assert _cache_groups(targets) == []
+
+
+def _pd_model(mode, **overrides):
+    fields = dict(
+        id=10,
+        name="glm",
+        backend="vllm",
+        backend_version="0.23.0",
+        source="huggingface",
+        model_source_key="zai-org/GLM-4.5-Air",
+        categories=[],
+        replicas=2,
+        ready_replicas=2,
+        instances=[],
+        extended_kv_cache=None,
+        disaggregation=SimpleNamespace(mode=mode),
+    )
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode, expected_role",
+    [
+        # NIXL pulls, so the completed transfer is counted on decode.
+        (PDModeEnum.VLLM_NIXL, "decode"),
+        # SGLang pushes, so prefill is the sender -- and writes nothing at all
+        # unless the connector reports a transfer size. Decode records the
+        # handshake unconditionally, so decode is the readable side.
+        (PDModeEnum.SGLANG_MOONCAKE, "decode"),
+        (PDModeEnum.SGLANG_NIXL, "decode"),
+        (PDModeEnum.VLLM_ASCEND_MOONCAKE, "decode"),
+        # The connector is the user's own, so the catalog cannot answer and
+        # the series still has to exist -- an absent one blanks every
+        # transfer panel, which reads as a broken group.
+        (PDModeEnum.CUSTOM, "decode"),
+    ],
+)
+async def test_pd_mode_info_carries_the_role_that_counts_kv_transfers(
+    mode, expected_role
+):
+    exporter = MetricExporter(SimpleNamespace(metrics_port=10161))
+
+    with (
+        patch(
+            "gpustack.exporter.exporter.Cluster.all",
+            return_value=[_cluster_with_model(_pd_model(mode))],
+        ),
+        patch(
+            "gpustack.exporter.exporter.CacheService.all_by_fields",
+            return_value=[],
+        ),
+    ):
+        metrics = await exporter._collect_metrics(session=SimpleNamespace())
+
+    assert _sample_labels(metrics, "gpustack:pd_mode") == {
+        "cluster_id": "1",
+        "cluster_name": "default",
+        "model_id": "10",
+        "model_name": "glm",
+        "mode": mode.value,
+        "kv_counted_role": expected_role,
+    }
+
+
+@pytest.mark.asyncio
+async def test_aggregated_models_publish_no_pd_mode_series():
+    """The dashboard's model list is PD-only, and a series here would put an
+    aggregated deployment in front of panels that have nothing to say about
+    it."""
+    exporter = MetricExporter(SimpleNamespace(metrics_port=10161))
+    model = _pd_model(PDModeEnum.VLLM_NIXL, disaggregation=None)
+
+    with (
+        patch(
+            "gpustack.exporter.exporter.Cluster.all",
+            return_value=[_cluster_with_model(model)],
+        ),
+        patch(
+            "gpustack.exporter.exporter.CacheService.all_by_fields",
+            return_value=[],
+        ),
+    ):
+        metrics = await exporter._collect_metrics(session=SimpleNamespace())
+
+    pd_mode = next(m for m in metrics if m.name == "gpustack:pd_mode")
+    assert pd_mode.samples == []

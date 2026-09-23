@@ -26,6 +26,7 @@ from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.cache_provider_catalog import get_cache_providers
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
+from gpustack.utils.grafana import counted_role
 from gpustack.utils.name import metric_name
 import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -141,6 +142,32 @@ class MetricExporter(Collector):
             labels=model_instance_labels,
         )
 
+        # Disaggregation. Under PD a replica count says nothing about whether
+        # the deployment works: a group can be fully staffed, answering every
+        # request, and quietly recomputing every prefill because no KV ever
+        # crosses. These are the series that make that visible.
+        model_role_desired = GaugeMetricFamily(
+            metric_name("model_role_desired_instances"),
+            "Desired instances of one role of the model",
+            labels=model_labels + ["role"],
+        )
+        model_role_ready = GaugeMetricFamily(
+            metric_name("model_role_ready_instances"),
+            "Ready instances of one role of the model. Compared against the "
+            "desired series this is the ready ratio versus the configured "
+            "ratio (a 3P1D running as 3P0D still reports three replicas up)",
+            labels=model_labels + ["role"],
+        )
+        # Which side of a pair counts KV transfers is a property of the
+        # connector -- NIXL pulls so decode counts, SGLang pushes so prefill
+        # does -- and reading the wrong side reports "no KV ever moved" on a
+        # healthy group. The catalog has always known it; exporting it is what
+        # lets a dashboard derive it per model instead of asking the reader,
+        # who has no way to know which way their connector moves bytes.
+        pd_mode_info = InfoMetricFamily(
+            metric_name("pd_mode"), "Disaggregation mode of the model"
+        )
+
         metrics = [
             cluster_info,
             cluster_status,
@@ -154,6 +181,9 @@ class MetricExporter(Collector):
             model_instance_latest_restart_time,
             cache_service_attached_model,
             model_instance_cache_attached,
+            model_role_desired,
+            model_role_ready,
+            pd_mode_info,
         ]
 
         cache_service_names = {
@@ -280,6 +310,37 @@ class MetricExporter(Collector):
                     model_label_values,
                     model.ready_replicas,
                 )
+
+                for role_name, status in (
+                    getattr(model, "role_status", None) or {}
+                ).items():
+                    model_role_desired.add_metric(
+                        model_label_values + [role_name], status.desired
+                    )
+                    model_role_ready.add_metric(
+                        model_label_values + [role_name], status.ready
+                    )
+
+                disaggregation = getattr(model, "disaggregation", None)
+                if disaggregation:
+                    mode = disaggregation.mode
+                    pd_mode_info.add_metric(
+                        model_labels + ["mode", "kv_counted_role"],
+                        {
+                            "cluster_id": str(cluster.id),
+                            "cluster_name": cluster.name,
+                            "model_id": str(model.id),
+                            "model_name": model.name,
+                            "mode": getattr(mode, "value", None) or str(mode),
+                            # Falls back to `decode` for a mode the catalog
+                            # cannot answer for -- `custom` above all, where
+                            # the connector is the user's own. One series per
+                            # group either way: an absent series would leave
+                            # the dashboard's variable empty and blank every
+                            # transfer panel, which reads as a broken group.
+                            "kv_counted_role": counted_role(model),
+                        },
+                    )
 
                 kv_cache = model.extended_kv_cache
                 if (
