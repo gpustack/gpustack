@@ -134,6 +134,12 @@ async def _request_to_worker(
             headers=req_headers,
             timeout=timeout,
             proxy=worker.get_proxy_address(),
+            ssl=(
+                False
+                if envs.GPUSTACK_INSTANCE_TLS_INSECURE
+                and envs.GPUSTACK_INSTANCE_SCHEME == "https"
+                else None
+            ),
         )
         if resp.status >= 400 and raise_on_error:
             error_text = await resp.text()
