@@ -15,7 +15,7 @@ from gpustack.schemas.cache_services import (
     CacheServiceInstance,
     CacheServiceStateEnum,
 )
-from gpustack.schemas.models import Model, get_backend
+from gpustack.schemas.models import Model, get_backend, role_effective_model
 from gpustack.schemas.workers import Worker
 from gpustack.utils.command import flatten_to_argv
 from gpustack.utils.version import version_in_range
@@ -128,11 +128,109 @@ def _declared_attach_address(
     return render_optional_template(spec.address_template, resolved_fields)
 
 
+def _composes_with_the_pd_connector(effective: Model, integration) -> bool:
+    """Whether this member would land a cache connector in the same flag the
+    disaggregation recipe writes.
+
+    Both halves have to be true: the deployment is disaggregated, and the
+    provider's integration actually renders a connector descriptor. A provider
+    that attaches some other way (SGLang's config file) composes with nothing,
+    whatever the deployment looks like.
+    """
+    if getattr(effective, "disaggregation", None) is None:
+        return False
+    if integration is None:
+        return False
+    return integration.injection.kv_transfer_config is not None
+
+
+def _composed_cache_for(effective: Model):
+    """This deployment's backend entry in the `composed_cache` registry, or
+    None when the engine declares nothing about composing."""
+    from gpustack.schemas.models import get_backend
+    from gpustack.server.pd_mode_catalog import get_composed_cache
+
+    return get_composed_cache(get_backend(effective))
+
+
+def _composed_connector_version_floor(
+    effective: Model,
+    integration,
+) -> Optional[str]:
+    """Reason to stand down when the engine is too old to run the composition,
+    or None when it is fine.
+
+    The requirement itself is declared per backend in `pd-modes.yaml` under
+    `composed_cache`, next to the other engine-behaviour registries, rather
+    than spelled here: it belongs to neither the mode nor the provider, and a
+    backend that declares nothing is simply not checked. Unparseable versions
+    fail open, like every other version gate here.
+    """
+    if not _composes_with_the_pd_connector(effective, integration):
+        return None
+    if not effective.backend_version:
+        return None
+
+    declared = _composed_cache_for(effective)
+    if declared is None or not declared.min_version:
+        return None
+    if (
+        version_in_range(effective.backend_version, f">={declared.min_version}")
+        is not False
+    ):
+        return None
+    detail = declared.description or "the composition does not work"
+    reference = f" ({declared.reference})" if declared.reference else ""
+    return (
+        f"Backend version {effective.backend_version} is below "
+        f"{declared.min_version}, where {detail}{reference}; "
+        "instance starts without shared KV cache"
+    )
+
+
+def _refused_cache_reason(
+    effective: Model,
+    integration,
+    role: Optional[str],
+) -> Optional[str]:
+    """Reason this role may not take the shared cache, or None when it may.
+
+    Which roles are refused is declared per backend in `pd-modes.yaml` under
+    `composed_cache.refuse_cache_on`, so "may prefill take a cache, may decode"
+    is answerable by reading the document — no rule of that shape is written
+    here.
+
+    For vLLM the refused role is decode: its connectors pull, so decode is
+    already loading the KV prefill computed, and the engine cannot also run a
+    cache connector's load on the same member. prefill is unaffected and is the
+    side worth attaching anyway — measured on a live 1P1D, it served 1024 of a
+    1277-token prompt out of the pool with the engine's own prefix cache empty.
+
+    Only an engine declaring `composed_cache` gets here at all. SGLang
+    attaches through `--enable-lmcache` and a config file, never lands in the
+    PD connector's flag, and takes a cache on both roles — verified on a live
+    SGLang pair.
+    """
+    if not role or not _composes_with_the_pd_connector(effective, integration):
+        return None
+    declared = _composed_cache_for(effective)
+    refusal = declared.refuse_cache_on if declared else None
+    if refusal is None or role not in refusal.roles:
+        return None
+    detail = refusal.description or "the engine refuses one here"
+    reference = f" ({refusal.reference})" if refusal.reference else ""
+    return (
+        f"Not attached on the '{role}' role by design: {detail}{reference}. "
+        "Other roles keep theirs."
+    )
+
+
 async def resolve_instance_cache_config(
     session: AsyncSession,
     model: Model,
     worker: Optional[Worker] = None,
     spans_workers: bool = False,
+    role: Optional[str] = None,
 ) -> Optional[CacheConfigSnapshot]:
     """
     Resolve the shared-cache connection snapshot for an instance of the
@@ -150,8 +248,24 @@ async def resolve_instance_cache_config(
     permission — most single-node placements carry it — so the
     node-local incompatibility is decided here, where the real
     placement is known, not at model validation.
+    ``role`` is the member's PD role, and it is projected here rather than by
+    the caller so that "which sides take a cache" has one answer. Under
+    disaggregation the two sides genuinely differ: attaching a cache to
+    prefill is where it pays, and a decode that does not take one is a normal
+    configuration rather than an oversight. Reading the Model's own value for
+    every member would silently give the whole group whatever the deployment
+    said, which is the opposite of what a per-role override asked for.
+
+    For a vLLM pair the asymmetry is more than a preference. Prefill alone is
+    the configuration that was measured working end to end; both sides enabled
+    is the one that kills the decode engine as soon as the pool hits, because
+    the two connectors decode then runs both load asynchronously and vLLM's
+    `MultiConnector` deduplicates only saves. A SGLang pair does not share that
+    hazard — its integration attaches through `--enable-lmcache` and a config
+    file, never composing into one connector — and takes a cache on both roles.
     """
-    ext = model.extended_kv_cache
+    effective = role_effective_model(model, role) if role else model
+    ext = effective.extended_kv_cache
     if not ext or not ext.is_shared():
         return None
 
@@ -232,7 +346,7 @@ async def resolve_instance_cache_config(
         )
     snapshot_endpoint = endpoint
 
-    backend = get_backend(model)
+    backend = get_backend(effective)
     resolved_fields = resolved_field_values(
         provider.fields if provider else [],
         (service.config.fields if service.config else None) or {},
@@ -301,26 +415,42 @@ async def resolve_instance_cache_config(
     if (
         integration is not None
         and integration.versions
-        and model.backend_version
-        and version_in_range(model.backend_version, integration.versions) is False
+        and effective.backend_version
+        and version_in_range(effective.backend_version, integration.versions) is False
     ):
         return CacheConfigSnapshot(
             **snapshot_base,
             endpoint=snapshot_endpoint,
             injected=False,
             reason=(
-                f"Backend version {model.backend_version} is outside the "
+                f"Backend version {effective.backend_version} is outside the "
                 f"cache provider's supported '{backend}' range "
                 f"({integration.versions}); "
                 "instance starts without shared KV cache"
             ),
+        )
+    composed_floor_reason = _composed_connector_version_floor(effective, integration)
+    if composed_floor_reason is not None:
+        return CacheConfigSnapshot(
+            **snapshot_base,
+            endpoint=snapshot_endpoint,
+            injected=False,
+            reason=composed_floor_reason,
+        )
+    refused_reason = _refused_cache_reason(effective, integration, role)
+    if refused_reason is not None:
+        return CacheConfigSnapshot(
+            **snapshot_base,
+            endpoint=snapshot_endpoint,
+            injected=False,
+            reason=refused_reason,
         )
     slot = integration.injection.kv_transfer_config if integration else None
     # backend_parameters is semantically a concatenated argv (an element
     # may be one token, a "--key value" pair, or a whole pasted command
     # line) — flatten exactly like the worker does before matching, or
     # the pasted forms slip through and take the slot over silently.
-    user_argv = flatten_to_argv(model.backend_parameters or [])
+    user_argv = flatten_to_argv(effective.backend_parameters or [])
     if slot and any(
         token == slot.flag or token.startswith(f"{slot.flag}=") for token in user_argv
     ):
@@ -363,6 +493,7 @@ async def resolve_instance_cache_config_safe(
     model: Model,
     worker: Optional[Worker] = None,
     spans_workers: bool = False,
+    role: Optional[str] = None,
 ) -> Optional[CacheConfigSnapshot]:
     """
     resolve_instance_cache_config that degrades instead of raising: an
@@ -371,13 +502,14 @@ async def resolve_instance_cache_config_safe(
     """
     try:
         return await resolve_instance_cache_config(
-            session, model, worker=worker, spans_workers=spans_workers
+            session, model, worker=worker, spans_workers=spans_workers, role=role
         )
     except Exception as e:
         logger.error(
             f"Failed to resolve shared cache config for model {model.name}: {e}"
         )
-        ext = model.extended_kv_cache
+        effective = role_effective_model(model, role) if role else model
+        ext = effective.extended_kv_cache
         if not ext or not ext.is_shared():
             return None
         return CacheConfigSnapshot(

@@ -531,3 +531,223 @@ def http_provider(path=None, target="port"):
         name="http-provider",
         health_check=CacheProviderHealthCheck(scheme="http", path=path, target=target),
     )
+
+
+# --- the floor a composed connector needs ---------------------------------- #
+
+
+def disaggregated_shared_cache_model(backend_version):
+    from gpustack.schemas.models import DisaggregationSpec, PDModeEnum
+
+    model = shared_cache_model()
+    model.disaggregation = DisaggregationSpec(mode=PDModeEnum.VLLM_NIXL)
+    model.backend_version = backend_version
+    return model
+
+
+@pytest.mark.asyncio
+async def test_a_cache_composed_with_pd_needs_the_multiconnector_fix():
+    """Below vLLM 0.26.0 the cache connector is handed empty blocks whenever it
+    is not the chosen one, so it stores nothing and the pool never warms. The
+    engine runs and disaggregation works — the cache is dead weight that reports
+    no error, which is exactly what a degradation reason is for."""
+    model = disaggregated_shared_cache_model("0.25.3")
+    with patch_lookups(managed_cache_service()):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=SimpleNamespace(id=2, ip="10.0.0.5", deleted_at=None),
+            role="prefill",
+        )
+
+    assert snapshot.injected is False
+    assert "46865" in snapshot.reason
+    assert not snapshot.args
+
+
+@pytest.mark.asyncio
+async def test_the_composed_floor_admits_the_version_that_carries_the_fix():
+    model = disaggregated_shared_cache_model("0.26.0")
+    with patch_lookups(managed_cache_service()):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=SimpleNamespace(id=2, ip="10.0.0.5", deleted_at=None),
+            role="prefill",
+        )
+
+    assert snapshot.injected is True
+
+
+@pytest.mark.asyncio
+async def test_the_composed_floor_is_not_applied_to_sglang():
+    """SGLang attaches through --enable-lmcache and a config file, nowhere near
+    MultiConnector — and its own version numbers are all below 0.26.0, so a
+    floor applied to the wrong backend would disable the cache outright."""
+    model = disaggregated_shared_cache_model("0.5.13")
+    model.backend = "SGLang"
+    with patch_lookups(managed_cache_service()):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=SimpleNamespace(id=2, ip="10.0.0.5", deleted_at=None),
+            role="prefill",
+        )
+
+    assert snapshot.injected is True
+
+
+@pytest.mark.asyncio
+async def test_the_composed_floor_does_not_apply_without_disaggregation():
+    """Nothing else writes the connector flag, so there is no composition to be
+    too old for — the integration's own floor is the only one that applies."""
+    model = shared_cache_model()
+    model.backend_version = "0.25.3"
+    with patch_lookups(managed_cache_service()):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=SimpleNamespace(id=2, ip="10.0.0.5", deleted_at=None),
+        )
+
+    assert snapshot.injected is True
+
+
+# --- the side that already loads KV must not take a second loader ---------- #
+
+
+@pytest.mark.asyncio
+async def test_a_refused_role_starts_without_the_cache():
+    """The catalog refuses a cache on decode: vLLM's connectors pull, so decode
+    is already loading, and a second async load per request trips the
+    scheduler's assert the first time the pool hits."""
+    model = disaggregated_shared_cache_model("0.27.1")
+    with patch_lookups(managed_cache_service()):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=SimpleNamespace(id=2, ip="10.0.0.5", deleted_at=None),
+            role="decode",
+        )
+
+    assert snapshot.injected is False
+    # The wording comes from the catalog; what this pins is that the reason
+    # names the refused role and cites the upstream defect.
+    assert "'decode'" in snapshot.reason
+    assert "53049" in snapshot.reason
+    assert not snapshot.args
+
+
+@pytest.mark.asyncio
+async def test_the_other_role_keeps_its_cache():
+    """Standing down is per role, not per deployment: prefill is where the
+    reuse pays and it is unaffected."""
+    model = disaggregated_shared_cache_model("0.27.1")
+    with patch_lookups(managed_cache_service()):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=SimpleNamespace(id=2, ip="10.0.0.5", deleted_at=None),
+            role="prefill",
+        )
+
+    assert snapshot.injected is True
+
+
+@pytest.mark.asyncio
+async def test_a_sglang_pair_takes_a_cache_on_both_roles():
+    """SGLang attaches through --enable-lmcache and a config file, never
+    composing into the PD connector's flag, so neither role ends up with two
+    loaders — verified on a live pair."""
+    model = disaggregated_shared_cache_model("0.5.13")
+    model.backend = "SGLang"
+    with patch_lookups(managed_cache_service()):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=SimpleNamespace(id=2, ip="10.0.0.5", deleted_at=None),
+            role="decode",
+        )
+
+    assert snapshot.injected is True
+
+
+@pytest.mark.asyncio
+async def test_a_non_disaggregated_model_is_untouched():
+    """Nothing else writes the connector flag, so a lone cache connector is the
+    only loader and the rule must not fire."""
+    model = shared_cache_model()
+    model.backend_version = "0.27.1"
+    with patch_lookups(managed_cache_service()):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=SimpleNamespace(id=2, ip="10.0.0.5", deleted_at=None),
+        )
+
+    assert snapshot.injected is True
+
+
+# --- which sides of a disaggregated pair take a cache ---------------------- #
+
+
+@pytest.mark.asyncio
+async def test_a_role_that_takes_no_cache_resolves_to_nothing():
+    """Attaching a shared cache to prefill alone is a normal disaggregated
+    configuration — it is the side where it pays. Reading the deployment's own
+    value for every member would hand the whole group whatever the model said,
+    which is the opposite of what the per-role override asked for."""
+    from gpustack.schemas.models import (
+        DisaggregationSpec,
+        ExtendedKVCacheConfig,
+        KVCacheModeEnum,
+        PDModeEnum,
+        RoleSpec,
+    )
+
+    model = new_model(1, "m", huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct")
+    model.disaggregation = DisaggregationSpec(mode=PDModeEnum.VLLM_NIXL)
+    model.roles = [
+        RoleSpec(
+            name="prefill",
+            extended_kv_cache=ExtendedKVCacheConfig(
+                enabled=True, mode=KVCacheModeEnum.SHARED, cache_service_id=7
+            ),
+        ),
+        RoleSpec(name="decode"),
+    ]
+
+    assert (
+        await resolve_instance_cache_config(MagicMock(), model, role="decode") is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_role_only_cache_is_resolved_for_that_role():
+    """The mirror of the above: the Model declares none, so a resolver reading
+    the Model would find nothing for the role that asked for one."""
+    from gpustack.schemas.models import (
+        DisaggregationSpec,
+        ExtendedKVCacheConfig,
+        KVCacheModeEnum,
+        PDModeEnum,
+        RoleSpec,
+    )
+
+    model = new_model(1, "m", huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct")
+    model.disaggregation = DisaggregationSpec(mode=PDModeEnum.VLLM_NIXL)
+    model.roles = [
+        RoleSpec(
+            name="prefill",
+            extended_kv_cache=ExtendedKVCacheConfig(
+                enabled=True, mode=KVCacheModeEnum.SHARED, cache_service_id=None
+            ),
+        ),
+        RoleSpec(name="decode"),
+    ]
+
+    snapshot = await resolve_instance_cache_config(MagicMock(), model, role="prefill")
+
+    assert snapshot is not None
+    # No service id on the role, so it degrades rather than silently skipping.
+    assert snapshot.injected is False

@@ -60,6 +60,10 @@ def _instance():
         state_message="",
         worker_id=None,
         spans_workers=False,
+        # Which role of a multi-role model this instance serves; None for a
+        # single-role deployment. `_schedule_one` reads it to project the
+        # role's overrides before looking for a candidate.
+        role=None,
         cache_config="unchanged-sentinel",
     )
 
