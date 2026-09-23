@@ -1,4 +1,3 @@
-import re
 import shlex
 from datetime import datetime
 from enum import Enum
@@ -12,6 +11,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.source import SourceTypeEnum
+from gpustack.utils.template import deployment_variables, render
 from .common import pydantic_column_type, PaginatedList
 from .models import BackendEnum, BackendSourceEnum, Model
 
@@ -227,44 +227,21 @@ class InferenceBackendBase(SQLModel):
             if not command:
                 return ""
 
-        command = command.replace("{{model_path}}", model_path or "")
-        command = command.replace("{{port}}", str(port))
-        command = command.replace("{{worker_ip}}", worker_ip or "")
-        command = command.replace("{{model_name}}", model_name or "")
-        command = command.replace(
-            "{{gpu_count}}", str(gpu_count) if gpu_count is not None else ""
-        )
-        command = command.replace(
-            "{{gpu_ids}}", ",".join(str(i) for i in gpu_ids) if gpu_ids else ""
-        )
-
-        # Resolve environment variables using {{VAR_NAME}} syntax
-        # Use provided env (from model) if available, otherwise fall back to backend env
-        if env:
-            command = self._resolve_env_vars(command, env)
-
-        return command
-
-    def _resolve_env_vars(self, command: str, env_dict: Dict[str, str]) -> str:
-        """
-        Resolve {{VAR_NAME}} placeholders in the command string using the provided environment dict.
-
-        Args:
-            command: The command string with {{VAR_NAME}} placeholders
-            env_dict: Dictionary of environment variable names to values
-
-        Returns:
-            Command with placeholders replaced by their values.
-            If a variable is not found in env_dict, the placeholder is left unchanged.
-        """
-        # Match valid variable names: start with letter or underscore, followed by alphanumeric or underscore
-        pattern = r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}"
-
-        def replace_var(match):
-            var_name = match.group(1)
-            return env_dict.get(var_name, match.group(0))
-
-        return re.sub(pattern, replace_var, command)
+        # One renderer, shared with the env-value path: the substitution used
+        # to live here, and living here is what kept it away from every
+        # built-in backend. See gpustack.utils.template.
+        variables = {
+            **(env or {}),
+            **deployment_variables(
+                model_path=model_path,
+                port=port,
+                worker_ip=worker_ip,
+                model_name=model_name,
+                gpu_count=gpu_count,
+                gpu_ids=gpu_ids,
+            ),
+        }
+        return render(command, variables, context="run command")
 
     def get_container_entrypoint(
         self, version: Optional[str] = None
