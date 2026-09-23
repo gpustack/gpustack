@@ -1,12 +1,13 @@
 import typing
 
 import pytest
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from gpustack.gateway.ai_proxy_types import AIProxyDefaultConfig
 from gpustack.schemas.model_provider import (
     ANTHROPIC_API_VERSION,
     ClaudeConfig,
+    ModelProviderCreate,
     ModelProviderTypeEnum,
     ProviderConfigType,
 )
@@ -34,9 +35,14 @@ class TestProviderTypeCoverage:
     UNCONSTRUCTIBLE = {ModelProviderTypeEnum.GENERIC}
 
     def _declared_types(self):
+        # unwrap the Annotated[...] the discriminator requires before taking
+        # the union's members
+        union = ProviderConfigType
+        if typing.get_origin(union) is typing.Annotated:
+            union = typing.get_args(union)[0]
         return {
             typing.get_args(c.model_fields["type"].annotation)[0]
-            for c in typing.get_args(ProviderConfigType)
+            for c in typing.get_args(union)
         }
 
     def test_every_type_has_a_config_class(self):
@@ -237,6 +243,54 @@ class TestClaudeCustomUrl:
 
         assert clean.ai_proxy_derived_fields()["providerDomain"] == "10.0.0.1:8080"
         assert clean.get_base_url() == "http://10.0.0.1:8080"
+
+
+class TestProviderConfigDiscrimination:
+    """``config`` is discriminated on ``type``, so a validation failure
+    surfaces as the single error of the selected provider type. The UI shows
+    ``detail[0].msg`` in its toast, which is only readable if this holds --
+    a bare union reports one ``literal_error`` per non-matching provider
+    instead (34 of them).
+    """
+
+    @pytest.mark.parametrize(
+        ("config", "message_fragment"),
+        [
+            (
+                {"type": "claude", "claudeCustomUrl": "http://user:pw@10.0.0.1:8080"},
+                "must not carry credentials",
+            ),
+            (
+                {"type": "claude", "claudeCustomUrl": "http://10.0.0.1:8080?key=abc"},
+                "origin and an optional path",
+            ),
+            (
+                {"type": "claude", "claudeCustomUrl": "not-a-url"},
+                "absolute http(s) URL",
+            ),
+        ],
+    )
+    def test_a_single_relevant_error_is_reported(self, config, message_fragment):
+        with pytest.raises(ValidationError) as exc_info:
+            ModelProviderCreate(
+                name="p",
+                config=config,
+                api_tokens=[{"input": "token"}],
+            )
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert message_fragment in errors[0]["msg"]
+
+    def test_an_unknown_type_is_rejected_with_one_error(self):
+        with pytest.raises(ValidationError) as exc_info:
+            ModelProviderCreate(
+                name="p",
+                config={"type": "not-a-provider"},
+                api_tokens=[{"input": "token"}],
+            )
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["loc"] == ("config",)
 
 
 class TestClaudeVersion:
