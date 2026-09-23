@@ -21,12 +21,48 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: {{ config.namespace | tojson }}
+  # Pod Security Admission, enforced by the API server at Pod *creation*: a Pod
+  # that does not fit the level is rejected outright, not left Pending. The
+  # worker DaemonSet the chart installs here mounts host paths, shares host
+  # namespaces and runs privileged containers, none of which the stricter
+  # levels allow, so without this an install onto a cluster whose default is
+  # `baseline` or `restricted` fails at the first Pod — with an error that
+  # reads like a bug in GPUStack rather than a policy the cluster set.
+  #
+  # All three keys, not just `enforce`: with `warn`/`audit` left on the cluster
+  # default, every Pod creation still returns a warning and writes an audit
+  # annotation — noise that hides the real ones.
+  #
+  # Kept in step with `_NAMESPACE_LABELS` in gpustack/gpu_instances/cluster_apis.py,
+  # which is the *other* place namespaces are created (every `gpustack-<org>`
+  # beyond the two rendered here). Changing one without the other leaves whole
+  # families of namespaces unlabelled.
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
 ---
 {#- Where the operator places this cluster owner's namespaced resources. #}
 apiVersion: v1
 kind: Namespace
 metadata:
   name: {{ config.cluster_owner_namespace | tojson }}
+  # A workload namespace, and the only one of its family rendered here — see
+  # the note above. Model, cache service and benchmark Pods land in namespaces
+  # like this one, and they need host networking (RDMA binds its GID to a NIC
+  # address), hostPort (the NIXL side channel a disaggregated pair hands its
+  # peer), host IPC (CUDA-IPC KV buffer sharing) and device mounts. Every one
+  # of those is a KV transfer plane requirement, so a disaggregated deployment
+  # is the case that fails first and hardest without this label.
+  #
+  # `privileged` exempts every Pod in the namespace from PSA, which is a reason
+  # these are namespaces GPUStack creates and owns rather than ones shared with
+  # a customer's own workloads. It does nothing about Kyverno / Gatekeeper /
+  # OPA, which are separate webhooks these labels do not address.
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
 ---
 apiVersion: v1
 kind: Secret

@@ -235,3 +235,62 @@ class TestOwnership:
             / "bootstrap.sh"
         ).read_text()
         assert "clusterrolebinding/${BINDING}" not in script
+
+
+class TestPodSecurityAdmission:
+    """PSA is enforced by the API server at Pod *creation*: a Pod that does not
+    fit its namespace's level is rejected outright, not left Pending. So an
+    unlabelled namespace does not degrade GPUStack — it stops the install at the
+    first Pod, with an error that reads like a bug.
+
+    Both namespaces need `privileged`, for different reasons. The system one
+    holds the worker DaemonSet, which mounts host paths, shares host namespaces
+    and runs privileged containers. The cluster owner's is a workload namespace:
+    model, cache service and benchmark Pods land there, and they need host
+    networking, hostPort, host IPC and device mounts — the KV transfer plane of
+    a disaggregated deployment needs all four at once.
+    """
+
+    LABELS = {
+        "pod-security.kubernetes.io/enforce": "privileged",
+        "pod-security.kubernetes.io/audit": "privileged",
+        "pod-security.kubernetes.io/warn": "privileged",
+    }
+
+    @staticmethod
+    def namespaces(rendered: Dict[str, dict]) -> Dict[str, dict]:
+        return {
+            k.split("/", 1)[1]: v
+            for k, v in rendered.items()
+            if k.startswith("Namespace/")
+        }
+
+    def test_every_namespace_the_manifest_creates_is_labelled(self):
+        """Asserted over *every* Namespace rather than the two by name, so a
+        namespace added later cannot quietly skip it."""
+        namespaces = self.namespaces(objects())
+        assert namespaces, "the manifest must still create its namespaces"
+        for name, doc in namespaces.items():
+            labels = doc["metadata"].get("labels") or {}
+            missing = {k: v for k, v in self.LABELS.items() if labels.get(k) != v}
+            assert not missing, f"namespace {name} is missing {sorted(missing)}"
+
+    def test_all_three_keys_are_set_not_just_enforce(self):
+        """`enforce` alone leaves `warn`/`audit` on the cluster default, so every
+        Pod creation still returns a warning and writes an audit annotation —
+        noise that hides the real ones."""
+        for name, doc in self.namespaces(objects()).items():
+            labels = doc["metadata"].get("labels") or {}
+            keys = [k for k in labels if k.startswith("pod-security.kubernetes.io/")]
+            assert len(keys) == 3, f"namespace {name} sets {sorted(keys)}"
+
+    def test_the_cluster_owner_namespace_is_among_them(self):
+        """The workload namespace is the one a disaggregated group's Pods land
+        in, and it is the one `ClusterOps.create_namespace` does not cover —
+        nothing routes the manifest's namespaces through it."""
+        rendered = objects(cluster_owner_principal_identifier="42")
+        owner = [n for n in self.namespaces(rendered) if n != config().namespace]
+        assert owner, "the cluster owner's namespace must still be rendered"
+        for name in owner:
+            labels = rendered[f"Namespace/{name}"]["metadata"]["labels"]
+            assert labels["pod-security.kubernetes.io/enforce"] == "privileged"
