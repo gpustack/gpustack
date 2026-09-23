@@ -1,5 +1,7 @@
 import logging
 import requests
+
+from gpustack import envs
 from typing import Any, Dict
 from gpustack.schemas.models import (
     BackendEnum,
@@ -28,8 +30,10 @@ def get_meta_from_running_instance(
         meta_path = "/info"
 
     try:
-        url = f"http://{mi.worker_ip}:{mi.port}{meta_path}"
-        response = requests.get(url, timeout=1)
+        scheme = envs.GPUSTACK_INSTANCE_SCHEME
+        verify = not envs.GPUSTACK_INSTANCE_TLS_INSECURE if scheme == "https" else True
+        url = f"{scheme}://{mi.worker_ip}:{mi.port}{meta_path}"
+        response = requests.get(url, timeout=1, verify=verify)
         response.raise_for_status()
 
         response_json = response.json()
