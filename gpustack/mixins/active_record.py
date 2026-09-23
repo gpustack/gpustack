@@ -30,7 +30,6 @@ from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.cache import locked_cached, delete_cache_by_key, class_key
 from gpustack.server.db import async_session
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -116,15 +115,25 @@ def _fuzzy_pattern(value: Any) -> str:
     return f"%{needle}%"
 
 
+def fuzzy_like(column: Any, value: Any):
+    """A ``LIKE`` predicate matching ``value`` literally in ``column``, case-folded.
+
+    Public because a route that builds its own search condition needs the same
+    reading of the needle as the generic one below: an escape rule that lives in
+    two places is an escape rule that drifts.
+    """
+    return func.lower(column).like(_fuzzy_pattern(value), escape=_LIKE_ESCAPE)
+
+
 def _fuzzy_conditions(cls, fuzzy_fields: Optional[dict]) -> List:
     """The OR-ed ``LIKE`` predicates for ``fuzzy_fields``, lowered on both sides.
 
-    One definition, because both the item query and its COUNT need the identical
-    predicate: they used to be written out separately and drifted, the count
-    losing the ``lower()`` on each side.
+    One definition, because both the item query and its COUNT need the
+    identical predicate: written out separately they drift, and a COUNT that
+    loses the ``lower()`` on each side disagrees with the page it counts.
     """
     return [
-        func.lower(getattr(cls, key)).like(_fuzzy_pattern(value), escape=_LIKE_ESCAPE)
+        fuzzy_like(getattr(cls, key), value)
         for key, value in (fuzzy_fields or {}).items()
     ]
 

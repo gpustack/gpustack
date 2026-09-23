@@ -8,6 +8,8 @@ from gpustack.utils.command import (
     extract_flag_arguments,
     find_parameter,
     find_bool_parameter,
+    find_last_int_parameter,
+    find_last_parameter,
     get_versioned_command,
     extend_args_no_exist,
     flatten_to_argv,
@@ -558,3 +560,48 @@ class TestSanitizeArgs:
     def test_non_string_elements_survive(self):
         # _build_command_args stringifies most values, but not all of them.
         assert sanitize_args(['--rate', 4]) == ['--rate', '4']
+
+
+def test_find_last_parameter_reads_an_argv_the_way_argparse_does():
+    """`find_parameter` answers with the first occurrence, which is the right
+    answer for detecting that a key is present and the wrong one for reporting
+    what the process will run: argparse keeps the last. The two only disagree
+    when one argv names a key twice, and there the difference is the whole
+    value."""
+    parameters = ['--dtype', 'auto', '--dtype', 'float16']
+    assert find_parameter(parameters, ['dtype']) == 'auto'
+    assert find_last_parameter(parameters, ['dtype']) == 'float16'
+
+
+def test_find_last_parameter_matches_find_parameter_on_a_single_occurrence():
+    for parameters in (
+        ['--dtype=float16'],
+        ['--dtype float16'],
+        ['--tp 8 --dtype bfloat16 --max-model-len 1024'],
+    ):
+        assert find_last_parameter(parameters, ['dtype']) == find_parameter(
+            parameters, ['dtype']
+        )
+
+
+def test_find_last_parameter_is_none_for_an_absent_or_flag_only_key():
+    assert find_last_parameter(['--dtype', 'auto'], ['block-size']) is None
+    assert (
+        find_last_parameter(['--enable-prefix-caching'], ['enable-prefix-caching'])
+        is None
+    )
+    assert find_last_parameter(None, ['dtype']) is None
+
+
+def test_find_last_int_parameter_takes_the_last_value_and_fails_quiet():
+    assert find_last_int_parameter(['--tp', '8', '--tp', '4'], ['tp']) == 4
+    # Aliases are one key: the last spelling still wins.
+    assert (
+        find_last_int_parameter(
+            ['--tensor-parallel-size=8', '--tp-size=2'],
+            ['tensor-parallel-size', 'tp-size'],
+        )
+        == 2
+    )
+    # A value the engine would reject is not a value to draw conclusions from.
+    assert find_last_int_parameter(['--tp', 'eight'], ['tp']) is None
