@@ -1,0 +1,939 @@
+# Declarative, read-only PD-mode catalog. Loaded by
+# gpustack/server/pd_mode_catalog.py and served via GET /v2/pd-modes.
+# Modes ship with GPUStack releases and are not user-editable resources.
+#
+# A mode is one disaggregation recipe: engine + KV connector + router. The user
+# picks one from a single dropdown (`disaggregation.mode`) and nothing about the
+# connection state — connector, ports, handshake variables — reaches the form.
+# Adding an engine is adding an entry here, not changing code; a new entry needs
+# code only when it needs a router peer style or a protocol that has no renderer
+# yet, which is why unknown values fail at load time instead of rendering wrong.
+#
+# Deliberately isomorphic to cache-providers.yaml: the per-role env / args /
+# files vocabulary is that file's `injection` section word for word, and the
+# same {{placeholder}} rendering applies. The one addition is `connector`, a
+# structured descriptor because that is the shape the extended-KV-cache
+# assembler consumes.
+#
+# Entry names must equal PDModeEnum's values verbatim (schemas/models.py), and
+# each entry's `backends` must agree with PD_MODE_BACKENDS. The loader asserts
+# both and fails start-up, because a mismatch is a silent table miss.
+#
+# Template placeholders:
+#   {{worker_ip}}            the worker's routable management IP
+#   {{net_device}}           the NIC derived for the worker. Which plane it
+#                            rides is the recipe's to declare
+#                            (`net_device_plane: data | control`): `data`, the
+#                            default, refuses to guess on a multi-NIC host and
+#                            asks for kv_ifname; `control` takes the worker's
+#                            management NIC, which holds the handshake IP by
+#                            definition.
+#   {{port}}                 the member's own HTTP API port
+#   {{ports.<name>}}         base of a named port band
+#   {{ports.<name>.count}}   width of a named port band
+#   {{role}} {{group_id}} {{model_name}} {{runner_image}}
+#   {{roles.<role>.<field>}} cross-role reference (Ascend needs each side's
+#                            connector config to carry the other side's
+#                            parallelism)
+#   {{peers.<role>}}         the group's (ip, port) list for a role
+#   {{peer.ip}} {{peer.port}}  the peer being rendered, inside router.peers.
+#                            Not a bare {{ip}}/{{port}}: the peer scope nests
+#                            inside the member's own, where a bare {{port}}
+#                            would resolve to the router's — a wrong address
+#                            rather than a failure.
+#   + DisaggregationSpec fields, e.g. {{kv_load_failure_policy}}
+# Placeholders take no inner spaces: "{{ worker_ip }}" renders literally and the
+# loader rejects it.
+
+# CIRCUIT BREAKER RECOVERY, referenced by every recipe declaring `--cb-*` flags.
+# The recovery side is deliberately undeclared: both gateways close an open
+# circuit themselves (60s open, then half-open, 3 successes to close, failures
+# counted over a 120s window), and a shorter timeout only probes a broken
+# backend more often. No setting recovers an ENGINE that is still broken — the
+# half-open probe is a real inference request, so a failing engine reopens the
+# circuit forever while `/health` answers 200, and only an engine restart clears
+# it. The exception is sglang-mooncake, whose roles un-blacklist a KV session
+# once it answers. With one replica per role there is also nothing to fail over
+# to, so an open circuit converts "slow" into "dead";
+# `--disable-circuit-breaker` is the per-role escape hatch.
+
+# Per-connector KV lease / abort windows. The parameter's name, its default and
+# where it is configured all differ per connector, and the windows differ by
+# 120x, so this cannot be a platform-wide constant. Modes reference an entry by
+# `kv_lease: <connector>`. Unqualified ids are vLLM `kv_connector`
+# implementations; `sglang-*` ids are `--disaggregation-transfer-backend`
+# values, whose KV lifecycle is a bootstrap timeout rather than a lease. moriio
+# is referenced by no shipped mode: the window is on the record even where
+# GPUStack cannot touch it.
+kv_leases:
+  - connector: nixl
+    param: kv_lease_duration
+    inject_to: connector_extra_config
+    engine_default: 30
+    gpustack_default: 60
+    expired_metric: "vllm:nixl_num_kv_expired_reqs"
+    description: >-
+      Seconds prefill holds computed KV for a decode that has not read it
+      yet. Decode renews by heartbeat every kv_lease_duration // 6 while
+      the request is queued and stops renewing when it aborts, so the hold
+      is bounded rather than leaked. The only window with a Prometheus
+      counter.
+      A second window lives on the same connector and is deliberately NOT
+      an entry here: `engine_ttl` (also connector_extra_config, engine
+      default 3600) evicts stale *remote engine state* -- the agent entries
+      a restarted peer leaves behind, reaped by _evict_stale_engines(). It
+      is engine-metadata GC, not a per-request KV hold, so it does not
+      belong in a registry whose unit is "how long prefill holds KV". Left
+      at the engine default; it is the mechanism behind the agent-entry
+      accumulation measured after repeated prefill restarts, so a
+      high-restart deployment is where it would need lowering.
+  - connector: mooncake
+    param: VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT
+    inject_to: env
+    engine_default: 480
+    gpustack_default: 60
+    # mooncake/stats.py exports no Prometheus counters, so an expiry shows up
+    # only in the engine log. Null rather than guessed.
+    expired_metric: null
+    description: >-
+      Seconds before the connector aborts a request and releases its KV.
+      The engine default is 8 minutes — 16x NIXL's — and the release is
+      invisible to Prometheus, so on Ascend a disconnected request holds KV
+      blocks for 8 minutes with nothing to alert on. Configured through an
+      env var, not the connector config.
+  - connector: moriio
+    param: defer_timeout
+    inject_to: connector_extra_config
+    engine_default: 60
+    expired_metric: null
+    description: >-
+      The window that actually reclaims prefill's blocks, and it is
+      settable: a deferred send whose finished_sending notification never
+      arrives is reaped after defer_timeout and its blocks force-freed, so
+      the scheduler does not hang waiting for a free that never comes.
+      Engine default 60s, overridable through kv_connector_extra_config.
+      A sibling `transfer_timeout` (default 30s, same entry point) bounds
+      the wait for a transfer to complete.
+      Not to be confused with VLLM_MORI_READ_ABORT_REQUEST_TIMEOUT --
+      that one IS a hardcoded MoRIIOConstants class attribute (3600, no env
+      override; the connector logs that env vars for it are deprecated and
+      ignored), but it is a read-abort deadline, not the block-reclaim
+      window. Reading it as "MoRIIO holds KV for an hour and it cannot be
+      shortened" is wrong on both halves.
+      No shipped mode uses MoRIIO (ROCm only), so nothing is injected today
+      and no platform default is claimed; the engine default is already
+      60s.
+  - connector: sglang-mooncake
+    param: SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT
+    inject_to: env
+    engine_default: 300
+    # Null, not 60 like the vLLM connectors: this is not a lease but how long
+    # prefill waits for decode's KV indices, so shortening it kills healthy
+    # requests whose decode merely queued. The engine's own log tells operators
+    # to raise it to 600 when TTFT is high — the field pressure is toward
+    # longer. A platform value needs a measurement first.
+    gpustack_default: null
+    expired_metric: null
+    description: >-
+      SGLang has no lease: prefill aborts the request and frees its tree
+      cache when the bootstrap wait times out. Enforced in the shared base
+      (CommonKVSender._check_bootstrap_timeout), so every SGLang transfer
+      backend inherits it -- see sglang-nixl.
+  - connector: sglang-nixl
+    param: SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT
+    inject_to: env
+    engine_default: 300
+    gpustack_default: null
+    expired_metric: null
+    description: >-
+      Same window as sglang-mooncake, and for the same reason: the timeout
+      is enforced in the shared base, and NixlKVManager/NixlKVSender extend
+      CommonKVManager/CommonKVSender, so nixl/conn.py calls
+      _check_bootstrap_timeout() exactly as mooncake/conn.py does. Decode
+      also notifies prefill on abort over the shared ZMQ channel
+      (_send_abort_notification in common/conn.py), and nixl/conn.py's
+      _handle_abort_notification marks the room Failed, so a cancelled
+      request does not have to wait out the window. What this backend
+      lacks is the acknowledgement back to decode: mooncake replies
+      ABORT_ACK, nixl does not, and upstream still carries a TODO to
+      define whether decode's buffer release must wait for the prefill
+      side's NIXL transfers to quiesce. That race is the open end here,
+      not the reclaim window.
+
+# What a member taking BOTH the mode's connector and a shared cache service
+# requires, once the two are folded into one `--kv-transfer-config` as a
+# MultiConnector. Keyed by engine: the requirements are neither the mode's —
+# every recipe on the same engine shares them — nor the cache provider's.
+# An engine that never folds has no entry; SGLang attaches its cache through
+# `--enable-lmcache` and a config file, which never reaches this flag.
+composed_cache:
+  - backend: vLLM
+    min_version: "0.26.0"
+    reference: vllm-project/vllm#46865
+    # Below this, MultiConnector hands every connector it did NOT choose an
+    # empty block list. On a cold pool nothing is ever chosen, so the cache
+    # stores nothing and can never warm itself: the engine runs, disaggregation
+    # works, and only the cache is dead — reporting nothing.
+    description: >-
+      a shared KV cache composed with a disaggregated deployment's connector
+      stores nothing and never hits
+    # Folding pushes each descriptor down one level and vLLM reads these off the
+    # TOP level only, so a child's copy parses and is then never consulted —
+    # silently reverting to the engine default while still visible in the launch
+    # command. The same list decides whether a mode may accept the setting.
+    top_level_only:
+      - kv_load_failure_policy
+    # WHICH ROLES MAY NOT TAKE A SHARED CACHE. vLLM's connectors PULL, so decode
+    # already loads the KV prefill computed and a cache there gives it two
+    # asynchronous loads per request. MultiConnector deduplicates saves but NOT
+    # loads: the second completion report names a request the scheduler has
+    # retired, tripping `assert req_id in self.requests` and taking the engine
+    # core down — the first time the pool actually HITS, so the group serves
+    # correctly right up until the cache starts working.
+    #
+    # prefill is unaffected and is the side worth attaching anyway. A pushing
+    # transport never has this problem, which is why the SGLang recipes declare
+    # no entry and take a cache on both roles. `description` is read by an
+    # operator in a tooltip, so it states the conclusion and nothing else.
+    refuse_cache_on:
+      roles: [decode]
+      reference: vllm-project/vllm#53049
+      description: it already loads KV through the disaggregation connector
+
+# Boolean engine switches both roles of a pair must land on the same way.
+# Distinct from the parameters compared in `server/pd_pairing.py`: those carry a
+# value, these are booleans argparse spells as two mutually exclusive flags, so
+# what gets compared is WHICH FLAG CAME LAST.
+pairing_toggles:
+  - backend: vLLM
+    key: hybrid_kv_cache_manager
+    enable_flag: "--no-disable-hybrid-kv-cache-manager"
+    disable_flag: "--disable-hybrid-kv-cache-manager"
+    # Setting --kv-transfer-config makes vLLM turn HMA off by itself and every
+    # disaggregated role gets that flag, so the disabling spelling is redundant.
+    # The enabling one is not: a connector that supports HMA can have it turned
+    # back on, and one side doing that alone is a real divergence.
+    default_enabled: false
+    # Not only a scheduling choice either: the NIXL compatibility hash covers
+    # is_hma_enabled, so two sides disagreeing fail the handshake every request.
+    description: >-
+      the two roles would run different hybrid KV cache manager settings, which
+      the connector's compatibility hash covers
+
+# Which side of a pair owns the KV transfer counters, and whether it has any.
+# Keyed by the same connector id kv_leases uses, since the transport decides
+# both. Every connector above must appear here, all-null if it exports nothing:
+# "Mooncake has no counters" is a measured fact and reads very differently from
+# a connector somebody forgot to add. The metric NAMES live in
+# metrics_config.yaml, where the worker's aggregator normalizes every engine's
+# spelling and units onto one set of `gpustack:pd_*` names; what is left here is
+# the semantics normalization cannot absorb.
+kv_transfer_metrics:
+  # NIXL PULLS: decode reads from prefill, so decode counts — on a working 1P1D
+  # prefill's transfer count stayed at 0.0 for the whole run. Read the prefill
+  # side and a healthy pair reports "no KV ever moved", precisely the alarm this
+  # metric exists to raise.
+  - connector: nixl
+    read_from_role: decode
+
+  # mooncake/stats.py exports zero Prometheus counters where NIXL exports
+  # fifteen, so nothing here can be timed. Effectiveness still can be:
+  # vllm:prompt_tokens_by_source comes from the engine, not the connector, and
+  # splits prompt tokens the same way under both. The speed figures are simply
+  # unavailable there.
+  - connector: mooncake
+    read_from_role: decode
+
+  - connector: moriio
+    read_from_role: decode
+
+  # SGLang PUSHES, so prefill knows the bytes and the speed — and decode is
+  # still the side to read. prefill publishes no `kv_transfer_*` family at all
+  # unless the connector hands it a byte count
+  # (`compute_and_observe_kv_transfer_metrics` returns early on a None size,
+  # taking the handshake and allocation timings with it), while decode observes
+  # `bootstrap_ms` and `alloc_ms` unconditionally. The cost is the byte and
+  # speed figures, reported as unmeasurable rather than as zero — they are
+  # absent on Mooncake either way, and the transfer count is what the verdict
+  # turns on.
+  - connector: sglang-mooncake
+    read_from_role: decode
+
+  - connector: sglang-nixl
+    read_from_role: decode
+
+modes:
+  - name: vllm-nixl
+    transport: NIXL
+    display_name: vLLM + NIXL
+    description: >-
+      vLLM's NixlConnector over UCX, fronted by the first-party vllm-router
+      in two-hop mode. Verified on 2x RTX 4090: 1P1D and 2P2D, round-robin
+      across both prefills, failure eviction and automatic re-add.
+    backends: [vLLM]
+    backend_versions: ">=0.20.0"
+    # Declared positively rather than left unconstrained: an absent constraint
+    # would offer this on AMD clusters, and phase 1 ships no AMD recipe.
+    gpu_filters:
+      vendor: nvidia
+    kv_lease: nixl
+    roles:
+      prefill:
+        ports:
+          # The engine default (5600) is fixed, so two prefills on one host
+          # collide by construction. count is 1 because phase one ships no local
+          # data parallelism; with DP the engine offsets the port by the
+          # data-parallel index and the band's width is that replica count — a
+          # connector-specific rule, not a platform formula.
+          - { name: kv_side_channel, count: 1, inject_to: env }
+        connector:
+          kv_connector: NixlConnector
+          kv_role: kv_producer
+          kv_load_failure_policy: "{{kv_load_failure_policy}}"
+          kv_connector_extra_config:
+            kv_lease_duration: "{{kv_lease_duration}}"
+        env:
+          # A bind address, not just an advertised one, and the engine defaults
+          # it to "localhost" — leave it unset and the side channel listens on
+          # loopback only, which is why cross-host PD fails out of the box.
+          VLLM_NIXL_SIDE_CHANNEL_HOST: "{{worker_ip}}"
+          VLLM_NIXL_SIDE_CHANNEL_PORT: "{{ports.kv_side_channel}}"
+          # Left to itself UCX picks up docker0 / br-* / flannel.1 and writes
+          # peer-unroutable addresses into the NIXL metadata; the far side then
+          # fails the handshake with NIXL_ERR_BACKEND.
+          UCX_NET_DEVICES: "{{net_device}}"
+      decode:
+        ports:
+          - { name: kv_side_channel, count: 1, inject_to: env }
+        connector:
+          kv_connector: NixlConnector
+          kv_role: kv_consumer
+          kv_load_failure_policy: "{{kv_load_failure_policy}}"
+        env:
+          VLLM_NIXL_SIDE_CHANNEL_HOST: "{{worker_ip}}"
+          VLLM_NIXL_SIDE_CHANNEL_PORT: "{{ports.kv_side_channel}}"
+          UCX_NET_DEVICES: "{{net_device}}"
+    router:
+      protocol: two_hop
+      image: "{{runner_image}}"
+      ports:
+        # --prometheus-port defaults to 29000 and always binds (its --help
+        # claims otherwise), so a second group's router on the same host dies in
+        # a Rust panic on the collision.
+        - { name: prometheus, count: 1, inject_to: args }
+      entrypoint:
+        # The image is the model's own runner image; what makes this a router
+        # rather than an engine is which executable inside it runs.
+        - vllm-router
+      connection_args:
+        # --enable-igw is what makes `membership_api_usable` true, i.e. what
+        # makes a ratio change something other than a full-group outage. The
+        # peers below are REQUIRED to start — without `--prefill` the router
+        # refuses to launch — and whether CLI peers also enter the registry
+        # under igw is version-dependent: read `GET /workers`, do not assume.
+        - --enable-igw
+        - --vllm-pd-disaggregation
+        - --kv-connector
+        - nixl
+        - --host
+        - "{{worker_ip}}"
+        - --port
+        - "{{port}}"
+        # Same class as VLLM_NIXL_SIDE_CHANNEL_HOST: a bind address, and left
+        # unset the exposition listens on loopback only. The PD-effectiveness
+        # ratio is computed off-host, so its denominator would be unreachable.
+        - --prometheus-host
+        - "{{worker_ip}}"
+        - --prometheus-port
+        - "{{ports.prometheus}}"
+      tunable_args:
+        # Asymmetric on purpose. Prefill gets cache_aware — this router's own
+        # default — because prefix reuse is the only thing a prefill role can
+        # win, and it needs no tokenizer: the policy is an approximate radix
+        # tree over request text, entirely router-side.
+        #
+        # Decode keeps round_robin because prefix affinity buys it nothing (its
+        # prompt KV arrives over the connector, not from its own cache), so what
+        # matters is decode-slot load. The load-aware policy for that is
+        # power_of_two, not used yet because whether a vLLM worker answers what
+        # the router's load monitor asks is unverified.
+        - flag: --prefill-policy
+          default: "cache_aware"
+          options: [random, round_robin, cache_aware, power_of_two, consistent_hash]
+        - flag: --decode-policy
+          default: "round_robin"
+          options: [random, round_robin, cache_aware, power_of_two, consistent_hash]
+        # These two only; everything the router's defaults cover is left to
+        # them, the health check above all. The breaker runs on the request path
+        # and learns a worker is dead at traffic rate; the health check is the
+        # background sweep for a worker nobody is routing to. Making it fast too
+        # buys seconds the breaker already covers and costs an interval near the
+        # engine's 5s HTTP keep-alive, where the checker grabs a pooled
+        # connection as the engine closes it — indistinguishable from the worker
+        # being down, and with one replica per role that is an outage, not
+        # failover. Do not add health-check overrides without a single-variable
+        # measurement isolating them from the breaker.
+        #
+        # On THIS recipe the breaker is inert: the PD path reads
+        # `circuit_breaker().can_execute()` but never calls `record_outcome()`,
+        # whose only caller is the non-PD router. The value is kept in step with
+        # the sglang recipes, where the breaker IS fed. Nor does this recipe
+        # have request-path failure detection at all — only a *transport* error
+        # counts as a prefill failure, so a 500 lands in the Ok branch and the
+        # request proceeds to decode and returns 200, which also means the
+        # PD-effectiveness denominator counts failed prefills as successes.
+        # Detection has to come from GPUStack, not from this flag.
+        - flag: --cb-failure-threshold
+          default: "10"
+          value_type: int
+          min: 1
+        - flag: --retry-max-retries
+          default: "3"
+          value_type: int
+          min: 0
+      peers:
+        style: repeated_flag
+        prefill: { flag: "--prefill", value: "http://{{peer.ip}}:{{peer.port}}" }
+        decode: { flag: "--decode", value: "http://{{peer.ip}}:{{peer.port}}" }
+      capabilities:
+        metrics: true
+        models_endpoint: true
+        # vllm_router_pd_{prefill,decode}_requests_total are per-worker, the
+        # shape the PD-effectiveness ratio needs; the engine exports the
+        # KV-expiry counter.
+        kv_expired_metric: true
+      # Scale-out without restarting the router, which matters because the
+      # router is a single replica and the gateway's only upstream: re-rendering
+      # peers and restarting it takes the whole group offline, so every ratio
+      # change would cost one outage.
+      #
+      # **--enable-igw is NOT backward compatible.** Under it the peers passed
+      # on the COMMAND LINE may never enter the registry, and requests then get
+      # 503 until two `POST /workers` calls land. Membership stops being an
+      # optimisation and becomes the ONLY way in, so turning the flag on without
+      # a consumer that registers every member at group formation loses the
+      # group. Hence `requires_args` names it while `command` does not carry it.
+      membership_api:
+        add: POST /workers
+        remove: DELETE /workers/{url}
+        # The difference between "the request was accepted" and "the member is
+        # in the registry": upstream polls the peer before admitting it and
+        # drops it silently on timeout, with a window tuned for small models.
+        probe: GET /workers
+        body:
+          url: "http://{{peer.ip}}:{{peer.port}}"
+          model_id: "{{model_name}}"
+        role_field: worker_type
+        role_values:
+          prefill: prefill
+          decode: decode
+        requires_args:
+          - --enable-igw
+      health_path: /health
+
+  - name: sglang-mooncake
+    transport: Mooncake
+    display_name: SGLang + Mooncake
+    description: >-
+      SGLang's own disaggregation over the Mooncake transfer backend (its
+      default), fronted by the official sglang_router. Decode fetches
+      prefill's parallelism from prefill's bootstrap service, so the two
+      sides rendezvous themselves and the router only has to dispatch.
+    backends: [SGLang]
+    # The floor is the router's, not the engine's: v0.5.7 is where a member
+    # stops being addressed by its URL and gets a registry-minted UUID.
+    # Supporting both would make the removal path guess which dialect an image
+    # speaks, and guessing wrong leaves a stale member taking traffic.
+    # Membership still works below this floor, so this carries one shape rather
+    # than marking a limitation.
+    backend_versions: ">=0.5.7"
+    gpu_filters:
+      vendor: nvidia
+    # Both SGLang recipes fit NVIDIA; this is the one to pick. Mooncake is the
+    # engine's own default, the only backend the DSA-layer-split and
+    # unified-memory paths accept, and it takes the NIC through a validated
+    # engine flag instead of UCX_NET_DEVICES discovery.
+    #
+    # Leaving `--disaggregation-ib-device` unset is safe with no RDMA on the
+    # host: discovery reports `Found 0 HCAs` and the transfer engine brings up
+    # its own TcpTransport rather than failing, and a cross-host 1P1D serves
+    # over TCP. Two alarming-but-harmless lines sit on that healthy path — `No
+    # RDMA devices found` (a WARNING phrased as an instruction) and `Local
+    # segment descriptor not found` (at ERROR) — so log-scanning diagnosis has
+    # to whitelist them. Which HCA discovery picks when there ARE several, the
+    # case the flag exists for, is unverified.
+    preferred: true
+    kv_lease: sglang-mooncake
+    roles:
+      prefill:
+        ports:
+          # The engine default (8998) is fixed, so two prefills on one host
+          # collide — and it is the same number vLLM's Mooncake connector uses,
+          # so a mixed host collides too. The router is this band's only
+          # consumer, which is why it is safe to read across roles: it waits for
+          # its dependencies, by which time the band is persisted.
+          - { name: bootstrap, count: 1, inject_to: args }
+        args:
+          - --disaggregation-mode
+          - prefill
+          - --disaggregation-bootstrap-port
+          - "{{ports.bootstrap}}"
+          - --disaggregation-transfer-backend
+          - mooncake
+        env:
+          # Without this the group survives about ten seconds of load. Mooncake's
+          # TcpTransport ships a connection pool and leaves it OFF, so every KV
+          # transfer opens and closes a TCP connection — ~178 per request. Since
+          # prefill reaches decode over the host's own address rather than
+          # loopback they sit in TIME_WAIT for 60s, so the 28232 ephemeral ports
+          # are gone in 9 seconds and `connect()` starts returning EADDRNOTAVAIL.
+          # Pooling bounds the count by concurrency instead of by request count,
+          # and is harmless on RDMA: the flag is read by the TCP path only.
+          MC_TCP_ENABLE_CONNECTION_POOL: "1"
+          # Without this ONE transfer failure kills the group permanently. The
+          # prefill side blacklists a decode session on its first failure, and
+          # every later request then fails at the entry check with «remote
+          # mooncake session ... is not alive» without attempting a connection
+          # again. Nothing clears that set but a restart, unless this probe
+          # thread re-tests blacklisted sessions (every 30s) and un-blacklists
+          # the ones that answer. Prefill only: `failed_sessions` lives in the
+          # prefill branch of the manager.
+          SGLANG_ENABLE_FAILED_SESSION_PROBE: "true"
+      decode:
+        args:
+          - --disaggregation-mode
+          - decode
+          - --disaggregation-transfer-backend
+          - mooncake
+        env:
+          # The pool is per-process and either side may be the one dialling, so
+          # both roles carry it. See prefill for what it costs to omit.
+          MC_TCP_ENABLE_CONNECTION_POOL: "1"
+    router:
+      protocol: same_dispatch
+      image: "{{runner_image}}"
+      ports:
+        # Without --prometheus-port the router still binds, on the hardcoded
+        # 29000, while its own port serves /metrics as 404 — so a second group's
+        # router on the same host collides and scraping finds nothing.
+        - { name: prometheus, count: 1, inject_to: args }
+      entrypoint:
+        - python3
+        - -m
+        - sglang_router.launch_router
+      connection_args:
+        - --pd-disaggregation
+        - --host
+        - "{{worker_ip}}"
+        - --port
+        - "{{port}}"
+        # A bind address, not just an advertised one: left unset the exposition
+        # is reachable only from the router's own netns, which puts the
+        # PD-effectiveness denominator out of reach of the server.
+        - --prometheus-host
+        - "{{worker_ip}}"
+        - --prometheus-port
+        - "{{ports.prometheus}}"
+      tunable_args:
+        # Stated rather than changed on the prefill side: this gateway also
+        # defaults to cache_aware, so writing it removes a silent divergence
+        # between the two recipes. Decode moves off the default for the reason
+        # given in vllm-nixl. This gateway's policy set is the vLLM fork's minus
+        # consistent_hash and rendezvous_hash, plus `manual` (explicit routing
+        # keys).
+        - flag: --prefill-policy
+          default: "cache_aware"
+          options: [random, round_robin, cache_aware, power_of_two, manual, bucket]
+        - flag: --decode-policy
+          default: "round_robin"
+          options: [random, round_robin, cache_aware, power_of_two, manual]
+        # The same two values as vllm-nixl, and for the same reason:
+        # `vllm-project/router` is a fork of this gateway, so its defaults are
+        # this one's verbatim. Unlike that fork, here the breaker IS fed on the
+        # PD path. See vllm-nixl for why the health check is left alone, and the
+        # header for the recovery side — on this recipe a stuck-open circuit
+        # also has an exit that needs no operator, since the roles'
+        # SGLANG_ENABLE_FAILED_SESSION_PROBE un-blacklists a session once it
+        # answers again.
+        - flag: --cb-failure-threshold
+          default: "10"
+          value_type: int
+          min: 1
+        - flag: --retry-max-retries
+          default: "3"
+          value_type: int
+          min: 0
+      peers:
+        style: repeated_flag
+        # A prefill peer is "URL BOOTSTRAP_PORT". `peer.ports.` and not
+        # `ports.`: in the deployment scope that name means the *router's* band,
+        # and for a two-prefill group there is no single right answer there at
+        # all — each prefill was allocated its own.
+        prefill: { flag: "--prefill", value: "http://{{peer.ip}}:{{peer.port}} {{peer.ports.bootstrap}}" }
+        decode: { flag: "--decode", value: "http://{{peer.ip}}:{{peer.port}}" }
+      capabilities:
+        metrics: true
+        models_endpoint: true
+        # SGLang's Mooncake path exports no KV-expiry counter.
+        kv_expired_metric: false
+      # No `requires_args`, and that is the difference from the vLLM fork: here
+      # the CLI peers and the API go through the *same* registration job and the
+      # PD router reads the shared registry on every request, so there is no
+      # flag to turn membership on and no window where the group is empty.
+      #
+      # `remove` names `{id}`, not `{url}`, and the id is read back off `probe`
+      # rather than constructed: from v0.5.7 it is a UUID the registry mints on
+      # admission, and `DELETE /workers/{url}` answers `400 Invalid worker_id`.
+      #
+      # `bootstrap_port` renders to a NUMBER (the value template is a bare
+      # placeholder, which keeps the band's type); a string is refused with
+      # `invalid type: string "9002", expected u16` and the member never
+      # registers. Decode declares no bootstrap band, so the key resolves to
+      # nothing and is left out of its body — what upstream expects, since a
+      # decode has no bootstrap service to name.
+      membership_api:
+        add: POST /workers
+        remove: DELETE /workers/{id}
+        # Load-bearing twice over: the add is asynchronous (202 = queued), and
+        # upstream health-checks the peer before admitting it and drops it
+        # silently on timeout.
+        probe: GET /workers
+        body:
+          bootstrap_port: "{{peer.ports.bootstrap}}"
+        role_field: worker_type
+        role_values:
+          prefill: prefill
+          decode: decode
+      health_path: /health
+
+  - name: sglang-nixl
+    transport: NIXL
+    display_name: SGLang + NIXL
+    description: >-
+      SGLang's disaggregation over the NIXL transfer backend, fronted by the
+      same official sglang_router. Prefer sglang-mooncake unless a NIXL/UCX
+      stack is already in place: mooncake is SGLang's own default, it is the
+      only backend the engine's DSA-layer-split and unified-memory paths
+      accept, and it takes the NIC through a validated engine flag
+      (--disaggregation-ib-device, which also accepts a per-GPU mapping)
+      whereas this path relies on UCX_NET_DEVICES discovery. See kv_lease
+      sglang-nixl for the one transfer-teardown difference.
+    backends: [SGLang]
+    # Same floor as sglang-mooncake, for a reason unrelated to the transfer
+    # backend: it is the router that renamed a member's id at v0.5.7, and both
+    # recipes run the same router.
+    backend_versions: ">=0.5.7"
+    gpu_filters:
+      vendor: nvidia
+    kv_lease: sglang-nixl
+    roles:
+      prefill:
+        ports:
+          - { name: bootstrap, count: 1, inject_to: args }
+        args:
+          - --disaggregation-mode
+          - prefill
+          - --disaggregation-bootstrap-port
+          - "{{ports.bootstrap}}"
+          - --disaggregation-transfer-backend
+          - nixl
+        env:
+          # SGLang selects the NIXL plugin by env; UCX is the one the runner
+          # images carry, and left to itself it advertises peer-unroutable
+          # virtual-bridge addresses — the same failure as the vLLM NIXL path.
+          SGLANG_DISAGGREGATION_NIXL_BACKEND: UCX
+          UCX_NET_DEVICES: "{{net_device}}"
+      decode:
+        args:
+          - --disaggregation-mode
+          - decode
+          - --disaggregation-transfer-backend
+          - nixl
+        env:
+          SGLANG_DISAGGREGATION_NIXL_BACKEND: UCX
+          UCX_NET_DEVICES: "{{net_device}}"
+    router:
+      protocol: same_dispatch
+      image: "{{runner_image}}"
+      ports:
+        # Same collision as sglang-mooncake: without this the router binds the
+        # hardcoded 29000 and its own port serves /metrics as 404.
+        - { name: prometheus, count: 1, inject_to: args }
+      entrypoint:
+        - python3
+        - -m
+        - sglang_router.launch_router
+      connection_args:
+        - --pd-disaggregation
+        - --host
+        - "{{worker_ip}}"
+        - --port
+        - "{{port}}"
+        # A bind address, not just an advertised one: left unset the exposition
+        # is reachable only from the router's own netns.
+        - --prometheus-host
+        - "{{worker_ip}}"
+        - --prometheus-port
+        - "{{ports.prometheus}}"
+      tunable_args:
+        # Same policies, same values and same reasoning as sglang-mooncake: the
+        # two recipes run the same router binary.
+        - flag: --prefill-policy
+          default: "cache_aware"
+          options: [random, round_robin, cache_aware, power_of_two, manual, bucket]
+        - flag: --decode-policy
+          default: "round_robin"
+          options: [random, round_robin, cache_aware, power_of_two, manual]
+        - flag: --cb-failure-threshold
+          default: "10"
+          value_type: int
+          min: 1
+        - flag: --retry-max-retries
+          default: "3"
+          value_type: int
+          min: 0
+      peers:
+        style: repeated_flag
+        # `peer.ports.` and not `ports.`: in the deployment scope that name
+        # means the *router's* band, and for a two-prefill group there is no
+        # single right answer there at all.
+        prefill: { flag: "--prefill", value: "http://{{peer.ip}}:{{peer.port}} {{peer.ports.bootstrap}}" }
+        decode: { flag: "--decode", value: "http://{{peer.ip}}:{{peer.port}}" }
+      capabilities:
+        metrics: true
+        models_endpoint: true
+        kv_expired_metric: false
+      # Same gateway and the same shared registry as sglang-mooncake — only the
+      # engine's transfer backend differs, and membership is a property of the
+      # router. See that recipe for why `remove` names `{id}` and why
+      # `bootstrap_port` must render to a number.
+      membership_api:
+        add: POST /workers
+        remove: DELETE /workers/{id}
+        probe: GET /workers
+        body:
+          bootstrap_port: "{{peer.ports.bootstrap}}"
+        role_field: worker_type
+        role_values:
+          prefill: prefill
+          decode: decode
+      health_path: /health
+
+  - name: vllm-ascend-mooncake
+    transport: Mooncake
+    display_name: vLLM-Ascend + Mooncake
+    description: >-
+      vLLM-Ascend's MooncakeHybridConnector with the transfer engine on the
+      Ascend protocol, fronted by vllm-ascend's own proxy example. Reverse
+      engineered from a running cross-host 1P1D on 910B2 x8 x2
+      (vllm-ascend v0.23.0 / vLLM 0.23.0). Every one of the four
+      declarations below differs from the NIXL path, which is why they are
+      declarations and not code.
+    backends: [vLLM]
+    # CANN plus the Ascend docker runtime. No vendor_variant whitelist on
+    # purpose: measured on 910B2 (A2) and field-proven on 910C (A3), but pinning
+    # those two would turn "untested" into "forbidden" and make a later Ascend
+    # generation unavailable until someone edits this file.
+    gpu_filters:
+      vendor: ascend
+    kv_lease: mooncake
+    pairing:
+      # The opposite of NIXL's rule. This connector carries both roles' tp/dp in
+      # its config so a decode rank can gather KV from several prefill ranks;
+      # Huawei's reference deployment (910C, 3P1D) is prefill TP4 / decode TP1,
+      # which the NIXL default rejected outright. A decode wider than its
+      # prefill has not been measured here, so the rule stays one-directional
+      # rather than `any` until it is.
+      tensor_parallel: prefill_ge_decode
+    # {{net_device}} lands on HCCL_SOCKET_IFNAME / GLOO_SOCKET_IFNAME /
+    # TP_SOCKET_IFNAME here, not on UCX_NET_DEVICES: these are handshake
+    # sockets, and the KV bytes never touch them — CANN moves them over the
+    # cards' own RoCE ports, where measurement put 99.94% of the traffic,
+    # invisible to the host stack. So the NIC is not a choice at all: HCCL_IF_IP
+    # is the worker's registration IP, HCCL requires it to sit on the interface
+    # HCCL_SOCKET_IFNAME names, and Worker.ifname is by definition that NIC.
+    #
+    # `control` rather than the default `data`, which refuses to derive anything
+    # on a multi-NIC host — and every real Ascend node is one, where the RDMA
+    # card's 25G ports read as the expert answer while the right one is the
+    # management bond. A NIC not holding HCCL_IF_IP fails deeper than a wrong
+    # card does.
+    net_device_plane: control
+    roles:
+      prefill:
+        ports:
+          # kv_port is a base address and the connector binds one port per
+          # worker rank, so the band is as wide as the member's card count:
+          #
+          #   handshake_port = kv_port
+          #                  + data_parallel_rank * tp_size * pp_size
+          #                  + (pp_rank + pcp_rank) * tp_size + tp_rank
+          #
+          # The width is the connector's rule, declared here rather than derived
+          # in code, and it has no engine default at all. The dp term only
+          # counts under MoE: vLLM sends non-MoE data-parallel ranks down a
+          # branch that zeroes data_parallel_rank, so every rank computes the
+          # same base and the second to bind fails with `Address already in use`
+          # — without exiting, leaving the instance wedged in `starting`.
+          # Admission refuses that combination rather than letting the band
+          # absorb it.
+          - { name: kv_port, count: "{{accelerator_count}}", inject_to: args }
+        # AscendDirectTransport resolves a peer's host address to the per-card
+        # RoCE addresses through this file, and the Ascend container runtime
+        # injects the devices and driver but not it. Without the mount
+        # cross-host transfers fail on every rank with ret -1 while same-host
+        # ones succeed, and the connector answers 200 with garbage rather than
+        # failing.
+        host_mounts: ["/etc/hccn.conf"]
+        connector:
+          kv_connector: MooncakeHybridConnector
+          kv_role: kv_producer
+          # The port lives inside the connector config, so allocation and
+          # connector assembly have to happen at the same moment — the
+          # "--kv-transfer-config carries no addresses" property holds for NIXL
+          # only.
+          kv_port: "{{ports.kv_port}}"
+          kv_connector_extra_config:
+            # Both sides carry both sides' parallelism: prefill's config names
+            # decode's TP and vice versa. This coupling has no NIXL equivalent
+            # and is the reason templates support cross-role references.
+            prefill:
+              tp_size: "{{roles.prefill.tensor_parallel_size}}"
+              dp_size: "{{roles.prefill.data_parallel_size}}"
+            decode:
+              tp_size: "{{roles.decode.tensor_parallel_size}}"
+              dp_size: "{{roles.decode.data_parallel_size}}"
+        env:
+          # All control plane. The data plane needs nothing from us: CANN uses
+          # the per-card RoCE ports directly.
+          HCCL_IF_IP: "{{worker_ip}}"
+          # The worker's NIC, not a per-card one: the card-internal eth0-eth7
+          # names do not exist in the host netns and the per-card RoCE addresses
+          # are unroutable from the host TCP stack, so a handshake address can
+          # only ever be the management IP.
+          HCCL_SOCKET_IFNAME: "{{net_device}}"
+          GLOO_SOCKET_IFNAME: "{{net_device}}"
+          TP_SOCKET_IFNAME: "{{net_device}}"
+      decode:
+        ports:
+          # Same rule as prefill's: one port per worker rank.
+          - { name: kv_port, count: "{{accelerator_count}}", inject_to: args }
+        # Same requirement, and it has to be on both sides: decode is the one
+        # that pulls, prefill is the one whose card addresses get resolved.
+        host_mounts: ["/etc/hccn.conf"]
+        connector:
+          kv_connector: MooncakeHybridConnector
+          kv_role: kv_consumer
+          kv_port: "{{ports.kv_port}}"
+          kv_connector_extra_config:
+            prefill:
+              tp_size: "{{roles.prefill.tensor_parallel_size}}"
+              dp_size: "{{roles.prefill.data_parallel_size}}"
+            decode:
+              tp_size: "{{roles.decode.tensor_parallel_size}}"
+              dp_size: "{{roles.decode.data_parallel_size}}"
+        env:
+          HCCL_IF_IP: "{{worker_ip}}"
+          HCCL_SOCKET_IFNAME: "{{net_device}}"
+          GLOO_SOCKET_IFNAME: "{{net_device}}"
+          TP_SOCKET_IFNAME: "{{net_device}}"
+    router:
+      protocol: two_hop
+      image: "{{runner_image}}"
+      entrypoint:
+        - vllm-router
+      connection_args:
+        # See vllm-nixl for what --enable-igw buys and why the CLI peers'
+        # registry behaviour is version-dependent.
+        - --enable-igw
+        - --vllm-pd-disaggregation
+        # `nixl`, on a mode whose transport backend is Mooncake, and that is not
+        # a mistake: this flag names the *wire protocol shape*, not the
+        # transport. vllm-ascend's Mooncake connector speaks vLLM's
+        # NixlConnector protocol byte for byte. Choosing `mooncake` here is not
+        # a degraded pairing but a hang: that branch first queries a Mooncake
+        # bootstrap server on :8998, which vllm-ascend does not run.
+        - --kv-connector
+        - nixl
+        - --host
+        - "{{worker_ip}}"
+        - --port
+        - "{{port}}"
+        - --prometheus-host
+        - "{{worker_ip}}"
+        - --prometheus-port
+        - "{{ports.prometheus}}"
+      tunable_args:
+        # The same two values and the same reasoning as vllm-nixl, including the
+        # breaker being inert on this router's PD path. Everything else is left
+        # to the router's own defaults, the health check above all.
+        - flag: --cb-failure-threshold
+          default: "10"
+          value_type: int
+          min: 1
+        - flag: --retry-max-retries
+          default: "3"
+          value_type: int
+          min: 0
+      ports:
+        # Same collision as vllm-nixl: --prometheus-port defaults to 29000 and
+        # always binds.
+        - { name: prometheus, count: 1, inject_to: args }
+      peers:
+        style: repeated_flag
+        prefill: { flag: "--prefill", value: "http://{{peer.ip}}:{{peer.port}}" }
+        decode: { flag: "--decode", value: "http://{{peer.ip}}:{{peer.port}}" }
+      capabilities:
+        metrics: true
+        models_endpoint: true
+        # A property of the *connector*, not the router: `kv_leases` records
+        # that Mooncake exports zero Prometheus counters, so an expired lease is
+        # visible only in the engine log. A router with metrics does not conjure
+        # an engine-side counter that was never written.
+        kv_expired_metric: false
+      # Read from upstream source, NOT measured. The single-router path drops
+      # `worker_type` before the PD router sees it and returns a hardcoded
+      # "requires specific add_prefill_server or add_decode_server methods";
+      # `--enable-igw` routes the call through the manager that dispatches on
+      # that field. `command` above does not carry the flag yet, so a consumer
+      # must read a failed call as "fall back to restart", never as "the group
+      # is broken".
+      membership_api:
+        add: POST /workers
+        remove: DELETE /workers/{url}
+        # The difference between "the request was accepted" and "the member is
+        # in the registry": upstream polls the peer before admitting it and
+        # drops it silently on timeout.
+        probe: GET /workers
+        body:
+          url: "http://{{peer.ip}}:{{peer.port}}"
+          model_id: "{{model_name}}"
+        role_field: worker_type
+        role_values:
+          prefill: prefill
+          decode: decode
+        requires_args:
+          - --enable-igw
+      health_path: /health
+
+  - name: custom
+    display_name: Custom
+    description: >-
+      GPUStack injects no connection state at all: connector, ports,
+      handshake variables and the router's image and command are the user's
+      to write on the roles. Also the only way to mix engines across roles,
+      since every other recipe expands into one engine's connector config.
+    # Empty means unconstrained, matching PD_MODE_BACKENDS: with nothing
+    # injected, any engine mix is the user's own to get right. Declaring neither
+    # backends nor gpu_filters is the mechanism that keeps it selectable on
+    # every engine and accelerator — an unsupported pair means "no built-in
+    # recipe", never "no PD".
+    backends: []
+    roles: {}
+    router:
+      protocol: user_provided
+    kv_lease: null
+    # No connector GPUStack knows, so no tensor-parallel direction it can vouch
+    # for either way; the user's engine is the judge.
+    pairing:
+      tensor_parallel: any
