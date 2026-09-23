@@ -162,7 +162,7 @@ class RoutePrefix:
         Returns regex patterns for the prefixes, considering versioning and legacy support.
         It supports removing -openai suffix from the versioned prefix with rewrite-target: /$1$3
         """
-        if getattr(self, "strip_version", False):
+        if self.strip_version:
             # Three capture groups for the global rewrite-target /$1$3:
             # $1 always empty, /v1 optional non-capturing, $2 optional slash,
             # $3 bare endpoint name. Both /v1/tokenize and /tokenize then
