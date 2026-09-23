@@ -1,3 +1,4 @@
+import importlib
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -160,6 +161,35 @@ def forget_refresh_state():
     for state in (probe._applied_ref, probe._last_refresh_attempt):
         state.clear()
     probe._revalidated_since_start = False
+
+
+@pytest.fixture(autouse=True)
+def release_build(monkeypatch):
+    """This tree is versioned as a development build; the defaults these tests
+    describe are a release's, and the development ones are pinned where tested."""
+    monkeypatch.setattr(probe, "is_dev_version", lambda: False)
+
+
+@pytest.fixture
+def bootstrap_env():
+    """Set GPUSTACK_BOOTSTRAP_WITH_EMBEDDED_SOURCES to a raw value (``None``
+    unsets it) and re-parse ``envs``, restored for the next test.
+
+    Its own context, so restoring the variable before the final re-parse does
+    not reach the patches every other fixture in this module owns."""
+
+    with pytest.MonkeyPatch.context() as mp:
+
+        def set_raw(raw):
+            name = "GPUSTACK_BOOTSTRAP_WITH_EMBEDDED_SOURCES"
+            if raw is None:
+                mp.delenv(name, raising=False)
+            else:
+                mp.setenv(name, raw)
+            importlib.reload(probe.envs)
+
+        yield set_raw
+    importlib.reload(probe.envs)
 
 
 @pytest.fixture
@@ -482,18 +512,28 @@ async def test_a_masked_official_is_not_fetched_and_a_user_url_refreshes(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw, dev_build",
+    [
+        pytest.param("true", False, id="configured"),
+        pytest.param(None, True, id="development-build-by-default"),
+        pytest.param("", True, id="empty-counts-as-unset"),
+    ],
+)
 async def test_an_installation_can_come_up_on_its_embedded_content(
-    session, mirror, monkeypatch
+    session, mirror, monkeypatch, bootstrap_env, raw, dev_build
 ):
-    """Configured that way, every slot is created out of service and nothing is
-    fetched — what the build ships serves. A cluster that cannot reach the OTA
-    server, one pinned to its build, and a development tree whose packaged
-    content is ahead of the published document all want this.
+    """Configured that way — or left unset on a development build, an empty value
+    included — every slot is created out of service and nothing is fetched: what
+    the build ships serves. A cluster that cannot reach the OTA server, one pinned
+    to its build, and a development tree whose packaged content is ahead of the
+    published document all want this.
 
     The starting point only: a slot put in service afterwards refreshes like
     any other, and a later round leaves it there.
     """
-    monkeypatch.setattr(probe.envs, "BOOTSTRAP_WITH_EMBEDDED_SOURCES", True)
+    bootstrap_env(raw)
+    monkeypatch.setattr(probe, "is_dev_version", lambda: dev_build)
 
     result = await refresh_sources(session, now=_T0)
 
@@ -508,6 +548,23 @@ async def test_an_installation_can_come_up_on_its_embedded_content(
 
     assert result.changed["catalog"] is True
     assert (await _official(session, CatalogSource)).enabled is True
+
+
+@pytest.mark.asyncio
+async def test_a_development_build_configured_off_starts_in_service(
+    session, mirror, monkeypatch, bootstrap_env
+):
+    """``false`` outranks the development-build default: every slot comes up in
+    service, reading the same OTA server a release does."""
+    bootstrap_env("false")
+    monkeypatch.setattr(probe, "is_dev_version", lambda: True)
+
+    result = await refresh_sources(session, now=_T0)
+
+    assert result.errors == {}
+    assert mirror.index_requests == [_INDEX_URL]
+    for source_cls in (CatalogSource, InferenceBackendSource, InferenceRunnerSource):
+        assert (await _official(session, source_cls)).enabled is True
 
 
 @pytest.mark.asyncio

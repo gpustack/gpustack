@@ -19,11 +19,11 @@ from gpustack.schemas.source import SourceTypeEnum
 from gpustack.server.sources.core import OFFICIAL_SOURCE_NAME
 from gpustack.server.sources.probe import (
     OFFICIAL_KINDS,
-    OTA_SERVER_URL,
     RefreshRound,
     SourceRefresher,
     applied_official_ref,
     official_filename,
+    ota_server_base,
     running_refresher,
 )
 
@@ -128,9 +128,7 @@ async def source_probe_status(
         )
 
     return SourceRefreshStatus(
-        ota_server_url=(get_global_config().ota_server_url or OTA_SERVER_URL).rstrip(
-            "/"
-        ),
+        ota_server_url=ota_server_base(get_global_config().ota_server_url),
         refreshing_on_this_server=refresher is not None,
         kinds=kinds,
         refreshed_at=last_round.refreshed_at if last_round else None,

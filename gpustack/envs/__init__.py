@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import List, Set
+from typing import List, Optional, Set
 
 # Database configuration
 DB_ECHO = os.getenv("GPUSTACK_DB_ECHO", "false").lower() == "true"
@@ -536,9 +536,14 @@ SCALING_SCHEDULER_INTERVAL = max(
 #
 # The starting point alone: a slot put in service afterwards stays there, and
 # the source configuration decides what an installation follows from then on.
-# Wanted where the OTA server is out of reach, where the content should stay
-# pinned to the build, and in development, where the published document belongs
-# to a release while the build under test is ahead of it.
-BOOTSTRAP_WITH_EMBEDDED_SOURCES = (
-    os.getenv("GPUSTACK_BOOTSTRAP_WITH_EMBEDDED_SOURCES", "false").lower() == "true"
+# Wanted where the OTA server is out of reach, and where the content should stay
+# pinned to the build. Unset or empty (``None``) means on for a development build
+# only, whose packaged content is ahead of any published document.
+_bootstrap_with_embedded_sources = (
+    os.getenv("GPUSTACK_BOOTSTRAP_WITH_EMBEDDED_SOURCES") or None
+)
+BOOTSTRAP_WITH_EMBEDDED_SOURCES: Optional[bool] = (
+    None
+    if _bootstrap_with_embedded_sources is None
+    else _bootstrap_with_embedded_sources.lower() == "true"
 )
