@@ -1,9 +1,19 @@
+import copy
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 import hashlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Union,
+)
 from croniter import croniter
 from pydantic import (
     BaseModel,
@@ -12,7 +22,14 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy import JSON, Column, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Column,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy import false as sa_false
 from sqlalchemy.orm import selectinload
 from sqlmodel import Field, Relationship, SQLModel, Text, select
@@ -36,6 +53,11 @@ from gpustack.schemas.model_routes import (
 )
 from gpustack.schemas.principals import _platform_principal_id
 from gpustack.schemas.cache_services import CacheConfigSnapshot
+
+# The enum lives with the cluster because the cluster is where the default is
+# set; a model only overrides it. Runtime import is safe in this direction —
+# `clusters` imports `models` under TYPE_CHECKING only.
+from gpustack.schemas.clusters import GatherStrategyEnum
 
 if TYPE_CHECKING:
     from gpustack.schemas.model_files import ModelFile
@@ -436,6 +458,612 @@ class SpeculativeConfig(BaseModel):
     """Maximum length of the n-gram to match."""
 
 
+# Prefill/decode disaggregation. A Model with `roles` set is a *group*: one
+# pool, one router, one generation at a time.
+
+
+class RoleNameEnum(str, Enum):
+    """Role names the API accepts.
+
+    The data model allows any name — the API validation layer is what limits
+    it to these three.
+    """
+
+    PREFILL = "prefill"
+    DECODE = "decode"
+    ROUTER = "router"
+
+    def __str__(self):
+        return self.value
+
+
+class PortBand(BaseModel):
+    """A contiguous run of ports, not a single point.
+
+    Some KV connectors derive several ports from one base — NIXL's side
+    channel takes one per tensor-parallel rank — so a port declaration has to
+    carry its width as well as its base.
+    """
+
+    base: int
+    count: int = 1
+
+
+class RoleResources(BaseModel):
+    """What a role's container asks for besides accelerators.
+
+    Only meaningful for a role that holds no weights — today the router — and
+    that is why it is not a Model-level field with the usual inherit-when-None
+    rule: prefill and decode get these numbers from sizing, and a hand-typed
+    value there would only fight the estimate.
+    """
+
+    cpu: Optional[float] = None
+    """Cores. Rendered into the container's requests *and* limits on
+    Kubernetes (so the Pod lands in the Guaranteed QoS class) and into
+    ``cpu_shares`` on Docker, which makes it a weight rather than a cap there.
+
+    It does **not** take part in placement. The scheduler's allocatable
+    view has two dimensions, RAM and VRAM, and CPU is not one of them, so
+    nothing subtracts this from a worker before choosing it. Declaring it
+    still buys cgroup enforcement and kubelet admission; "the scheduler will
+    place the router according to this number" is not true yet and must not
+    be implied in the UI.
+    """
+    memory: Optional[int] = None
+    """Bytes. Unlike `cpu` this one *is* consumed by placement: it becomes the
+    role's ``ComputedResourceClaim.ram``, which the allocatable view already
+    tracks and subtracts."""
+
+
+# A managed router is a proxy: it forwards requests and loads no weights, so
+# its footprint is a fixed floor rather than something to estimate. The memory
+# figure is deliberately the one the CPU-only claim already hardcoded, so
+# turning it into a declared default changes no placement decision.
+ROUTER_DEFAULT_CPU = 2.0
+ROUTER_DEFAULT_MEMORY = 2 * 1024**3
+
+
+class RoleSpec(BaseModel):
+    """One role of a multi-role deployment.
+
+    Every deployment field left as ``None`` inherits the ``Model``-level field
+    of the same name; giving it a value overrides it. The override surface is
+    deliberately the *whole* of ``backend_parameters`` and ``env`` rather than
+    a PD-specific subset: on Ascend, prefill and decode differ in nearly every
+    performance-related parameter, down to ``HCCL_CONNECT_TIMEOUT`` (120 vs
+    1200) and ``HCCL_BUFFSIZE`` (2560 vs 1024). Any narrower surface runs out
+    immediately.
+
+    Note that the inherit-when-None rule is not applied here: the projection
+    onto an effective per-role Model happens on the read path, and its result
+    is deliberately never persisted so that one intent has one source of
+    truth.
+    """
+
+    name: str
+    replicas: int = Field(default=1, ge=1)
+    """The x and y of xPyD, and the only scaling truth for a group.
+
+    Not wanting a role means removing it, not setting this to zero — a zero
+    would leave `dependencies` pointing at a role that never appears.
+    """
+
+    backend: Optional[str] = None
+    backend_version: Optional[str] = None
+    image_name: Optional[str] = None
+    run_command: Optional[str] = None
+    backend_parameters: Optional[List[str]] = None
+    env: Optional[Dict[str, str]] = None
+    gpu_selector: Optional[GPUSelector] = None
+    worker_selector: Optional[Dict[str, str]] = None
+    gpu_type_selector: Optional[GPUTypeSelector] = None
+    """The only entry point for a heterogeneous group, and the precondition
+    for gang admission."""
+    extended_kv_cache: Optional[ExtendedKVCacheConfig] = None
+    speculative_config: Optional[SpeculativeConfig] = None
+    """Overridable per role because prefill and decode need *different*
+    values, not because one of them should switch it off.
+
+    The first reading of this was backwards: prefill does not decode, so a
+    draft model looked like pure waste there. What the NIXL handshake actually
+    hashes is the model — `model`, `num_hidden_layers`, `num_kv_heads`,
+    `head_size` — and for MTP-style speculation the draft head is *part of the
+    model*. A prefill that does not load it therefore produces a different
+    structure and fails the compatibility check. Upstream's own recipes
+    (vllm-ascend's DeepSeek-V4-Flash and GLM5 tutorials) say the same thing in
+    numbers: prefill runs `num_speculative_tokens: 1` and decode runs 3 or
+    more. The 1 is not prefill speculating; it is prefill loading the same
+    shape.
+
+    So the model-level value cannot serve both, and neither can switching it
+    off on one side. Absent still inherits the model's, which is right for a
+    non-MTP draft model where prefill genuinely gains nothing — the field
+    makes the split possible, it does not force it.
+
+    No migration: `roles` is already a JSON column, so a new field on this
+    model is a schema change only.
+    """
+
+    lora_list: Optional[List[LoraListEntry]] = None
+    """Declared so it can be *refused*, which is the only thing admission does
+    with it today.
+
+    It is here because its absence was invisible. `RoleSpec` takes pydantic's
+    default `extra="ignore"` — the same leniency that lets an old row's
+    `cpu_only` be read straight past — so a deployment that put its adapters on
+    one role got a 200, a read-back with no `lora_list` anywhere, and not one
+    word about where they went. A field that exists and is rejected says what
+    happened; a field that does not exist says nothing.
+
+    Nothing consumes it: `validate_roles` refuses any role that sets it. Role
+    names would have to reach the engine through the group's router, and the
+    router's member table is indexed by served-model name — the same wall that
+    makes LoRA and disaggregation refuse each other outright (see
+    `_reject_lora_under_disaggregation`). Implementing per-role adapters before
+    that is settled would be building on it.
+
+    It is nonetheless a real override field rather than a role-own one, so the
+    projection carries it: the day the refusal lifts, `role_effective_model`
+    already hands each member its own list and there is no second mechanism to
+    add.
+    """
+
+    dependencies: Optional[List[str]] = None
+    """Roles that must be ready before this one starts. Must not cycle."""
+    # No `cpu_only`. It was a boolean standing in for a quantity: the
+    # scheduler needs a VRAM claim, and the flag only decided whether to go ask
+    # `estimate_model_vram` — which sizes the MODEL'S WEIGHTS and is therefore
+    # the wrong number for any role that does not load them. So the `False`
+    # branch had no correct implementation for a router: the only way to say
+    # "give this router a card" booked it at the whole model, and there was no
+    # per-role way to override that (`GPUSTACK_MODEL_VRAM_CLAIM` is
+    # model-level, so setting it would mis-size prefill and decode too).
+    #
+    # Deleting it makes "a router takes no accelerator" a property of the role
+    # rather than a checkbox someone had to remember, which matters because
+    # `role_takes_no_accelerator` gates three separate things — the VRAM claim,
+    # whether the CONTAINER asks for devices, and gang membership — each with
+    # its own recorded incident from getting it wrong.
+    #
+    # Old rows and old clients still carrying it are read straight past:
+    # `RoleSpec` takes pydantic's default `extra="ignore"`, and the value they
+    # carried (`False` on every group the UI ever produced) now means what it
+    # already meant in practice.
+    #
+    # A GPU-bearing role that is not prefill or decode comes back as a new role
+    # NAME, not as a flag on the router.
+    resources: Optional[RoleResources] = None
+    """CPU and memory for a role that claims no accelerator — the router.
+
+    Role-own rather than an override, because there is no Model-level field to
+    inherit from: `ram_size` / `ram_ratio` feed the *VRAM* estimate, not a
+    container's memory request. Left as `None` the router still gets
+    `ROUTER_DEFAULT_CPU` / `ROUTER_DEFAULT_MEMORY`, so the field only exists
+    to move off that floor.
+
+    Refused on prefill and decode at admission: their footprint is what sizing
+    computes from the weights and the parallelism, and a second, hand-written
+    source for the same number is a way to disagree with it silently.
+    """
+
+
+class PDModeEnum(str, Enum):
+    """A disaggregation recipe: engine plus KV connector.
+
+    These values must match the entry names in ``pd-modes.yaml`` verbatim —
+    the catalog is looked up by them, so a mismatch is a silent miss. The
+    loader asserts the two sets are equal at start-up.
+    """
+
+    VLLM_NIXL = "vllm-nixl"
+    SGLANG_MOONCAKE = "sglang-mooncake"
+    SGLANG_NIXL = "sglang-nixl"
+    VLLM_ASCEND_MOONCAKE = "vllm-ascend-mooncake"
+    CUSTOM = "custom"
+    """The user supplies every connection-state parameter themselves. Also the
+    only way to mix engines across roles, since a recipe injects one engine's
+    connector config into every role."""
+
+    def __str__(self):
+        return self.value
+
+
+# Which engines a recipe can be injected into. A recipe expands into one
+# engine's connector config and env, so a role running a different engine
+# would be handed configuration it cannot read — e.g. `vllm-nixl` would inject
+# `NixlConnector` and `VLLM_NIXL_*` into a TileRT decode and fail silently.
+# Mixing engines across roles therefore has to go through `custom`.
+#
+# `pd-modes.yaml` is the authoritative source for this; the catalog loader
+# asserts the two agree at start-up, the same way it asserts the mode names
+# match. This table exists so that request validation doesn't have to wait on
+# a catalog read.
+PD_MODE_BACKENDS: Dict[str, List[str]] = {
+    PDModeEnum.VLLM_NIXL.value: [BackendEnum.VLLM.value],
+    PDModeEnum.VLLM_ASCEND_MOONCAKE.value: [BackendEnum.VLLM.value],
+    PDModeEnum.SGLANG_MOONCAKE.value: [BackendEnum.SGLANG.value],
+    PDModeEnum.SGLANG_NIXL.value: [BackendEnum.SGLANG.value],
+    # `custom` means the user writes the connection state themselves, so any
+    # engine mix is theirs to get right -- within PD_BACKENDS below, which is
+    # the gate `custom` does not exempt anyone from.
+    PDModeEnum.CUSTOM.value: [],
+}
+
+# Which engines may be disaggregated at all, whatever the mode.
+#
+# A narrower question than PD_MODE_BACKENDS above, and asked of a different
+# thing: that table says which engine a *recipe* can be injected into, and
+# `custom` answers "any" because it injects nothing. This one says which
+# engines the *feature* applies to, and `custom` is subject to it like every
+# other mode -- writing the connection parameters yourself does not give an
+# engine a KV cache to disaggregate.
+#
+# VoxBox runs speech models, where there is no prompt KV to hand across, so
+# prefill/decode does not name anything it does. MindIE has disaggregation of
+# its own on Ascend, and is excluded as a product decision rather than a
+# technical one: GPUStack ships no recipe for it, so the only way in would be
+# `custom` with every connection parameter hand-written, and a path that
+# reaches a running group only if the user already knows the engine's
+# disaggregation protocol is one this form should not offer.
+PD_BACKENDS: List[str] = [
+    BackendEnum.VLLM.value,
+    BackendEnum.SGLANG.value,
+    # A user-supplied engine image, which is how a BYO engine runs PD here.
+    BackendEnum.CUSTOM.value,
+]
+
+
+class GatherSpec(BaseModel):
+    """How tightly this deployment's members should sit together.
+
+    The only source of the requirement — there is no cluster-wide default
+    underneath it, because a cluster-level failure policy would let an operator
+    arm a rejection the deployer never sees stated. Absent means absent: no
+    constraint.
+
+    **Two independent questions, deliberately two fields.**
+
+    - ``layer`` — how close do you want them? A *target*.
+    - ``strategy`` — and if that cannot be met? ``MustGather`` refuses;
+      ``PreferGather`` deploys anyway.
+
+    Read the pair as a failure policy layered on a target, not as a placement
+    instruction: the solver always takes the tightest domain that fits, so
+    neither field makes a group land any closer than it otherwise would.
+    What they decide is what happens when the target is missed.
+
+    ``PreferGather`` **with** a ``layer`` is the combination most deployments
+    want — "aim for X but ship it either way" — and it needs both fields to
+    be expressible at all: place as usual, and if the group ends up looser
+    than ``layer``, say so on the model as a ``gather_unmet`` degradation. A
+    target without a threat attached, which is the normal way to ask for
+    something.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    strategy: Optional[GatherStrategyEnum] = None
+    """None means no gather requirement at all. `PreferGather` keeps widening
+    to the cluster root and reports a miss; `MustGather` stops at `layer` and
+    refuses the deployment instead."""
+
+    layer: Optional[str] = None
+    """The layer `strategy` applies to: a layer id of the cluster's chain, or
+    the built-in node layer, which is the leaf.
+
+    Required under `MustGather` — a refusal needs something to refuse below.
+    Optional under `PreferGather`, where it is the target a miss is reported
+    against; omitted there, nothing is reported and any placement is fine.
+
+    Every value here names a layer the cluster actually declares, including
+    `accelerator_domain`, which is an ordinary custom layer like any other.
+    `routes.models.validate_gather_layer` refuses anything else — the solver
+    stands an unknown layer down rather than failing, so an unchecked name
+    would be a `MustGather` nothing enforces.
+    """
+
+    @model_validator(mode="after")
+    def check_layer_accompanies_must(self) -> "GatherSpec":
+        """`MustGather` without a layer has nothing to stop at.
+
+        Left unchecked it reads as "refuse if it does not fit" with no
+        definition of "fit", and the solver's `_enforced_gather` would stand
+        the requirement down — so the deployment would be accepted under a
+        promise that was never in force. Refusing at the edge is the whole
+        difference between a constraint and a decoration.
+        """
+        if self.strategy == GatherStrategyEnum.MUST_GATHER and not self.layer:
+            raise ValueError("gather strategy 'MustGather' requires a layer")
+        if self.layer and self.strategy is None:
+            raise ValueError(
+                "gather layer is set without a strategy; there is nothing to "
+                "apply it to"
+            )
+        # `PreferGather` + a layer is deliberately NOT refused: that pair is
+        # "aim for this, ship it anyway, tell me if you missed" and is the
+        # common case. It is also why this check is one-directional — a
+        # strategy needs no layer, only `MustGather` does.
+        return self
+
+
+class DisaggregationSpec(BaseModel):
+    mode: PDModeEnum
+
+    vendor: Optional[str] = None
+    """Which accelerator vendor this group runs on, e.g. "nvidia".
+
+    Only needed in a cluster with more than one vendor partition that could
+    host the group. A PD group cannot span vendors -- the KV path differs
+    (HCCL/MemFabric vs UCX/RDMA verbs) -- so this is a *placement* constraint,
+    not a preference, and it doubles as the key the recipe is derived from.
+
+    None in a single-vendor cluster, where it is derived. Deliberately not
+    guessed in a mixed one: the platform picking "the partition with the most
+    cards" would override a user who wants the idle partition instead.
+
+    It lives here rather than on the model because the constraint exists
+    *because of* PD. If a non-PD workload ever needs the same thing, promote
+    it to a model-level `gpu_filters` -- the two shapes match.
+    """
+
+    readiness: Literal["any_per_role", "all"] = "any_per_role"
+    """Whether every role member has to be ready, or one per role is enough.
+
+    `all` is for a deployment sized to a known load, where a partial group
+    degrades into queueing rather than into reduced throughput — it moves the
+    shortfall out of `degradations` and into `state`, so the endpoint stops
+    taking traffic during a scale-up instead of serving through it. Judged in
+    `derive_model_state`; not surfaced in the deployment form yet.
+    """
+
+    kv_load_failure_policy: Literal["fail", "recompute"] = "fail"
+    """What decode does when the KV it was promised does not load.
+
+    Only `vllm-nixl` renders it — SGLang has no equivalent concept and
+    Mooncake's connector does not read the key — so a non-default value is
+    refused at admission on the other modes rather than stored and ignored.
+
+    `recompute` degrades silently by design, so choosing it means committing
+    to watch decode's recompute share; the PD-effectiveness ratio is where
+    that shows.
+    """
+
+    # `router_kind` was here: an escape hatch for swapping the router
+    # implementation out of a mode's bundle. Both things that would have used
+    # it arrived instead -- the `custom` mode, and per-role image/run_command
+    # overrides -- and either expresses more than a name ever could. What was
+    # left accepted any string, changed nothing, and appeared in every PD
+    # model's API response, which reads as an offer to swap routers there.
+
+
+class ModelStateEnum(str, Enum):
+    """Model-level lifecycle. Deliberately *not* a copy of
+    ``ModelInstanceStateEnum`` — this is an aggregate, not a per-process
+    lifecycle, so it has no download/start phases.
+
+    Degradation is not a value here. Cache not attached, bandwidth below the
+    measured baseline, ratio unmet — all of those coexist with a servable
+    group, so they live in the orthogonal ``degradations`` marker instead.
+    """
+
+    PENDING = "pending"
+    """Nothing ready yet."""
+    PARTIAL = "partial"
+    """Members are up and the deployment still cannot serve — for a group, a
+    role with zero ready members, or an upstream registration that has not
+    succeeded.
+
+    **Unreachable for a role-less model**: one ready replica serves, so there
+    is no such condition. Being short of the requested count is
+    `degradations: [ratio_unmet]` beside a RUNNING state, not this."""
+    RUNNING = "running"
+    """Servable: every role has at least one ready member *and* the upstream
+    registration succeeded."""
+    ERROR = "error"
+    """A member has failed in a way it can't recover from."""
+
+    def __str__(self):
+        return self.value
+
+
+class RoleStatus(BaseModel):
+    """Per-role readiness detail.
+
+    Carried on the Model row rather than computed per request because the
+    list endpoint returns `ModelPublic` without instances, and the UI needs
+    per-role detail on a row it hasn't expanded.
+    """
+
+    desired: int = 0
+
+    ready: int = 0
+    """Members of this role that are RUNNING **and taking traffic**.
+
+    A member inside its drain window is excluded, and that is the whole
+    difference from a plain RUNNING count: the router dropped it from its
+    member list the moment the window opened, so it answers only what it had
+    already taken. Counting it here made a role scaled from 3 to 2 report
+    `ready=3, desired=2` for the length of the window — more members than were
+    asked for, which reads as an edit that did not take.
+
+    This is what `model_role_ready_instances` publishes, so that series dips
+    while a role is draining. That is the intended reading: the dip is real
+    capacity leaving."""
+
+    draining: int = 0
+    """Members inside their scale-down drain window, whatever their state.
+
+    Separate from `ready` rather than derivable from it, because a draining
+    member need not be RUNNING: victim selection scores a broken member zero
+    and so picks it first, which makes "draining and also ERROR" the ordinary
+    case rather than a corner.
+
+    **It is also the only member a reader cannot account for.** Someone
+    looking at an expanded group counts rows, and during a scale-down the rows
+    outnumber `ready`. Every other kind of surplus explains itself — a member
+    that is still starting is the gap between `ready` and `desired`, and the
+    row says «Starting» — but a drained member sits outside both numbers. So
+    this is what the cell prints beside the fraction, and printing the member
+    total instead would leave the reader to do the subtraction and still not
+    know what the extra one was doing.
+
+    Defaults to 0, which is what a role that has never had a drain window
+    reads back as."""
+
+
+class DegradationReasonEnum(str, Enum):
+    """Reasons a group is servable but worse than asked for.
+
+    Orthogonal to `state`, following the precedent set by `stale`: "config
+    changed *and* still serving" has to be expressible as one fact, and so
+    does "running but the cache never attached".
+    """
+
+    CACHE_NOT_INJECTED = "cache_not_injected"
+    # There is deliberately no bandwidth or PD-effectiveness marker here.
+    # Both need traffic to have happened, and the counters behind them live in
+    # Prometheus, where the worker's aggregator publishes them labelled and
+    # over a path that handles tunnelled hosts. A marker on the row would be a
+    # second, staler copy of that answer.
+    RATIO_UNMET = "ratio_unmet"
+    # No prefill and decode member share a host, so no request's KV can avoid
+    # the network. Placement-only and knowable at admission, unlike the
+    # bandwidth markers above which need traffic to have happened.
+    PAIRING_REMOTE = "pairing_remote"
+
+    GATHER_UNMET = "gather_unmet"
+    """The group is serving, but looser than the layer it asked to sit in.
+
+    Only ever set under `PreferGather`: that strategy ships whatever it can
+    place, so without this marker "I wanted same-rack" and "I got same-rack"
+    are indistinguishable afterwards — the request is in the spec and the
+    outcome is nowhere. `MustGather` needs no marker, having refused instead.
+
+    Placement-only and knowable as soon as the members are bound, like
+    `PAIRING_REMOTE` beside it: no traffic has to happen for it to be true."""
+
+    GATHER_BLOCKED_SCALE_OUT = "gather_blocked_scale_out"
+    """A member cannot be placed without leaving the domain this deployment is
+    pinned to, and the deployment asked to be refused rather than spread.
+
+    The other half of `MustGather`, and the half nobody could see. Under it
+    `GatherFloorFilter` refuses every worker outside the domain the running
+    members occupy -- the strategy working exactly as specified -- but the
+    refusal lands on one pending instance's `state_message` and nowhere else:
+    the model stays RUNNING with an empty `degradations` list, so a scale-up
+    that will never complete is indistinguishable from one still in flight
+    unless the user opens each member in turn. `GATHER_UNMET` does not cover
+    it either, by construction: that one fires only once the floor is ALREADY
+    broken, which under `MustGather` is an invariant check rather than a
+    report.
+
+    **It does not claim the floor is the cause.** A group with no room left
+    anywhere -- inside the domain or outside it -- presents identically: a
+    weight-bearing member placed, a sibling pending, nothing moving. The two
+    are not separable from the model row, and pretending otherwise would send
+    the operator to edit a gather policy when the answer was to add a worker.
+    The wording is therefore true under both readings: a member is not being
+    placed, and this deployment is one that would rather wait than spread.
+    Which of the two it is, the member's `state_message` says.
+
+    Deliberately absent during formation, where no member is placed yet and
+    the solver -- not the filter -- is the one refusing; a group that cannot
+    form fails scheduling with the shortfall named, which is a different
+    report with a different audience. And deliberately delayed by a dwell, so
+    an ordinary scale-up does not wear the marker for the seconds between the
+    row being created and the scheduler reaching it."""
+
+    ENGINE_VERSION_BELOW_RECIPE_FLOOR = "engine_version_below_recipe_floor"
+    """The pinned engine version is below the floor this PD recipe declares.
+
+    The floor is not stylistic. `sglang-nixl` and `sglang-mooncake` declare
+    `>=0.5.7` because a member's id stopped being its URL and became a UUID
+    the registry mints at that version: on an older build `DELETE
+    /workers/{url}` answers 400, so a scaled-down member is never removed from
+    the router's registry and keeps taking traffic after GPUStack believes it
+    is gone.
+
+    **A degradation and not a 400, unlike a cache provider's `versions`.**
+    The cache range is enforced at admission because an out-of-range engine
+    there is handed injected args it cannot parse and fails to start -- a
+    refusal costs nothing, since the deployment was not going to run. This
+    floor is different: the group runs, and the version string it was pinned
+    to may be a self-built image with a private number that happens to carry
+    the fix. Rejecting would break those deployments to prevent a failure they
+    do not have.
+
+    Set only for a version `version_in_range` positively reports as out of
+    range. Unpinned, unparseable and unknown-to-us all leave it unset -- the
+    same fail-open the cache check takes, and for the same reason: an exotic
+    version string must never be the thing that condemns a deployment.
+
+    Two parseable shapes are let through as well, because sorting them below
+    the floor answers a question they were never asked: a local version
+    (`0.5.6+ourfix`) is by PEP 440's own definition an official release plus
+    whatever the packager put on top of it -- backporting the very fix the
+    floor wants is a common reason to cut one -- and a pre-release
+    (`0.5.7-rc1`, `0.5.6.dev0`) is cut from a branch rather than from a
+    release line the floor was ever measured against."""
+
+    PAIRING_UNVERIFIED = "pairing_unverified"
+    """A pairing factor whose two effective values GPUStack could not compare —
+    usually one role declaring it and the other going silent.
+
+    The factors prefill and decode must share — the context window, the tensor
+    parallelism, the dtypes, the block size, the KV cache layout. Comparing
+    them only when *both* roles write them down would pass a group where one
+    side is silent by not checking it, and that is the ordinary way a group is
+    misconfigured: edit prefill, leave decode alone.
+
+    **A marker and not a 400, because the silent side's value is genuinely
+    unknown here.** Substituting the engines' defaults was the obvious repair
+    and is wrong for every one of these: an unwritten `--tensor-parallel-size`
+    is the member's card count and not 1, since GPUStack injects it itself; an
+    unwritten `--dtype` is `auto`, which needs the checkpoint's config to
+    resolve and admission has no session to fetch one; `--block-size` and
+    `--kv-cache-layout` are settled by the platform and the attention backend,
+    `VLLM_KV_CACHE_LAYOUT` included, so any constant written down would drift
+    into a false alarm on a later vLLM. A pair this marker describes is very
+    often correct — what it reports is that nothing verified it, which is not
+    the same claim as "this is broken".
+
+    **An explicit `auto` is silence, not a third value.** `--dtype auto`
+    against `--dtype float16` lands here rather than being refused: on a float16
+    checkpoint the two are the same run, and telling them apart needs the config
+    file admission cannot open. Writing `auto` down does not turn a question
+    into an answer.
+
+    A divergence GPUStack *can* prove — two concrete values that differ — is
+    still refused at admission. Both sides silent is deliberately not marked:
+    two roles taking the same default from the same engine on the same model
+    agree whatever it resolves to."""
+
+    PAIRING_TP_MISPLACED = "pairing_tp_misplaced"
+    """The cards the members actually got break the recipe's tensor-parallel
+    direction.
+
+    The admission check can only read the spec, and the spec routinely does not
+    contain the number: a role that writes no `--tensor-parallel-size` and pins
+    no cards runs whatever the scheduler gives it. Placement is where that
+    stops being unknown — every member's `gpu_indexes` is written down, the
+    engines derive tp from exactly that for a single-worker member, and the
+    direction the recipe declares (`PDMode.pairing.tensor_parallel`) can
+    finally be applied to the deployment that exists rather than the one that
+    was described.
+
+    **Marked, never enforced.** By the time this is knowable the members are
+    placed and, usually, serving; failing them would take down a group to
+    report a shape it is already running. Under NIXL the shape does break —
+    a decode narrower than its prefill raises an `IndexError` inside decode on
+    first transfer — but that failure belongs to the engine and arrives with
+    its own message. This is the attribution: the reason that IndexError exists
+    is a placement, and the placement is written on the model."""
+
+    def __str__(self):
+        return self.value
+
+
 class ModelSpecBase(SQLModel, ModelSource):
     name: str = Field(index=True)
     description: Optional[str] = Field(
@@ -515,6 +1143,26 @@ class ModelSpecBase(SQLModel, ModelSource):
         sa_column=Column(pydantic_column_type(List[LoraListEntry]), nullable=True),
     )
 
+    # Empty `roles` is the backward-compatibility baseline: behaviour is
+    # byte-for-byte unchanged. `roles` without `disaggregation` is plain
+    # multi-role orchestration; both together is PD.
+    roles: Optional[List[RoleSpec]] = Field(
+        default=None,
+        sa_column=Column(pydantic_column_type(List[RoleSpec]), nullable=True),
+    )
+    disaggregation: Optional[DisaggregationSpec] = Field(
+        sa_type=pydantic_column_type(DisaggregationSpec), default=None
+    )
+    # Beside `roles` rather than inside `disaggregation`: gather describes how
+    # far apart the group's *members* may sit, and members come from `roles`.
+    # A role-bearing model without disaggregation is a valid shape (plain
+    # multi-role orchestration), and it wants this just as much. The
+    # deployment form still shows the control in the PD block, which is a
+    # placement decision about the form, not about the field.
+    gather: Optional[GatherSpec] = Field(
+        sa_type=pydantic_column_type(GatherSpec), default=None
+    )
+
     @model_validator(mode="after")
     def set_defaults(self):
         backend = get_backend(self)
@@ -552,6 +1200,59 @@ class Model(ModelBase, BaseModelMixin, table=True):
         ),
     )
     id: Optional[int] = Field(default=None, primary_key=True)
+
+    # Server-owned status. Declared here and on `ModelPublic`, deliberately
+    # *not* on `ModelBase`: `ModelUpdate` inherits `ModelBase`, and the UI
+    # issues whole-object PUTs (start/stop, inline replica edits), so
+    # anything reachable from `ModelBase` gets written back by the client.
+    # `ready_replicas` sits on `ModelSpecBase` for historical reasons and the
+    # frontend has to strip it by hand — don't grow that list.
+    #
+    # One writer only: `sync_model_status` computes all five from a single
+    # scan of the model's instances, in one transaction behind one change
+    # gate. There is no second owner.
+    # String, not sa.Enum — following CacheService.state. A bare
+    # `Optional[ModelStateEnum]` maps to `sa.Enum(name="modelstateenum")`, and
+    # that breaks twice over: asyncpg then renders `$1::modelstateenum` on
+    # every read and write, against a column the migration created as VARCHAR;
+    # and sa.Enum persists member *names*, so the row would hold "RUNNING"
+    # while the API, the enum's own value and the `?state=` filter all say
+    # "running".
+    state: Optional[ModelStateEnum] = Field(
+        default=None, sa_column=Column(String(length=64), nullable=True)
+    )
+    state_message: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    role_status: Optional[Dict[str, RoleStatus]] = Field(
+        default=None,
+        sa_column=Column(pydantic_column_type(Dict[str, RoleStatus]), nullable=True),
+    )
+    stale: Optional[bool] = Field(default=None)
+    """A member's `spec_digest` differs from the model's current one, so the
+    running group predates the config it's shown with. Orthogonal to `state`:
+    a stale group is usually still serving."""
+    degradations: Optional[List[str]] = Field(sa_type=JSON, default=None)
+    """`DegradationReasonEnum` values. A list, because they coexist."""
+    restarting_since: Optional[datetime] = Field(
+        sa_column=Column(UTCDateTime), default=None
+    )
+    """When `POST /{id}/restart` last tore this deployment down, cleared once
+    it is serving again. The window a second restart must be refused in.
+
+    **It exists because the fact is not derivable.** The rows cannot be asked:
+    live members spanning more than one `spec_digest` reads like
+    "mid-replacement" and never happens, because the teardown is synchronous
+    and the reconcile rebuilds from the same target digest, so the two
+    generations are never in the table at once. Without the timestamp, a
+    second click landing while the replacements are still starting deletes
+    exactly those replacements and costs the group another full startup, with
+    nothing in the UI to say why it went back to pending.
+
+    Cleared by `sync_model_status` on reaching RUNNING, and lapsing on its own
+    after `RESTART_IN_FLIGHT_LAPSE_SECONDS`. The lapse is not a tidy-up: a
+    group that never converges is precisely the one an operator needs to
+    restart again, and a guard with no expiry would answer 409 forever."""
 
     instances: list["ModelInstance"] = Relationship(
         sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
@@ -608,6 +1309,16 @@ class ModelPublic(
     id: int
     created_at: datetime
     updated_at: datetime
+    # Read-only status, mirrored from `Model`. Absent from `ModelBase` so
+    # `ModelUpdate` can't accept it — see the note on `Model`.
+    state: Optional[ModelStateEnum] = None
+    state_message: Optional[str] = None
+    role_status: Optional[Dict[str, RoleStatus]] = None
+    stale: Optional[bool] = None
+    degradations: Optional[List[str]] = None
+    # Exposed so the Restart control can be disabled while one is in flight,
+    # rather than letting the click through to a 409 the user has to read.
+    restarting_since: Optional[datetime] = None
     # Populated only by the detail endpoint; None on list responses.
     has_stale_lora_instances: Optional[bool] = None
 
@@ -628,6 +1339,219 @@ class ModelPublic(
 
 
 ModelsPublic = PaginatedList[ModelPublic]
+
+
+class RoleEffectiveModel(ModelBase):
+    """A `Model` as one role sees it — see `role_effective_model`.
+
+    Non-table on purpose, and both reasons are load-bearing:
+
+    * **A projection must never reach the database.** `Model.model_copy()`
+      looks like the obvious way to build one, but the copy *shares the
+      original's* `_sa_instance_state` — it is the same ORM identity, so the
+      projection would sit one session flush away from writing a role's
+      overrides onto the Model row. A non-table class cannot be added to a
+      session at all, so the rule holds by construction rather than by
+      everyone remembering it.
+    * It records the direction of the data: nothing reads a projection back.
+
+    It carries the spec, not the aggregate status: `state` / `role_status` /
+    `degradations` live on `Model` and `ModelPublic` only. A worker or a
+    scheduling pass acting on a model-wide aggregate would be reading the
+    wrong thing anyway.
+    """
+
+    id: Optional[int] = None
+
+    # Deliberately left unhashable, which is what `Model` is too — SQLModel
+    # sets `__hash__ = None` on a table class the same way pydantic does for
+    # any mutable model, and `ModelInstance` has to override it explicitly to
+    # go into a queue. So a projection behaves like the thing it stands in
+    # for, and a reader that starts hashing models fails for both rather than
+    # only for role-bearing deployments.
+
+
+# The RoleSpec fields that describe the role itself rather than override a
+# Model field. Everything else is an override, derived rather than listed so
+# that adding one to RoleSpec cannot silently fail to be projected.
+_ROLE_OWN_FIELDS = frozenset({"name", "dependencies", "resources"})
+
+_ROLE_OVERRIDE_FIELDS = frozenset(RoleSpec.model_fields) - _ROLE_OWN_FIELDS
+
+
+def find_role(model, role_name: Optional[str]) -> Optional[RoleSpec]:
+    """The named role of `model`, or None if it has no roles or no match."""
+    if not role_name:
+        return None
+    for role in model.roles or []:
+        if role.name == role_name:
+            return role
+    return None
+
+
+def servable_instances(model, instances):
+    """The members that can answer a whole request for `model`.
+
+    For a role-bearing group that is the router alone. Every member serves an
+    OpenAI-shaped API on its own port, so handing a request to any of them
+    succeeds — a prefill returns after a single token, a decode runs without
+    the prefix its KV was meant to carry, and both answer 200 with plausible
+    text. Balancing across the group therefore does not fail; it silently
+    answers two thirds of requests wrongly.
+
+    One function, because there are two places that route to an instance — the
+    gateway's upstream registration and the direct proxy — and a rule this
+    consequential must not be able to hold in one and not the other.
+
+    A group with no running router yields nothing rather than falling back to
+    its GPU members: there is no member of a group that can serve alone, so an
+    empty result is the honest answer and the caller reports the group as
+    unavailable.
+    """
+    if not getattr(model, "roles", None):
+        return list(instances)
+    return [
+        instance
+        for instance in instances
+        if getattr(instance, "role", None) == RoleNameEnum.ROUTER.value
+    ]
+
+
+def member_worker_ids(entry) -> List[int]:
+    """Every machine one member occupies, not just the one it is filed under.
+
+    **One reader, because there were four and they disagreed.** A member that
+    spans machines records the extra ones on
+    `distributed_servers.subordinate_workers`; `worker_id` alone is the machine
+    its row is filed under. Everything that asks "where is this member" was
+    reading that one field: the gather floor, the breach report it is meant to
+    be caught by, the pairing-locality sum, and the proximity scorer. So a
+    member on three machines was invisible on two of them to all four —
+    anchoring a floor on the wrong domain, under-reporting the breach, and
+    scoring a candidate against a group it could not fully see.
+
+    Why the whole span and not the primary: a member wide enough to straddle
+    machines holds cards on all of them, so it pairs from all of them. A decode
+    spread over two hosts gives a prefill on either one somewhere local to
+    fetch from, and counting only the primary makes the other host look empty.
+
+    **Duck-typed across the two shapes it is asked of**, because the ledger has
+    to read the same for a member already placed and a member being considered
+    — otherwise scale-out and scale-down stop being inverses. A stored
+    `ModelInstance` carries `worker_id` and keeps its other halves under
+    `distributed_servers`; a fresh `ModelInstanceScheduleCandidate` carries
+    `worker` and `subordinate_workers` directly.
+
+    Reachable today without any cross-node support in the group solver: a
+    scaled-out member goes down the per-instance path with the whole worker
+    list, and `distributed_inference_across_workers` defaults to true for
+    vLLM, SGLang and MindIE.
+
+    Order is the member's own — primary first — because that is the order the
+    ranks are laid out in, and a caller that cares which machine holds rank 0
+    must not have to guess.
+    """
+    primary = getattr(entry, "worker_id", None)
+    if primary is None:
+        worker = getattr(entry, "worker", None)
+        primary = getattr(worker, "id", None) if worker is not None else None
+    out: List[int] = [] if primary is None else [primary]
+
+    subordinates = getattr(entry, "subordinate_workers", None)
+    if subordinates is None:
+        servers = getattr(entry, "distributed_servers", None)
+        subordinates = (
+            getattr(servers, "subordinate_workers", None) if servers else None
+        )
+    for subordinate in subordinates or []:
+        worker_id = getattr(subordinate, "worker_id", None)
+        if worker_id is not None and worker_id not in out:
+            out.append(worker_id)
+    return out
+
+
+def role_takes_no_accelerator(model, role_name: Optional[str]) -> bool:
+    """Whether this role should be placed without claiming any GPU.
+
+    The router, and only the router. It is a proxy — it forwards requests to
+    the members that hold the weights and loads none itself — so this is a
+    property of what the role *is*, and the answer cannot depend on anyone
+    remembering to tick anything. That holds for a router the user brings
+    themselves (image *and* command) too: the only sizing available is
+    `estimate_model_vram`, which returns the model's weights, so giving any
+    router a card would book a proxy at the whole model — leaving it
+    unschedulable beside the prefill and decode it serves.
+    """
+    role = find_role(model, role_name)
+    if role is None:
+        return False
+    return role.name == RoleNameEnum.ROUTER.value
+
+
+def role_container_resources(model, role_name: Optional[str]) -> RoleResources:
+    """CPU and memory for a role that claims no accelerator.
+
+    Returns the declared values where given and the router floor otherwise, so
+    a caller never has to know whether the deployment said anything. Callers
+    that also handle accelerator-bearing roles must gate on
+    `role_takes_no_accelerator` first: this returns the floor for any role
+    name, and applying it to prefill would override what sizing computed.
+    """
+    role = find_role(model, role_name)
+    declared = role.resources if role else None
+    return RoleResources(
+        cpu=(declared.cpu if declared and declared.cpu else ROUTER_DEFAULT_CPU),
+        memory=(
+            declared.memory if declared and declared.memory else ROUTER_DEFAULT_MEMORY
+        ),
+    )
+
+
+def role_effective_model(model, role_name: Optional[str]):
+    """Return `model` with the named role's overrides applied.
+
+    A `RoleSpec` field left as None means "inherit the Model field of the same
+    name". Nothing downstream performs that merge: the worker's start path
+    reads `self._model.<field>` in dozens of places and the scheduler's
+    filters, selectors and scorers read a Model in dozens more, all of them
+    expecting a single set of values. So the merge happens once, here, at the
+    two points where a Model is handed to those readers — `get_model()` on the
+    worker and `find_candidate()` on the server.
+
+    `replicas` is projected too, and unconditionally: it is never None, and
+    for a role-bearing model `Model.replicas` is a 0/1 deployment switch while
+    `roles[].replicas` is the count. Inside these two read paths the role's
+    count is the right answer — it is what decides how many GPUs one replica
+    gets and whether the multi-replica overcommit rule applies. Outside them
+    `Model.replicas` keeps its switch meaning, which is why this projection
+    deliberately does not reach the evaluator's `set_model_gpus_per_replica`:
+    that one writes back.
+
+    Returns `model` itself when there is nothing to project, so a role-less
+    deployment takes byte-for-byte the path it takes today.
+
+    One known edge: `distributed_inference_across_workers` is defaulted from
+    the *Model's* backend by `ModelSpecBase.set_defaults`, which runs before a
+    role's `backend` override is applied. A role that switches engines
+    therefore inherits the Model's value rather than one derived from its own
+    backend. That only arises under `pd_mode=custom`, the one mode that
+    permits a mixed-engine group, and there the user is already supplying the
+    connection state by hand — so set it explicitly on the Model in that case.
+    """
+    role = find_role(model, role_name)
+    if role is None:
+        return model
+
+    projected = RoleEffectiveModel.model_validate(model)
+    for field in _ROLE_OVERRIDE_FIELDS:
+        value = getattr(role, field, None)
+        if value is None:
+            continue
+        # Copy, so that mutating a projected list in place — the worker
+        # substitutes `{data_dir}` into `backend_parameters` that way — cannot
+        # reach back into the role held by `model.roles`.
+        setattr(projected, field, copy.deepcopy(value))
+    return projected
 
 
 # Model Instances
@@ -816,7 +1740,6 @@ class ModelInstanceBase(SQLModel, ModelSource):
             nullable=False,
         ),
     )
-
     mounted_loras: Optional[List[LoraListEntry]] = Field(
         default=None,
         sa_column=Column(pydantic_column_type(List[LoraListEntry]), nullable=True),
@@ -830,6 +1753,57 @@ class ModelInstanceBase(SQLModel, ModelSource):
         distributed_inference_across_workers permission flag."""
         dservers = self.distributed_servers
         return bool(dservers and dservers.subordinate_workers)
+
+    role: Optional[str] = None
+    """Which role of the parent Model this instance serves. None for a plain
+    single-role deployment."""
+    group_id: Optional[str] = Field(default=None, index=True)
+    """Shared by every member of one group. A group is a *generation*, not a
+    replica: one group_id is one `spec_digest`.
+
+    Pairing binds to this rather than to peer addresses because serving ports
+    were measured to change on every rebuild; addresses get resolved when the
+    router config is rendered."""
+    spec_digest: Optional[str] = None
+    """The generation this instance was created from. Differing from the
+    model's current digest is what makes the model `stale`."""
+    named_ports: Optional[Dict[str, PortBand]] = Field(
+        default=None,
+        sa_column=Column(pydantic_column_type(Dict[str, PortBand]), nullable=True),
+    )
+    """Connector ports by declared name. Values are bands, not points."""
+
+    draining_since: Optional[datetime] = Field(
+        sa_column=Column(UTCDateTime), default=None
+    )
+    """Set when scale-down picked this member, cleared if it is kept.
+
+    A prefill cannot be told "stop accepting work and exit once the blocks you
+    hold have been fetched" — the engine has no such shutdown, and waiting for
+    it is upstream WIP. So the wait happens here instead: the member is taken
+    out of the router's registry immediately (`pd_membership.desired_members`
+    skips it) and its container is left running for a window, which is what
+    lets the decodes that are mid-request finish pulling from it.
+
+    **The row is what makes this survive a server restart.** Held in memory,
+    a restart mid-window would leave a member that no router knows about and
+    nothing will ever delete — serving nothing, holding its cards. With the
+    timestamp on the row the reaper picks it up again, and a window that
+    elapsed while the server was down simply reaps on the next pass.
+
+    Clearing it is the rollback, and it needs no second mechanism: the next
+    membership reconcile sees the member as ordinary and re-registers it.
+
+    **`UTCDateTime`, not a bare `datetime`.** The column is TIMESTAMP WITHOUT
+    TIME ZONE and the writer builds `datetime.now(timezone.utc)`, which is
+    aware. SQLite stores that without complaint; asyncpg refuses it outright
+    (`DataError: invalid input for query argument`), and the refusal surfaces
+    as a reconcile that fails after `find_scale_down_candidates` has already
+    picked its victim — so on PostgreSQL every per-role scale-down retried
+    forever and no surplus member was ever taken out of rotation, while
+    `role_status` and `degradations` went on reporting the group as converged.
+    The type strips the zone on the way in and puts UTC back on the way out,
+    which is why every other timestamp on this table already uses it."""
 
     def get_deployment_metadata(
         self,

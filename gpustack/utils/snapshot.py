@@ -62,6 +62,7 @@ def create_model_instance_snapshot(
         ],
         computed_resource_claim=model_instance.computed_resource_claim,
         resolved_path=model_instance.resolved_path,
+        role=getattr(model_instance, "role", None),
         subordinate_workers=subordinate_workers_snapshots,
         backend=model_instance.backend,
         backend_version=model_instance.backend_version,

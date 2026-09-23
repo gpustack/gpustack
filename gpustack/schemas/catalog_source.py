@@ -292,12 +292,32 @@ def build_catalog_entries(sources: List[SourceContent]) -> List[CatalogModelEntr
 async def _pinned_draft_names(session: AsyncSession) -> Dict[str, List[str]]:
     """Every draft model name a live deployment pins, to the models pinning it. A
     model stores the name, not a resolved source, so the catalog entry is what
-    turns it into a repository (``get_draft_model_source``)."""
+    turns it into a repository (``get_draft_model_source``).
+
+    ``speculative_config`` is a per-role override, and a *role* pinning a draft
+    model pins it exactly as hard as the deployment does — the two sides of a
+    disaggregated pair are expected to differ here, so the role is where a draft
+    model is most likely to be named at all. Reading only the Model's value let
+    this answer "nobody pins it" about a name a running decode was about to
+    download, and the reconcile then deleted the catalog entry underneath it.
+    The loss is silent by design downstream: ``get_draft_model_source`` falls
+    back to reading the name as a repository id, so the operator gets a 404
+    naming a repository nobody published and no mention of the catalog.
+    """
     pinned: Dict[str, List[str]] = {}
     for model in await Model.all(session):
-        speculative_config = model.speculative_config
-        if model.replicas > 0 and speculative_config and speculative_config.draft_model:
-            pinned.setdefault(speculative_config.draft_model, []).append(model.name)
+        if model.replicas <= 0:
+            continue
+        configs = [model.speculative_config]
+        configs.extend(role.speculative_config for role in model.roles or [])
+        for speculative_config in configs:
+            if not speculative_config or not speculative_config.draft_model:
+                continue
+            # One deployment named once however many of its roles pin the same
+            # name: the list is read out into a sentence an operator acts on.
+            pinning = pinned.setdefault(speculative_config.draft_model, [])
+            if model.name not in pinning:
+                pinning.append(model.name)
     return pinned
 
 

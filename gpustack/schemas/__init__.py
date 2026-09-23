@@ -133,6 +133,9 @@ from gpustack.schemas.cache_services import (
 from gpustack.schemas.cache_providers import (
     CacheProvider,
 )
+from gpustack.schemas.pd_modes import (
+    PDMode,
+)
 from gpustack.schemas.filesystem import (
     FileExistsResponse,
 )
@@ -346,6 +349,7 @@ __all__ = [
     "CacheServiceStateEnum",
     "CacheConfigSnapshot",
     "CacheProvider",
+    "PDMode",
     "FileExistsResponse",
     "ModelProvider",
     "ModelProviderCreate",

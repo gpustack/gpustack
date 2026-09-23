@@ -149,17 +149,27 @@ class FakeMirror:
         )
 
 
+def _forget_process_memos():
+    for state in (probe._applied_ref, probe._last_refresh_attempt):
+        state.clear()
+    probe._revalidated_since_start = False
+    # The resolved catalog variant is memoized for the life of the process, and
+    # resolving it costs two real HTTP probes. Anything that touched the OFFICIAL
+    # catalog path earlier in the session — a routes test, say — leaves that memo
+    # primed off the network this machine happened to have, which the ``mirror``
+    # fixture's stand-in then cannot displace. Drop it too, so the stand-in is
+    # what answers and no round rides on reachability.
+    probe._packaged_catalog_filename.cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def forget_refresh_state():
-    """The applied-ref memo, the due tracker and the "revalidated yet" flag stand
-    in for a process lifetime; no test may inherit another's."""
-    for state in (probe._applied_ref, probe._last_refresh_attempt):
-        state.clear()
-    probe._revalidated_since_start = False
+    """The applied-ref memo, the due tracker, the "revalidated yet" flag and the
+    resolved catalog variant stand in for a process lifetime; no test may inherit
+    another's."""
+    _forget_process_memos()
     yield
-    for state in (probe._applied_ref, probe._last_refresh_attempt):
-        state.clear()
-    probe._revalidated_since_start = False
+    _forget_process_memos()
 
 
 @pytest.fixture
