@@ -151,7 +151,7 @@ class RoutePrefix:
         for versioned_prefix in versioned_prefixes:
             for prefix in self.prefixes:
                 flattened.append(f"{versioned_prefix}{prefix}")
-        if self.strip_version:
+        if getattr(self, "strip_version", False):
             # Bare (unversioned) forms must also reach the gateway plugin
             # path whitelists so routing headers are injected for them.
             flattened.extend(self.prefixes)
@@ -162,15 +162,12 @@ class RoutePrefix:
         Returns regex patterns for the prefixes, considering versioning and legacy support.
         It supports removing -openai suffix from the versioned prefix with rewrite-target: /$1$3
         """
-        if self.strip_version:
+        if getattr(self, "strip_version", False):
             # Three capture groups for the global rewrite-target /$1$3:
             # $1 always empty, /v1 optional non-capturing, $2 optional slash,
             # $3 bare endpoint name. Both /v1/tokenize and /tokenize then
             # rewrite to the bare path the upstream (e.g. vLLM) actually serves.
-            return [
-                f"/()(?:v1)?(/)?({prefix.lstrip('/')})"
-                for prefix in self.prefixes
-            ]
+            return [f"/()(?:v1)?(/)?({prefix.lstrip('/')})" for prefix in self.prefixes]
         versioned_prefixes = [f"/(v1){'(-openai)?' if self.support_legacy else '()'}"]
         if self.additional_versions:
             versioned_prefixes.extend(
@@ -1367,11 +1364,11 @@ async def mirror_from_anchor_ingress(
 
 
 MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX = [
-# Explicit enableOnPathSuffix for the gpustack-model-mapper wasm plugin. When
-# present in a match-rule config it overrides the plugin's built-in defaults
-# (which lack the unversioned vLLM tokenize endpoints). The first 14 entries
-# mirror those defaults verbatim; the last two extend alias rewriting to the
-# new tokenize/detokenize paths.
+    # Explicit enableOnPathSuffix for the gpustack-model-mapper wasm plugin. When
+    # present in a match-rule config it overrides the plugin's built-in defaults
+    # (which lack the unversioned vLLM tokenize endpoints). The first 14 entries
+    # mirror those defaults verbatim; the last two extend alias rewriting to the
+    # new tokenize/detokenize paths.
     "/completions",
     "/embeddings",
     "/images/generations",
