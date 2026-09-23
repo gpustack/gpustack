@@ -139,6 +139,7 @@ class RoutePrefix:
     prefixes: List[str]
     support_legacy: bool = False
     additional_versions: Optional[List[str]] = None
+    strip_version: bool = False
 
     def flattened_prefixes(self) -> List[str]:
         versioned_prefixes = ["/v1"]
@@ -150,6 +151,10 @@ class RoutePrefix:
         for versioned_prefix in versioned_prefixes:
             for prefix in self.prefixes:
                 flattened.append(f"{versioned_prefix}{prefix}")
+        if getattr(self, "strip_version", False):
+            # Bare (unversioned) forms must also reach the gateway plugin
+            # path whitelists so routing headers are injected for them.
+            flattened.extend(self.prefixes)
         return flattened
 
     def regex_prefixes(self) -> List[str]:
@@ -157,6 +162,15 @@ class RoutePrefix:
         Returns regex patterns for the prefixes, considering versioning and legacy support.
         It supports removing -openai suffix from the versioned prefix with rewrite-target: /$1$3
         """
+        if getattr(self, "strip_version", False):
+            # Three capture groups for the global rewrite-target /$1$3:
+            # $1 always empty, /v1 optional non-capturing, $2 optional slash,
+            # $3 bare endpoint name. Both /v1/tokenize and /tokenize then
+            # rewrite to the bare path the upstream (e.g. vLLM) actually serves.
+            return [
+                f"/()(?:v1)?(/)?({prefix.lstrip('/')})"
+                for prefix in self.prefixes
+            ]
         versioned_prefixes = [f"/(v1){'(-openai)?' if self.support_legacy else '()'}"]
         if self.additional_versions:
             versioned_prefixes.extend(
@@ -194,6 +208,9 @@ openai_model_prefixes: List[RoutePrefix] = [
         ]
     ),
     RoutePrefix(["/rerank"], additional_versions=["/v2"]),
+    # vLLM serves /tokenize & /detokenize at the ROOT path (no /v1 prefix);
+    # strip_version rewrites both request forms down to the bare path.
+    RoutePrefix(["/tokenize", "/detokenize"], strip_version=True),
 ]
 
 anthropic_model_exact: List[RoutePrefix] = [
@@ -1349,6 +1366,31 @@ async def mirror_from_anchor_ingress(
     )
 
 
+MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX = [
+# Explicit enableOnPathSuffix for the gpustack-model-mapper wasm plugin. When
+# present in a match-rule config it overrides the plugin's built-in defaults
+# (which lack the unversioned vLLM tokenize endpoints). The first 14 entries
+# mirror those defaults verbatim; the last two extend alias rewriting to the
+# new tokenize/detokenize paths.
+    "/completions",
+    "/embeddings",
+    "/images/generations",
+    "/images/edits",
+    "/audio/speech",
+    "/audio/transcriptions",
+    "/audio/translations",
+    "/fine_tuning/jobs",
+    "/moderations",
+    "/image-synthesis",
+    "/video-synthesis",
+    "/rerank",
+    "/messages",
+    "/responses",
+    "/tokenize",
+    "/detokenize",
+]
+
+
 def get_expected_match_list(
     route_name: str,
     ingress_prefix: str,
@@ -1359,7 +1401,10 @@ def get_expected_match_list(
     match_list: List[WasmPluginMatchRule] = []
     ingress_name = f"{ingress_prefix}{ingress_name}"
     for model_name, service_names in model_name_to_registries.items():
-        config = {"modelMapping": {route_name: model_name}}
+        config = {
+            "modelMapping": {route_name: model_name},
+            "enableOnPathSuffix": MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX,
+        }
         match_list.append(
             WasmPluginMatchRule(
                 config=config,
@@ -1372,7 +1417,10 @@ def get_expected_match_list(
         # the fallback mapping should include both normal ingress and fallback ingress
         # as the normal ingress may not exist when only fallback model is set
         fallback_name = fallback_ingress_name(ingress_name)
-        config = {"modelMapping": {route_name: model_name}}
+        config = {
+            "modelMapping": {route_name: model_name},
+            "enableOnPathSuffix": MODEL_MAPPER_ENABLE_ON_PATH_SUFFIX,
+        }
         match_list.append(
             WasmPluginMatchRule(
                 config=config,
