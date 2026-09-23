@@ -22,6 +22,7 @@ from gpustack.server.bus import Event, EventType
 from gpustack.worker.serve_manager import (
     _LOG_TAIL_CHUNK_SIZE,
     ServeManager,
+    is_ready,
     _describe_workload_failure,
     _LogPersistence,
     _tail_lines,
@@ -74,7 +75,7 @@ def _get_workload_sequence(states):
     the reconnect loop forever."""
     remaining = list(states)
 
-    def next_state(name):
+    def next_state(name, **kwargs):
         return remaining.pop(0) if len(remaining) > 1 else remaining[0]
 
     return next_state
@@ -1489,3 +1490,210 @@ def test_sync_vgpu_allocation_steady_state_skips_worker_fetch():
         manager.sync_model_instances_state()
 
     clientset.workers.get.assert_not_called()
+
+
+# --- inference health probe: which member of a group answers for it -------- #
+
+
+def _group_model():
+    """A 1P1D group with a managed router, as the worker sees the Model row."""
+    from gpustack.schemas.models import DisaggregationSpec, PDModeEnum, RoleSpec
+    from gpustack.server.pd_mode_catalog import load_pd_modes
+
+    load_pd_modes()
+    model = new_model(
+        1,
+        "qwen3-0.6b",
+        1,
+        huggingface_repo_id="Qwen/Qwen3-0.6B",
+        backend=BackendEnum.VLLM,
+    )
+    model.roles = [
+        RoleSpec(name="prefill", replicas=1),
+        RoleSpec(name="decode", replicas=1),
+        RoleSpec(name="router", replicas=1),
+    ]
+    model.disaggregation = DisaggregationSpec(mode=PDModeEnum.VLLM_NIXL)
+    model.env = {"GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED": "true"}
+    return model
+
+
+def _member(instance_id: int, role: str):
+    mi = new_model_instance(
+        instance_id,
+        f"qwen3-{role}",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.RUNNING,
+    )
+    mi.role = role
+    return mi
+
+
+def test_an_engine_role_is_probed_but_not_with_a_real_request():
+    """Every RUNNING member needs an answer — the readiness probe is asked once
+    on the way into RUNNING and never again, so this is the only thing that
+    finds an engine that is listening and no longer answering.
+
+    A prefill and a decode get the cheap question: the same GET the readiness
+    probe uses. Measured on a live 1P1D, each answers a chat completion on its
+    own in ~0.1s, so a real request there costs a generation and the KV cache
+    behind it and still only reports on that member."""
+    manager, _ = _build_serve_manager()
+    model = _group_model()
+
+    members = {
+        "prefill": _member(1, "prefill"),
+        "decode": _member(2, "decode"),
+        "router": _member(3, "router"),
+    }
+    for mi in members.values():
+        manager._model_instance_by_instance_id[mi.id] = mi
+        manager._model_cache_by_instance[mi.id] = model
+
+    inferred, probed = [], []
+    with (
+        patch(
+            "gpustack.worker.serve_manager.is_inference_ready",
+            side_effect=lambda mi, m, timeout=15: inferred.append(mi.role) or True,
+        ),
+        patch(
+            "gpustack.worker.serve_manager.is_ready",
+            side_effect=lambda b, mi, p=None, m=None, timeout=1: (
+                probed.append(mi.role) or True
+            ),
+        ),
+    ):
+        manager.sync_model_instances_inference_health()
+
+    # The router carries the real request: it is where a request meets both
+    # roles, so its answer covers the KV path between them.
+    assert inferred == ["router"]
+    # The engine roles are still checked, just not with a generation.
+    assert sorted(probed) == ["decode", "prefill"]
+
+
+def test_an_engine_role_that_stops_answering_is_marked_error():
+    """The failure this exists for: the container is healthy, the process is
+    alive, and the server behind it has stopped answering. Nothing else in the
+    worker notices that on a member that already reached RUNNING."""
+    manager, _ = _build_serve_manager()
+    model = _group_model()
+    model.env["GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD"] = "1"
+
+    prefill = _member(1, "prefill")
+    manager._model_instance_by_instance_id[prefill.id] = prefill
+    manager._model_cache_by_instance[prefill.id] = model
+
+    with (
+        patch("gpustack.worker.serve_manager.is_ready", return_value=False),
+        patch.object(manager, "_update_model_instance") as update,
+    ):
+        manager.sync_model_instances_inference_health()
+
+    update.assert_called_once()
+    assert update.call_args.kwargs["state"] == ModelInstanceStateEnum.ERROR
+
+
+def test_a_role_less_instance_is_still_probed():
+    """The rule keys off the role, so a plain deployment is untouched."""
+    manager, _ = _build_serve_manager()
+    model = new_model(
+        1,
+        "qwen3-0.6b",
+        1,
+        huggingface_repo_id="Qwen/Qwen3-0.6B",
+        backend=BackendEnum.VLLM,
+    )
+    model.env = {"GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED": "true"}
+
+    mi = new_model_instance(
+        1, "plain", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+    manager._model_instance_by_instance_id[mi.id] = mi
+    manager._model_cache_by_instance[mi.id] = model
+
+    probed = []
+    with patch(
+        "gpustack.worker.serve_manager.is_inference_ready",
+        side_effect=lambda mi, m, timeout=15: probed.append(mi.name) or True,
+    ):
+        manager.sync_model_instances_inference_health()
+
+    assert probed == ["plain"]
+
+
+def test_the_managed_router_is_not_skipped_as_a_custom_backend():
+    """The router is only *launched* as a custom backend; it serves the group's
+    OpenAI API, which is precisely what this probe calls. Reading it as "custom,
+    so there is no standard API" would skip the one member worth probing."""
+    from gpustack.worker.pd_router import apply_managed_router
+    from gpustack.worker.serve_manager import is_inference_ready
+
+    projected = apply_managed_router(_group_model(), "router")
+    assert projected.backend == BackendEnum.CUSTOM
+
+    router = _member(3, "router")
+    router.worker_ip = "192.168.13.3"
+    router.port = 40054
+
+    with patch("gpustack.worker.serve_manager.requests.post") as post:
+        post.return_value = SimpleNamespace(status_code=200)
+        assert is_inference_ready(router, projected) is True
+
+    assert post.called, "a managed router must actually be probed"
+    assert post.call_args[0][0].endswith("/v1/chat/completions")
+
+
+def test_a_genuinely_custom_backend_is_still_skipped():
+    """Nothing here claims to know what a user's own binary serves."""
+    from gpustack.worker.serve_manager import is_inference_ready
+
+    model = new_model(
+        1,
+        "custom-thing",
+        1,
+        huggingface_repo_id="org/repo",
+        backend=BackendEnum.CUSTOM,
+    )
+    mi = new_model_instance(
+        1, "custom-thing", 1, worker_id=1, state=ModelInstanceStateEnum.RUNNING
+    )
+
+    with patch("gpustack.worker.serve_manager.requests.post") as post:
+        assert is_inference_ready(mi, model) is True
+    assert not post.called
+
+
+def test_the_probe_does_not_inherit_the_readiness_timeout():
+    """One second suits a member on its way into RUNNING, where a slow answer
+    costs another pass. Here a failure retires the member, so the probe carries
+    its own patience — a busy engine answering late is working, not broken."""
+    manager, _ = _build_serve_manager()
+    model = _group_model()
+    model.env["GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_TIMEOUT"] = "20"
+
+    prefill = _member(1, "prefill")
+    manager._model_instance_by_instance_id[prefill.id] = prefill
+    manager._model_cache_by_instance[prefill.id] = model
+
+    with patch("gpustack.worker.serve_manager.is_ready", return_value=True) as ready:
+        manager.sync_model_instances_inference_health()
+
+    assert ready.call_args.kwargs["timeout"] == 20
+
+
+def test_readiness_keeps_its_own_fast_timeout():
+    """The polling caller is unchanged: it is asked every pass and a slow
+    answer there is free."""
+    mi = new_model_instance(
+        1, "plain", 1, worker_id=1, state=ModelInstanceStateEnum.STARTING
+    )
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.return_value = SimpleNamespace(status_code=200)
+        assert is_ready(BackendEnum.VLLM, mi) is True
+
+    assert get.call_args.kwargs["timeout"] == 1
