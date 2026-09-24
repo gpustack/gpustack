@@ -159,8 +159,7 @@ async def _fake_inference_server(handler):
         await runner.cleanup()
 
 
-@asynccontextmanager
-async def _worker_client(port: int, instance_id: Optional[int] = None):
+def _build_worker_app(port: int, instance_id: Optional[int] = None) -> FastAPI:
     app = FastAPI()
     register_handlers(app)
     app.include_router(worker_proxy.router)
@@ -177,6 +176,12 @@ async def _worker_client(port: int, instance_id: Optional[int] = None):
             request.state.x_target_instance_id = instance_id
         return await call_next(request)
 
+    return app
+
+
+@asynccontextmanager
+async def _worker_client(port: int, instance_id: Optional[int] = None):
+    app = _build_worker_app(port, instance_id)
     async with ClientSession() as session:
         app.state.http_client = session
         app.state.http_client_no_proxy = session
@@ -432,3 +437,224 @@ def test_defaults_are_ordered():
     ceiling, would make the segmentation meaningless."""
     assert envs.PROXY_STREAM_IDLE_TIMEOUT <= envs.PROXY_TTFT_TIMEOUT
     assert envs.PROXY_TTFT_TIMEOUT <= envs.PROXY_TIMEOUT
+
+
+async def _watch_for_upstream_close(request, closed: asyncio.Event, sse: bool):
+    """Fake engine: keeps "generating" until its client connection closes.
+
+    This is how vLLM decides to abort: it notices that the connection from the
+    proxy has closed. ``closed`` is set when that happens.
+    """
+    if sse:
+        # Headers committed before prefill, as vLLM does, but no token yet.
+        resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+    for _ in range(int(STALL / 0.02)):
+        if request.transport is None or request.transport.is_closing():
+            closed.set()
+            break
+        await asyncio.sleep(0.02)
+    return web.Response()
+
+
+async def _call_then_disconnect(
+    app: FastAPI, body: bytes, disconnect_after: float, chunked: bool = False
+):
+    """Drive the ASGI app directly with a client that sends its request and
+    then goes away, the way a user cancelling a generation does."""
+    if chunked:
+        half = len(body) // 2
+        messages = [
+            {"type": "http.request", "body": body[:half], "more_body": True},
+            {"type": "http.request", "body": body[half:], "more_body": False},
+        ]
+        framing = (b"transfer-encoding", b"chunked")
+    else:
+        messages = [{"type": "http.request", "body": body, "more_body": False}]
+        framing = (b"content-length", str(len(body)).encode())
+
+    async def receive():
+        if messages:
+            return messages.pop(0)
+        await asyncio.sleep(disconnect_after)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        pass
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/chat/completions",
+        "raw_path": b"/v1/chat/completions",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"worker"),
+            (b"content-type", b"application/json"),
+            framing,
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 80),
+    }
+    await app(scope, receive, send)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stream, chunked",
+    [
+        # vLLM sends nothing for a non-streaming request until generation is
+        # done, so the whole generation used to run for a departed client.
+        (False, False),
+        # Same gap for a stream still queued or in prefill: no first chunk yet.
+        (True, False),
+        # A chunked upload is streamed to the upstream; the disconnect watch
+        # must start once it has been read, not before.
+        (False, True),
+    ],
+    ids=["non_streaming", "streaming_before_first_token", "chunked_upload"],
+)
+async def test_client_disconnect_before_response_closes_upstream(stream, chunked):
+    """A client that disconnects before the response starts must make the proxy
+    close its upstream connection promptly, so the engine aborts the request
+    and frees the GPU instead of finishing a generation nobody will read."""
+    closed = asyncio.Event()
+
+    async def handler(request):
+        return await _watch_for_upstream_close(request, closed, sse=stream)
+
+    body = json.dumps({"stream": stream}).encode()
+    async with _fake_inference_server(handler) as port:
+        app = _build_worker_app(port)
+        async with ClientSession() as session:
+            app.state.http_client = session
+            app.state.http_client_no_proxy = session
+            await asyncio.wait_for(
+                _call_then_disconnect(app, body, disconnect_after=0.1, chunked=chunked),
+                timeout=STALL,
+            )
+            # Well under STALL: the fake engine would otherwise run it out.
+            await asyncio.wait_for(closed.wait(), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_chunked_upload_is_streamed_to_upstream(tight_budgets):
+    """A chunked request body reaches the upstream intact. The branch handling
+    it used to be unreachable, which sent every body through request.body()."""
+    received = {}
+
+    async def handler(request):
+        received["body"] = await request.read()
+        received["transfer_encoding"] = request.headers.get("Transfer-Encoding")
+        return web.json_response({"id": "done"})
+
+    async def upload():
+        yield b'{"stream": '
+        yield b"false}"
+
+    async with _fake_inference_server(handler) as port:
+        async with _worker_client(port) as (client, _):
+            resp = await client.post(
+                "/v1/chat/completions",
+                content=upload(),
+                headers={"content-type": "application/json"},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"id": "done"}
+    assert received["body"] == b'{"stream": false}'
+    assert received["transfer_encoding"] == "chunked"
+
+
+class _ScriptedReceive:
+    """Stands in for a Request in _cancel_on_client_disconnect: only
+    ``receive`` is used."""
+
+    def __init__(self, receive):
+        self.receive = receive
+
+
+def _consumed() -> asyncio.Event:
+    event = asyncio.Event()
+    event.set()
+    return event
+
+
+class TestCancelOnClientDisconnect:
+    @pytest.mark.asyncio
+    async def test_result_is_returned_while_client_stays(self):
+        async def never_disconnects():
+            await asyncio.sleep(STALL)
+
+        async def work():
+            return "upstream"
+
+        result = await worker_proxy._cancel_on_client_disconnect(
+            _ScriptedReceive(never_disconnects), work(), _consumed(), discard=None
+        )
+        assert result == "upstream"
+
+    @pytest.mark.asyncio
+    async def test_result_finishing_with_the_disconnect_is_discarded(self):
+        """The watcher has consumed the disconnect, so nothing downstream would
+        notice it: the finished result must be released, not relayed."""
+        discarded = []
+
+        async def disconnects_at_once():
+            return {"type": "http.disconnect"}
+
+        async def work():
+            return "upstream"
+
+        with pytest.raises(worker_proxy._ClientDisconnected):
+            await worker_proxy._cancel_on_client_disconnect(
+                _ScriptedReceive(disconnects_at_once),
+                work(),
+                _consumed(),
+                discard=discarded.append,
+            )
+        assert discarded == ["upstream"]
+
+    @pytest.mark.asyncio
+    async def test_watcher_failure_propagates_instead_of_disconnect(self):
+        cancelled = asyncio.Event()
+
+        async def fails():
+            raise RuntimeError("receive failed")
+
+        async def work():
+            try:
+                await asyncio.sleep(STALL)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        with pytest.raises(RuntimeError, match="receive failed"):
+            await worker_proxy._cancel_on_client_disconnect(
+                _ScriptedReceive(fails), work(), _consumed(), discard=None
+            )
+        assert cancelled.is_set()
+
+    @pytest.mark.asyncio
+    async def test_no_listening_before_body_is_consumed(self):
+        """Receiving early would steal body messages from the upload."""
+        received = []
+        body_consumed = asyncio.Event()
+
+        async def receive():
+            received.append(True)
+            return {"type": "http.disconnect"}
+
+        async def work():
+            await asyncio.sleep(0.1)
+            return "upstream"
+
+        result = await worker_proxy._cancel_on_client_disconnect(
+            _ScriptedReceive(receive), work(), body_consumed, discard=None
+        )
+        assert result == "upstream"
+        assert received == []
