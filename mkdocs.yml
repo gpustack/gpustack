@@ -148,6 +148,7 @@ nav:
           - Installation via Docker: installation/installation.md
           - Installation via Helm: installation/helm.md
           - Air-Gapped Installation: installation/air-gapped.md
+          - Behind a Reverse Proxy: installation/reverse-proxy.md
           - Uninstallation: installation/uninstallation.md
       - Upgrade:
           - Upgrade via Docker: upgrade/docker.md
