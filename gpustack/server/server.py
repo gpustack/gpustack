@@ -1270,6 +1270,7 @@ class Server:
                     providers=providers,
                     models=models,
                     k8s_config=get_async_k8s_config(cfg=self.config),
+                    cfg=self.config,
                 )
                 return
             except Exception:

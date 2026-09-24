@@ -4339,6 +4339,7 @@ async def sync_model_ai_proxy(
             expected_providers=expected_providers,
             expected_match_rules=expected_match_rules,
             owned_provider_ids=owned_provider_ids,
+            cfg=cfg,
         ),
     )
 
@@ -6502,6 +6503,7 @@ class ModelProviderController:
                         expected_providers=provider_config_list,
                         expected_match_rules=match_rules,
                         operating_id_prefix=mcp_handler.provider_id_prefix,
+                        cfg=self._config,
                     ),
                 )
         except Exception as e:
