@@ -442,18 +442,14 @@
     # a hybrid model (Mamba or linear-attention layers beside full
     # attention) on the unified-group path, where the two layer kinds have
     # no common cache spec and the engine fails to start.
-    # That hybrid support belongs to the `lmcache` build inside the engine
-    # image, not to the name written here. vLLM resolves `LMCacheMPConnector`
-    # at import: the package's own class when it imports, and otherwise a
-    # builtin fallback that does NOT declare SupportsHMA and refuses to run
-    # with the hybrid manager on. On an image that falls back, vLLM turns the
-    # hybrid manager off by itself for whichever member carries the cache —
-    # which is also what makes that member's NIXL compatibility hash differ
-    # from a member without one, since the hash covers is_hma_enabled. The
-    # engine log says which branch was taken ("Using external
+    # That support comes from the `lmcache` build inside the engine image,
+    # not from the name written here: without it vLLM resolves a builtin
+    # that does not declare SupportsHMA and turns the hybrid manager off
+    # for the member holding the cache. The NIXL compatibility hash covers
+    # is_hma_enabled, so that member stops pairing with one that has no
+    # cache, and PD pairing fails on a configuration that looks correct.
+    # The engine log names the branch taken ("Using external
     # LMCacheMPConnector" vs "falling back to builtin implementation").
-    # Nothing on the platform checks this today; the integration `versions`
-    # below constrain the engine, not the package inside its image.
     # Engines attach node-local only (the per_node resolver degrades
     # instead of crossing nodes:
     # the engine-driven copy path measures slower than no cache at all),
