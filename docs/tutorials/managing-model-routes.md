@@ -60,6 +60,9 @@ provides.
 
 1. Enable **Generic Proxy** on the model route (toggle in the route
    settings).
+   > [!NOTE]
+   > Managing model routes (and calling the generic proxy) requires an API
+   > key with route-management permission, not a plain inference key.
 2. Get the route id:
 
    ```bash
@@ -75,8 +78,12 @@ provides.
    curl -X POST http://<gpustack_server_url>/model/proxy/<route-id>/tokenize \
      -H "Authorization: Bearer <api-key>" \
      -H "Content-Type: application/json" \
-     -d '{"model": "<model-name>", "messages": [{"role": "user", "content": "hello"}]}'
-   # → {"count": 13, "max_model_len": 1048576, "tokens": [...]}
+     -d '{"model": "<model-name>", "prompt": "hello"}'
+   # → {"count": 2, "max_model_len": 1048576, "tokens": [...]}
+   #
+   # Note: the root-path /tokenize endpoint expects a `prompt` string.
+   # (vLLM's versioned /v1/tokenize variant accepts a `messages` array instead —
+   # handy if your harness already holds a chat-style payload.)
    ```
 
 This is handy for **context-window preflight**: compute the exact prompt
