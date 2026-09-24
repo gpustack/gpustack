@@ -101,13 +101,15 @@ def setup_reload_config_cmd(subparsers: argparse._SubParsersAction):
 
 def run(args):
     try:
-        logger.info("Starting configuration reload...")
-        logger.info(f"GPUStack version: {__version__} ({__git_commit__})")
         if handle_list_mode(args):
             return
 
         config_data = get_filtered_config_data(args, {})
         cfg = Config(**config_data)
+        setup_logging(cfg.debug)
+        logger.info("Starting configuration reload...")
+        logger.info(f"GPUStack version: {__version__} ({__git_commit__})")
+
         payload = build_runtime_update_payload(cfg, config_data)
         if not payload:
             logger.info(
@@ -115,7 +117,6 @@ def run(args):
             )
             return
 
-        setup_logging(cfg.debug)
         apply_runtime_updates(payload, args)
         display_config_summary(payload)
 

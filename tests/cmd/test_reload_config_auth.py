@@ -185,7 +185,11 @@ def test_reload_config_payload_keeps_explicit_false_boolean(monkeypatch, tmp_pat
 
 def test_reload_config_skips_empty_runtime_update(monkeypatch, tmp_path):
     monkeypatch.setenv("GPUSTACK_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(reload_config, "setup_logging", lambda debug: None)
+    events = []
+    monkeypatch.setattr(
+        reload_config, "setup_logging", lambda debug: events.append("setup_logging")
+    )
+    monkeypatch.setattr(reload_config.logger, "info", events.append)
     monkeypatch.setattr(
         reload_config,
         "apply_runtime_updates",
@@ -193,6 +197,11 @@ def test_reload_config_skips_empty_runtime_update(monkeypatch, tmp_path):
     )
 
     reload_config.run(argparse.Namespace(file=None, set=None, list=False))
+
+    assert events[0] == "setup_logging"
+    assert events[-1] == (
+        "No whitelisted configuration changes supplied; nothing to reload."
+    )
 
 
 # ---------------------------------------------------------------------------
