@@ -454,7 +454,7 @@ class ServeManager:
         # {model_instance_id: failure_count}
         self._inference_health_check_failures: Dict[int, int] = {}
 
-        # Track last successful inference per port (set by worker proxy)
+        # Track last successful inference per model instance (set by worker proxy)
         self._last_successful_inference: Dict[int, float] = {}
         # Track last health check time per model instance
         self._last_health_check_time: Dict[int, float] = {}

@@ -410,14 +410,19 @@ class RestartTracker:
         return self._is_looping(instance_id, now)
 
     def _is_looping(self, instance_id: int, now: datetime) -> bool:
-        if self._served.get(instance_id):
-            return False
         stamps = self._restarts.get(instance_id)
         if not stamps:
             return False
+        # Trimmed before the latch is read, not after it has already answered.
+        # A member that served and then restarts forever keeps being recorded
+        # -- `observe_restart_count` does not know about the latch -- so
+        # returning here first left one deque growing for as long as the
+        # instance lived. Trimming costs nothing and bounds it by the window.
         cutoff = now - self._window
         while stamps and stamps[0] < cutoff:
             stamps.popleft()
+        if self._served.get(instance_id):
+            return False
         return len(stamps) >= self._threshold
 
     def forget(self, instance_id: int) -> None:
