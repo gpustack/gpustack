@@ -261,6 +261,9 @@ class _FakeModelInstance:
         self.ports = [40034]
         # Non-None keeps aggregate() from probing the backend over HTTP.
         self.api_detected_backend_version = "0.6.18"
+        # Read by _build_base_labels for the disaggregation role label; a
+        # missing attribute would skip the whole endpoint's metrics.
+        self.role = None
 
 
 class _FakeModel:
