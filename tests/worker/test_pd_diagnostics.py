@@ -41,7 +41,7 @@ def test_the_root_cause_beats_the_exception_that_escaped():
     found = diagnose(log)
 
     assert found.signature == "NIXL_ERR_BACKEND"
-    assert "kv_ifname" in found.summary
+    assert "kv_transfer_ifname" in found.summary
 
 
 def test_the_earliest_signature_wins_over_a_later_one():
@@ -93,7 +93,7 @@ def test_the_measured_zmq_error_is_recognised():
     found = diagnose("ZMQError: No such device (addr='tcp://{{worker_ip}}:5600')")
 
     assert found is not None
-    assert "kv_ifname" in found.summary or "placeholder" in found.summary
+    assert "kv_transfer_ifname" in found.summary or "placeholder" in found.summary
 
 
 def test_an_unrendered_placeholder_is_named():

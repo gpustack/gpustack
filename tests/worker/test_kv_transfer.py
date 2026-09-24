@@ -270,3 +270,34 @@ def test_the_shipped_catalog_declares_the_policy_as_top_level_only():
     from gpustack.server.pd_mode_catalog import get_composed_cache
 
     assert tuple(get_composed_cache("vLLM").top_level_only) == LIFTED
+
+
+def test_the_equals_spelling_merges_like_the_spaced_one():
+    """Both spellings reach this, because the two assemblers need not agree.
+
+    `pd_injection` stands down when the role writes `--kv-transfer-config=<json>`
+    and the cache still injects the spaced form, so a pair looking like one
+    descriptor meant no merge — argparse then kept the last and one connector
+    was silently gone.
+    """
+    merged = compose_kv_transfer_config(
+        [
+            "vllm",
+            "serve",
+            "/m",
+            f'{KV_TRANSFER_CONFIG_FLAG}={{"kv_connector":"Mine"}}',
+            "--max-model-len",
+            "8192",
+            KV_TRANSFER_CONFIG_FLAG,
+            '{"kv_connector":"CacheConnector"}',
+        ],
+        "prefill",
+    )
+
+    positions = [i for i, t in enumerate(merged) if t == KV_TRANSFER_CONFIG_FLAG]
+    assert len(positions) == 1, merged
+    composed = json.loads(merged[positions[0] + 1])
+    assert composed["kv_connector"] == "MultiConnector", composed
+    # The token after the `=` form must survive: dropping a fixed two tokens
+    # per position would have eaten it.
+    assert "--max-model-len" in merged and "8192" in merged, merged

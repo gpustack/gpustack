@@ -637,7 +637,7 @@ class InferenceServer(ABC):
         recipe silently falls off.
 
         Every failure to answer degrades to `data`, the stricter plane: an
-        unreadable catalog then costs an operator one `kv_ifname` on a
+        unreadable catalog then costs an operator one `kv_transfer_ifname` on a
         multi-NIC host, where the reverse default would put KV bytes on the
         management NIC without saying so.
         """
@@ -661,8 +661,8 @@ class InferenceServer(ABC):
         return PDNetDevicePlaneEnum.DATA
 
     def _pd_template_variables(self) -> Dict[str, object]:
-        """The two placeholders only this layer can resolve: the KV-plane NIC
-        and the runner image.
+        """The two placeholders only this layer can resolve: the `{{net_device}}`
+        NIC and the runner image.
 
         Both are read tolerantly. An unresolvable one is left out of the
         context so its placeholder survives into the launch with a warning,
@@ -674,16 +674,21 @@ class InferenceServer(ABC):
 
         net_device = None
         try:
-            # Imported where it is used: only a PD member ever needs a KV-plane
-            # NIC, and every other backend start on this worker should be
-            # unaffected by whether this module resolves.
+            # Imported where it is used: only a PD member ever needs a
+            # `{{net_device}}` value, and every other backend start on this
+            # worker should be unaffected by whether this module resolves.
             from gpustack.worker.net_device import derive_net_device
 
             net_device = derive_net_device(
                 self._worker, self._config, self._net_device_plane()
             )
         except Exception as e:
-            logger.warning(f"Failed to derive the KV-plane network device: {e}")
+            # Named for the placeholder rather than for what rides it. The
+            # plane is the mode's to declare: on a `control` recipe the NIC
+            # this resolves carries the handshake only, and the KV bytes go
+            # over the cards' own RoCE ports, which the host stack never
+            # sees. Calling it the KV NIC there names the one thing it is not.
+            logger.warning(f"Failed to derive the {{net_device}} interface: {e}")
         if net_device:
             variables["net_device"] = net_device
 
@@ -744,6 +749,12 @@ class InferenceServer(ABC):
         """The PD role's engine arguments, or an empty list."""
         injection = self._pd_injection()
         return list(injection.args) if injection else []
+
+    def _parameter_format(self) -> Optional[ParameterFormatEnum]:
+        """The shape this backend wants `--key value` clusters written in."""
+        if not self.inference_backend:
+            return None
+        return getattr(self.inference_backend, "parameter_format", None)
 
     def _get_configured_env(self, **kwargs) -> Dict[str, str]:
         """
@@ -1538,7 +1549,16 @@ exec "$@"
         # off first, or connector state GPUStack injected is reported as the
         # user's own — and the deployment view is where a user goes to find out
         # what GPUStack added.
+        # Through the same normalization the prefix went through on the way in.
+        # `_flatten_backend_param` prepends these tokens and then reshapes the
+        # whole stream to the backend's `parameter_format`, so under `EQUAL` the
+        # pair `--kv-transfer-config {json}` reaching the caller is the single
+        # token `--kv-transfer-config={json}` and the raw pair no longer matches
+        # the head of it.
         pd_arguments = self._pd_arguments()
+        parameter_format = self._parameter_format()
+        if pd_arguments and parameter_format is not None:
+            pd_arguments = _normalize_param_format(pd_arguments, parameter_format)
         if (
             pd_arguments
             and user_backend_parameters[: len(pd_arguments)] == pd_arguments
@@ -1869,11 +1889,7 @@ exec "$@"
         if pd_arguments:
             tokens = pd_arguments + tokens
 
-        parameter_format = (
-            getattr(self.inference_backend, "parameter_format", None)
-            if self.inference_backend
-            else None
-        )
+        parameter_format = self._parameter_format()
         if parameter_format is None or not tokens:
             return tokens
 

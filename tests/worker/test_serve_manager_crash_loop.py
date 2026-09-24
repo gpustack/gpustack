@@ -136,7 +136,7 @@ def test_the_reason_is_the_logs_first_error_not_its_last(tmp_path):
         manager._mark_crash_loop(mi, _workload(count), True)
 
     _, kwargs = manager._update_model_instance.call_args
-    assert "kv_ifname" in kwargs["state_message"]
+    assert "kv_transfer_ifname" in kwargs["state_message"]
     assert "IndexError" not in kwargs["state_message"]
 
 

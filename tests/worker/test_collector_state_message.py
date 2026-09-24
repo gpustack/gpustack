@@ -31,7 +31,7 @@ def _collector(system_info_error=None, gpu_error=None):
             worker_metrics_port=10151,
             disable_worker_metrics=False,
             proxy_mode="tunnel",
-            kv_ifname=None,
+            kv_transfer_ifname=None,
         ),
         worker_ip_getter=lambda: "10.0.0.1",
         worker_ifname_getter=lambda: "eth0",

@@ -2058,3 +2058,50 @@ def test_refuse_unrendered_router_passes_a_fully_rendered_router():
         ),
         types.SimpleNamespace(name="qwen3-pd-router-abc12"),
     )
+
+
+_PD_CONNECTOR = '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
+
+
+def _backend_reporting_injected_parameters(parameter_format):
+    """An `InferenceServer` with just enough on it to answer the report call."""
+    backend = VLLMServer.__new__(VLLMServer)
+    backend.inference_backend = (
+        types.SimpleNamespace(parameter_format=parameter_format)
+        if parameter_format is not None
+        else None
+    )
+    backend._pd_arguments = lambda: ["--kv-transfer-config", _PD_CONNECTOR]
+    return backend
+
+
+@pytest.mark.parametrize(
+    "parameter_format, user_parameters",
+    [
+        (
+            ParameterFormatEnum.EQUAL,
+            [f"--kv-transfer-config={_PD_CONNECTOR}", "--max-model-len=8192"],
+        ),
+        (
+            None,
+            ["--kv-transfer-config", _PD_CONNECTOR, "--max-model-len", "8192"],
+        ),
+    ],
+)
+def test_the_pd_connector_is_reported_as_injected_in_either_parameter_format(
+    parameter_format, user_parameters
+):
+    """The connector GPUStack added is never attributed to the user.
+
+    The role's arguments ride in front of the user's through
+    `_flatten_backend_param`, which also reshapes the whole stream to the
+    backend's `parameter_format` — so what comes back here is the prefix in
+    that shape, and the report has to recognise it in either one.
+    """
+    backend = _backend_reporting_injected_parameters(parameter_format)
+    arguments = ["vllm", "serve", "/models/llm"] + user_parameters + ["--port", "4000"]
+
+    injected = backend._get_injected_backend_parameters(arguments, user_parameters)
+
+    assert "--kv-transfer-config" in " ".join(injected)
+    assert "--max-model-len" not in " ".join(injected)

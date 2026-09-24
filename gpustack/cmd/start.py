@@ -623,10 +623,10 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("WORKER_IFNAME"),
     )
     worker_group.add_argument(
-        "--kv-ifname",
+        "--kv-transfer-ifname",
         type=str,
         help="Network interface name carrying the KV transfer plane of disaggregated serving. Falls back to the auto-detected worker interface when this host has only one candidate interface; required on a multi-NIC host.",
-        default=get_gpustack_env("KV_IFNAME"),
+        default=get_gpustack_env("KV_TRANSFER_IFNAME"),
     )
     worker_group.add_argument(
         "--worker-name",
@@ -945,7 +945,7 @@ def set_worker_options(args, config_data: dict):
         "server_url",
         "worker_ip",
         "worker_ifname",
-        "kv_ifname",
+        "kv_transfer_ifname",
         "worker_name",
         "worker_port",
         "disable_worker_metrics",

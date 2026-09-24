@@ -301,9 +301,9 @@ class WorkerStatus(SystemInfo):
     hand-filled label always wins over a discovered fact.
     """
 
-    kv_ifname: Optional[str] = None
+    kv_transfer_ifname: Optional[str] = None
     """
-    What this worker was TOLD its KV-transfer NIC is -- `--kv-ifname`, verbatim,
+    What this worker was TOLD its KV-transfer NIC is -- `--kv-transfer-ifname`, verbatim,
     and `None` when the operator set nothing.
 
     Reported so the derivation can be told from the override. The rendered
@@ -315,7 +315,7 @@ class WorkerStatus(SystemInfo):
     operator is still typing it in.
 
     A worker-local setting, and deliberately not promoted to a cluster-wide
-    one: see `Config.kv_ifname` for why a NIC name must not be broadcast.
+    one: see `Config.kv_transfer_ifname` for why a NIC name must not be broadcast.
     """
 
     model_config = ConfigDict(from_attributes=True)

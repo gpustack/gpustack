@@ -121,7 +121,7 @@ class WorkerConfig(PredefinedConfig):
     # that have no ``ib0``, converting a single-host ambiguity into a
     # cluster-wide misconfiguration whose failure mode is the very
     # ``NIXL_ERR_BACKEND`` this field exists to avoid.
-    kv_ifname: Optional[str] = None
+    kv_transfer_ifname: Optional[str] = None
 
 
 class Config(WorkerConfig, BaseSettings):
@@ -165,7 +165,7 @@ class Config(WorkerConfig, BaseSettings):
         worker_ip: IP address of the worker node. Auto-detected by default.
         worker_ifname: Network interface name of the worker node. Auto-detected by default.
         worker_name: Name of the worker node. Use the hostname by default.
-        kv_ifname: Network interface name carrying the KV transfer plane of disaggregated serving.
+        kv_transfer_ifname: Network interface name carrying the KV transfer plane of disaggregated serving.
                    Falls back to worker_ifname when unset and this host has a single candidate
                    interface; required on a multi-NIC host.
         disable_worker_metrics: Disable worker metrics.
