@@ -491,6 +491,23 @@ async def mark_internal_inference(request: Request):
     is a cluster credential rather than anyone's account. The exemption lives
     on this prefix rather than inside the check so it cannot be reached from
     `/v1` -- a request that did not come through here never has the flag.
+
+    **This is not where the tenant boundary is drawn, and narrowing it here
+    buys nothing.** The worker token is a cross-tenant credential by design:
+    `bypass_tenant_filter` returns True for every `kind=SYSTEM` principal
+    because, as it says, such a principal "needs to read every tenant's
+    resources to do their job". The same token already passes
+    `model_allowed_for_user` on plain `/v1` for any route in the fleet --
+    `get_user_accessible_model_names` hands a SYSTEM principal every
+    `ModelRoute` there is -- and `worker_client_router` grants it more than
+    that besides. So binding this flag to a running benchmark would constrain
+    a path that is strictly narrower than the ones already open to the same
+    credential, and it cannot be free: `benchmarks` carries one index, unique
+    on `name`, so every such check is a table scan on the load generator's
+    own request path, charged to the latency the run exists to measure. If
+    the worker token's reach is ever narrowed, this is one of the places that
+    has to be revisited -- but then the boundary belongs at the credential,
+    not here.
     """
     request.state.internal_inference = True
 

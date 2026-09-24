@@ -185,16 +185,37 @@ async def get_cluster_topology(session: SessionDep, ctx: TenantContextDep, id: i
     assert_cluster_visible(ctx, cluster, not_found_message=f"cluster {id} not found")
     workers = await Worker.all_by_field(session, "cluster_id", id)
     return await _view_public(
-        cluster.topology, workers, await _gather_references(session, id)
+        cluster.topology, workers, await _gather_references(session, ctx, id)
     )
 
 
-async def _gather_references(session, cluster_id: int) -> Dict[str, List[str]]:
-    """layer name -> names of models whose `gather.layer` names it."""
+async def _gather_references(session, ctx, cluster_id: int) -> Dict[str, List[str]]:
+    """layer name -> names of models whose `gather.layer` names it.
+
+    Scoped to the caller, because a cluster is not a tenant boundary. A global
+    cluster, or one sublet through `cluster_access`, passes
+    `assert_cluster_visible` for a principal who owns none of the models on it
+    -- and these names go out in the payload of every read, preview and
+    locations call. So the list answers "which of YOUR models would this layer
+    strand", which is also the only version of the question the caller can act
+    on.
+
+    It is not the deletion guard. That lives in `clusters.py`, sees every
+    model, and still refuses a layer another principal's deployment needs --
+    so the narrower list here can understate what blocks a delete, never
+    permit one it should not.
+    """
+    from gpustack.api.tenant import tenant_list_conditions
     from gpustack.schemas.models import Model
 
     out: Dict[str, List[str]] = {}
-    for model in await Model.all_by_field(session, "cluster_id", cluster_id):
+    models = await Model.all_by_field(
+        session,
+        "cluster_id",
+        cluster_id,
+        extra_conditions=list(tenant_list_conditions(ctx, Model)),
+    )
+    for model in models:
         gather = getattr(model, "gather", None)
         layer = getattr(gather, "layer", None)
         if layer:
@@ -227,7 +248,9 @@ async def preview_cluster_topology(
     assert_cluster_visible(ctx, cluster, not_found_message=f"cluster {id} not found")
     topology = body.topology if body and body.topology is not None else cluster.topology
     workers = await Worker.all_by_field(session, "cluster_id", id)
-    return await _view_public(topology, workers, await _gather_references(session, id))
+    return await _view_public(
+        topology, workers, await _gather_references(session, ctx, id)
+    )
 
 
 def _layers_public(
@@ -471,7 +494,14 @@ async def set_cluster_topology_locations(
 
     workers = await Worker.all_by_field(session, "cluster_id", id)
     by_id = {w.id: w for w in workers}
-    resolved_view = build_view(cluster.topology, workers)
+    try:
+        resolved_view = build_view(cluster.topology, workers)
+    except TopologyError as e:
+        # The same translation the read paths do. A stored declaration that
+        # cannot become a tree is the caller's to fix, and letting it out as a
+        # 500 here would make a mutating endpoint the one place that reports it
+        # as a server fault.
+        raise BadRequestException(message=str(e))
 
     # Resolve every assignment before writing any, so a bad one refuses the
     # whole batch instead of leaving half a rack renamed.
@@ -497,8 +527,14 @@ async def set_cluster_topology_locations(
                 )
             )
 
+    # One transaction for the batch, because the paragraph above promises one:
+    # validating everything before writing anything is worth nothing if the
+    # writes then land one commit at a time, since a failure partway through
+    # leaves exactly the half-renamed rack that promise rules out -- and the
+    # caller gets a 500 instead of the `previous` it needs to undo what did
+    # land. Rows are mutated here and committed together below.
     previous: Dict[tuple, Dict[int, Optional[str]]] = {}
-    service = WorkerService(session)
+    changed: Dict[int, Worker] = {}
     for worker, layer, key, value in planned:
         labels = dict(worker.labels or {})
         before = labels.get(key)
@@ -508,8 +544,15 @@ async def set_cluster_topology_locations(
             labels[key] = value
         if labels == (worker.labels or {}):
             continue
-        await service.update(worker, {"labels": labels})
+        # Assigned to the row rather than passed as a patch: one batch may name
+        # the same worker for two different fields, and the second has to build
+        # on the first rather than on what the request read.
+        worker.labels = labels
+        changed[worker.id] = worker
         previous.setdefault((layer, before), {})[worker.id] = before
+
+    if changed:
+        await WorkerService(session).batch_update(list(changed.values()))
 
     # One inverse assignment per (field, previous value): the undo of "these
     # three got R3" is "these two get back R1 and that one gets cleared".
@@ -523,6 +566,6 @@ async def set_cluster_topology_locations(
     return LocationsPublic(
         previous=inverse,
         topology=await _view_public(
-            cluster.topology, refreshed, await _gather_references(session, id)
+            cluster.topology, refreshed, await _gather_references(session, ctx, id)
         ),
     )

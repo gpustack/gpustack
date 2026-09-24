@@ -3,13 +3,15 @@ from typing import List, Optional
 
 from fastapi import APIRouter
 
+from gpustack.api.tenant import assert_cluster_visible
+from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.schemas.pd_mode_resolution import PDModeResolution
 from gpustack.schemas.pd_modes import PDMode
 from gpustack.server.cluster_accelerators import cluster_vendors
 from gpustack.server.pd_mode_catalog import get_pd_modes
 from gpustack.server.pd_mode_resolver import resolve_pd_mode
-from gpustack.server.deps import ListParamsDep, SessionDep
+from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
 
 router = APIRouter()
 
@@ -65,6 +67,7 @@ async def list_pd_modes(
 @router.get("/resolve", response_model=PDModeResolution)
 async def resolve(
     session: SessionDep,
+    ctx: TenantContextDep,
     cluster_id: Optional[int] = None,
     backend: Optional[str] = None,
     vendor: Optional[str] = None,
@@ -80,5 +83,16 @@ async def resolve(
     (Docker / Kubernetes), which is the infrastructure provider, not the
     accelerator vendor.
     """
+    if cluster_id is not None:
+        # The catalog itself carries no tenant data, but the accelerators a
+        # cluster reports do: answering for an id the caller cannot see would
+        # let any Org member probe another Org's hardware. Checked before the
+        # query rather than filtered inside it, so an invisible cluster reads
+        # as absent rather than as one with no accelerators — the latter would
+        # come back as a resolution failure and leak its existence anyway.
+        cluster = await Cluster.one_by_id(session, cluster_id)
+        assert_cluster_visible(
+            ctx, cluster, not_found_message=f"cluster {cluster_id} not found"
+        )
     vendors = await cluster_vendors(session, cluster_id)
     return resolve_pd_mode(backend, vendors, vendor=vendor)

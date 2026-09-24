@@ -195,13 +195,31 @@ def _add_benchmark_target_mode() -> None:
     # Added nullable, backfilled, then left nullable: SQLite cannot add a NOT
     # NULL column with a server default in one step, and the model supplies the
     # default on every write anyway. A NULL that somehow survives reads as
-    # `instance` on the way out, which is what such a row was.
+    # `model_instance` on the way out, which is what such a row was.
     op.add_column(
         "benchmarks",
         sa.Column("target_mode", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     )
     op.execute(
-        "UPDATE benchmarks SET target_mode = 'instance' WHERE target_mode IS NULL"
+        "UPDATE benchmarks SET target_mode = 'model_instance' WHERE target_mode IS NULL"
+    )
+
+
+def _rename_instance_target_mode() -> None:
+    """Carry rows written before the value was spelled `model_instance`.
+
+    The add above is guarded on the column not existing, so a database that
+    already took this bundle keeps whatever it was backfilled with -- and
+    `instance` is no longer a member of the enum, which means every such row
+    raises on the way out rather than reading as the mode it always was. This
+    runs on its own, unguarded by the column check, and is a no-op once there
+    is nothing left spelled the old way.
+    """
+    if not table_exists("benchmarks") or not column_exists("benchmarks", "target_mode"):
+        return
+    op.execute(
+        "UPDATE benchmarks SET target_mode = 'model_instance' "
+        "WHERE target_mode = 'instance'"
     )
 
 
@@ -250,6 +268,7 @@ def upgrade() -> None:
         )
 
     _add_benchmark_target_mode()
+    _rename_instance_target_mode()
     _add_itl_per_chunk()
 
 

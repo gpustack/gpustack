@@ -15,10 +15,13 @@ import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 
-_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "gpustack/migrations/versions"
-    / "2026_09_21_1000-f4a5b6c7d8e9_pd_disaggregation_database_changes.py"
+# Matched by revision id rather than by file name: the name carries a
+# timestamp that moves whenever the revision is re-chained, and a rebase that
+# renamed it should not break a test about what the migration does.
+_PATH = next(
+    (Path(__file__).resolve().parents[2] / "gpustack/migrations/versions").glob(
+        "*f4a5b6c7d8e9*.py"
+    )
 )
 _spec = importlib.util.spec_from_file_location(
     "pd_disaggregation_database_changes", _PATH
@@ -70,7 +73,7 @@ def test_the_column_is_added_and_old_rows_say_instance(db):
     con = sqlite3.connect(path)
     try:
         assert con.execute("SELECT target_mode FROM benchmarks").fetchall() == [
-            ("instance",)
+            ("model_instance",)
         ]
     finally:
         con.close()

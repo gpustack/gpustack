@@ -6,7 +6,7 @@ prompt KV cache across two engines, and an engine that has no such cache to
 split cannot be disaggregated no matter who writes the connection parameters.
 
 `custom` mode is the case worth pinning. It injects nothing, so
-``PD_MODE_BACKENDS['custom']`` is empty and the per-mode loop skips it
+the `custom` recipe declares no `backends` and the per-mode loop skips it
 entirely — which made it a way past every engine check there was.
 """
 

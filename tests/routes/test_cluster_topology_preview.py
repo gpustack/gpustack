@@ -73,18 +73,22 @@ def _stubs(workers, saved=None, allocated=None, models=None):
             "gpustack.schemas.models.Model.all_by_field",
             new=AsyncMock(return_value=models or []),
         ),
+        # These cases are about the tree, not about who may see it: a caller
+        # that sees everything keeps them reading as they did. The scoping
+        # itself is pinned by `test_gather_references_are_scoped_to_the_caller`.
+        patch("gpustack.api.tenant.tenant_list_conditions", lambda ctx, model: []),
     )
 
 
 async def _get(workers, saved=None, allocated=None, models=None):
     stubs = _stubs(workers, saved, allocated, models)
-    with stubs[0], stubs[1], stubs[2], stubs[3], stubs[4], stubs[5]:
+    with stubs[0], stubs[1], stubs[2], stubs[3], stubs[4], stubs[5], stubs[6]:
         return await route.get_cluster_topology(session=None, ctx=None, id=1)
 
 
 async def _preview(workers, saved=None, body=None, allocated=None):
     stubs = _stubs(workers, saved, allocated)
-    with stubs[0], stubs[1], stubs[2], stubs[3], stubs[4], stubs[5]:
+    with stubs[0], stubs[1], stubs[2], stubs[3], stubs[4], stubs[5], stubs[6]:
         return await route.preview_cluster_topology(
             session=None,
             ctx=None,
@@ -530,11 +534,24 @@ async def test_the_domain_and_switch_keys_are_offered_as_candidates():
 
 
 class _FakeService:
+    """Records the writes, and counts them.
+
+    The route mutates the rows and commits them together, so the batch is
+    what the fake has to accept -- and `commits` is what pins that it stays
+    one call rather than one per worker.
+    """
+
+    commits = 0
+
     def __init__(self, session):
         pass
 
     async def update(self, worker, patch):
         worker.labels = patch["labels"]
+
+    async def batch_update(self, workers):
+        type(self).commits += 1
+        return len(workers)
 
 
 async def _set(workers, assignments, saved=None):
@@ -546,6 +563,7 @@ async def _set(workers, assignments, saved=None):
         stubs[3],
         stubs[4],
         stubs[5],
+        stubs[6],
         patch("gpustack.server.services.WorkerService", _FakeService),
     ):
         body = route.LocationsRequest(
@@ -682,3 +700,71 @@ async def test_an_unknown_field_or_foreign_worker_refuses_the_whole_batch():
             ],
         )
     assert workers[0].labels == {}
+
+
+@pytest.mark.asyncio
+async def test_a_batch_of_locations_lands_in_one_commit():
+    """Validating everything before writing anything is worth nothing if the
+    writes then land one at a time: a failure partway through leaves the
+    half-renamed rack the up-front validation exists to rule out, and the
+    inverse returned for undo would describe a state nobody was ever in."""
+    workers = [_worker(1, "w1"), _worker(2, "w2"), _worker(3, "w3")]
+    _FakeService.commits = 0
+
+    await _set(
+        workers,
+        [{"worker_ids": [1, 2, 3], "layer": lid("rack"), "value": "R3"}],
+    )
+
+    assert _FakeService.commits == 1, "three workers, one transaction"
+    assert all(w.labels == {RACK: "R3"} for w in workers)
+
+
+@pytest.mark.asyncio
+async def test_two_fields_on_one_worker_accumulate():
+    """A batch may name the same worker twice, for two different fields. The
+    second has to build on the first rather than on what the request read, or
+    one of the two silently does not land."""
+    workers = [_worker(1, "w1")]
+    _FakeService.commits = 0
+
+    await _set(
+        workers,
+        [
+            {"worker_ids": [1], "layer": lid("rack"), "value": "R3"},
+            {"worker_ids": [1], "layer": lid("zone"), "value": "Z1"},
+        ],
+    )
+
+    assert workers[0].labels == {RACK: "R3", ZONE: "Z1"}
+    assert _FakeService.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_gather_references_are_scoped_to_the_caller():
+    """A cluster is not a tenant boundary.
+
+    A global cluster, or one sublet through `cluster_access`, passes
+    `assert_cluster_visible` for a principal who owns none of the models on
+    it — and these names go out in the payload of every read. So the query
+    has to carry the caller's conditions.
+    """
+    seen = {}
+
+    async def _all_by_field(session, field, value, **kwargs):
+        seen.update(kwargs)
+        return []
+
+    with (
+        patch(
+            "gpustack.schemas.models.Model.all_by_field",
+            new=AsyncMock(side_effect=_all_by_field),
+        ),
+        patch(
+            "gpustack.api.tenant.tenant_list_conditions",
+            lambda ctx, model: ["OWNED-BY-CALLER"],
+        ),
+    ):
+        await route._gather_references(None, object(), 1)
+
+    assert seen.get("extra_conditions") == ["OWNED-BY-CALLER"]
