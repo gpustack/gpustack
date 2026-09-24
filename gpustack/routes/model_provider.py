@@ -542,25 +542,54 @@ async def try_model_with_provider(
             )
         else:
             headers["Authorization"] = f"Bearer {input.api_token}"
-        try:
-            response = await client.post(
-                url=completion_url, json=data, headers=headers, timeout=60
-            )
-            response.raise_for_status()
-            return TestProviderModelResult(
-                model_name=input.model_name,
-                accessible=True,
-            )
-        except httpx.HTTPStatusError as exc:
-            return TestProviderModelResult(
-                model_name=input.model_name,
-                accessible=False,
-                error_message=f"Provider API error: {exc.response.status_code} {exc.response.text}",
-            )
-        except httpx.RequestError as exc:
-            raise InternalServerErrorException(
-                message=f"Network error: {exc.__class__.__name__}: {exc}"
-            )
+        for attempt in range(2):
+            try:
+                response = await client.post(
+                    url=completion_url, json=data, headers=headers, timeout=60
+                )
+                response.raise_for_status()
+                return TestProviderModelResult(
+                    model_name=input.model_name,
+                    accessible=True,
+                )
+            except httpx.HTTPStatusError as exc:
+                if (
+                    attempt == 0
+                    and _is_thinking_restricted_qwen_rejection(input.config.type, exc)
+                    and "enable_thinking" not in data
+                ):
+                    # A thinking-only Qwen model (e.g. qwen3.7-max) rejects the
+                    # parameterless ping -- DashScope defaults enable_thinking to
+                    # False while the model requires True. Retry once with it
+                    # explicit instead of failing the provider test.
+                    data = {**data, "enable_thinking": True}
+                    continue
+                return TestProviderModelResult(
+                    model_name=input.model_name,
+                    accessible=False,
+                    error_message=f"Provider API error: {exc.response.status_code} {exc.response.text}",
+                )
+            except httpx.RequestError as exc:
+                raise InternalServerErrorException(
+                    message=f"Network error: {exc.__class__.__name__}: {exc}"
+                )
+
+
+def _is_thinking_restricted_qwen_rejection(
+    provider_type: ModelProviderTypeEnum, exc: httpx.HTTPStatusError
+) -> bool:
+    """Whether a failed ping should be retried with ``enable_thinking`` set.
+
+    Only the one rejection DashScope words as a thinking-mode restriction
+    qualifies, and only for the Qwen provider -- anything else (bad token,
+    quota, a non-thinking model) answers the same on a retry, so the first
+    error is reported as-is.
+    """
+    return (
+        provider_type == ModelProviderTypeEnum.QWEN
+        and exc.response.status_code == 400
+        and "enable_thinking" in exc.response.text
+    )
 
 
 @router.post(
