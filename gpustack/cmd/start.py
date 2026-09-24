@@ -9,9 +9,8 @@ from typing import Any, Dict
 
 import yaml
 
-from gpustack import __version__, __git_commit__
 from gpustack.config.config import set_global_config
-from gpustack.extension import Plugin, iter_plugin_classes
+from gpustack.extension import Plugin, iter_plugin_classes, resolve_version_info
 from gpustack.logging import setup_logging
 from gpustack.utils.envs import get_gpustack_env, get_gpustack_env_bool
 from gpustack.worker.worker import Worker
@@ -761,7 +760,8 @@ def run(args: argparse.Namespace):
         initialize_gateway(cfg)
         multiprocessing.set_start_method('spawn')
 
-        logger.info(f"GPUStack version: {__version__} ({__git_commit__})")
+        version, git_commit = resolve_version_info()
+        logger.info(f"GPUStack version: {version} ({git_commit})")
 
         if cfg.server_url:
             run_worker(cfg)

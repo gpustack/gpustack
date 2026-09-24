@@ -5,8 +5,17 @@ pull, i.e. the repository from ``--image-repo`` at the version
 ``resolve_version_info()`` reports, which a plugin may override.
 """
 
+import pytest
+
 import gpustack.cmd.images as images
 import gpustack.extension as extension
+
+
+@pytest.fixture(autouse=True)
+def clear_version_cache():
+    extension.resolve_version_info.cache_clear()
+    yield
+    extension.resolve_version_info.cache_clear()
 
 
 class _Plugin(extension.Plugin):

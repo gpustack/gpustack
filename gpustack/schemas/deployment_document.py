@@ -28,7 +28,6 @@ from typing import (
 import yaml
 from pydantic import BaseModel, NonNegativeInt, ValidationError
 
-from gpustack import __version__
 from .models import Model, ModelCreate, ModelPublic
 from .source import unknown_keys
 
@@ -204,10 +203,14 @@ def dump_deployments(
     header comment the output is a pure function of the rows, so a re-export
     diffs cleanly.
     """
+    # Lazy import: gpustack.extension pulls in the server stack, which imports
+    # this module.
+    from gpustack.extension import resolve_version_info
+
     if exported_at is None:
         exported_at = datetime.now(timezone.utc)
     header = (
-        f"# Exported from GPUStack v{__version__} "
+        f"# Exported from GPUStack {resolve_version_info()[0]} "
         f"at {exported_at:%Y-%m-%dT%H:%M:%SZ}\n"
     )
     entries = [

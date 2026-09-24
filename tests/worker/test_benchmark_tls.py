@@ -287,30 +287,16 @@ class TestInsecureFlagForwarding:
 class TestResolveProgressInsecureTLS:
     """What puts the progress channel into insecure mode.
 
-    Only GPUSTACK_INSECURE_TLS, which a worker started with the enterprise
-    plugin's --insecure-tls sets. There is deliberately no benchmark-only switch:
-    it would let benchmarks skip verification while the worker's own connection
-    to the same server could not. The variable cannot reach the benchmark
-    container on its own (stripped by filter_env_vars, and the enterprise
-    sitecustomize shim lives in the gpustack image), so it is read here.
+    Only GPUSTACK_INSECURE_TLS, the worker-wide switch. There is deliberately no
+    benchmark-only one: it would let benchmarks skip verification while the
+    worker's own connection to the same server could not. The variable cannot
+    reach the benchmark container on its own -- filter_env_vars strips
+    GPUSTACK_* -- so it is resolved here and forwarded as a runner flag.
     """
 
-    def test_off_by_default(self, monkeypatch):
-        monkeypatch.delenv("GPUSTACK_INSECURE_TLS", raising=False)
+    def test_off_by_default(self):
         assert bm_runner.resolve_progress_insecure_tls() is False
 
-    def test_the_worker_wide_env_enables_it(self, monkeypatch):
-        monkeypatch.setenv("GPUSTACK_INSECURE_TLS", "1")
+    def test_the_worker_wide_switch_enables_it(self, monkeypatch):
+        monkeypatch.setattr(bm_runner.envs, "INSECURE_TLS", True)
         assert bm_runner.resolve_progress_insecure_tls() is True
-
-    def test_true_also_enables_it(self, monkeypatch):
-        # get_gpustack_env_bool accepts "1" and "true" only -- not "yes"/"on",
-        # which the backend-parameter parser does accept.
-        monkeypatch.setenv("GPUSTACK_INSECURE_TLS", "true")
-        assert bm_runner.resolve_progress_insecure_tls() is True
-
-    def test_a_falsy_env_value_does_not_enable_it(self, monkeypatch):
-        # get_gpustack_env_bool reads "true"/"1"; anything else is off, so an
-        # operator who explicitly disabled it is not overridden by its presence.
-        monkeypatch.setenv("GPUSTACK_INSECURE_TLS", "false")
-        assert bm_runner.resolve_progress_insecure_tls() is False

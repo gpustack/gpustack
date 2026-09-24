@@ -6,7 +6,6 @@ import aiohttp
 from fastapi import FastAPI
 from fastapi_cdn_host import patch_docs
 
-from gpustack import __version__
 from fastapi.middleware.cors import CORSMiddleware
 from gpustack.api import exceptions, middlewares
 from gpustack.api.auth import BearerTokenAuthenticator
@@ -18,7 +17,7 @@ from gpustack.utils.forwarded import ForwardedHostPortMiddleware
 from gpustack.security import JWTManager
 from gpustack.gateway.utils import worker_websocket_connect_callback
 from gpustack.websocket_proxy.message_server import MessageServerHandler
-from gpustack.extension import Plugin, iter_plugin_classes
+from gpustack.extension import Plugin, iter_plugin_classes, resolve_version_info
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +42,7 @@ def create_app(cfg: Config) -> FastAPI:
         title="GPUStack",
         lifespan=lifespan,
         response_model_exclude_unset=True,
-        version=__version__,
+        version=resolve_version_info()[0],
         docs_url=None if (cfg and cfg.disable_openapi_docs) else "/docs",
         redoc_url=None if (cfg and cfg.disable_openapi_docs) else "/redoc",
         openapi_url=None if (cfg and cfg.disable_openapi_docs) else "/openapi.json",
