@@ -643,6 +643,11 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     break
 
             if found_candidate:
+                # Same reason as the single-GPU scan above: `get_resource_claim`
+                # quotes this in a group's refusal, and a multi-GPU member
+                # without it falls back to the weights estimate — smaller than
+                # what the engine seizes, by a factor of the card count.
+                self._reserved_vram = max(self._reserved_vram, vram_sum)
                 return [
                     ModelInstanceScheduleCandidate(
                         worker=worker,

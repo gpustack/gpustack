@@ -110,6 +110,9 @@ class GroupCapacity:
         # worker_id -> ports already spoken for there. Computed on first use
         # and kept, because a solve asks about the same workers once per role.
         self._ports_taken: Dict[int, int] = {}
+        # Rebuilt per counting pass from what the solve has committed;
+        # empty until the first role is placed.
+        self._committed_ports: Dict[int, int] = {}
         # role -> {worker_id: worker}, after that role's filters.
         self._eligible: Dict[Optional[str], Dict[int, Worker]] = {}
         self._projected: Dict[Optional[str], "_RoleProjection"] = {}
@@ -216,6 +219,14 @@ class GroupCapacity:
         projected = self._projected[role]
         instances = self._model_instances + self._translate(already_placed)
         limit = self._limit_for(role)
+        # VRAM crosses roles through `_translate`; ports did not. `_share_out`
+        # deals two roles onto the same roomiest worker by design, and the
+        # second role was priced against the free-port count the snapshot had
+        # before the first role committed anything -- so a concentrated group
+        # is admitted for more ports than the range holds and its trailing
+        # members wedge in `starting`, which is the wedge this budget exists
+        # to prevent.
+        self._committed_ports = self._committed_port_demand(already_placed)
 
         out: Dict[int, int] = {}
         for worker_id in worker_ids:
@@ -264,7 +275,15 @@ class GroupCapacity:
                 # Nothing was proven about this worker. Leaving it out is the
                 # difference between "no room" and "we could not look".
                 continue
-            out[worker_id] = self._within_port_budget(role, worker_id, offer)
+            # One offer per worker here, so its first placement is this
+            # worker's own.
+            first = (getattr(offer, "placements", None) or [None])[0]
+            out[worker_id] = self._within_port_budget(
+                role,
+                worker_id,
+                offer,
+                len(getattr(first, "gpu_indexes", None) or []) if first else 0,
+            )
 
         # Narrowed before the spanning fallback below, and it cannot divert a
         # domain into it: the band that wins is the one holding the most
@@ -273,7 +292,9 @@ class GroupCapacity:
             out = self._one_gpu_size_only(role, eligible, out)
         if any(out.values()):
             return out
-        return await self._spanning(role, worker_ids, eligible, instances, limit, out)
+        return await self._spanning(
+            role, worker_ids, eligible, instances, limit, out, one_gpu_size
+        )
 
     def _one_gpu_size_only(
         self,
@@ -360,6 +381,19 @@ class GroupCapacity:
             min(worker.id for worker in band),
         )
 
+    def _widest_band(self, workers: List[Worker]) -> List[Worker]:
+        """`workers`, narrowed to the roomiest same-size band among them.
+
+        Ranked by `_band_rank` with nothing measured, which is what this case
+        is: no machine held a member on its own, so the key falls through to
+        "the bigger card, then the lowest worker id" — the most headroom, and
+        reproducible.
+        """
+        bands = group_workers_by_gpu_memory_size(workers)
+        if len(bands) < 2:
+            return workers
+        return sorted(bands, key=lambda band: self._band_rank(band, {}))[0]
+
     def _note_one_gpu_size(self, role: str, held: int) -> None:
         """Say that mixed card sizes, not a full cluster, is what ran short.
 
@@ -400,6 +434,7 @@ class GroupCapacity:
         instances: List[object],
         limit: int,
         measured: Dict[int, int],
+        one_gpu_size: bool = False,
     ) -> Dict[int, int]:
         """Capacity for a member that needs more machines than any one has.
 
@@ -444,6 +479,17 @@ class GroupCapacity:
             for worker_id in worker_ids
             if worker_id in eligible and not _reports_no_memory(eligible[worker_id])
         ]
+        if one_gpu_size:
+            # The same rule the single-machine pass applied, and it has to be
+            # applied again here rather than inherited: that pass zeroed the
+            # losing bands in `measured`, but this one rebuilds its own
+            # candidate set from `eligible` and would otherwise combine the
+            # machines it just ruled out -- or mix sizes across the combination
+            # itself, which the selectors' cross-node rules do not prevent
+            # (they govern GPU type and count, not per-card memory). A replica
+            # spread over a 48 GiB card and a 32 GiB one is uneven VRAM inside
+            # one replica, which the engines do not take.
+            usable = self._widest_band(usable)
         if len(usable) < 2:
             # Fewer than two machines to combine, so there is no combination to
             # try and `measured` is already the whole answer. This is also the
@@ -483,8 +529,10 @@ class GroupCapacity:
             # not the primary's. A member needs its side-channel ports on every
             # host that carries one of its ranks, so a host short of them stops
             # the whole combination rather than a fraction of it.
+            cards = len(getattr(candidate, "gpu_indexes", None) or [])
             allowed = min(
-                self._within_port_budget(role, worker_id, offer) for worker_id in span
+                self._within_port_budget(role, worker_id, offer, cards)
+                for worker_id in span
             )
             out[primary] = min(out.get(primary, 0) + 1, max(allowed, 0))
         logger.debug(
@@ -600,7 +648,45 @@ class GroupCapacity:
                 out.append(note)
         return out
 
-    def _within_port_budget(self, role: str, worker_id: int, offer) -> int:
+    def _committed_port_demand(
+        self, already_placed: Sequence[object]
+    ) -> Dict[int, int]:
+        """Ports the members this solve has committed so far will reserve.
+
+        Priced per member with its OWN role's demand, not the asking role's: a
+        prefill on eight cards and a router on none take different numbers of
+        ports from the same range, and charging one at the other's rate is how
+        a budget stops being one.
+
+        **The whole demand on every machine the member spans**, not a share of
+        it split between them, because that is what the worker does: one
+        `ModelInstance` row holds one set of ports, `_assign_named_ports` sizes
+        the bands once on the primary, and every host the member lands on then
+        fences that same set through `_register_assigned_ports`. Charging only
+        the primary leaves a later role priced against free ports its own
+        allocator will find taken -- the scheduler promising room the worker
+        cannot produce, which is the failure this budget exists to prevent.
+        `_within_port_budget` reads the same way for the same reason.
+
+        Empty for the first role of a solve, which is the case every
+        single-role deployment takes.
+        """
+        out: Dict[int, int] = {}
+        for entry in already_placed:
+            worker_id = getattr(entry, "worker_id", None)
+            role = getattr(entry, "role", None)
+            if worker_id is None or not role or role not in self._projected:
+                continue
+            offers = self._offers.get((role, worker_id)) or []
+            cards = len(getattr(offers[0], "gpu_indexes", None) or []) if offers else 0
+            demand = port_budget.member_port_demand(
+                self._projected[role].model, role, cards
+            )
+            for machine in self._spans.get((role, worker_id), [worker_id]):
+                out[machine] = out.get(machine, 0) + demand
+        return out
+
+    def _within_port_budget(self, role: str, worker_id: int, offer, cards: int) -> int:
         """`offer.slots`, capped by what the host has ports for.
 
         Applied here rather than as a filter of its own so a port shortage
@@ -608,17 +694,18 @@ class GroupCapacity:
         worker, and the same walk to the next domain. The alternative — a
         worker that passes capacity and fails at start-up — puts the failure
         after the placement decision, where nothing reconsiders it.
+
+        `cards` is passed in rather than read off the offer, because an offer
+        is not always about one placement. A single-machine pass makes one per
+        worker and its placements are that worker's, but the spanning pass
+        makes ONE offer holding every combination it found — so reading the
+        first placement there prices every combination at the width of
+        whichever happened to come back first. It is the primary's card count
+        either way: `{{accelerator_count}}` resolves from `gpu_indexes` on the
+        instance row, and that row carries the primary's cards.
         """
         if offer.slots <= 0:
             return offer.slots
-
-        # The cards this member would get here. `{{accelerator_count}}` is the
-        # width of a Mooncake-style band, and it is the one input that is not
-        # knowable from the spec — it is what the selector just decided.
-        placements = getattr(offer, "placements", None) or []
-        cards = (
-            len(getattr(placements[0], "gpu_indexes", None) or []) if placements else 0
-        )
 
         # The role's projection, which is what the worker's own resolver
         # receives: `backend_parameters` there are the role's effective ones.
@@ -629,10 +716,13 @@ class GroupCapacity:
             self._ports_taken[worker_id] = port_budget.ports_taken_on(
                 worker_id, self._model_instances, self._cache_instances
             )
+        # Added on the read rather than written back: the cache holds what the
+        # snapshot saw, and what this solve has committed changes per role.
+        taken = self._ports_taken[worker_id] + self._committed_ports.get(worker_id, 0)
         allowed = port_budget.port_capacity(
             getattr(self._config, "service_port_range", None),
             demand,
-            self._ports_taken[worker_id],
+            taken,
         )
         if allowed is None or allowed >= offer.slots:
             return offer.slots
@@ -640,9 +730,7 @@ class GroupCapacity:
         logger.debug(
             "Port budget caps role %r on %s",
             role,
-            port_budget.describe(
-                worker_id, allowed, demand, self._ports_taken[worker_id]
-            ),
+            port_budget.describe(worker_id, allowed, demand, taken),
         )
         return allowed
 

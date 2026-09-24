@@ -601,6 +601,13 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 break
 
         if found_candidate:
+            # The reservation this member would hold across all of its cards,
+            # recorded for the same reason the single-GPU scan records its own:
+            # `get_resource_claim` quotes it in a group's refusal, and without
+            # it a multi-GPU member falls back to the weights estimate — which
+            # is materially smaller than what the engine seizes, on the one
+            # path where the difference is multiplied by the card count.
+            self._reserved_vram = max(self._reserved_vram, vram_sum)
             return [
                 ModelInstanceScheduleCandidate(
                     worker=worker,

@@ -307,6 +307,9 @@ async def test_a_breakdown_that_cannot_be_built_does_not_take_the_refusal_with_i
 
     assert group.demands == []
     assert "the cluster is full" in group.messages
+    # And the refusal itself survives: with no breakdown to replace it, this
+    # is the only thing that says the group did not fit.
+    assert "no room" in group.messages
 
 
 @pytest.mark.asyncio
@@ -411,3 +414,37 @@ async def test_a_role_bearing_model_never_reaches_find_candidate():
     assert result.resource_claim.vram == 40 * GIB
     assert result.role_resource_claims[0].role == "prefill"
     assert result.role_resource_claims_by_cluster_id[1][0].replicas == 1
+
+
+@pytest.mark.asyncio
+async def test_the_breakdown_replaces_the_count_rather_than_joining_it():
+    """One question, one answer.
+
+    The solver's own words count the whole group -- "needs 4 placements and
+    the cluster has room for 0" -- and the breakdown answers the same question
+    role by role. They are not measured alike: the count leaves out roles that
+    take no accelerator, its `available` is the running total where the solve
+    gave up rather than the cluster's free room, and each role's figure is
+    that role alone against everything free. Sent together they read as
+    arithmetic that does not add up, which is what put a "2 placements, room
+    for 0" beside a "1/1" for the router.
+    """
+    placement = GroupInfeasible(
+        reason="The group needs 4 placements and the cluster has room for 0.",
+        role="prefill",
+        needed=4,
+        available=0,
+    )
+
+    group = await _run(
+        placement,
+        demand_map={
+            "prefill": (MemberResourceClaim(vram=40 * GIB, ram=GIB), 0),
+            "router": (MemberResourceClaim(vram=0, ram=2 * GIB), 1),
+        },
+    )
+
+    assert group.demands, "the breakdown is what replaces it"
+    assert not any("placements" in m for m in group.messages)
+    # Still says which role stopped it, or nothing would.
+    assert any("Blocked on the 'prefill' role" in m for m in group.messages)

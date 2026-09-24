@@ -133,3 +133,92 @@ async def test_single_host_candidates_pass_through():
         result = await obj.select_candidates([])
 
     assert result == [local]
+
+
+# --- how much VRAM one member may be given here ------------------------------ #
+
+
+def test_a_members_capacity_is_every_card_it_takes():
+    """The parent decides "does this fit on one host" by comparing the whole
+    member's claim against a member's capacity there. For a vGPU member that
+    is one slice; for a whole-card member it is all of its cards.
+
+    Measured against one card, a member needing two or more failed that test
+    and fell into the parent's spread-across-hosts branch — whose candidates
+    this selector refuses by design, so exactly the multi-card members it
+    exists to place had nowhere to go.
+    """
+    assert _built(4)._member_vram_capacity() == 4 * 40 * 1024**3
+    assert _built(1)._member_vram_capacity() == 40 * 1024**3
+
+
+def test_the_parent_still_measures_a_vgpu_member_by_one_slice():
+    """The override must not move placement for the deployments already using
+    the parent: a vGPU member takes one slice and is measured by one."""
+    from gpustack.policies.candidate_selectors.vgpu_resource_fit_selector import (
+        VGPUResourceFitSelector,
+    )
+
+    parent = VGPUResourceFitSelector.__new__(VGPUResourceFitSelector)
+    parent._slice_vram = 40 * 1024**3
+
+    assert parent._member_vram_capacity() == 40 * 1024**3
+
+
+# --- how many of the pool's cards the host actually has --------------------- #
+
+
+def _pool_worker(cards):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        name="w",
+        status=SimpleNamespace(
+            gpu_devices=[
+                SimpleNamespace(vendor="NVIDIA", name="NVIDIA H100 80GB HBM3")
+                for _ in range(cards)
+            ]
+        ),
+    )
+
+
+def _pool_detail():
+    from gpustack.schemas.gpu_instance_types import GPUInstanceTypeDetail
+
+    return GPUInstanceTypeDetail(manufacturer="NVIDIA", product="H100 80GB HBM3")
+
+
+def test_a_host_short_of_cards_is_not_in_the_pool_for_this_member():
+    """What is free on a node is the node-side scheduler's call, but how many
+    of the pool's cards it HAS is inventory: a two-card node can never serve a
+    four-card member however empty it is, and picking it produces a workload
+    that sits Pending against a resource the node never advertises enough of.
+    """
+    selector = _built(4)
+
+    assert selector._worker_matches_pool(_pool_worker(4), _pool_detail()) is True
+    assert selector._worker_matches_pool(_pool_worker(8), _pool_detail()) is True
+    assert selector._worker_matches_pool(_pool_worker(2), _pool_detail()) is False
+
+
+def test_one_matching_card_is_still_enough_for_a_vgpu_member():
+    """The parent is unchanged: a slice is one card's worth, so finding one of
+    the pool's cards is the whole question there."""
+    from gpustack.policies.candidate_selectors.vgpu_resource_fit_selector import (
+        VGPUResourceFitSelector,
+    )
+
+    parent = VGPUResourceFitSelector.__new__(VGPUResourceFitSelector)
+
+    assert parent._worker_matches_pool(_pool_worker(1), _pool_detail()) is True
+
+
+def test_a_host_with_none_of_the_pools_cards_is_refused_either_way():
+    from gpustack.policies.candidate_selectors.vgpu_resource_fit_selector import (
+        VGPUResourceFitSelector,
+    )
+
+    parent = VGPUResourceFitSelector.__new__(VGPUResourceFitSelector)
+
+    assert parent._worker_matches_pool(_pool_worker(0), _pool_detail()) is False
+    assert _built(4)._worker_matches_pool(_pool_worker(0), _pool_detail()) is False

@@ -147,6 +147,27 @@ class VGPUResourceFitSelector(ScheduleCandidatesSelector):
     def _should_check_vision_tp_divisibility(self) -> bool:
         return False
 
+    def _cards_per_member(self) -> int:
+        """How many of the pool's cards one member occupies on its host.
+
+        One, because a vGPU member is one slice of one card. A subclass whose
+        member takes several says so here, and the pool filter below then
+        counts rather than merely looking -- a node with two of the pool's
+        cards can never serve a four-card member, whatever is free on it.
+        """
+        return 1
+
+    def _member_vram_capacity(self) -> int:
+        """How much VRAM one member of this deployment can be given here.
+
+        One slice, because that is what a vGPU member takes. A subclass whose
+        member takes several of them says so by overriding this -- the fit
+        below compares the whole member's claim, and measuring a four-card
+        member against one card's worth sends it down the spread-across-hosts
+        branch it can never use.
+        """
+        return self._slice_vram
+
     async def select_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
@@ -219,7 +240,7 @@ class VGPUResourceFitSelector(ScheduleCandidatesSelector):
         )
         self._ram_claim = get_model_ram_claim(self._model)
 
-        if self._vram_claim <= self._slice_vram:
+        if self._vram_claim <= self._member_vram_capacity():
             return [
                 self._create_candidate(worker, detail) for worker in matching_workers
             ]
@@ -306,10 +327,18 @@ class VGPUResourceFitSelector(ScheduleCandidatesSelector):
     ) -> bool:
         if not worker.status or not worker.status.gpu_devices:
             return False
-        return any(
-            _device_matches_pool(device.vendor or "", device.name or "", detail)
+        matching = sum(
+            1
             for device in worker.status.gpu_devices
+            if _device_matches_pool(device.vendor or "", device.name or "", detail)
         )
+        # Counted, not merely found. What is free here is the node-side
+        # scheduler's call (see `select_candidates`), but how many of the
+        # pool's cards the node HAS is inventory, and a node with fewer than a
+        # member needs cannot serve one however empty it is. Picking it anyway
+        # produces a workload that sits Pending against a resource the node
+        # never advertises enough of.
+        return matching >= self._cards_per_member()
 
     async def _load_cluster_devices(self) -> Optional[dict]:
         """Every node's ``Devices`` in the model's cluster, keyed by node name.

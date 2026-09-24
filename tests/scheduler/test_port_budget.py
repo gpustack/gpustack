@@ -75,10 +75,42 @@ class TestMemberDemand:
         assert demand == 1
 
 
+def _spanning(worker_id, subordinates, ports=None, named_ports=None):
+    return SimpleNamespace(
+        worker_id=worker_id,
+        ports=ports or [],
+        named_ports=named_ports or {},
+        distributed_servers=SimpleNamespace(
+            subordinate_workers=[SimpleNamespace(worker_id=w) for w in subordinates]
+        ),
+    )
+
+
 class TestPortsTaken:
-    def test_only_this_worker_counts(self):
+    def test_a_member_on_another_worker_does_not_count(self):
         instances = [_instance(1, ports=[40000, 40001]), _instance(2, ports=[40002])]
         assert port_budget.ports_taken_on(1, instances) == 2
+
+    def test_a_spanning_member_counts_on_every_machine_it_holds(self):
+        """A member is one row holding one set of ports, and each host it
+        landed on fences that same set: the subordinate's own pass finds the
+        ports already assigned and re-registers rather than allocating. Read
+        off `worker_id` alone, a running spanning member was invisible on its
+        subordinates — so the budget offered ports the allocator would then
+        refuse, and the member that took them wedges in `starting`."""
+        member = _spanning(
+            1,
+            [2],
+            ports=[40000],
+            named_ports={"kv_port": _band(base=40001, count=8)},
+        )
+
+        primary = port_budget.ports_taken_on(1, [member])
+        subordinate = port_budget.ports_taken_on(2, [member])
+
+        assert primary == 9
+        assert subordinate == primary, "the same ports are fenced on both"
+        assert port_budget.ports_taken_on(3, [member]) == 0
 
     def test_a_bands_base_is_not_charged_twice(self):
         """`ports` and `named_ports` overlap by design.
@@ -133,3 +165,106 @@ class TestCapacity:
 )
 def test_both_weight_holding_roles_declare_the_mooncake_band(role):
     assert port_budget.member_port_demand(_model(MOONCAKE), role, cards=4) > 1
+
+
+class TestPortsCommittedDuringOneSolve:
+    """VRAM crosses roles through `_translate`; ports have to as well.
+
+    `_share_out` deals two roles onto the same roomiest worker on purpose, so
+    the second role is priced on a host the first has already taken ports on —
+    and pricing it against the pre-solve snapshot is what admits a group for
+    more ports than the range holds, leaving its trailing members wedged in
+    `starting`.
+    """
+
+    @staticmethod
+    def _capacity(model):
+        from gpustack.scheduler.group_capacity import GroupCapacity
+
+        cap = GroupCapacity(SimpleNamespace(), model, [], [])
+        for role in (RoleNameEnum.PREFILL.value, RoleNameEnum.DECODE.value):
+            cap._projected[role] = SimpleNamespace(model=model)
+        return cap
+
+    def test_an_earlier_roles_members_are_charged_to_the_worker(self):
+        model = _model(MOONCAKE)
+        cap = self._capacity(model)
+        # What the counting pass offered for this (role, worker): a TP8 member.
+        cap._offers[(RoleNameEnum.PREFILL.value, 1)] = [
+            SimpleNamespace(gpu_indexes=list(range(8)))
+        ]
+
+        committed = cap._committed_port_demand(
+            [
+                SimpleNamespace(worker_id=1, role=RoleNameEnum.PREFILL.value),
+                SimpleNamespace(worker_id=1, role=RoleNameEnum.PREFILL.value),
+            ]
+        )
+
+        # Two members, each one serving port plus one per worker rank.
+        assert committed == {1: 2 * (1 + 8)}
+
+    def test_each_member_is_priced_at_its_own_roles_demand(self):
+        """A Mooncake prefill takes nine ports and its router two — a serving
+        port plus the prometheus band the recipe declares. Charging one at the
+        other's rate is how a budget stops being one."""
+        model = _model(MOONCAKE)
+        cap = self._capacity(model)
+        cap._projected[RoleNameEnum.ROUTER.value] = SimpleNamespace(model=model)
+        cap._offers[(RoleNameEnum.PREFILL.value, 1)] = [
+            SimpleNamespace(gpu_indexes=list(range(8)))
+        ]
+        cap._offers[(RoleNameEnum.ROUTER.value, 1)] = [SimpleNamespace(gpu_indexes=[])]
+
+        committed = cap._committed_port_demand(
+            [
+                SimpleNamespace(worker_id=1, role=RoleNameEnum.PREFILL.value),
+                SimpleNamespace(worker_id=1, role=RoleNameEnum.ROUTER.value),
+            ]
+        )
+
+        assert committed == {1: (1 + 8) + (1 + 1)}
+
+    def test_nothing_committed_yet_charges_nothing(self):
+        """The first role of a solve, and every single-role deployment."""
+        cap = self._capacity(_model(MOONCAKE))
+        assert cap._committed_port_demand([]) == {}
+
+    def test_a_member_spanning_two_machines_is_charged_on_both(self):
+        """The worker fences one set of ports on every host the member lands on.
+
+        `_assign_named_ports` sizes the bands once, on the primary, and each
+        host in the span then re-registers that same set. So a later role
+        asking for ports on the subordinate has to be priced against them, or
+        the solve promises room the allocator will find taken.
+        """
+        model = _model(MOONCAKE)
+        cap = self._capacity(model)
+        cap._offers[(RoleNameEnum.PREFILL.value, 1)] = [
+            SimpleNamespace(gpu_indexes=list(range(8)))
+        ]
+        cap._spans[(RoleNameEnum.PREFILL.value, 1)] = [1, 2]
+
+        committed = cap._committed_port_demand(
+            [SimpleNamespace(worker_id=1, role=RoleNameEnum.PREFILL.value)]
+        )
+
+        assert committed == {1: 1 + 8, 2: 1 + 8}
+
+    def test_each_combination_is_priced_at_its_own_width(self):
+        """The spanning pass makes ONE offer holding every combination it
+        found, so reading the first placement's cards would price a 2-card
+        combination at an 8-card one's width — in whichever direction the
+        first one happens to be wrong."""
+        model = _model(MOONCAKE)
+        cap = self._capacity(model)
+        cap._config = SimpleNamespace(service_port_range="40000-40063")
+        cap._ports_taken = {1: 0, 2: 0}
+        offer = SimpleNamespace(slots=20, placements=[])
+
+        wide = cap._within_port_budget(RoleNameEnum.PREFILL.value, 1, offer, 8)
+        narrow = cap._within_port_budget(RoleNameEnum.PREFILL.value, 2, offer, 2)
+
+        # 64 ports in the range: nine per member at eight cards, three at two.
+        assert wide == 64 // (1 + 8)
+        assert narrow == 20, "three ports each leaves room for every slot offered"

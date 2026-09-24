@@ -873,7 +873,12 @@ def _share_out(
             key=lambda kv: (
                 -kv[1],
                 load.get(kv[0], 0),
-                prefer.get(kv[0], 0),
+                # Absent ranks worse than any stated preference. The caller
+                # maps every warm worker to 0 to say "these are warm", so a
+                # default of 0 made warm and cold tie on this key and dropped
+                # the preference silently -- the between-domain score still
+                # counted file locality, which is why nothing looked wrong.
+                prefer.get(kv[0], len(prefer) + 1),
                 kv[0],
             ),
         )

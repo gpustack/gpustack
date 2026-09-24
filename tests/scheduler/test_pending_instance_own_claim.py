@@ -108,6 +108,32 @@ class TestTheArithmeticThatBlocksIt:
         for idx in (6, 7):
             assert allocatable.vram[idx] == TOTAL - CLAIM
 
+    def test_siblings_returned_to_the_queue_release_their_cards(self):
+        """The case the exclusion could not reach.
+
+        `find_candidate` drops the claim of the instance it is placing, and
+        only that one. When several members of a group come back to PENDING
+        together — a re-solve, a worker reconnect — each sibling's last claim
+        is still summed against the same cards, so every one of them is
+        weighed against the others' abandoned attempts and none can be placed.
+
+        The scheduler now clears the claim wherever it puts a row back in the
+        queue, which is what makes these rows the harmless kind below.
+        """
+        worker = _worker()
+        siblings = [_instance(500), _instance(501)]
+        for sibling in siblings:
+            # What the scheduler writes when it returns a row to PENDING.
+            sibling.computed_resource_claim = None
+        stuck = _instance(404)
+
+        allocatable = get_worker_allocatable_resource(
+            [mi for mi in siblings + [stuck] if mi.id != 404], worker
+        )
+
+        for idx in (6, 7):
+            assert allocatable.vram[idx] == TOTAL
+
     def test_a_claimless_pending_row_was_always_harmless(self):
         """Why this went unnoticed: a never-placed instance carries no claim,
         so the sum skipped it and the bug needed a re-deploy to show up."""

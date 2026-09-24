@@ -294,6 +294,17 @@ def _bind_probe(port: int, host: str) -> Optional[bool]:
     SO_REUSEADDR is deliberately *not* set: with it Linux happily binds
     0.0.0.0:p alongside an existing 127.0.0.1:p, which is exactly the
     occupancy this probe exists to see.
+
+    A consequence worth stating, because it looks like a bug from the outside:
+    a port left in TIME_WAIT by a process that just exited reads as taken, for
+    up to 2MSL (a minute on Linux). Retrying the bind with SO_REUSEADDR would
+    tell that apart from a live listener, and is still not worth it. The
+    asymmetry decides: calling a used port free leaves an engine wedged in
+    `starting` forever, which is the failure this whole function was widened
+    to prevent, while calling a free port used costs one more port out of a
+    range far larger than the members on a host. If a range ever does get
+    tight enough for TIME_WAIT to matter, widen the range -- do not loosen the
+    probe.
     """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -324,6 +335,14 @@ def is_port_available(port: int, host: str = "127.0.0.1") -> bool:
     Both 0.0.0.0 and `host` are probed: a bind of 0.0.0.0:p fails if anything
     holds p on any address, and probing `host` too covers the case where
     0.0.0.0 could not be probed at all.
+
+    **`host` has to be an address of the machine this runs on.** The answer is
+    reached by binding, and binding only ever sees this machine -- the connect
+    probe below is a fallback for when no bind was conclusive, and a local
+    bind of 0.0.0.0 is always conclusive, so it never runs for a remote
+    address. Every caller today passes the worker's own ip from the worker
+    itself, which is why this holds; a caller that asked about another host
+    would be told True for a port that host is listening on.
 
     Contract (several callers depend on it): returns a bool, never raises.
 

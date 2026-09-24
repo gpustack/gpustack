@@ -380,15 +380,35 @@ class Scheduler:
             model_instance.state_message = (
                 "The group could not be placed.\nDetails:\n" + "".join(messages)
             )
+            # Nothing is placed, so nothing is claimed. A claim left on a row
+            # that is back in the queue is counted against its own worker by
+            # `compute_worker_allocated`, and the next attempt is then weighed
+            # against memory only this instance's last attempt is holding.
+            model_instance.computed_resource_claim = None
             await ModelInstanceService(session).update(model_instance)
             logger.debug("Group %s not placeable: %s", model.name, "".join(messages))
             return True
 
+        # Written in one transaction, not row by row. A failure partway
+        # through a per-row commit leaves some members on workers and the rest
+        # PENDING -- which the next reconcile reads as a scale-out against a
+        # stale picture rather than as a group still forming, and which is the
+        # state solve-then-commit exists to make unreachable.
+        placed: List[ModelInstance] = []
         for instance_id, candidate in by_instance.items():
             row = next((i for i in group_instances if i.id == instance_id), None)
             if row is None:
                 continue
-            await apply_candidate_to_instance(session, model, row, candidate)
+            await apply_candidate_to_instance(
+                session, model, row, candidate, commit=False
+            )
+            placed.append(row)
+
+        # One commit for the whole group, and the log comes after it: saying a
+        # member was scheduled before the transaction lands would leave a
+        # record of a placement a rollback then took away.
+        await ModelInstanceService(session).batch_update(placed)
+        for row in placed:
             # INFO, unlike the single-instance path's debug: a group forms
             # once per generation and its member-to-card mapping is the thing
             # anyone diagnosing a disaggregated deployment asks for first.
@@ -398,7 +418,7 @@ class Scheduler:
                 row.name,
                 row.role,
                 row.worker_name,
-                candidate.gpu_indexes,
+                row.gpu_indexes,
             )
         return True
 
@@ -471,6 +491,11 @@ class Scheduler:
                     model_instance.state_message = (
                         "No suitable workers.\nDetails:\n" + "".join(messages)
                     )
+                    # Back in the queue means holding nothing. The exclusion a
+                    # few lines down only drops the claim of the instance being
+                    # placed; a sibling that came back here keeps its own, and
+                    # every later attempt is measured against it.
+                    model_instance.computed_resource_claim = None
                 if state_message != "":
                     model_instance.state_message = state_message
 
@@ -494,6 +519,8 @@ async def apply_candidate_to_instance(
     model: Model,
     model_instance: ModelInstance,
     candidate: ModelInstanceScheduleCandidate,
+    *,
+    commit: bool = True,
 ) -> None:
     """Write a chosen candidate onto its instance row.
 
@@ -543,7 +570,8 @@ async def apply_candidate_to_instance(
             role=model_instance.role,
         )
 
-    await ModelInstanceService(session).update(model_instance)
+    if commit:
+        await ModelInstanceService(session).update(model_instance)
 
 
 def _cards_per_member(model: Model) -> int:

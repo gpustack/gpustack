@@ -189,6 +189,19 @@ def test_a_declared_fraction_raises_the_claim_to_what_the_engine_will_seize(conf
     assert selector._vram_claim_on(_Card(_24G)) == int(_24G * 0.9)
 
 
+def test_a_repeated_flag_reserves_from_the_value_the_engine_will_use(config):
+    """argparse keeps the last occurrence, so the reservation must too.
+
+    Reading the first one books less than the engine seizes, and the member is
+    admitted onto a card it does not fit.
+    """
+    selector = _selector(
+        config, ["--gpu-memory-utilization=0.5", "--gpu-memory-utilization=0.95"]
+    )
+    assert selector._whole_card_fraction == 0.95
+    assert selector._vram_claim_on(_Card(_24G)) == int(_24G * 0.95)
+
+
 def test_sglang_says_the_same_thing_with_another_name(config):
     selector = _selector(config, ["--mem-fraction-static=0.75"])
     assert selector._whole_card_fraction == 0.75
@@ -212,3 +225,61 @@ def test_a_value_the_engine_would_reject_is_not_acted_on(config, raw):
         _selector(config, [f"--gpu-memory-utilization={raw}"])._whole_card_fraction
         is None
     )
+
+
+# --- what the multi-GPU path books, per card ------------------------------- #
+
+
+def _distribute(selector, worker, free_per_gpu):
+    """The per-card VRAM the multi-GPU path would book on this worker."""
+    from types import SimpleNamespace
+
+    allocatable = SimpleNamespace(
+        vram={i: free for i, free in enumerate(free_per_gpu)}, ram=64 * 1024**3
+    )
+    with patch(
+        "gpustack.policies.candidate_selectors."
+        "custom_backend_resource_fit_selector.get_worker_allocatable_resource",
+        return_value=allocatable,
+    ):
+        candidates = selector.find_single_worker_multi_gpu_candidates([worker])
+    if not candidates:
+        return None
+    return candidates[0].computed_resource_claim.vram
+
+
+def test_without_a_fraction_the_weights_are_split_not_repeated(config):
+    """The claim a custom backend has always made: weights divided across the
+    cards it lands on. Booking the whole estimate on each card would reserve it
+    once per GPU and starve everything placed after it."""
+    selector = _selector(config, ["--some-unrelated-flag=1"])
+    selector._vram_claim = 8 * 1024**3
+    worker = linux_nvidia_4_4080_16gx4()
+    free = [16 * 1024**3] * 4
+
+    vram = _distribute(selector, worker, free)
+
+    assert vram is not None
+    # 8 GiB of weights over four cards, not 8 GiB on each of them.
+    assert vram == {i: 2 * 1024**3 for i in range(4)}, vram
+
+
+def test_a_card_that_cannot_hold_its_own_fraction_is_left_out(config):
+    """The sum is not the test. One roomy card covering a nearly full one gets
+    the member admitted, and the distribution then books the full per-card
+    fraction against memory the ledger says is taken — an OOM at startup, not a
+    scheduling near-miss."""
+    selector = _selector(config, ["--gpu-memory-utilization=0.5"])
+    selector._vram_claim = 4 * 1024**3
+    worker = linux_nvidia_4_4080_16gx4()
+    # Three cards free, one with 1 GiB left — it cannot hold its 8 GiB share.
+    free = [16 * 1024**3, 16 * 1024**3, 16 * 1024**3, 1024**3]
+
+    vram = _distribute(selector, worker, free)
+
+    assert vram is not None, "the three roomy cards should still form a member"
+    # The full card is gone from the candidate, and the three that remain each
+    # carry the same per-card fraction rather than a share of the weights.
+    assert 3 not in vram, vram
+    assert len(set(vram.values())) == 1, vram
+    assert all(v > 4 * 1024**3 for v in vram.values()), vram
