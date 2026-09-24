@@ -110,8 +110,20 @@ def _parse(value: str, *, where: str) -> Optional[Dict[str, Any]]:
     return parsed
 
 
-def _split_flags(arguments: List[str]) -> Tuple[List[int], List[str]]:
-    """Positions of the flag and the raw value that follows each.
+def _split_flags(arguments: List[str]) -> Tuple[List[int], List[str], List[int]]:
+    """Positions of the flag, the raw value at each, and how many tokens it took.
+
+    **Both spellings**, because argparse takes both and the two assemblers do
+    not have to agree on one: `pd_injection` stands down when the role writes
+    `--kv-transfer-config=<json>`, and the cache still injects the spaced form.
+    Recognising only the spaced one here left that pair looking like a single
+    descriptor, so the merge below never ran and the engine got two values of
+    one flag -- argparse keeping the last, one connector silently gone, which
+    is the failure this module exists to prevent.
+
+    The width is returned because the caller rewrites the argv: the spaced form
+    occupies two tokens and the `=` form one, and dropping a fixed two would
+    eat the argument after it.
 
     A flag at the very end has no value and is left alone rather than being
     treated as an empty descriptor: it is malformed input, and the engine's
@@ -119,15 +131,25 @@ def _split_flags(arguments: List[str]) -> Tuple[List[int], List[str]]:
     """
     positions: List[int] = []
     values: List[str] = []
+    widths: List[int] = []
+    joined = KV_TRANSFER_CONFIG_FLAG + "="
     index = 0
-    while index < len(arguments) - 1:
-        if arguments[index] == KV_TRANSFER_CONFIG_FLAG:
+    while index < len(arguments):
+        token = arguments[index]
+        if token == KV_TRANSFER_CONFIG_FLAG and index + 1 < len(arguments):
             positions.append(index)
             values.append(arguments[index + 1])
+            widths.append(2)
             index += 2
             continue
+        if token.startswith(joined):
+            positions.append(index)
+            values.append(token[len(joined) :])
+            widths.append(1)
+            index += 1
+            continue
         index += 1
-    return positions, values
+    return positions, values, widths
 
 
 def _lift_top_level_only(
@@ -228,7 +250,7 @@ def compose_kv_transfer_config(
         A new argv with one flag, or the original list object when there was
         nothing to do — callers rely on the untouched case being untouched.
     """
-    positions, values = _split_flags(arguments)
+    positions, values, widths = _split_flags(arguments)
     if len(positions) < 2:
         return arguments
 
@@ -272,9 +294,8 @@ def compose_kv_transfer_config(
     encoded = json.dumps(composed, separators=(",", ":"))
     result: List[str] = []
     drop = set()
-    for position in positions:
-        drop.add(position)
-        drop.add(position + 1)
+    for position, width in zip(positions, widths):
+        drop.update(range(position, position + width))
     first = positions[0]
     for index, token in enumerate(arguments):
         if index == first:
@@ -293,7 +314,7 @@ def descriptor_in(arguments: List[str]) -> Optional[Dict[str, Any]]:
     Used to tell the cache's contribution apart from the PD injector's: the
     caller renders the cache branch on its own and hands the result here.
     """
-    positions, values = _split_flags(arguments)
+    positions, values, _ = _split_flags(arguments)
     if len(positions) != 1:
         return None
     return _parse(values[0], where="cache arguments")

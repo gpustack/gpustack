@@ -67,7 +67,7 @@ _SIGNATURES: Tuple[Tuple[str, str, str], ...] = (
         "NIXL_ERR_BACKEND",
         r"NIXL_ERR_BACKEND",
         "The KV transport could not reach its peer. This is almost always the "
-        "network interface: check that kv_ifname names the interface carrying "
+        "network interface: check that kv_transfer_ifname names the interface carrying "
         "KV traffic on both workers, and that the address the engine "
         "advertised is one the peer can route to. Left to itself the transport "
         "picks up a container bridge and advertises an unroutable address.",
@@ -130,7 +130,7 @@ _SIGNATURES: Tuple[Tuple[str, str, str], ...] = (
         r"ZMQError: No such device",
         "The interface name the engine was given does not exist on this "
         "worker. If it looks like an unresolved template placeholder, the "
-        "value could not be derived — set kv_ifname on this worker.",
+        "value could not be derived — set kv_transfer_ifname on this worker.",
     ),
     (
         "unresolved placeholder",

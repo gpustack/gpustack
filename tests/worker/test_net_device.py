@@ -60,26 +60,32 @@ def _worker(ifname: str = "eth0", gpu_devices=None) -> Worker:
     )
 
 
-def test_kv_ifname_overrides_worker_ifname(config):
+def test_kv_transfer_ifname_overrides_worker_ifname(config):
     """The escape hatch exists precisely because the auto-detected NIC is the
     management one; if it did not win, setting it would be a no-op."""
-    assert derive_net_device(_worker(ifname="eth0"), config(kv_ifname="ib0")) == "ib0"
+    assert (
+        derive_net_device(_worker(ifname="eth0"), config(kv_transfer_ifname="ib0"))
+        == "ib0"
+    )
 
 
-def test_kv_ifname_wins_on_a_multi_nic_host(config, nics):
-    """The refusal below is what kv_ifname is the answer to, so it must not be
+def test_kv_transfer_ifname_wins_on_a_multi_nic_host(config, nics):
+    """The refusal below is what kv_transfer_ifname is the answer to, so it must not be
     reachable once the operator has answered."""
     nics(["eno1", "ib0"])
-    assert derive_net_device(_worker(ifname="eno1"), config(kv_ifname="ib0")) == "ib0"
+    assert (
+        derive_net_device(_worker(ifname="eno1"), config(kv_transfer_ifname="ib0"))
+        == "ib0"
+    )
 
 
-def test_kv_ifname_is_honoured_even_when_it_is_not_a_candidate(config, nics):
+def test_kv_transfer_ifname_is_honoured_even_when_it_is_not_a_candidate(config, nics):
     """The candidate filter gates the automatic path only. An explicit value is
     an instruction, not a proposal -- an RDMA-only netdev, or one this host's
     naming does not resemble, must still get through."""
     nics(["eno1"])
     assert (
-        derive_net_device(_worker(ifname="eno1"), config(kv_ifname="mlx5_0"))
+        derive_net_device(_worker(ifname="eno1"), config(kv_transfer_ifname="mlx5_0"))
         == "mlx5_0"
     )
 
@@ -101,9 +107,12 @@ def test_placeholder_worker_row_is_not_a_value(config):
     assert derive_net_device(_worker(ifname="   "), config()) is None
 
 
-def test_blank_kv_ifname_defers_instead_of_blanking_the_result(config, nics):
+def test_blank_kv_transfer_ifname_defers_instead_of_blanking_the_result(config, nics):
     nics(["eth1"])
-    assert derive_net_device(_worker(ifname="eth1"), config(kv_ifname="  ")) == "eth1"
+    assert (
+        derive_net_device(_worker(ifname="eth1"), config(kv_transfer_ifname="  "))
+        == "eth1"
+    )
 
 
 def test_ascend_per_card_iface_is_never_used(config, nics):
@@ -150,8 +159,8 @@ def test_ascend_per_card_iface_does_not_rescue_a_missing_worker_ifname(config):
     assert derive_net_device(worker, config()) is None
 
 
-def test_kv_ifname_defaults_to_none(config):
-    assert config().kv_ifname is None
+def test_kv_transfer_ifname_defaults_to_none(config):
+    assert config().kv_transfer_ifname is None
 
 
 #
@@ -179,7 +188,7 @@ def test_the_refusal_names_the_candidates_so_the_operator_can_transcribe_one(
     for name in ("eno1", "ib0", "ib1"):
         assert name in caplog.text
     # The remedy has to be in the message, not only in the docs.
-    assert "kv_ifname" in caplog.text
+    assert "kv_transfer_ifname" in caplog.text
 
 
 def test_the_refusal_reports_the_management_nic_as_the_likely_answer(
@@ -243,7 +252,7 @@ def test_management_nic_outside_the_candidate_set_warns_but_still_resolves(
 def test_control_plane_derives_on_a_multi_nic_host_instead_of_refusing(
     config, nics, caplog
 ):
-    """A host with many candidate NICs must not make `kv_ifname` mandatory for
+    """A host with many candidate NICs must not make `kv_transfer_ifname` mandatory for
     a value the platform already holds: `HCCL_IF_IP` is the worker's
     registration IP and HCCL requires it to sit on the interface
     `HCCL_SOCKET_IFNAME` names, which is what `Worker.ifname` is."""
@@ -276,14 +285,14 @@ def test_the_data_plane_is_what_an_undeclared_caller_gets(config, nics):
     assert derive_net_device(_worker(ifname="eno1"), config()) is None
 
 
-def test_kv_ifname_still_wins_on_the_control_plane(config, nics):
+def test_kv_transfer_ifname_still_wins_on_the_control_plane(config, nics):
     """The escape hatch is per-worker and no plane may bypass it: a machine
     whose handshake really does belong on another NIC must stay expressible."""
     nics(["bond1", "eno1"])
     assert (
         derive_net_device(
             _worker(ifname="bond1"),
-            config(kv_ifname="eno1"),
+            config(kv_transfer_ifname="eno1"),
             PDNetDevicePlaneEnum.CONTROL,
         )
         == "eno1"
@@ -301,7 +310,7 @@ def test_control_plane_still_invents_nothing_without_a_worker_ifname(config, cap
             )
             is None
         )
-    assert "kv_ifname" in caplog.text
+    assert "kv_transfer_ifname" in caplog.text
 
 
 def test_control_plane_does_not_second_guess_the_worker_ifname(config, monkeypatch):
@@ -417,7 +426,7 @@ def test_enumeration_excludes_link_local_only_interfaces(host):
 
 def test_enumeration_reports_a_real_dual_homed_host(host):
     """The case the refusal is for: a management port and a fabric port, both
-    real, both up, and nothing here able to tell which carries the KV plane."""
+    real, both up, and nothing here able to tell which carries the KV transfer."""
     host(
         {
             "lo": ([_v4("127.0.0.1")], _up("up,loopback,running")),

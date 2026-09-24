@@ -34,7 +34,10 @@ from pydantic import BaseModel
 from gpustack.schemas.models import role_effective_model
 from gpustack.schemas.pd_modes import PDKVLeaseTargetEnum, PDMode, PDModeRole
 from gpustack.server.pd_mode_catalog import get_pd_mode
-from gpustack.server.pd_pairing import selector_cards_per_replica
+from gpustack.server.pd_pairing import (
+    selector_cards_per_replica,
+    selector_spans_workers,
+)
 from gpustack.utils.command import find_int_parameter, flatten_to_argv
 from gpustack.utils.template import render, render_values
 from gpustack.worker.kv_transfer import KV_TRANSFER_CONFIG_FLAG
@@ -301,7 +304,12 @@ def render_pd_injection(
         else _render_tree(role.connector, context, f"{where} connector")
     )
     if user_owns_kv_config:
-        logger.info(
+        # Warning rather than info, and level with the env override beside it:
+        # the recipe's connector is the whole of what makes the role talk to
+        # its peer, so withholding it can leave a group that starts, serves and
+        # transfers nothing. A deliberate override is worth one line of log; an
+        # accidental one is worth finding.
+        logger.warning(
             "Role '%s' sets %s itself; PD mode '%s' is not adding its own "
             "connector descriptor. The role's own value is what the engine "
             "gets.",
@@ -389,6 +397,16 @@ def _refuse_unrendered(injection: "PDInjection", where: str) -> None:
         # where the transport expects a file, and neither says why.
         for match in _ANY_PLACEHOLDER.finditer(str(path)):
             unrendered.append(match.group(0))
+    for path, content in sorted(injection.files.items()):
+        # The most invisible of the four. A placeholder here is in no argv echo
+        # and no environment -- it is written into a config file the engine
+        # reads, and the interface name or port band it was meant to carry is
+        # exactly what a transfer engine fails on, far from anything that names
+        # the cause.
+        for match in _ANY_PLACEHOLDER.finditer(str(path)):
+            unrendered.append(match.group(0))
+        for match in _ANY_PLACEHOLDER.finditer(str(content)):
+            unrendered.append(f"{path}: {match.group(0)}")
 
     if not unrendered:
         return
@@ -400,7 +418,7 @@ def _refuse_unrendered(injection: "PDInjection", where: str) -> None:
         f"{where}: {len(unrendered)} configuration value(s) would reach the "
         f"engine unrendered — {', '.join(unrendered)}. A placeholder with no "
         "value is a port band that was not allocated, a network interface "
-        "that could not be derived (set `kv_ifname` on the worker when the "
+        "that could not be derived (set `kv_transfer_ifname` on the worker when the "
         "host has several), or a parallelism the role never declared."
     )
 
@@ -538,12 +556,19 @@ def _cross_role_variables(model, instance=None) -> Dict[str, object]:
         if not name:
             continue
         projected = role_effective_model(model, name)
-        cards = (
-            None
-            if name == running_role
-            else selector_cards_per_replica(role)  # peer, read off its own pin
-        )
-        fields = _role_fields(projected, name, instance, pinned_cards=cards)
+        is_peer = name != running_role
+        cards = selector_cards_per_replica(role) if is_peer else None
+        # A peer pinned across machines is left unresolved rather than sized
+        # from the member that happens to be starting. Its own pin says None
+        # for the same reason an absent pin does, so without this the peer
+        # borrows the running member's card count -- a four-card prefill
+        # rendering `{{roles.decode.tensor_parallel_size}}` as 4 while decode
+        # spans two workers, which is the number going into a Mooncake
+        # descriptor that decode's engine then contradicts. Unresolved, the
+        # placeholder survives to `_refuse_unrendered`, and the launch refuses
+        # instead of pairing badly.
+        borrows_from = None if (is_peer and selector_spans_workers(role)) else instance
+        fields = _role_fields(projected, name, borrows_from, pinned_cards=cards)
         for field, value in fields.items():
             context[f"roles.{name}.{field}"] = value
     return context
@@ -626,7 +651,11 @@ def _implicit_parallelism(
 
     out: Dict[str, object] = {}
     if "tensor_parallel_size" not in declared:
-        cards = pinned_cards or len(getattr(instance, "gpu_indexes", None) or [])
+        cards = (
+            pinned_cards
+            if pinned_cards is not None
+            else len(getattr(instance, "gpu_indexes", None) or [])
+        )
         if cards:
             out["tensor_parallel_size"] = cards
     if "data_parallel_size" not in declared:

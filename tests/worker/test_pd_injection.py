@@ -204,7 +204,7 @@ def test_an_underivable_net_device_stops_the_launch(caplog):
     variables.pop("net_device")
 
     with caplog.at_level(logging.WARNING):
-        with pytest.raises(PDInjectionError, match="kv_ifname") as e:
+        with pytest.raises(PDInjectionError, match="kv_transfer_ifname") as e:
             render_pd_injection(_model(), _instance(), variables)
 
     assert "net_device" in str(e.value)
@@ -372,7 +372,13 @@ def _backend(model, instance):
     backend._model = role_effective_model(model, instance.role)
     backend._model_instance = instance
     backend._worker = types.SimpleNamespace(id=1, ip="192.168.50.10", ifname="eth0")
-    backend._config = types.SimpleNamespace(data_dir="/var/lib/gpustack")
+    # `kv_transfer_ifname` because this is the escape hatch a real multi-NIC host has
+    # to use: the data plane refuses to derive a KV interface when several
+    # are plausible, so a stub without it makes the outcome depend on how
+    # many interfaces the machine running the tests happens to have.
+    backend._config = types.SimpleNamespace(
+        data_dir="/var/lib/gpustack", kv_transfer_ifname="eth0"
+    )
     backend._model_path = "/models/llm"
     backend.inference_backend = None
     backend._get_selected_gpu_devices = lambda: []
@@ -390,8 +396,9 @@ def test_start_path_carries_env_args_and_attributes_them_to_gpustack():
     env = backend._get_configured_env()
     assert env["VLLM_NIXL_SIDE_CHANNEL_HOST"] == "192.168.50.10"
     assert env["VLLM_NIXL_SIDE_CHANNEL_PORT"] == "5600"
-    # Derived from the worker's own interface until the net-device module
-    # lands; either way it is never left as "all".
+    # The NIC the worker was told to put KV traffic on, never left as "all":
+    # UCX picking for itself writes peer-unroutable bridge addresses into the
+    # NIXL metadata and the far side fails the handshake.
     assert env["UCX_NET_DEVICES"] == "eth0"
 
     tokens = backend._flatten_backend_param()
@@ -487,18 +494,36 @@ def test_a_refused_injection_stays_refused_at_every_seam():
     sequence, and a seam that swallowed the first one would then start the
     engine with neither connector.
 
-    Uses the one clash that is still a refusal — a hand-written
-    `--kv-transfer-config` under a mode that injects its own. The cache is no
-    longer one of these, because it is composed rather than refused."""
-    model = _model(
-        backend_parameters=[KV_TRANSFER_CONFIG_FLAG, '{"kv_connector":"Mine"}']
-    )
-    backend = _backend(model, _instance())
+    A band the scheduler never allocated is the refusal used here: the recipe
+    names `{{ports.kv_side_channel}}` and this instance carries no such band,
+    so the placeholder would otherwise reach the engine verbatim.
+    """
+    backend = _backend(_model(), _instance(named_ports={}))
 
     with pytest.raises(PDInjectionError):
         backend._get_configured_env()
     with pytest.raises(PDInjectionError):
         backend._flatten_backend_param()
+
+
+def test_a_role_that_writes_its_own_connector_keeps_it(caplog):
+    """Same rule as an env override: what the role wrote explicitly wins.
+
+    Injecting a second `--kv-transfer-config` beside it would leave the engine
+    with two descriptors for one flag, so the recipe's own is withheld — and
+    said out loud, because a connector silently not injected is a group that
+    comes up looking configured and transfers nothing.
+    """
+    model = _model(
+        backend_parameters=[KV_TRANSFER_CONFIG_FLAG, '{"kv_connector":"Mine"}']
+    )
+    backend = _backend(model, _instance())
+
+    with caplog.at_level(logging.WARNING):
+        tokens = backend._flatten_backend_param()
+
+    assert tokens == [KV_TRANSFER_CONFIG_FLAG, '{"kv_connector":"Mine"}']
+    assert KV_TRANSFER_CONFIG_FLAG in caplog.text
 
 
 def test_model_env_overrides_the_injection_but_says_so(caplog):
@@ -889,3 +914,59 @@ def test_a_peers_declared_parallelism_still_wins_over_its_pin():
         "kv_connector_extra_config"
     ]
     assert extra["decode"]["tp_size"] == 2
+
+
+def test_a_placeholder_inside_a_rendered_file_is_refused_too():
+    """The least visible of the four places one can survive.
+
+    A file's contents reach no argv echo and no environment — they are written
+    into a config the engine reads, and an interface name or port band left as
+    `{{...}}` there fails inside the transfer engine, far from anything that
+    names the cause.
+    """
+    from gpustack.worker.pd_injection import PDInjection, _refuse_unrendered
+
+    injection = PDInjection(
+        files={"/etc/mooncake.json": '{"device_name": "{{net_device}}"}'}
+    )
+
+    with pytest.raises(PDInjectionError) as excinfo:
+        _refuse_unrendered(injection, "PD mode 'x' role 'prefill'")
+
+    assert "/etc/mooncake.json" in str(excinfo.value)
+    assert "{{net_device}}" in str(excinfo.value)
+
+
+def test_a_peer_pinned_across_machines_refuses_rather_than_borrows():
+    """The third case, between the two above: a peer that DID pin, across
+    machines.
+
+    Its own pin cannot answer — the world size of a distributed member is
+    split into tp and pp much further down the vLLM path — so the pin reads as
+    silent, exactly as no pin does. Borrowing the running member's count there
+    writes a number into Mooncake's descriptor that decode's engine then
+    contradicts, and a handshake failure is a worse way to learn this than a
+    launch that refuses. The placeholder survives to the refusal instead.
+    """
+    from gpustack.schemas.models import GPUSelector
+
+    model = _model(
+        mode=PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        roles=[
+            RoleSpec(name="prefill", replicas=1),
+            RoleSpec(
+                name="decode",
+                replicas=1,
+                gpu_selector=GPUSelector(gpu_ids=["w1:npu:0", "w2:npu:0"]),
+            ),
+        ],
+    )
+    instance = _instance(
+        named_ports={"kv_port": PortBand(base=41100, count=4)},
+        gpu_indexes=[0, 1, 2, 3],
+    )
+
+    with pytest.raises(PDInjectionError) as refused:
+        render_pd_injection(model, instance, _variables())
+
+    assert "tensor_parallel_size" in str(refused.value)

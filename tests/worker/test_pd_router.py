@@ -448,7 +448,7 @@ def test_the_runner_image_is_resolved_against_the_groups_engine():
 
     fake = SimpleNamespace(
         _worker=SimpleNamespace(ifname="eno1", name="node-a"),
-        _config=SimpleNamespace(kv_ifname=None),
+        _config=SimpleNamespace(kv_transfer_ifname=None),
         # The unprojected model still carries the group's engine; the projected
         # one has been switched to Custom.
         _model_spec=spec,
@@ -508,7 +508,7 @@ def test_the_net_device_plane_comes_from_the_deployments_recipe():
 
 def test_an_unanswerable_plane_degrades_to_the_stricter_one():
     """A mode the catalog cannot answer for must not relax the multi-NIC
-    refusal: `data` then costs an operator one `kv_ifname`, where the other
+    refusal: `data` then costs an operator one `kv_transfer_ifname`, where the other
     direction would put KV bytes on the management NIC without saying so."""
     from types import SimpleNamespace
 

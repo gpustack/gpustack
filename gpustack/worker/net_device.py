@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 # Interfaces that exist only to move packets between namespaces on this host.
-# The KV plane can never ride them, and letting one through fails like this:
+# The KV transfer can never ride them, and letting one through fails like this:
 # UCX advertises the address behind the bridge (``172.17.x``,
 # ``10.42.x``) in the NIXL metadata, the peer cannot route to it, and
 # ``loadRemoteMD()`` reports ``NIXL_ERR_BACKEND`` a whole handshake away from
@@ -86,7 +86,7 @@ def _has_routable_address(addrs) -> bool:
 
 
 def candidate_kv_interfaces() -> List[str]:
-    """The host NICs that could plausibly carry the KV plane.
+    """The host NICs that could plausibly carry the KV transfer.
 
     Runs in the worker process, which is the only place the question can be
     answered at all: ``WorkerStatus`` carries no host NIC inventory, so the
@@ -115,14 +115,14 @@ def candidate_kv_interfaces() -> List[str]:
 def _multi_nic_refusal(worker_name: str, worker_ifname: str, candidates: List[str]):
     detail = (
         f" The detected management-plane NIC is {worker_ifname!r}; set "
-        f"kv_ifname to it if that is really where the KV traffic belongs."
+        f"kv_transfer_ifname to it if that is really where the KV traffic belongs."
         if worker_ifname
         else ""
     )
     logger.error(
-        "Refusing to derive the KV plane network interface for worker %s: "
+        "Refusing to derive the KV transfer network interface for worker %s: "
         "this host has %d candidate interfaces (%s) and nothing here can tell "
-        "which one the KV traffic should ride. Set kv_ifname on this worker to "
+        "which one the KV traffic should ride. Set kv_transfer_ifname on this worker to "
         "name it explicitly.%s",
         worker_name,
         len(candidates),
@@ -138,7 +138,7 @@ def derive_net_device(
 ) -> Optional[str]:
     """The value of ``{{net_device}}``: the NIC this recipe's ``plane`` rides.
 
-    Priority: ``config.kv_ifname`` (per-worker escape hatch) -> ``Worker.ifname``
+    Priority: ``config.kv_transfer_ifname`` (per-worker escape hatch) -> ``Worker.ifname``
     *if this host has only one plausible KV NIC* -> ``None``.
 
     **``plane`` decides whether that middle gate applies at all**, and it is
@@ -151,7 +151,7 @@ def derive_net_device(
     the platform already knows — or mistype it, which on Ascend puts
     ``HCCL_IF_IP`` on a NIC that does not hold it.
 
-    ``kv_ifname`` still wins on both planes. It is the per-worker escape hatch,
+    ``kv_transfer_ifname`` still wins on both planes. It is the per-worker escape hatch,
     and a plane that could bypass it would make setting it a no-op exactly
     where an operator went to the trouble of answering.
 
@@ -198,9 +198,9 @@ def derive_net_device(
     - On other vendors the field is only ever populated by hand via
       ``resources.gpu_devices``, and filling that in swaps the whole GPU
       detector for the ``Custom`` one, freezing VRAM/model/power discovery.
-      That is a worse trade than typing one ``kv_ifname``.
+      That is a worse trade than typing one ``kv_transfer_ifname``.
 
-    One boundary remains, and it lands the caller on ``kv_ifname`` too: when
+    One boundary remains, and it lands the caller on ``kv_transfer_ifname`` too: when
     ``gpu_type_selector`` is set (the only way to get a gang), the cards are
     assigned by the device plugin *after* the pod binds, so no per-card source
     could have been used at render time anyway.
@@ -208,9 +208,9 @@ def derive_net_device(
     # ``Worker.ifname`` is a non-optional ``str``, but pool-provisioned rows are
     # created with "" as a placeholder before the worker ever reports in, so
     # emptiness -- not absence -- is what marks "unknown" on both sources.
-    kv_ifname = (config.kv_ifname or "").strip()
-    if kv_ifname:
-        return kv_ifname
+    kv_transfer_ifname = (config.kv_transfer_ifname or "").strip()
+    if kv_transfer_ifname:
+        return kv_transfer_ifname
 
     worker_name = worker.name or "<unknown>"
     worker_ifname = (worker.ifname or "").strip()
@@ -254,7 +254,7 @@ def derive_net_device(
                 "The management-plane NIC %r of worker %s is not among the "
                 "candidate KV interfaces (%s) -- it looks virtual or down. "
                 "UCX may advertise an address the peer cannot route; set "
-                "kv_ifname if the KV plane belongs elsewhere.",
+                "kv_transfer_ifname if the KV transfer belongs elsewhere.",
                 worker_ifname,
                 worker_name,
                 ", ".join(candidates),
@@ -262,9 +262,9 @@ def derive_net_device(
         return worker_ifname
 
     logger.warning(
-        "Cannot derive the KV plane network interface for worker %s: "
-        "neither kv_ifname nor a detected worker ifname is available. "
-        "Set kv_ifname on that worker to name the interface explicitly.",
+        "Cannot derive the KV transfer network interface for worker %s: "
+        "neither kv_transfer_ifname nor a detected worker ifname is available. "
+        "Set kv_transfer_ifname on that worker to name the interface explicitly.",
         worker_name,
     )
     return None
