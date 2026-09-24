@@ -37,6 +37,7 @@ from gpustack.utils.network import parse_port_range
 # placed on a host, that one decides whether it can start there, and a private
 # copy here would drift into a scheduler that promises room the allocator does
 # not find.
+from gpustack.schemas.models import member_worker_ids
 from gpustack.worker.pd_injection import band_specs_for, band_width
 
 logger = logging.getLogger(__name__)
@@ -89,11 +90,26 @@ def ports_taken_on(
     they come out of the *same* `service_port_range`. A host running a cache
     server has two fewer ports for members, and a group is exactly the kind of
     workload that is placed onto cache-bearing hosts on purpose (F6).
+
+    **A member counts on every machine it spans, not on the one its row is
+    filed under.** One `ModelInstance` holds one set of ports:
+    `_assign_named_ports` sizes the bands once on the primary, and each host
+    the member landed on then fences that same set through
+    `_register_assigned_ports` -- a subordinate's own pass finds `mi.port`
+    already set and re-registers rather than allocating. Filtering on
+    `worker_id` made a running spanning member invisible on its subordinates,
+    so this read handed back more free ports than the host has and the solve
+    promised room the allocator would not find. `_committed_port_demand`
+    charges the members of the solve in hand the same way, for the same
+    reason.
+
+    A cache instance has no spanning form -- one per worker, by its own
+    constraint -- so that loop still asks about the one machine it is on.
     """
     taken: Set[int] = set()
 
     for instance in model_instances:
-        if getattr(instance, "worker_id", None) != worker_id:
+        if worker_id not in member_worker_ids(instance):
             continue
         for port in getattr(instance, "ports", None) or []:
             taken.add(port)

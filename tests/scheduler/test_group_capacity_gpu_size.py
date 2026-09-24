@@ -231,3 +231,61 @@ async def test_sizing_does_not_apply_the_one_gpu_size_rule():
     # Sizing sees every worker, so a 48 GiB-only domain is still worth a look.
     assert unbanded[1] == 1 and unbanded[2] == 1
     assert unbanded[3] == 1
+
+
+class _OnlySpanning:
+    """Fits nothing on one machine, and picks the smallest card as the primary.
+
+    The primary choice is what makes the rule observable: with the losing band
+    still in the candidate set, the combination it returns is anchored on a
+    card the band rule just ruled out.
+    """
+
+    def __init__(self, instances):
+        pass
+
+    async def select_candidates(self, workers):
+        if len(workers) < 2:
+            return []
+        ordered = sorted(workers, key=lambda w: w.status.gpu_devices[0].memory.total)
+        primary, *rest = ordered
+        return [
+            SimpleNamespace(
+                worker=primary,
+                gpu_indexes=[0],
+                gpu_type="cuda",
+                gpu_addresses=None,
+                computed_resource_claim=CLAIM,
+                subordinate_workers=[
+                    SimpleNamespace(worker_id=rest[0].id, gpu_indexes=[0])
+                ],
+                overcommit=False,
+            )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_a_spanning_member_stays_inside_the_band_that_was_kept():
+    """The rule survives the fallback that runs when nothing fits on one host.
+
+    `_spanning` rebuilds its candidate set from the eligible workers, so
+    without re-applying the rule it combines the machines the single-machine
+    pass just zeroed — and the engines do not take uneven VRAM inside one
+    replica any more than the router takes uneven caches between two.
+    """
+    workers = [_worker(1, 48), _worker(2, 48), _worker(3, 32), _worker(4, 32)]
+    model = _model()
+    # The switch the fallback gates on; the projection applies it as a default
+    # for the engines that support it, and this stub does not go through one.
+    model.distributed_inference_across_workers = True
+    cap = _capacity(workers, model)
+    cap._selector = lambda m, instances, cpu_only, ram_claim=None: _OnlySpanning(
+        instances
+    )
+
+    slots = await cap("prefill", [1, 2, 3, 4], [])
+
+    anchored = {worker_id for worker_id, count in slots.items() if count}
+    assert anchored, "the spanning fallback offered nothing at all"
+    # 3 and 4 are the 32 GiB band, which the rule zeroed before the fallback ran.
+    assert anchored <= {1, 2}, slots

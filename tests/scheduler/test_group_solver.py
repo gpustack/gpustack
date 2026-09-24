@@ -1014,6 +1014,31 @@ async def test_preference_breaks_a_tie_that_room_and_balance_left_open():
     assert isinstance(got, GroupPlacement)
 
 
+def test_a_worker_outside_the_preference_map_ranks_below_every_worker_in_it():
+    """The shape the scheduler actually passes.
+
+    It maps every warm worker to 0 — the map says "these are warm", not how
+    they order among themselves — so a default of 0 for an absent worker made
+    warm and cold tie and dropped the preference entirely. Nothing looked
+    wrong because the between-domain score still counted file locality, and
+    the existing tie-break test maps both workers and so never exercised the
+    absent case.
+
+    Asserted on `_share_out` directly: the preference only reaches it once a
+    group has failed to fit on one host, which a placement-level test would
+    have to build a whole spanning cluster to reach.
+    """
+    from gpustack.scheduler.group_solver import _share_out
+
+    # Identical room and nothing placed, so only the preference can separate
+    # them — and the warm one is the HIGHER id on purpose: with the buggy
+    # default both workers tied here and the final `worker_id` tie-break
+    # handed it to worker 1, which is the right answer for the wrong reason.
+    got = _share_out({1: 1, 2: 1}, replicas=1, preference={2: 0})
+
+    assert got == [(2, 1)], got
+
+
 @pytest.mark.asyncio
 async def test_preference_never_outranks_room():
     """A rank map orders what capacity has already tied. Letting it move a

@@ -36,7 +36,7 @@ from gpustack.schemas.clusters import Cluster, GatherStrategyEnum
 from gpustack.schemas.models import (
     Model,
     ModelInstance,
-    RoleNameEnum,
+    role_takes_no_accelerator,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.scheduler.group_capacity import (
@@ -76,7 +76,11 @@ def is_group_forming(model: Model, instances: Sequence[ModelInstance]) -> bool:
     if not model.roles:
         return False
 
-    gpu_members = [i for i in instances if i.role != RoleNameEnum.ROUTER.value]
+    # The same predicate every other reader of this distinction uses. Naming
+    # the router directly would count a future accelerator-free role as a GPU
+    # member -- and those rows are created later by the dependency gate, so a
+    # leftover one would make a forming group read as a scale-out.
+    gpu_members = [i for i in instances if not role_takes_no_accelerator(model, i.role)]
     if not gpu_members:
         return False
     if all(i.worker_id is not None for i in gpu_members):
@@ -252,14 +256,22 @@ async def schedule_group(
                 "change in the cluster; the server log names the member."
             ]
         rows = [i for i in group_instances if i.role == role and i.worker_id is None]
-        if len(rows) < len(candidates):
-            # Fewer rows than the solve placed: the convergence loop has not
-            # created them all yet. Refuse rather than place part of a role —
-            # the next cycle sees a complete picture.
+        if len(rows) != len(candidates):
+            # Either direction is a picture still settling, and neither may be
+            # placed from: too few rows and part of a role would be placed, too
+            # many and `zip` would silently drop the surplus — leaving rows
+            # PENDING with no candidate and no state message, re-solving the
+            # whole group every cycle with nothing to show for it. The
+            # controller closes both gaps (it creates what is missing and
+            # drains what is spare), so refusing costs a cycle and says why.
+            detail = (
+                "waiting for the rest to be created."
+                if len(rows) < len(candidates)
+                else "waiting for the surplus to be reclaimed."
+            )
             return None, [
                 f"Role '{role}' has {len(rows)} unplaced members but the "
-                f"group was solved for {len(candidates)}; waiting for the "
-                "rest to be created."
+                f"group was solved for {len(candidates)}; {detail}"
             ]
         for row, candidate in zip(rows, candidates):
             by_instance[row.id] = candidate

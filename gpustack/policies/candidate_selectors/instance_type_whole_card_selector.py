@@ -85,6 +85,21 @@ class InstanceTypeWholeCardSelector(VGPUResourceFitSelector):
     def get_messages(self) -> List[str]:
         return self._messages
 
+    def _cards_per_member(self) -> int:
+        return self._cards
+
+    def _member_vram_capacity(self) -> int:
+        """Every card the member takes, not one of them.
+
+        A whole-card member is `cards_per_member` cards on ONE host, so its
+        capacity there is their sum. Measured against a single card, a member
+        needing two or more failed the parent's single-host test and fell into
+        the spread-across-hosts branch — whose candidates this selector then
+        refuses by design, leaving exactly the multi-card members it exists to
+        place with nowhere to go.
+        """
+        return self._cards * self._slice_vram
+
     def _create_slice_claim(self) -> ComputedResourceClaim:
         """One entry per card, not one entry.
 

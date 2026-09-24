@@ -563,7 +563,21 @@ async def evaluate_group(
         reason = getattr(placement, "reason", "The group does not fit.")
         blocked = getattr(placement, "role", None)
         notes = capacity.notes_for(blocked)
-        messages = [reason]
+        demands = await _role_asks(group_model, capacity, view, order)
+        # Two answers to one question, and they do not agree. `reason` counts
+        # the whole group -- "needs 2 placements and the cluster has room for
+        # 0" -- while `demands` breaks the same refusal down role by role, and
+        # the two are not measured the same way: `needed` leaves out the roles
+        # that take no accelerator, `available` is the running total at the
+        # point the solve gave up rather than the cluster's free room, and each
+        # role's own figure is that role measured alone against everything
+        # free. Put side by side they read as arithmetic that does not add up.
+        # The breakdown is the better answer and says more, so it is the one
+        # sent -- but only when there is something left to say afterwards.
+        # `reason` stays whenever nothing else would name what went wrong,
+        # because an empty message list is read downstream as "no explanation"
+        # and takes the breakdown down with it.
+        messages = [] if (demands and blocked) else [reason]
         if blocked:
             # The notes below are one role's and they name no role themselves:
             # they come from the selectors, which are shared with the
@@ -579,7 +593,7 @@ async def evaluate_group(
             )
         return GroupEvaluation(
             messages=messages + notes,
-            demands=await _role_asks(group_model, capacity, view, order),
+            demands=demands,
         )
 
     # `already` accumulates across roles for the same reason the capacity count
