@@ -170,6 +170,16 @@ async def _cancel_on_client_disconnect(
 
     if not watcher.done():
         watcher.cancel()
+        try:
+            await watcher
+        except asyncio.CancelledError:
+            pass
+        else:
+            # The watcher raced the cancellation and already consumed the
+            # http.disconnect message; nobody is listening anymore.
+            result = work.result()
+            discard(result)
+            raise _ClientDisconnected()
         return work.result()
 
     # The watcher finished: either the client disconnected, or listening for
