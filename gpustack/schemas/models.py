@@ -958,6 +958,24 @@ class ModelInstanceLogWorker(BaseModel):
     name: str
 
 
+class ModelInstanceLogStreamStats(BaseModel):
+    """How much one selectable log stream of one restart holds on disk."""
+
+    size_bytes: int = 0
+    line_count: int = Field(
+        default=0,
+        description=(
+            "Lines this restart's own logs hold. A line range request answers "
+            "with the total of the stream it actually served, which also "
+            "counts the download log; that header is what page counts follow."
+        ),
+    )
+    truncated: bool = Field(
+        default=False,
+        description="Whether the serving log size cap dropped part of this stream.",
+    )
+
+
 class ModelInstanceLogRestartEntry(BaseModel):
     """One main serve log session on disk, with optional UX label time."""
 
@@ -975,6 +993,13 @@ class ModelInstanceLogRestartEntry(BaseModel):
             "Available container names for this restart. "
             "'default' is the main workload container; others are sidecars "
             "(e.g., ['default', 'ray-head'])."
+        ),
+    )
+    container_stats: Dict[str, ModelInstanceLogStreamStats] = Field(
+        default_factory=dict,
+        description=(
+            "Size of each stream in `containers`, by the same names. Empty "
+            "from a worker too old to measure them."
         ),
     )
 
