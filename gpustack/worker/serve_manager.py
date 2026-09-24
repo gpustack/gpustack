@@ -77,6 +77,7 @@ from gpustack.schemas.models import (
     role_effective_model,
 )
 from gpustack.schemas.pd_modes import PDPortScopeEnum
+from gpustack.schemas.workers import WorkerStateEnum
 from gpustack.worker.pd_injection import (
     ACCELERATOR_COUNT_KEY,
     band_count_key,
@@ -827,14 +828,6 @@ class ServeManager:
                         continue
                 # Get patch dict for subordinate worker.
                 else:
-                    # For initialize later mode, the state is set to RUNNING directly,
-                    # which means the subordinate worker doesn't need to wait for the main worker to be healthy.
-                    if (
-                        model_instance.distributed_servers.mode
-                        == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
-                    ):
-                        continue
-                    # Otherwise, update subordinate worker state to RUNNING.
                     sw_pos = next(
                         (
                             i
@@ -847,8 +840,28 @@ class ServeManager:
                     sw = model_instance.distributed_servers.subordinate_workers[sw_pos]
                     if sw.state == ModelInstanceStateEnum.RUNNING:
                         continue
-                    sw.state = ModelInstanceStateEnum.RUNNING
-                    sw.state_message = ""
+                    if (
+                        model_instance.distributed_servers.mode
+                        == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                    ):
+                        # Startup sets RUNNING directly in this mode. Only repair
+                        # an unreachable subordinate with a surviving workload;
+                        # the main worker still owns the engine readiness check.
+                        if sw.state != ModelInstanceStateEnum.UNREACHABLE:
+                            continue
+                        worker = self._clientset.workers.get(
+                            self._worker_id, use_cache=False
+                        )
+                        if worker.state != WorkerStateEnum.READY or worker.unreachable:
+                            continue
+                    # Do not mutate the watch cache before the update succeeds:
+                    # a failed write must leave recovery eligible for retry.
+                    sw = sw.model_copy(
+                        update={
+                            "state": ModelInstanceStateEnum.RUNNING,
+                            "state_message": "",
+                        }
+                    )
                     patch_dict = {
                         f"distributed_servers.subordinate_workers.{sw_pos}": sw,
                     }
