@@ -137,6 +137,53 @@ def test_recovered_subordinate_unblocks_main_health_check(recovery, mode):
         client.workers.get.assert_not_called()
 
 
+@pytest.mark.parametrize("initially_ready", [True, False])
+def test_recovery_shares_worker_read_only_within_one_sync(recovery, initially_ready):
+    client = recovery.clients[1]
+    instances = {}
+    client.model_instances.list.side_effect = lambda **kwargs: SimpleNamespace(
+        items=[instance.model_copy(deep=True) for instance in instances.values()]
+    )
+    client.model_instances.get.side_effect = lambda id: instances[id].model_copy(
+        deep=True
+    )
+
+    def update_instance(*, id, model_update):
+        instances[id] = ModelInstance.model_validate(
+            instances[id].model_dump() | model_update.model_dump()
+        )
+        return instances[id].model_copy(deep=True)
+
+    client.model_instances.update.side_effect = update_instance
+    for ready in (initially_ready, not initially_ready):
+        instances = {
+            id: recovery.instance.model_copy(
+                deep=True, update={"id": id, "name": f"distributed-instance-{id}"}
+            )
+            for id in (1, 2)
+        }
+        # Replace the API snapshot so a previous pass cannot observe the change.
+        recovery.worker = SimpleNamespace(
+            state=WorkerStateEnum.READY if ready else WorkerStateEnum.NOT_READY,
+            unreachable=False,
+        )
+        client.reset_mock()
+
+        recovery.managers[1].sync_model_instances_state()
+
+        client.workers.get.assert_called_once_with(2, use_cache=False)
+        assert client.model_instances.update.call_count == (2 if ready else 0)
+        expected = (
+            ModelInstanceStateEnum.RUNNING
+            if ready
+            else ModelInstanceStateEnum.UNREACHABLE
+        )
+        for instance in instances.values():
+            assert instance.distributed_servers.subordinate_workers[0].state == expected
+            assert instance.state == ModelInstanceStateEnum.UNREACHABLE
+        recovery.health.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "worker_state, unreachable",
     [

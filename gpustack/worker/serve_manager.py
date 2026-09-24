@@ -651,6 +651,8 @@ class ServeManager:
             )
             self._stop_container_log_persistence(stale_id)
 
+        # Reuse a fresh worker snapshot only within this sync pass.
+        recovery_worker = None
         for model_instance in model_instances:
             # Skip if the provision process has not exited yet.
             if self._is_provisioning(model_instance):
@@ -849,10 +851,14 @@ class ServeManager:
                         # the main worker still owns the engine readiness check.
                         if sw.state != ModelInstanceStateEnum.UNREACHABLE:
                             continue
-                        worker = self._clientset.workers.get(
-                            self._worker_id, use_cache=False
-                        )
-                        if worker.state != WorkerStateEnum.READY or worker.unreachable:
+                        if recovery_worker is None:
+                            recovery_worker = self._clientset.workers.get(
+                                self._worker_id, use_cache=False
+                            )
+                        if (
+                            recovery_worker.state != WorkerStateEnum.READY
+                            or recovery_worker.unreachable
+                        ):
                             continue
                     # Do not mutate the watch cache before the update succeeds:
                     # a failed write must leave recovery eligible for retry.
