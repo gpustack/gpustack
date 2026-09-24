@@ -37,6 +37,7 @@ from gpustack.gateway.utils import (
     default_mcp_bridge_name,
     openai_model_prefixes,
     anthropic_model_exact,
+    apply_ai_proxy_override,
     gpustack_ai_proxy_name,
     gpustack_generic_proxy_router_name,
     mcp_ingress_equal,
@@ -658,9 +659,17 @@ def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
 
 
 def ai_proxy_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
+    """The create-only foundation of the ai-proxy CR.
+
+    ``defaultConfig`` starts as just the operator's whitelisted settings (see
+    ``AiProxyOverride``): the runtime reconciler owns ``providers`` and the
+    match rules, and ``spec_replace(create_only=True)`` keeps this startup
+    pass from ever overwriting them.
+    """
     resource_name = gpustack_ai_proxy_name
+    default_config = apply_ai_proxy_override({}, cfg)
     expected_spec = WasmPluginSpec(
-        defaultConfig={},
+        defaultConfig=default_config,
         defaultConfigDisable=False,
         failStrategy="FAIL_OPEN",
         imagePullPolicy="UNSPECIFIED_POLICY",

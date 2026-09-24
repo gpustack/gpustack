@@ -21,7 +21,10 @@ from typing import (
 )
 from tenacity import retry, stop_after_attempt, wait_fixed
 from fastapi import HTTPException
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.datastructures import Headers
+from gpustack.config.config import Config
+from gpustack.gateway.plugins import plugin_entry
 from gpustack.gateway.labels_annotations import managed_labels, match_labels
 from gpustack.gateway import ai_proxy_types
 from gpustack.gateway.client.networking_higress_io_v1_api import (
@@ -1543,6 +1546,83 @@ _ai_proxy_anthropic_capabilities: Dict[str, str] = {
 }
 
 
+# Manifest name, which is also the ``gateway_plugin`` key -- the same name
+# ``plugin_spec_overrides`` resolves the module URL by. Kept beside the model
+# that consumes it, as gateway/__init__.py does with ai-statistics'.
+ai_proxy_plugin_name = "gpustack-ai-proxy"
+
+
+class AiProxyOverride(BaseModel):
+    """``gateway_plugin["gpustack-ai-proxy"].config``.
+
+    Shaped like the CR's ``defaultConfig`` so field paths transcribe straight
+    from the plugin's own Go config struct.
+
+    The whitelist is load-bearing, not convenience: ai-proxy's defaultConfig
+    carries ``providers`` with ``apiTokens``, so free-form passthrough would
+    let an operator hand the plugin upstream credentials or rewrite provider
+    selection without going through the management plane at all. Unknown
+    fields fail validation instead of being ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    # Whether ai-proxy rejects tool-call messages that arrive without the
+    # assistant message that initiated them. The plugin's default is ``off``;
+    # ``None`` here means "not configured", which leaves the key out of the
+    # CR entirely so the plugin default governs.
+    tool_call_validation: Optional[Literal["off", "strict"]] = Field(
+        default=None, alias="toolCallValidation"
+    )
+
+
+def ai_proxy_override(cfg: Optional[Config]) -> AiProxyOverride:
+    entry = plugin_entry(ai_proxy_plugin_name, cfg)
+    if entry is None or not entry.config:
+        return AiProxyOverride()
+    try:
+        return AiProxyOverride.model_validate(entry.config)
+    except ValidationError as e:
+        # Field locations only: the validation error's own text embeds the
+        # rejected input values, and a config that stumbled in carrying
+        # ``providers``/``apiTokens`` would then ride this message into the
+        # startup and controller logs.
+        locations = ", ".join(
+            ".".join(str(part) for part in error["loc"]) for error in e.errors()
+        )
+        raise ValueError(
+            f"Invalid gateway_plugin.{ai_proxy_plugin_name}.config: "
+            f"unsupported or misspelled field(s): {locations}"
+        ) from e
+
+
+def apply_ai_proxy_override(
+    default_config: Dict[str, Any], cfg: Optional[Config]
+) -> Dict[str, Any]:
+    """Write the operator's ai-proxy settings into a ``defaultConfig`` dict.
+
+    Called on every write path -- the init-time CR creation and the runtime
+    reconcilers -- so the CR reflects config.yaml on the next reconcile rather
+    than only after a restart. Match rules are left alone: the plugin copies
+    the global config into each rule before applying its overrides, so the
+    rule inherits the value written here.
+
+    ``cfg=None`` is deliberately a no-op that leaves the current keys alone,
+    not "unconfigured": several reconcilers write this CR, and one that cannot
+    see the server config must not strip what a sibling wrote from it. A real
+    Config whose entry is absent or empty *does* remove the key, so turning
+    the switch off returns the CR to the plugin's own default.
+    """
+    if cfg is None:
+        return default_config
+    override = ai_proxy_override(cfg)
+    if override.tool_call_validation is not None:
+        default_config["toolCallValidation"] = override.tool_call_validation
+    else:
+        default_config.pop("toolCallValidation", None)
+    return default_config
+
+
 def ai_proxy_model_provider_config(
     id: str,
     api_tokens: Optional[List[str]] = None,
@@ -1710,6 +1790,7 @@ async def cleanup_ai_proxy_config(
     models: List[Model],
     k8s_config: k8s_client.Configuration,
     namespace: str,
+    cfg: Optional[Config] = None,
 ):
     """Prune the ai-proxy CR at startup, before the controllers replay routes.
 
@@ -1747,6 +1828,10 @@ async def cleanup_ai_proxy_config(
             p for p in current_providers if p.get("id") and p.get("id") in ids_to_keep
         ]
         default_config["providers"] = filtered_providers
+        # The operator's whitelisted settings ride this write too, so removing
+        # one from config.yaml is recycled even if no model event reconciles
+        # the CR afterwards.
+        apply_ai_proxy_override(default_config, cfg)
         existing_plugin.spec.defaultConfig = default_config
         filtered_provider_ids = {
             p.get("id") for p in filtered_providers if p.get("id") is not None
@@ -1907,6 +1992,7 @@ def ai_proxy_diff_spec(
     expected_match_rules: List[WasmPluginMatchRule],
     operating_id_prefix: Optional[str] = None,
     owned_provider_ids: Optional[Set[str]] = None,
+    cfg: Optional[Config] = None,
 ) -> WasmPluginSpec:
     if current_spec is None:
         return current_spec
@@ -1930,6 +2016,7 @@ def ai_proxy_diff_spec(
             if provider_id
         },
     )
+    apply_ai_proxy_override(current_spec.defaultConfig, cfg)
     current_spec.matchRules = match_rules
     return current_spec
 

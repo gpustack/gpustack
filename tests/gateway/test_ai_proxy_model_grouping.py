@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gpustack.config.config import Config, GatewayPluginEntry
 from gpustack.gateway.client.extensions_higress_io_v1_api import (
     WasmPluginMatchRule,
     WasmPluginSpec,
@@ -12,11 +13,14 @@ from gpustack.gateway.utils import (
     _ai_proxy_anthropic_capabilities,
     ai_proxy_diff_spec,
     ai_proxy_model_provider_config,
+    ai_proxy_override,
+    apply_ai_proxy_override,
     cleanup_ai_proxy_config,
     model_ai_proxy_plugin_spec,
     model_ai_proxy_provider_id,
     provider_id_prefix,
 )
+
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.schemas.models import Model
 
@@ -182,6 +186,107 @@ def test_plugin_spec_skips_deployment_without_services():
     )
     assert providers == []
     assert rules == []
+
+
+def _cfg_with_plugin_config(config: Optional[Dict[str, Any]]) -> Config:
+    cfg = Config(data_dir="/tmp/gpustack-test-data")
+    cfg.gateway_plugin = (
+        {"gpustack-ai-proxy": GatewayPluginEntry(config=config)}
+        if config is not None
+        else None
+    )
+    return cfg
+
+
+def test_tool_call_validation_strict_lands_in_default_config():
+    cfg = _cfg_with_plugin_config({"toolCallValidation": "strict"})
+    assert apply_ai_proxy_override({"providers": []}, cfg) == {
+        "providers": [],
+        "toolCallValidation": "strict",
+    }
+
+
+def test_tool_call_validation_absent_when_unconfigured():
+    # Absent rather than "off": the plugin's own default governs, and the
+    # reconciler's diff stays quiet for deployments that never set it.
+    # cfg=None (a caller that cannot see the server config) is also a no-op;
+    # the stripping hazard it would pose is pinned by the test below.
+    assert apply_ai_proxy_override({"providers": []}, None) == {"providers": []}
+    assert apply_ai_proxy_override(
+        {"providers": []}, _cfg_with_plugin_config(None)
+    ) == {"providers": []}
+
+
+def test_tool_call_validation_preserved_when_cfg_unavailable():
+    # Several reconcilers write this CR; one invoked without the server
+    # config must leave the keys a sibling wrote alone, or a provider event
+    # would flap the setting against the model reconciler's writes.
+    live = {"providers": [], "toolCallValidation": "strict"}
+    assert apply_ai_proxy_override(live, None) == {
+        "providers": [],
+        "toolCallValidation": "strict",
+    }
+
+
+def test_tool_call_validation_removed_after_config_deleted():
+    live = {"providers": [], "toolCallValidation": "strict"}
+    assert "toolCallValidation" not in apply_ai_proxy_override(
+        live, _cfg_with_plugin_config(None)
+    )
+    # Unconfigured config (entry present, config empty) recycles the same way.
+    assert "toolCallValidation" not in apply_ai_proxy_override(
+        {"toolCallValidation": "strict"}, _cfg_with_plugin_config(None)
+    )
+
+
+def test_tool_call_validation_rejects_fields_outside_the_whitelist():
+    # ai-proxy's defaultConfig carries providers with apiTokens; accepting
+    # them here would be a path to hand the plugin upstream credentials
+    # around the management plane. The rejection names field locations only:
+    # the validation error's own text embeds the rejected input values, and
+    # credentials have no business in a startup or controller log.
+    with pytest.raises(ValueError, match="gpustack-ai-proxy") as excinfo:
+        ai_proxy_override(_cfg_with_plugin_config({"apiTokens": ["gpustack_ak_sk"]}))
+    assert "apiTokens" in str(excinfo.value)
+    assert "gpustack_ak_sk" not in str(excinfo.value)
+    with pytest.raises(ValueError, match="gpustack-ai-proxy"):
+        ai_proxy_override(_cfg_with_plugin_config({"providers": []}))
+
+
+def test_tool_call_validation_rejects_unknown_mode():
+    # The plugin would silently fall back to off on an unknown value; the
+    # server refuses it instead so a typo surfaces at startup.
+    with pytest.raises(ValueError):
+        ai_proxy_override(_cfg_with_plugin_config({"toolCallValidation": "lazy"}))
+
+
+def test_reconcile_applies_override_only_to_default_config():
+    cfg = _cfg_with_plugin_config({"toolCallValidation": "strict"})
+    live = WasmPluginSpec(
+        defaultConfig={
+            "providers": [],
+            "toolCallValidation": "off",
+        },
+        matchRules=[
+            WasmPluginMatchRule(
+                config={"activeProviderId": "gpustack-model-5"},
+                configDisable=False,
+                service=["model-5-1.static"],
+            )
+        ],
+    )
+
+    result = ai_proxy_diff_spec(
+        live,
+        expected_providers=[],
+        expected_match_rules=[],
+        cfg=cfg,
+    )
+
+    assert result.defaultConfig["toolCallValidation"] == "strict"
+    # The rule inherits the global config inside the plugin; GPUStack never
+    # writes the field per rule.
+    assert all("toolCallValidation" not in (r.config or {}) for r in result.matchRules)
 
 
 def test_reconcile_replaces_stale_rules_of_the_same_provider():

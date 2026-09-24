@@ -246,6 +246,14 @@ gateway_plugin:
   ai-statistics:
     config:
       enable_content_types: [ application/json, text/event-stream ]
+  # Fields are the plugin's own camelCase config keys; only whitelisted ones
+  # are accepted, so a field the server does not vouch for fails startup
+  # instead of being forwarded.
+  gpustack-ai-proxy:
+    config:
+      # Reject tool-call messages that arrive without the assistant message
+      # that initiated them ("strict"), or the plugin's default ("off").
+      toolCallValidation: strict
 
 # Worker Options
 server_url: http://your_gpustack_server_url
