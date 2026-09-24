@@ -342,6 +342,18 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("BUILTIN_PROMETHEUS_PORT"),
     )
     server_group.add_argument(
+        "--builtin-prometheus-scrape-configs-dir",
+        type=str,
+        help="Directory containing additional Prometheus scrape configuration files. Default is /etc/prometheus/scrape_configs.d.",
+        default=get_gpustack_env("BUILTIN_PROMETHEUS_SCRAPE_CONFIGS_DIR"),
+    )
+    server_group.add_argument(
+        "--builtin-prometheus-remote-write-receiver",
+        action=OptionalBoolAction,
+        help="Enable the embedded Prometheus remote-write receiver.",
+        default=get_gpustack_env_bool("BUILTIN_PROMETHEUS_REMOTE_WRITE_RECEIVER"),
+    )
+    server_group.add_argument(
         "--builtin-grafana-port",
         type=int,
         help="Port for the embedded Grafana service. Default is 13000.",
@@ -916,6 +928,8 @@ def set_server_options(args, config_data: dict):
         "shuihua_api_base_url",
         "disable_builtin_observability",
         "builtin_prometheus_port",
+        "builtin_prometheus_scrape_configs_dir",
+        "builtin_prometheus_remote_write_receiver",
         "builtin_grafana_port",
         "grafana_url",
         "grafana_worker_dashboard_uid",

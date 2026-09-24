@@ -6,6 +6,15 @@ Most command line parameters can also be set via environment variables with the 
 
 For a complete list of command line parameters that can be set as environment variables, see [CLI Reference](cli-reference/start.md#available-environment-variables). This will not be discussed here.
 
+The built-in Prometheus extension settings follow the same mapping:
+
+| Variable | CLI flag | Default |
+|----------|----------|---------|
+| `GPUSTACK_BUILTIN_PROMETHEUS_SCRAPE_CONFIGS_DIR` | `--builtin-prometheus-scrape-configs-dir` | `/etc/prometheus/scrape_configs.d` |
+| `GPUSTACK_BUILTIN_PROMETHEUS_REMOTE_WRITE_RECEIVER` | `--builtin-prometheus-remote-write-receiver` | `false` |
+
+See [Extending the Built-in Prometheus](user-guide/observability.md#extending-the-built-in-prometheus) for drop-in file and security requirements.
+
 ### Priority Order
 
 Configuration values are applied in the following priority order (highest to lowest):
