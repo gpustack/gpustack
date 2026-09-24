@@ -484,3 +484,27 @@ def test_a_handshake_failure_still_outranks_a_later_oom():
         "torch.OutOfMemoryError: CUDA out of memory.\n"
     )
     assert diagnose(log).signature == "NIXL_ERR_BACKEND"
+
+
+def test_a_member_that_served_stops_accumulating_restart_stamps():
+    """The crash-loop verdict latches False once a member has served, and
+    `observe_restart_count` does not know that — it goes on recording every
+    restart. Reading the latch before trimming the window left one deque
+    growing for as long as the instance lived, which on a member that restarts
+    for weeks is a lot of timestamps nobody will ever look at."""
+    from datetime import datetime, timedelta, timezone
+
+    tracker = RestartTracker(threshold=3, window=timedelta(minutes=5))
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    tracker.observe_restart_count(1, 0, start)
+    tracker.observe_running(1)
+
+    # An hour of restarts, well past the five-minute window.
+    for i in range(1, 61):
+        tracker.observe_restart_count(1, i, start + timedelta(minutes=i))
+
+    assert tracker._restarts[1], "the latest ones are still there"
+    assert (
+        len(tracker._restarts[1]) <= 6
+    ), f"the window holds five minutes, not an hour: {len(tracker._restarts[1])}"
