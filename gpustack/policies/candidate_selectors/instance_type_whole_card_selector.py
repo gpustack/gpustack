@@ -36,7 +36,6 @@ from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack.policies.candidate_selectors.vgpu_resource_fit_selector import (
     VGPUResourceFitSelector,
 )
-from gpustack.schemas.gpu_instance_types import GPUInstanceTypeDetail
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     GPUTypeSelector,
@@ -127,6 +126,14 @@ class InstanceTypeWholeCardSelector(VGPUResourceFitSelector):
         all-reduces per layer over the network. A member that does not fit on
         one host is refused here, and crossing hosts stays something the user
         asks for explicitly.
+
+        The refusal depends on the parent's candidates arriving with their
+        subordinates intact. An override that dropped them before this ran
+        made the filter match everything and the branch below unreachable --
+        so a member too large for `cards_per_member` cards was admitted onto
+        one worker, claiming only what fits there while its weights needed
+        more. Building a candidate this then discards costs a claim per host,
+        and that is the price of the filter having something to see.
         """
         candidates = await super().select_candidates(workers)
         if not candidates:
@@ -143,15 +150,3 @@ class InstanceTypeWholeCardSelector(VGPUResourceFitSelector):
             ]
             return []
         return single_host
-
-    def _create_candidate(
-        self,
-        worker: Worker,
-        detail: GPUInstanceTypeDetail,
-        subordinate_workers: Optional[List[Worker]] = None,
-    ) -> ModelInstanceScheduleCandidate:
-        # Subordinates dropped rather than passed through: this selector's
-        # whole contract is "on one worker", and a candidate carrying
-        # subordinates would be filtered out by `select_candidates` anyway.
-        # Building it and then discarding it costs a claim per host.
-        return super()._create_candidate(worker, detail, None)

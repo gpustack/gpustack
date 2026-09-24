@@ -211,13 +211,17 @@ class TestRouteModeAimsAtTheDeployment:
         kwargs = json.loads(args[args.index("--backend-kwargs") + 1])
         assert "api_key" not in kwargs
 
-    def test_route_mode_without_a_resolved_route_stays_on_the_member(self):
-        # Belt and braces: the server refuses to create such a run, so this is
-        # a row from a downgrade rather than a shape a client can ask for —
-        # measuring the member beats sending the load at a proxy with no name
-        # to give it.
-        args = self._args(mode=BenchmarkTargetModeEnum.ROUTE, route_name=None)
-        assert args[args.index("--target") + 1] == "http://10.0.0.1:40050"
+    def test_route_mode_without_a_resolved_route_refuses(self):
+        # The server refuses to create such a run, so this is a row from a
+        # downgrade rather than a shape a client can ask for — which is why
+        # the answer is to refuse rather than to fall back. Measuring the
+        # member does not fail: it produces a number, and the row goes on
+        # saying that number measured the deployment through its route.
+        # Comparing that against a real route-mode run is the confusion the
+        # mode column exists to prevent, and a missing run is easier to
+        # notice than a mislabelled one.
+        with pytest.raises(Exception, match="no route name"):
+            self._args(mode=BenchmarkTargetModeEnum.ROUTE, route_name=None)
 
     def test_an_insecure_worker_does_not_verify_the_proxys_tls(self):
         # Same switch the progress channel already honours: one worker, one
