@@ -306,6 +306,10 @@ async def test_select_candidates_3x_64gx1_1x_64gx0(config, m, expected):
 
     with (
         patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=_MOCK_PRETRAINED_QWEN3_4B),
+        ),
+        patch(
             "gpustack.policies.utils.get_worker_model_instances",
             return_value=model_instances,
         ),
@@ -2113,6 +2117,21 @@ _MOCK_PRETRAINED_DEEPSEEK_R1_0528 = SimpleNamespace(
         "original_max_position_embeddings": 4096,
         "type": "yarn",
     },
+)
+
+# Same offline-mocking rationale as _MOCK_PRETRAINED_DEEPSEEK_R1_0528 above:
+# the 3x test's Qwen/Qwen3-4B config was still fetched from ModelScope on
+# every run, which the same 15s timeout turns into a CI flake.
+_MOCK_PRETRAINED_QWEN3_4B = SimpleNamespace(
+    architectures=["Qwen3ForCausalLM"],
+    num_hidden_layers=36,
+    hidden_size=2560,
+    vocab_size=151936,
+    num_attention_heads=32,
+    num_key_value_heads=8,
+    head_dim=128,
+    torch_dtype="bfloat16",
+    max_position_embeddings=131072,
 )
 
 
