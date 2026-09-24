@@ -1,7 +1,7 @@
 from sqlmodel import col
 import re
 import yaml
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence
 import aiohttp
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -436,6 +436,21 @@ async def get_benchmark_dashboard(
     return RedirectResponse(url=dashboard_url, status_code=302)
 
 
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """A timestamp that `.timestamp()` will read as UTC.
+
+    The timestamp columns come back from the database with UTC attached, but
+    the column default is naive (`mixins/timestamp._datetime_func`), so a row
+    still in the session that wrote it carries a naive value. `.timestamp()`
+    reads that in the server's *local* zone, which on any host not running UTC
+    shifts the dashboard window by the local offset -- a report opening hours
+    away from the run it describes.
+    """
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def _dashboard_window(benchmark: Benchmark) -> Dict[str, str]:
     """Grafana's `from`/`to` for the interval this run occupied.
 
@@ -443,7 +458,7 @@ def _dashboard_window(benchmark: Benchmark) -> Dict[str, str]:
     last progress write: the reader is watching it happen, and a window that
     ends a few seconds ago would look frozen.
     """
-    started = benchmark.created_at
+    started = _as_utc(benchmark.created_at)
     if started is None:
         return {}
 
@@ -458,10 +473,9 @@ def _dashboard_window(benchmark: Benchmark) -> Dict[str, str]:
         # the row says next.
         BenchmarkStateEnum.UNREACHABLE,
     )
-    if finished and benchmark.updated_at is not None:
-        window["to"] = str(
-            int((benchmark.updated_at + _DASHBOARD_PADDING).timestamp() * 1000)
-        )
+    ended = _as_utc(benchmark.updated_at)
+    if finished and ended is not None:
+        window["to"] = str(int((ended + _DASHBOARD_PADDING).timestamp() * 1000))
     else:
         window["to"] = "now"
     return window

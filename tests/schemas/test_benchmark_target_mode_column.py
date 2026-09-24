@@ -1,10 +1,10 @@
 """The `target_mode` column has to hold the enum VALUE, not its member name.
 
 `load_type` on the same table already carries the comment explaining why, and
-the migration that adds `target_mode` writes the literal `'instance'`. When the
+the migration that adds `target_mode` writes the literal `'model_instance'`. When the
 field omitted `sa_type=AutoString`, SQLModel gave it a native enum column keyed
 on member NAMES, so every read of a row the migration had backfilled raised
-``'instance' is not among the defined enum values``. Observed consequence: the
+``'model_instance' is not among the defined enum values``. Observed consequence: the
 benchmark watch stream died on subscribe and the worker re-subscribed every
 five seconds, which takes the whole benchmark feature out.
 """
@@ -29,7 +29,7 @@ def test_target_mode_column_matches_load_type():
 
 
 def test_the_migration_backfill_is_a_readable_value():
-    """`'instance'` — what the migration writes — round-trips as the enum."""
-    assert BenchmarkTargetModeEnum("instance") is BenchmarkTargetModeEnum.INSTANCE
-    assert BenchmarkTargetModeEnum.INSTANCE.value == "instance"
+    """`'model_instance'` — what the migration writes — round-trips as the enum."""
+    assert BenchmarkTargetModeEnum("model_instance") is BenchmarkTargetModeEnum.INSTANCE
+    assert BenchmarkTargetModeEnum.INSTANCE.value == "model_instance"
     assert BenchmarkTargetModeEnum.ROUTE.value == "route"

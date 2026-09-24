@@ -669,31 +669,10 @@ class PDModeEnum(str, Enum):
         return self.value
 
 
-# Which engines a recipe can be injected into. A recipe expands into one
-# engine's connector config and env, so a role running a different engine
-# would be handed configuration it cannot read — e.g. `vllm-nixl` would inject
-# `NixlConnector` and `VLLM_NIXL_*` into a TileRT decode and fail silently.
-# Mixing engines across roles therefore has to go through `custom`.
-#
-# `pd-modes.yaml` is the authoritative source for this; the catalog loader
-# asserts the two agree at start-up, the same way it asserts the mode names
-# match. This table exists so that request validation doesn't have to wait on
-# a catalog read.
-PD_MODE_BACKENDS: Dict[str, List[str]] = {
-    PDModeEnum.VLLM_NIXL.value: [BackendEnum.VLLM.value],
-    PDModeEnum.VLLM_ASCEND_MOONCAKE.value: [BackendEnum.VLLM.value],
-    PDModeEnum.SGLANG_MOONCAKE.value: [BackendEnum.SGLANG.value],
-    PDModeEnum.SGLANG_NIXL.value: [BackendEnum.SGLANG.value],
-    # `custom` means the user writes the connection state themselves, so any
-    # engine mix is theirs to get right -- within PD_BACKENDS below, which is
-    # the gate `custom` does not exempt anyone from.
-    PDModeEnum.CUSTOM.value: [],
-}
-
 # Which engines may be disaggregated at all, whatever the mode.
 #
-# A narrower question than PD_MODE_BACKENDS above, and asked of a different
-# thing: that table says which engine a *recipe* can be injected into, and
+# A narrower question than a recipe's own `backends`, and asked of a different
+# thing: that says which engine a *recipe* can be injected into, and
 # `custom` answers "any" because it injects nothing. This one says which
 # engines the *feature* applies to, and `custom` is subject to it like every
 # other mode -- writing the connection parameters yourself does not give an

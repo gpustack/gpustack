@@ -58,10 +58,14 @@ class BenchmarkLoadTypeEnum(str, Enum):
 
 
 class BenchmarkTargetModeEnum(str, Enum):
-    r"""What the load is aimed at: one instance, or the deployment's entrance.
+    r"""What the load is aimed at: one model instance, or the deployment's entrance.
 
     The two are different measurements, and the difference is not overhead —
     it is what the number means.
+
+    ``instance`` means a MODEL instance, and the word is worth spelling out:
+    this product also has GPU instances and GPU instance types, and a load
+    aimed at a machine would be a different measurement again.
 
     ``instance`` measures an ENGINE. The load goes straight at a member's own
     port, so nothing but the engine is in the path. It is the right mode for
@@ -79,7 +83,7 @@ class BenchmarkTargetModeEnum(str, Enum):
     ``instance`` stays the default and stays available for groups.
     """
 
-    INSTANCE = "instance"
+    INSTANCE = "model_instance"
     ROUTE = "route"
 
 

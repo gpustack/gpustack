@@ -75,7 +75,6 @@ from gpustack.server.deps import (
 )
 from gpustack.schemas.models import (
     PD_BACKENDS,
-    PD_MODE_BACKENDS,
     ExtendedKVCacheConfig,
     LoraListEntry,
     PDModeEnum,
@@ -632,7 +631,13 @@ def validate_roles(  # noqa: C901
 
     # A recipe injects one engine's connector configuration into every role,
     # so a role on a different engine would receive settings it cannot read.
-    permitted = PD_MODE_BACKENDS.get(disaggregation.mode.value, [])
+    #
+    # Read off the recipe rather than a table restating it. The catalog is
+    # already loaded by the time this line runs -- the two rejections above
+    # resolve the same mode -- so the second source of truth was buying a
+    # dict lookup and owing a start-up assertion that the two still agreed.
+    mode = get_pd_mode(disaggregation.mode.value)
+    permitted = list(mode.backends) if mode else []
     if permitted:
         for role in roles:
             role_backend = role.backend or field("backend")
@@ -823,7 +828,7 @@ def _reject_an_engine_that_cannot_be_disaggregated(field, roles) -> None:
     all, and `custom` is not an exemption from it: supplying the connection
     parameters yourself does not give an engine a prompt KV cache to hand
     across. Without this, `custom` mode is a way around the check entirely --
-    ``PD_MODE_BACKENDS['custom']`` is empty, so the loop below it does not run.
+    the `custom` recipe declares no `backends`, so the loop below does not run.
 
     Judged per role and against the model-level engine each role falls back to,
     because a group is only as disaggregable as the engine each member runs.
@@ -1892,7 +1897,13 @@ def _reject_a_split_cache_pool(declarations: List[_CacheDeclaration]) -> None:
     services = {
         declaration.ext.cache_service_id
         for declaration in declarations
-        if declaration.role and declaration.ext.is_shared()
+        # `is_shared()` reads the mode, not the id, so a shared declaration may
+        # still be missing its `cache_service_id` here -- the misconfiguration
+        # the per-declaration check rejects with a 400. Left in, `sorted()`
+        # would compare None with an int and turn that into a 500.
+        if declaration.role
+        and declaration.ext.is_shared()
+        and declaration.ext.cache_service_id is not None
     }
     if len(services) < 2:
         return

@@ -83,7 +83,12 @@ class PDPeerStyleEnum(str, Enum):
     """--prefiller-hosts a b --prefiller-ports 1 2 (vllm-ascend's proxy example)."""
 
     USER_PROVIDED = "user_provided"
-    """The user supplies image and command on the role itself."""
+    """The platform renders nothing; the image and command are the user's.
+
+    Read off the role, but not usually typed there: a role that overrides
+    neither inherits the deployment's, which is what the form submits. So one
+    image carries the router beside the engine and dispatches on the role.
+    """
 
 
 class PDRouterProtocolEnum(str, Enum):
@@ -842,7 +847,7 @@ class PDNetDevicePlaneEnum(str, Enum):
     - **data** — `UCX_NET_DEVICES` (both NIXL recipes). This NIC moves the KV
       bytes. The management NIC is usually the wrong fabric, and picking it
       silently fails at the far end of the handshake with `NIXL_ERR_BACKEND`,
-      so a multi-NIC host must refuse to guess and ask for `kv_ifname`.
+      so a multi-NIC host must refuse to guess and ask for `kv_transfer_ifname`.
     - **control** — `HCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME` /
       `TP_SOCKET_IFNAME` (`vllm-ascend-mooncake`). These carry the handshake
       sockets only; the data plane rides the cards' own RoCE ports, which the
@@ -885,7 +890,7 @@ class PDMode(BaseModel):
     ``BackendEnum`` spelling. A recipe expands into one engine's connector
     config, so a role on another engine would be handed configuration it
     cannot read. Empty means unconstrained (only ``custom``, which injects
-    nothing). ``PD_MODE_BACKENDS`` must agree; the loader asserts it."""
+    nothing). Request validation reads this, and nothing restates it."""
 
     backend_versions: Optional[str] = None
     """Engine versions this recipe is known to work against, in
@@ -975,7 +980,7 @@ class PDMode(BaseModel):
 
     The default is ``data`` because that is the stricter of the two: a recipe
     that forgets to declare its plane keeps the multi-NIC refusal, which costs
-    an operator one ``kv_ifname``. The reverse default would put KV bytes on
+    an operator one ``kv_transfer_ifname``. The reverse default would put KV bytes on
     the management NIC of every unclassified recipe."""
 
     def role(self, name: str) -> Optional[PDModeRole]:
