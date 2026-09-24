@@ -372,7 +372,7 @@ def model_instance_registry(
         domain=domain,
         port=port,
         name=name,
-        protocol="http",
+        protocol=envs.GPUSTACK_INSTANCE_SCHEME,
         type=registry_type,
     )
 
@@ -403,7 +403,7 @@ def _worker_reserve_proxy_registry(
         domain=domain,
         port=port,
         name=name_override or f"{cluster_worker_prefix(worker.cluster_id)}{worker.id}",
-        protocol="http",
+        protocol=envs.GPUSTACK_INSTANCE_SCHEME,
         type=registry_type,
     )
 
@@ -444,7 +444,7 @@ def cluster_registry(cluster: Cluster) -> Optional[McpBridgeRegistry]:
         domain=cluster.gateway_endpoint or cluster.reported_gateway_endpoint,
         port=80,
         name="cluster-gateway",
-        protocol="http",
+        protocol=envs.GPUSTACK_INSTANCE_SCHEME,
         type="static",
     )
 

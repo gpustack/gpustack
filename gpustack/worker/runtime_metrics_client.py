@@ -1,6 +1,8 @@
 import logging
 from typing import Optional
 import requests
+
+from gpustack import envs
 from prometheus_client.parser import text_string_to_metric_families
 from prometheus_client.openmetrics.parser import (
     text_string_to_metric_families as openmetrics_text_string_to_metric_families,
@@ -61,6 +63,7 @@ class Config:
         self.base_delay = base_delay
         self.max_delay = max_delay
         self.insecure_tls = insecure_tls
+        self.scheme = envs.GPUSTACK_INSTANCE_SCHEME
 
 
 class Client:
@@ -68,7 +71,7 @@ class Client:
         self.config = config or Config()
 
     def fetch_metrics_from_endpoint(self, endpoint):
-        url = f"http://{endpoint}/metrics"
+        url = f"{self.config.scheme}://{endpoint}/metrics"
 
         logger.trace(f"Fetching metrics from {url}")
 
@@ -129,7 +132,7 @@ class Client:
         error_msg = ""
         warning_msg = ""
         for path in paths:
-            url = f"http://{endpoint}/{path}"
+            url = f"{self.config.scheme}://{endpoint}/{path}"
             try:
                 resp = requests.get(
                     url,

@@ -15,6 +15,7 @@ from typing import (
 
 import aiohttp
 
+from gpustack import envs
 from gpustack.schemas.workers import Worker
 from gpustack.utils.network import use_proxy_env_for_url
 
@@ -70,7 +71,8 @@ def _build_url(worker: Worker, path: str) -> str:
         if worker.advertise_address and not worker.get_proxy_address()
         else worker.ip
     )
-    return f"http://{hostname}:{worker.port}/{path.lstrip('/')}"
+    scheme = envs.GPUSTACK_INSTANCE_SCHEME
+    return f"{scheme}://{hostname}:{worker.port}/{path.lstrip('/')}"
 
 
 def _convert_params(params: Optional[Dict]) -> Optional[Dict]:
@@ -132,6 +134,12 @@ async def _request_to_worker(
             headers=req_headers,
             timeout=timeout,
             proxy=worker.get_proxy_address(),
+            ssl=(
+                False
+                if envs.GPUSTACK_INSTANCE_TLS_INSECURE
+                and envs.GPUSTACK_INSTANCE_SCHEME == "https"
+                else None
+            ),
         )
         if resp.status >= 400 and raise_on_error:
             error_text = await resp.text()

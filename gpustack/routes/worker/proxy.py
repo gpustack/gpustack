@@ -74,7 +74,7 @@ async def proxy(path: str, request: Request):  # noqa: C901
         logger.debug(
             f"Proxying request to worker at port {target_service_port} for path: {path}"
         )
-        url = f"http://{worker_ip_getter()}:{target_service_port}/{path}"
+        url = f"{envs.GPUSTACK_INSTANCE_SCHEME}://{worker_ip_getter()}:{target_service_port}/{path}"
         if request.url.query:
             url = f"{url}?{request.url.query}"
         headers = dict(request.headers)
@@ -107,6 +107,12 @@ async def proxy(path: str, request: Request):  # noqa: C901
             headers=headers,
             data=content,
             timeout=timeout,
+            ssl=(
+                False
+                if envs.GPUSTACK_INSTANCE_TLS_INSECURE
+                and envs.GPUSTACK_INSTANCE_SCHEME == "https"
+                else None
+            ),
         )
 
         # Heuristic: treat a non-error HTTP status as a successful inference
