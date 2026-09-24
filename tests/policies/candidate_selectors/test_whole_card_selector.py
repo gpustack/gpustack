@@ -168,14 +168,19 @@ def test_the_parent_still_measures_a_vgpu_member_by_one_slice():
 # --- how many of the pool's cards the host actually has --------------------- #
 
 
-def _pool_worker(cards):
+def _pool_worker(cards, id=1, name="w"):
     from types import SimpleNamespace
 
     return SimpleNamespace(
-        name="w",
+        id=id,
+        name=name,
+        ip="10.0.0.1",
+        ifname="eth0",
         status=SimpleNamespace(
             gpu_devices=[
-                SimpleNamespace(vendor="NVIDIA", name="NVIDIA H100 80GB HBM3")
+                SimpleNamespace(
+                    vendor="NVIDIA", name="NVIDIA H100 80GB HBM3", type="cuda"
+                )
                 for _ in range(cards)
             ]
         ),
@@ -222,3 +227,23 @@ def test_a_host_with_none_of_the_pools_cards_is_refused_either_way():
 
     assert parent._worker_matches_pool(_pool_worker(0), _pool_detail()) is False
     assert _built(4)._worker_matches_pool(_pool_worker(0), _pool_detail()) is False
+
+
+# --- the refusal has to have something to refuse ---------------------------- #
+
+
+def test_a_spread_candidate_keeps_the_subordinates_the_filter_reads():
+    """`select_candidates` refuses a member spread across hosts by looking at
+    `subordinate_workers`. Dropping them on the way in makes that filter match
+    everything and the refusal unreachable — and an unreachable refusal admits
+    a member onto one worker claiming only what fits there while its weights
+    need more, which is the under-reservation this class exists to prevent."""
+    selector = _built(4)
+    selector._ram_claim = 8 * 1024**3
+    subordinates = [_pool_worker(4, id=2, name="w2")]
+
+    candidate = selector._create_candidate(
+        _pool_worker(4), _pool_detail(), subordinates
+    )
+
+    assert candidate.subordinate_workers, "the filter has to be able to see them"

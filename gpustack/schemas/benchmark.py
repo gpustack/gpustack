@@ -386,10 +386,10 @@ class BenchmarkBase(SQLModel):
     # Stored as a plain string for the same reason as `load_type` below: the
     # default enum column keys on member NAMES (`INSTANCE`), while the
     # migration backfills, the API accepts and the UI sends the VALUE
-    # (`instance`). Measured consequence of the mismatch: every read of a
-    # pre-existing row raised `'instance' is not among the defined enum
-    # values`, which killed the benchmark watch stream and left the worker
-    # re-subscribing every five seconds.
+    # (`model_instance`). Measured consequence of the mismatch: every read of a
+    # pre-existing row raised `is not among the defined enum values`, which
+    # killed the benchmark watch stream and left the worker re-subscribing
+    # every five seconds.
     target_mode: BenchmarkTargetModeEnum = Field(
         default=BenchmarkTargetModeEnum.INSTANCE, sa_type=AutoString
     )

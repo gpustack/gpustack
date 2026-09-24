@@ -422,10 +422,18 @@ class BenchmarkRunner:
         # (which resolves the route and load-balances exactly as `/v1` does)
         # and the name is the route's, not the model's -- a route is what the
         # proxy matches on.
-        route_mode = (
-            getattr(b, "target_mode", None) == BenchmarkTargetModeEnum.ROUTE
-            and self._route_name
-        )
+        route_mode = getattr(b, "target_mode", None) == BenchmarkTargetModeEnum.ROUTE
+        if route_mode and not self._route_name:
+            # Refused rather than fallen back on, the way the resolved path is
+            # above. Sending the load at one member while the row says the run
+            # measured the deployment through its route does not fail — it
+            # produces a number, labelled as the thing it is not, and the mode
+            # column exists precisely to keep those two readings apart.
+            raise Exception(
+                f"Benchmark {b.name}(id={b.id}) is in route mode but its "
+                "snapshot carries no route name; refusing to measure one "
+                "member and report it as the deployment"
+            )
         target = self._route_proxy_target() if route_mode else self._model_endpoint
         served_name = self._route_name if route_mode else b.model_name
 

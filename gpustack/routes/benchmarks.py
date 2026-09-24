@@ -145,7 +145,7 @@ async def get_benchmarks(
         None, description="Filter by load type (fixed_rate / concurrency)."
     ),
     target_mode: Optional[BenchmarkTargetModeEnum] = Query(
-        None, description="Filter by target mode (instance / route)."
+        None, description="Filter by target mode (model_instance / route)."
     ),
     worker_id: Optional[int] = Query(
         None,
@@ -271,11 +271,11 @@ async def _get_benchmarks(  # noqa: C901
     def _load_type_match(data) -> bool:
         return not load_type or data.load_type == load_type
 
-    # `target_mode` (instance / route) filter. The column is backfilled by the
-    # migration and written on every insert, so a NULL here means a row someone
-    # put in by hand — and what such a row measured was an instance. Matching
-    # NULL as `instance` keeps the two modes a partition of the list rather
-    # than losing rows between them.
+    # `target_mode` (model_instance / route) filter. The column is backfilled
+    # by the migration and written on every insert, so a NULL here means a row
+    # someone put in by hand — and what such a row measured was one model
+    # instance. Matching NULL as `model_instance` keeps the two modes a
+    # partition of the list rather than losing rows between them.
     def _target_mode_match(data) -> bool:
         if not target_mode:
             return True
