@@ -14,32 +14,17 @@ from .cluster_apis_util import (
     get_k8s_client,
 )
 
+from gpustack.k8s.pod_security import NAMESPACE_LABELS
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_GROUP = "worker.gpustack.ai"
 _DEFAULT_VERSION = "v1"
 
-_NAMESPACE_LABELS = {
-    # Pod Security Admission, which is built into Kubernetes and enforced at
-    # Pod *creation*: a Pod that does not fit the level is rejected outright,
-    # not left Pending. GPUStack's own workloads legitimately need what the
-    # stricter levels forbid — host networking (RDMA binds its GID to a NIC
-    # address), hostPort, host IPC (CUDA-IPC KV buffer sharing), and device
-    # mounts — so this family of namespaces has to sit at `privileged`.
-    #
-    # All three keys, not just `enforce`: with `warn`/`audit` left on the
-    # cluster default, every Pod creation still returns a warning and writes an
-    # audit annotation, which is noise that hides real ones.
-    #
-    # Blast radius, stated deliberately: `privileged` means every Pod in the
-    # namespace is exempt from PSA. That is a reason these are namespaces
-    # GPUStack creates and owns, rather than ones shared with a customer's
-    # own workloads. It also does nothing about Kyverno / Gatekeeper / OPA,
-    # which are separate webhooks that these labels do not address.
-    "pod-security.kubernetes.io/enforce": "privileged",
-    "pod-security.kubernetes.io/audit": "privileged",
-    "pod-security.kubernetes.io/warn": "privileged",
-}
+# What that level is, and why, lives beside the other place namespaces are
+# created: one definition, so a label added in one and not the other cannot
+# leave a whole family of namespaces rejecting its own Pods.
+_NAMESPACE_LABELS = NAMESPACE_LABELS
 
 
 class _Scope(Enum):

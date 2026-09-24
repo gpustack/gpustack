@@ -33,14 +33,11 @@ metadata:
   # default, every Pod creation still returns a warning and writes an audit
   # annotation — noise that hides the real ones.
   #
-  # Kept in step with `_NAMESPACE_LABELS` in gpustack/gpu_instances/cluster_apis.py,
-  # which is the *other* place namespaces are created (every `gpustack-<org>`
-  # beyond the two rendered here). Changing one without the other leaves whole
-  # families of namespaces unlabelled.
+  # Rendered from `k8s.pod_security.NAMESPACE_LABELS`, which is also what
+  # `gpu_instances.cluster_apis` applies to every `gpustack-<org>` namespace
+  # beyond the two rendered here. One definition, so the two cannot drift.
   labels:
-    pod-security.kubernetes.io/enforce: privileged
-    pod-security.kubernetes.io/audit: privileged
-    pod-security.kubernetes.io/warn: privileged
+    {{ namespace_labels | to_yaml | indent(4) }}
 ---
 {#- Where the operator places this cluster owner's namespaced resources. #}
 apiVersion: v1
@@ -60,9 +57,7 @@ metadata:
   # a customer's own workloads. It does nothing about Kyverno / Gatekeeper /
   # OPA, which are separate webhooks these labels do not address.
   labels:
-    pod-security.kubernetes.io/enforce: privileged
-    pod-security.kubernetes.io/audit: privileged
-    pod-security.kubernetes.io/warn: privileged
+    {{ namespace_labels | to_yaml | indent(4) }}
 ---
 apiVersion: v1
 kind: Secret

@@ -3943,7 +3943,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "GPUStack PD Disaggregation",
+  "title": "GPUStack PD Disaggregated Model",
   "uid": "gpustack-pd",
   "version": 1
 }
