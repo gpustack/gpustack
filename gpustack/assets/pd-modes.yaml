@@ -5,18 +5,22 @@
 # A mode is one disaggregation recipe: engine + KV connector + router. The user
 # picks one from a single dropdown (`disaggregation.mode`) and nothing about the
 # connection state — connector, ports, handshake variables — reaches the form.
-# Adding an engine is adding an entry here, not changing code; a new entry needs
-# code only when it needs a router peer style or a protocol that has no renderer
-# yet, which is why unknown values fail at load time instead of rendering wrong.
+# Adding an engine is adding an entry here plus its `PDModeEnum` member in
+# schemas/models.py; the loader asserts the two agree and fails start-up
+# otherwise. Beyond that a new entry needs code only when it wants a router
+# peer style or a protocol that has no renderer yet, which is why unknown
+# values fail at load time instead of rendering wrong.
 #
-# Deliberately isomorphic to cache-providers.yaml: the per-role env / args /
-# files vocabulary is that file's `injection` section word for word, and the
-# same {{placeholder}} rendering applies. The one addition is `connector`, a
+# This catalog is closed, and that is the one way it is NOT like
+# cache-providers.yaml: it takes no plugin contributions, and a malformed
+# entry fails the process rather than costing only itself. The isomorphism is
+# in the vocabulary -- the per-role env / args / files section is that file's
+# `injection` word for word, and the same {{placeholder}} rendering applies. The one addition is `connector`, a
 # structured descriptor because that is the shape the extended-KV-cache
 # assembler consumes.
 #
 # Entry names must equal PDModeEnum's values verbatim (schemas/models.py), and
-# each entry's `backends` must agree with PD_MODE_BACKENDS. The loader asserts
+# each entry's `backends` is what request validation reads. The loader asserts
 # both and fails start-up, because a mismatch is a silent table miss.
 #
 # Template placeholders:
@@ -25,7 +29,7 @@
 #                            rides is the recipe's to declare
 #                            (`net_device_plane: data | control`): `data`, the
 #                            default, refuses to guess on a multi-NIC host and
-#                            asks for kv_ifname; `control` takes the worker's
+#                            asks for kv_transfer_ifname; `control` takes the worker's
 #                            management NIC, which holds the handshake IP by
 #                            definition.
 #   {{port}}                 the member's own HTTP API port
@@ -923,7 +927,7 @@ modes:
       handshake variables and the router's image and command are the user's
       to write on the roles. Also the only way to mix engines across roles,
       since every other recipe expands into one engine's connector config.
-    # Empty means unconstrained, matching PD_MODE_BACKENDS: with nothing
+    # Empty means unconstrained: with nothing
     # injected, any engine mix is the user's own to get right. Declaring neither
     # backends nor gpu_filters is the mechanism that keeps it selectable on
     # every engine and accelerator — an unsupported pair means "no built-in

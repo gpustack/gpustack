@@ -148,6 +148,24 @@ def test_engine_mismatch_carries_its_reason():
 # ---- every unresolved exit is translatable --------------------------------
 
 
+def test_an_absent_vendor_does_not_leave_its_recipes_eligible():
+    """The two halves of the answer have to agree.
+
+    Saying "this cluster has no nvidia" while marking every nvidia recipe
+    eligible is what lets admission accept a mode no worker can run --
+    `_resolution` reads an empty vendor set as unconstrained, so the refusal
+    path must name the vendors the cluster really has.
+    """
+    resolution = resolve_pd_mode(VLLM, {"ascend"}, vendor="nvidia")
+
+    assert resolution.unresolved_code == PDModeUnresolvedCode.VENDOR_NOT_IN_CLUSTER
+    eligible = {o.name for o in resolution.options if o.eligible}
+    assert "vllm-nixl" not in eligible, eligible
+    # `custom` injects nothing and stays selectable everywhere, which is what
+    # keeps "no built-in recipe" from reading as "no PD".
+    assert "custom" in eligible
+
+
 def test_every_unresolved_exit_carries_a_code_the_ui_can_translate():
     """`unresolved_reason` is English prose assembled here, so a UI that
     rendered it verbatim put an English sentence inside a localized form. The

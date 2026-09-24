@@ -14,6 +14,19 @@ DB_TRACE_SQL_SUBSTR = os.getenv("GPUSTACK_DB_TRACE_SQL_SUBSTR", "")
 DB_POOL_SIZE = int(os.getenv("GPUSTACK_DB_POOL_SIZE", 30))
 DB_MAX_OVERFLOW = int(os.getenv("GPUSTACK_DB_MAX_OVERFLOW", 20))
 DB_POOL_TIMEOUT = int(os.getenv("GPUSTACK_DB_POOL_TIMEOUT", 30))
+
+# How many models may reconcile at once. Each reconcile holds a session for
+# its whole pass, so without a bound the ceiling is the number of models: the
+# controller's event subscription replays one CREATED per row on start-up, and
+# nothing in that loop yields, so every model's task is created in a single
+# tick. Past `DB_POOL_SIZE + DB_MAX_OVERFLOW` the pool stops handing out
+# connections and starts timing out -- shared with the API, so a reconcile
+# storm takes request handling down with it.
+#
+# Well under the pool so reconciles cannot be what exhausts it, and in the
+# same range as the other bounded fan-outs here (the metrics querier's 8, the
+# worker registration gate's 10).
+MODEL_RECONCILE_CONCURRENCY = int(os.getenv("GPUSTACK_MODEL_RECONCILE_CONCURRENCY", 8))
 # Bound how long a pooled connection may be reused so a node that a database
 # failover demoted cannot be talked to forever. SQLAlchemy's default is -1,
 # meaning a connection is never recycled; 1800 matches the prevailing default

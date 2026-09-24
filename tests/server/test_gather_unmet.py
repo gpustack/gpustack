@@ -356,3 +356,55 @@ def test_the_blocked_reason_is_its_own_enum_value():
         DegradationReasonEnum.GATHER_BLOCKED_SCALE_OUT.value
         == "gather_blocked_scale_out"
     )
+
+
+@pytest.mark.asyncio
+async def test_members_sharing_nothing_are_degraded_under_a_declared_layer():
+    """The most-unmet case there is, and the one a declared layer used to hide.
+
+    `order_layers` is root-to-leaf, so index 0 is the LOOSEST rung. With the
+    root appended after the declared layers it ranked as the tightest thing in
+    the cluster, and a group sharing nothing — which lands on the root —
+    compared as tighter than the rack it was asked for. The result was silence
+    on exactly the placement this degradation exists to report.
+
+    Every other test here runs without a declared topology, where the root is
+    the only entry and ranks 0 by accident; the ordering only shows itself
+    once a layer is declared.
+    """
+    topology = {
+        "layers": [
+            layer_dict("zone", [ZONE]),
+            layer_dict("rack", [RACK], parent="zone"),
+        ]
+    }
+    split = [
+        _worker(1, {ZONE: "H1", RACK: "R1"}),
+        _worker(2, {ZONE: "H2", RACK: "R2"}),
+    ]
+
+    assert (
+        await _check(PREFER_RACK, split, [_instance(1), _instance(2)], topology) is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_declared_layer_does_not_turn_a_met_target_into_a_miss():
+    """The other direction of the same ordering, so a fix cannot simply invert
+    it: members inside the rack they asked for are not degraded, declared
+    topology or not."""
+    topology = {
+        "layers": [
+            layer_dict("zone", [ZONE]),
+            layer_dict("rack", [RACK], parent="zone"),
+        ]
+    }
+    together = [
+        _worker(1, {ZONE: "H1", RACK: "R1"}),
+        _worker(2, {ZONE: "H1", RACK: "R1"}),
+    ]
+
+    assert (
+        await _check(PREFER_RACK, together, [_instance(1), _instance(2)], topology)
+        is False
+    )

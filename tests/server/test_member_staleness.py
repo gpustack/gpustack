@@ -58,14 +58,27 @@ _no_types = patch(
 )
 
 
+def _pass():
+    """A stand-in for one reconcile pass.
+
+    `session.info` is a real dict because that is where `model_spec_digest`
+    keeps its per-pass memo; a bare `MagicMock` would answer `.get` with a
+    mock and hand back a digest nobody computed. A fresh one per call is a
+    fresh pass.
+    """
+    session = MagicMock()
+    session.info = {}
+    return session
+
+
 async def _digest(model, **kwargs):
     with _no_types:
-        return await model_spec_digest(MagicMock(), model, **kwargs)
+        return await model_spec_digest(_pass(), model, **kwargs)
 
 
 async def _stale(model, instances):
     with _no_types:
-        return await _stale_members(MagicMock(), model, instances)
+        return await _stale_members(_pass(), model, instances)
 
 
 @pytest.mark.asyncio
