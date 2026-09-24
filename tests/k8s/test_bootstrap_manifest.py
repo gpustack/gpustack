@@ -17,6 +17,7 @@ from gpustack.k8s import bootstrap
 from gpustack.k8s.bootstrap import BOOTSTRAP_NAME, RELEASE_NAME, render_bootstrap
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.schemas.clusters import ImageCredential, K8sOptions
+from gpustack.k8s.pod_security import NAMESPACE_LABELS
 from gpustack_runtime.detector import ManufacturerEnum
 
 
@@ -251,11 +252,10 @@ class TestPodSecurityAdmission:
     a disaggregated deployment needs all four at once.
     """
 
-    LABELS = {
-        "pod-security.kubernetes.io/enforce": "privileged",
-        "pod-security.kubernetes.io/audit": "privileged",
-        "pod-security.kubernetes.io/warn": "privileged",
-    }
+    # The shipped constant, not a copy of it. A test that restates the labels
+    # passes whatever the manifest and `cluster_apis` happen to agree on, which
+    # is the one thing it is here to check.
+    LABELS = NAMESPACE_LABELS
 
     @staticmethod
     def namespaces(rendered: Dict[str, dict]) -> Dict[str, dict]:
@@ -294,3 +294,21 @@ class TestPodSecurityAdmission:
         for name in owner:
             labels = rendered[f"Namespace/{name}"]["metadata"]["labels"]
             assert labels["pod-security.kubernetes.io/enforce"] == "privileged"
+
+
+def test_the_manifest_and_the_api_apply_the_same_labels():
+    """Two places create namespaces — this manifest for the system and
+    cluster-owner ones, and `ClusterOps.create_namespace` for every
+    `gpustack-<org>` beyond them. A label in one and not the other leaves a
+    whole family of namespaces rejecting the Pods GPUStack puts in them, and
+    the template used to carry its own copy with a comment asking that they be
+    kept in step by hand."""
+    from gpustack.gpu_instances.cluster_apis import _NAMESPACE_LABELS
+
+    assert _NAMESPACE_LABELS is NAMESPACE_LABELS
+
+    for name, doc in TestPodSecurityAdmission.namespaces(objects()).items():
+        labels = doc["metadata"].get("labels") or {}
+        assert {
+            k: v for k, v in labels.items() if k.startswith("pod-security.")
+        } == NAMESPACE_LABELS, name

@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 import jinja2
 import yaml
 
+from gpustack.k8s.pod_security import NAMESPACE_LABELS
+
 from gpustack.k8s.chart import chart_digest, chart_download_url
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.k8s.values import (
@@ -128,4 +130,5 @@ def render_bootstrap(config: TemplateConfig) -> str:
         bootstrap_name=BOOTSTRAP_NAME,
         job_name=_job_name(stamp),
         applied_revision=revision,
+        namespace_labels=NAMESPACE_LABELS,
     )
