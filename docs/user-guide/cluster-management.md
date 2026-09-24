@@ -67,6 +67,59 @@ The `Advanced` settings expose the following Kubernetes deployment options:
 - `GPU Service Static Access Address` — only shown when `Cluster Type` is `GPU Service`. The static address the operator uses to access GPU instances in this cluster (e.g. a LoadBalancer VIP). Optional.
 - `Worker Configuration YAML` — see [Worker Configuration YAML](#worker-configuration-yaml) below.
 
+#### Namespaces and Pod Security Admission
+
+GPUStack creates the namespaces it owns — `gpustack-system` (or whatever
+`Namespace` is set to) and one `gpustack-<org>` per organization using the
+cluster — and labels each of them for
+[Pod Security Admission](https://kubernetes.io/docs/concepts/security/pod-security-admission/)
+at the `privileged` level:
+
+```yaml
+pod-security.kubernetes.io/enforce: privileged
+pod-security.kubernetes.io/audit: privileged
+pod-security.kubernetes.io/warn: privileged
+```
+
+**Why it is needed.** Pod Security Admission is built into Kubernetes and
+enforced when a Pod is *created*: a Pod that does not fit the level is rejected
+outright rather than left Pending. Model, cache service and benchmark Pods
+legitimately need what the `baseline` and `restricted` levels forbid:
+
+| Requirement | What needs it |
+| --- | --- |
+| Host networking | RDMA binds its GID to a NIC address |
+| hostPort | the side channel a disaggregated pair hands its peer |
+| Host IPC | CUDA-IPC sharing of KV cache buffers |
+| Device mounts | the accelerators themselves |
+
+A prefill/decode deployment needs all four at once, so it is the case that
+fails first and hardest without the label.
+
+**Why all three keys.** With `warn` and `audit` left on the cluster default,
+every Pod creation still returns a warning and writes an audit annotation.
+That is noise in a namespace where the exemption is expected, and it hides the
+warnings that matter elsewhere.
+
+**Blast radius.** `privileged` means every Pod in those namespaces is exempt
+from Pod Security Admission. That is a reason they are namespaces GPUStack
+creates and owns rather than ones shared with your own workloads: nothing else
+should be scheduled into them. The labels also do nothing about Kyverno,
+Gatekeeper or OPA — those are separate admission webhooks, and a policy of
+theirs that forbids host networking or device mounts will still reject these
+Pods. If your cluster runs one, allow the GPUStack namespaces there as well.
+
+**Checking what a stricter level would refuse.** Against your own running
+workloads, without changing anything:
+
+```bash
+kubectl label --dry-run=server --overwrite ns <namespace> \
+  pod-security.kubernetes.io/enforce=baseline
+```
+
+The API server evaluates the namespace's existing Pods against the level and
+warns about each one that would be rejected, naming the controls it violates.
+
 #### Chart Values
 
 Registering a `Kubernetes` cluster installs the GPUStack Helm chart into it, and the options above are turned into values for that chart. `helmValues` reaches the same chart directly, for what those options do not cover: the keys are the chart's own, taken verbatim, so anything the chart or its sub-charts offer is configurable without waiting for an option of its own here.

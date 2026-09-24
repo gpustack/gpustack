@@ -28,7 +28,7 @@ Three questions decide it:
 2. **Is the prompt-to-generation ratio far from 1:1?** The gain comes from
    sizing the two sides independently, which only pays when they are
    differently loaded.
-3. **Is the KV plane fast enough?** The prompt's KV cache crosses the network
+3. **Is the KV transfer fast enough?** The prompt's KV cache crosses the network
    on every request. On a slow or shared link, transfer time replaces the
    prefill time you saved.
 
@@ -52,9 +52,21 @@ usually be faster without it.
 5. Save.
 
 The router is managed for you: its image, command, peer addresses and health
-path all come from the mode's recipe, and they are shown read-only so you can
-see what was derived rather than trust it. If you need your own router, choose
-the `custom` mode and supply an image and a run command on the router role.
+path all come from the mode's recipe, so the form does not ask for them. What
+it does ask for is what a recipe cannot know — the router's own arguments and
+environment — and the connection arguments the platform derived are seeded
+into that same list, so you can see what was rendered rather than trust it. A
+row you leave untouched is dropped again on save, and the server goes on
+rendering it.
+
+A router is structurally one replica, so there is no count to set: a second
+would split the prefix cache and give the group two addresses.
+
+If you need your own router, choose the `custom` mode and set the image and
+run command on the **deployment** rather than on the router role — the role
+inherits both. One image therefore carries your router beside the engine and
+dispatches on the role, which is the same work as naming it in two places
+without the second place to keep in sync.
 
 ## How a group starts
 
@@ -82,7 +94,7 @@ that is the normal path rather than a fault.
 | `Partially ready` | Members are up and the group still cannot serve — a role with no ready member, or the router's endpoint not yet registered. |
 | `Running` | Every role has at least one ready member and the endpoint is registered. |
 | `Ratio 2:1 (currently 1:1)` | The group serves, but not at the ratio you asked for. Shown beside the state, not instead of it. |
-| Clock icon / `Config changed` | The running members predate the configuration shown. See [Applying a configuration change](#applying-a-configuration-change). |
+| Clock icon / `Config changed` | The running members predate the configuration shown, and until you restart, a role cannot be scaled up. See [Applying a configuration change](#applying-a-configuration-change). |
 
 Being short of the requested ratio is a degradation, not a state: a 3P1D group
 running 2P1D still serves, just not at the throughput you sized for.
@@ -106,8 +118,17 @@ and lets it re-form on the current configuration. Restarting only some roles is
 not offered, because that is exactly the request that produces the mixed pairing
 above.
 
-Scaling a role is different and does **not** require a restart: adding a prefill
-adds a prefill.
+Scaling a role is different and does **not** require a restart — on a
+deployment with nothing pending. A replica count is not part of the shape the
+group is pinned to, so adding a prefill adds a prefill.
+
+**With a saved change still waiting for its restart, a role cannot be scaled
+up.** A new member would be built from the edited configuration and would then
+run beside members that were not, which is the mixed pairing above. The scale
+takes effect when you restart, along with the change itself.
+
+Scaling **down** still applies immediately, edit pending or not: losing a
+member cannot produce a mismatched pair.
 
 ## Using a shared KV cache with it
 
@@ -138,7 +159,16 @@ supported and often sufficient configuration.
 
 ## Networking requirements
 
-### The KV interface
+### On Kubernetes: what the Pods ask the cluster for
+
+A group's members need host networking, hostPort, host IPC and device mounts —
+all four at once, which is more than the `baseline` Pod Security Admission
+level allows. GPUStack labels the namespaces it owns accordingly; see
+[Namespaces and Pod Security Admission](cluster-management.md#namespaces-and-pod-security-admission)
+for what that means on a cluster you brought yourself, including what it does
+*not* cover.
+
+### The KV transfer interface
 
 The KV cache crosses the network on every request, and the interface it crosses
 matters. Left to itself, the transport layer will happily pick up a container
@@ -150,8 +180,8 @@ GPUStack derives the interface per worker:
 
 - **One routable interface** — it is used. Nothing to configure.
 - **Several routable interfaces** — GPUStack refuses to guess. Set
-  `--kv-ifname` (or the `kv_ifname` worker config key, or
-  `GPUSTACK_KV_IFNAME`) on that worker to the interface carrying KV traffic. The
+  `--kv-transfer-ifname` (or the `kv_transfer_ifname` worker config key, or
+  `GPUSTACK_KV_TRANSFER_IFNAME`) on that worker to the interface carrying KV traffic. The
   worker log lists the candidates it found.
 
 Set it explicitly on any machine with more than one fabric — a management NIC
