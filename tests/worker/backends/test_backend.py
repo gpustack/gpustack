@@ -842,6 +842,7 @@ def test_vllm_command_args_include_late_system_flags_as_injected():
         backend=BackendEnum.VLLM,
         backend_parameters=[],
         backend_version=None,
+        image_name=None,
         categories=[],
         extended_kv_cache=None,
         speculative_config=None,
@@ -889,6 +890,7 @@ def test_vllm_command_args_exclude_user_backend_parameters_from_injected():
         backend=BackendEnum.VLLM,
         backend_parameters=["--host", "0.0.0.0", "--temperature", "0.2"],
         backend_version=None,
+        image_name=None,
         categories=[],
         extended_kv_cache=None,
         speculative_config=None,
@@ -1791,3 +1793,86 @@ def test_is_ascend_310p(name, devices, expected):
 def test_is_ascend(name, devices, expected):
     actual = is_ascend(devices)
     assert actual == expected, f"case {name} expected {expected}, but got {actual}"
+
+
+def _make_versioned_args_server(run_command=None, backend_version=None):
+    server = _StubServer.__new__(_StubServer)
+    server._model = types.SimpleNamespace(
+        run_command=run_command,
+        backend_version=backend_version,
+        env=None,
+    )
+    server._model_path = "/models/qwen"
+    server._model_instance = types.SimpleNamespace(port=8000, model_name="qwen")
+    server._worker = types.SimpleNamespace(ip="10.0.0.1")
+    server._get_selected_gpu_devices = lambda: [
+        types.SimpleNamespace(index=1),
+        types.SimpleNamespace(index=0),
+    ]
+    backend = InferenceBackend(
+        backend_name=BackendEnum.VLLM,
+        default_version="0.11.0",
+        version_configs={},
+    )
+    backend.version_configs = VersionConfigDict(
+        root={
+            "0.11.0": VersionConfig(
+                image_name="runner:0.11.0", built_in_frameworks=["cuda"]
+            ),
+            "0.11.0-custom": VersionConfig(
+                image_name="own:0.11.0",
+                run_command="--from-version {{model_path}} --port {{port}}",
+            ),
+        }
+    )
+    server.inference_backend = backend
+    return server
+
+
+def test_a_run_command_on_the_model_overrides_the_default_arguments():
+    """The model's own run_command wins over both the backend's default
+    arguments and a version config's command, and its placeholders resolve.
+
+    vLLM and SGLang supply the executable through the container entrypoint, so
+    a run_command for them carries arguments only.
+    """
+    default_args = ["--model", "/models/qwen", "--port", "8000"]
+
+    # No custom command anywhere: the backend keeps its own arguments.
+    server = _make_versioned_args_server()
+    assert server.build_versioned_command_args(default_args) == default_args
+
+    # A model command applies without a backend_version to hang it on.
+    server = _make_versioned_args_server(
+        run_command="--model {{model_path}} --port {{port}} --host {{worker_ip}} --gpus {{gpu_ids}}"
+    )
+    assert server.build_versioned_command_args(default_args) == [
+        "--model",
+        "/models/qwen",
+        "--port",
+        "8000",
+        "--host",
+        "10.0.0.1",
+        "--gpus",
+        "0,1",
+    ]
+
+    # A version config command is shared by every deployment on that version,
+    # so the model's own command outranks it.
+    server = _make_versioned_args_server(
+        run_command="--from-model {{model_path}}",
+        backend_version="0.11.0-custom",
+    )
+    assert server.build_versioned_command_args(default_args) == [
+        "--from-model",
+        "/models/qwen",
+    ]
+
+    # Without a model command that version config still applies.
+    server = _make_versioned_args_server(backend_version="0.11.0-custom")
+    assert server.build_versioned_command_args(default_args) == [
+        "--from-version",
+        "/models/qwen",
+        "--port",
+        "8000",
+    ]

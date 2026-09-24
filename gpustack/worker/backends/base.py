@@ -948,8 +948,8 @@ exec "$@"
         port: Optional[int] = None,
     ) -> List[str]:
         """
-        Override default startup arguments based on version configuration
-        when the version uses non-built-in version and defines a custom run_command
+        Override default startup arguments with a custom run_command, taken from
+        the model itself or from a non-built-in version configuration.
 
         Args:
         - default_args: The default command argument list.
@@ -960,46 +960,54 @@ exec "$@"
             The final command argument list used for container execution.
         """
 
-        # if no version or inference backend is available, return default_args
-        version = self._model.backend_version
-        if not version or not self.inference_backend:
+        if not self.inference_backend:
             return default_args
 
-        # Load version configuration
-        version_config = None
-        try:
-            version_config, version = self.inference_backend.get_version_config(version)
-        except Exception:
-            version_config = self.inference_backend.version_configs.root.get(version)
+        version = self._model.backend_version
+        # A run_command on the model wins: it belongs to this deployment, while
+        # a version config is shared by every deployment using that version.
+        run_command = self._model.run_command
+        if not run_command:
+            if not version:
+                return default_args
 
-        # Only perform replacement when the version uses non-built-in version and defines run_command
-        if (
-            version_config
-            and version_config.built_in_frameworks is None
-            and version_config.run_command
-        ):
-            resolved_model_path = (
-                model_path if model_path is not None else self._model_path
-            )
-            resolved_port = port if port is not None else self._model_instance.port
-            resolved_model_name = self._model_instance.model_name
-            selected_gpu_indexes = sorted(
-                d.index for d in self._get_selected_gpu_devices()
-            )
+            version_config = None
+            try:
+                version_config, version = self.inference_backend.get_version_config(
+                    version
+                )
+            except Exception:
+                version_config = self.inference_backend.version_configs.root.get(
+                    version
+                )
 
-            command = self.inference_backend.replace_command_param(
-                version=version,
-                model_path=resolved_model_path,
-                port=resolved_port,
-                worker_ip=self._worker.ip,
-                model_name=resolved_model_name,
-                gpu_count=len(selected_gpu_indexes),
-                gpu_ids=selected_gpu_indexes,
-                command=version_config.run_command,
-                env=self._model.env,
-            )
-            if command:
-                return shlex.split(command)
+            # Built-in versions keep the backend's own startup arguments.
+            if (
+                not version_config
+                or version_config.built_in_frameworks is not None
+                or not version_config.run_command
+            ):
+                return default_args
+            run_command = version_config.run_command
+
+        resolved_model_path = model_path if model_path is not None else self._model_path
+        resolved_port = port if port is not None else self._model_instance.port
+        resolved_model_name = self._model_instance.model_name
+        selected_gpu_indexes = sorted(d.index for d in self._get_selected_gpu_devices())
+
+        command = self.inference_backend.replace_command_param(
+            version=version,
+            model_path=resolved_model_path,
+            port=resolved_port,
+            worker_ip=self._worker.ip,
+            model_name=resolved_model_name,
+            gpu_count=len(selected_gpu_indexes),
+            gpu_ids=selected_gpu_indexes,
+            command=run_command,
+            env=self._model.env,
+        )
+        if command:
+            return shlex.split(command)
 
         # Return original default_args by default
         return default_args

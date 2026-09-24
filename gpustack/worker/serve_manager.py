@@ -1963,7 +1963,9 @@ class ServeManager:
                 cross_ports: List[int] = []
                 if backend == BackendEnum.VLLM:
                     executor_backend = resolve_executor_backend(
-                        model.backend_parameters, model.backend_version
+                        model.backend_parameters,
+                        model.backend_version,
+                        model.image_name,
                     )
                     if executor_backend == "mp":
                         # DP RPC + PyTorch master + VLLM_PORT. Clamp the band to

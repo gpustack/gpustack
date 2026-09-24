@@ -14,6 +14,7 @@ from gpustack.utils.command import (
     format_backend_parameters,
     is_parameter_key,
     merge_flag_arguments,
+    resolve_executor_backend,
     safe_split,
     sanitize_args,
 )
@@ -558,3 +559,40 @@ class TestSanitizeArgs:
     def test_non_string_elements_survive(self):
         # _build_command_args stringifies most values, but not all of them.
         assert sanitize_args(['--rate', 4]) == ['--rate', '4']
+
+
+@pytest.mark.parametrize(
+    "case_name, backend_parameters, backend_version, image_name, expected",
+    [
+        # A gpustack-runner image always bundles Ray, whichever vLLM it ships.
+        ("runner image", None, None, None, "ray"),
+        ("runner image, pinned version", None, "0.11.0", None, "ray"),
+        # A '-custom' version names the engine version, so Ray is assumed
+        # present below the release that dropped it and absent from there on.
+        ("custom version below the cut", None, "0.17.0-custom", None, "ray"),
+        ("custom version at the cut", None, "0.18.0-custom", None, "mp"),
+        # A pinned image names no version, so it is assumed recent enough to
+        # have lost Ray — the deployment must not take the Ray sidecar path.
+        ("pinned image", None, None, "vllm/vllm-openai:nightly", "mp"),
+        # An explicit choice outranks every default.
+        (
+            "pinned image, user asks for ray",
+            ["--distributed-executor-backend=ray"],
+            None,
+            "vllm/vllm-openai:nightly",
+            "ray",
+        ),
+        (
+            "runner image, user asks for mp",
+            ["--distributed-executor-backend=mp"],
+            None,
+            None,
+            "mp",
+        ),
+    ],
+)
+def test_resolve_executor_backend(
+    case_name, backend_parameters, backend_version, image_name, expected
+):
+    actual = resolve_executor_backend(backend_parameters, backend_version, image_name)
+    assert actual == expected, f"case {case_name}: expected {expected}, got {actual}"

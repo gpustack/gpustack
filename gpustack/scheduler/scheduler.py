@@ -82,6 +82,13 @@ from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
 
+# Shared by every rejection that a custom runtime can resolve, so the ways out
+# stay listed in one place.
+UNSUPPORTED_MODEL_REMEDY = (
+    "To proceed with deployment, ensure the model is supported by backend, or "
+    "deploy it using a custom backend version, a custom image, or a custom backend."
+)
+
 
 class Scheduler:
     def __init__(self, cfg: Config, check_interval: int = 180):
@@ -734,10 +741,8 @@ async def evaluate_pretrained_config(
             )
 
         architectures = getattr(pretrained_config, "architectures", []) or []
-        if not architectures and not model.backend_version:
-            raise ValueError(
-                "Unrecognized architecture. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
-            )
+        if not architectures and not model.backend_version and not model.image_name:
+            raise ValueError(f"Unrecognized architecture. {UNSUPPORTED_MODEL_REMEDY}")
 
     model_type = detect_model_type(architectures)
 
@@ -746,9 +751,10 @@ async def evaluate_pretrained_config(
         model.backend == BackendEnum.VLLM
         and model_type == CategoryEnum.UNKNOWN
         and not model.backend_version
+        and not model.image_name
     ):
         raise ValueError(
-            f"Unsupported architecture: {architectures}. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
+            f"Unsupported architecture: {architectures}. {UNSUPPORTED_MODEL_REMEDY}"
         )
 
     meta_modified = False
@@ -800,8 +806,9 @@ def should_skip_architecture_check(model: Model) -> bool:
         model.backend == BackendEnum.CUSTOM
         or not is_built_in_backend(model.backend)
         or model.backend_version
+        or model.image_name
     ):
-        # New model architectures may be added with custom backend/version.
+        # New model architectures may be added with a custom backend, version or image.
         return True
 
     if model.backend_parameters and find_parameter(
@@ -824,9 +831,7 @@ def simplify_auto_config_value_error(e: ValueError) -> ValueError:
         )
 
     if "pip install --upgrade transformers" in message:
-        return ValueError(
-            "Unsupported model. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
-        )
+        return ValueError(f"Unsupported model. {UNSUPPORTED_MODEL_REMEDY}")
 
     return ValueError(f"Not a supported model.\n\n{message}")
 

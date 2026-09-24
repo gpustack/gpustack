@@ -65,7 +65,11 @@ def _is_vllm_ray_subordinate(model_instance: ModelInstance) -> bool:
     model = model_instance.model
     backend_parameters = model.backend_parameters if model else None
     backend_version = model.backend_version if model else None
-    return resolve_executor_backend(backend_parameters, backend_version) == "ray"
+    image_name = model.image_name if model else None
+    return (
+        resolve_executor_backend(backend_parameters, backend_version, image_name)
+        == "ray"
+    )
 
 
 def _default_display_name(model_instance: ModelInstance, is_main_worker: bool) -> str:

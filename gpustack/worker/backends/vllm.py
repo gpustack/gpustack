@@ -253,7 +253,9 @@ class VLLMServer(InferenceServer):
         )
 
         executor_backend = resolve_executor_backend(
-            self._model.backend_parameters, self._model.backend_version
+            self._model.backend_parameters,
+            self._model.backend_version,
+            self._model.image_name,
         )
 
         # Adjust run container for distributed follower (Ray path only).
@@ -490,7 +492,9 @@ class VLLMServer(InferenceServer):
 
         ports = self._model_instance.ports or []
         executor_backend = resolve_executor_backend(
-            self._model.backend_parameters, self._model.backend_version
+            self._model.backend_parameters,
+            self._model.backend_version,
+            self._model.image_name,
         )
         if executor_backend == "mp":
             # VLLM_DP_MASTER_PORT belongs to the DP coordinator path
@@ -647,6 +651,7 @@ class VLLMServer(InferenceServer):
                 ctx.is_distributed,
                 ctx.deployment_metadata,
                 self._model.backend_version,
+                self._model.image_name,
             )
         )
         arguments.extend(self._get_speculative_arguments())
@@ -696,7 +701,9 @@ class VLLMServer(InferenceServer):
         deployment_metadata: Optional[ModelInstanceDeploymentMetadata],
     ) -> _VLLMArgsContext:
         executor_backend = resolve_executor_backend(
-            self._model.backend_parameters, self._model.backend_version
+            self._model.backend_parameters,
+            self._model.backend_version,
+            self._model.image_name,
         )
         topology: Optional[MultinodeTopology] = None
         if (
@@ -1139,11 +1146,13 @@ def get_auto_parallelism_arguments(
     is_distributed: bool,
     deployment_metadata: Optional[ModelInstanceDeploymentMetadata] = None,
     backend_version: Optional[str] = None,
+    image_name: Optional[str] = None,
 ) -> List[str]:
     if (
         is_distributed
         and deployment_metadata is not None
-        and resolve_executor_backend(backend_parameters, backend_version) == "mp"
+        and resolve_executor_backend(backend_parameters, backend_version, image_name)
+        == "mp"
     ):
         # MP multi-node: derive shape-specific defaults for tp/pp/dp/dpl
         # so the cluster works out-of-the-box; subordinate workers receive
