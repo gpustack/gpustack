@@ -1,6 +1,6 @@
 import pytest
 
-from gpustack.schemas.models import PD_MODE_BACKENDS, BackendEnum, PDModeEnum
+from gpustack.schemas.models import BackendEnum, PDModeEnum
 from gpustack.schemas.pd_modes import (
     PDInjectTargetEnum,
     PDKVLeaseTargetEnum,
@@ -27,6 +27,16 @@ from gpustack.server.pd_mode_catalog import (
     parse_pd_mode_catalog,
 )
 
+# What the shipped catalog declares, restated here only so a test that is about
+# something else can fill in the modes it does not care about.
+_SHIPPED_BACKENDS = {
+    PDModeEnum.VLLM_NIXL.value: [BackendEnum.VLLM.value],
+    PDModeEnum.VLLM_ASCEND_MOONCAKE.value: [BackendEnum.VLLM.value],
+    PDModeEnum.SGLANG_MOONCAKE.value: [BackendEnum.SGLANG.value],
+    PDModeEnum.SGLANG_NIXL.value: [BackendEnum.SGLANG.value],
+    PDModeEnum.CUSTOM.value: [],
+}
+
 
 def _document(modes, kv_leases=None, kv_transfer_metrics=None, composed_cache=None):
     """A minimal catalog document whose mode names satisfy the enum
@@ -37,7 +47,7 @@ def _document(modes, kv_leases=None, kv_transfer_metrics=None, composed_cache=No
     the same connectors, and a test about something else should not have to
     restate that."""
     entries = {mode["name"]: mode for mode in modes}
-    for name, backends in PD_MODE_BACKENDS.items():
+    for name, backends in _SHIPPED_BACKENDS.items():
         entries.setdefault(name, {"name": name, "backends": list(backends)})
     leases = kv_leases or []
     if kv_transfer_metrics is None:
@@ -91,25 +101,14 @@ def test_missing_and_extra_names_both_fail_the_load():
         )
 
 
-def test_catalog_backends_agree_with_the_validation_table():
-    """PD_MODE_BACKENDS exists only so request validation need not read the
-    catalog. The catalog is authoritative; this is the check that keeps the
-    copy honest."""
-    for mode in load_pd_modes():
-        assert sorted(mode.backends) == sorted(PD_MODE_BACKENDS[mode.name])
+def test_nothing_restates_which_engines_a_recipe_targets():
+    """Request validation reads the recipe itself. A second list would have to
+    be asserted equal at start-up, which is what this catalog used to do."""
+    import gpustack.schemas.models as models_schema
+
+    assert not hasattr(models_schema, "PD_MODE_BACKENDS")
     # `custom` injects nothing, so it constrains nothing.
     assert get_pd_mode(PDModeEnum.CUSTOM.value).backends == []
-
-
-def test_backends_mismatch_fails_the_load():
-    document = _document(
-        [{"name": PDModeEnum.VLLM_NIXL.value, "backends": [BackendEnum.SGLANG.value]}]
-    )
-    with pytest.raises(PDModeCatalogError) as excinfo:
-        parse_pd_mode_catalog(document)
-    message = str(excinfo.value)
-    assert "PD_MODE_BACKENDS" in message
-    assert "vllm-nixl" in message
 
 
 def test_every_built_in_recipe_declares_its_accelerator():
@@ -674,7 +673,7 @@ def test_expired_metric_claim_must_match_the_window():
         [
             {
                 "name": PDModeEnum.VLLM_NIXL.value,
-                "backends": PD_MODE_BACKENDS[PDModeEnum.VLLM_NIXL.value],
+                "backends": list(_SHIPPED_BACKENDS[PDModeEnum.VLLM_NIXL.value]),
                 "kv_lease": "mooncake",
                 "router": {
                     "protocol": "two_hop",
@@ -1105,7 +1104,7 @@ def test_the_net_device_plane_differs_between_the_recipes_that_inject_it():
 
 def test_a_recipe_that_says_nothing_keeps_the_stricter_plane():
     """The default has to be `data`: forgetting to classify a recipe then costs
-    one `kv_ifname`, where the reverse default would silently put KV bytes on
+    one `kv_transfer_ifname`, where the reverse default would silently put KV bytes on
     the management NIC of every unclassified recipe."""
     assert PDMode(name="x").net_device_plane == PDNetDevicePlaneEnum.DATA
     # And the shipped recipes that leave the NIC to the engine are unaffected.
@@ -1125,7 +1124,7 @@ def test_declaring_the_control_plane_where_no_net_device_is_injected_fails():
         [
             {
                 "name": PDModeEnum.SGLANG_MOONCAKE.value,
-                "backends": list(PD_MODE_BACKENDS[PDModeEnum.SGLANG_MOONCAKE.value]),
+                "backends": list(_SHIPPED_BACKENDS[PDModeEnum.SGLANG_MOONCAKE.value]),
                 "net_device_plane": "control",
             }
         ]
@@ -1216,3 +1215,65 @@ def test_two_floors_for_one_backend_are_refused():
 
     with pytest.raises(PDModeCatalogError, match="duplicate composed_cache"):
         parse_pd_mode_catalog(document)
+
+
+def test_two_recipes_on_one_engine_keep_reaching_their_router_the_same_way():
+    """`sglang-mooncake` and `sglang-nixl` declare byte-for-byte identical
+    routers, and the two vLLM recipes share everything about reaching theirs.
+    Editing one and forgetting the other gives a router that starts and then
+    cannot register — a broken deployment rather than a visible typo — so the
+    duplication is guarded where it can still be read as one."""
+    load_pd_modes(reload=True)  # the shipped catalog must satisfy it
+
+
+def test_a_router_edited_on_one_recipe_and_not_its_sibling_fails_the_load():
+    document = _document(
+        [
+            {
+                "name": PDModeEnum.SGLANG_MOONCAKE.value,
+                "backends": [BackendEnum.SGLANG.value],
+                "router": {
+                    "protocol": "two_hop",
+                    "entrypoint": ["sglang-router"],
+                    "peers": {"style": "repeated_flag"},
+                    "health_path": "/health",
+                },
+            },
+            {
+                "name": PDModeEnum.SGLANG_NIXL.value,
+                "backends": [BackendEnum.SGLANG.value],
+                "router": {
+                    "protocol": "two_hop",
+                    "entrypoint": ["sglang-router"],
+                    "peers": {"style": "repeated_flag"},
+                    "health_path": "/healthz",
+                },
+            },
+        ]
+    )
+
+    with pytest.raises(PDModeCatalogError) as excinfo:
+        parse_pd_mode_catalog(document)
+
+    message = str(excinfo.value)
+    assert "health_path" in message
+    assert PDModeEnum.SGLANG_MOONCAKE.value in message
+
+
+def test_the_allowance_is_not_vacuous():
+    """The vLLM pair is allowed to differ in what it advertises and what it
+    lets an operator turn, and it does. If it ever stopped, the allowance
+    would be silently guarding nothing and the next real difference would slip
+    through with it."""
+    by_name = {mode.name: mode for mode in load_pd_modes(reload=True)}
+    left = by_name[PDModeEnum.VLLM_NIXL.value].router.model_dump(mode="json")
+    right = by_name[PDModeEnum.VLLM_ASCEND_MOONCAKE.value].router.model_dump(
+        mode="json"
+    )
+
+    differing = {k for k in set(left) | set(right) if left.get(k) != right.get(k)}
+
+    assert "tunable_args" in differing or "capabilities" in differing
+    # And everything about reaching the router is the same.
+    for shared in ("entrypoint", "peers", "membership_api", "health_path"):
+        assert left.get(shared) == right.get(shared), shared

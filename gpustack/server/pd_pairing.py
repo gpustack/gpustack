@@ -173,17 +173,56 @@ def compare_must_match(
 def compare_max_model_len(
     prefill_params: Sequence[str], decode_params: Sequence[str]
 ) -> Tuple[str, Optional[int], Optional[int]]:
-    """The context-length verdict, with the two numbers the message needs."""
+    """The context-length verdict, with the two numbers the message needs.
+
+    Presence is read separately from the number, because an integer parse
+    answers None for two different things: the key was never written, and the
+    key was written in a form this cannot read. vLLM takes `--max-model-len
+    128k`, so the second is reachable -- and reading both as "never written"
+    put a prefill at `128k` beside a decode at `32k` in the branch that means
+    "neither said anything, so both take the window from the model config",
+    and called them agreed. That is the mismatch this comparison exists for,
+    and the one that surfaces as a long prompt failing after prefill has
+    already been paid for.
+    """
+    prefill_raw = find_last_parameter(prefill_params, PAIRING_MAX_LEN)
+    decode_raw = find_last_parameter(decode_params, PAIRING_MAX_LEN)
     prefill_len = find_last_int_parameter(prefill_params, PAIRING_MAX_LEN)
     decode_len = find_last_int_parameter(decode_params, PAIRING_MAX_LEN)
     if prefill_len is not None and decode_len is not None:
         verdict = AGREE if prefill_len == decode_len else DIFFER
-    elif prefill_len is None and decode_len is None:
+    elif prefill_raw is None and decode_raw is None:
         # Both roles take the window out of the same model config.
+        verdict = AGREE
+    elif prefill_raw is not None and prefill_raw == decode_raw:
+        # Written the same way on both sides. Whatever the engine makes of a
+        # spelling this cannot parse, it makes the same thing of it twice.
         verdict = AGREE
     else:
         verdict = UNDECIDABLE
     return verdict, prefill_len, decode_len
+
+
+def selector_spans_workers(role) -> bool:
+    """Whether this role's own pin puts one replica on more than one machine.
+
+    Told apart from "not pinned at all", which `selector_cards_per_replica`
+    cannot do -- both answer None there, and a caller that reads None as
+    "nothing was said" will happily substitute a number of its own. For a
+    distributed member that number is wrong by construction: the world size is
+    split into tp and pp much further down the vLLM path, and a guess made here
+    lands in a descriptor the engine then contradicts.
+
+    False for an unpinned role, which is the ordinary case and says nothing
+    either way.
+    """
+    selector = getattr(role, "gpu_selector", None)
+    gpu_ids = getattr(selector, "gpu_ids", None) if selector is not None else None
+    if not gpu_ids:
+        return False
+    # "worker_name:device:index" -- more than one worker name and the member is
+    # distributed, so the card count is not the world size.
+    return len({str(gpu_id).rsplit(":", 2)[0] for gpu_id in gpu_ids}) > 1
 
 
 def selector_cards_per_replica(role) -> Optional[int]:
@@ -210,14 +249,12 @@ def selector_cards_per_replica(role) -> Optional[int]:
     a distributed member, and `cal_distributed_parallelism_arguments` splits its
     world size into tp and pp much further down the vLLM path.
     """
+    if selector_spans_workers(role):
+        return None
+
     selector = getattr(role, "gpu_selector", None)
     gpu_ids = getattr(selector, "gpu_ids", None) if selector is not None else None
     if not gpu_ids:
-        return None
-
-    # "worker_name:device:index" -- more than one worker name and the member is
-    # distributed, so the card count is not the world size.
-    if len({str(gpu_id).rsplit(":", 2)[0] for gpu_id in gpu_ids}) != 1:
         return None
 
     per_replica = getattr(selector, "gpus_per_replica", None)

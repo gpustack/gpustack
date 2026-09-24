@@ -1027,24 +1027,39 @@ class ModelInstanceService:
                 )
                 created.append(result)
             await self.session.commit()
-
-            # create(auto_commit=False) returns before invalidating cached_all,
-            # so the batch commit must do it — the same rule batch_delete
-            # follows, and for the same reason: subscribe()'s replay snapshot
-            # would otherwise not carry the new rows.
-            await ModelInstance._invalidate_cached_all()
-
-            for model_id in model_ids:
-                await delete_cache_by_key(self.get_running_instances, model_id)
-            await invalidate_workers_allocated(model_instances)
-
-            return created
         except Exception as e:
             await self.session.rollback()
             names = [mi.name for mi in model_instances]
             raise InternalServerErrorException(
                 message=f"Failed to create model instances {names}: {e}"
             )
+
+        # Past the commit, so past the point where anything can be undone. The
+        # cache work below used to sit inside the block above, where a failure
+        # in it rolled back a transaction that had already landed -- a no-op --
+        # and then told the caller the members had not been created. For a
+        # group that is the worst answer available: the rows exist, and a
+        # caller acting on "not created" creates them again.
+        #
+        # create(auto_commit=False) returns before invalidating cached_all, so
+        # the batch has to do it or subscribe()'s replay snapshot will not
+        # carry the new rows. A failure there is reported rather than raised:
+        # a stale cache is a pass of lag that the next invalidation clears,
+        # and losing a created group to it is not a trade worth making.
+        try:
+            await ModelInstance._invalidate_cached_all()
+            for model_id in model_ids:
+                await delete_cache_by_key(self.get_running_instances, model_id)
+            await invalidate_workers_allocated(model_instances)
+        except Exception as e:
+            logger.warning(
+                "Model instances %s were created, but a cache could not be "
+                "invalidated: %s. Readers may lag by a pass.",
+                [mi.name for mi in model_instances],
+                e,
+            )
+
+        return created
 
     async def update(
         self, model_instance: ModelInstance, source: Union[dict, SQLModel, None] = None

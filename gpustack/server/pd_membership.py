@@ -62,6 +62,7 @@ no such route at all — see `_read_registry`.
 import asyncio
 import logging
 import re
+import time
 from urllib.parse import quote, urlsplit
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
@@ -526,14 +527,14 @@ async def _await_registration(
     missing when the window closes is missing, and that is the answer the
     outcome is built from.
     """
-    deadline = asyncio.get_event_loop().time() + _ADMISSION_WINDOW_SECONDS
+    deadline = asyncio.get_running_loop().time() + _ADMISSION_WINDOW_SECONDS
     while True:
         read = await _read_registry(client, api, base, proxy=proxy, headers=headers)
         if read.absent or read.entries is None:
             return read
         if not set(wanted) - set(read.entries):
             return read
-        if asyncio.get_event_loop().time() >= deadline:
+        if asyncio.get_running_loop().time() >= deadline:
             return read
         await asyncio.sleep(_ADMISSION_POLL_SECONDS)
 
@@ -736,6 +737,27 @@ _unreadable: Dict[int, int] = {}
 # restart -- see `should_restart_router`.
 _restarts: Dict[int, int] = {}
 
+# Consecutive failed reconciles before the message says where to look.
+#
+# What changes at this point is not the outcome — it was already False — but
+# what the message is allowed to claim. One failure is ordinary and says nothing
+# about a cause: a router that has just come up, a member still being probed.
+# Five in a row is a router that is not going to admit its members on its own,
+# and only then is it honest to send whoever is watching to the router itself.
+#
+# The escalation names evidence, not a mechanism. What the registry holds is
+# version-dependent (fact 2 at the top of this module), and the two causes that
+# survive five passes — a router that disagrees with the call, and a router this
+# server cannot reach — are told apart by the router's own `GET /workers` and
+# its log, not by anything this code can infer. In particular the message must
+# not claim that members can only ever join through this API — they can also
+# arrive from the command line — because stating a cause we cannot observe sends
+# people to fix the wrong thing.
+#
+# And it is stated, not performed. The router's command is rendered from
+# `pd-modes.yaml`, so any change to how it was launched is an operator action —
+# this code cannot un-launch a flag on a running process, and restarting the
+# router only repeats the same call against the same endpoint.
 PERSISTENT_FAILURE_PASSES = 5
 
 # How many consecutive passes the registry must be unreadable before the
@@ -769,27 +791,71 @@ RESTART_AFTER_UNREADABLE_PASSES = 5
 # up. A third has nothing left to prove.
 RESTART_ATTEMPT_LIMIT = 2
 
-"""Consecutive failed reconciles before the message says where to look.
 
-What changes at this point is not the outcome — it was already False — but
-what the message is allowed to claim. One failure is ordinary and says nothing
-about a cause: a router that has just come up, a member still being probed.
-Five in a row is a router that is not going to admit its members on its own,
-and only then is it honest to send whoever is watching to the router itself.
+# The member set each group's routers were last confirmed to hold, and the
+# monotonic time that confirmation was made.
+_settled: Dict[int, Tuple[str, float]] = {}
 
-The escalation names evidence, not a mechanism. What the registry holds is
-version-dependent (fact 2 at the top of this module), and the two causes that
-survive five passes — a router that disagrees with the call, and a router this
-server cannot reach — are told apart by the router's own `GET /workers` and
-its log, not by anything this code can infer. In particular the message must
-not claim that members can only ever join through this API — they can also
-arrive from the command line — because stating a cause we cannot observe sends
-people to fix the wrong thing.
+# How long a confirmation is allowed to stand before the registry is read
+# again even though nothing about the group has changed.
+#
+# The skip below is keyed on what the SERVER knows -- the member set and where
+# the routers are. A router that restarts and comes back with an empty
+# registry changes none of that, and nothing else in the product would notice:
+# the row keeps its id and its port, the members keep running, and the group
+# would sit behind a router serving 503s with every pass agreeing there was
+# nothing to do. Re-reading on a timer is what bounds that window, and it is
+# the whole reason `reconcile` was built to cost one read when nothing changed.
+#
+# A minute, because that is the scale of the damage. The window is an outage
+# for the whole group -- one router, the gateway's only upstream -- so it has
+# to be short enough to be a blip rather than an incident, and long enough
+# that the steady state is one request per group per minute instead of one per
+# instance event.
+RESETTLE_AFTER_SECONDS = 60.0
 
-And it is stated, not performed. The router's command is rendered from
-`pd-modes.yaml`, so any change to how it was launched is an operator action —
-this code cannot un-launch a flag on a running process, and restarting the
-router only repeats the same call against the same endpoint."""
+
+def membership_fingerprint(
+    mode_name: Optional[str],
+    members: Dict[str, str],
+    routers: Sequence[ModelInstance],
+) -> str:
+    """What the server knows about who should be registered, and with whom.
+
+    Both halves matter. The members decide what `reconcile` would send; the
+    routers decide who it would be sent to, so a router that moves to another
+    worker or comes back on another port has to read as a change even when the
+    member set is identical. The mode is in it because it chooses the API.
+    """
+    member_part = ";".join(f"{url}={role}" for url, role in sorted(members.items()))
+    router_part = ";".join(sorted(f"{r.id}@{r.worker_id}:{r.port}" for r in routers))
+    return f"{mode_name or ''}|{member_part}|{router_part}"
+
+
+def settled(model_id: int, fingerprint: str, now: Optional[float] = None) -> bool:
+    """Whether this exact membership was confirmed recently enough to skip.
+
+    False for anything unproven: a group never reconciled, one whose members
+    or routers have changed, and one whose confirmation has aged out. A pass
+    that skips records nothing, so the outcome the previous pass wrote is
+    still what `upstream_registration_ready` reads -- which is correct,
+    because it is still the last thing actually observed.
+    """
+    remembered = _settled.get(model_id)
+    if remembered is None or remembered[0] != fingerprint:
+        return False
+    at = now if now is not None else time.monotonic()
+    return at - remembered[1] < RESETTLE_AFTER_SECONDS
+
+
+def note_settled(model_id: int, fingerprint: str, now: Optional[float] = None) -> None:
+    """Record that the routers were observed holding exactly this member set.
+
+    Only ever called after an outcome that is `ok`. Remembering a failed pass
+    would turn one unreachable router into a minute of not trying to reach it.
+    """
+    at = now if now is not None else time.monotonic()
+    _settled[model_id] = (fingerprint, at)
 
 
 def record(model_id: int, outcome: MembershipOutcome) -> None:
@@ -815,6 +881,12 @@ def record(model_id: int, outcome: MembershipOutcome) -> None:
         if count >= PERSISTENT_FAILURE_PASSES and outcome.reason:
             outcome = MembershipOutcome(
                 ok=False,
+                # Carried, not defaulted. Escalating the wording does not
+                # change what kind of failure this is, and the stored outcome
+                # is the only copy anything later can ask -- a rebuild that
+                # quietly answers "readable" would be one lie sitting where
+                # the reader has no way to notice it.
+                unreadable=outcome.unreadable,
                 reason=(
                     f"{outcome.reason} (unchanged for {count} passes, so the "
                     "member management API is failing consistently rather "
@@ -837,7 +909,9 @@ def outcome_for(model_id: int) -> Optional[MembershipOutcome]:
 def forget(model_id: int) -> None:
     _outcomes.pop(model_id, None)
     _failures.pop(model_id, None)
+    _unreadable.pop(model_id, None)
     _restarts.pop(model_id, None)
+    _settled.pop(model_id, None)
 
 
 def consecutive_failures(model_id: int) -> int:

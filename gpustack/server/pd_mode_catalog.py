@@ -1,10 +1,10 @@
 import logging
 from importlib.resources import files
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
-from gpustack.schemas.models import PD_MODE_BACKENDS, PDModeEnum
+from gpustack.schemas.models import PDModeEnum
 from gpustack.schemas.pd_modes import (
     PDComposedCache,
     PDKVLease,
@@ -100,7 +100,7 @@ def parse_pd_mode_catalog(raw: Any) -> PDModeCatalog:
             raise PDModeCatalogError(f"mode '{name}' is invalid: {e}") from e
 
     _assert_names_match_enum(modes)
-    _assert_backends_match_table(modes)
+    _assert_shared_routers_have_not_drifted(modes)
     _assert_expired_metric_agrees(modes)
     _assert_gpu_filters_declared(modes)
     _assert_router_invocation_is_classified(modes)
@@ -287,6 +287,82 @@ def _parse_transfer_metrics(
     return metrics
 
 
+# Router blocks that are meant to stay the same, and what each pair is allowed
+# to differ in. Two recipes on one engine reach their router the same way --
+# the same image, the same peer flags, the same membership API -- and the
+# duplication is real: `sglang-mooncake` and `sglang-nixl` declare byte-for-byte
+# identical routers today, and the two vLLM recipes share eight of their ten
+# keys.
+#
+# Asserted rather than factored out, and deliberately in that order. The two
+# keys most likely to drift are `membership_api` and `connection_args`, and
+# what makes drift dangerous is that it is silent: a router started with one
+# recipe's peer flags and another's membership API fails at registration, far
+# from the edit. An assertion names the pair and the key at start-up. A shared
+# template would too, but it would also add a second way to read this file,
+# and five entries do not pay for one -- when the catalog grows, `kv_lease`'s
+# named indirection is the shape to copy, not YAML anchors, which leave
+# nothing behind to assert on.
+_ROUTERS_THAT_MUST_AGREE: List[Tuple[str, str, Set[str]]] = [
+    (
+        PDModeEnum.SGLANG_MOONCAKE.value,
+        PDModeEnum.SGLANG_NIXL.value,
+        set(),
+    ),
+    (
+        PDModeEnum.VLLM_NIXL.value,
+        PDModeEnum.VLLM_ASCEND_MOONCAKE.value,
+        # The connector each advertises, and the knobs an operator may turn.
+        # Everything about reaching the router itself is shared.
+        {"capabilities", "tunable_args"},
+    ),
+]
+
+
+def _assert_shared_routers_have_not_drifted(modes: List[PDMode]) -> None:
+    """Two recipes on one engine keep reaching their router the same way.
+
+    See `_ROUTERS_THAT_MUST_AGREE` for why this is an assertion rather than a
+    shared template. A pair listed there may differ only in the keys named
+    with it; anything else is an edit made to one recipe and forgotten on the
+    other, which surfaces as a router that starts and then cannot register.
+    """
+    by_name = {mode.name: mode for mode in modes}
+    drifted = []
+    # `command` is composed at load time from entrypoint + connection_args +
+    # tunable_args, so it restates what is compared below. Left in, a pair that
+    # is allowed to differ in `tunable_args` would always be reported as
+    # differing in `command` too -- the derived consequence of a difference
+    # that was declared acceptable.
+    derived = {"command"}
+    for left_name, right_name, allowed in _ROUTERS_THAT_MUST_AGREE:
+        left, right = by_name.get(left_name), by_name.get(right_name)
+        if left is None or right is None or not left.router or not right.router:
+            # A pair this catalog no longer ships says nothing about drift.
+            continue
+        left_block = left.router.model_dump(mode="json")
+        right_block = right.router.model_dump(mode="json")
+        differing = {
+            key
+            for key in (set(left_block) | set(right_block)) - derived
+            if left_block.get(key) != right_block.get(key)
+        }
+        unexpected = sorted(differing - allowed)
+        if unexpected:
+            drifted.append(
+                f"'{left_name}' and '{right_name}' differ in {unexpected} "
+                f"(allowed: {sorted(allowed) or 'nothing'})"
+            )
+    if drifted:
+        raise PDModeCatalogError(
+            f"{_ASSET_NAME} declares router blocks that are meant to stay the "
+            "same and no longer do. An edit made to one recipe and not its "
+            "sibling gives a router that starts and then fails to register, "
+            "which reads as a broken deployment rather than a typo: "
+            + "; ".join(drifted)
+        )
+
+
 def _assert_names_match_enum(modes: List[PDMode]) -> None:
     """The catalog's entry names must be exactly PDModeEnum's values.
 
@@ -309,30 +385,6 @@ def _assert_names_match_enum(modes: List[PDMode]) -> None:
         f"in the enum but missing from the catalog: {missing}; "
         f"in the catalog but not in the enum: {unknown}"
     )
-
-
-def _assert_backends_match_table(modes: List[PDMode]) -> None:
-    """Each entry's `backends` must agree with PD_MODE_BACKENDS.
-
-    That table exists only so request validation does not have to read the
-    catalog. This catalog is the authoritative declaration of which engines
-    a recipe may be injected into, and this assertion is what keeps the copy
-    honest — otherwise a mode added here could pass a validation the catalog
-    itself would refuse.
-    """
-    disagreements = []
-    for mode in modes:
-        declared = sorted(mode.backends)
-        expected = sorted(PD_MODE_BACKENDS.get(mode.name, []))
-        if declared != expected:
-            disagreements.append(
-                f"'{mode.name}': catalog {declared} != table {expected}"
-            )
-    if disagreements:
-        raise PDModeCatalogError(
-            "PD_MODE_BACKENDS is a copy of this catalog's `backends` kept for "
-            "request validation, and the two disagree: " + "; ".join(disagreements)
-        )
 
 
 def _assert_router_invocation_is_classified(modes: List[PDMode]) -> None:

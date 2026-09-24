@@ -288,3 +288,48 @@ def test_a_model_without_disaggregation_is_untouched_by_placement_too():
 
 def test_the_placement_marker_is_the_value_the_api_publishes():
     assert DegradationReasonEnum.PAIRING_TP_MISPLACED.value == "pairing_tp_misplaced"
+
+
+# --- a window written in a form the comparison cannot read ------------------ #
+
+
+def test_two_unreadable_windows_are_not_taken_for_silence():
+    """vLLM accepts `--max-model-len 128k`, and an integer parse answers None
+    for that exactly as it does for a key nobody wrote. Reading both alike put
+    a prefill at 128k beside a decode at 32k in the branch that means "neither
+    said anything, so both take the window from the model config" — and called
+    them agreed. That is the mismatch this comparison exists for."""
+    from gpustack.server.pd_pairing import AGREE, UNDECIDABLE, compare_max_model_len
+
+    verdict, prefill, decode = compare_max_model_len(
+        ["--max-model-len=128k"], ["--max-model-len=32k"]
+    )
+
+    assert verdict == UNDECIDABLE
+    assert (prefill, decode) == (None, None)
+
+    # The same spelling on both sides is still agreement: whatever the engine
+    # makes of it, it makes the same thing of it twice.
+    same, _, _ = compare_max_model_len(
+        ["--max-model-len=128k"], ["--max-model-len=128k"]
+    )
+    assert same == AGREE
+
+
+def test_one_unreadable_window_beside_a_silent_role_is_not_agreement():
+    """A role that wrote `128k` and one that wrote nothing are not the same
+    deployment: the second takes whatever the model config says, and nothing
+    here knows that the first resolves to it."""
+    from gpustack.server.pd_pairing import UNDECIDABLE, compare_max_model_len
+
+    verdict, _, _ = compare_max_model_len(["--max-model-len=128k"], [])
+
+    assert verdict == UNDECIDABLE
+
+
+def test_both_silent_still_agree():
+    """The ordinary case, unchanged: neither role names a window, so both take
+    it from the same model config."""
+    from gpustack.server.pd_pairing import AGREE, compare_max_model_len
+
+    assert compare_max_model_len([], [])[0] == AGREE

@@ -266,8 +266,22 @@ class ModelController:
     DELETED -> Model UPDATED -> reconcile", so retiring a 4P4D generation is
     nine deletions and nine reconciles — and each of the middle ones sees a
     group short of members. Reconciling on every one of them recreates what
-    the deletion is still in the middle of removing. One reconcile per burst,
-    reading the settled state, cannot make that mistake.
+    the deletion is still in the middle of removing.
+
+    **What the queue actually guarantees is convergence, not one pass.** The
+    debounce window is off (`dedup_window` defaults to 0), so the first event
+    of a burst starts a reconcile immediately and that one does read a
+    half-finished picture. Every event arriving while it runs coalesces into
+    a single follow-up, which `done()` re-queues — and that one reads the
+    settled state. So a burst costs two passes, and the recreation the first
+    may perform is undone by the second rather than prevented.
+
+    The window is deliberately left off: this controller carries every model,
+    not only the role-bearing ones, so a debounce would delay every
+    deployment's status and route publication to spare PD one wasted pass —
+    and it would be charged twice on the drain path, whose self-scheduled
+    re-queue is itself a MODIFIED event. Convergence in two passes is the
+    cheaper side of that trade.
     """
 
     def __init__(self, cfg: Config):
@@ -278,6 +292,15 @@ class ModelController:
         # while one model's events serialise.
         self._queue: WorkQueue = WorkQueue(coalesce=self._merge_events)
         self._inflight: Dict[Any, asyncio.Task] = {}
+        # Held for the length of a pass, which is where the session is held
+        # too. The queue serialises one model against itself and says nothing
+        # about how many models run at once -- and the answer without this is
+        # "all of them": the subscription replays one CREATED per row on
+        # start-up through a loop that never yields, so a fleet's worth of
+        # tasks and sessions is created in a single tick. The pool is shared
+        # with the API, so the bound is here rather than in the queue, which
+        # has no business knowing what a pass costs.
+        self._passes = asyncio.Semaphore(envs.MODEL_RECONCILE_CONCURRENCY)
         self._dispatch_task: Optional[asyncio.Task] = None
 
     @staticmethod
@@ -370,7 +393,8 @@ class ModelController:
     async def _process(self, event: WorkEvent):
         keys = event.keys
         try:
-            await self._reconcile(event.object)
+            async with self._passes:
+                await self._reconcile(event.object)
             self._queue.forget(keys)
         except asyncio.CancelledError:
             raise
@@ -424,12 +448,23 @@ class ModelController:
         Reconcile the model.
         """
         model: Model = event.data
+        # Every model that goes away takes its membership bookkeeping with it.
+        # `pd_membership` keeps per-model dicts that only the status pass
+        # clears, and that pass stops running the moment the row is gone -- so
+        # a deleted group's outcome, failure streak and restart budget would
+        # stay in memory for the life of the process, and a later model that
+        # happened to reuse the id would inherit them. Done on the event rather
+        # than inside the status pass because a delete is precisely the case
+        # that pass does not get to see.
+        deleted_id = resolve_event_id(event)
+        if event.type == EventType.DELETED and deleted_id is not None:
+            pd_membership.forget(deleted_id)
         # Unhydrated means a delete whose row is gone (see Event), and every
         # callee below reads model fields. Leader-only controller, so nothing
         # else picks it up -- warn rather than drop it quietly.
         if not isinstance(model, Model):
             logger.warning(
-                f"Model {resolve_event_id(event)} {event.type} not reconciled: "
+                f"Model {deleted_id} {event.type} not reconciled: "
                 f"the event carries only an id and the row is gone"
             )
             return
@@ -1581,19 +1616,65 @@ _DIGEST_EXCLUDED_SPEC_FIELDS = frozenset(
         # scheduling; running groups are not moved"), and a digest bump would
         # make that sentence a lie.
         "gather",
+        # The rest of the placement preferences, excluded for the same reason
+        # as `gather` and confirmed the same way: not one of them is read
+        # anywhere under `gpustack/worker/`. They choose which worker the NEXT
+        # member lands on -- a label filter, a scorer's strategy, a pin, an
+        # admission gate -- and nothing re-places a member that is already
+        # holding its cards. `gpu_selector` in particular never reaches a
+        # container: what the engine is given comes from the instance's own
+        # `gpu_indexes`, decided once when the member was placed, and editing
+        # the model's selector does not rewrite it.
+        #
+        # `gpu_type_selector` is deliberately NOT here, and is the one that
+        # looks like it belongs. It becomes the workload's resource keys --
+        # whole card, sliced percentage, MIG profile -- so changing it while a
+        # member runs leaves that member asking for the old ones.
+        "placement_strategy",
+        "worker_selector",
+        "gpu_selector",
+        "distributable",
+        "distributed_inference_across_workers",
+        # Whether the gateway translates `/v1/messages` or forwards it. A
+        # statement about the server, as its own field says; the container is
+        # byte-for-byte the same either way.
+        "native_anthropic_api",
     }
+)
+
+# Three of those exclusions carry a second reason worth stating on its own:
+# `distributable`, `distributed_inference_across_workers` and
+# `gpu_selector.gpus_per_replica` are written by the SERVER, not by the user
+# (`scheduler.py` sets each once it has worked the value out). In the digest
+# they made a group go stale with nobody having edited anything, and the
+# restart that clears the warning only confirms the value the platform had
+# already chosen -- the shape `_stale_members` warns about, where a false
+# reading is indistinguishable from a true one because acting on it appears
+# to work. `backend_version` has an explicit exemption for exactly this; these
+# had none.
+
+
+# A role can override the placement preferences too, and a preference is no
+# more part of the container's shape for naming a role than for naming a
+# model. `gpu_type_selector` stays for the same reason it stays above: a role
+# picks its own pool with it, and the pool is in the workload's resource keys.
+_ROLE_DIGEST_EXCLUDED_FIELDS = frozenset(
+    {"replicas", "worker_selector", "gpu_selector"}
 )
 
 
 def _role_digest_payload(role: RoleSpec) -> Dict[str, Any]:
-    """A role's contribution to the digest, minus its replica count.
+    """A role's contribution to the digest, minus what does not shape it.
 
-    Same reason `replicas` is excluded at the model level: a role's count is
-    what per-role convergence adjusts, so folding it in would turn every
-    scale into a generation change.
+    `replicas` for the reason it is excluded at the model level: a role's
+    count is what per-role convergence adjusts, so folding it in would turn
+    every scale into a generation change. The selectors for the reason
+    `gather` is excluded: they decide where the next member goes, and no
+    member already placed is moved by editing one.
     """
     payload = role.model_dump(mode="json", exclude_none=True)
-    payload.pop("replicas", None)
+    for field in _ROLE_DIGEST_EXCLUDED_FIELDS:
+        payload.pop(field, None)
     return payload
 
 
@@ -1649,7 +1730,30 @@ async def model_spec_digest(
     `backend_version` substitutes for the model's own, and exists for one
     caller: asking whether a *particular member* is out of date with the spec.
     See `_stale_members`.
+
+    **One answer per reconcile pass, and that is a correctness property
+    rather than a saving.** A Model event runs `sync_replicas` and
+    `sync_model_status` inside one session, so the digest is computed twice
+    against a catalog a *different* task may retire-and-insert into between
+    them: `_sync_replicas_per_role` stamps a new member with what it computed,
+    `_stale_members` then compares against what it computed, and a member
+    created moments earlier reads as out of date with the spec it was built
+    from. Memoising on the session makes the two the same value by
+    construction, because the session is exactly one pass.
+
+    The memo deliberately dies with the pass. What `_instance_type_snapshots`
+    exists to catch is drift *between* passes -- two members admitted at
+    different moments resolving one type name to different cards -- and a
+    cache outliving the pass would hide precisely that. `updated_at` is in
+    the key so a model rewritten mid-pass recomputes; it can only cost an
+    extra computation, never return a stale one.
     """
+    memo: Dict[Any, str] = session.info.setdefault("model_spec_digests", {})
+    memo_key = (model.id, model.updated_at, backend_version)
+    cached = memo.get(memo_key)
+    if cached is not None:
+        return cached
+
     payload: Dict[str, Any] = {}
     for field in ModelSpecBase.model_fields:
         if field in _DIGEST_EXCLUDED_SPEC_FIELDS:
@@ -1675,7 +1779,9 @@ async def model_spec_digest(
     payload["_instance_types"] = await _instance_type_snapshots(session, model)
 
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return f"sha1:{hashlib.sha1(blob.encode('utf-8')).hexdigest()}"
+    digest = f"sha1:{hashlib.sha1(blob.encode('utf-8')).hexdigest()}"
+    memo[memo_key] = digest
+    return digest
 
 
 async def _stale_members(
@@ -1989,9 +2095,44 @@ async def _sync_replicas_per_role(
     # replacement that a re-scale-up is waiting for.
     generation = await _reap_drained(session, generation)
 
+    # A generation the spec has moved past gets no new members.
+    #
+    # `spec_digest` labels a member with the generation it belongs to; it does
+    # not preserve what that generation was built from. Every field of a
+    # replacement comes off the CURRENT model row -- see
+    # `_build_instance_create` -- and the worker reads the live row again when
+    # it starts the container, so a member created now runs the edited spec
+    # whatever digest it is stamped with. Filling a gap here would therefore
+    # produce the one thing this whole mechanism exists to prevent: a prefill
+    # and a decode on opposite sides of an edit, which pair, transfer, and
+    # fail only on the prompt long enough to reach the setting they disagree
+    # about. F7 3.3 asks for the switch to be all-stop-then-all-start; a group
+    # that lost a member mid-edit waits for that restart rather than healing
+    # itself across the seam.
+    #
+    # Nothing new needs saying for it to be visible: every surviving member
+    # carries the older digest, so `stale` is already true, and a role left
+    # short raises `ratio_unmet` on its own. "Config changed" beside "not at
+    # full count" is the state, and the restart the first asks for is what
+    # clears both.
+    #
+    # It also holds back a router that has not been created yet, which is the
+    # same answer to the same question -- a router rendered from peers that
+    # predate the edit is a cross-generation pairing like any other.
+    spec_moved = bool(generation) and generation_digest != digest
+
     for role in model.roles:
         have = [i for i in generation if i.role == role.name]
         if len(have) < role.replicas:
+            if spec_moved:
+                logger.info(
+                    f"Not replacing {role.replicas - len(have)} missing "
+                    f"{role.name} member(s) of model {model.name}: the spec has "
+                    f"changed since group {group_id} was formed, and a new "
+                    f"member would run the edited spec beside peers that do "
+                    f"not. Restart the model to rebuild the whole group."
+                )
+                continue
             if not _dependencies_ready(model, role, generation):
                 continue
             pending = [
@@ -3047,16 +3188,27 @@ async def _gather_unmet(
 
     # The tightest layer containing every member: fold pairwise and keep the
     # LOOSEST answer, since a layer holding all of them has to hold each pair.
-    order = [spec.layer for spec in order_layers(view.specs)] + [ROOT_LAYER]
+    #
+    # `order_layers` is root-to-leaf, so index 0 is the LOOSEST rung and the
+    # root belongs at the front rather than appended: sharing nothing is the
+    # loosest placement there is. Ranked last it read as the tightest, and a
+    # group spread across the whole cluster compared as tighter than the rack
+    # it asked for — silence on the one placement this exists to report. The
+    # bug hid while no topology was declared, where the root is the only entry
+    # and ranks 0 either way.
+    order = [ROOT_LAYER] + [spec.layer for spec in order_layers(view.specs)]
     rank = {name: index for index, name in enumerate(order)}
+    # Anything unranked is the host leaf, which is tighter than every declared
+    # rung. The same default on both reads, because they answer one question.
+    tightest = len(order)
     actual = placed[0].layer
     for node in placed[1:]:
         shared = common_layer(placed[0], node) or ROOT_LAYER
-        if rank.get(shared, 0) < rank.get(actual, len(order)):
+        if rank.get(shared, tightest) < rank.get(actual, tightest):
             actual = shared
 
     # Looser means *earlier* in a root-to-leaf order.
-    return rank.get(actual, 0) < rank.get(layer, len(order))
+    return rank.get(actual, tightest) < rank.get(layer, tightest)
 
 
 def _gather_blocked_scale_out(model: Model, instances: Sequence[ModelInstance]) -> bool:
@@ -3741,6 +3893,24 @@ async def _reconcile_router_membership(
         )
         return
 
+    # `sync_model_status` runs on every Model event AND every ModelInstance
+    # event, so a group coming up fires this several times per member while
+    # the answer changes once. `reconcile` is built to cost one read when
+    # nothing has changed, but that read rides the same forward proxy the
+    # gateway uses on a `tunnel` worker and waits up to `_TIMEOUT_SECONDS` per
+    # router -- so the cheap case is still seconds on the critical path of
+    # status convergence, repeated per event. Skipped only on what was
+    # OBSERVED: `note_settled` runs after a read-back that agreed, never after
+    # a failure, and the confirmation ages out so a router that came back
+    # empty is still found. Skipping records nothing, which leaves the last
+    # observed outcome standing -- the right answer, since it is still the
+    # last thing anyone actually saw.
+    fingerprint = pd_membership.membership_fingerprint(
+        mode_name, pd_membership.desired_members(model, instances), routers
+    )
+    if pd_membership.settled(model.id, fingerprint):
+        return
+
     # Every router, and the worst outcome wins: one router with an empty
     # registry serves 503s while another serves fine, and a group is only
     # servable when the thing in front of it is.
@@ -3772,6 +3942,8 @@ async def _reconcile_router_membership(
         if worst is None or (worst.ok and not outcome.ok):
             worst = outcome
     if worst is not None:
+        if worst.ok:
+            pd_membership.note_settled(model.id, fingerprint)
         pd_membership.record(model.id, _explain_unreadable(model, worst))
 
 

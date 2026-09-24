@@ -40,6 +40,25 @@ from gpustack.server.controllers import (
     sync_replicas,
 )
 
+# A member stamped with whatever the model's digest works out to on this run.
+# Spelled as a sentinel rather than a literal because the distinction now
+# decides behaviour: peers on the CURRENT spec get their gaps filled, peers
+# from before an edit do not.
+CURRENT = "spec_digest:current"
+
+
+def _pass():
+    """A stand-in for one reconcile pass.
+
+    `session.info` is a real dict because that is where `model_spec_digest`
+    keeps its per-pass memo; a bare `MagicMock` would answer `.get` with a
+    mock and hand back a digest nobody computed. A fresh one per call is a
+    fresh pass.
+    """
+    session = MagicMock()
+    session.info = {}
+    return session
+
 
 def _model(replicas=1, roles=None, **kwargs) -> Model:
     return Model(
@@ -163,7 +182,11 @@ async def _run(model, instances, instance_type_snapshot=None):
         # reason the deletes are: this harness has no database.
         patch.object(ModelInstance, "update", AsyncMock()),
     ):
-        await sync_replicas(MagicMock(), model)
+        current = await model_spec_digest(_pass(), model)
+        for stamped in instances:
+            if stamped.spec_digest == CURRENT:
+                stamped.spec_digest = current
+        await sync_replicas(_pass(), model)
     return recorder
 
 
@@ -326,8 +349,8 @@ async def test_the_router_is_not_created_before_its_peers_run():
 @pytest.mark.asyncio
 async def test_the_router_appears_once_its_peers_are_running():
     members = [
-        _instance(1, role="prefill", group_id="1-abc", spec_digest="sha1:abc"),
-        _instance(2, role="decode", group_id="1-abc", spec_digest="sha1:abc"),
+        _instance(1, role="prefill", group_id="1-abc", spec_digest=CURRENT),
+        _instance(2, role="decode", group_id="1-abc", spec_digest=CURRENT),
     ]
     recorder = await _run(_model(replicas=1, roles=_pd_roles()), members)
 
@@ -335,7 +358,7 @@ async def test_the_router_appears_once_its_peers_are_running():
     # It joins the generation its peers are already in, rather than starting
     # one of its own.
     assert recorder.created[0].group_id == "1-abc"
-    assert recorder.created[0].spec_digest == "sha1:abc"
+    assert recorder.created[0].spec_digest == members[0].spec_digest
 
 
 # --- per-role convergence -------------------------------------------------- #
@@ -346,9 +369,9 @@ async def test_scaling_one_role_up_touches_only_that_role():
     """Group-granular convergence would express this as delete-group plus
     create-group — a full outage to add one prefill."""
     members = [
-        _instance(1, role="prefill", group_id="1-abc", spec_digest="sha1:abc"),
-        _instance(2, role="decode", group_id="1-abc", spec_digest="sha1:abc"),
-        _instance(3, role="router", group_id="1-abc", spec_digest="sha1:abc"),
+        _instance(1, role="prefill", group_id="1-abc", spec_digest=CURRENT),
+        _instance(2, role="decode", group_id="1-abc", spec_digest=CURRENT),
+        _instance(3, role="router", group_id="1-abc", spec_digest=CURRENT),
     ]
     recorder = await _run(_model(replicas=1, roles=_pd_roles(prefill=3)), members)
 
@@ -421,7 +444,7 @@ async def test_mixed_roles_are_refused_by_the_scale_down_selector():
 async def test_a_scale_does_not_change_the_digest():
     """Folding replica counts into the digest would make every scale a
     generation change, and a generation change is a full-group restart."""
-    session = MagicMock()
+    session = _pass()
     with patch(
         "gpustack.server.controllers.GPUInstanceType.all_by_fields",
         AsyncMock(return_value=[]),
@@ -437,7 +460,7 @@ async def test_a_scale_does_not_change_the_digest():
 
 @pytest.mark.asyncio
 async def test_a_description_change_does_not_change_the_digest():
-    session = MagicMock()
+    session = _pass()
     with patch(
         "gpustack.server.controllers.GPUInstanceType.all_by_fields",
         AsyncMock(return_value=[]),
@@ -452,17 +475,18 @@ async def test_a_description_change_does_not_change_the_digest():
 
 @pytest.mark.asyncio
 async def test_a_deployment_shaping_change_does_change_the_digest():
-    session = MagicMock()
+    # A pass each, because a spec change is something that happens BETWEEN
+    # reconciles; within one the digest is pinned on purpose.
     with patch(
         "gpustack.server.controllers.GPUInstanceType.all_by_fields",
         AsyncMock(return_value=[]),
     ):
-        plain = await model_spec_digest(session, _model(roles=_pd_roles()))
+        plain = await model_spec_digest(_pass(), _model(roles=_pd_roles()))
         env = await model_spec_digest(
-            session, _model(roles=_pd_roles(), env={"A": "1"})
+            _pass(), _model(roles=_pd_roles(), env={"A": "1"})
         )
         overridden = await model_spec_digest(
-            session,
+            _pass(),
             _model(
                 roles=[
                     RoleSpec(name="prefill", replicas=1, backend_parameters=["--x"]),
@@ -492,14 +516,16 @@ async def test_the_instance_type_snapshot_is_part_of_the_digest():
             RoleSpec(name="decode", replicas=1),
         ]
     )
-    session = MagicMock()
 
     async def _snapshot(value):
+        # "At different moments" is the whole claim, so each reading is its
+        # own pass. Two readings inside one pass are pinned to one answer by
+        # the memo -- see `test_one_pass_reads_one_catalog`.
         with patch(
             "gpustack.server.controllers.GPUInstanceType.all_by_fields",
             AsyncMock(return_value=[SimpleNamespace(snapshot=value)] if value else []),
         ):
-            return await model_spec_digest(session, model)
+            return await model_spec_digest(_pass(), model)
 
     assert await _snapshot("sha1:gen1") != await _snapshot("sha1:gen2")
     # A type that vanished is itself a digest input, not a dropped one.
@@ -507,24 +533,47 @@ async def test_the_instance_type_snapshot_is_part_of_the_digest():
 
 
 @pytest.mark.asyncio
-async def test_new_members_join_the_generation_their_peers_are_in():
+async def test_a_gap_is_not_filled_across_a_spec_edit():
     """A spec edit makes the running members stale; it does not retire them.
-    Adding a member with the model's CURRENT digest would put two generations
-    in one group — the exact pairing `group_id` and `spec_digest` exist to
-    make structurally impossible."""
+    Nor does it let the gap they leave be filled.
+
+    `spec_digest` labels a member's generation; it does not preserve what that
+    generation was built from. A replacement is built from the model as it is
+    NOW -- and the worker reads the live row again at start -- so stamping it
+    with the peers' digest would record a sameness it does not have. The pair
+    that produces agrees at handshake and fails on the first prompt long
+    enough to reach what they disagree about, which is why the switch has to
+    be all-stop-then-all-start.
+    """
     members = [
         _instance(1, role="prefill", group_id="1-old", spec_digest="sha1:old"),
         _instance(2, role="decode", group_id="1-old", spec_digest="sha1:old"),
         _instance(3, role="router", group_id="1-old", spec_digest="sha1:old"),
     ]
+
     recorder = await _run(
         _model(replicas=1, roles=_pd_roles(prefill=2), env={"CHANGED": "1"}),
         members,
     )
 
-    assert len(recorder.created) == 1
+    assert recorder.created == [], "the gap waits for the restart"
+    assert not recorder.deleted, "and the members that are serving keep serving"
+
+
+@pytest.mark.asyncio
+async def test_a_gap_is_filled_when_the_spec_has_not_moved():
+    """The other side of it, and the ordinary case: peers on the current spec
+    get their missing member back without anyone being asked to restart."""
+    members = [
+        _instance(1, role="prefill", group_id="1-old", spec_digest=CURRENT),
+        _instance(2, role="decode", group_id="1-old", spec_digest=CURRENT),
+        _instance(3, role="router", group_id="1-old", spec_digest=CURRENT),
+    ]
+
+    recorder = await _run(_model(replicas=1, roles=_pd_roles(prefill=2)), members)
+
+    assert _by_role(recorder.created) == {"prefill": 1}
     assert recorder.created[0].group_id == "1-old"
-    assert recorder.created[0].spec_digest == "sha1:old"
 
 
 # --- staleness ------------------------------------------------------------- #
@@ -548,7 +597,7 @@ async def _sync_status(model, instances, snapshot=None):
         ),
         patch("gpustack.server.controllers.ModelService", service),
     ):
-        await sync_model_status(MagicMock(), model)
+        await sync_model_status(_pass(), model)
     return model
 
 
@@ -559,7 +608,7 @@ async def test_members_matching_the_current_spec_are_not_stale():
         "gpustack.server.controllers.GPUInstanceType.all_by_fields",
         AsyncMock(return_value=[]),
     ):
-        digest = await model_spec_digest(MagicMock(), model)
+        digest = await model_spec_digest(_pass(), model)
 
     await _sync_status(
         model,
@@ -726,3 +775,133 @@ async def test_an_established_group_keeps_its_members():
 
     assert not recorder.deleted
     assert not recorder.created
+
+
+@pytest.mark.asyncio
+async def test_one_pass_reads_one_catalog():
+    """A member must not be stale against the spec it was just built from.
+
+    `sync_replicas` and `sync_model_status` run inside one session, so the
+    digest is computed twice while another task may retire-and-insert the
+    type behind a `gpu_type_selector`. Were the two reads independent,
+    `_sync_replicas_per_role` would stamp a member with one answer and
+    `_stale_members` would judge it against another.
+    """
+    model = _model(
+        roles=[
+            RoleSpec(
+                name="prefill",
+                replicas=1,
+                gpu_type_selector={"type": "a100-slice"},
+            ),
+            RoleSpec(name="decode", replicas=1),
+        ]
+    )
+    session = _pass()
+
+    async def _digest_with(catalog):
+        with patch(
+            "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+            AsyncMock(return_value=[SimpleNamespace(snapshot=catalog)]),
+        ):
+            return await model_spec_digest(session, model)
+
+    stamped = await _digest_with("sha1:gen1")
+    judged = await _digest_with("sha1:gen2")
+
+    assert stamped == judged, "the catalog moved mid-pass and the digest followed it"
+
+
+@pytest.mark.asyncio
+async def test_the_substitute_version_is_still_its_own_answer():
+    """`_stale_members` asks twice in one pass, with and without the model's
+    own `backend_version`, and the two are different questions."""
+    model = _model(roles=_pd_roles(), backend_version="v1")
+    session = _pass()
+
+    with patch(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    ):
+        pinned = await model_spec_digest(session, model)
+        unpinned = await model_spec_digest(session, model, backend_version=None)
+
+    assert pinned != unpinned
+
+
+@pytest.mark.asyncio
+async def test_a_placement_preference_is_not_a_new_generation():
+    """Nothing re-places a member that already holds its cards, so an edit
+    that only steers the next placement must not ask for a restart that would
+    move nothing. `gather` established this; the rest of the preferences are
+    the same kind of field and none of them is read anywhere on the worker."""
+    from gpustack.schemas.models import GPUSelector, PlacementStrategyEnum
+
+    with patch(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    ):
+        plain = await model_spec_digest(_pass(), _model(roles=_pd_roles()))
+        labelled = await model_spec_digest(
+            _pass(), _model(roles=_pd_roles(), worker_selector={"zone": "a"})
+        )
+        pinned = await model_spec_digest(
+            _pass(),
+            _model(roles=_pd_roles(), gpu_selector=GPUSelector(gpu_ids=["w1:cuda:0"])),
+        )
+        spread = await model_spec_digest(
+            _pass(),
+            _model(roles=_pd_roles(), placement_strategy=PlacementStrategyEnum.BINPACK),
+        )
+
+    assert plain == labelled
+    assert plain == pinned
+    assert plain == spread
+
+
+@pytest.mark.asyncio
+async def test_what_the_server_works_out_for_itself_is_not_an_edit():
+    """`distributable` and `distributed_inference_across_workers` are set by
+    the scheduler once it has worked them out, not by anyone editing the
+    model. In the digest they made a group stale with nobody having touched
+    it, and the restart that cleared the warning only confirmed the value the
+    platform had already chosen."""
+    with patch(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    ):
+        before = await model_spec_digest(_pass(), _model(roles=_pd_roles()))
+        after = await model_spec_digest(
+            _pass(),
+            _model(
+                roles=_pd_roles(),
+                distributable=True,
+                distributed_inference_across_workers=True,
+            ),
+        )
+
+    assert before == after
+
+
+@pytest.mark.asyncio
+async def test_the_pool_a_member_draws_its_cards_from_still_is_one():
+    """The exclusion above stops at `gpu_type_selector`. It becomes the
+    workload's resource keys — whole card, sliced percentage, MIG profile —
+    so a member left running against the old ones is a member asking for
+    something the node no longer offers it."""
+    from gpustack.schemas.models import GPUTypeSelector
+
+    with patch(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    ):
+        plain = await model_spec_digest(_pass(), _model(roles=_pd_roles()))
+        pooled = await model_spec_digest(
+            _pass(),
+            _model(
+                roles=_pd_roles(),
+                gpu_type_selector=GPUTypeSelector(type="a100-slice"),
+            ),
+        )
+
+    assert plain != pooled

@@ -742,3 +742,160 @@ def test_a_readable_outcome_is_never_reworded():
 
     refused = MembershipOutcome(ok=False, reason="the router did not admit x")
     assert _explain_unreadable(_pd_model(restart_on_error=False), refused) is refused
+
+
+def _router_row(id_, worker_id=7, port=40027):
+    return SimpleNamespace(id=id_, worker_id=worker_id, port=port)
+
+
+class TestSkippingAnUnchangedReconcile:
+    """`sync_model_status` fires on every instance event; the answer changes once.
+
+    The skip is keyed on what the server knows, so everything it cannot see —
+    a router that restarted into an empty registry above all — has to be
+    caught by the confirmation ageing out instead.
+    """
+
+    def setup_method(self):
+        pd_membership.forget(4243)
+
+    def teardown_method(self):
+        pd_membership.forget(4243)
+
+    def _fingerprint(self, members, routers):
+        return pd_membership.membership_fingerprint("vllm-nixl", members, routers)
+
+    def test_nothing_is_skipped_before_a_reconcile_has_agreed(self):
+        fp = self._fingerprint({"http://10.0.0.1:40010": "prefill"}, [_router_row(9)])
+        assert pd_membership.settled(4243, fp, now=100.0) is False
+
+    def test_the_same_members_are_not_read_again_straight_away(self):
+        fp = self._fingerprint({"http://10.0.0.1:40010": "prefill"}, [_router_row(9)])
+        pd_membership.note_settled(4243, fp, now=100.0)
+
+        assert pd_membership.settled(4243, fp, now=100.2) is True
+
+    def test_a_member_joining_is_read_again_at_once(self):
+        before = self._fingerprint(
+            {"http://10.0.0.1:40010": "prefill"}, [_router_row(9)]
+        )
+        pd_membership.note_settled(4243, before, now=100.0)
+
+        after = self._fingerprint(
+            {
+                "http://10.0.0.1:40010": "prefill",
+                "http://10.0.0.2:40011": "decode",
+            },
+            [_router_row(9)],
+        )
+        assert pd_membership.settled(4243, after, now=100.2) is False
+
+    def test_a_router_moving_to_another_worker_is_read_again(self):
+        """Same members, different router — the registry to correct is a new one."""
+        members = {"http://10.0.0.1:40010": "prefill"}
+        pd_membership.note_settled(
+            4243, self._fingerprint(members, [_router_row(9, worker_id=7)]), now=100.0
+        )
+
+        moved = self._fingerprint(members, [_router_row(9, worker_id=8)])
+        assert pd_membership.settled(4243, moved, now=100.2) is False
+
+    def test_a_confirmation_ages_out(self):
+        """A router that restarts into an empty registry changes nothing the
+        server can see, so only the clock finds it."""
+        fp = self._fingerprint({"http://10.0.0.1:40010": "prefill"}, [_router_row(9)])
+        pd_membership.note_settled(4243, fp, now=100.0)
+
+        assert (
+            pd_membership.settled(
+                4243, fp, now=100.0 + pd_membership.RESETTLE_AFTER_SECONDS
+            )
+            is False
+        )
+
+    def test_forgetting_a_group_forgets_that_it_was_settled(self):
+        fp = self._fingerprint({"http://10.0.0.1:40010": "prefill"}, [_router_row(9)])
+        pd_membership.note_settled(4243, fp, now=100.0)
+
+        pd_membership.forget(4243)
+
+        assert pd_membership.settled(4243, fp, now=100.2) is False
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_group_does_not_reach_the_router_a_second_time(
+    monkeypatch,
+):
+    """The end the cost is actually paid at: one HTTP round trip per router.
+
+    Two passes over a group nothing has happened to — the second must not
+    dial, and the outcome the first recorded has to survive it.
+    """
+    from gpustack.server import controllers
+
+    model = SimpleNamespace(
+        id=4244,
+        name="pd",
+        disaggregation=SimpleNamespace(mode=SimpleNamespace(value="vllm-nixl")),
+        restart_on_error=False,
+    )
+    instances = [
+        _instance("prefill", 40010),
+        _instance("decode", 40011, ip="10.0.0.2"),
+        SimpleNamespace(
+            role=RoleNameEnum.ROUTER.value,
+            id=99,
+            port=40027,
+            worker_id=7,
+            worker_ip="10.0.0.1",
+            state=ModelInstanceStateEnum.RUNNING,
+        ),
+    ]
+
+    calls = []
+
+    async def _reconcile(*args, **kwargs):
+        calls.append(args)
+        return MembershipOutcome(ok=True, registered=["http://10.0.0.1:40010"])
+
+    async def _dial(_session, router_instance):
+        return router_instance.worker_ip, None, None
+
+    monkeypatch.setattr(pd_membership, "reconcile", _reconcile)
+    monkeypatch.setattr(controllers, "_router_dial", _dial)
+
+    pd_membership.forget(model.id)
+    try:
+        await controllers._reconcile_router_membership(None, model, instances)
+        assert len(calls) == 1
+
+        await controllers._reconcile_router_membership(None, model, instances)
+        assert len(calls) == 1, "nothing changed, so nothing to ask the router"
+
+        outcome = pd_membership.outcome_for(model.id)
+        assert outcome is not None and outcome.ok
+    finally:
+        pd_membership.forget(model.id)
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_model_takes_its_membership_state_with_it(monkeypatch):
+    """`forget` was only ever reached from the status pass, and a deleted row
+    is exactly what that pass stops seeing — so every PD group ever deleted
+    left its outcome, failure streak and restart budget behind for the life of
+    the process, for a later model to inherit along with the id."""
+    from gpustack.server import controllers
+    from gpustack.server.coordinator.base import Event, EventType
+
+    pd_membership.record(4245, MembershipOutcome(ok=True, registered=["x"]))
+    assert pd_membership.outcome_for(4245) is not None
+
+    controller = controllers.ModelController.__new__(controllers.ModelController)
+    # An id-only payload: the row is already gone, which is the shape a delete
+    # most often arrives in and the one that used to leak unconditionally.
+    event = Event(type=EventType.DELETED, data=None)
+    event.id = 4245
+
+    await controller._reconcile(event)
+
+    assert pd_membership.outcome_for(4245) is None

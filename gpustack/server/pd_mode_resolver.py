@@ -111,7 +111,14 @@ def resolve_pd_mode(
         return _resolution(
             modes,
             backend,
-            effective_vendors=set(),
+            # What the cluster actually has, not an empty set: `_resolution`
+            # reads empty as "unconstrained" and would mark every
+            # vendor-specific recipe eligible on the same response that says
+            # the requested vendor is absent -- and admission would then accept
+            # a mode no worker can run. Naming the real vendors makes the
+            # recipes for them eligible, the rest not, and leaves `custom`
+            # eligible as it must be.
+            effective_vendors=cluster_vendors,
             cluster_vendors=cluster_vendors,
             mode=None,
             resolved_vendor=None,
