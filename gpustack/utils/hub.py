@@ -2,6 +2,7 @@ import json
 import logging
 import gzip
 import os
+import struct
 import tempfile
 from typing import Dict, List, Optional, Any
 from pathlib import Path
@@ -388,6 +389,143 @@ def read_repo_file_content(  # noqa: C901
         )
         logger.error(f"Failed to read '{file_path}' for source '{source_key}': {e}")
         return None
+
+
+# Voxtral-TTS audio-encoder weight prefixes. vllm_omni gates encode_waveforms
+# (the ref_audio / voice-cloning path) on these tensors being loaded; the
+# open-source checkpoint omits them, so a request carrying ref_audio crashes the
+# whole engine at runtime. Any such key present => voice cloning is supported.
+# Upstream: vllm-project/vllm-omni voxtral_tts/voxtral_tts_audio_tokenizer.py
+_AUDIO_TOKENIZER_WEIGHT_PREFIX = "audio_tokenizer."
+_VOICE_CLONING_ENCODER_WEIGHT_PREFIXES = (
+    "audio_tokenizer.input_proj.",
+    "audio_tokenizer.encoder_blocks.",
+)
+
+# Guard against a corrupt safetensors header claiming to be gigabytes long;
+# a real header is tens of KB even for a multi-GB checkpoint.
+_MAX_SAFETENSORS_HEADER_BYTES = 16 * 1024 * 1024
+
+
+def read_safetensors_header_keys(local_dir: str, filename: str) -> Optional[set]:
+    """
+    Read only the safetensors header of a local weight file and return its tensor
+    keys, without loading the multi-GB tensor payload.
+
+    A safetensors file starts with an 8-byte little-endian header length followed
+    by that many bytes of JSON, so only the header is read: tens of KB for a
+    multi-GB checkpoint, and never more than _MAX_SAFETENSORS_HEADER_BYTES.
+    Returns None when the header cannot be read (missing or corrupt file, or an
+    implausibly large header length).
+    """
+    try:
+        with open(os.path.join(local_dir, filename), "rb") as f:
+            header_len = struct.unpack("<Q", f.read(8))[0]
+            if header_len <= 0 or header_len > _MAX_SAFETENSORS_HEADER_BYTES:
+                logger.warning(
+                    f"Implausible safetensors header length {header_len} for '{filename}'"
+                )
+                return None
+            header = json.loads(f.read(header_len))
+        if not isinstance(header, dict):
+            # A JSON array or string iterates into non-string "keys" that blow up
+            # on the caller's .startswith(), outside its try block.
+            logger.warning(f"Safetensors header is not a JSON object in '{filename}'")
+            return None
+        return {key for key in header if key != "__metadata__"}
+    except Exception as e:
+        logger.warning(f"Failed to read safetensors header for '{filename}': {e}")
+        return None
+
+
+def _resolve_weights_local_dir(model: Model, local_dir: Optional[str]) -> Optional[str]:
+    """
+    The directory holding this model's weights on the local node, if any: the
+    caller's local_dir (an instance's resolved_path — the worker has already
+    downloaded the weights before the instance can run, whatever the source), or
+    a local-path model's own directory. None when neither is a directory.
+    """
+    candidates = [local_dir]
+    if model.source == SourceEnum.LOCAL_PATH:
+        candidates.append(model.local_path)
+    return next((c for c in candidates if c and os.path.isdir(c)), None)
+
+
+def _load_weight_keys(model: Model, local_dir: Optional[str] = None) -> Optional[set]:
+    """
+    Return a model's tensor weight keys, read from the copy on this node: the
+    sharded index (model.safetensors.index.json) when present, otherwise the
+    safetensors headers themselves. Returns None when the weights are not
+    readable locally.
+    """
+    local_dir = _resolve_weights_local_dir(model, local_dir)
+    if not local_dir:
+        # An instance cannot run before its files are downloaded, so this means
+        # the resolved path never got backfilled — worth surfacing rather than
+        # silently skipping detection.
+        logger.warning(
+            f"No local weight directory for '{model.readable_source}'; "
+            "skipping voice-cloning detection"
+        )
+        return None
+
+    file_names = set(os.listdir(local_dir))
+
+    index_name = "model.safetensors.index.json"
+    if index_name in file_names:
+        with open(os.path.join(local_dir, index_name)) as f:
+            index = json.load(f)
+        weight_map = (index or {}).get("weight_map") or {}
+        return set(weight_map.keys()) or None
+
+    for candidate in ("model.safetensors", "consolidated.safetensors"):
+        if candidate in file_names:
+            return read_safetensors_header_keys(local_dir, candidate)
+
+    # Sharded without an index (Mistral-native consolidated-0000N-of-0000M):
+    # union every shard's header, since reading only the first would miss the
+    # weights the caller is looking for and yield a confidently wrong verdict.
+    shards = sorted(name for name in file_names if name.endswith(".safetensors"))
+    keys = set()
+    for shard in shards:
+        shard_keys = read_safetensors_header_keys(local_dir, shard)
+        if shard_keys is None:
+            # An unreadable shard may hold exactly the weights that decide the
+            # verdict, so stay inconclusive instead of judging a partial manifest.
+            return None
+        keys |= shard_keys
+
+    return keys or None
+
+
+def detect_voice_cloning_support(
+    model: Model, local_dir: Optional[str] = None
+) -> Optional[bool]:
+    """
+    Detect whether a TTS checkpoint ships the audio encoder required for voice
+    cloning (the ref_audio path), from its static safetensors weight-key manifest.
+    Reads the copy already on this node; pass local_dir (an instance's
+    resolved_path) for models that carry no local path of their own.
+
+    - True/False for Voxtral-TTS-family checkpoints (those carrying
+      ``audio_tokenizer.*`` weights): False when the encoder weights are absent.
+    - None when the model is not of that family, or the manifest cannot be read;
+      None makes no capability claim and is not reported to callers.
+    """
+    try:
+        keys = _load_weight_keys(model, local_dir=local_dir)
+    except Exception as e:
+        logger.warning(
+            f"voice-cloning detection failed for '{model.readable_source}': {e}"
+        )
+        return None
+
+    if not keys or not any(
+        key.startswith(_AUDIO_TOKENIZER_WEIGHT_PREFIX) for key in keys
+    ):
+        return None
+
+    return any(key.startswith(_VOICE_CLONING_ENCODER_WEIGHT_PREFIXES) for key in keys)
 
 
 def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
