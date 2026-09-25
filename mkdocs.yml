@@ -21,20 +21,31 @@ theme:
   custom_dir: docs/overrides
   palette:
     - media: "(prefers-color-scheme)"
+      # This entry is what Material writes into the served HTML, before its
+      # JS picks the light/dark entry below. Leaving scheme/primary unset
+      # here means the page ships as Material's default indigo and repaints
+      # to white only once the script runs — a visible purple header flash
+      # on a slow connection. Stating the light values makes the initial
+      # paint already correct for the common case.
+      scheme: default
+      primary: white
+      accent: indigo
       toggle:
         icon: material/brightness-auto
         name: Switch to light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: custom
-      accent: orange
+      # `white` / `black` keep the header out of a saturated colour block;
+      # the brand hue lives in links and accents instead (see extra.css).
+      primary: white
+      accent: indigo
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: light blue
-      accent: orange
+      primary: black
+      accent: indigo
       toggle:
         icon: material/brightness-4
         name: Switch to system preference
@@ -58,6 +69,12 @@ theme:
     - toc.follow
   icon:
     repo: fontawesome/brands/github
+  # `false` stops Material from emitting the fonts.googleapis.com link.
+  # Inter and JetBrains Mono — the pair gpustack.ai uses — are served from
+  # docs/assets/fonts/ instead; see the @font-face block at the top of
+  # stylesheets/extra.css, which also sets --md-text-font/--md-code-font
+  # so Material builds its stacks around them.
+  font: false
   language: en
 plugins:
   - glightbox
@@ -87,7 +104,7 @@ extra:
     - icon: fontawesome/brands/github
       link: https://github.com/gpustack
     - icon: fontawesome/brands/docker
-      link: https://hub.docker.com/r/gpustack
+      link: https://hub.docker.com/u/gpustack
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/gpustack/
     - icon: fontawesome/brands/discord
