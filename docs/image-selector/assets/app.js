@@ -37,8 +37,8 @@ const CONFIG = {
             'inference_backend': '推理后端',
             'inference_backend_tooltip': '如果未找到所需的内置推理后端或对应版本，可尝试切换到较低版本的计算框架。一般来说，高版本驱动能够兼容运行低版本的计算框架。',
             'optional_images': '可选镜像',
-            'optional_postgres_images_tooltip': '使用外部数据库：<a href="https://docs.gpustack.ai/latest/installation/installation/#using-an-external-database" target="_blank">https://docs.gpustack.ai/latest/installation/installation/#using-an-external-database</a>',
-            'optional_monitoring_images_tooltip': '配置外部可观测性：<a href="https://docs.gpustack.ai/latest/user-guide/observability/#external-observability-optional" target="_blank">https://docs.gpustack.ai/latest/user-guide/observability/#external-observability-optional</a>',
+            'optional_postgres_images_tooltip': '使用外部数据库：<a href="../installation/installation/#using-an-external-database" target="_blank">../installation/installation/#using-an-external-database</a>',
+            'optional_monitoring_images_tooltip': '配置外部可观测性：<a href="../user-guide/observability/#external-observability-optional" target="_blank">../user-guide/observability/#external-observability-optional</a>',
             'postgres': 'PostgreSQL',
             'monitoring': '监控套件 (Prometheus + Grafana)',
             'required_images': '所需镜像',
@@ -96,7 +96,7 @@ const CONFIG = {
                 </ul>
                 <div style="margin-top:15px; font-size:13px; color:var(--text-color)">
                     以上命令均支持镜像过滤与自定义配置，具体用法请参考：
-                    <a href="https://docs.gpustack.ai/latest/installation/air-gapped/#container-images" target="_blank" style="color:var(--primary-color); font-weight:600">准备容器镜像 &rarr;</a>
+                    <a href="../installation/air-gapped/#container-images" target="_blank" style="color:var(--primary-color); font-weight:600">准备容器镜像 &rarr;</a>
                 </div>`,
             'view_full_docs': '查看完整离线部署文档 &rarr;',
             'copied': '已复制到剪贴板',
@@ -130,8 +130,8 @@ const CONFIG = {
             'inference_backend': 'Inference Backend',
             'inference_backend_tooltip': 'If you cannot find the desired built-in inference backend or version, try switching the computing framework version to select a lower version image. High-version drivers are generally compatible with lower-version computing frameworks.',
             'optional_images': 'Optional Images',
-            'optional_postgres_images_tooltip': 'Using an external database: <a href="https://docs.gpustack.ai/latest/installation/installation/#using-an-external-database" target="_blank">https://docs.gpustack.ai/latest/installation/installation/#using-an-external-database</a>',
-            'optional_monitoring_images_tooltip': 'Configuring external observability: <a href="https://docs.gpustack.ai/latest/user-guide/observability/#external-observability-optional" target="_blank">https://docs.gpustack.ai/latest/user-guide/observability/#external-observability-optional</a>',
+            'optional_postgres_images_tooltip': 'Using an external database: <a href="../installation/installation/#using-an-external-database" target="_blank">../installation/installation/#using-an-external-database</a>',
+            'optional_monitoring_images_tooltip': 'Configuring external observability: <a href="../user-guide/observability/#external-observability-optional" target="_blank">../user-guide/observability/#external-observability-optional</a>',
             'postgres': 'PostgreSQL',
             'monitoring': 'Monitoring (Prometheus + Grafana)',
             'required_images': 'Required Images',
@@ -188,7 +188,7 @@ const CONFIG = {
                 </ul>
                 <div style="margin-top:15px; font-size:13px; color:var(--text-color)">
                     All commands support filtering and custom config. For details, refer to:
-                    <a href="https://docs.gpustack.ai/latest/installation/air-gapped/#container-images" target="_blank" style="color:var(--primary-color); font-weight:600">Prepare Container Images &rarr;</a>
+                    <a href="../installation/air-gapped/#container-images" target="_blank" style="color:var(--primary-color); font-weight:600">Prepare Container Images &rarr;</a>
                 </div>`,
             'view_full_docs': 'View full air-gapped docs &rarr;',
             'copied': 'Copied to clipboard',

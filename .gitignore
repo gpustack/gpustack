@@ -124,6 +124,7 @@ venv.bak/
 
 # mkdocs documentation
 /site
+/mkdocs.offline.generated.yml
 
 # mypy
 .mypy_cache/
@@ -157,6 +158,9 @@ __pycache__/
 # GPUStack related
 */third_party/bin
 */ui/
+# Narrower than the pattern above on purpose: `*/help/` would also swallow a
+# docs/help/ section if anyone ever adds one.
+/gpustack/help/
 *.ma
 
 # macOS

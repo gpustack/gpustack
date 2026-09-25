@@ -1,0 +1,34 @@
+# The documentation as GPUStack serves it itself, at /help/ on the server.
+#
+# An air-gapped deployment is the only reason this build exists, so anything the
+# page fetches over the network has to be gone. What is overridden below is only
+# that: everything else is inherited, which is what keeps the bundled site and
+# docs.gpustack.ai from drifting apart in content.
+INHERIT: mkdocs.yml
+
+# Canonical links and a sitemap pointing at docs.gpustack.ai would be wrong in a
+# copy served from the customer's own host. Nothing in the site needs an absolute
+# URL to link within itself.
+site_url: ''
+
+theme:
+  # Material otherwise emits a fonts.googleapis.com stylesheet and a
+  # fonts.gstatic.com preconnect. Not asking for the fonts is smaller than
+  # vendoring them, at the price of falling back to the system stack.
+  font: false
+
+extra:
+  # mike serves several versions at docs.gpustack.ai. A bundled copy is exactly
+  # one version — the server's — so the selector has nothing to offer, and left
+  # in place it fetches a versions.json this build does not produce.
+  version: null
+
+plugins:
+  # Downloads every external asset at build time and rewrites the references to
+  # the local copies. It finds more than a hand-written inventory does: besides
+  # katex and tablesort, the pages here reach out for katex's font files,
+  # Mermaid, the GitHub buttons script and the shields.io badges.
+  #
+  # The cost is that this build needs network access. Its cache
+  # (.cache/plugin/privacy) makes every rebuild after the first one offline.
+  privacy: {}

@@ -195,6 +195,7 @@ jobs:
           build-args: |
             PYTHON_VERSION=${{ env.INPUT_PYTHON_VERSION }}
             GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS=${{ needs.metadata.outputs.filter_labels }}
+            GIT_COMMIT=${{ github.event.pull_request.head.sha || github.sha }}
           labels: |
             ${{ needs.metadata.outputs.labels }}
           outputs: |
