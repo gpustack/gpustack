@@ -255,6 +255,7 @@ class _FakeModelInstance:
         self.id = instance_id
         self.name = f"test-instance-{instance_id}"
         self.model_id = model_id
+        self.role = None
         self.worker_id = 77
         self.worker_name = "test-worker"
         self.worker_ip = "10.0.0.1"
