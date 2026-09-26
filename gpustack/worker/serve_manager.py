@@ -54,6 +54,13 @@ from gpustack.worker.log_sources import (
 )
 from gpustack.worker.model_meta import get_meta_from_running_instance
 from gpustack.client import ClientSet
+from gpustack.worker.pd_router import (
+    apply_managed_router,
+    is_managed_router,
+    managed_router_health_path,
+)
+from gpustack.worker.pd_diagnostics import RestartTracker, diagnose
+
 from gpustack.schemas.models import (
     BackendEnum,
     Model,
@@ -65,6 +72,16 @@ from gpustack.schemas.models import (
     DistributedServerCoordinateModeEnum,
     ModelInstanceSubordinateWorker,
     CategoryEnum,
+    PortBand,
+    RoleNameEnum,
+    role_effective_model,
+)
+from gpustack.schemas.pd_modes import PDPortScopeEnum
+from gpustack.worker.pd_injection import (
+    ACCELERATOR_COUNT_KEY,
+    band_count_key,
+    band_specs_for,
+    band_width,
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
@@ -93,6 +110,19 @@ _LOG_RESUME_SKIP_TIMEOUT = 30.0
 # Global lock for port assignment to avoid pickle serialization issues
 _port_lock = threading.Lock()
 
+# The `count` spelling that means "as many ports as this member has cards".
+
+# vLLM's mp path does not bind only VLLM_DP_MASTER_PORT: it derives nine more
+# ports from it (one per DP init attempt), so the connecting port is the *base*
+# of a band and every port in that band has to be probed, fenced and recorded
+# like any other allocation. Ten is vLLM's number, not ours.
+_VLLM_MP_CONNECTING_BAND = 10
+
+# Name the mp band is recorded under in `named_ports`. Prefixed so it cannot
+# collide with a band a pd-mode declares: the catalog's names come from
+# connectors and this one comes from the executor.
+_VLLM_MP_CONNECTING_BAND_NAME = "_vllm_mp_connecting"
+
 _SERVER_CLASS_MAPPING = {
     BackendEnum.VLLM: VLLMServer,
     BackendEnum.SGLANG: SGLangServer,
@@ -104,6 +134,19 @@ _SERVER_CLASS_MAPPING = {
 # e.g. {"<container>": {"devices": {"groups": [{"accelerators": [{"id": "<GPU UUID>",
 # "index": 0, "mode": 3, "allocated": 640000}]}]}, "deviceIDs": [...]}}.
 _ALLOCATED_ACCELERATORS_ANNOTATION = "device.gpustack.ai/accelerator.allocated"
+
+
+class PDPortScopeUnsupportedError(Exception):
+    """A band declares a scope this allocator cannot honour.
+
+    Raised rather than degraded to per-instance. `PDPortScopeEnum.ROLE` means
+    "every member of this role shares one band", which needs a registry keyed
+    by (group, role) that does not exist yet. Allocating such a band per
+    instance produces the one thing worse than an unimplemented feature: a
+    band of the right *width* at the wrong *base* on each member, so the
+    connector that was supposed to meet on it only fails at handshake, long
+    after the instances report healthy.
+    """
 
 
 def _parse_allocated_accelerators(annotations: Optional[Dict[str, str]]) -> List[dict]:
@@ -402,12 +445,16 @@ class ServeManager:
         # Instance-level port tracking to avoid conflicts
         self._assigned_ports: Dict[int, Set[int]] = {}
         self._restart_backoff_counts: Dict[int, int] = {}
+        # Recognises a member that keeps restarting without ever serving. In
+        # this process rather than on the row because the signal is a rate, and
+        # the row records only a cumulative count and the last restart's time.
+        self._restart_tracker = RestartTracker()
 
         # Inference health check failure tracking
         # {model_instance_id: failure_count}
         self._inference_health_check_failures: Dict[int, int] = {}
 
-        # Track last successful inference per port (set by worker proxy)
+        # Track last successful inference per model instance (set by worker proxy)
         self._last_successful_inference: Dict[int, float] = {}
         # Track last health check time per model instance
         self._last_health_check_time: Dict[int, float] = {}
@@ -633,6 +680,15 @@ class ServeManager:
                 WorkloadStatusStateEnum.PENDING,
                 WorkloadStatusStateEnum.INITIALIZING,
             ]:
+                # "Still launching" is also what a crash loop looks like. A
+                # container that binds, fails and is restarted never reaches
+                # FAILED, so the branch below never runs and the instance sits
+                # at `starting` for as long as anyone leaves it — which is the
+                # shape every port-level failure in a disaggregated deployment
+                # takes. Ask whether it is launching or looping before
+                # accepting the former.
+                if self._mark_crash_loop(model_instance, workload, is_main_worker):
+                    continue
                 logger.trace(
                     f"Model instance {model_instance.name} workload is still launching. Skipping sync."
                 )
@@ -651,6 +707,15 @@ class ServeManager:
                     # admission rejection, an image-pull failure, an exit code)
                     # when available.
                     failure_message = _describe_workload_failure(workload)
+                    # And then the log's, because the workload's is often just
+                    # a number. A container that exits once and permanently —
+                    # `exit code 127`, a command the image does not contain —
+                    # never reaches the crash-loop path, so without this
+                    # call the failure that can never recover would be the one
+                    # explained least.
+                    failure_message = self._append_log_diagnosis(
+                        model_instance, failure_message
+                    )
                     with contextlib.suppress(NotFoundException):
                         # Get patch dict for main worker.
                         if is_main_worker:
@@ -700,6 +765,15 @@ class ServeManager:
             health_check_path = self._get_health_check_path(
                 backend, model.owner_principal_id
             )
+            if not health_check_path:
+                # A managed router runs as a custom backend, which registers no
+                # health path, and the generic probe reads that as "always
+                # ready". The recipe declares the router's own path, and the
+                # router is the group's only entrance -- the one member whose
+                # liveness must not be assumed.
+                health_check_path = managed_router_health_path(
+                    model, model_instance.role
+                )
             if model.env and 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in model.env:
                 # NOTE: There is no known use case for now. Keep this in case the built-in backends
                 # introduce breaking changes and the default health check path no longer works.
@@ -725,6 +799,10 @@ class ServeManager:
                             continue
 
                         self._restart_backoff_counts.pop(model_instance.id, None)
+                        # A member that served is not a member that never
+                        # started: a later crash loop is a different failure
+                        # and must not be reported as a bad configuration.
+                        self._restart_tracker.observe_running(model_instance.id)
                         patch_dict = {
                             "state": ModelInstanceStateEnum.RUNNING,
                             "state_message": "",
@@ -1015,15 +1093,64 @@ class ServeManager:
                     )
                     raise e
 
+    def _probe_running_instance(
+        self, mi: ModelInstance, model: Model, timeout: int
+    ) -> bool:
+        """Is this member still serving? Asked of a member already RUNNING.
+
+        The readiness probe answers this question once, on the way into
+        RUNNING, and is never asked again -- past that point an engine that is
+        listening but no longer answering is invisible to everything except
+        the container's own state, which stays healthy through a hang. So this
+        is the only thing that finds one, and every member needs an answer.
+
+        What differs per member is *which* question is worth its cost:
+
+        * An engine role -- a prefill, a decode, a role-less replica sharing
+          the group's engine -- is asked the same thing the readiness probe
+          asks, on the backend's own health path. One GET. It catches the
+          failure that matters here (the process lives, the server does not)
+          without spending a real request, and it cannot be answered wrongly
+          by a member that is healthy in isolation.
+
+        * The router, and a plain deployment, get the real inference request.
+          For the router that is the whole point: it is where a request meets
+          both roles, so its answer covers the KV path between them, which is
+          the failure disaggregation adds and the one no single member's
+          health endpoint can see.
+
+        Deliberately NOT a real request to a prefill or a decode. Measured on
+        a live 1P1D: each answers a chat completion on its own in ~0.1s,
+        because each is a complete engine that merely also carries KV
+        transfer. So the request costs a real generation and the KV cache
+        behind it, and buys a verdict on the member alone -- which the GET
+        already gives.
+        """
+        role = getattr(mi, "role", None)
+        if not role or role == RoleNameEnum.ROUTER.value:
+            return is_inference_ready(mi, model, timeout=timeout)
+
+        backend = get_backend(model)
+        health_check_path = self._get_health_check_path(
+            backend, model.owner_principal_id
+        )
+        if model.env and 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in model.env:
+            health_check_path = model.env['GPUSTACK_MODEL_HEALTH_CHECK_PATH']
+        # The probe's own timeout, not the readiness default: a failure
+        # here retires the member, so it has to outlast a busy engine.
+        return is_ready(backend, mi, health_check_path, model, timeout=timeout)
+
     def sync_model_instances_inference_health(self):
         """
         Synchronize model instances' inference health by sending actual inference requests.
 
-        Per-model configuration is read from model.env:
+        Per-model configuration, read from model.env and nowhere else -- there
+        is no server- or worker-wide setting behind any of these, so a
+        deployment that sets none of them is not probed at all:
         - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED: "true"/"false" (default: false)
-        - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_INTERVAL: seconds (default: global env)
+        - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_INTERVAL: seconds (default: 300)
         - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_TIMEOUT: seconds (default: 15)
-        - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD: count (default: global env)
+        - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD: count (default: 3)
 
         If the model has received successful inference traffic recently
         (within the configured interval), the active health check is skipped.
@@ -1077,7 +1204,7 @@ class ServeManager:
                 continue
 
             # Perform inference health check.
-            if not is_inference_ready(model_instance, model, timeout=timeout):
+            if not self._probe_running_instance(model_instance, model, timeout):
                 failure_count = self._inference_health_check_failures.get(
                     model_instance.id, 0
                 )
@@ -1307,6 +1434,7 @@ class ServeManager:
             stop_event: Event to signal thread to stop
             token: Operation token identifying a specific container in the workload.
                 If None, logs from the default (index=0) container are fetched.
+                resolve it, at the cost of a cluster-wide lookup per attempt.
             resume: Adopt a log file a previous worker process left behind,
                 appending to it instead of rewriting it from the runtime's replay.
         """
@@ -1855,6 +1983,10 @@ class ServeManager:
                     "state": ModelInstanceStateEnum.INITIALIZING,
                     "port": mi.port,
                     "ports": mi.ports,
+                    # The bands are allocated on the worker but read on the
+                    # server (the router's peer config), so they persist the
+                    # same way `port`/`ports` do.
+                    "named_ports": mi.named_ports,
                     "pid": process.pid,
                 }
             # Get patch dict for subordinate worker.
@@ -1913,19 +2045,24 @@ class ServeManager:
         - Main serving port
         - RPC port for vLLM DP communication (if applicable)
         - Connecting port for subordinate workers (if applicable)
+        - Named connector bands declared by the instance's PD role
 
         Args:
             mi: The model instance to assign ports to.
             model: The model associated with the instance.
             backend: The backend type (e.g., vLLM, SGLang).
         """
-        if mi.port:
-            # Port already assigned, skip.
-            return
-
         with _port_lock:
             if mi.port:
-                # Port already assigned, skip.
+                # Ports already assigned (a restart reusing what was
+                # persisted), so nothing to allocate — but they still have to
+                # be re-registered. This process's view of what is taken lives
+                # only in `_assigned_ports`, so returning without refilling it
+                # leaves the whole band looking free to the next instance
+                # started here. Harmless while an instance held one port;
+                # with a band of `1 + Σcount` it hands the same ports out
+                # twice after a worker restart.
+                self._register_assigned_ports(mi)
                 return
 
             if self._assigned_ports:
@@ -1947,36 +2084,42 @@ class ServeManager:
             #   ports[1]: --data-parallel-rpc-port (DP coordinator ZMQ)
             #   ports[2]: --master-port (PyTorch distributed TCP store)
             #   ports[3]: env VLLM_PORT (dp_only only; reserved but unused otherwise)
+            #   ports[4:-1]: named bands, then the connecting band's derived
+            #                ports — fenced, addressed by nobody
             #   ports[-1]: connecting port (= VLLM_DP_MASTER_PORT for dp_only/nested)
             # Ray path: only ports[1] (DP RPC), when user dp > 1.
+            connecting_port: Optional[int] = None
+            connecting_band: List[int] = []
             if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
-                # Allocate first so we can fence off the 10-port band vLLM reserves
-                # around VLLM_DP_MASTER_PORT (= connecting port), keeping the cross
-                # ports (incl. VLLM_PORT) outside it.
-                connecting_port = network.get_free_port(
+                executor_backend = (
+                    resolve_executor_backend(
+                        model.backend_parameters, model.backend_version
+                    )
+                    if backend == BackendEnum.VLLM
+                    else None
+                )
+                # The connecting port doubles as VLLM_DP_MASTER_PORT, and on the
+                # mp path vLLM derives nine more ports from it, so what has to
+                # be free is a run of ten — not one port with nine unprobed
+                # neighbours, which is all a `get_free_port` here can promise.
+                # Allocated first so the cross ports (incl. VLLM_PORT)
+                # land outside the band rather than inside it.
+                band_count = _VLLM_MP_CONNECTING_BAND if executor_backend == "mp" else 1
+                connecting_port = network.get_free_band(
                     port_range=self._config.service_port_range,
+                    count=band_count,
                     unavailable_ports=unavailable_ports,
                     host=mi.worker_ip,
                 )
-                unavailable_ports.add(connecting_port)
+                connecting_band = list(
+                    range(connecting_port, connecting_port + band_count)
+                )
+                unavailable_ports |= set(connecting_band)
 
                 cross_ports: List[int] = []
                 if backend == BackendEnum.VLLM:
-                    executor_backend = resolve_executor_backend(
-                        model.backend_parameters, model.backend_version
-                    )
                     if executor_backend == "mp":
-                        # DP RPC + PyTorch master + VLLM_PORT. Clamp the band to
-                        # service_port_range; out-of-range ports would inflate
-                        # get_free_port's exhaustion count.
-                        _, end_port = network.parse_port_range(
-                            self._config.service_port_range
-                        )
-                        unavailable_ports |= set(
-                            range(
-                                connecting_port, min(connecting_port + 10, end_port + 1)
-                            )
-                        )
+                        # DP RPC + PyTorch master + VLLM_PORT.
                         cross_port_count = 3
                     else:
                         dps = find_int_parameter(
@@ -1994,9 +2137,260 @@ class ServeManager:
                         unavailable_ports.add(cross_port)
 
                 mi.ports.extend(cross_ports)
+
+            # Named connector bands, appended to `mi.ports` as well as written
+            # to `mi.named_ports`. `named_ports` is a *new* index, not a
+            # migration: the positional convention above stays exactly as it
+            # is. The append matters on its own — under hostNetwork the
+            # runtime declares every entry of `mi.ports` as a hostPort
+            # (`_get_configured_ports()` never looks at `named_ports`), and
+            # that declaration is the only thing that turns a same-host port
+            # collision into a schedulable-Pending with an event instead of a
+            # container crash-looping forever in `starting`.
+            named_band_ports = self._assign_named_ports(mi, model, unavailable_ports)
+            mi.ports.extend(named_band_ports)
+
+            if connecting_port is not None:
+                # Only the base goes into `mi.ports`, and it goes last: the
+                # distributed backends read the connecting port as `ports[-1]`
+                # (VLLM_DP_MASTER_PORT / VLLM_PORT), so nothing may be appended
+                # after it.
                 mi.ports.append(connecting_port)
+                if len(connecting_band) > 1:
+                    # The nine ports vLLM derives from the base are recorded in
+                    # `named_ports` rather than in `mi.ports`, and the
+                    # distinction is deliberate. Both indexes persist and both
+                    # are re-fenced on a worker restart, so either one fixes
+                    # what was broken here: ten ports that were bound but
+                    # neither probed nor registered. Only `mi.ports` is turned
+                    # into host ports by the runtime — so putting them there
+                    # would also rewrite the container spec of every existing
+                    # multi-worker vLLM deployment, which is a change to
+                    # non-disaggregated behaviour and belongs to whoever
+                    # decides to make it, not to this one. What that costs:
+                    # a collision with a process outside this worker still
+                    # surfaces as a crash loop rather than as an unschedulable
+                    # Pod. Within one worker the fence now prevents it, which
+                    # is where two members of one deployment actually collide.
+                    named_ports = dict(mi.named_ports or {})
+                    named_ports[_VLLM_MP_CONNECTING_BAND_NAME] = PortBand(
+                        base=connecting_port, count=len(connecting_band)
+                    )
+                    mi.named_ports = named_ports
 
             self._assigned_ports[mi.id] = set(mi.ports)
+            for band in (mi.named_ports or {}).values():
+                self._assigned_ports[mi.id] |= set(
+                    range(band.base, band.base + max(band.count, 1))
+                )
+
+    def _mark_crash_loop(
+        self, mi: ModelInstance, workload, is_main_worker: bool
+    ) -> bool:
+        """Turn a member that keeps restarting without serving into an ERROR.
+
+        Returns True once it has been marked, so the caller stops treating the
+        workload as merely slow to start.
+
+        Only the main worker's row is written. A subordinate worker's state
+        lives inside `distributed_servers`, and the existing failure path above
+        already owns that shape; duplicating it here to catch a loop would mean
+        two writers for one field.
+        """
+        if not is_main_worker or mi.state == ModelInstanceStateEnum.ERROR:
+            return False
+
+        restarts = max(
+            (
+                exit_.restart_count or 0
+                for exit_ in (getattr(workload, "exits", None) or [])
+            ),
+            default=0,
+        )
+        now = datetime.now(timezone.utc)
+        if not self._restart_tracker.observe_restart_count(mi.id, restarts, now):
+            return False
+
+        # The reason comes from the log rather than from the workload, because
+        # the workload has none: a container that exited and was restarted
+        # reports no message on Kubernetes and no exit code worth surfacing.
+        # The log is where the root cause was written, several lines before the
+        # exception that ended the process.
+        diagnosis = diagnose(self._read_container_log(mi), mi.named_ports)
+        message = f"Restarted {restarts} times without serving. " + (
+            f"{diagnosis.summary} Log: {diagnosis.line}"
+            if diagnosis
+            else "No known failure signature was found in its log; check "
+            "the instance log for the first error, not the last."
+        )
+        with contextlib.suppress(NotFoundException):
+            self._update_model_instance(
+                mi.id,
+                state=ModelInstanceStateEnum.ERROR,
+                state_message=message,
+            )
+        logger.warning(f"Model instance {mi.name} is crash-looping: {message}")
+        return True
+
+    def _append_log_diagnosis(self, mi: ModelInstance, message: str) -> str:
+        """Add what the log says to what the runtime says, when it knows more.
+
+        The runtime's account of a failure is frequently just an exit code, and
+        an exit code names the symptom. The log holds the cause, usually
+        several lines before whatever ended the process — which is why the
+        signature scan reports the earliest match rather than the last.
+
+        Best-effort in both directions: no log, no match, or a read that throws
+        all leave the message exactly as it arrived. A less specific failure
+        message is a much smaller problem than an instance that fails to be
+        marked failed.
+        """
+        try:
+            diagnosis = diagnose(self._read_container_log(mi), mi.named_ports)
+        except Exception:
+            return message
+        if not diagnosis:
+            return message
+        return f"{message} {diagnosis.summary} Log: {diagnosis.line}"
+
+    def _read_container_log(self, mi: ModelInstance, limit: int = 256_000) -> str:
+        """The tail of this instance's most recent container log.
+
+        A tail rather than the whole file: an engine's startup log is large and
+        the signatures being looked for are startup-time. Failures to read are
+        swallowed — a missing log makes the diagnosis less specific, and must
+        not stop the instance being marked failed.
+        """
+        try:
+            log_dir = Path(self._serve_log_dir)
+            candidates = sorted(
+                log_dir.glob(f"{mi.id}.container.*.log"),
+                key=lambda p: p.stat().st_mtime,
+            )
+            if not candidates:
+                return ""
+            path = candidates[-1]
+            size = path.stat().st_size
+            with open(path, "r", errors="replace") as f:
+                if size > limit:
+                    f.seek(size - limit)
+                return f.read()
+        except Exception as e:
+            logger.debug(f"Failed to read the container log for {mi.name}: {e}")
+            return ""
+
+    def _register_assigned_ports(self, mi: ModelInstance) -> None:
+        """Re-register an instance's already-persisted ports as taken.
+
+        Covers both indexes: the named bands are whole runs, and only their
+        base is stored, so the fence has to be re-expanded from `count`.
+        Callers must hold `_port_lock`.
+        """
+        taken: Set[int] = set(mi.ports or [])
+        if mi.port:
+            taken.add(mi.port)
+        for band in (mi.named_ports or {}).values():
+            taken |= set(range(band.base, band.base + max(band.count, 1)))
+        if taken:
+            self._assigned_ports[mi.id] = taken
+
+    def _assign_named_ports(
+        self,
+        mi: ModelInstance,
+        model: Model,
+        unavailable_ports: Set[int],
+    ) -> List[int]:
+        """Allocate the port bands this instance's PD role declares.
+
+        The widths come from `pd-modes.yaml` and nothing else: measured, one
+        connector wants one port per data-parallel replica and another wants
+        one per tensor-parallel rank, so there is no platform-side formula to
+        compute them from. Writes `mi.named_ports` and returns every port of
+        every band, in order, for the caller to append to `mi.ports`.
+
+        Mutates `unavailable_ports` with the *whole* band, not just its base:
+        the ports a connector derives from the base are bound just as surely
+        as the base is, and the existing vLLM mp path fencing off ten ports
+        around the connecting port is the same idea with the width hardcoded.
+
+        Every band is allocated per instance, which is what
+        `PDPortScopeEnum.INSTANCE` means and what every band shipped today
+        declares. A `role`-scoped band would need a registry shared across the
+        instances of one role, which does not exist yet; nothing declares one,
+        so allocating it per instance is strictly safer than pretending.
+
+        Callers must hold `_port_lock`.
+        """
+        mode_name = getattr(getattr(model, "disaggregation", None), "mode", None)
+        specs = band_specs_for(model, mi.role, context=f"Model instance {mi.name}")
+        if not specs:
+            # Not a PD instance, or a role that declares no band. Either way,
+            # today's path byte for byte.
+            return []
+
+        named_ports: Dict[str, PortBand] = dict(mi.named_ports or {})
+        band_ports: List[int] = []
+        for spec in specs:
+            if spec.scope == PDPortScopeEnum.ROLE:
+                # Not implemented, and therefore refused. See
+                # PDPortScopeUnsupportedError: per-instance allocation of a
+                # role-scoped band is not a partial implementation of it, it is
+                # a different band on every member.
+                raise PDPortScopeUnsupportedError(
+                    f"Model instance {mi.name} (role '{mi.role}', PD mode "
+                    f"'{mode_name}') declares port band '{spec.name}' with "
+                    f"scope '{PDPortScopeEnum.ROLE.value}'. Role-scoped bands "
+                    "need a registry shared by the members of one role, which "
+                    "does not exist yet, and allocating one per instance would "
+                    "give each member a different base for a band they are "
+                    "supposed to meet on."
+                )
+            count = band_width(
+                spec,
+                cards=len(mi.gpu_indexes or []),
+                backend_parameters=model.backend_parameters,
+            )
+            if count is None:
+                # Skipping the band leaves `{{ports.<name>}}` unresolved in the
+                # launch, which the renderer logs and the engine rejects by
+                # name; allocating a guessed width would instead look like it
+                # worked. Which of the two reasons it was decides where the
+                # operator looks next, so it is named.
+                why = (
+                    "has no accelerators assigned to size it from"
+                    if band_count_key(spec) == ACCELERATOR_COUNT_KEY
+                    else "declares no parallelism parameter answering to that name"
+                )
+                logger.warning(
+                    f"Model instance {mi.name} (role '{mi.role}') declares port "
+                    f"band '{spec.name}' with count '{spec.count}' but {why}. "
+                    "No ports are reserved for it, so the placeholder reaches "
+                    "the engine verbatim and the launch fails naming it."
+                )
+                continue
+            try:
+                base = network.get_free_band(
+                    port_range=self._config.service_port_range,
+                    count=count,
+                    unavailable_ports=unavailable_ports,
+                    host=mi.worker_ip,
+                )
+            except network.PortRangeExhaustedError as e:
+                # Re-raise with the role and band named. The allocator knows
+                # the arithmetic but not who was asking, and "which role of
+                # which deployment" is the first thing an operator needs.
+                raise network.PortRangeExhaustedError(
+                    f"Model instance {mi.name} (role '{mi.role}', PD mode "
+                    f"'{mode_name}') needs a {count}-port band for "
+                    f"'{spec.name}': {e}"
+                ) from e
+            band = list(range(base, base + count))
+            unavailable_ports |= set(band)
+            named_ports[spec.name] = PortBand(base=base, count=count)
+            band_ports.extend(band)
+
+        mi.named_ports = named_ports
+        return band_ports
 
     def _restart_model_instance(self, mi: ModelInstance):
         """
@@ -2093,6 +2487,13 @@ class ServeManager:
         self._model_instance_by_instance_id.pop(mi.id, None)
         if clear_restart_backoff:
             self._restart_backoff_counts.pop(mi.id, None)
+            # Same condition as the backoff on purpose. The crash-loop verdict
+            # and the restart backoff answer the same question — "is this one
+            # still worth retrying" — so a stop that keeps the backoff (the
+            # restart path) has to keep the loop history too, or a member being
+            # restarted for the fourth time looks like one being started for
+            # the first.
+            self._restart_tracker.forget(mi.id)
         self._inference_health_check_failures.pop(mi.id, None)
         self._last_health_check_time.pop(mi.id, None)
         self._last_successful_inference.pop(mi.id, None)
@@ -2154,7 +2555,22 @@ class ServeManager:
         if model := self._model_cache_by_instance.get(mi.id):
             return model
 
-        model = self._clientset.models.get(mi.model_id)
+        # Project the role's overrides here too. This is a third cluster of
+        # worker-side readers, and every one of them wants the role's value:
+        # the vGPU type and backend version at sync, `env` for the health-check
+        # config, and the backend that decides the port band and the fallback
+        # registry at start. Without the projection this manager would size and
+        # probe an instance from the Model-level spec while the child process
+        # runs from the role's — the two would disagree on the same instance.
+        # The cache is already keyed per instance, so projecting inside it is
+        # exactly per-role.
+        model = role_effective_model(self._clientset.models.get(mi.model_id), mi.role)
+        # A managed router is a custom-backend image plus a command, and this
+        # manager has to know that before the child process exists: the backend
+        # is what picks the port band and the fallback registry. No peers are
+        # passed — the command they render into is the child's business, and
+        # rendering it here would only be rendering it twice.
+        model = apply_managed_router(model, mi.role)
         self._model_cache_by_instance[mi.id] = model
         return model
 
@@ -2232,9 +2648,16 @@ def is_ready(
     mi: ModelInstance,
     health_check_path: Optional[str] = None,
     model: Model = None,
+    timeout: int = 1,
 ) -> bool:
     """
     Access the health endpoint of the given model instance to check if it is servable.
+
+    ``timeout`` defaults to the second that suits the caller this was written
+    for: a member on its way into RUNNING, polled every pass, where a slow
+    answer costs nothing but another pass. A caller that turns a failure into
+    ERROR must pass its own -- under load a busy engine answers late, and one
+    second of patience would retire a member that is merely working.
     """
     is_built_in = is_built_in_backend(backend)
     if (not is_built_in or backend == BackendEnum.CUSTOM) and (not health_check_path):
@@ -2271,7 +2694,7 @@ def is_ready(
         scheme = envs.GPUSTACK_INSTANCE_SCHEME
         verify = not envs.GPUSTACK_INSTANCE_TLS_INSECURE if scheme == "https" else True
         health_check_url = f"{scheme}://{mi.worker_ip}:{mi.port}{health_check_path}"
-        response = requests.get(health_check_url, timeout=1, verify=verify)
+        response = requests.get(health_check_url, timeout=timeout, verify=verify)
         if response.status_code == 200:
             return True
     except Exception as e:
@@ -2346,8 +2769,10 @@ def is_inference_ready(mi: ModelInstance, model: Model, timeout: int = 15) -> bo
     """
     Send a minimal inference request to verify the inference capability is working.
     """
-    # Check Custom backend (no standard inference API)
-    if is_custom_backend(model.backend):
+    # Check Custom backend (no standard inference API). A managed router is the
+    # exception: it is only *launched* as a custom backend, and it serves the
+    # group's OpenAI API -- which is exactly what this probe is for.
+    if is_custom_backend(model.backend) and not is_managed_router(model, mi.role):
         return True
 
     # Check port assignment
