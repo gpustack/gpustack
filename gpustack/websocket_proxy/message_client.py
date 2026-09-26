@@ -6,6 +6,7 @@ Message Client - Client that handles CONNECT_REQUEST from server
 import asyncio
 import logging
 import random
+import ssl
 import uuid
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
@@ -39,12 +40,14 @@ class MessageClient:
         cidrs: Optional[List[str]] = None,
         unix_sockets: Optional[List[str]] = None,
         authenticator: Optional[Authenticator] = None,
+        insecure_tls: bool = False,
     ) -> None:
         # replace http(s):// with ws(s):// and append connect path
         self.server_uri = (
             server_endpoint.replace('https://', 'wss://').replace('http://', 'ws://')
             + default_connect_path
         )
+        self._insecure_tls = insecure_tls
         self._client_info = BaseClientInfo(
             client_id=client_id,
             cidrs=cidrs or [],
@@ -75,11 +78,20 @@ class MessageClient:
                 headers = self._client_info.to_headers()
             self._authenticator.inject_headers(headers)
             try:
-                self._websocket = await connect(
-                    self.server_uri,
-                    proxy=None,
-                    additional_headers=headers,
-                )
+                connect_kwargs = {
+                    "proxy": None,
+                    "additional_headers": headers,
+                }
+                if self._insecure_tls and self.server_uri.startswith("wss://"):
+                    # Skip TLS certificate verification for the tunnel
+                    # WebSocket when the server presents a private/self-signed
+                    # certificate. Construct a dedicated context rather than
+                    # mutating the process-wide ``make_ssl_context()`` singleton.
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
+                    connect_kwargs["ssl"] = ssl_context
+                self._websocket = await connect(self.server_uri, **connect_kwargs)
                 logger.debug(
                     f"[Client] Connected to {self.server_uri} with client_id: {self._client_info.client_id}"
                 )
