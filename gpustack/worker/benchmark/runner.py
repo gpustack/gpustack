@@ -13,6 +13,7 @@ from gpustack.envs import BENCHMARK_DATASET_SHAREGPT_PATH, BENCHMARK_REQUEST_TIM
 from gpustack.logging import setup_logging
 from gpustack.ssl_context import resolve_ca_bundle
 from gpustack.schemas.benchmark import (
+    BenchmarkTargetModeEnum,
     DATASET_RANDOM,
     DATASET_SHAREGPT,
     SLO_THRESHOLDS,
@@ -75,6 +76,64 @@ def resolve_progress_insecure_tls() -> bool:
     return bool(get_gpustack_env_bool("INSECURE_TLS"))
 
 
+def _local_model_snapshot(
+    benchmark, endpoint_snapshot: ModelInstanceSnapshot
+) -> ModelInstanceSnapshot:
+    """The snapshot member whose weights are on the worker running this.
+
+    `--processor` is a path, and the path only exists where a member downloaded
+    the model. The endpoint answers that for every model with one member; for a
+    group it does not, because the endpoint is the router. The server picks the
+    placement worker, so the member to read is the one the snapshot puts there.
+
+    Falls back to the endpoint rather than raising: a caller with a
+    single-member snapshot must keep working unchanged, including one written
+    before the snapshot carried the whole group.
+    """
+    if endpoint_snapshot.resolved_path and (
+        benchmark.worker_id is None
+        or endpoint_snapshot.worker_id == benchmark.worker_id
+    ):
+        return endpoint_snapshot
+
+    members = list((benchmark.snapshot.instances or {}).values())
+    local = [
+        m for m in members if m.resolved_path and m.worker_id == benchmark.worker_id
+    ]
+    if local:
+        # Stable across members that all hold the same weights.
+        return sorted(local, key=lambda m: m.name)[0]
+    return endpoint_snapshot
+
+
+def _transient_phase_arg(value: float) -> str:
+    """Render a warmup/cooldown value as a guidellm TransientPhaseConfig object.
+
+    Sent as JSON rather than the bare number, for one reason: to pin ``mode``.
+
+    guidellm's ``TransientPhaseConfig`` defaults to ``mode="prefer_duration"``,
+    and ``compute_limits`` drops the request-based bound whenever a duration can
+    also be computed. Our stages always set BOTH ``max_requests`` and
+    ``max_seconds``, so the bare number was always interpreted as a slice of
+    TIME -- e.g. ``0.1`` trimmed the first 10% of each stage's seconds, not its
+    requests.
+
+    That is the wrong axis for comparing arms. Trimming by time removes a
+    DIFFERENT POPULATION of requests from a saturated arm than from an idle one
+    (the saturated arm's warmup backlog gets dragged into the measured window),
+    which biases the very comparison the benchmark exists to make. Trimming by
+    request count removes "the first N% of requests" from both, which is
+    comparable by construction.
+
+    The column keeps guidellm's own scalar convention -- below 1 is a fraction,
+    1 and above is an absolute count -- so both are forwarded, only with the
+    axis pinned.
+    """
+    if value < 1:
+        return json.dumps({"percent": value, "mode": "requests"})
+    return json.dumps({"value": int(value), "mode": "requests"})
+
+
 class BenchmarkRunner:
     _clientset: ClientSet
     _config: Config
@@ -86,6 +145,7 @@ class BenchmarkRunner:
     _api_key: str
     _benchmark_dir: Optional[str]
     _progress_insecure_skip_tls_verify: bool
+    _route_name: Optional[str] = None
     _fallback_registry: Optional[str] = None
     """The fallback container registry to use if needed."""
 
@@ -121,10 +181,6 @@ class BenchmarkRunner:
             instance_snapshot: ModelInstanceSnapshot = benchmark.snapshot.instances.get(
                 benchmark.model_instance_name
             )
-            if instance_snapshot.resolved_path is None:
-                raise ValueError(
-                    f"Benchmark {benchmark.name}(id={benchmark.id}) snapshot for model instance {benchmark.model_instance_name} has no resolved path"
-                )
 
             if instance_snapshot.worker_ip is None:
                 raise ValueError(
@@ -136,10 +192,29 @@ class BenchmarkRunner:
                     f"Benchmark {benchmark.name}(id={benchmark.id}) snapshot for model instance {benchmark.model_instance_name} has no ports"
                 )
 
+            # The tokenizer comes from the member that lives HERE, which is not
+            # the member the load is sent to when the target is a group: the
+            # endpoint is the router and `--processor` is a host path, so the
+            # weights are on the worker the server placed this run on. The two
+            # coincide for every non-PD model, where the snapshot holds exactly
+            # one member and this picks it.
+            local_snapshot = _local_model_snapshot(benchmark, instance_snapshot)
+            if local_snapshot.resolved_path is None:
+                raise ValueError(
+                    f"Benchmark {benchmark.name}(id={benchmark.id}) has no snapshot member with a resolved model path on worker {benchmark.worker_id}; the tokenizer is read from disk, so the run has to sit on a worker that holds the weights"
+                )
+
             self._benchmark_dir = self._config.benchmark_dir
-            self._model_path = instance_snapshot.resolved_path
+            self._model_path = local_snapshot.resolved_path
             self._model_endpoint = f"{envs.GPUSTACK_INSTANCE_SCHEME}://{instance_snapshot.worker_ip}:{instance_snapshot.ports[0] if instance_snapshot.ports else ''}"
             self._model_backend_parameters = instance_snapshot.backend_parameters
+            # `route` mode aims at the deployment instead of the member: the
+            # load enters where client traffic does, so a plain model's
+            # replicas are all of them rather than the one this snapshot
+            # happens to name. Resolved on the server and carried on the
+            # snapshot — the runner must not re-derive which route fronts a
+            # model, or the two could disagree about what was measured.
+            self._route_name = getattr(benchmark.snapshot, "route_name", None)
 
             _api_key = read_worker_token(self._config.data_dir)
             if _api_key is None:
@@ -342,6 +417,27 @@ class BenchmarkRunner:
     def _build_command_args(  # noqa: C901
         self, with_ca_cert: bool = False
     ) -> List[str]:
+        b = self._benchmark
+        # Where the load goes, and what it asks for by name. In `route` mode
+        # both change together: the target is the server's benchmark proxy
+        # (which resolves the route and load-balances exactly as `/v1` does)
+        # and the name is the route's, not the model's -- a route is what the
+        # proxy matches on.
+        route_mode = getattr(b, "target_mode", None) == BenchmarkTargetModeEnum.ROUTE
+        if route_mode and not self._route_name:
+            # Refused rather than fallen back on, the way the resolved path is
+            # above. Sending the load at one member while the row says the run
+            # measured the deployment through its route does not fail — it
+            # produces a number, labelled as the thing it is not, and the mode
+            # column exists precisely to keep those two readings apart.
+            raise Exception(
+                f"Benchmark {b.name}(id={b.id}) is in route mode but its "
+                "snapshot carries no route name; refusing to measure one "
+                "member and report it as the deployment"
+            )
+        target = self._route_proxy_target() if route_mode else self._model_endpoint
+        served_name = self._route_name if route_mode else b.model_name
+
         # guidellm 0.7.1 registers request handlers on OpenAIRequestHandlerFactory
         # by API PATH, and benchmark-runner's `openai_http_error_detail` backend
         # exposes that as a `request_handlers` field (path -> registered handler
@@ -355,6 +451,14 @@ class BenchmarkRunner:
                 "/v1/chat/completions": "chat_completions_with_reasoning"
             },
         }
+        if route_mode:
+            # The proxy is the server, and the server authenticates. The worker
+            # token is the credential this process already holds and already
+            # uses (progress reporting posts with it), so route mode needs no
+            # new secret and nothing of the user's is stored on the run.
+            backend_kwargs["api_key"] = self._api_key
+            if self._progress_insecure_skip_tls_verify:
+                backend_kwargs["verify"] = False
 
         # Load selection — one of three mutually-exclusive shapes, named by
         # benchmark_load_mode so the precedence lives in one place (the result
@@ -367,7 +471,6 @@ class BenchmarkRunner:
         #      mode; each stage carries its own max_requests / max_seconds).
         #   3. single     -> one `constant`/`concurrent` run (single-rate records
         #      via request_rate).
-        b = self._benchmark
         mode = benchmark_load_mode(b)
         # fixed_rate -> ramp/pin the request rate (open-loop constant);
         # concurrency -> ramp/pin the stream count (closed-loop concurrent).
@@ -386,7 +489,7 @@ class BenchmarkRunner:
             # SLO targets ("<=" ms). Any one set -> target is the SLO boundary; a
             # point meets the SLO when every set threshold holds (AND). Walked from
             # SLO_THRESHOLDS so a threshold added there is forwarded here without a
-            # second list to remember (it used to be silently dropped).
+            # second list to remember, where it would be silently dropped.
             for t in SLO_THRESHOLDS:
                 value = getattr(b, t.attr, None)
                 if value is not None:
@@ -415,7 +518,19 @@ class BenchmarkRunner:
             "benchmark",
             "run",
             "--target",
-            self._model_endpoint,
+            target,
+            # Named, never discovered. Without it guidellm asks the target for
+            # `GET /v1/models` and takes the first entry, which fails two ways:
+            # a PD router does not necessarily answer that route in the shape
+            # guidellm reads (measured against a live 1P1D: `KeyError: 'data'`
+            # before a single request was sent), and an engine serving LoRA
+            # adapters answers with several names of which the first is not
+            # necessarily the one to measure. The name is the one the engine
+            # was started with (`--served-model-name`), so it is also the name
+            # the router forwards. A row without one (nothing the server
+            # creates today) falls back to discovery rather than sending the
+            # string "None" as a model id.
+            *(["--model", served_name] if served_name else []),
             *profile_args,
             "--sample-requests",
             "0",
@@ -548,10 +663,12 @@ class BenchmarkRunner:
                 command_args.extend(["--max-seconds", str(b.max_seconds)])
 
         # Warmup / cooldown / constraints, passed through to guidellm.
+        # Sent as a JSON object rather than the bare number the column holds, to
+        # pin `mode` — see `_transient_phase_arg`.
         if b.warmup is not None:
-            command_args.extend(["--warmup", str(b.warmup)])
+            command_args.extend(["--warmup", _transient_phase_arg(b.warmup)])
         if b.cooldown is not None:
-            command_args.extend(["--cooldown", str(b.cooldown)])
+            command_args.extend(["--cooldown", _transient_phase_arg(b.cooldown)])
         if b.max_errors is not None:
             command_args.extend(["--max-errors", str(b.max_errors)])
         # guidellm's MaxErrorRateConstraint takes a FRACTION in the open interval
@@ -583,6 +700,20 @@ class BenchmarkRunner:
             "/benchmarks/{id}/state".format(id=id), json=kwargs
         )
         resp.raise_for_status()
+
+    def _route_proxy_target(self) -> str:
+        """The server's benchmark proxy, which fronts the deployment's route.
+
+        Not `/v1` directly: that door authenticates a USER, and this process
+        holds a worker token rather than anyone's credentials. The proxy is the
+        same resolution and the same load balancer behind a worker-authenticated
+        prefix, so `route` mode needs no key of the user's and stores no secret
+        on the run.
+
+        The path stops before `/v1`, which the load generator appends itself.
+        """
+        base = self._api_url.split("/v2/benchmarks/")[0]
+        return f"{base}/v2/benchmark-proxy"
 
     def _get_configured_mounts(self) -> List[ContainerMount]:
         """
