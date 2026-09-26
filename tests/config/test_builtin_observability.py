@@ -1,4 +1,5 @@
 import json
+import shlex
 from pathlib import Path
 
 from starlette.requests import Request
@@ -85,7 +86,8 @@ def test_prepare_prometheus_config_writes_observability_env(tmp_path, monkeypatc
 
     assert "PROMETHEUS_PORT=19100" in env_text
     assert "GF_SERVER_HTTP_PORT=13100" in env_text
-    assert f"PROMETHEUS_DATA_DIR={tmp_path / 'data' / 'prometheus'}" in env_text
+    prometheus_data_dir = shlex.quote(str(tmp_path / 'data' / 'prometheus'))
+    assert f"PROMETHEUS_DATA_DIR={prometheus_data_dir}" in env_text
     assert "127.0.0.1:10161/metrics/targets" in prom_text
     assert "url: http://127.0.0.1:19100/prometheus" in datasource_text
 
