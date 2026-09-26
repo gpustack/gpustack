@@ -1,0 +1,62 @@
+---
+title: DeepSeek-V4-Flash
+description: "Deploy DeepSeek-V4-Flash with SGLang — Z.ai's DeepSeek-Sparse-Attention (DSA) Mixture-of-Experts model with MTP speculative decoding and 1M context, on H20."
+tag: NEW
+---
+
+# Deploying DeepSeek-V4-Flash with GPUStack and SGLang
+
+This tutorial guides you through setting up **DeepSeek-V4-Flash**—a high-performance Mixture-of-Experts (MoE) model with massive long-context capabilities—using **SGLang (v0.5.14)** in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `lmsysorg/sglang:v0.5.14`
+* **Hardware Requirements**: H20 (8x GPUs for Tensor/Context Parallelism)
+
+### 2. Model Weights Source
+* **Model Name**: `DeepSeek-V4-Flash`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/deepseek-ai/DeepSeek-V4-Flash`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to **Models** -> **deployment**, and select the **model deploy** / **modelscope** mode.
+
+### 1. Basic Information
+* **Model Name**: `DeepSeek-V4-Flash`
+* **Container Image**: `lmsysorg/sglang:v0.5.14`
+
+### 2. Backend Arguments (Multi-line Format for UI Input)
+You can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+--trust-remote-code
+--tp-size 8
+--enable-nsa-prefill-context-parallel
+--nsa-prefill-cp-mode round-robin-split
+--moe-runner-backend marlin
+--speculative-algorithm EAGLE
+--speculative-num-steps 3
+--speculative-eagle-topk 1
+--reasoning-parser deepseek-v4
+--tool-call-parser deepseekv4
+--attn-cp-size 8
+--context-length 1000000
+--mem-fraction-static 0.8
+--speculative-num-draft-tokens 4
+```
+
+### 3. Parameter Optimizations
+MTP / speculative decoding. The checkpoint ships one nextn layer. Enable EAGLE MTP for lower latency (--speculative-algorithm EAGLE --speculative-num-steps 5 --speculative-eagle-topk 1 --speculative-num-draft-tokens 6 for low-latency; 1-1-2 for balanced). The config’s index_share_for_mtp_iteration reuses the DSA indexer’s topk across draft steps (effective only at --speculative-eagle-topk 1). Tune the draft length to the accept length. GLM-5.2’s MTP head is strong — accept length runs high (4+ in many workloads, near-saturating at 5–6 in low-latency runs). Watch the server’s reported accept length and adjust --speculative-num-steps / --speculative-num-draft-tokens accordingly: while accept length stays close to the draft-token count there is headroom to push them higher (more accepted tokens per step); if it falls well below, lower them — every rejected draft token is wasted verification compute.
+
+Context Parallelism (CP) for long prefill. DSA prefill CP splits the long-prefill attention across --attn-cp-size ranks. On Hopper (H200) this gives a large prefill-latency win at long context — e.g. round-robin CP (--tp 8 --attn-cp-size 8 --enable-dsa-prefill-context-parallel --dsa-prefill-cp-mode round-robin-split) cut 64K-token prefill TTFT roughly 2.5–2.8× vs. plain TP8 in our testing. Trade-offs: CP partitions the KV pool (lower max context at the same --mem-fraction-static) and adds some decode-side overhead, so it pays off only for long sequences. CP is currently verified on Hopper only — the Blackwell (sm100) DSA-CP FP8 rope kernel is not yet adapted, so leave CP off on B200/B300/GB300.
+
+Memory. The FP8 weights are large (MoE total, not active params). Start around --mem-fraction-static 0.8 on H20 (TP8) and tune up
+
+### 4. more config
+
+https://docs.sglang.io/cookbook/autoregressive/DeepSeek/DeepSeek-V4
