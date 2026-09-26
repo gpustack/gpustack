@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import List, Set
+from typing import List, Optional, Set
 
 # Database configuration
 DB_ECHO = os.getenv("GPUSTACK_DB_ECHO", "false").lower() == "true"
@@ -14,6 +14,19 @@ DB_TRACE_SQL_SUBSTR = os.getenv("GPUSTACK_DB_TRACE_SQL_SUBSTR", "")
 DB_POOL_SIZE = int(os.getenv("GPUSTACK_DB_POOL_SIZE", 30))
 DB_MAX_OVERFLOW = int(os.getenv("GPUSTACK_DB_MAX_OVERFLOW", 20))
 DB_POOL_TIMEOUT = int(os.getenv("GPUSTACK_DB_POOL_TIMEOUT", 30))
+
+# How many models may reconcile at once. Each reconcile holds a session for
+# its whole pass, so without a bound the ceiling is the number of models: the
+# controller's event subscription replays one CREATED per row on start-up, and
+# nothing in that loop yields, so every model's task is created in a single
+# tick. Past `DB_POOL_SIZE + DB_MAX_OVERFLOW` the pool stops handing out
+# connections and starts timing out -- shared with the API, so a reconcile
+# storm takes request handling down with it.
+#
+# Well under the pool so reconciles cannot be what exhausts it, and in the
+# same range as the other bounded fan-outs here (the metrics querier's 8, the
+# worker registration gate's 10).
+MODEL_RECONCILE_CONCURRENCY = int(os.getenv("GPUSTACK_MODEL_RECONCILE_CONCURRENCY", 8))
 # Bound how long a pooled connection may be reused so a node that a database
 # failover demoted cannot be talked to forever. SQLAlchemy's default is -1,
 # meaning a connection is never recycled; 1800 matches the prevailing default
@@ -29,7 +42,23 @@ DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS = int(
 )
 
 # Proxy configuration
+#
+# The inference proxy budget is segmented at the first response body chunk,
+# because silence means different things on either side of it (#6012). Before
+# the first chunk, silence is indistinguishable from queueing or the prefill of
+# a long prompt, so the bound has to stay generous; after it, a healthy engine
+# emits tokens continuously and a gap of tens of seconds means the upstream is
+# wedged. A single idle value cannot express both.
 PROXY_TIMEOUT = int(os.getenv("GPUSTACK_PROXY_TIMEOUT_SECONDS", 1800))
+# Backstop on the wait for the first body chunk of a streaming response.
+PROXY_TTFT_TIMEOUT = int(os.getenv("GPUSTACK_PROXY_TTFT_TIMEOUT_SECONDS", 300))
+# Inter-chunk budget, applied only once a streaming response has started.
+PROXY_STREAM_IDLE_TIMEOUT = int(
+    os.getenv("GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS", 60)
+)
+# Unrelated to request duration: this maps to the upstream cluster's
+# connection-pool reaping (common_http_protocol_options.idle_timeout) in the
+# gateway, not to how long a request may take.
 PROXY_UPSTREAM_IDLE_TIMEOUT = int(
     os.getenv("GPUSTACK_PROXY_UPSTREAM_IDLE_TIMEOUT_SECONDS", 3)
 )
@@ -301,6 +330,46 @@ SCHEDULER_SCALE_UP_PLACEMENT_MAX_SCORE = float(
 SCHEDULER_SCALE_UP_LOCALITY_MAX_SCORE = float(
     os.getenv("GPUSTACK_SCHEDULER_SCALE_UP_LOCALITY_MAX_SCORE", 5)
 )
+# Per opposite-role sibling on a worker, when scaling one role of a PD group
+# out: "most decodes wins, and capacity breaks the tie".
+#
+# **A floor, not the weight actually used.** The rule holds only while one more
+# sibling outweighs everything the rest of the chain can say, and what the rest
+# of the chain can say depends on which scorers are active.
+# `_pairing_affinity_max_score` therefore sums the ceilings of the scorers on
+# the chain and takes `max(this value, that sum + 1)`, so raising this still
+# raises the weight and adding a scorer cannot silently outrank it. 0 is read
+# as an off switch and is never raised to the floor.
+SCHEDULER_PAIRING_AFFINITY_MAX_SCORE = float(
+    os.getenv("GPUSTACK_SCHEDULER_PAIRING_AFFINITY_MAX_SCORE", 200)
+)
+# Ranking a group's whole placement against the others at the same layer.
+#
+# Both terms are ratios in [0, 1], so these are weights between commensurable
+# quantities rather than an exchange rate -- which is also why the layer is
+# not among them: it is settled by strict preference before anything is
+# scored. Pairing leads because co-locating a request's two ends is what
+# disaggregation is for; file locality is a first-start saving and rides
+# behind it, able to decide only a pairing tie.
+SCHEDULER_GROUP_PAIR_LOCALITY_WEIGHT = float(
+    os.getenv("GPUSTACK_SCHEDULER_GROUP_PAIR_LOCALITY_WEIGHT", 1.0)
+)
+SCHEDULER_GROUP_FILE_LOCALITY_WEIGHT = float(
+    os.getenv("GPUSTACK_SCHEDULER_GROUP_FILE_LOCALITY_WEIGHT", 0.3)
+)
+# How many fitting domains one layer may yield before ranking stops asking for
+# more. Domains are examined smallest-first, so the tail of a wide layer buys
+# ranking quality at a full selector sweep each.
+SCHEDULER_GROUP_CANDIDATE_LIMIT = int(
+    os.getenv("GPUSTACK_SCHEDULER_GROUP_CANDIDATE_LIMIT", 16)
+)
+# How long a scaled-down group member keeps running after it leaves the
+# router's registry. Not a grace period for the process: it is the time the
+# decodes already fetching KV from it need to finish, which the engine cannot
+# be asked to wait for itself.
+SCHEDULER_DRAIN_WINDOW_SECONDS = int(
+    os.getenv("GPUSTACK_SCHEDULER_DRAIN_WINDOW_SECONDS", 60)
+)
 # Scale-down scoring weights (relative, normalized in score chain)
 SCHEDULER_SCALE_DOWN_STATUS_MAX_SCORE = float(
     os.getenv("GPUSTACK_SCHEDULER_SCALE_DOWN_STATUS_MAX_SCORE", 100)
@@ -310,6 +379,44 @@ SCHEDULER_SCALE_DOWN_OFFLOAD_MAX_SCORE = float(
 )
 SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE = float(
     os.getenv("GPUSTACK_SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE", 1)
+)
+# How much of a PD group member's keep-score comes from the opposite-role
+# members sharing its worker, when one role is scaled in. It picks the victim
+# in the ordinary case, where every surplus member is healthy and the status
+# and offload scores above tie.
+#
+# **Has to stay below 50**, `StatusScorer`'s step between "starting" and
+# "running" on its 0/50/100 scale. At 50 a starting member on a worker full of
+# decodes ties a running member sitting alone, and deleting the already-broken
+# member -- the one free move a scale-down has -- stops happening. Normalised
+# into the band below, unlike the scale-up side.
+SCHEDULER_SCALE_DOWN_PAIRING_MAX_SCORE = float(
+    os.getenv("GPUSTACK_SCHEDULER_SCALE_DOWN_PAIRING_MAX_SCORE", 20)
+)
+# Per topology rung shared with the group's placed members, when scaling one
+# out or placing its router. Above `PlacementScorer`'s 100-point spread so
+# capacity cannot outvote a whole rung of the operator's own tree. It needs no
+# ceiling against the pairing bonus: a candidate on a peer's host shares every
+# rung that host's rack does, and one more.
+SCHEDULER_TOPOLOGY_PROXIMITY_MAX_SCORE = float(
+    os.getenv("GPUSTACK_SCHEDULER_TOPOLOGY_PROXIMITY_MAX_SCORE", 150)
+)
+# How long a member of a `MustGather` group may sit unplaced before the model
+# reports `gather_blocked_scale_out`. Nothing expires when it passes: it only
+# separates "the scheduler has not run yet", which every scale-up spends, from
+# "the scheduler has run and there is nowhere inside the domain to put this".
+# Sized well above a scheduling pass and well below the patience of someone
+# watching a scale-up.
+SCHEDULER_GATHER_BLOCKED_DWELL_SECONDS = int(
+    os.getenv("GPUSTACK_SCHEDULER_GATHER_BLOCKED_DWELL_SECONDS", 120)
+)
+# How long `POST /models/{id}/restart` keeps answering 409 to a second request
+# before assuming the first one is not coming back. The lapse is not tidy-up: a
+# group that never reaches RUNNING is exactly the one an operator needs to
+# restart again. Sized to outlast a cold start that pulls an image and reads
+# weights off disk, since refusing early costs a real outage.
+RESTART_IN_FLIGHT_LAPSE_SECONDS = int(
+    os.getenv("GPUSTACK_RESTART_IN_FLIGHT_LAPSE_SECONDS", 900)
 )
 
 MIGRATION_DATA_DIR = os.getenv("GPUSTACK_MIGRATION_DATA_DIR", None)
@@ -331,8 +438,6 @@ GATEWAY_MIRROR_INGRESS_NAME = os.getenv(
 # "http" (default) keeps legacy plaintext behavior; "https" switches every
 # internal hop (gateway McpBridge registries, server->worker forwarding,
 # health/inference checks, metadata & metrics scraping) to TLS.
-# Example: point GPUSTACK_INSTANCE_SCHEME at "https" after enabling
-# vLLM --ssl-keyfile/--ssl-certfile on model instances.
 GPUSTACK_INSTANCE_SCHEME = os.getenv("GPUSTACK_INSTANCE_SCHEME", "http").lower()
 if GPUSTACK_INSTANCE_SCHEME not in ("http", "https"):
     raise ValueError(
@@ -554,9 +659,14 @@ SCALING_SCHEDULER_INTERVAL = max(
 #
 # The starting point alone: a slot put in service afterwards stays there, and
 # the source configuration decides what an installation follows from then on.
-# Wanted where the OTA server is out of reach, where the content should stay
-# pinned to the build, and in development, where the published document belongs
-# to a release while the build under test is ahead of it.
-BOOTSTRAP_WITH_EMBEDDED_SOURCES = (
-    os.getenv("GPUSTACK_BOOTSTRAP_WITH_EMBEDDED_SOURCES", "false").lower() == "true"
+# Wanted where the OTA server is out of reach, and where the content should stay
+# pinned to the build. Unset or empty (``None``) means on for a development build
+# only, whose packaged content is ahead of any published document.
+_bootstrap_with_embedded_sources = (
+    os.getenv("GPUSTACK_BOOTSTRAP_WITH_EMBEDDED_SOURCES") or None
+)
+BOOTSTRAP_WITH_EMBEDDED_SOURCES: Optional[bool] = (
+    None
+    if _bootstrap_with_embedded_sources is None
+    else _bootstrap_with_embedded_sources.lower() == "true"
 )
