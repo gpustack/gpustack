@@ -330,6 +330,9 @@ class ModelFileDownloadTask:
         self._ensure_model_file_size_and_paths()
 
         self._speed_lock = threading.Lock()
+        # Create thread locks in the child process so download tasks stay picklable.
+        self._progress_lock = threading.Lock()
+        self._last_reported_progress = -1.0
         # Lock for _model_downloaded_size/_last_download_update_time/_last_downloaded_size to avoid race condition
         self._model_downloaded_size = 0
         self._last_download_update_time = 0
@@ -971,7 +974,13 @@ class ModelFileDownloadTask:
         self._model_file.resolved_paths = file_paths
 
     def _update_model_file_progress(self, model_file_id: int, progress: float):
-        self._update_model_file(model_file_id, download_progress=progress)
+        # Serialize requests as well as the check so older reports cannot finish
+        # after newer ones and overwrite their progress.
+        with self._progress_lock:
+            if progress <= self._last_reported_progress:
+                return
+            self._update_model_file(model_file_id, download_progress=progress)
+            self._last_reported_progress = progress
 
     def _update_model_file(self, id: int, **kwargs):
         model_file_public = self._clientset.model_files.get(id=id)
