@@ -151,9 +151,107 @@ Some paths are refused rather than merged: the ones the server derives from this
 
     Saving the cluster changes nothing in Kubernetes on its own. Re-run `Register Cluster` and apply the manifest it gives you: the in-cluster Job compares what the manifest asks for against what the release was installed from, and upgrades only when they differ.
 
+!!! note
+
+    An upgrade that changes what the release deploys — turning off the CPU worker DaemonSet (`worker.cpuEnabled=false` in `helmValues`, for a cluster whose CPU-only nodes carry the control plane), or dropping a GPU vendor the cluster no longer selects — removes the worker DaemonSets it stops rendering on its own: `kubectl apply` would not (it never deletes an object the manifest omits), so the upgrade Job deletes every `<release>-worker[-<vendor>]` DaemonSet that the release no longer renders, whether or not a Helm revision ever owned it.
+
+    A leftover from before this cleanup existed is removed the same way: apply the current manifest once and the Job sweeps it, even when the configuration has not changed since. Only a cluster that cannot run the Job at all needs the manual form:
+
+    ```bash
+    kubectl delete daemonset/gpustack-worker -n gpustack-system
+    kubectl delete daemonset/gpustack-worker-<vendor> -n gpustack-system
+    ```
+
+    Keep the `Register Cluster` parameters (GPU vendors, options) identical to the last applied manifest when you only mean to upgrade the version — anything else is a configuration change, not an upgrade.
+
 !!! warning
 
     Kueue and Node Feature Discovery are not optional. The operator derives its scheduling chain from them and waits for their CRDs at startup, so switching one off that the cluster does not already provide leaves the operator unable to start. Switching off one this release installed removes it — Kueue's CRDs come from its chart, and every `Workload` and `ClusterQueue` goes with them.
+
+#### Uninstalling a Kubernetes Cluster
+
+Uninstalling is `helm uninstall` of the release(s) the registration installed, plus the objects Helm never owned. One preparatory step decides whether it finishes cleanly: the operator's tree (Kueue, Node Feature Discovery, the CSI drivers, the device managers) deploys controllers whose custom resources carry finalizers, and uninstalling takes those controllers away — so the resources have to be gone first, or the namespaces they live in (`gpustack-system`, `gpustack-default`) never leave `Terminating`. In order:
+
+1. Remove what the cluster runs from the server first — delete (or migrate) the models deployed to it, then delete the cluster record — so the server stops scheduling onto workers that are about to disappear.
+2. Delete the custom resources **while their controllers are still running**, and wait for them to clear. Discover what this cluster's releases own rather than guessing:
+
+    ```bash
+    kubectl get crd -o json | jq -r '.items[]
+      | select(((.metadata.annotations // {})["meta.helm.sh/release-name"] // "")
+        | . == "gpustack" or . == "gpustack-kueue"
+          or . == "gpustack-node-feature-discovery"
+          or . == "gpustack-csi-driver-nfs" or . == "gpustack-csi-driver-s3"
+          or . == "gpustack-operator-device-manager")
+      | .metadata.name'
+    ```
+
+    For every CRD that lists, delete all of its objects and wait until none remain:
+
+    ```bash
+    kubectl delete <crd-name> --all -A          # e.g. clusterqueues.kueue.x-k8s.io
+    kubectl get <crd-name> -A                   # empty before you move on
+    ```
+
+3. Uninstall the releases. The main one is `gpustack`; the five `gpustack-*` application releases exist on clusters registered before the chart adopted their objects, and `helm uninstall` on a release that does not exist is an error, so check first:
+
+    ```bash
+    for release in gpustack gpustack-kueue gpustack-node-feature-discovery \
+                   gpustack-csi-driver-nfs gpustack-csi-driver-s3 \
+                   gpustack-operator-device-manager; do
+      kubectl get secret -n gpustack-system \
+        --selector "owner=helm,name=${release}" >/dev/null 2>&1 || continue
+      helm uninstall "${release}" -n gpustack-system --timeout 10m
+    done
+    ```
+
+    Do not pass `--wait` here. With `--wait`, the uninstall reaches the Node Feature Discovery **post-delete prune hook**, creates the hook's `node-feature-discovery-prune` ServiceAccount and ClusterRole, and then blocks in the deletion wait — the wait outlives its `--timeout` (verified with `helm --debug`: it sits on `waiting for resources to be deleted count=1` for minutes past the timeout, and the ServiceAccount it just created is still there). Killing Helm to escape it is what leaves the prune RBAC behind ownerless, so the hook is the reason step 4 removes those objects by hand. Without `--wait` the uninstall returns promptly, the hook resources are cleaned up with the rest, and the objects are gone all the same — step 4 removes the stragglers Helm never owned.
+
+4. Remove what `helm uninstall` does not. Helm never deletes CRDs, and the operator registers three more kinds of cluster-scoped object that no release owns:
+
+    - **The operator's own CRDs** — `devices`, `instances` and `instancetypes` under `worker.gpustack.ai`. The operator creates them at startup rather than the chart, so they carry no `meta.helm.sh/release-name` annotation and step 2's discovery query does not list them. An `instancetype` object survives with the `gpustack.ai/controlled` finalizer; strip it (see below) before or while deleting the CRDs, or the CRD stays in deletion and the group's API never goes away.
+    - **The operator's admission webhooks** — `gpustack-worker-mutation` (Mutating) and `gpustack-worker-validation` (Validating). They forward to the operator's Service and fail closed, so until they are deleted every write to a `worker.gpustack.ai` object — including the finalizer strip below — is rejected with `service "gpustack-operator-worker" not found`.
+    - **The operator's APIServices** — `v1.gpustack.ai` and `v1.worker.gpustack.ai`, likewise backed by the operator's Service. A namespace stuck deleting reports `stale GroupVersion discovery` for these groups until they are removed, and never finishes.
+
+    ```bash
+    kubectl delete mutatingwebhookconfiguration gpustack-worker-mutation --ignore-not-found
+    kubectl delete validatingwebhookconfiguration gpustack-worker-validation --ignore-not-found
+    kubectl delete apiservice v1.gpustack.ai v1.worker.gpustack.ai --ignore-not-found
+    kubectl delete crd devices.worker.gpustack.ai instances.worker.gpustack.ai \
+      instancetypes.worker.gpustack.ai --ignore-not-found
+    ```
+
+    The Node Feature Discovery prune RBAC can outlive `helm uninstall` as well — `ClusterRole/node-feature-discovery-prune` and its binding are the post-delete prune hook's resources (see the `--wait` note above), left ownerless when Helm is killed mid-hook. A later registration refuses to install rather than adopt them, so remove them with the rest:
+
+    ```bash
+    kubectl delete clusterrole node-feature-discovery-prune --ignore-not-found
+    kubectl delete clusterrolebinding node-feature-discovery-prune --ignore-not-found
+    ```
+
+    Then the cluster-scoped bootstrap RBAC, then the namespaces. `gpustack-system` also holds the bootstrap ConfigMap, ServiceAccount and the registration token Secret — deleting the namespace takes them with it:
+
+    ```bash
+    kubectl delete clusterrolebinding gpustack-bootstrap --ignore-not-found
+    kubectl delete namespace gpustack-default gpustack-system
+    ```
+
+5. *(Optional)* Clean the data each node still carries. Worker pods mount `/var/lib/gpustack` from the host, and nothing in the steps above touches it — it holds downloaded model weights and caches. Nothing in a reinstall objects to it: a cluster registered again on the same nodes picks the directory back up and skips re-downloading what is already there, so remove it only when the storage is needed for something else:
+
+    ```bash
+    rm -rf /var/lib/gpustack
+    ```
+
+Verify with `kubectl get all -n gpustack-system` (should be `NotFound`), `kubectl get clusterrolebinding | grep gpustack`, `kubectl get ds -A | grep -E 'gpustack|csi'`, and — for the objects only step 4 removes — `kubectl get apiservice,mutatingwebhookconfiguration,validatingwebhookconfiguration 2>/dev/null | grep gpustack` and `kubectl get crd | grep -E 'gpustack|worker\.gpustack'` (both should print nothing).
+
+If a namespace is already stuck in `Terminating`, its objects still hold finalizers whose controllers are gone. Find them, then strip the finalizers by hand — safe only on a cluster you are removing. Delete the admission webhooks first (step 4), or the patch itself is intercepted by a webhook whose Service no longer exists:
+
+```bash
+kubectl api-resources --verbs=list --namespaced -o name |
+  xargs -n1 -I{} sh -c 'kubectl get {} -n gpustack-default -o name 2>/dev/null'
+kubectl patch <kind>/<name> -n gpustack-default \
+  -p '{"metadata":{"finalizers":null}}' --type=merge
+```
+
+The same strip applies to cluster-scoped leftovers — an `instancetype.worker.gpustack.ai` object holding the `gpustack.ai/controlled` finalizer keeps its CRD (and with it the whole `worker.gpustack.ai` group) in deletion: `kubectl patch instancetypes.worker.gpustack.ai <name> -p '{"metadata":{"finalizers":null}}' --type=merge`.
 
 ### Creating DigitalOcean Cluster
 
