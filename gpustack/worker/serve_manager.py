@@ -33,6 +33,7 @@ from gpustack.logging import (
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
     is_built_in_backend,
+    is_built_in_backend_custom_version,
     is_custom_backend,
 )
 from gpustack.utils import network
@@ -954,15 +955,19 @@ class ServeManager:
             self._ensure_container_log_persistence(model_instance)
 
             # Otherwise, update model instance state to RUNNING if everything is fine.
-            model = self._get_model(model_instance)
-            if model.gpu_type_selector:
-                # vGPU: read back the real device allocation the operator
-                # device plugin wrote onto the workload's annotations.
-                self._sync_vgpu_allocation(model_instance, workload, is_main_worker)
-            if not model.backend_version:
-                # backend version may be empty on initialization.
-                # try to refresh to get updated model info on syncs.
-                model = self._refresh_model(model_instance)
+            try:
+                model = self._get_model(model_instance)
+                if model.gpu_type_selector:
+                    # vGPU: read back the real device allocation the operator
+                    # device plugin wrote onto the workload's annotations.
+                    self._sync_vgpu_allocation(model_instance, workload, is_main_worker)
+                if not model.backend_version:
+                    # backend version may be empty on initialization.
+                    # try to refresh to get updated model info on syncs.
+                    model = self._refresh_model(model_instance)
+            except NotFoundException:
+                # An instance can briefly outlive its deleted model in the watch cache.
+                continue
 
             backend = get_backend(model)
             health_check_path = self._get_health_check_path(
@@ -978,8 +983,8 @@ class ServeManager:
                     model, model_instance.role
                 )
             if model.env and 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in model.env:
-                # NOTE: There is no known use case for now. Keep this in case the built-in backends
-                # introduce breaking changes and the default health check path no longer works.
+                # A model-specific path can match a custom image whose health
+                # endpoint differs from the backend's default.
                 health_check_path = model.env['GPUSTACK_MODEL_HEALTH_CHECK_PATH']
 
             with contextlib.suppress(NotFoundException):
@@ -1353,7 +1358,8 @@ class ServeManager:
         deployment that sets none of them is not probed at all:
         - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED: "true"/"false" (default: false)
         - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_INTERVAL: seconds (default: 300)
-        - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_TIMEOUT: seconds (default: 15)
+        - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_TIMEOUT: seconds (default: 15,
+          or 25 for SGLang PD engine roles)
         - GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD: count (default: 3)
 
         If the model has received successful inference traffic recently
@@ -1372,12 +1378,15 @@ class ServeManager:
         now = time.time()
 
         for model_instance in model_instances:
-            model = self._get_model(model_instance)
+            try:
+                model = self._get_model(model_instance)
+            except NotFoundException:
+                continue
             if not model:
                 continue
 
             # Read per-model config from model.env.
-            config = _get_inference_health_check_config(model)
+            config = _get_inference_health_check_config(model, model_instance.role)
             if not config["enabled"]:
                 continue
 
@@ -2897,7 +2906,10 @@ class ServeManager:
             The refreshed model.
         """
         logger.debug(f"Refreshing model {mi.model_name} information from server.")
-        refreshed_model = self._clientset.models.get(mi.model_id)
+        refreshed_model = role_effective_model(
+            self._clientset.models.get(mi.model_id), mi.role
+        )
+        refreshed_model = apply_managed_router(refreshed_model, mi.role)
         self._model_cache_by_instance[mi.id] = refreshed_model
         return refreshed_model
 
@@ -2960,19 +2972,24 @@ def is_ready(
     mi: ModelInstance,
     health_check_path: Optional[str] = None,
     model: Model = None,
-    timeout: int = 1,
+    timeout: Optional[int] = None,
 ) -> bool:
     """
     Access the health endpoint of the given model instance to check if it is servable.
 
-    ``timeout`` defaults to the second that suits the caller this was written
-    for: a member on its way into RUNNING, polled every pass, where a slow
-    answer costs nothing but another pass. A caller that turns a failure into
-    ERROR must pass its own -- under load a busy engine answers late, and one
-    second of patience would retire a member that is merely working.
+    A readiness probe waits five seconds for SGLang's /health endpoint and one
+    second for other paths. A caller that turns a failure into ERROR passes its
+    own timeout so a busy engine is not retired for answering late.
     """
     is_built_in = is_built_in_backend(backend)
-    allow_missing_health_route = False
+    custom_image = bool(
+        model
+        and backend in (BackendEnum.VLLM, BackendEnum.SGLANG)
+        and is_built_in_backend_custom_version(
+            backend, model.backend_version, model.image_name
+        )
+    )
+    allow_missing_health_route = custom_image and not health_check_path
     if (not is_built_in or backend == BackendEnum.CUSTOM) and (not health_check_path):
         # If custom backend does not have health check path, consider it always ready.
         return True
@@ -2985,12 +3002,12 @@ def is_ready(
         backend == BackendEnum.SGLANG
         and model
         and CategoryEnum.IMAGE in model.categories
+        and not health_check_path
     ):
-        if model.image_name:
-            # A pinned image has no catalog version; use its configured health
-            # path or probe the standard Diffusion endpoint.
-            allow_missing_health_route = not health_check_path
-            health_check_path = health_check_path or "/health"
+        if custom_image:
+            # A custom image's version key does not establish which health
+            # endpoints its server implements.
+            health_check_path = "/health"
         elif not model.backend_version:
             # version may be empty at initialization, consider it not ready.
             return False
@@ -3000,9 +3017,16 @@ def is_ready(
         else:
             # Older versions do not support health check, consider it always ready.
             return True
+    elif backend in (BackendEnum.VLLM, BackendEnum.SGLANG) and not health_check_path:
+        health_check_path = "/health"
     elif is_built_in and backend != BackendEnum.CUSTOM and not health_check_path:
-        # Built-in backends (vLLM, SGLang, vox-box) except (Custom, MindIE) use /v1/models as health check path.
+        # VoxBox uses the OpenAI model list as its default health endpoint.
         health_check_path = "/v1/models"
+
+    if timeout is None:
+        timeout = (
+            5 if backend == BackendEnum.SGLANG and health_check_path == "/health" else 1
+        )
 
     try:
         # Use the worker IP instead of localhost for health check.
@@ -3014,7 +3038,14 @@ def is_ready(
         if response.status_code == 200:
             return True
         if allow_missing_health_route and response.status_code == 404:
-            # Older Diffusion servers answer HTTP but have no health route.
+            logger.warning(
+                "Model instance %s uses a custom image without %s; accepting "
+                "HTTP 404 only confirms the server responds and does not "
+                "confirm model readiness. Set GPUSTACK_MODEL_HEALTH_CHECK_PATH "
+                "to an endpoint that reports model readiness.",
+                mi.name,
+                health_check_path,
+            )
             return True
     except Exception as e:
         logger.debug(f"Error checking model instance {mi.name} health: {e}")
@@ -3055,7 +3086,9 @@ def _get_inference_endpoint_and_payload(model: Model) -> tuple[str, dict] | None
     }
 
 
-def _get_inference_health_check_config(model: Model) -> dict:
+def _get_inference_health_check_config(
+    model: Model, role: Optional[str] = None
+) -> dict:
     """Read per-model inference health check config from model.env."""
     env = model.env or {}
     enabled = env.get(
@@ -3068,9 +3101,20 @@ def _get_inference_health_check_config(model: Model) -> dict:
         env.get("GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_INTERVAL"),
         300,
     )
+    # SGLang's /health can wait up to SGLANG_HEALTH_CHECK_TIMEOUT
+    # (20s by default) for a scheduler response before returning 503.
+    # Periodic PD probes allow 25s so the server can return its verdict.
+    # Ref: https://github.com/sgl-project/sglang/blob/v0.5.20/python/sglang/srt/entrypoints/http_server.py#L193
+    default_timeout = (
+        25
+        if get_backend(model) == BackendEnum.SGLANG
+        and model.disaggregation is not None
+        and role
+        and role != RoleNameEnum.ROUTER.value
+        else 15
+    )
     timeout = safe_int(
-        env.get("GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_TIMEOUT"),
-        15,
+        env.get("GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_TIMEOUT"), default_timeout
     )
     threshold = safe_int(
         env.get("GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD"),

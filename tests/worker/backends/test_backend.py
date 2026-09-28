@@ -480,6 +480,7 @@ def test_sglang_cache_report_arguments(backend_parameters, backend_version, expe
     [
         (None, RuntimeError, "workload setup reached"),
         ("0.5.4", ValueError, "do not support Diffusion models"),
+        ("0.5.4-custom", RuntimeError, "workload setup reached"),
         ("0.5.6", RuntimeError, "workload setup reached"),
     ],
 )
@@ -488,7 +489,9 @@ def test_sglang_diffusion_checks_only_known_backend_versions(
 ):
     backend = SGLangServer.__new__(SGLangServer)
     backend.is_diffusion = True
-    backend._model = types.SimpleNamespace(backend_version=backend_version)
+    backend._model = types.SimpleNamespace(
+        backend_version=backend_version, image_name=None
+    )
 
     def reach_workload_setup(*args):
         raise RuntimeError("workload setup reached")
