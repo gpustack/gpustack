@@ -1216,6 +1216,14 @@ dev = [
     { name = "shellcheck-py" },
     { name = "twine" },
 ]
+docs = [
+    { name = "mike" },
+    { name = "mkdocs" },
+    { name = "mkdocs-glightbox" },
+    { name = "mkdocs-material" },
+    { name = "mkdocs-minify-plugin" },
+    { name = "mkdocs-redirects" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1305,6 +1313,14 @@ dev = [
     { name = "pytest", specifier = ">=8.2.0" },
     { name = "shellcheck-py", specifier = ">=0.10.0.1" },
     { name = "twine", specifier = ">=5.1.1" },
+]
+docs = [
+    { name = "mike", specifier = ">=2.1.3" },
+    { name = "mkdocs", specifier = ">=1.6.0" },
+    { name = "mkdocs-glightbox", specifier = ">=0.4.0" },
+    { name = "mkdocs-material", specifier = ">=9.5.27" },
+    { name = "mkdocs-minify-plugin", specifier = ">=0.8.0" },
+    { name = "mkdocs-redirects", specifier = ">=1.2.2" },
 ]
 
 [[package]]

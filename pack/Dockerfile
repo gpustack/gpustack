@@ -319,7 +319,7 @@ SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 ARG GIT_COMMIT
 
 COPY docs/ /workspace/docs/
-COPY hack/build-docs.sh /workspace/hack/build-docs.sh
+COPY hack/build-docs.sh hack/mkdocs_offline.py /workspace/hack/
 COPY mkdocs.yml mkdocs.offline.yml pyproject.toml uv.lock /workspace/
 
 WORKDIR /workspace
@@ -334,7 +334,7 @@ RUN --mount=type=cache,target=/root/.cache \
 
     # The dependency group only, never the project: the site does not import
     # gpustack, and installing it here would drag in its whole runtime tree.
-    uv sync --frozen --only-group dev --no-install-project
+    uv sync --frozen --only-group docs --no-install-project
 
     # UV_NO_SYNC stops the `uv run` inside the script from doing it anyway. The
     # cache mount above is where the privacy plugin keeps the external assets it
@@ -810,16 +810,14 @@ COPY --chmod=755 pack/entrypoint.sh /usr/bin/entrypoint.sh
 # a layer this size sitting above the accelerator layers would make a typo in a
 # guide cost a full image rebuild.
 
-COPY --from=docs /workspace/gpustack/help /tmp/help
-RUN <<EOF
+RUN --mount=type=bind,from=docs,source=/workspace/gpustack/help,target=/tmp/help <<EOF
     # Install the user documentation
 
     # Beside the UI inside the installed package, which is where
     # gpustack.routes.ui looks for it. The wheel deliberately does not carry the
     # site -- see .gitignore and the artifacts list in pyproject.toml -- so the
     # image is what places it.
-    cp -a /tmp/help "$(pip show gpustack | grep Location: | head -n 1 | cut -d" " -f 2)/gpustack/help"
-    rm -rf /tmp/help
+    cp -a /tmp/help "$(python3 -c 'import importlib.util; print(next(iter(importlib.util.find_spec("gpustack").submodule_search_locations)))')/help"
 EOF
 
 ## KUBE_FEATURE_WatchListClient=false: Disable WatchListClient to avoid potential issues with Kubernetes API server versions that do not support it.

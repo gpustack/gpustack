@@ -75,6 +75,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    { include-group = "docs" },
     "installer==0.7.0",
     "coverage[toml]>=7.5.1",
     "flake8>=7.0.0",
@@ -85,14 +86,17 @@ dev = [
     "httpx-aiohttp>=0.1.4",
     "deptry>=0.16.1",
     "pre-commit>=3.7.1",
-    "mkdocs>=1.6.0",
-    "mkdocs-material>=9.5.27",
     "shellcheck-py>=0.10.0.1",
     "twine>=5.1.1",
+    "matplotlib>=3.10.7",
+]
+
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.27",
     "mike>=2.1.3",
     "mkdocs-glightbox>=0.4.0",
     "mkdocs-redirects>=1.2.2",
-    "matplotlib>=3.10.7",
     "mkdocs-minify-plugin>=0.8.0",
 ]
 

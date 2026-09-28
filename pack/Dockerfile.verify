@@ -8,11 +8,9 @@
 # stage itself. The site here is the one hack/build-docs.sh already produced and
 # gated on the host.
 #
-# Example:
-#   bash hack/build-docs.sh --offline
-#   uv build --wheel --out-dir /tmp/gpustack-verify-wheel
-#   docker build --build-context wheel=/tmp/gpustack-verify-wheel \
-#       --file pack/Dockerfile.verify --tag gpustack-help-verify .
+# Run `make verify-docs` to build the docs and wheel, then run this check.
+# A minimal UI fixture is created below if the wheel has no downloaded UI;
+# this check verifies documentation serving, not the console build.
 #
 # A successful build is the pass: the assertions run during it.
 
@@ -37,19 +35,27 @@ RUN <<EOF
 EOF
 
 # The same placement idiom as pack/Dockerfile, which is the point of the check.
-COPY gpustack/help /tmp/help
-RUN <<EOF
+RUN --mount=type=bind,from=help,source=.,target=/tmp/help <<EOF
     set -eu
 
-    cp -a /tmp/help "$(pip show gpustack | grep Location: | head -n 1 | cut -d" " -f 2)/gpustack/help"
-    rm -rf /tmp/help
+    cp -a /tmp/help "$(python3 -c 'import importlib.util; print(next(iter(importlib.util.find_spec("gpustack").submodule_search_locations)))')/help"
 EOF
 
 RUN <<EOF python3
+from html.parser import HTMLParser
+from pathlib import Path
+from urllib.parse import urljoin, urlsplit
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from gpustack.routes import ui
+
+ui_dir = Path(ui.PACKAGE_DIR) / "ui"
+if not ui_dir.exists():
+    for name in ("css", "js", "static"):
+        (ui_dir / name).mkdir(parents=True)
+    (ui_dir / "index.html").write_text("<html>UI fixture</html>")
 
 app = FastAPI()
 ui.register(app)
@@ -58,6 +64,35 @@ client = TestClient(app)
 for path in ("/help/", "/help/installation/air-gapped/", "/help/search/search_index.json"):
     status = client.get(path).status_code
     assert status == 200, f"{path} answered {status}"
+
+assert client.get("/help/missing/deep/page/").status_code == 404
+assert client.get("/help/CNAME").status_code == 404
+response = client.get("/help/search/search_index.json", headers={"accept-encoding": "gzip"})
+assert response.headers["content-encoding"] == "gzip"
+
+class PageAssets(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.urls = []
+
+    def handle_starttag(self, tag, attributes):
+        attributes = dict(attributes)
+        assert attributes.get("data-md-component") != "source", "GitHub widget enabled"
+        assert "github-button" not in attributes.get("class", "").split()
+        if tag in ("script", "img") and attributes.get("src"):
+            self.urls.append(attributes["src"])
+        if tag == "link" and attributes.get("rel") in ("stylesheet", "icon"):
+            self.urls.append(attributes["href"])
+
+for path in ("/help/overview/", "/help/installation/air-gapped/", "/help/missing/deep/page/"):
+    parser = PageAssets()
+    parser.feed(client.get(path).text)
+    assert parser.urls, f"No assets found in {path}"
+    for url in parser.urls:
+        resolved = urljoin(f"http://testserver{path}", url)
+        assert urlsplit(resolved).netloc == "testserver", resolved
+        assert urlsplit(resolved).path.startswith("/help/"), resolved
+        assert client.get(resolved).status_code == 200, resolved
 
 print("/help/ is served from the installed package")
 EOF

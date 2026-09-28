@@ -50,6 +50,8 @@ help:
 	#
 	#   * [dev] `make build-docs`, build docs, not supported on Windows.
 	#
+	#   * [dev] `make verify-docs`, verify bundled documentation in Docker, not supported on Windows.
+	#
 	#   * [dev] `make serve-docs`, serve docs, not supported on Windows.
 	#
 	#   * [ci]  `make package`, build container images, not supported on Windows.

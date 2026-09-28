@@ -11,6 +11,17 @@ INHERIT: mkdocs.yml
 # URL to link within itself.
 site_url: ''
 
+# Disable Material's GitHub API requests.
+repo_url: null
+edit_uri: null
+
+exclude_docs: |
+  /CNAME
+  /overrides/
+
+hooks:
+  - hack/mkdocs_offline.py
+
 theme:
   # Material otherwise emits a fonts.googleapis.com stylesheet and a
   # fonts.gstatic.com preconnect. Not asking for the fonts is smaller than
@@ -18,6 +29,7 @@ theme:
   font: false
 
 extra:
+  offline: true
   # mike serves several versions at docs.gpustack.ai. A bundled copy is exactly
   # one version — the server's — so the selector has nothing to offer, and left
   # in place it fetches a versions.json this build does not produce.
@@ -27,7 +39,7 @@ plugins:
   # Downloads every external asset at build time and rewrites the references to
   # the local copies. It finds more than a hand-written inventory does: besides
   # katex and tablesort, the pages here reach out for katex's font files,
-  # Mermaid, the GitHub buttons script and the shields.io badges.
+  # Mermaid and the shields.io badges.
   #
   # The cost is that this build needs network access. Its cache
   # (.cache/plugin/privacy) makes every rebuild after the first one offline.
