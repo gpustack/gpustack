@@ -7,7 +7,11 @@ both halves: the name is unique per rendering, and the revision that decides the
 answer reaches both the Job and the release.
 """
 
+import json
 import pathlib
+import re
+import shutil
+import subprocess
 from typing import Dict
 
 import pytest
@@ -56,6 +60,33 @@ def chart_values(rendered: Dict[str, dict]) -> dict:
     return yaml.safe_load(
         rendered[f"ConfigMap/{BOOTSTRAP_NAME}"]["data"]["values.yaml"]
     )
+
+
+SCRIPT = (
+    pathlib.Path(__file__).resolve().parents[2] / "gpustack" / "k8s" / "bootstrap.sh"
+).read_text()
+
+
+def unrendered_workers_body() -> str:
+    """The text of remove_unrendered_workers, whose behaviour has no cluster to
+    be exercised in — the assertions about it read the script the Job runs."""
+    start = SCRIPT.index("remove_unrendered_workers() {")
+    return SCRIPT[start : SCRIPT.index("\n}\n", start)]
+
+
+def unrendered_workers_jq() -> str:
+    """The jq program the script feeds rendered objects to, lifted verbatim so
+    the test exercises the shipped filter rather than a copy of it."""
+    # Skipped at call time: a marker on a helper pytest never collects is
+    # silently inert, and the tests calling this would fail rather than skip
+    # on a machine without jq.
+    if shutil.which("jq") is None:
+        pytest.skip("jq is not installed")
+    match = re.search(
+        r"jq -r '(?P<program>if \.items.*?)'", unrendered_workers_body(), re.DOTALL
+    )
+    assert match, "the rendered-set pipeline must still filter through jq"
+    return match.group("program")
 
 
 class TestJobNaming:
@@ -236,6 +267,95 @@ class TestOwnership:
             / "bootstrap.sh"
         ).read_text()
         assert "clusterrolebinding/${BINDING}" not in script
+
+
+class TestUnrenderedWorkerCleanup:
+    """`remove_unrendered_workers` decides, from the release's rendered
+    manifest, which worker DaemonSets to delete. Both invariants here guard
+    the same failure: a worker the chart *does* render being deleted because
+    the rendered set understated it."""
+
+    def test_a_failed_read_skips_the_cleanup_rather_than_acting_on_partial_output(self):
+        # `kubectl create --dry-run=client` can emit objects before failing,
+        # so an `|| true` would hand the delete below a truncated set — the
+        # workers missing from it read as stale. The pipeline must carry its
+        # failure out (pipefail inside the substitution, nothing swallowing
+        # the status) and the caller must treat it as "read nothing".
+        body = unrendered_workers_body()
+        pipeline = body[body.index("if ! rendered=$(") : body.index("); then")]
+        assert "set -o pipefail" in pipeline
+        assert "|| true" not in pipeline
+
+    def test_the_rendered_set_collects_daemonsets_only(self):
+        # The chart keeps rendering same-named objects of other kinds — the
+        # `gpustack-worker` ServiceAccount survives `worker.cpuEnabled=false` —
+        # so a name collected from any kind would mark the retired CPU worker
+        # rendered and spare the legacy DaemonSet.
+        body = unrendered_workers_body()
+        pipeline = body[body.index("if ! rendered=$(") : body.index("); then")]
+        assert '"DaemonSet"' in pipeline
+
+    def test_an_empty_but_successful_read_is_a_valid_empty_set(self):
+        # A release with every worker switched off renders no DaemonSet at all;
+        # conflating that with an unreadable manifest would keep the legacy
+        # worker DaemonSets running unmanaged forever. Only a failed read
+        # skips, so no `-z "${rendered}"` guard may return before the delete.
+        assert '[[ -z "${rendered}" ]]' not in unrendered_workers_body()
+
+    def test_the_already_deployed_path_guards_the_cleanup_with_the_stamp(self):
+        # The no-op path lists DaemonSets against the deployed release's
+        # manifest, so an overtaken Job on it can delete a worker a newer
+        # manifest has just re-enabled — the same race the post-install
+        # cleanup's guard closes.
+        start = SCRIPT.index('"release is already at revision')
+        block = SCRIPT[start : SCRIPT.index("exit 0", start)]
+        assert "exit_if_overtaken" in block
+
+    def test_the_jq_filter_answers_daemonset_names_only(self):
+        # Fed the shipped program, a List mixing a same-named ServiceAccount
+        # with a worker DaemonSet yields the DaemonSet alone.
+        listing = {
+            "kind": "List",
+            "items": [
+                {
+                    "kind": "ServiceAccount",
+                    "metadata": {"name": "gpustack-worker"},
+                },
+                {
+                    "kind": "DaemonSet",
+                    "metadata": {"name": "gpustack-worker"},
+                },
+                {
+                    "kind": "DaemonSet",
+                    "metadata": {"name": "gpustack-worker-nvidia"},
+                },
+            ],
+        }
+        out = subprocess.run(
+            ["jq", "-r", unrendered_workers_jq()],
+            input=json.dumps(listing),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        # One name per line, ServiceAccount name absent: with it present the
+        # legacy CPU worker DaemonSet would never be cleaned up.
+        assert out.stdout.split() == ["gpustack-worker", "gpustack-worker-nvidia"]
+
+    def test_the_jq_filter_drops_a_single_non_daemonset_document(self):
+        # `kubectl create -o json` emits a bare object, not a List, when the
+        # manifest holds one document; the else-branch must filter by kind
+        # too, or a lone ServiceAccount would count as a rendered worker.
+        out = subprocess.run(
+            ["jq", "-r", unrendered_workers_jq()],
+            input=json.dumps(
+                {"kind": "ServiceAccount", "metadata": {"name": "gpustack-worker"}}
+            ),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert out.stdout == ""
 
 
 class TestPodSecurityAdmission:
