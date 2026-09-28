@@ -196,6 +196,75 @@ remove_pre_chart_objects() {
   kubectl delete --ignore-not-found clusterrolebinding/gpustack-worker
 }
 
+# Worker DaemonSets this release does not render. A worker this configuration
+# stops rendering — the CPU worker switched off, a GPU vendor dropped — is
+# pruned by `helm upgrade` only if a previous revision rendered it. The
+# pre-chart manifest's workers were kubectl-owned, and `--take-ownership`
+# adopts only what the new release renders, so such a worker was never in any
+# revision: nothing Helm does will ever remove it, and it keeps running the
+# image it was installed with, unmanaged.
+#
+# Decided against the release's own rendered manifest rather than against the
+# values, so a chart that renames or adds a worker needs no change here, and
+# against the worker basename alone so nothing else in the namespace is ever a
+# candidate. That set is the gate: a DaemonSet that is rendered is never
+# touched, and one that is deleted cannot match again — a once-marker in the
+# ConfigMap would add state that a delete interrupted mid-way would strand,
+# where this repairs itself on the next apply.
+remove_unrendered_workers() {
+  local basename rendered stale
+  basename=$(printf '%s-worker' "${RELEASE}")
+  # The rendered set comes out of the manifest text, parsed client-side:
+  # `kubectl get -f -` would answer with the *live* objects, so a rendered
+  # worker that is momentarily absent — deleted out of band, or its creation
+  # still racing — would drop out of the set and be read as stale by the list
+  # below, and this would delete a worker the chart means to run.
+  #
+  # DaemonSet names only: the chart renders same-named objects of other kinds —
+  # the `gpustack-worker` ServiceAccount outlives `worker.cpuEnabled=false` —
+  # and a name collected from any other kind would mark that worker rendered
+  # and spare the legacy DaemonSet this cleanup exists to remove.
+  #
+  # A failure of any pipeline stage skips the cleanup rather than acting on a
+  # partial set: `kubectl create --dry-run=client` can emit objects before
+  # failing, and a worker missing from the truncated output would read as
+  # stale — a wrong delete with no repair.
+  #
+  # An empty set from a successful read is valid, not unreadable: a release
+  # with every worker switched off renders no DaemonSet at all, and treating
+  # that as "could not read" would keep the legacy worker DaemonSets running
+  # unmanaged forever. Empty means every matching DaemonSet is stale.
+  if ! rendered=$(
+    set -o pipefail
+    helm get manifest "${RELEASE}" --namespace "${NAMESPACE}" 2>/dev/null |
+      kubectl create --dry-run=client --validate=false -o json -f - 2>/dev/null |
+      jq -r 'if .items
+             then (.items | map(select(.kind == "DaemonSet")) | .[].metadata.name)
+             else (select(.kind == "DaemonSet") | .metadata.name)
+             end'
+  ); then
+    log "WARNING: could not read the rendered manifest of ${RELEASE}; skipping unrendered-worker cleanup"
+    return 0
+  fi
+  stale=$(
+    kubectl get daemonset --namespace "${NAMESPACE}" -o json 2>/dev/null |
+      jq -r --arg rendered "${rendered//$'\n'/ }" --arg base "${basename}" '
+        .items[]
+        | select(.metadata.name == $base or (.metadata.name | startswith($base + "-")))
+        | select(.metadata.name as $n | ($rendered | split(" ") | index($n)) | not)
+        | .metadata.name' || true
+  )
+  [[ -z "${stale}" ]] && return 0
+  log "removing worker DaemonSets this release does not render: ${stale//$'\n'/ }"
+  # No --wait, for the same reason the helm upgrade above has none: a worker
+  # pod can hold a long-running GPU workload, and these DaemonSets are already
+  # unmanaged, so their teardown need not gate this Job — the API server's
+  # own garbage collection finishes it.
+  # shellcheck disable=SC2086 # one name per line, none can contain spaces
+  kubectl delete daemonset --namespace "${NAMESPACE}" --ignore-not-found --wait=false ${stale} ||
+    log "WARNING: could not remove every unrendered worker DaemonSet"
+}
+
 dump_failed_hooks() {
   local job pod
   for job in $(
@@ -211,6 +280,28 @@ dump_failed_hooks() {
       kubectl logs --namespace "${NAMESPACE}" "${pod}" --tail=80 2>&1 || true
     done
   done
+}
+
+# Overtaken? Two applies can overlap: this Job took its copy of the values when
+# it started, and a later manifest updates the ConfigMap in place. Acting now
+# would undo what the newer one is doing — and Helm's own bookkeeping only
+# orders the two operations, it does not decide which should win.
+#
+# Asked before every step that is destructive to a concurrent install: the
+# no-op cleanup on the already-deployed path and the unrendered-worker cleanup
+# after the install both delete by a set read from the release, the repair
+# below rolls back or drops the release record, and the install itself would
+# put the cluster back on this Job's configuration.
+exit_if_overtaken() {
+  local current_stamp
+  current_stamp=$(
+    kubectl get "configmap/${BOOTSTRAP_CONFIGMAP}" --namespace "${NAMESPACE}" \
+      --ignore-not-found -o jsonpath='{.data.renderedAt}' 2>/dev/null || true
+  )
+  if [[ -n "${current_stamp}" && "${current_stamp}" != "${RENDERED_AT}" ]]; then
+    log "a later manifest (${current_stamp}) has been applied, leaving this one to it"
+    exit 0
+  fi
 }
 
 # The chart records the configuration it was installed from, as part of the
@@ -250,6 +341,12 @@ if [[ "${release_status}" == "deployed" && "${recorded_revision}" == "${DESIRED_
   log "release is already at revision ${DESIRED_REVISION}, nothing to install"
   retire_adopted_records
   remove_pre_chart_objects
+  # The cleanup below deletes by a set read from the release, and a Job a
+  # newer manifest has already overtaken would judge staleness against a
+  # revision that is no longer the one to ask about — the same guard the
+  # post-install cleanup runs under.
+  exit_if_overtaken
+  remove_unrendered_workers
   exit 0
 fi
 log "installing revision ${DESIRED_REVISION} (release is ${release_status:-absent} at ${recorded_revision:-none})"
@@ -422,27 +519,6 @@ if [[ -n "${existing_statefulsets// /}" ]]; then
   fail "refusing to install: release '${RELEASE}' in namespace '${NAMESPACE}' already owns StatefulSet(s) ${existing_statefulsets}, so it is a GPUStack server install. Installing workers here would re-render that release from worker-only values. Register this cluster into a different namespace."
 fi
 
-# Overtaken? Two applies can overlap: this Job took its copy of the values when
-# it started, and a later manifest updates the ConfigMap in place. Acting now
-# would undo what the newer one is doing — and Helm's own bookkeeping only
-# orders the two operations, it does not decide which should win.
-#
-# Asked twice, because both of the things this Job does after here are
-# destructive to a concurrent install: the repair below rolls back or drops the
-# release record, and the install itself would put the cluster back on this
-# Job's configuration.
-exit_if_overtaken() {
-  local current_stamp
-  current_stamp=$(
-    kubectl get "configmap/${BOOTSTRAP_CONFIGMAP}" --namespace "${NAMESPACE}" \
-      --ignore-not-found -o jsonpath='{.data.renderedAt}' 2>/dev/null || true
-  )
-  if [[ -n "${current_stamp}" && "${current_stamp}" != "${RENDERED_AT}" ]]; then
-    log "a later manifest (${current_stamp}) has been applied, leaving this one to it"
-    exit 0
-  fi
-}
-
 # Before the repair, not only before the install: a stale Job that rolled back
 # an upgrade a newer Job is performing would take the newer one down with it,
 # and the newer Job's retry would then be repairing damage rather than
@@ -544,5 +620,15 @@ retire_adopted_records
 # By exact name, never by prefix or label: this Job's own name shares a prefix
 # with the one it replaces.
 remove_pre_chart_objects
+
+# Read the stamp one last time: this cleanup deletes by a set read from the
+# release, and a Job a newer manifest has already overtaken would judge
+# staleness against a revision that is no longer the one to ask about.
+exit_if_overtaken
+
+# The same class of leftover among the workers: unrendered ones — a CPU worker
+# this upgrade switched off, a vendor it dropped — were never in a release
+# revision, so the `helm upgrade` above prunes nothing and they keep running.
+remove_unrendered_workers
 
 log "done"
