@@ -21,14 +21,6 @@ on:
       - "v*-dev"
     tags:
       - "v*.*.*"
-    paths-ignore:
-      - "mkdocs.yml"
-      - "docs/**"
-      - "**.md"
-      - "**.mdx"
-      - "**.png"
-      - "**.jpg"
-      - "**.gif"
   pull_request:
     branches:
       - "main"
@@ -36,6 +28,15 @@ on:
     paths:
       - ".github/workflows/pack.yaml"
       - "pack/**"
+      - "docs/**"
+      - "mkdocs.yml"
+      - "mkdocs.offline.yml"
+      - "hack/build-docs.sh"
+      - "hack/mkdocs_offline.py"
+      - "hack/verify-docs.sh"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".dockerignore"
 
 env:
   INPUT_PYTHON_VERSION: 3.11
