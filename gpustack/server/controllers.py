@@ -5354,20 +5354,21 @@ async def _promote_to_starting_if_complete(
     session: AsyncSession, instance: ModelInstance
 ) -> bool:
     """When all files are ready, attach the LoRA mount list, backfill the
-    resolved paths, and move to STARTING. Returns True if promoted."""
-    loaded = await ModelInstance.one_by_id_with_model_files(session, instance.id)
-    if not _download_completed(loaded):
+    resolved paths, and move to STARTING. The caller loads the instance's files
+    before modifying it so completion checks preserve pending updates.
+    Returns True if promoted."""
+    if not _download_completed(instance):
         return False
     # Promotion is the single choke point into STARTING, so backfill the paths
     # here: the subordinate path never sets them and concurrent events may carry
     # a None snapshot, which crashes the worker on Path(None).
     if not instance.resolved_path:
         instance.resolved_path = _first_resolved_path(
-            loaded.model_files, exclude_lora=True
+            instance.model_files, exclude_lora=True
         )
     if instance.draft_model_source and not instance.draft_model_resolved_path:
         instance.draft_model_resolved_path = _first_resolved_path(
-            loaded.draft_model_files
+            instance.draft_model_files
         )
     mounted, lora_skipped = await _build_mounted_loras_payload(session, instance)
     if mounted is not None:
@@ -5532,8 +5533,16 @@ async def sync_distributed_model_file_state(
 ):
     """Sync a subordinate-worker model file's state onto its model instance."""
 
-    # Re-load to avoid identity-map conflicts with a detached caller instance.
     instance = await ModelInstance.one_by_id(session, instance.id)
+    if (
+        instance
+        and file.state == ModelFileStateEnum.READY
+        and instance.state
+        in (ModelInstanceStateEnum.INITIALIZING, ModelInstanceStateEnum.DOWNLOADING)
+    ):
+        # Completion needs sibling files. Refresh before modifying nested progress
+        # so pending JSON updates are not replaced by their persisted values.
+        instance = await ModelInstance.one_by_id_with_model_files(session, instance.id)
     if not instance or instance.state == ModelInstanceStateEnum.ERROR:
         return
 
@@ -5569,7 +5578,8 @@ async def _build_mounted_loras_payload(
 ) -> Tuple[Optional[List[LoraListEntry]], List[str]]:
     """
     Build LoraListEntry list for Model.lora_list entries whose LoRA ModelFile
-    is READY on this instance. Used once when transitioning to STARTING.
+    is READY on this instance. Uses the caller's eagerly loaded model files
+    when transitioning to STARTING to preserve pending instance updates.
 
     Returns (mounted_loras, skip_messages). skip_messages collects per-entry
     reasons for any LoRA that could not be resolved (invalid source config),
@@ -5581,9 +5591,6 @@ async def _build_mounted_loras_payload(
     entries = normalized_lora_list(model)
     if not entries:
         return [], []
-    inst = await ModelInstance.one_by_id_with_model_files(session, instance.id)
-    if not inst:
-        return None, []
     out: List[LoraListEntry] = []
     skipped: List[str] = []
     for entry in entries:
@@ -5594,7 +5601,7 @@ async def _build_mounted_loras_payload(
             logger.warning("%s (instance=%s, entry=%s)", msg, instance.name, entry)
             skipped.append(msg)
             continue
-        for f in inst.model_files or []:
+        for f in instance.model_files or []:
             if not getattr(f, "is_lora", False):
                 continue
             if f.model_source_index != src.model_source_index:
