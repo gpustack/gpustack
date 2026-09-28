@@ -179,6 +179,7 @@ class SGLangServer(InferenceServer):
     ):
         if (
             self.is_diffusion
+            and self._model.backend_version is not None
             and compare_versions(self._model.backend_version, "0.5.5") < 0
         ):
             raise ValueError(

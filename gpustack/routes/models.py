@@ -1121,6 +1121,16 @@ async def validate_model_in(
         logger.info("Skip model validation for custom backend")
         return
 
+    # A custom image carries its own version and is not described by the runner
+    # catalog, so there is nothing for backend_version to select.
+    if model_in.image_name and model_in.backend_version:
+        raise BadRequestException(
+            message=(
+                "Cannot set both a custom image and a backend version. "
+                "Clear the backend version to deploy with a custom image."
+            )
+        )
+
     if model_in.backend_parameters:
         param_gpu_layers = find_parameter(
             model_in.backend_parameters, ["ngl", "gpu-layers", "n-gpu-layers"]
@@ -3110,14 +3120,46 @@ async def update_model(
         ctx, session, model_in.cluster_id, model.owner_principal_id
     )
 
+    # Runtime settings belong to their backend. Validate a backend switch
+    # against its replacement settings, while preserving fields explicitly
+    # supplied in the request.
+    fields_set = model_in.model_fields_set
+    backend_switched = (
+        "backend" in fields_set
+        and model_in.backend is not None
+        and model_in.backend != model.backend
+    )
+    if "backend" not in fields_set:
+        object.__setattr__(model_in, "backend", model.backend)
+    if backend_switched:
+        for field in ("run_command", "image_name", "backend_version"):
+            if field not in fields_set:
+                setattr(model_in, field, None)
+    elif (
+        not is_custom_backend(model_in.backend)
+        and model.image_name
+        and model.backend_version
+        and (
+            "backend_version" not in fields_set
+            or model_in.backend_version == model.backend_version
+        )
+        and ("image_name" not in fields_set or model_in.image_name)
+    ):
+        # An image selects the runtime, so an unchanged backend version is
+        # unused while the image remains selected.
+        model_in.backend_version = None
+
     # Validate against the merged state: a sparse update carries only the
-    # fields being changed, so validation would otherwise check
-    # gpu_selector/gpu_type_selector mutual exclusion against half the
-    # picture (e.g. setting gpu_selector on a model that already has
-    # gpu_type_selector). object.__setattr__ bypasses pydantic's
-    # fields-set tracking, keeping the backfill out of the persisted patch.
-    for field in ("gpu_type_selector", "gpu_selector", "cluster_id"):
-        if field not in model_in.model_fields_set:
+    # fields being changed. object.__setattr__ keeps backfilled values out of
+    # the persisted patch.
+    for field in (
+        "gpu_type_selector",
+        "gpu_selector",
+        "cluster_id",
+        "image_name",
+        "backend_version",
+    ):
+        if field not in fields_set:
             object.__setattr__(model_in, field, getattr(model, field))
 
     await validate_model_in(session, model_in, stored=model)
@@ -3130,14 +3172,6 @@ async def update_model(
         model.owner_principal_id,
         model_in.cluster_id or model.cluster_id,
     )
-
-    if model_in.backend != BackendEnum.CUSTOM.value and (
-        model.run_command or model.image_name
-    ):
-        patch = model_in.model_dump(exclude_unset=True)
-        patch["run_command"] = None
-        patch["image_name"] = None
-        model_in = patch
 
     try:
         await ModelService(session).update(model, model_in, auto_commit=False)

@@ -2403,7 +2403,9 @@ class ServeManager:
             if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
                 executor_backend = (
                     resolve_executor_backend(
-                        model.backend_parameters, model.backend_version
+                        model.backend_parameters,
+                        model.backend_version,
+                        model.image_name,
                     )
                     if backend == BackendEnum.VLLM
                     else None
@@ -2970,6 +2972,7 @@ def is_ready(
     second of patience would retire a member that is merely working.
     """
     is_built_in = is_built_in_backend(backend)
+    allow_missing_health_route = False
     if (not is_built_in or backend == BackendEnum.CUSTOM) and (not health_check_path):
         # If custom backend does not have health check path, consider it always ready.
         return True
@@ -2983,7 +2986,12 @@ def is_ready(
         and model
         and CategoryEnum.IMAGE in model.categories
     ):
-        if not model.backend_version:
+        if model.image_name:
+            # A pinned image has no catalog version; use its configured health
+            # path or probe the standard Diffusion endpoint.
+            allow_missing_health_route = not health_check_path
+            health_check_path = health_check_path or "/health"
+        elif not model.backend_version:
             # version may be empty at initialization, consider it not ready.
             return False
         elif compare_versions(model.backend_version, "0.5.5.post3") >= 0:
@@ -3004,6 +3012,9 @@ def is_ready(
         health_check_url = f"http://{mi.worker_ip}:{mi.port}{health_check_path}"
         response = requests.get(health_check_url, timeout=timeout)
         if response.status_code == 200:
+            return True
+        if allow_missing_health_route and response.status_code == 404:
+            # Older Diffusion servers answer HTTP but have no health route.
             return True
     except Exception as e:
         logger.debug(f"Error checking model instance {mi.name} health: {e}")

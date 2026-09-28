@@ -23,6 +23,7 @@ from gpustack.routes.models import (
     export_models,
     import_models,
     update_model,
+    validate_model_in,
 )
 from gpustack.routes.model_common import ModelStateFilterEnum
 from gpustack.schemas.clusters import Cluster
@@ -42,6 +43,7 @@ from gpustack.schemas.model_routes import (
     ModelRouteTarget,
 )
 from gpustack.schemas.models import (
+    BackendEnum,
     GPUSelector,
     LoraListEntry,
     Model,
@@ -87,6 +89,15 @@ def _model_create(cluster_id=None):
         source=SourceEnum.HUGGING_FACE,
         huggingface_repo_id="org/repo",
         cluster_id=cluster_id,
+    )
+
+
+def _model_update(**kwargs):
+    return ModelUpdate(
+        name="m1",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/repo",
+        **kwargs,
     )
 
 
@@ -279,6 +290,352 @@ async def test_update_model_hides_non_visible_cluster_as_missing(monkeypatch):
 async def test_update_model_rejects_missing_cluster(monkeypatch):
     with pytest.raises(NotFoundException):
         await _run_update(monkeypatch, _ctx(CUSTOM_ORG_ID), None)
+
+
+def _stored_model(backend, image_name=None, run_command=None, backend_version=None):
+    model = MagicMock()
+    model.owner_principal_id = CUSTOM_ORG_ID
+    model.cluster_id = CLUSTER_ID
+    model.backend = backend
+    model.image_name = image_name
+    model.run_command = run_command
+    model.backend_version = backend_version
+    # Backfilled into the patch before validation, so a bare MagicMock would
+    # read as "both selectors set" and trip their own mutual exclusion first.
+    model.gpu_type_selector = None
+    model.gpu_selector = None
+    model.roles = None
+    model.scaling_schedule = None
+    model.disaggregation = None
+    return model
+
+
+async def _capture_update_patch(monkeypatch, model, model_in):
+    """Drive update_model past validation and return what ModelService saw."""
+    captured = {}
+
+    class _Service:
+        def __init__(self, session):
+            pass
+
+        async def update(self, model, source, auto_commit=True):
+            captured["source"] = source
+
+    monkeypatch.setattr(
+        "gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=model)
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_resource_visible", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_cluster_belongs_to_org",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(models_route, "validate_gather_layer", AsyncMock())
+    monkeypatch.setattr(
+        models_route, "apply_scaling_schedule_baseline", lambda *a, **k: None
+    )
+    monkeypatch.setattr(models_route, "validate_shared_kv_cache", AsyncMock())
+    monkeypatch.setattr(models_route, "ModelService", _Service)
+    monkeypatch.setattr(
+        "gpustack.routes.models.ModelRoute.one_by_field", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(models_route, "revoke_model_access_cache", AsyncMock())
+
+    session = MagicMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+
+    await update_model(session, _ctx(CUSTOM_ORG_ID), 1, model_in)
+    return captured["source"]
+
+
+@pytest.mark.asyncio
+async def test_a_custom_image_and_a_backend_version_are_mutually_exclusive():
+    """An image pins a runtime the runner catalog does not carry, so it
+    replaces the backend version rather than joining it."""
+    with pytest.raises(BadRequestException) as exc_info:
+        await validate_model_in(
+            MagicMock(),
+            _model_update(
+                backend=BackendEnum.VLLM,
+                image_name="vllm/vllm-openai:nightly",
+                backend_version="0.11.0",
+            ),
+        )
+    assert "custom image" in exc_info.value.message
+
+    # Either one alone is fine.
+    await validate_model_in(
+        MagicMock(),
+        _model_update(backend=BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly"),
+    )
+    await validate_model_in(
+        MagicMock(), _model_update(backend=BackendEnum.VLLM, backend_version="0.11.0")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_sparse_update_cannot_pin_a_second_runtime(monkeypatch):
+    """Validation sees the merged state, so omitting backend_version cannot
+    leave the model pinned to both a version and an image."""
+    model = _stored_model(BackendEnum.VLLM, backend_version="0.11.0")
+
+    monkeypatch.setattr(
+        "gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=model)
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_resource_visible", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_cluster_belongs_to_org",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(models_route, "validate_gather_layer", AsyncMock())
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await update_model(
+            MagicMock(),
+            _ctx(CUSTOM_ORG_ID),
+            1,
+            _model_update(
+                backend=BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly"
+            ),
+        )
+    assert "custom image" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_editing_an_unrelated_field_keeps_the_custom_image(monkeypatch):
+    model = _stored_model(BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly")
+    model_in = _model_update(backend=BackendEnum.VLLM, replicas=3)
+
+    source = await _capture_update_patch(monkeypatch, model, model_in)
+
+    assert source is model_in
+    assert "image_name" not in source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_switching_away_from_the_custom_backend_drops_its_image(monkeypatch):
+    """The image and command belong to the backend they were entered for, but a
+    request that supplies a replacement keeps it."""
+    model = _stored_model(
+        BackendEnum.CUSTOM, image_name="my/own:v1", run_command="python serve.py"
+    )
+
+    source = await _capture_update_patch(
+        monkeypatch, model, _model_update(backend=BackendEnum.VLLM)
+    )
+    assert source.image_name is None
+    assert source.run_command is None
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(backend=BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly"),
+    )
+    assert source.image_name == "vllm/vllm-openai:nightly"
+    assert source.run_command is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "old_backend, old_image, old_command, old_version, changes, expected",
+    [
+        (
+            BackendEnum.CUSTOM,
+            "my/own:v1",
+            "python serve.py",
+            None,
+            {"backend": BackendEnum.VLLM, "backend_version": "0.11.0"},
+            (None, None, "0.11.0"),
+        ),
+        (
+            BackendEnum.VLLM,
+            "vllm/old:latest",
+            None,
+            None,
+            {"backend": BackendEnum.SGLANG, "backend_version": "0.5.6"},
+            (None, None, "0.5.6"),
+        ),
+        (
+            BackendEnum.VLLM,
+            None,
+            None,
+            "0.11.0",
+            {"backend": BackendEnum.SGLANG},
+            (None, None, None),
+        ),
+        (
+            BackendEnum.VLLM,
+            "vllm/old:latest",
+            "--old-option",
+            None,
+            {"backend": BackendEnum.SGLANG, "image_name": "sglang/new:latest"},
+            ("sglang/new:latest", None, None),
+        ),
+        (
+            BackendEnum.VLLM,
+            None,
+            None,
+            "0.11.0",
+            {"backend": "my-backend"},
+            (None, None, None),
+        ),
+    ],
+)
+async def test_switching_backend_validates_the_new_runtime(
+    monkeypatch, old_backend, old_image, old_command, old_version, changes, expected
+):
+    model = _stored_model(old_backend, old_image, old_command, old_version)
+
+    source = await _capture_update_patch(monkeypatch, model, _model_update(**changes))
+
+    assert (source.image_name, source.run_command, source.backend_version) == expected
+    assert {"image_name", "run_command", "backend_version"} <= source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_switching_backend_rejects_conflicting_replacements(monkeypatch):
+    model = _stored_model(BackendEnum.CUSTOM, image_name="my/own:v1")
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await _capture_update_patch(
+            monkeypatch,
+            model,
+            _model_update(
+                backend=BackendEnum.VLLM,
+                image_name="vllm/vllm-openai:nightly",
+                backend_version="0.11.0",
+            ),
+        )
+
+    assert "custom image" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_sparse_custom_backend_update_keeps_its_version_and_image(monkeypatch):
+    model = _stored_model("my-backend", image_name="my/own:v1", backend_version="v1")
+
+    source = await _capture_update_patch(monkeypatch, model, _model_update(replicas=2))
+
+    assert source.backend == "my-backend"
+    assert source.image_name == "my/own:v1"
+    assert source.backend_version == "v1"
+    assert not {"backend", "image_name", "backend_version"} & source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_editing_a_legacy_builtin_image_clears_its_unused_version(monkeypatch):
+    model = _stored_model(
+        BackendEnum.VLLM,
+        image_name="vllm/vllm-openai:nightly",
+        backend_version="0.11.0",
+    )
+
+    source = await _capture_update_patch(monkeypatch, model, _model_update(replicas=2))
+
+    assert source.image_name == "vllm/vllm-openai:nightly"
+    assert source.backend_version is None
+    assert "backend_version" in source.model_fields_set
+    assert "image_name" not in source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_replacing_a_legacy_builtin_image_clears_its_unused_version(monkeypatch):
+    model = _stored_model(
+        BackendEnum.VLLM,
+        image_name="vllm/vllm-openai:old",
+        backend_version="0.11.0",
+    )
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(image_name="vllm/vllm-openai:nightly"),
+    )
+
+    assert source.image_name == "vllm/vllm-openai:nightly"
+    assert source.backend_version is None
+    assert {"image_name", "backend_version"} <= source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_clearing_a_legacy_builtin_image_keeps_its_version(monkeypatch):
+    model = _stored_model(
+        BackendEnum.VLLM,
+        image_name="vllm/vllm-openai:old",
+        backend_version="0.11.0",
+    )
+
+    source = await _capture_update_patch(
+        monkeypatch, model, _model_update(image_name=None)
+    )
+
+    assert source.image_name is None
+    assert source.backend_version == "0.11.0"
+    assert "backend_version" not in source.model_fields_set
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "image_name",
+    ["vllm/vllm-openai:old", "vllm/vllm-openai:nightly"],
+)
+async def test_full_update_of_legacy_builtin_image_clears_unchanged_version(
+    monkeypatch, image_name
+):
+    model = _stored_model(
+        BackendEnum.VLLM,
+        image_name="vllm/vllm-openai:old",
+        backend_version="0.11.0",
+    )
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(image_name=image_name, backend_version="0.11.0", replicas=2),
+    )
+
+    assert source.image_name == image_name
+    assert source.backend_version is None
+    assert {"image_name", "backend_version"} <= source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_legacy_builtin_image_rejects_changed_version_without_clearing_image(
+    monkeypatch,
+):
+    model = _stored_model(
+        BackendEnum.VLLM,
+        image_name="vllm/vllm-openai:old",
+        backend_version="0.11.0",
+    )
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await _capture_update_patch(
+            monkeypatch, model, _model_update(backend_version="0.12.0")
+        )
+    assert "custom image" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_null_backend_does_not_clear_runtime_settings(monkeypatch):
+    model = _stored_model(
+        BackendEnum.VLLM,
+        image_name="vllm/vllm-openai:nightly",
+        run_command="--max-model-len=8192",
+    )
+
+    source = await _capture_update_patch(
+        monkeypatch, model, _model_update(backend=None)
+    )
+
+    assert source.backend is None
+    assert source.image_name == "vllm/vllm-openai:nightly"
+    assert source.run_command is None
+    assert not {"image_name", "run_command"} & source.model_fields_set
 
 
 @pytest.mark.parametrize(
