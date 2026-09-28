@@ -3437,6 +3437,60 @@ def test_the_probe_does_not_inherit_the_readiness_timeout():
     assert ready.call_args.kwargs["timeout"] == 20
 
 
+@pytest.mark.parametrize(
+    "backend, role, pd_mode, configured_timeout, expected_timeout",
+    [
+        (BackendEnum.SGLANG, "prefill", True, None, 25),
+        (BackendEnum.SGLANG, "decode", True, "12", 12),
+        (BackendEnum.SGLANG, "router", True, None, 15),
+        (BackendEnum.SGLANG, "prefill", False, None, 15),
+        (BackendEnum.SGLANG, None, False, None, 15),
+        (BackendEnum.VLLM, "prefill", True, None, 15),
+    ],
+)
+def test_running_probe_timeout_for_engine_roles(
+    backend, role, pd_mode, configured_timeout, expected_timeout
+):
+    from gpustack.schemas.models import DisaggregationSpec, PDModeEnum
+
+    manager, _ = _build_serve_manager()
+    model = new_model(1, "test", huggingface_repo_id="example/model", backend=backend)
+    if pd_mode:
+        mode = (
+            PDModeEnum.SGLANG_MOONCAKE
+            if backend == BackendEnum.SGLANG
+            else PDModeEnum.VLLM_NIXL
+        )
+        model.disaggregation = DisaggregationSpec(mode=mode)
+    model.env = {"GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED": "true"}
+    if configured_timeout is not None:
+        model.env["GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_TIMEOUT"] = configured_timeout
+    mi = _member(1, role)
+    manager._model_instance_by_instance_id[mi.id] = mi
+    manager._model_cache_by_instance[mi.id] = model
+
+    with patch.object(manager, "_probe_running_instance", return_value=True) as probe:
+        manager.sync_model_instances_inference_health()
+
+    assert probe.call_args.args[2] == expected_timeout
+
+
+def test_running_probe_continues_after_model_is_deleted():
+    manager, clientset = _build_serve_manager()
+    deleted = _member(1, "prefill")
+    ready = _member(2, "prefill")
+    model = _group_model()
+    manager._model_instance_by_instance_id[deleted.id] = deleted
+    manager._model_instance_by_instance_id[ready.id] = ready
+    manager._model_cache_by_instance[ready.id] = model
+    clientset.models.get.side_effect = NotFoundException("Model deleted")
+
+    with patch.object(manager, "_probe_running_instance", return_value=True) as probe:
+        manager.sync_model_instances_inference_health()
+
+    probe.assert_called_once_with(ready, model, 15)
+
+
 def test_readiness_keeps_its_own_fast_timeout():
     """The polling caller is unchanged: it is asked every pass and a slow
     answer there is free."""
@@ -3451,6 +3505,264 @@ def test_readiness_keeps_its_own_fast_timeout():
         assert is_ready(BackendEnum.VLLM, mi) is True
 
     assert get.call_args.kwargs["timeout"] == 1
+
+
+@pytest.mark.parametrize(
+    "backend, expected_path, expected_timeout",
+    [
+        (BackendEnum.VLLM, "/health", 1),
+        (BackendEnum.SGLANG, "/health", 5),
+        (BackendEnum.VOX_BOX, "/v1/models", 1),
+        (BackendEnum.ASCEND_MINDIE, "/info", 1),
+    ],
+)
+@pytest.mark.parametrize("status_code, expected_ready", [(200, True), (503, False)])
+def test_built_in_readiness_paths(
+    backend, expected_path, expected_timeout, status_code, expected_ready
+):
+    mi = new_model_instance(1, "plain", 1, worker_id=1)
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.return_value = SimpleNamespace(status_code=status_code)
+        assert is_ready(backend, mi) is expected_ready
+
+    get.assert_called_once_with(
+        f"http://10.0.0.1:8000{expected_path}", timeout=expected_timeout
+    )
+
+
+@pytest.mark.parametrize(
+    "backend, image_name, backend_version",
+    [
+        (BackendEnum.VLLM, "vllm/custom:latest", None),
+        (BackendEnum.VLLM, None, "0.11.0-custom"),
+        (BackendEnum.SGLANG, "sglang/custom:latest", None),
+        (BackendEnum.SGLANG, None, "0.5.4-custom"),
+    ],
+)
+def test_custom_builtin_without_health_route_is_ready_with_warning(
+    backend, image_name, backend_version, caplog
+):
+    model = new_model(
+        1,
+        "custom-image",
+        huggingface_repo_id="example/model",
+        backend=backend,
+        image_name=image_name,
+        backend_version=backend_version,
+    )
+    mi = new_model_instance(1, "custom-image", 1, worker_id=1)
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.return_value = SimpleNamespace(status_code=404)
+        assert is_ready(backend, mi, model=model) is True
+
+    assert "does not confirm model readiness" in caplog.text
+    assert "GPUSTACK_MODEL_HEALTH_CHECK_PATH" in caplog.text
+    get.assert_called_once_with(
+        "http://10.0.0.1:8000/health",
+        timeout=5 if backend == BackendEnum.SGLANG else 1,
+    )
+
+
+@pytest.mark.parametrize(
+    "backend, image_name, backend_version, path, status_code",
+    [
+        (BackendEnum.VLLM, None, "0.11.0", None, 404),
+        (BackendEnum.SGLANG, None, "0.5.18", None, 404),
+        (BackendEnum.VLLM, "vllm/custom:latest", None, "/ready", 404),
+        (BackendEnum.SGLANG, None, "0.5.4-custom", "/ready", 404),
+        (BackendEnum.VLLM, "vllm/custom:latest", None, None, 503),
+        (BackendEnum.SGLANG, None, "0.5.4-custom", None, 503),
+    ],
+)
+def test_unhealthy_builtin_is_not_ready(
+    backend, image_name, backend_version, path, status_code
+):
+    model = new_model(
+        1,
+        "test",
+        huggingface_repo_id="example/model",
+        backend=backend,
+        image_name=image_name,
+        backend_version=backend_version,
+    )
+    mi = new_model_instance(1, "test", 1, worker_id=1)
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.return_value = SimpleNamespace(status_code=status_code)
+        assert is_ready(backend, mi, path, model) is False
+
+
+def test_health_connection_failure_is_not_ready():
+    mi = new_model_instance(1, "test", 1, worker_id=1)
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.side_effect = ConnectionError("server unavailable")
+        assert is_ready(BackendEnum.SGLANG, mi) is False
+
+
+def test_sglang_explicit_probe_timeout_is_preserved():
+    mi = new_model_instance(1, "test", 1, worker_id=1)
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.return_value = SimpleNamespace(status_code=200)
+        assert is_ready(BackendEnum.SGLANG, mi, timeout=12) is True
+
+    get.assert_called_once_with("http://10.0.0.1:8000/health", timeout=12)
+
+
+@pytest.mark.parametrize(
+    "health_check_path, first_status_code",
+    [(None, 503), (None, 404), ("/ready", 404)],
+)
+def test_state_sync_waits_for_sglang_health_before_running(
+    health_check_path, first_status_code
+):
+    manager, clientset = _build_serve_manager()
+    model = new_model(
+        1,
+        "test",
+        huggingface_repo_id="example/model",
+        backend=BackendEnum.SGLANG,
+        backend_version="0.5.18",
+    )
+    mi = new_model_instance(
+        1, "test", 1, worker_id=1, state=ModelInstanceStateEnum.STARTING
+    )
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[mi])
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_ensure_container_log_persistence"),
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_get_health_check_path", return_value=health_check_path),
+        patch.object(manager, "_update_model_instance") as update,
+        patch(
+            "gpustack.worker.serve_manager.get_meta_from_running_instance",
+            return_value={},
+        ),
+        patch("gpustack.worker.serve_manager.requests.get") as get,
+    ):
+        get.side_effect = [
+            SimpleNamespace(status_code=first_status_code),
+            SimpleNamespace(status_code=200),
+        ]
+        manager.sync_model_instances_state()
+        update.assert_not_called()
+        manager.sync_model_instances_state()
+
+    update.assert_called_once_with(
+        mi.id, state=ModelInstanceStateEnum.RUNNING, state_message=""
+    )
+    requested_path = health_check_path or "/health"
+    assert [call.args[0] for call in get.call_args_list] == [
+        f"http://10.0.0.1:8000{requested_path}",
+        f"http://10.0.0.1:8000{requested_path}",
+    ]
+
+
+@pytest.mark.parametrize("cache_deleted_model", [True, False])
+def test_state_sync_continues_after_model_is_deleted(cache_deleted_model):
+    manager, clientset = _build_serve_manager()
+    deleted_model = new_model(
+        1,
+        "deleted",
+        huggingface_repo_id="example/deleted",
+        backend=BackendEnum.SGLANG,
+    )
+    ready_model = new_model(
+        2,
+        "ready",
+        huggingface_repo_id="example/ready",
+        backend=BackendEnum.SGLANG,
+        backend_version="0.5.18",
+    )
+    deleted = new_model_instance(
+        1, "deleted", 1, worker_id=1, state=ModelInstanceStateEnum.STARTING
+    )
+    ready = new_model_instance(
+        2, "ready", 2, worker_id=1, state=ModelInstanceStateEnum.STARTING
+    )
+    ready.worker_ip = "10.0.0.1"
+    ready.port = 8000
+    clientset.model_instances.list.return_value = SimpleNamespace(
+        items=[deleted, ready]
+    )
+    clientset.models.get.side_effect = NotFoundException("Model deleted")
+    if cache_deleted_model:
+        manager._model_cache_by_instance[deleted.id] = deleted_model
+    manager._model_cache_by_instance[ready.id] = ready_model
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_ensure_container_log_persistence"),
+        patch.object(manager, "_get_health_check_path", return_value=None),
+        patch.object(manager, "_update_model_instance") as update,
+        patch(
+            "gpustack.worker.serve_manager.get_meta_from_running_instance",
+            return_value={},
+        ),
+        patch("gpustack.worker.serve_manager.requests.get") as get,
+    ):
+        get.return_value = SimpleNamespace(status_code=200)
+        manager.sync_model_instances_state()
+
+    update.assert_called_once_with(
+        ready.id, state=ModelInstanceStateEnum.RUNNING, state_message=""
+    )
+
+
+def test_refreshed_model_keeps_role_and_router_configuration():
+    from gpustack.schemas.models import RoleSpec
+
+    manager, clientset = _build_serve_manager()
+    model = new_model(
+        1,
+        "test",
+        huggingface_repo_id="example/model",
+        backend=BackendEnum.VLLM,
+        roles=[
+            RoleSpec(
+                name="prefill",
+                backend=BackendEnum.SGLANG,
+                env={"GPUSTACK_MODEL_HEALTH_CHECK_PATH": "/prefill-ready"},
+            )
+        ],
+    )
+    clientset.models.get.return_value = model
+
+    prefill = _member(1, "prefill")
+    projected = manager._refresh_model(prefill)
+    assert projected.backend == BackendEnum.SGLANG
+    assert projected.env["GPUSTACK_MODEL_HEALTH_CHECK_PATH"] == "/prefill-ready"
+    assert manager._model_cache_by_instance[prefill.id] is projected
+
+    clientset.models.get.return_value = _group_model()
+    router = _member(2, "router")
+    projected_router = manager._refresh_model(router)
+    assert projected_router.backend == BackendEnum.CUSTOM
+    assert manager._model_cache_by_instance[router.id] is projected_router
 
 
 @pytest.mark.parametrize(
@@ -3483,7 +3795,7 @@ def test_sglang_diffusion_readiness_with_unknown_or_known_version(
         assert is_ready(BackendEnum.SGLANG, mi, None, model) is expected_ready
 
     if expected_path:
-        get.assert_called_once_with(f"http://10.0.0.1:8000{expected_path}", timeout=1)
+        get.assert_called_once_with(f"http://10.0.0.1:8000{expected_path}", timeout=5)
     else:
         get.assert_not_called()
 
@@ -3532,4 +3844,50 @@ def test_sglang_diffusion_custom_image_without_health_route(
         get.return_value = SimpleNamespace(status_code=status_code)
         assert is_ready(BackendEnum.SGLANG, mi, None, model) is expected_ready
 
-    get.assert_called_once_with("http://10.0.0.1:8000/health", timeout=1)
+    get.assert_called_once_with("http://10.0.0.1:8000/health", timeout=5)
+
+
+@pytest.mark.parametrize("status_code, expected_ready", [(404, True), (503, False)])
+def test_sglang_diffusion_custom_version_uses_health_path(
+    status_code, expected_ready, caplog
+):
+    model = new_model(
+        1,
+        "diffusion",
+        huggingface_repo_id="example/diffusion",
+        backend=BackendEnum.SGLANG,
+        categories=[CategoryEnum.IMAGE],
+        backend_version="0.5.4-custom",
+    )
+    mi = new_model_instance(1, "diffusion", 1, worker_id=1)
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.return_value = SimpleNamespace(status_code=status_code)
+        assert is_ready(BackendEnum.SGLANG, mi, None, model) is expected_ready
+
+    get.assert_called_once_with("http://10.0.0.1:8000/health", timeout=5)
+    if status_code == 404:
+        assert "does not confirm model readiness" in caplog.text
+
+
+@pytest.mark.parametrize("backend_version", ["0.5.5.post2", "0.5.8", "0.5.4-custom"])
+def test_sglang_diffusion_explicit_path_precedes_version_handling(backend_version):
+    model = new_model(
+        1,
+        "diffusion",
+        huggingface_repo_id="example/diffusion",
+        backend=BackendEnum.SGLANG,
+        categories=[CategoryEnum.IMAGE],
+        backend_version=backend_version,
+    )
+    mi = new_model_instance(1, "diffusion", 1, worker_id=1)
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.return_value = SimpleNamespace(status_code=404)
+        assert is_ready(BackendEnum.SGLANG, mi, "/ready", model) is False
+
+    get.assert_called_once_with("http://10.0.0.1:8000/ready", timeout=1)

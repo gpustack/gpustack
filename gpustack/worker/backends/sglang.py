@@ -18,7 +18,9 @@ from gpustack_runtime.deployer import (
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
 from gpustack.scheduler.model_registry import is_multimodal_model
+from gpustack.schemas.inference_backend import is_built_in_backend_custom_version
 from gpustack.schemas.models import (
+    BackendEnum,
     LoraListEntry,
     ModelInstance,
     SpeculativeAlgorithmEnum,
@@ -180,6 +182,11 @@ class SGLangServer(InferenceServer):
         if (
             self.is_diffusion
             and self._model.backend_version is not None
+            and not is_built_in_backend_custom_version(
+                BackendEnum.SGLANG,
+                self._model.backend_version,
+                self._model.image_name,
+            )
             and compare_versions(self._model.backend_version, "0.5.5") < 0
         ):
             raise ValueError(
