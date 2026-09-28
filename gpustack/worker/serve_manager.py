@@ -863,6 +863,21 @@ class ServeManager:
 
             is_main_worker = model_instance.worker_id == self._worker_id
 
+            # INITIALIZE_LATER followers have no workload until the main worker
+            # finishes downloading. A missing container is expected while waiting.
+            if (
+                not is_main_worker
+                and model_instance.distributed_servers.mode
+                == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                and model_instance.state
+                not in (
+                    ModelInstanceStateEnum.STARTING,
+                    ModelInstanceStateEnum.RUNNING,
+                    ModelInstanceStateEnum.ERROR,
+                )
+            ):
+                continue
+
             # Skip if the workload is still launching.
             # Use deployment metadata name for subordinate workers (e.g., "model-f0")
             # since their workload name differs from the model instance name.

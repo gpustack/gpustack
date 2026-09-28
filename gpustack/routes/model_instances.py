@@ -878,6 +878,44 @@ async def create_model_instance(
     return model_instance
 
 
+def _preserve_download_state(
+    instance: ModelInstance, update: ModelInstanceUpdate
+) -> None:
+    """Preserve controller-owned download results across worker state reports."""
+    for field in (
+        "download_progress",
+        "draft_model_download_progress",
+        "resolved_path",
+        "draft_model_resolved_path",
+        "mounted_loras",
+    ):
+        setattr(update, field, getattr(instance, field))
+    if instance.state in (
+        ModelInstanceStateEnum.STARTING,
+        ModelInstanceStateEnum.RUNNING,
+        ModelInstanceStateEnum.ERROR,
+    ) and update.state in (
+        ModelInstanceStateEnum.INITIALIZING,
+        ModelInstanceStateEnum.DOWNLOADING,
+    ):
+        # A download snapshot must not undo completion or erase a failure.
+        # Runtime updates and explicit restarts (SCHEDULED) remain valid transitions.
+        update.state = instance.state
+        update.state_message = instance.state_message
+    if not update.distributed_servers:
+        return
+    stored_progress = {
+        worker.worker_id: worker.download_progress
+        for worker in (
+            instance.distributed_servers.subordinate_workers or []
+            if instance.distributed_servers
+            else []
+        )
+    }
+    for worker in update.distributed_servers.subordinate_workers or []:
+        worker.download_progress = stored_progress.get(worker.worker_id)
+
+
 @router.put("/{id}", response_model=ModelInstancePublic)
 async def update_model_instance(
     session: SessionDep,
@@ -893,6 +931,7 @@ async def update_model_instance(
     )
 
     try:
+        _preserve_download_state(model_instance, model_instance_in)
         await ModelInstanceService(session).update(model_instance, model_instance_in)
     except Exception as e:
         raise InternalServerErrorException(

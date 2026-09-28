@@ -138,6 +138,49 @@ def _build_serve_manager(worker_id: int = 1):
     return manager, clientset
 
 
+@pytest.mark.parametrize(
+    "mode",
+    [
+        DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        DistributedServerCoordinateModeEnum.RUN_FIRST,
+    ],
+)
+@pytest.mark.parametrize(
+    "state",
+    [
+        ModelInstanceStateEnum.INITIALIZING,
+        ModelInstanceStateEnum.DOWNLOADING,
+        ModelInstanceStateEnum.STARTING,
+        ModelInstanceStateEnum.RUNNING,
+    ],
+)
+def test_subordinate_health_check_waits_for_start(state, mode):
+    manager, clientset = _build_serve_manager(worker_id=2)
+    instance = new_model_instance(1, "distributed", 1, worker_id=1, state=state)
+    instance.distributed_servers = DistributedServers(
+        mode=mode,
+        subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[instance])
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=None) as get,
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_append_log_diagnosis", side_effect=lambda mi, msg: msg),
+        patch.object(manager, "_update_model_instance") as update,
+    ):
+        manager.sync_model_instances_state()
+
+    if mode == DistributedServerCoordinateModeEnum.INITIALIZE_LATER and state in (
+        ModelInstanceStateEnum.INITIALIZING,
+        ModelInstanceStateEnum.DOWNLOADING,
+    ):
+        get.assert_not_called()
+        update.assert_not_called()
+    else:
+        get.assert_called_once()
+        update.assert_called_once()
+
+
 def test_sync_model_instances_state_marks_main_unreachable_when_subordinate_unreachable():
     manager, clientset = _build_serve_manager()
 
