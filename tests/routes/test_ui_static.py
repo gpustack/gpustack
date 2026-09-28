@@ -543,17 +543,28 @@ def test_missing_documentation_is_not_mounted(no_help_app):
     ]
 
 
-@pytest.mark.parametrize("path", ["/help", "/help/", "/help/installation/"])
-def test_missing_documentation_is_a_404(no_help_app, path):
-    """An install without the docs bundle must still start and serve.
+@pytest.mark.parametrize(
+    "path,suffix",
+    [
+        ("/help", ""),
+        ("/help/", ""),
+        ("/help/installation/requirements/", "installation/requirements/"),
+        ("/help/troubleshooting/?q=worker", "troubleshooting/?q=worker"),
+    ],
+)
+def test_missing_documentation_redirects_to_online_docs(no_help_app, path, suffix):
+    response = TestClient(no_help_app).get(path, follow_redirects=False)
 
-    The UI is mandatory and its absence is a startup failure; the docs are an
-    optional artifact, so the only visible consequence of not having them is a
-    404 under /help.
-    """
-    response = TestClient(no_help_app).get(path)
+    assert response.status_code == 307
+    assert response.headers["location"] == "https://docs.gpustack.ai/latest/" + suffix
+    assert response.headers["cache-control"] == CACHE_REVALIDATE
+
+
+def test_bundled_documentation_never_redirects_missing_pages_online(help_client):
+    response = help_client.get("/help/missing/", follow_redirects=False)
 
     assert response.status_code == 404
+    assert "location" not in response.headers
 
 
 def test_console_still_served_without_documentation(no_help_app):

@@ -4,10 +4,11 @@ import re
 import stat
 from mimetypes import guess_type
 from typing import Optional, Tuple
+from urllib.parse import quote
 
 import anyio
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException
@@ -238,7 +239,7 @@ def register(app: FastAPI):
     if os.path.isdir(help_dir):
         # Absence is not an error, unlike the UI above: the documentation is an
         # optional build artifact, and a server without it has to start and
-        # serve the console regardless — leaving /help a plain 404.
+        # serve the console regardless, using the online fallback below.
         #
         # html=True is what makes the site addressable at all. MkDocs builds it
         # with use_directory_urls, so every page is an index.html inside a
@@ -249,6 +250,17 @@ def register(app: FastAPI):
             PrecompressedStaticFiles(directory=help_dir, html=True),
             name="help",
         )
+    else:
+
+        @app.get("/help", include_in_schema=False)
+        @app.get("/help/{path:path}", include_in_schema=False)
+        async def online_help(request: Request, path: str = ""):
+            # Resolve at the server so existing worker messages also keep
+            # working when the installation has no bundled documentation.
+            url = "https://docs.gpustack.ai/latest/" + quote(path, safe="/")
+            if request.url.query:
+                url += "?" + request.url.query
+            return RedirectResponse(url, headers={"Cache-Control": CACHE_REVALIDATE})
 
     @app.get("/", include_in_schema=False)
     async def index():

@@ -33,6 +33,7 @@ on:
       - "mkdocs.offline.yml"
       - "hack/build-docs.sh"
       - "hack/mkdocs_offline.py"
+      - "hack/check_offline_docs.py"
       - "hack/verify-docs.sh"
       - "pyproject.toml"
       - "uv.lock"
