@@ -3,7 +3,7 @@
 ``compute_state`` is the only place the backend hands a documentation URL to the
 UI. An air-gapped deployment cannot reach ``docs.gpustack.ai``, so both links
 must be root-absolute paths under ``/help/`` — the static docs site the server
-mounts itself.
+mounts itself, or redirects to the online site when the bundle is absent.
 """
 
 from datetime import datetime, timedelta, timezone

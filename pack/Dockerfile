@@ -318,7 +318,7 @@ SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 ARG GIT_COMMIT
 
 COPY docs/ /workspace/docs/
-COPY hack/build-docs.sh hack/mkdocs_offline.py /workspace/hack/
+COPY hack/build-docs.sh hack/mkdocs_offline.py hack/check_offline_docs.py /workspace/hack/
 COPY mkdocs.yml mkdocs.offline.yml pyproject.toml uv.lock /workspace/
 
 WORKDIR /workspace

@@ -6,12 +6,6 @@ set -o pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-# Hosts the public site may fetch from and the bundled one may not. Checking the
-# output rather than the config is what makes this hard to regress: the ways a
-# page starts reaching out again — a theme override, a new markdown extension, a
-# plugin that inlines a CDN script — are not visible in mkdocs.offline.yml.
-EXTERNAL_HOSTS="unpkg\.com|fonts\.googleapis\.com|fonts\.gstatic\.com|buttons\.github\.io|img\.shields\.io|raw\.githubusercontent\.com"
-
 # What the bundled site puts in its header, and the only way a reader can tell one
 # copy from another. A release number cannot do that job here: the documentation
 # ships on its own cadence, so two copies claiming the same release can hold
@@ -85,10 +79,9 @@ EOF
   # cannot exist, so gzipping them would produce files nothing ever asks for.
   gzip --best --force --keep "${site_dir}/search/search_index.json"
 
-  if grep -rlE "https://(${EXTERNAL_HOSTS})" "${site_dir}" --include="*.html"; then
-    echo "error: the pages above still fetch from the network" >&2
-    return 1
-  fi
+  # Inspect resource references rather than prose: a documented curl command
+  # or a normal outbound link does not make the browser fetch that URL.
+  uv run python "${ROOT_DIR}/hack/check_offline_docs.py" "${site_dir}"
 }
 
 #
