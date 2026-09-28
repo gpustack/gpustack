@@ -1057,7 +1057,16 @@ class ModelSpecBase(SQLModel, ModelSource):
     categories: List[str] = Field(sa_type=JSON, default=[])
     placement_strategy: PlacementStrategyEnum = PlacementStrategyEnum.SPREAD
     cpu_offloading: Optional[bool] = None
-    distributed_inference_across_workers: Optional[bool] = None
+    distributed_inference_across_workers: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether to allow inference across multiple workers. Corresponds to "
+            "the 'Allow Distributed Inference Across Workers' checkbox. Enabling "
+            "this option does not guarantee placement across multiple workers. "
+            "If unspecified, defaults to true for vLLM, SGLang, and MindIE, "
+            "and false for other backends."
+        ),
+    )
     worker_selector: Optional[Dict[str, str]] = Field(sa_type=JSON, default={})
     gpu_selector: Optional[GPUSelector] = Field(
         sa_type=pydantic_column_type(GPUSelector), default=None
@@ -1097,7 +1106,16 @@ class ModelSpecBase(SQLModel, ModelSource):
 
     env: Optional[Dict[str, str]] = Field(sa_type=JSON, default=None)
     restart_on_error: Optional[bool] = True
-    distributable: Optional[bool] = False
+    distributable: Optional[bool] = Field(
+        default=False,
+        description=(
+            "Deprecated. Capability flag used by GGUF model evaluation and "
+            "scheduling; it does not represent distributed inference support "
+            "across all backends. Use distributed_inference_across_workers "
+            "to configure whether cross-worker inference is allowed."
+        ),
+        schema_extra={"json_schema_extra": {"deprecated": True}},
+    )
 
     # Extended KV Cache configuration. Maps to LMCache in vLLM, and to SGLang's native HiCache (LMCache in shared mode).
     extended_kv_cache: Optional[ExtendedKVCacheConfig] = Field(
