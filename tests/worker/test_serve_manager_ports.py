@@ -588,6 +588,24 @@ def test_mp_connecting_band_keeps_the_positional_layout():
     assert not band & set(mi.ports[1:4])
 
 
+def test_custom_image_reserves_the_mp_connecting_band():
+    manager = _manager()
+    mi = _plain_instance()
+    model = new_model(
+        1,
+        "custom-image-model",
+        huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
+        image_name="vllm/vllm-openai:nightly",
+    )
+
+    manager._assign_ports(mi, model, BackendEnum.VLLM)
+
+    connecting = mi.ports[-1]
+    band = set(range(connecting, connecting + _VLLM_MP_CONNECTING_BAND))
+    assert len(mi.ports) == 5
+    assert band <= manager._assigned_ports[mi.id]
+
+
 def test_the_mp_container_spec_is_unchanged():
     """The nine derived ports are recorded but NOT put in `mi.ports`.
 

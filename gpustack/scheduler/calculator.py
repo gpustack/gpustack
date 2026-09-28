@@ -810,8 +810,12 @@ def should_fallback_load_config_json(e: Exception, model: Model) -> bool:
     ):
         return True
 
-    # Fallback for backend version specified or import errors
-    return model.backend_version is not None or isinstance(e, ImportError)
+    # Fallback for a custom runtime the user pinned, or import errors
+    return (
+        model.backend_version is not None
+        or model.image_name is not None
+        or isinstance(e, ImportError)
+    )
 
 
 async def check_diffusers_model_index_from_workers(

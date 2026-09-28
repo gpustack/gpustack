@@ -22,6 +22,7 @@ from gpustack.routes.worker.logs import (
 )
 from gpustack.schemas.models import (
     BackendEnum,
+    CategoryEnum,
     DistributedServerCoordinateModeEnum,
     DistributedServers,
     ModelInstanceSubordinateWorker,
@@ -3407,3 +3408,85 @@ def test_readiness_keeps_its_own_fast_timeout():
         assert is_ready(BackendEnum.VLLM, mi) is True
 
     assert get.call_args.kwargs["timeout"] == 1
+
+
+@pytest.mark.parametrize(
+    "image_name, backend_version, expected_ready, expected_path",
+    [
+        ("sglang/diffusion:custom", None, True, "/health"),
+        (None, None, False, None),
+        (None, "0.5.5.post2", True, None),
+        (None, "0.5.8", True, "/health"),
+    ],
+)
+def test_sglang_diffusion_readiness_with_unknown_or_known_version(
+    image_name, backend_version, expected_ready, expected_path
+):
+    model = new_model(
+        1,
+        "diffusion",
+        huggingface_repo_id="example/diffusion",
+        backend=BackendEnum.SGLANG,
+        categories=[CategoryEnum.IMAGE],
+        image_name=image_name,
+        backend_version=backend_version,
+    )
+    mi = new_model_instance(1, "diffusion", 1, worker_id=1)
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.return_value = SimpleNamespace(status_code=200)
+        assert is_ready(BackendEnum.SGLANG, mi, None, model) is expected_ready
+
+    if expected_path:
+        get.assert_called_once_with(f"http://10.0.0.1:8000{expected_path}", timeout=1)
+    else:
+        get.assert_not_called()
+
+
+@pytest.mark.parametrize("status_code, expected_ready", [(200, True), (404, False)])
+def test_sglang_diffusion_custom_image_uses_explicit_health_path(
+    status_code, expected_ready
+):
+    model = new_model(
+        1,
+        "diffusion",
+        huggingface_repo_id="example/diffusion",
+        backend=BackendEnum.SGLANG,
+        categories=[CategoryEnum.IMAGE],
+        image_name="sglang/diffusion:custom",
+        env={"GPUSTACK_MODEL_HEALTH_CHECK_PATH": "/ready"},
+    )
+    mi = new_model_instance(1, "diffusion", 1, worker_id=1)
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.return_value = SimpleNamespace(status_code=status_code)
+        assert is_ready(BackendEnum.SGLANG, mi, "/ready", model) is expected_ready
+
+    get.assert_called_once_with("http://10.0.0.1:8000/ready", timeout=1)
+
+
+@pytest.mark.parametrize("status_code, expected_ready", [(404, True), (503, False)])
+def test_sglang_diffusion_custom_image_without_health_route(
+    status_code, expected_ready
+):
+    model = new_model(
+        1,
+        "diffusion",
+        huggingface_repo_id="example/diffusion",
+        backend=BackendEnum.SGLANG,
+        categories=[CategoryEnum.IMAGE],
+        image_name="sglang/diffusion:custom",
+    )
+    mi = new_model_instance(1, "diffusion", 1, worker_id=1)
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.return_value = SimpleNamespace(status_code=status_code)
+        assert is_ready(BackendEnum.SGLANG, mi, None, model) is expected_ready
+
+    get.assert_called_once_with("http://10.0.0.1:8000/health", timeout=1)

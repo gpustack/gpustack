@@ -1196,5 +1196,37 @@ async def test_a_remote_document_replaces_the_packaged_runner_catalog(source_typ
     assert not workers and messages
 
 
+@pytest.mark.asyncio
+async def test_a_custom_image_bypasses_the_runner_catalog():
+    """A user-supplied image has no entry in the runner catalog, so the filter
+    has nothing to match it against and must let the worker through.
+
+    The same model without an image is the control: it is filtered out against
+    the same empty catalog, which is what makes the second assertion mean
+    anything.
+    """
+
+    async def filter_with(model):
+        with (
+            patch(
+                'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+            ),
+            patch.object(InferenceBackend, "all", AsyncMock(return_value=[])),
+            patch.object(RunnerOverrideEntry, "all", AsyncMock(return_value=[])),
+            patch('gpustack.schemas.runner_source.list_runners', lambda **_: []),
+        ):
+            return await BackendFrameworkFilter(model).filter(
+                [linux_nvidia_4_4080_16gx4()]
+            )
+
+    workers, messages = await filter_with(create_model(backend="vLLM"))
+    assert not workers and messages
+
+    workers, messages = await filter_with(
+        create_model(backend="vLLM", image_name="vllm/vllm-openai:nightly")
+    )
+    assert len(workers) == 1 and not messages
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

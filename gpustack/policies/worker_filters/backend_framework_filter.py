@@ -174,7 +174,9 @@ class BackendFrameworkFilter(WorkerFilter):
             )
             return workers, []
 
-        if self.model.backend == BackendEnum.CUSTOM:
+        # A custom image is supplied by the user and absent from the runner
+        # catalog, so there is no runner entry to match it against.
+        if self.model.backend == BackendEnum.CUSTOM or self.model.image_name:
             return workers, []
 
         async with async_session() as session:

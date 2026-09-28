@@ -75,6 +75,10 @@ For more details, please refer to the [Inference Backends](built-in-inference-ba
 
 Select a backend version. The version availability depend on the selected backend. This option is useful for ensuring compatibility or taking advantage of features introduced in specific backend versions.
 
+For a built-in vLLM or SGLang backend, set `image_name` in the deployment configuration to use a container image that is not in the runner catalog. Leave `backend_version` unset: a custom image and a backend version cannot be selected together. When a vLLM deployment uses a custom image, distributed execution defaults to `mp`. If the image includes Ray and you want to use it, set `--distributed-executor-backend=ray` in `backend_parameters`.
+
+For a built-in vLLM or SGLang backend, `run_command` supplies initial startup arguments without the executable; GPUStack still adds its managed arguments, including the serving host and port. For a custom backend, `run_command` specifies the full command, including the executable. See [Using Custom Inference Backends](../tutorials/using-custom-backends.md) for an example.
+
 ## Edit Model Deployment
 
 1. Find the model deployment you want to edit on the deployment list page.
@@ -175,7 +179,8 @@ Every field in the file is something you set on the deploy form. Below is what e
 | `backend` | [`Backend`](#backend) |
 | `backend_version` | [`Backend Version`](#backend-version) |
 | `backend_parameters` | [`Backend Parameters`](#backend-parameters) |
-| `image_name`, `run_command` | The image and start command of a custom backend |
+| `image_name` | A container image for a built-in or custom backend; mutually exclusive with `backend_version` for built-in backends |
+| `run_command` | Initial arguments for built-in vLLM or SGLang, or the full command for a custom backend |
 | `native_anthropic_api` | `Native Anthropic API` |
 | `env` | [`Environment Variables`](#environment-variables) |
 | `restart_on_error` | [`Auto-Restart On Error`](#auto-restart-on-error) |
