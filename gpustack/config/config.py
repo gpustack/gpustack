@@ -197,6 +197,9 @@ class Config(WorkerConfig, BaseSettings):
         gateway_namespace: The namespace where the gateway component is deployed.
         namespace: Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.
         disable_builtin_observability: Disable embedded Grafana and Prometheus services.
+        enable_tracing: Enable OpenTelemetry distributed request tracing.
+            Server spans are exported over OTLP (OTEL_EXPORTER_OTLP_* env vars).
+            Requires the 'tracing' extra; off by default.
         prometheus_url: Base URL of an external Prometheus to query. When unset, the embedded one is used if it is enabled. Set this to keep the server's own metric queries working on a deployment that delegates observability to its own stack.
         grafana_url: Base URL for Grafana UI used by redirects and proxying. When unset, defaults to the embedded Grafana URL unless builtin observability is disabled.
         grafana_worker_dashboard_uid: Grafana dashboard UID for worker dashboard.
@@ -345,6 +348,7 @@ class Config(WorkerConfig, BaseSettings):
     shuihua_api_base_url: str = "https://hub.do.top"
 
     disable_builtin_observability: bool = False
+    enable_tracing: bool = False
     builtin_prometheus_port: int = 19090
     prometheus_url: Optional[str] = None
     builtin_grafana_port: int = 13000
