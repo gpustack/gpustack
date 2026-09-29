@@ -690,8 +690,9 @@ class BenchmarkResultBase(BenchmarkResultGrid):
     A measured point together with the benchmark it belongs to.
 
     A benchmark task produces N x M of these (N input lengths x M rates). The
-    parent `Benchmark` row keeps a single "representative" point (global throughput
-    peak) in its flat metric columns for list/sort; the full grid lives here.
+    parent `Benchmark` row keeps the recommended operating point in its flat metric
+    columns for list/sort, or the throughput peak when no point meets the SLO; the
+    full grid lives here.
     """
 
     benchmark_id: int = Field(

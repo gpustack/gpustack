@@ -1103,6 +1103,7 @@ class BenchmarkManager:
         """
         results: list = []
         best = None
+        metric_points = []
         report = None
         worst_errs = -1
         loaded = 0
@@ -1142,12 +1143,34 @@ class BenchmarkManager:
                     best.tokens_per_second_mean or 0
                 ):
                     best = m
+                if len(point_results) == 1:
+                    metric_points.append((point_results[0], m))
             # Keep the report with the MOST failed requests for error-sample
             # extraction: failures concentrate at the high-load points, so the
             # first (lowest-load) point's samples are usually empty.
             if report is None or errs > worst_errs:
                 report = rep
                 worst_errs = errs
+
+        # Each report has one stage, so its full metrics can represent the
+        # recommended rate selected from the combined measured curve.
+        recommended_rate = analysis.compute_best_points(benchmark, results).get(
+            "recommended_rate"
+        )
+        matching = [
+            (point, metrics)
+            for point, metrics in metric_points
+            if recommended_rate is not None
+            and point.get("rate") == recommended_rate
+            and (
+                not analysis.has_slo(benchmark)
+                or (analysis.meets_slo(benchmark, point) and analysis.success_ok(point))
+            )
+        ]
+        if matching:
+            best = max(
+                matching, key=lambda pair: pair[0].get("tokens_per_second_mean") or 0
+            )[1]
 
         return CollectedResults(results, best, report, loaded, skipped, skipped_reason)
 
@@ -1157,8 +1180,8 @@ class BenchmarkManager:
         Shared by the terminal sync and the in-progress partial sync so both
         aggregate points the same way — the only difference between a partial and a
         final read is how many point files happen to exist on disk at the time.
-        `metrics` is the representative (throughput-peak) point; `report` is the one
-        used for error samples.
+        `metrics` is the recommended operating point (or throughput peak when
+        no point meets the SLO); `report` is the one used for error samples.
         """
         mode = benchmark_load_mode(benchmark)
         try:
@@ -1208,7 +1231,7 @@ class BenchmarkManager:
         the user should see it — but it is NOT a measured ramp point: its throughput
         profile yields rate=None, which already excludes it from the peak /
         recommendation / validity (all of which require a rate). It is deliberately
-        not fed into the representative metrics or the error-sample report either.
+        not fed into the parent metrics or the error-sample report either.
         Appended last => highest sequence => shown at the end of the stages table.
         """
         probe_path = artifacts.saturation_probe_path(self._benchmark_dir, benchmark.id)
@@ -1287,7 +1310,7 @@ class BenchmarkManager:
             )
 
         # Failure counts aggregate across ALL stages — a failure in any stage should
-        # surface, not only the representative peak point. (For a single-run
+        # surface, not only the recommended point. (For a single-run
         # benchmark `results` has one stage, so this matches the old behavior.)
         # The saturation probe and legacy bound passes are excluded by
         # measured_stages: their requests are instrument readings, not part of the
@@ -1400,7 +1423,7 @@ class BenchmarkManager:
             attempts=attempts,
         )
         # Per-point results (one row per (input_tokens, rate) grid cell); the parent
-        # metrics above hold the representative (throughput-peak) point.
+        # metrics above hold the recommended operating point.
         self._retry_sync(
             _post("results", results),
             what=f"results for {label}",

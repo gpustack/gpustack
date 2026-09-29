@@ -188,6 +188,33 @@ class TestComputeValidity:
         v = analysis.compute_validity(benchmark, points, {"recommended_rate": 32})
         assert [w["code"] for w in v["warnings"]] == ["budget_exhausted"]
 
+    def test_slo_refinement_stopped_by_point_budget_reports_incomplete_coverage(self):
+        points = [
+            _point(4, 4000.0, 0.5, time_to_first_token_mean=30.0),
+            _point(8, 8000.0, 0.5, time_to_first_token_mean=40.0),
+            _point(16, 16000.0, 0.5, time_to_first_token_mean=90.0),
+        ]
+        benchmark = SimpleNamespace(
+            load_type="concurrency",
+            upper_bound=100,
+            max_points=3,
+            slo_avg_ttft_ms=70.0,
+        )
+        best = analysis.compute_best_points(benchmark, points)
+
+        validity = analysis.compute_validity(
+            benchmark,
+            points,
+            best,
+            {"bracket_reason": "slo_failed", "stop_reason": "budget_points"},
+        )
+
+        assert best["recommended_rate"] == 8
+        assert validity["sufficient"] is False
+        assert validity["warnings"] == [
+            {"code": "budget_exhausted", "params": {"which": "points"}}
+        ]
+
     def test_best_point_at_the_bottom_says_lower_the_range(self):
         # Saturated from the first point: every knob reports the same throughput,
         # so the cheapest one wins and the optimum may be below the range.
@@ -367,6 +394,34 @@ class TestBuildCommandArgs:
             )
         )
         assert args[args.index("--slo-p95-ttft-ms") + 1] == "500.0"
+
+    @pytest.mark.parametrize(
+        "load_type,lower_bound,upper_bound,max_points,axis",
+        [
+            ("fixed_rate", 1, 4, 12, "rate"),
+            ("concurrency", 4, 138, 3, "concurrency"),
+        ],
+    )
+    def test_auto_tune_forwards_bounds_and_point_budget(
+        self, load_type, lower_bound, upper_bound, max_points, axis
+    ):
+        args = BenchmarkRunner._build_command_args(
+            self._runner(
+                auto_tune=True,
+                load_type=load_type,
+                lower_bound=lower_bound,
+                upper_bound=upper_bound,
+                max_points=max_points,
+            )
+        )
+
+        for flag, expected in (
+            ("--axis", axis),
+            ("--lower-bound", str(lower_bound)),
+            ("--upper-bound", str(upper_bound)),
+            ("--max-points", str(max_points)),
+        ):
+            assert args[args.index(flag) + 1] == expected
 
     def test_max_error_rate_is_forwarded_only_when_guidellm_accepts_it(self):
         # guidellm's MaxErrorRateConstraint takes a fraction in (0, 1) and rejects
@@ -789,20 +844,48 @@ class _Rep:
     """A stand-in for GenerativeBenchmarksReport: one measured point that can be
     told to blow up during conversion, or to carry a given error count."""
 
-    def __init__(self, tps, errored=0, incomplete=0, fail_convert=False):
+    def __init__(
+        self,
+        tps,
+        errored=0,
+        incomplete=0,
+        fail_convert=False,
+        rate=1,
+        ttft=None,
+        tpot=None,
+        total=100,
+        successful=None,
+    ):
         self._tps = tps
         self._errored = errored
         self._incomplete = incomplete
         self._fail_convert = fail_convert
+        self._rate = rate
+        self._ttft = ttft
+        self._tpot = tpot
+        self._total = total
+        self._successful = total if successful is None else successful
 
     def to_results(self, input_tokens, sequence_start):
         if self._fail_convert:
             raise ValueError("conversion boom")
-        return [{"rate": 1, "tokens_per_second_mean": self._tps}]
+        return [
+            {
+                "rate": self._rate,
+                "tokens_per_second_mean": self._tps,
+                "time_to_first_token_mean": self._ttft,
+                "inter_token_latency_mean": self._tpot,
+                "request_total": self._total,
+                "request_successful": self._successful,
+            }
+        ]
 
     def to_metrics(self):
         return SimpleNamespace(
             tokens_per_second_mean=self._tps,
+            time_to_first_token_mean=self._ttft,
+            inter_token_latency_mean=self._tpot,
+            request_total=self._total,
             request_errored=self._errored,
             request_incomplete=self._incomplete,
         )
@@ -862,6 +945,86 @@ class TestCollectResultsResilience:
         assert len(collected.results) == 2
         # best of the two good points
         assert collected.metrics.tokens_per_second_mean == 20
+
+    def test_slo_list_metrics_come_from_the_recommended_stage(
+        self, tmp_path, monkeypatch
+    ):
+        benchmark = self._benchmark(tmp_path, 2)
+        benchmark.slo_avg_ttft_ms = 70.0
+        self._patch_loader(
+            monkeypatch,
+            {
+                "5__p0.json": _Rep(30000, rate=310, ttft=60, tpot=9, total=3100),
+                "5__p1.json": _Rep(35000, rate=384, ttft=90, tpot=12, total=3840),
+            },
+        )
+
+        collected = _bare_manager(tmp_path)._collect_results(benchmark)
+
+        assert analysis.compute_best_points(benchmark, collected.results) == {
+            "peak_rate": 384.0,
+            "slo_met_rate": 310.0,
+            "recommended_rate": 310.0,
+        }
+        assert collected.metrics.tokens_per_second_mean == 30000
+        assert collected.metrics.time_to_first_token_mean == 60
+        assert collected.metrics.inter_token_latency_mean == 9
+        assert collected.metrics.request_total == 3100
+
+    def test_list_metrics_use_peak_stage_without_slo(self, tmp_path, monkeypatch):
+        benchmark = self._benchmark(tmp_path, 2)
+        self._patch_loader(
+            monkeypatch,
+            {
+                "5__p0.json": _Rep(30000, rate=310, ttft=60, total=3100),
+                "5__p1.json": _Rep(35000, rate=384, ttft=90, total=3840),
+            },
+        )
+
+        collected = _bare_manager(tmp_path)._collect_results(benchmark)
+
+        assert (
+            analysis.compute_best_points(benchmark, collected.results)[
+                "recommended_rate"
+            ]
+            == 384.0
+        )
+        assert collected.metrics.tokens_per_second_mean == 35000
+        assert collected.metrics.request_total == 3840
+
+    @pytest.mark.parametrize('failing_ttft,failing_successful', [(90, 100), (60, 90)])
+    def test_duplicate_rate_uses_qualifying_stage_metrics(
+        self, tmp_path, monkeypatch, failing_ttft, failing_successful
+    ):
+        benchmark = self._benchmark(tmp_path, 3)
+        benchmark.auto_tune = False
+        benchmark.stages = [{'rate': 310}, {'rate': 310}, {'rate': 384}]
+        benchmark.slo_avg_ttft_ms = 70.0
+        self._patch_loader(
+            monkeypatch,
+            {
+                "5__stage0.json": _Rep(30000, rate=310, ttft=60, total=100),
+                "5__stage1.json": _Rep(
+                    35000,
+                    rate=310,
+                    ttft=failing_ttft,
+                    total=100,
+                    successful=failing_successful,
+                ),
+                "5__stage2.json": _Rep(40000, rate=384, ttft=90, total=100),
+            },
+        )
+
+        collected = _bare_manager(tmp_path)._collect_results(benchmark)
+
+        assert (
+            analysis.compute_best_points(benchmark, collected.results)[
+                'recommended_rate'
+            ]
+            == 310.0
+        )
+        assert collected.metrics.tokens_per_second_mean == 30000
+        assert collected.metrics.time_to_first_token_mean == 60
 
     def test_report_for_samples_is_the_point_with_most_failures(
         self, tmp_path, monkeypatch
