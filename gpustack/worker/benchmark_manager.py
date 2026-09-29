@@ -377,6 +377,14 @@ class BenchmarkManager:
             logger.warning(f"Failed to remove old log file {log_file_path}: {e}")
 
         try:
+            for name in artifacts.list_benchmark_files(
+                self._benchmark_dir, benchmark.id
+            ):
+                try:
+                    os.remove(os.path.join(self._benchmark_dir, name))
+                except FileNotFoundError:
+                    continue
+
             fallback_registry = registration.determine_default_registry(
                 self._config.system_default_container_registry
             )

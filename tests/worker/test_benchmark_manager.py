@@ -1767,6 +1767,178 @@ class TestArtifactNaming:
         assert artifacts.list_point_files("/nonexistent-dir", 1) == []
 
 
+class TestBenchmarkStartArtifacts:
+    @pytest.mark.asyncio
+    async def test_stale_artifacts_are_removed_before_launch(
+        self, tmp_path, monkeypatch
+    ):
+        benchmark_dir = tmp_path / "benchmarks"
+        benchmark_dir.mkdir()
+        stale = [
+            "6.json",
+            "6.full.json",
+            "6__p0.json",
+            "6__p9.json",
+            "6__p9.full.json",
+            "6__p10.json",
+            "6__p11.full.json",
+            "6__satprobe.json",
+            "6__ramp.json",
+            "6__stage0.json",
+            "6__curve.json",
+        ]
+        for name in stale:
+            (benchmark_dir / name).write_text("old")
+        siblings = [benchmark_dir / name for name in ("60__p0.json", "61__p10.json")]
+        for sibling in siblings:
+            sibling.write_text("keep")
+
+        mgr = _bare_manager(benchmark_dir)
+        mgr._benchmark_log_dir = str(tmp_path)
+        mgr._provisioning_processes = {}
+        mgr._benchmark_by_id = {}
+        mgr._clientset_getter = lambda: SimpleNamespace(headers={})
+        mgr._config = SimpleNamespace(system_default_container_registry=None)
+        mgr._set_active_benchmark = lambda _id: None
+        started = []
+
+        class Process:
+            pid = 123
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def start(self):
+                assert all(not (benchmark_dir / name).exists() for name in stale)
+                assert all(sibling.read_text() == "keep" for sibling in siblings)
+                started.append(True)
+
+        monkeypatch.setattr(bm.multiprocessing, "Process", Process)
+        monkeypatch.setattr(
+            bm.registration, "determine_default_registry", lambda _registry: None
+        )
+
+        async def update(_id, **_kwargs):
+            return True
+
+        mgr._update_benchmark_state = update
+        await mgr._start_benchmark(SimpleNamespace(id=6, name="test"))
+
+        assert started == [True]
+        assert all(sibling.read_text() == "keep" for sibling in siblings)
+
+    @pytest.mark.asyncio
+    async def test_cleanup_failure_prevents_launch(self, tmp_path, monkeypatch):
+        benchmark_dir = tmp_path / "benchmarks"
+        benchmark_dir.mkdir()
+        stale = benchmark_dir / "6__p9.json"
+        stale.write_text("old")
+
+        mgr = _bare_manager(benchmark_dir)
+        mgr._benchmark_log_dir = str(tmp_path)
+        mgr._provisioning_processes = {}
+        mgr._benchmark_by_id = {}
+        mgr._config = SimpleNamespace(system_default_container_registry=None)
+        mgr._clientset_getter = lambda: SimpleNamespace(headers={})
+        updates = []
+
+        async def update(_id, **kwargs):
+            updates.append(kwargs)
+            return True
+
+        mgr._update_benchmark_state = update
+        monkeypatch.setattr(
+            bm.os,
+            "remove",
+            lambda _path: (_ for _ in ()).throw(PermissionError("read only")),
+        )
+        monkeypatch.setattr(
+            bm.multiprocessing,
+            "Process",
+            lambda **_kwargs: pytest.fail("process must not start"),
+        )
+
+        await mgr._start_benchmark(SimpleNamespace(id=6, name="test"))
+
+        assert stale.exists()
+        assert updates[0]["state"] == bm_schemas.BenchmarkStateEnum.ERROR
+        assert "read only" in updates[0]["state_message"]
+
+    @pytest.mark.asyncio
+    async def test_missing_result_directory_prevents_launch(
+        self, tmp_path, monkeypatch
+    ):
+        mgr = _bare_manager(tmp_path / "missing")
+        mgr._benchmark_log_dir = str(tmp_path)
+        mgr._provisioning_processes = {}
+        mgr._benchmark_by_id = {}
+        mgr._config = SimpleNamespace(system_default_container_registry=None)
+        mgr._clientset_getter = lambda: SimpleNamespace(headers={})
+        updates = []
+
+        async def update(_id, **kwargs):
+            updates.append(kwargs)
+            return True
+
+        mgr._update_benchmark_state = update
+        monkeypatch.setattr(
+            bm.multiprocessing,
+            "Process",
+            lambda **_kwargs: pytest.fail("process must not start"),
+        )
+
+        await mgr._start_benchmark(SimpleNamespace(id=6, name="test"))
+
+        assert updates[0]["state"] == bm_schemas.BenchmarkStateEnum.ERROR
+        assert "No such file or directory" in updates[0]["state_message"]
+
+    @pytest.mark.asyncio
+    async def test_file_removed_after_listing_does_not_prevent_launch(
+        self, tmp_path, monkeypatch
+    ):
+        benchmark_dir = tmp_path / "benchmarks"
+        benchmark_dir.mkdir()
+        stale = benchmark_dir / "6__p9.json"
+        stale.write_text("old")
+
+        mgr = _bare_manager(benchmark_dir)
+        mgr._benchmark_log_dir = str(tmp_path)
+        mgr._provisioning_processes = {}
+        mgr._benchmark_by_id = {}
+        mgr._clientset_getter = lambda: SimpleNamespace(headers={})
+        mgr._config = SimpleNamespace(system_default_container_registry=None)
+        mgr._set_active_benchmark = lambda _id: None
+        started = []
+
+        class Process:
+            pid = 123
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def start(self):
+                started.append(True)
+
+        def remove(path):
+            stale.unlink()
+            raise FileNotFoundError(path)
+
+        monkeypatch.setattr(bm.os, "remove", remove)
+        monkeypatch.setattr(bm.multiprocessing, "Process", Process)
+        monkeypatch.setattr(
+            bm.registration, "determine_default_registry", lambda _registry: None
+        )
+
+        async def update(_id, **_kwargs):
+            return True
+
+        mgr._update_benchmark_state = update
+        await mgr._start_benchmark(SimpleNamespace(id=6, name="test"))
+
+        assert started == [True]
+        assert not stale.exists()
+
+
 class TestFinalizePartialAnalysis:
     """A run that ends any way OTHER than completion still has to drop the
     `in_progress` tag: the row will never change again, so a snapshot labelled

@@ -74,6 +74,25 @@ def list_point_files(benchmark_dir: str, benchmark_id: int) -> List[str]:
     return sorted(names, key=point_file_index)
 
 
+def list_benchmark_files(benchmark_dir: str, benchmark_id: int) -> List[str]:
+    """List result artifacts owned by one benchmark ID.
+
+    Args:
+        benchmark_dir: Directory shared by benchmark runs.
+        benchmark_id: ID whose old artifacts must be removed before a new run.
+
+    Returns:
+        Names of the benchmark's JSON reports and sidecars.
+    """
+    prefix = f"{benchmark_id}__"
+    single = {f"{benchmark_id}.json", f"{benchmark_id}.full.json"}
+    return [
+        name
+        for name in os.listdir(benchmark_dir)
+        if name in single or (name.startswith(prefix) and name.endswith(".json"))
+    ]
+
+
 def stage_report_path(benchmark_dir: str, benchmark_id: int, stage_index: int) -> str:
     """The report for one manual stage (one single-rate run)."""
     return f"{benchmark_dir}/{benchmark_id}__stage{stage_index}.json"
