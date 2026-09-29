@@ -22,6 +22,7 @@ from gpustack.schemas.common import (
 from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolumeSpec,
 )
+from gpustack.schemas.gpu_instance_types import GPUInstanceTypePublic
 
 
 class GPUInstancePort(BaseModel):
@@ -902,6 +903,16 @@ class GPUInstancePublic(GPUInstanceCreate, PublicFields):
     """
     Server-stamped snapshot of the GPU instance type this instance was created
     against (``sha1:<hexdigest>``). Read-only; never accepted as a client input.
+    """
+
+    type_snapshot_detail: Optional[GPUInstanceTypePublic] = None
+    """
+    Resolved read-only summary of the GPU instance type this instance was
+    created against, joined from the persisted ``gpu_instance_types`` row by
+    the ``type_snapshot`` key. Carries the type's ``name``, ``spec`` and
+    observed ``status.detail`` so clients can render the instance's type
+    without relying on ``description``; ``None`` when the stamped type row no
+    longer exists. Read-only; never accepted as a client input.
     """
 
 

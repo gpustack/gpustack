@@ -346,6 +346,13 @@ async def test_gpu_instance_create_allows_granted_cluster(monkeypatch):
     monkeypatch.setattr(
         gpu_instances_route.GPUInstance, "create", AsyncMock(return_value=created)
     )
+    # The response payload carries the resolved type summary; resolution is
+    # covered elsewhere, so the route returns the created row untouched here.
+    monkeypatch.setattr(
+        gpu_instances_route,
+        "_to_public_with_type",
+        AsyncMock(side_effect=lambda session, instance: instance),
+    )
 
     create_obj = SimpleNamespace(
         owner_principal_id=CALLER_PRINCIPAL,

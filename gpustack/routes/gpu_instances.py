@@ -31,9 +31,10 @@ Route → target phase:
 """
 
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends
+from sqlmodel import select
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
@@ -78,7 +79,9 @@ from gpustack.schemas.gpu_instances import (
     GPUInstanceStatus,
     GPUInstanceVolume,
 )
+from gpustack.schemas.gpu_instance_types import GPUInstanceTypePublic
 from gpustack.schemas.principals import platform_principal_id
+from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -112,12 +115,13 @@ async def get_gpu_instances(
             GPUInstance.streaming(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
+                event_transform=_inject_type_snapshot_detail_into_event,
             ),
             media_type="text/event-stream",
         )
 
     async with async_session() as session:
-        return await GPUInstance.paginated_by_query(
+        paginated = await GPUInstance.paginated_by_query(
             session=session,
             fields=fields,
             fuzzy_fields=fuzzy_fields,
@@ -127,6 +131,14 @@ async def get_gpu_instances(
             page=params.page,
             per_page=params.perPage,
         )
+        type_rows = await _types_by_snapshot(session, paginated.items)
+        return GPUInstancesPublic(
+            items=[
+                _public_with_type_rows(instance, type_rows)
+                for instance in paginated.items
+            ],
+            pagination=paginated.pagination,
+        )
 
 
 @router.get("/{id}", response_model=GPUInstancePublic)
@@ -135,12 +147,15 @@ async def get_gpu_instance(
     ctx: TenantContextDep,
     id: int,
 ):
-    return ensure_visible(
-        await GPUInstance.one_by_id(
-            session=session,
-            id=id,
+    return await _to_public_with_type(
+        session,
+        ensure_visible(
+            await GPUInstance.one_by_id(
+                session=session,
+                id=id,
+            ),
+            ctx,
         ),
-        ctx,
     )
 
 
@@ -204,9 +219,12 @@ async def create_gpu_instance(
     async with handle_error(
         message="Failed to create GPU instance",
     ):
-        return await GPUInstance.create(
-            session=session,
-            source=source,
+        return await _to_public_with_type(
+            session,
+            await GPUInstance.create(
+                session=session,
+                source=source,
+            ),
         )
 
 
@@ -227,7 +245,7 @@ async def update_gpu_instance(
 
     source = await _build_update_source(session, ctx, update_obj, ret)
     if not source:
-        return ret
+        return await _to_public_with_type(session, ret)
 
     async with handle_error(
         message="Failed to update GPU instance",
@@ -236,7 +254,7 @@ async def update_gpu_instance(
             session=session,
             source=source,
         )
-        return ret
+        return await _to_public_with_type(session, ret)
 
 
 @router.delete("/{id}", status_code=202, response_model=GPUInstancePublic)
@@ -487,6 +505,80 @@ async def _resolve_type_snapshot(
     return row.snapshot
 
 
+async def _types_by_snapshot(
+    session: AsyncSession,
+    instances: List[Union[GPUInstance, GPUInstancePublic]],
+) -> Dict[str, GPUInstanceType]:
+    """``{snapshot: row}`` for every type stamped on the given instances, in
+    one query.
+
+    The key is each instance's own server-stamped ``type_snapshot`` — never a
+    client input — and it is globally unique
+    (``uq_gpu_instance_type_snapshot``), so a resolved row is exactly the
+    definition the visible instance was stamped against. The summary therefore
+    inherits the instance's own visibility and cannot cross tenants.
+    Soft-deleted types still resolve: the instance legitimately points at the
+    definition it was created against.
+    """
+    snapshots = sorted({i.type_snapshot for i in instances if i.type_snapshot})
+    if not snapshots:
+        return {}
+    rows = await session.exec(
+        select(GPUInstanceType).where(GPUInstanceType.snapshot.in_(snapshots))
+    )
+    return {row.snapshot: row for row in rows.all()}
+
+
+def _type_summary_detail(
+    row: GPUInstanceType,
+) -> Optional[GPUInstanceTypePublic]:
+    """Project a persisted type row into the read-only summary carried by
+    ``GPUInstancePublic.type_snapshot_detail``."""
+    return GPUInstanceTypePublic.model_validate(row, from_attributes=True)
+
+
+def _public_with_type_rows(
+    instance: GPUInstance, type_rows: Dict[str, GPUInstanceType]
+) -> GPUInstancePublic:
+    """Build the public payload carrying the resolved type summary, so every
+    response renders the instance's type from the definition the server
+    stamped rather than from ``description``."""
+    public = GPUInstancePublic.model_validate(instance, from_attributes=True)
+    row = type_rows.get(instance.type_snapshot or "")
+    if row is not None:
+        public.type_snapshot_detail = _type_summary_detail(row)
+    return public
+
+
+async def _to_public_with_type(
+    session: AsyncSession, instance: GPUInstance
+) -> GPUInstancePublic:
+    """Resolve the stamped snapshot to its type row and attach the summary to
+    the public payload (single-row routes)."""
+    return _public_with_type_rows(
+        instance, await _types_by_snapshot(session, [instance])
+    )
+
+
+async def _inject_type_snapshot_detail_into_event(event) -> None:
+    """Populate ``type_snapshot_detail`` on a watch event so the streamed
+    payload matches the REST response — otherwise a UI in watch mode would
+    overwrite a fully rendered row with one missing the type summary."""
+    if event.type == EventType.DELETED:
+        return
+    instance = event.data
+    if not isinstance(instance, GPUInstancePublic) or instance.id is None:
+        return
+    if not instance.type_snapshot:
+        return
+    async with async_session() as session:
+        row = (await _types_by_snapshot(session, [instance])).get(
+            instance.type_snapshot
+        )
+    if row is not None:
+        instance.type_snapshot_detail = _type_summary_detail(row)
+
+
 def _build_create_source(
     create_obj: GPUInstanceCreate,
     creator_id: int,
@@ -633,9 +725,10 @@ async def _transition_to_phase(
     action: str,
     target_phase: str,
     fail_message: str,
-) -> GPUInstance:
+) -> GPUInstancePublic:
     """Load + ownership-check the row, gate the transition by ``action``,
-    stamp the target phase, and persist. Returns the updated row."""
+    stamp the target phase, and persist. Returns the updated payload with its
+    resolved type summary."""
     ret = ensure_writable(
         await GPUInstance.one_by_id(
             session=session,
@@ -669,4 +762,4 @@ async def _transition_to_phase(
             session=session,
             source=source,
         )
-        return ret
+        return await _to_public_with_type(session, ret)
