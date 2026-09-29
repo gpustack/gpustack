@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
+from gpustack.schemas.models import ModelInstance
 from gpustack.config.config import Config
 from gpustack.scheduler import port_budget
 from gpustack.policies.base import MemberResourceClaim, WorkerFilterChain
@@ -45,12 +46,12 @@ from gpustack.policies.worker_filters.pd_mode_filter import PDModeRuntimeFilter
 from gpustack.policies.worker_filters.status_filter import StatusFilter
 from gpustack.schemas.models import (
     Model,
-    ModelInstance,
     role_effective_model,
     role_container_resources,
     role_takes_no_accelerator,
 )
 from gpustack.schemas.workers import Worker
+from gpustack.policies.resource_view import ResourceView
 from gpustack.scheduler.offer_slot import _stand_in_for, count_offer_slots
 
 logger = logging.getLogger(__name__)
@@ -101,12 +102,16 @@ class GroupCapacity:
         workers: Sequence[Worker],
         model_instances: Sequence[ModelInstance],
         cache_instances: Sequence[object] = (),
+        *,
+        resource_view: ResourceView,
     ):
         self._config = config
         self._model = model
         self._workers = {w.id: w for w in workers}
-        self._model_instances = list(model_instances)
+        # Cache bindings contribute ports; RAM/VRAM come from resource_view.
         self._cache_instances = list(cache_instances)
+        self._model_instances = list(model_instances)
+        self._resource_view = resource_view.with_model_instances(self._model_instances)
         # worker_id -> ports already spoken for there. Computed on first use
         # and kept, because a solve asks about the same workers once per role.
         self._ports_taken: Dict[int, int] = {}
@@ -816,6 +821,7 @@ class GroupCapacity:
             instances,
             cpu_only=cpu_only,
             ram_claim=ram_claim,
+            resource_view=self._resource_view.with_model_instances(instances),
         )
 
     def _limit_for(self, role: str) -> int:

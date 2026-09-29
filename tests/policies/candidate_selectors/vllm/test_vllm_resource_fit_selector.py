@@ -1,3 +1,4 @@
+from gpustack.policies.resource_view import ResourceView
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -595,15 +596,16 @@ async def test_select_candidates(
 
         mis = []
 
-        resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-        placement_scorer = PlacementScorer(m, mis)
+        resource_fit_selector = VLLMResourceFitSelector(
+            config, m, mis, resource_view=ResourceView(mis)
+        )
+        placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await placement_scorer.score(actual_candidates)
-        # find_candidate takes a session only to resolve a draft model's source, and
-        # returns before touching it when the model declares no speculative decoding.
+        # Supply the complete resource view so selection does not query storage.
         actual_candidate, _ = await scheduler.find_candidate(
-            None, config, m, workers, mis
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
         )
 
         try:
@@ -859,13 +861,15 @@ async def test_select_candidates_headless(
 
         mis = []
 
-        resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-        placement_scorer = PlacementScorer(m, mis)
+        resource_fit_selector = VLLMResourceFitSelector(
+            config, m, mis, resource_view=ResourceView(mis)
+        )
+        placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await placement_scorer.score(actual_candidates)
         actual_candidate, _ = await scheduler.find_candidate(
-            None, config, m, workers, mis
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
         )
 
         try:
@@ -1110,13 +1114,15 @@ async def test_select_candidates_from_different_gpu_types(
     ):
         m.backend = BackendEnum.VLLM.value
         mis = []
-        resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-        scorer = PlacementScorer(m, mis)
+        resource_fit_selector = VLLMResourceFitSelector(
+            config, m, mis, resource_view=ResourceView(mis)
+        )
+        scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await scorer.score(actual_candidates)
         actual_candidate, _ = await scheduler.find_candidate(
-            None, config, m, workers, mis
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
         )
 
         try:
@@ -1155,8 +1161,10 @@ async def test_auto_schedule_single_work_single_gpu(config):
         ),
     ]
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1236,8 +1244,10 @@ async def test_auto_schedule_single_work_multi_gpu(
     m = model
     mis = []
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     original_init_model_params = resource_fit_selector._init_model_parameters
 
@@ -1291,7 +1301,9 @@ async def test_tp_divisibility_checks_vision_heads_for_vllm(config):
     )
     m.backend = BackendEnum.VLLM
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, [])
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, [], resource_view=ResourceView([])
+    )
     resource_fit_selector._num_attention_heads = 0
     resource_fit_selector._vision_num_attention_heads = 16
     resource_fit_selector._model_params.vocab_size = None
@@ -1322,7 +1334,9 @@ async def test_tp_divisibility_skips_vision_heads_in_language_only_mode_for_vllm
     )
     m.backend = BackendEnum.VLLM
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, [])
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, [], resource_view=ResourceView([])
+    )
     resource_fit_selector._num_attention_heads = 0
     resource_fit_selector._vision_num_attention_heads = 16
     resource_fit_selector._model_params.vocab_size = None
@@ -1339,8 +1353,10 @@ async def test_auto_schedule_multi_work_multi_gpu(config):
     m = make_model(2, None, "Qwen/Qwen3-32B")
     mis = []
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1415,11 +1431,15 @@ async def test_manual_schedule_multi_work_multi_gpu(config):
         ),
     ]
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
-    resource_fit_selector2 = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer2 = PlacementScorer(m, mis)
+    resource_fit_selector2 = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer2 = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1676,8 +1696,10 @@ async def test_output_schedule_msg(config, index, workers, model, expect_msg):
     m = model
     mis = []
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1750,8 +1772,10 @@ async def test_lora_vram_claim_in_output_schedule_msg(config):
     )
     mis = []
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1835,10 +1859,10 @@ async def test_a_shared_kv_cache_books_no_host_ram(config):
         ),
     ):
         local_candidates = await VLLMResourceFitSelector(
-            config, local, []
+            config, local, [], resource_view=ResourceView([])
         ).select_candidates(workers)
         shared_candidates = await VLLMResourceFitSelector(
-            config, shared, []
+            config, shared, [], resource_view=ResourceView([])
         ).select_candidates(workers)
 
     assert len(local_candidates) == 1 and len(shared_candidates) == 1
@@ -1869,7 +1893,7 @@ async def test_a_member_is_priced_by_what_it_reserves_not_by_its_weights(config)
         cpu_offloading=False,
     )
     m.backend = BackendEnum.VLLM.value
-    selector = VLLMResourceFitSelector(config, m, [])
+    selector = VLLMResourceFitSelector(config, m, [], resource_view=ResourceView([]))
 
     with (
         patch(

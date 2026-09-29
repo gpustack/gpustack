@@ -22,7 +22,7 @@ from gpustack.scheduler import scheduler
 from gpustack.scheduler.calculator import get_pretrained_config_with_workers
 from gpustack.server.catalog import get_catalog_spec_by_source_key
 from gpustack.server.cache_provider_catalog import get_cache_provider
-from gpustack.schemas.cache_services import CacheService
+from gpustack.schemas.cache_services import CacheService, CacheServiceInstance
 from gpustack.schemas.clusters import Cluster
 from gpustack.policies.base import MemberResourceClaim
 from gpustack.schemas.model_evaluations import (
@@ -43,6 +43,10 @@ from gpustack.schemas.models import (
     role_takes_no_accelerator,
 )
 from gpustack.schemas.principals import _platform_principal_id
+from gpustack.server.cache_service_resources import (
+    cache_resource_reservations,
+)
+from gpustack.policies.resource_view import ResourceView
 from gpustack.scheduler.group_capacity import (
     GroupCapacity,
     attendant_demands,
@@ -181,7 +185,9 @@ async def evaluate_models(
 
 
 def make_hashable_key(
-    model: ModelSpec, workers: List[Worker], extra: Optional[str] = None
+    model: ModelSpec,
+    workers: List[Worker],
+    extra: Optional[Dict[str, Any]] = None,
 ) -> str:
     key_data = json.dumps(
         {
@@ -294,8 +300,19 @@ async def evaluate_model_with_cache(
     try:
         # Fetched once: it keys the cache, and the evaluation reads it again.
         cache_service = await visible_cache_service(session, model)
+        cache_instances = await cache_instances_in(
+            session, cluster_id, worker_ids=[worker.id for worker in workers]
+        )
+        resource_view = ResourceView(
+            model_instances, cache_resource_reservations(cache_instances)
+        )
         cache_key = make_hashable_key(
-            model, workers, cache_service_verdict_key(cache_service)
+            model,
+            workers,
+            extra={
+                "cache_service": cache_service_verdict_key(cache_service),
+                "reservations": resource_view.reservation_key(),
+            },
         )
         if cache_key in evaluate_cache:
             logger.trace(
@@ -312,6 +329,8 @@ async def evaluate_model_with_cache(
                 model_instances,
                 cluster_id=cluster_id,
                 cache_service=cache_service,
+                resource_view=resource_view,
+                cache_instances=cache_instances,
             )
             evaluate_cache[cache_key] = result
     except Exception as e:
@@ -334,6 +353,8 @@ async def evaluate_model(
     model_instances: List[ModelInstance],
     cluster_id: Optional[int] = None,
     cache_service: Optional[CacheService] = None,
+    resource_view: Optional[ResourceView] = None,
+    cache_instances: Optional[List[CacheServiceInstance]] = None,
 ) -> ModelEvaluationResult:
     result = ModelEvaluationResult()
 
@@ -386,6 +407,12 @@ async def evaluate_model(
                 cluster_workers,
                 cluster_model_instances,
                 cluster_id,
+                resource_view=resource_view,
+                cache_instances=(
+                    [i for i in cache_instances if i.cluster_id == cluster_id]
+                    if cache_instances is not None
+                    else None
+                ),
             )
             if group.total is None:
                 result.scheduling_messages.extend(group.messages)
@@ -397,7 +424,12 @@ async def evaluate_model(
             continue
 
         candidate, schedule_messages = await scheduler.find_candidate(
-            session, config, model, cluster_workers, cluster_model_instances
+            session,
+            config,
+            model,
+            cluster_workers,
+            cluster_model_instances,
+            resource_view=resource_view,
         )
         if not candidate:
             result.scheduling_messages.extend(schedule_messages)
@@ -461,6 +493,8 @@ async def evaluate_group(
     workers: List[Worker],
     model_instances: List[ModelInstance],
     cluster_id: int,
+    resource_view: Optional[ResourceView] = None,
+    cache_instances: Optional[List[CacheServiceInstance]] = None,
 ) -> GroupEvaluation:
     """What the whole group would claim in this cluster, or why it cannot land.
 
@@ -547,9 +581,23 @@ async def evaluate_group(
     except TopologyError as e:
         return GroupEvaluation(messages=[f"Cluster topology is invalid: {e}"])
 
-    cache_instances = await cache_instances_in(session, cluster_id)
+    if cache_instances is None:
+        cache_instances = await cache_instances_in(
+            session, cluster_id, worker_ids=[worker.id for worker in workers]
+        )
+    if resource_view is None:
+        resource_view = ResourceView(
+            model_instances, cache_resource_reservations(cache_instances)
+        )
+    else:
+        resource_view = resource_view.with_model_instances(model_instances)
     capacity = GroupCapacity(
-        config, group_model, workers, model_instances, cache_instances
+        config,
+        group_model,
+        workers,
+        model_instances,
+        cache_instances,
+        resource_view=resource_view,
     )
     placement = await solve_group_placement(
         view.root,

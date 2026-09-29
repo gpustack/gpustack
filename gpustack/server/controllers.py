@@ -26,6 +26,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
+from gpustack.server.cache_service_resources import load_resource_view
 from gpustack.config.config import (
     Config,
     get_cluster_image_name,
@@ -95,6 +96,7 @@ from gpustack.schemas.config import (
     GatewayModeEnum,
     SensitivePredefinedConfig,
 )
+from gpustack.schemas.cache_service_resources import cache_service_resource_claim
 from gpustack.schemas.cache_services import (
     cache_service_spec_digest,
     CacheService,
@@ -681,8 +683,8 @@ class CacheServiceController:
     (narrowed to workers matching the service's worker_selector labels when
     one is set), following workers as they join and leave. Instances whose
     worker left the desired set are hard-deleted; their workloads are
-    cleaned up by the worker-side orphan cleaner. External services are
-    untouched.
+    stopped by the workers consuming their deletion events. The orphan
+    cleaner provides a fallback. External services are untouched.
     """
 
     RESYNC_INTERVAL_SECONDS = 60
@@ -716,8 +718,8 @@ class CacheServiceController:
     async def _watch_cache_services(self):
         async for event in CacheService.subscribe(source="cache_service_controller"):
             if event.type not in (EventType.CREATED, EventType.UPDATED):
-                # Service deletion is a hard delete; the instances table's
-                # ON DELETE CASCADE drops the rows with it.
+                # ActiveRecord's cascade deletes the instances and publishes
+                # their deletion events in the service's transaction.
                 continue
             cache_service: CacheService = event.data
             if cache_service is None:
@@ -998,6 +1000,19 @@ class CacheServiceController:
         instances = await CacheServiceInstance.all_by_fields(
             session, {"cache_service_id": service.id}
         )
+        if provider is not None:
+            for instance in instances:
+                if (
+                    instance.computed_resource_claim is None
+                    and instance.spec_digest == cache_service_spec_digest(service)
+                ):
+                    claim = cache_service_resource_claim(
+                        service, provider, instance.component
+                    )
+                    if claim is not None:
+                        await instance.update(
+                            session, {"computed_resource_claim": claim}
+                        )
         desired_by_component, error_message, reconcile = (
             await self._desired_component_workers(session, service, instances, provider)
         )
@@ -1115,6 +1130,11 @@ class CacheServiceController:
                         component_addresses=instance_addresses,
                         state=CacheServiceStateEnum.PENDING,
                         spec_digest=cache_service_spec_digest(service),
+                        computed_resource_claim=(
+                            cache_service_resource_claim(service, provider, component)
+                            if provider
+                            else None
+                        ),
                     ),
                 )
                 logger.info(
@@ -1431,21 +1451,51 @@ class CacheServiceController:
         # reconciles the instance set, not the spec; recovery is
         # delete-to-recreate) — say so instead of silently returning the
         # new spec from the API while containers run the old one.
-        # Instances predating the digest (None) are never flagged.
+        # A missing digest alone does not establish drift; resource claims
+        # are compared separately against the current declaration.
         current_digest = cache_service_spec_digest(service)
-        if any(
+        spec_drifted = any(
             instance.spec_digest and instance.spec_digest != current_digest
             for instance in instances
-        ):
-            drift_message = (
-                "configuration changed after instances started; delete "
-                "instances to recreate them with the current configuration"
+        )
+        if spec_drifted or self._resource_claims_drifted(service, provider, instances):
+            reason = (
+                "configuration changed after instances started"
+                if spec_drifted
+                else "resource reservation is missing or differs from the current declaration"
             )
+            drift_message = f"{reason}; delete instances to recreate them with the current configuration"
             message = f"{message}; {drift_message}" if message else drift_message
 
         await self._set_service_state(
             session, service, state=state, state_message=message, healthy=healthy
         )
+
+    @staticmethod
+    def _resource_claims_drifted(service, provider, instances) -> bool:
+        """Keep running reservations fixed and surface declaration changes for recreation."""
+        if provider is None:
+            return False
+        # TODO: Unified workloads should retain their resolved launch spec so
+        # legacy reservations can be reconstructed without guessing capacity.
+        claims = {}
+        for instance in instances:
+            if instance.computed_resource_claim is None and instance.state not in (
+                CacheServiceStateEnum.RUNNING,
+                CacheServiceStateEnum.ERROR,
+            ):
+                continue
+            component = instance.component or ""
+            if component not in claims:
+                try:
+                    claims[component] = cache_service_resource_claim(
+                        service, provider, component
+                    )
+                except ValueError:
+                    return True
+            if instance.computed_resource_claim != claims[component]:
+                return True
+        return False
 
     async def _set_service_state(
         self,
@@ -2814,12 +2864,17 @@ async def find_scale_down_candidates(
                 )
             )
 
+        async with async_session() as session:
+            resource_view = await load_resource_view(
+                session, instances, cluster_id=model.cluster_id
+            )
         scorers.append(
             PlacementScorer(
                 model,
                 instances,
                 scale_type=ScaleTypeEnum.SCALE_DOWN,
                 max_score=placement_max_score,
+                resource_view=resource_view,
             )
         )
 
@@ -3590,10 +3645,9 @@ async def _degradation_reasons(
     looks at neither the cache nor the ratio -- which is the whole reason they
     are a separate list rather than a state.
 
-    `state` is taken rather than re-derived, and only the ratio reads it: the
-    markers below describe placement or configuration and are true whether or
-    not the deployment is serving, while "short of the shape you asked for"
-    says something about the service itself.
+    `state` is taken rather than re-derived, and only the ratio reads it.
+    Cache degradation comes from running instances' startup snapshots;
+    placement and configuration markers can apply before the deployment serves.
 
     Returns the reasons and a possibly-extended `state_message`: one of them
     (the cache) carries a detail worth putting in front of the user, and
@@ -4085,11 +4139,14 @@ async def sync_model_status(session: AsyncSession, model: Model) -> bool:  # noq
                 ready_by_role[instance.role] = ready_by_role.get(instance.role, 0) + 1
         elif instance.state == ModelInstanceStateEnum.ERROR:
             error_count += 1
-        # A resolved cache the instance could not attach to is a degradation,
-        # not a failure: the instance starts anyway, just without the shared
-        # cache. `cache_config` is None when no cache service was
-        # selected at all, which is not a degradation.
-        if instance.cache_config is not None and not instance.cache_config.injected:
+        # Only a running engine can be degraded by missing its shared cache.
+        # Before startup, the snapshot is provisional: placement supplies the
+        # worker, and cache readiness can refresh it before the engine starts.
+        if (
+            instance.state == ModelInstanceStateEnum.RUNNING
+            and instance.cache_config is not None
+            and not instance.cache_config.injected
+        ):
             cache_not_injected = True
             if cache_reason is None:
                 cache_reason = instance.cache_config.reason

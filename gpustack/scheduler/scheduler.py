@@ -10,8 +10,13 @@ from sqlalchemy.orm import selectinload
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from gpustack.policies.candidate_selectors.base_candidate_selector import (
+    ScheduleCandidatesSelector,
+)
 from gpustack.policies.scorers.pairing_affinity_scorer import PairingAffinityScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
+from gpustack.server.cache_service_resources import load_resource_view
+from gpustack.policies.resource_view import ResourceView
 from gpustack.policies.scorers.topology_proximity_scorer import (
     TopologyProximityScorer,
 )
@@ -619,7 +624,9 @@ def build_candidate_selector(
     model_instances: List[ModelInstance],
     cpu_only: bool = False,
     ram_claim: Optional[int] = None,
-):
+    *,
+    resource_view: ResourceView,
+) -> ScheduleCandidatesSelector:
     """Which resource-fit selector answers "does one more member fit here".
 
     Extracted from `find_candidate` so the group scheduler's capacity count can
@@ -646,7 +653,12 @@ def build_candidate_selector(
         # is what leaves it unschedulable on a host whose cards its own peers
         # have just filled.
         return CustomBackendResourceFitSelector(
-            config, model, model_instances, cpu_only=True, ram_claim=ram_claim
+            config,
+            model,
+            model_instances,
+            cpu_only=True,
+            ram_claim=ram_claim,
+            resource_view=resource_view,
         )
     if model.gpu_type_selector:
         # Whole cards and slices are two different questions on the same field.
@@ -661,18 +673,31 @@ def build_candidate_selector(
                 model,
                 model_instances,
                 cards_per_member=_cards_per_member(model),
+                resource_view=resource_view,
             )
-        return VGPUResourceFitSelector(config, model, model_instances)
+        return VGPUResourceFitSelector(
+            config, model, model_instances, resource_view=resource_view
+        )
     if is_gguf_model(model):
-        return GGUFResourceFitSelector(model, model_instances, config.cache_dir)
+        return GGUFResourceFitSelector(
+            model, model_instances, config.cache_dir, resource_view=resource_view
+        )
     if model.backend == BackendEnum.ASCEND_MINDIE:
-        return AscendMindIEResourceFitSelector(config, model, model_instances)
+        return AscendMindIEResourceFitSelector(
+            config, model, model_instances, resource_view=resource_view
+        )
     if model.backend == BackendEnum.VLLM and not is_omni_model(model):
         # Note: Route omni categories to CustomSelector for vLLM-Omni.
-        return VLLMResourceFitSelector(config, model, model_instances)
+        return VLLMResourceFitSelector(
+            config, model, model_instances, resource_view=resource_view
+        )
     if model.backend == BackendEnum.SGLANG:
-        return SGLangResourceFitSelector(config, model, model_instances)
-    return CustomBackendResourceFitSelector(config, model, model_instances)
+        return SGLangResourceFitSelector(
+            config, model, model_instances, resource_view=resource_view
+        )
+    return CustomBackendResourceFitSelector(
+        config, model, model_instances, resource_view=resource_view
+    )
 
 
 def _pairing_affinity_max_score(
@@ -825,6 +850,7 @@ async def find_candidate(
     role: Optional[str] = None,
     exclude_instance_id: Optional[int] = None,
     group_id: Optional[str] = None,
+    resource_view: Optional[ResourceView] = None,
 ) -> Tuple[Optional[ModelInstanceScheduleCandidate], List[str]]:
     """
     Find a schedule candidate for the model instance.
@@ -845,31 +871,20 @@ async def find_candidate(
                 - A list of messages for the scheduling process.
     """
 
-    # An instance may not be weighed against its own claim.
-    #
-    # `get_worker_allocatable_resource` derives a GPU's free VRAM as
-    # `total - sum(claims of every instance on it) - system_reserved`, and the
-    # caller hands it *every* row including the one being placed. A freshly
-    # created instance has `computed_resource_claim = None`, so the sum skips
-    # it and nothing goes wrong, so the ordinary first placement is unaffected.
-    #
-    # It stops holding as soon as an instance is placed, written a claim, and
-    # then returns to PENDING (a retry, a re-deploy, a group re-solve). Now its
-    # own claim is counted against the very GPUs it wants, and because the
-    # claim is `gpu_memory_utilization x total`, allocatable collapses to the
-    # remaining 10%. The GPU then fails the `allocatable/total >=
-    # gpu_memory_utilization` test, every candidate is classed overcommit, and
-    # a multi-replica model refuses overcommit outright. The retry re-reads the
-    # same stale claim, so it never recovers on its own.
-    #
-    # The symptom is a replica stuck PENDING against cards that are empty
-    # apart from its own claim.
-    #
-    # Filtered here and not in `ModelInstance.all()` at the call site: the
-    # group path derives `group_instances` from that same list, and
-    # `is_group_forming` has to be able to see the triggering member.
+    # A retry can retain its previous resource claim. Counting that claim would
+    # make the instance compete with its own reservation and reject otherwise
+    # available workers. Exclude its main and subordinate bindings from both
+    # placement rules and resource accounting.
+    # Keep the caller's instance list intact for group membership checks.
     if exclude_instance_id is not None:
         model_instances = [mi for mi in model_instances if mi.id != exclude_instance_id]
+    resource_view = (
+        resource_view.with_model_instances(model_instances)
+        if resource_view is not None
+        else await load_resource_view(
+            session, model_instances, cluster_id=model.cluster_id
+        )
+    )
 
     # Read before projecting: the answer is a property of the ROLE — the router
     # is a proxy and loads no weights — and the projection flattens the role's
@@ -932,7 +947,12 @@ async def find_candidate(
     # Initialize candidate selector.
     try:
         candidates_selector = build_candidate_selector(
-            config, model, model_instances, cpu_only=cpu_only, ram_claim=ram_claim
+            config,
+            model,
+            model_instances,
+            cpu_only=cpu_only,
+            ram_claim=ram_claim,
+            resource_view=resource_view,
         )
     except Exception as e:
         return None, [f"Failed to initialize {model.backend} candidates selector: {e}"]
@@ -958,7 +978,7 @@ async def find_candidate(
 
     # Score candidates.
     candidate_scorers = [
-        PlacementScorer(model, model_instances),
+        PlacementScorer(model, model_instances, resource_view=resource_view),
     ]
     locality_max_score = envs.SCHEDULER_SCALE_UP_LOCALITY_MAX_SCORE
     if locality_max_score > 0:

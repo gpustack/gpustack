@@ -8,10 +8,8 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import StreamingResponse
 
-from gpustack_runtime.deployer import logs_workload
 
 from gpustack.api.exceptions import BadRequestException, NotFoundException
-from gpustack.schemas.cache_services import cache_service_instance_workload_name
 from gpustack.schemas.models import (
     ModelInstanceLogRestartEntry,
     ServeLogOptionsResponse,
@@ -299,6 +297,8 @@ async def merged_log_generator(  # noqa: C901
         await asyncio.gather(*all_tasks, return_exceptions=True)
 
 
+# TODO: Use a shared workload lifecycle signal to end follow when deployment
+# terminates without producing container output.
 async def combined_log_generator(
     log_dir: Path | str,
     model_instance_id: int,
@@ -532,33 +532,23 @@ async def serve_log_line_range(
 
 @router.get("/cacheServiceInstanceLogs/{instance_id}")
 async def get_cache_service_instance_logs(
+    request: Request,
     instance_id: int,
     log_options: LogOptionsDep,
     cache_service_id: int = Query(),
 ):
-    """Stream a managed cache service instance's container logs.
-
-    Logs are read live from the container runtime rather than from
-    persisted files, so the ``previous`` option has no effect here.
-    """
-    workload_name = cache_service_instance_workload_name(cache_service_id, instance_id)
-
-    def iter_logs():
-        try:
-            logs = logs_workload(
-                name=workload_name,
-                tail=log_options.tail,
-                follow=log_options.follow,
-            )
-        except Exception as e:
-            yield f"Failed to fetch cache service logs: {e}\n"
-            return
-        if isinstance(logs, (bytes, str)):
-            yield logs
-            return
-        yield from logs
-
-    return StreamingResponse(iter_logs(), media_type="application/octet-stream")
+    """Read the cache instance's bounded startup and container archives."""
+    log_dir = request.app.state.config.log_dir
+    if log_options.offset is not None:
+        return await serve_log_line_range(
+            Path(log_dir) / "cache_services", instance_id, "", log_options
+        )
+    return StreamingResponse(
+        combined_log_generator(
+            Path(log_dir) / "cache_services", instance_id, "", log_options, ""
+        ),
+        media_type="application/octet-stream",
+    )
 
 
 @router.get("/benchmark_logs/{id}")

@@ -9,9 +9,11 @@ what the filters and the selector actually receive, and that the selector
 """
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from gpustack.policies.resource_view import ResourceView
 
 from gpustack.scheduler import scheduler
 from gpustack.schemas.models import (
@@ -58,12 +60,13 @@ class _RecordingSelector:
     seen = []
 
     def __init__(self, *args, **kwargs):
-        # The selectors take either (config, model, instances) or
-        # (model, instances, cache_dir); the model is the first Model-ish arg.
+        # Selectors receive the model and its complete resource view.
         self.model = next(a for a in args if hasattr(a, "backend_parameters"))
         # Only the custom selector takes it; recorded so a test can tell "the
         # custom selector was chosen" from "it was chosen for a router".
         self.cpu_only = kwargs.get("cpu_only", False)
+        self.resource_view = kwargs["resource_view"]
+        self.instances = next(a for a in args if isinstance(a, (list, tuple)))
         type(self).seen.append(self)
 
     async def select_candidates(self, workers):
@@ -106,6 +109,9 @@ def harness():
 
     with patch.multiple(
         scheduler,
+        load_resource_view=AsyncMock(
+            side_effect=lambda session, instances, **kwargs: ResourceView(instances)
+        ),
         WorkerFilterChain=_FilterChain,
         CandidateScoreChain=_ScoreChain,
         pick_highest_score_candidate=lambda candidates: None,

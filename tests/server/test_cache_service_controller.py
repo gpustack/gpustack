@@ -100,6 +100,7 @@ def _instance(**overrides):
         component_addresses=None,
         state=CacheServiceStateEnum.PENDING,
         spec_digest=None,
+        computed_resource_claim=None,
         delete=AsyncMock(),
     )
     fields.update(overrides)
@@ -197,6 +198,23 @@ async def test_per_node_creates_instance_per_active_worker(monkeypatch):
     names = [call.args[1].name for call in create.await_args_list]
     assert all(name.startswith("svc-") for name in names)
     assert len(set(names)) == 3
+
+
+@pytest.mark.asyncio
+async def test_creation_records_ram_before_the_worker_can_start(monkeypatch):
+    provider = _provider("per_node")
+    from gpustack.schemas.cache_providers import CacheProviderResourceProfile
+
+    provider.resource_profile = CacheProviderResourceProfile(ram_gib="8")
+    create = _patch_reconcile(
+        monkeypatch, provider, workers=[_worker(5)], instance_lists=[[], []]
+    )
+    await CacheServiceController(MagicMock())._reconcile_service(
+        MagicMock(), _service(worker_id=None)
+    )
+    created = create.await_args.args[1]
+    assert created.state == CacheServiceStateEnum.PENDING
+    assert created.computed_resource_claim == {"ram": 8 * 1024**3}
 
 
 @pytest.mark.asyncio
@@ -1562,3 +1580,39 @@ async def test_a_failed_dependency_is_reported_not_kept_pending(monkeypatch):
     await controller._reconcile_service(MagicMock(), service)
 
     assert updates["state"] == CacheServiceStateEnum.ERROR
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claim", [None, {"ram": 4 * 1024**3}])
+@pytest.mark.parametrize("has_digest", [False, True])
+async def test_aggregate_reports_reservation_drift_without_rewriting_running_claim(
+    claim,
+    has_digest,
+):
+    from gpustack.schemas.cache_providers import CacheProviderResourceProfile
+    from gpustack.schemas.cache_services import cache_service_spec_digest
+
+    service = _service(update=AsyncMock())
+    provider = _provider()
+    provider.resource_profile = CacheProviderResourceProfile(ram_gib="8")
+    instance = _instance(
+        state=CacheServiceStateEnum.RUNNING,
+        spec_digest=cache_service_spec_digest(service) if has_digest else None,
+        computed_resource_claim=claim,
+    )
+    with patch(
+        "gpustack.server.controllers.CacheServiceInstance.all_by_fields",
+        AsyncMock(return_value=[instance]),
+    ):
+        await CacheServiceController(MagicMock())._sync_service_aggregate(
+            MagicMock(), service, provider
+        )
+    assert (
+        "delete instances to recreate"
+        in service.update.call_args.args[1]["state_message"]
+    )
+    assert instance.computed_resource_claim == claim
+    assert "resource reservation" in service.update.call_args.args[1]["state_message"]
+    assert (
+        "configuration changed" not in service.update.call_args.args[1]["state_message"]
+    )

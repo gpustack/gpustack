@@ -379,13 +379,19 @@ class _Capacity(BaseModel):
 async def _worker_capacity(workers) -> Dict[int, _Capacity]:
     """Per worker: how many GPUs it has, and how many carry nothing.
 
-    Allocation comes from ``get_worker_allocated``, which derives it from the
-    current model-instance bindings — the same single source of truth the
+    Allocation comes from ``get_workers_allocated``, which derives it from the
+    current workload bindings — the same single source of truth the
     scheduler and the workers API read. Deriving it here from anything a worker
     self-reports would let the preview and the scheduler disagree about the
     same rack.
     """
-    from gpustack.server.worker_allocated_cache import get_worker_allocated
+    from gpustack.server.worker_allocated_cache import get_workers_allocated
+
+    try:
+        allocations = await get_workers_allocated(worker.id for worker in workers)
+    except Exception:
+        logger.exception("Could not read reservations for topology preview")
+        allocations = {}
 
     out: Dict[int, _Capacity] = {}
     for worker in workers:
@@ -394,7 +400,7 @@ async def _worker_capacity(workers) -> Dict[int, _Capacity]:
         )
         indexes = [d.index for d in devices if d.index is not None]
         try:
-            allocated = await get_worker_allocated(worker.id)
+            allocated = allocations[worker.id]
             used = {
                 index
                 for index, vram in (getattr(allocated, "vram", None) or {}).items()

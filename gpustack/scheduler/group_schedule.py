@@ -30,6 +30,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack import envs
+from gpustack.policies.resource_view import ResourceView
+from gpustack.server.cache_service_resources import cache_resource_reservations
 from gpustack.config.config import Config
 from gpustack.policies.scorers.model_file_locality_scorer import ready_worker_ids
 from gpustack.schemas.clusters import Cluster, GatherStrategyEnum
@@ -164,8 +166,16 @@ async def schedule_group(
     # cluster selector" line the refusal now carries — and a capacity function
     # that measures workers the solver was never offered is one more place for
     # the two to disagree.
+    resource_view = ResourceView(
+        model_instances, cache_resource_reservations(cache_instances)
+    )
     capacity = GroupCapacity(
-        config, model, in_cluster, model_instances, cache_instances
+        config,
+        model,
+        in_cluster,
+        model_instances,
+        cache_instances,
+        resource_view=resource_view,
     )
     # One chain, walked from the host upward. Picking which chain to walk used
     # to be a step here — the layer name was looked up to decide whether the
@@ -280,27 +290,30 @@ async def schedule_group(
     return by_instance, []
 
 
-async def cache_instances_in(session: AsyncSession, cluster_id) -> List[object]:
-    """Cache server instances of this cluster, for the port budget.
+async def cache_instances_in(
+    session: AsyncSession, cluster_id, worker_ids: Optional[List[int]] = None
+) -> List[object]:
+    """Read the cache reservations and ports used by the group's capacity pass.
 
-    Failure is not fatal here and deliberately so: the budget is a refinement
-    of a capacity number that was already correct about cards. Refusing to
-    schedule a group because the cache table could not be read would trade a
-    slightly optimistic port count for an outage.
+    A failed read cannot be treated as an empty resource ledger.
     """
-    if not cluster_id:
-        return []
-    try:
-        from gpustack.schemas.cache_services import CacheServiceInstance
+    from gpustack.schemas.cache_services import CacheServiceInstance
 
+    if worker_ids is not None:
+        if not worker_ids:
+            return []
         return list(
-            await CacheServiceInstance.all_by_field(session, "cluster_id", cluster_id)
+            await CacheServiceInstance.all_by_fields(
+                session,
+                {"cluster_id": cluster_id} if cluster_id is not None else {},
+                extra_conditions=[CacheServiceInstance.worker_id.in_(worker_ids)],
+            )
         )
-    except Exception as e:
-        logger.warning(
-            "Could not read cache service instances for the port budget: %s", e
-        )
-        return []
+    if cluster_id is None:
+        return list(await CacheServiceInstance.all(session))
+    return list(
+        await CacheServiceInstance.all_by_field(session, "cluster_id", cluster_id)
+    )
 
 
 def stand_in(candidate) -> object:

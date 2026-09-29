@@ -3,8 +3,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode, urlparse
 
 import aiohttp
+from sqlalchemy.orm import selectinload
 from fastapi import APIRouter, Request, status
-from fastapi.responses import PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 
 from gpustack import envs
 from gpustack.api.exceptions import (
@@ -29,6 +30,7 @@ from gpustack.schemas.cache_providers import (
     localized_default,
     resolved_field_values,
 )
+from gpustack.schemas.cache_service_resources import cache_service_resource_claim
 from gpustack.schemas.cache_services import (
     CacheServiceAttachedMetrics,
     CacheServiceMetricsPublic,
@@ -63,7 +65,7 @@ from gpustack.server.cache_service_metrics import (
     parse_window as parse_metrics_window,
 )
 from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
-from gpustack.server.worker_request import request_to_worker, stream_to_worker
+from gpustack.server.worker_request import stream_to_worker
 from gpustack.utils.grafana import resolve_grafana_base_url
 from gpustack.worker.logs import LogOptionsDep
 
@@ -472,42 +474,39 @@ async def _proxy_instance_logs(
         "cache_service_id": instance.cache_service_id,
     }
 
-    if log_options.follow:
-
-        def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
-            msg = (
-                str(e)
-                if not isinstance(e, TimeoutError)
-                else f"Log stream timed out ({t.total} seconds). Please reopen the log page."
+    if log_options.previous:
+        params["previous"] = True
+    if log_options.offset is not None:
+        if log_options.follow or log_options.tail > 0:
+            raise BadRequestException(
+                message="offset cannot be combined with tail or follow"
             )
-            return f"\x1b[999;1H{msg}\n", status.HTTP_500_INTERNAL_SERVER_ERROR
+        params.update(offset=log_options.offset, limit=log_options.limit)
+    if not log_options.follow:
+        # A bounded-memory download can outlast a total request deadline.
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=120)
 
-        return StreamingResponseWithStatusCode(
-            stream_to_worker(
-                worker=worker,
-                method="GET",
-                path=f"cacheServiceInstanceLogs/{instance.id}",
-                proxy_client=request.app.state.http_client,
-                no_proxy_client=request.app.state.http_client_no_proxy,
-                params=params,
-                timeout=timeout,
-                on_exception=on_exception,
-                raw=True,
-            ),
-            media_type="application/octet-stream",
+    def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
+        msg = (
+            str(e)
+            if not isinstance(e, TimeoutError)
+            else "Log stream timed out. Please reopen the log page."
         )
+        return f"{msg}\n", status.HTTP_500_INTERNAL_SERVER_ERROR
 
-    resp, body = await request_to_worker(
-        worker=worker,
-        method="GET",
-        path=f"cacheServiceInstanceLogs/{instance.id}",
-        proxy_client=request.app.state.http_client,
-        no_proxy_client=request.app.state.http_client_no_proxy,
-        params=params,
-        timeout=timeout,
-    )
-    return PlainTextResponse(
-        content=body.decode() if body else "", status_code=resp.status
+    return StreamingResponseWithStatusCode(
+        stream_to_worker(
+            worker=worker,
+            method="GET",
+            path=f"cacheServiceInstanceLogs/{instance.id}",
+            proxy_client=request.app.state.http_client,
+            no_proxy_client=request.app.state.http_client_no_proxy,
+            params=params,
+            timeout=timeout,
+            on_exception=on_exception,
+            raw=True,
+        ),
+        media_type="application/octet-stream",
     )
 
 
@@ -737,6 +736,19 @@ async def get_cache_service(
         return cache_service
     provider = await get_cache_provider(session, cache_service.provider_name)
     return _redacted_for_user(cache_service, provider)
+
+
+def _validate_resource_claims(service, provider) -> None:
+    if provider is None:
+        return
+    config_fields = service.config.fields if service.config else None
+    try:
+        for component in provider.components or {"": None}:
+            if component and not provider.component_enabled(component, config_fields):
+                continue
+            cache_service_resource_claim(service, provider, component)
+    except ValueError as e:
+        raise BadRequestException(message=str(e))
 
 
 def _validate_cache_service_provider(
@@ -1288,6 +1300,7 @@ async def create_cache_service(
     _validate_cache_service_config(cache_service_in, provider)
     _validate_management_url(cache_service_in, provider)
     _validate_fields(cache_service_in, provider)
+    _validate_resource_claims(cache_service_in, provider)
     _validate_cache_service_l2_storage(cache_service_in, provider)
     _validate_cache_service_worker_selector(cache_service_in)
     _reject_placeholder_secrets(cache_service_in, provider)
@@ -1385,6 +1398,22 @@ async def update_cache_service(
             stored=(cache_service.config.fields if cache_service.config else None),
             enforce_required=not is_system,
         )
+        # User edits always validate the effective spec; runtime-only worker
+        # updates must still work when the stored declaration cannot be resolved.
+        if (
+            not is_system
+            or {"config", "provider_version"} & cache_service_in.model_fields_set
+        ):
+            effective = CacheServiceBase.model_validate(
+                cache_service, from_attributes=True
+            )
+            effective = CacheServiceBase.model_validate(
+                {
+                    **effective.model_dump(),
+                    **cache_service_in.model_dump(exclude_unset=True),
+                }
+            )
+            _validate_resource_claims(effective, provider)
         _validate_cache_service_l2_storage(cache_service_in, provider)
     elif is_system:
         # A worker reporting what happened to a service that can no longer
@@ -1447,7 +1476,9 @@ async def _models_referencing_cache_service(
 
 @router.delete("/{id}")
 async def delete_cache_service(session: SessionDep, ctx: TenantContextDep, id: int):
-    cache_service = await CacheService.one_by_id(session, id)
+    cache_service = await CacheService.one_by_id(
+        session, id, options=[selectinload(CacheService.instances)]
+    )
     assert_resource_visible(
         ctx, cache_service, not_found_message="Cache service not found"
     )

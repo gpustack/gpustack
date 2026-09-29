@@ -31,16 +31,17 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
+from gpustack.policies.resource_view import ResourceView
 from gpustack.config.config import Config
 from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack.policies.candidate_selectors.vgpu_resource_fit_selector import (
     VGPUResourceFitSelector,
 )
 from gpustack.schemas.models import (
+    ModelInstance,
     ComputedResourceClaim,
     GPUTypeSelector,
     Model,
-    ModelInstance,
 )
 from gpustack.schemas.workers import Worker
 
@@ -74,8 +75,10 @@ class InstanceTypeWholeCardSelector(VGPUResourceFitSelector):
         model: Model,
         model_instances: List[ModelInstance],
         cards_per_member: int = 1,
+        *,
+        resource_view: ResourceView,
     ):
-        super().__init__(config, model, model_instances)
+        super().__init__(config, model, model_instances, resource_view=resource_view)
         # Never below one: a member that occupies an accelerator occupies at
         # least one, and a zero here would make the claim empty and the worker
         # look free.

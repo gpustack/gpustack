@@ -6,11 +6,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from gpustack.config import Config
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
 from gpustack.schemas.models import (
+    ModelInstance,
     BackendEnum,
     CategoryEnum,
     ComputedResourceClaim,
     Model,
-    ModelInstance,
     ModelInstanceSubordinateWorker,
     is_omni_model,
 )
@@ -22,6 +22,7 @@ from gpustack.utils.gpu import (
     group_gpu_ids_by_worker,
     group_gpu_indexes_by_gpu_type_and_worker,
 )
+from gpustack.policies.resource_view import ResourceView
 from gpustack.policies.base import (
     Allocatable,
     MemberResourceClaim,
@@ -32,7 +33,6 @@ from gpustack.policies.utils import (
     get_computed_ram_claim,
     get_model_num_attention_heads,
     get_model_vision_num_attention_heads,
-    get_worker_allocatable_resource,
     get_worker_model_instances,
     should_skip_gpu_count_check,
     sort_gpu_indexes_by_allocatable_rate,
@@ -198,10 +198,13 @@ class ScheduleCandidatesSelector(ABC):
         config: Config,
         model: Model,
         model_instances: List[ModelInstance],
+        *,
+        resource_view: ResourceView,
     ):
         self._config = config
         self._model = model
         self._model_instances = model_instances
+        self._resource_view = resource_view
         self._model_params = ModelParameters()
         self._num_attention_heads = 0
         self._vision_num_attention_heads = 0
@@ -348,9 +351,7 @@ class ScheduleCandidatesSelector(ABC):
         if allocatable is not None:
             return allocatable
 
-        allocatable = get_worker_allocatable_resource(
-            self._model_instances, worker, gpu_type
-        )
+        allocatable = self._resource_view.allocatable(worker, gpu_type)
         self._workers_allocatable_resource_by_gpu_type.setdefault(
             gpu_type, {}
         ).setdefault(worker.id, allocatable)

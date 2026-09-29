@@ -54,6 +54,7 @@ from gpustack.schemas.workers import (
 from gpustack.server.bus import Event, EventType
 from gpustack.server.worker_allocated_cache import (
     get_worker_allocated,
+    get_workers_allocated,
     vram_allocated_for_index,
 )
 from gpustack.schemas.clusters import (
@@ -255,11 +256,14 @@ async def get_workers(
             order_by=_normalize_worker_order_by(params.order_by),
         )
         me_id = user.worker.id if user.worker else None
+        allocations = await get_workers_allocated(
+            worker.id for worker in worker_list.items
+        )
         public_list = [
             to_worker_public(
                 worker,
                 me_id == worker.id,
-                await _lookup_allocated(worker.id),
+                (allocations[worker.id].ram, allocations[worker.id].vram),
             )
             for worker in worker_list.items
         ]

@@ -9,6 +9,7 @@ unmeasured and hedges its refusal, so a ruled-out worker has to come back as a
 measured zero.
 """
 
+from gpustack.policies.resource_view import ResourceView
 from types import SimpleNamespace
 
 import pytest
@@ -76,7 +77,9 @@ class _OneCardEach:
 
 def _capacity(workers, model=None):
     model = model or _model()
-    cap = GroupCapacity(SimpleNamespace(), model, workers, [])
+    cap = GroupCapacity(
+        SimpleNamespace(), model, workers, [], resource_view=ResourceView([])
+    )
     cap._selector = lambda m, instances, cpu_only, ram_claim=None: _OneCardEach(
         instances
     )
