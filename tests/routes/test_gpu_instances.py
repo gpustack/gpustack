@@ -40,7 +40,9 @@ from gpustack.schemas.gpu_instance_persistent_volumes import (
 from gpustack.schemas.gpu_instance_types import (
     GPUInstanceType,
     GPUInstanceTypeSpec,
+    GPUInstanceTypeUnitResources,
 )
+from gpustack.server.bus import EventType
 
 NAMESPACE = "gpustack-user-1"
 CTX = SimpleNamespace(user=SimpleNamespace(id=1))
@@ -517,3 +519,188 @@ async def test_update_ssh_only_does_not_restamp(engine):
 
     # SSH-only edit keeps the type unchanged, so it is not re-resolved/re-stamped.
     assert "type_snapshot" not in source
+
+
+# --- resolved type summary on the public payload ---------------------------- #
+#
+# The GPU Instances page renders the instance type from the summary carried by
+# ``GPUInstancePublic.type_snapshot_detail`` (joined from the stamped
+# ``type_snapshot``), never from ``description`` — so the payload contract is:
+# however ``description`` is set (empty, cleared by a later PUT), the summary
+# must resolve as long as the stamped type row exists.
+
+
+async def _seed_accelerated_type(engine, *, snapshot, deleted=False):
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        s.add(
+            GPUInstanceType(
+                cluster_id=2,
+                name="a10g",
+                spec=GPUInstanceTypeSpec(
+                    display_name="A10G Pool",
+                    acceleratable=True,
+                    unit_resources=GPUInstanceTypeUnitResources(
+                        cpu="7250m",
+                        ram="26214Mi",
+                    ),
+                ),
+                snapshot=snapshot,
+                deleted_at=datetime(2020, 1, 1) if deleted else None,
+            )
+        )
+        await s.commit()
+
+
+async def _to_public(engine, row):
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        return await routes._to_public_with_type(s, row)
+
+
+@pytest.mark.asyncio
+async def test_type_snapshot_detail_resolved_from_the_stamped_row(engine):
+    await _seed_accelerated_type(engine, snapshot="sha1:a10g")
+    await _seed(engine, phase=GPUInstancePhase.READY, type_snapshot="sha1:a10g")
+    row = await _row(engine)
+
+    public = await _to_public(engine, row)
+
+    detail = public.type_snapshot_detail
+    assert detail is not None
+    assert detail.name == "a10g"
+    assert detail.spec.display_name == "A10G Pool"
+    assert detail.spec.acceleratable is True
+    assert detail.spec.unit_resources.cpu == "7250m"
+    assert detail.spec.unit_resources.ram == "26214Mi"
+
+
+@pytest.mark.asyncio
+async def test_type_snapshot_detail_survives_a_cleared_description(engine):
+    # The reported bug: an instance whose description is empty (or cleared by a
+    # later PUT) rendered as CPU-only because the UI parsed the type out of the
+    # description. The payload contract is that the resolved summary — not
+    # description — carries everything the type rendering needs.
+    await _seed_accelerated_type(engine, snapshot="sha1:a10g")
+    await _seed(
+        engine,
+        phase=GPUInstancePhase.READY,
+        type_snapshot="sha1:a10g",
+    )
+    row = await _row(engine)
+    assert row.description is None
+
+    public = await _to_public(engine, row)
+
+    assert public.description is None
+    assert public.type_snapshot == "sha1:a10g"
+    assert public.type_snapshot_detail is not None
+    assert public.type_snapshot_detail.spec.acceleratable is True
+    assert public.type_snapshot_detail.spec.display_name == "A10G Pool"
+
+
+@pytest.mark.asyncio
+async def test_type_snapshot_detail_absent_without_a_snapshot(engine):
+    await _seed(engine, phase=GPUInstancePhase.READY, type_snapshot=None)
+    row = await _row(engine)
+
+    public = await _to_public(engine, row)
+
+    assert public.type_snapshot_detail is None
+
+
+@pytest.mark.asyncio
+async def test_type_snapshot_detail_absent_when_the_type_row_is_gone(engine):
+    # A dangling snapshot degrades to None (no crash): the client falls back to
+    # its no-type rendering.
+    await _seed(engine, phase=GPUInstancePhase.READY, type_snapshot="sha1:ghost")
+    row = await _row(engine)
+
+    public = await _to_public(engine, row)
+
+    assert public.type_snapshot_detail is None
+
+
+@pytest.mark.asyncio
+async def test_type_snapshot_detail_resolves_a_soft_deleted_type(engine):
+    # The instance legitimately points at the definition it was created
+    # against, so a soft-deleted type still resolves for display.
+    await _seed_accelerated_type(engine, snapshot="sha1:a10g", deleted=True)
+    await _seed(engine, phase=GPUInstancePhase.READY, type_snapshot="sha1:a10g")
+    row = await _row(engine)
+
+    public = await _to_public(engine, row)
+
+    assert public.type_snapshot_detail is not None
+    assert public.type_snapshot_detail.name == "a10g"
+
+
+def test_type_snapshot_detail_is_not_a_client_input():
+    # Resolved server-side on every read; the create/update DTOs must not bind
+    # it, mirroring type_snapshot.
+    assert "type_snapshot_detail" not in GPUInstanceCreate.model_fields
+    assert "type_snapshot_detail" not in GPUInstanceUpdate.model_fields
+    assert "type_snapshot_detail" in GPUInstancePublic.model_fields
+
+
+def _patch_sessions(monkeypatch, engine):
+    def fake_async_session():
+        return AsyncSession(engine, expire_on_commit=False)
+
+    monkeypatch.setattr(routes, "async_session", fake_async_session)
+
+
+@pytest.mark.asyncio
+async def test_watch_event_carries_the_resolved_summary(monkeypatch, engine):
+    # The list page streams updates in watch mode and replaces the row with the
+    # event payload, so the stream must carry the summary or a watch update
+    # would blank the type rendering.
+    await _seed_accelerated_type(engine, snapshot="sha1:a10g")
+    await _seed(engine, phase=GPUInstancePhase.READY, type_snapshot="sha1:a10g")
+    row = await _row(engine)
+    _patch_sessions(monkeypatch, engine)
+
+    event = SimpleNamespace(
+        type=EventType.UPDATED,
+        data=GPUInstancePublic.model_validate(row, from_attributes=True),
+        id=1,
+    )
+    await routes._inject_type_snapshot_detail_into_event(event)
+
+    assert event.data.type_snapshot_detail is not None
+    assert event.data.type_snapshot_detail.name == "a10g"
+
+
+@pytest.mark.asyncio
+async def test_watch_event_skips_deleted_and_snapshotless_rows(monkeypatch, engine):
+    # DELETED events carry id-only payloads and snapshotless rows have nothing
+    # to resolve — both must pass through untouched.
+    await _seed(engine, phase=GPUInstancePhase.READY, type_snapshot=None)
+    row = await _row(engine)
+    _patch_sessions(monkeypatch, engine)
+
+    deleted = SimpleNamespace(type=EventType.DELETED, data={"id": 1}, id=2)
+    await routes._inject_type_snapshot_detail_into_event(deleted)
+    assert deleted.data == {"id": 1}
+
+    updated = SimpleNamespace(
+        type=EventType.UPDATED,
+        data=GPUInstancePublic.model_validate(row, from_attributes=True),
+        id=3,
+    )
+    await routes._inject_type_snapshot_detail_into_event(updated)
+    assert updated.data.type_snapshot_detail is None
+
+
+@pytest.mark.asyncio
+async def test_types_by_snapshot_batches_a_page_into_one_lookup(engine):
+    # The list route resolves a whole page's types in one query: rows sharing a
+    # type deduplicate onto one key, and a snapshotless row contributes none.
+    await _seed_accelerated_type(engine, snapshot="sha1:a10g")
+    await _seed(engine, phase=GPUInstancePhase.READY, type_snapshot="sha1:a10g")
+    row = await _row(engine)
+    snapshotless = row.model_copy(update={"id": 2, "type_snapshot": None})
+
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        rows = await routes._types_by_snapshot(s, [row, row, snapshotless])
+
+    assert list(rows) == ["sha1:a10g"]
+    assert rows["sha1:a10g"].name == "a10g"
