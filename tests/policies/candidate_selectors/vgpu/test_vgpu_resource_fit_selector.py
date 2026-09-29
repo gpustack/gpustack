@@ -3,6 +3,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gpustack.policies.candidate_selectors import VGPUResourceFitSelector
+from gpustack.policies.candidate_selectors.vgpu_resource_fit_selector import (
+    _gpu_type_label,
+)
 from gpustack.schemas.gpu_instance_types import (
     GPUInstanceType,
     GPUInstanceTypeAcceleratorSlicedDetail,
@@ -212,7 +215,10 @@ async def test_sliced_oversized_without_distributed(config):
     messages = selector.get_messages()
     assert len(messages) == 1
     assert "70.00 GiB" in messages[0] or "70" in messages[0]
-    assert "pool-a100" in messages[0]
+    # The message names the GPU type by the observed product name the UI
+    # headlines it with, not the InstanceType resource name.
+    assert "A100-80GB-PCIe" in messages[0]
+    assert "pool-a100" not in messages[0]
 
 
 @pytest.mark.asyncio
@@ -528,6 +534,32 @@ async def test_no_matching_workers(config):
 def test_parse_pool_memory_quantity():
     assert parse_quantity_to_mib("81920Mi") == 81920
     assert parse_quantity_to_mib("80Gi") == 80 * 1024
+
+
+@pytest.mark.parametrize(
+    "manufacturer,product,expected",
+    [
+        # The product commonly already carries the vendor name; do not
+        # double it with the manufacturer.
+        ("nvidia", "NVIDIA-GeForce-RTX-4090", "NVIDIA-GeForce-RTX-4090"),
+        ("nvidia", "A100-80GB-PCIe", "A100-80GB-PCIe"),
+        ("nvidia", None, "nvidia"),
+        (None, None, "pool-a100"),
+    ],
+)
+def test_gpu_type_label(manufacturer, product, expected):
+    selector = GPUTypeSelector(
+        type="pool-a100", accelerator_sliced_memory_percentage=50
+    )
+    detail = GPUInstanceTypeDetail(manufacturer=manufacturer, product=product)
+    assert _gpu_type_label(selector, detail) == expected
+
+
+def test_gpu_type_label_without_detail():
+    selector = GPUTypeSelector(
+        type="pool-a100", accelerator_sliced_memory_percentage=50
+    )
+    assert _gpu_type_label(selector, None) == "pool-a100"
 
 
 @pytest.mark.asyncio

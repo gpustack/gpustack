@@ -38,6 +38,25 @@ logger = logging.getLogger(__name__)
 _MIB = 1024 * 1024
 
 
+def _gpu_type_label(
+    selector: "GPUTypeSelector", detail: Optional[GPUInstanceTypeDetail]
+) -> str:
+    """
+    The GPU type name a scheduling message should show: the observed product
+    name the UI headlines the type with, falling back to the manufacturer and
+    then to the InstanceType resource name when the operator has not
+    backfilled the hardware detail. The product is not prefixed with the
+    manufacturer: it commonly already carries the vendor name, e.g.
+    "NVIDIA-GeForce-RTX-4090".
+    """
+    if detail is not None:
+        if detail.product:
+            return detail.product
+        if detail.manufacturer:
+            return detail.manufacturer
+    return selector.type
+
+
 def _normalize_device_name(name: str) -> str:
     """
     Normalize a GPU device/product name for comparison, e.g.
@@ -178,31 +197,30 @@ class VGPUResourceFitSelector(ScheduleCandidatesSelector):
         detail = await self._get_instance_type_detail(selector)
         if detail is None:
             self._messages = [
-                f"InstanceType '{selector.type}' is not available in the model's cluster."
+                f"GPU Type '{selector.type}' is not available in the model's cluster."
             ]
             return []
+
+        label = _gpu_type_label(selector, detail)
 
         card_vram = self._get_card_vram(detail)
         if card_vram <= 0:
             self._messages = [
-                f"InstanceType '{selector.type}' does not report its accelerator memory."
+                f"GPU Type '{label}' does not report its accelerator memory."
             ]
             return []
 
         self._slice_vram = self._get_slice_vram(selector, detail, card_vram)
         if self._slice_vram <= 0:
             self._messages = [
-                f"InstanceType '{selector.type}' has no profile named "
+                f"GPU Type '{label}' has no profile named "
                 f"'{selector.accelerator_partitioned_profile}'."
             ]
             return []
 
         pool_workers = [w for w in workers if self._worker_matches_pool(w, detail)]
         if not pool_workers:
-            self._messages = [
-                f"No workers have GPUs matching InstanceType '{selector.type}' "
-                f"({detail.manufacturer} {detail.product})."
-            ]
+            self._messages = [f"No workers have GPUs matching GPU Type '{label}'."]
             return []
 
         # A worker's own inventory says which cards it has, not which slicing
@@ -229,8 +247,7 @@ class VGPUResourceFitSelector(ScheduleCandidatesSelector):
                 else "software slicing"
             )
             self._messages = [
-                f"No node backing InstanceType '{selector.type}' "
-                f"({detail.manufacturer} {detail.product}) has {wanted} enabled "
+                f"No node backing GPU Type '{label}' has {wanted} enabled "
                 f"with capacity left."
             ]
             return []
@@ -247,8 +264,9 @@ class VGPUResourceFitSelector(ScheduleCandidatesSelector):
 
         if not self._model.distributed_inference_across_workers:
             self._messages = [
-                f"The model requires approximately {byte_to_gib(self._vram_claim)} GiB of VRAM, "
-                f"but one slice of InstanceType '{selector.type}' provides "
+                f"The model requires approximately "
+                f"{byte_to_gib(self._vram_claim)} GiB of VRAM, "
+                f"but one slice of GPU Type '{label}' provides "
                 f"{byte_to_gib(self._slice_vram)} GiB."
             ]
             return []
@@ -256,8 +274,9 @@ class VGPUResourceFitSelector(ScheduleCandidatesSelector):
         slices_needed = math.ceil(self._vram_claim / self._slice_vram)
         if len(matching_workers) < slices_needed:
             self._messages = [
-                f"The model requires approximately {byte_to_gib(self._vram_claim)} GiB of VRAM, "
-                f"needs {slices_needed} slices of InstanceType '{selector.type}' "
+                f"The model requires approximately "
+                f"{byte_to_gib(self._vram_claim)} GiB of VRAM, "
+                f"needs {slices_needed} slices of GPU Type '{label}' "
                 f"({byte_to_gib(self._slice_vram)} GiB each), "
                 f"but only {len(matching_workers)} matching workers are available."
             ]
