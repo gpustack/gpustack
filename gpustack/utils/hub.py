@@ -78,9 +78,17 @@ def get_model_lock(model_id: str) -> Lock:
 
 
 class FileEntry:
-    def __init__(self, rfilename: str, size: Optional[int] = None):
+    def __init__(
+        self,
+        rfilename: str,
+        size: Optional[int] = None,
+        file_type: Optional[str] = None,
+        sha256: Optional[str] = None,
+    ):
         self.rfilename = rfilename
         self.size = size
+        self.file_type = file_type
+        self.sha256 = sha256
 
 
 def get_model_path_and_name(model: ModelFile) -> (str, str):
@@ -291,6 +299,8 @@ def match_model_scope_file_paths(
     files = api.get_model_files(model_id, recursive=True)
     file_paths = [f["Path"] for f in files]
     matching_paths = sorted(p for p in file_paths if fnmatch.fnmatch(p, file_path))
+    if not matching_paths:
+        return []
 
     extra_matching_paths = [
         p for p in file_paths if fnmatch.fnmatch(p, extra_file_path)

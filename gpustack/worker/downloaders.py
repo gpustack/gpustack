@@ -1,6 +1,9 @@
+import fnmatch
 import logging
+import modelscope
 import os
 from typing import List, Optional, Union
+from packaging.version import Version
 from tqdm.contrib.concurrent import thread_map
 
 from huggingface_hub import HfApi, hf_hub_download
@@ -15,6 +18,7 @@ from gpustack.utils import file
 from gpustack.utils.hub import (
     match_hugging_face_files,
     match_model_scope_file_paths,
+    select_most_suitable_extra_file,
     FileEntry,
 )
 from gpustack.utils.locks import HeartbeatSoftFileLock
@@ -27,6 +31,7 @@ def download_model(
     local_dir: Optional[str] = None,
     cache_dir: Optional[str] = None,
     huggingface_token: Optional[str] = None,
+    model_scope_files: Optional[List[str]] = None,
 ) -> List[str]:
     if model.source == SourceEnum.HUGGING_FACE:
         return HfDownloader.download(
@@ -46,6 +51,7 @@ def download_model(
             local_dir=local_dir,
             cache_dir=os.path.join(cache_dir, "model_scope"),
             owner_worker_id=getattr(model, "worker_id", None),
+            matching_files=model_scope_files,
         )
     elif model.source == SourceEnum.LOCAL_PATH:
         return file.get_sharded_file_paths(model.local_path)
@@ -73,6 +79,33 @@ def get_model_file_info(
         return file_list
 
     raise ValueError(f"Unsupported model source: {model.source}")
+
+
+def select_model_scope_file_info(
+    files: List[FileEntry], model: ModelSource
+) -> List[FileEntry]:
+    """Select the ModelScope files used for size, progress, and download."""
+    by_path = {
+        file.rfilename: file
+        for file in files
+        if file.rfilename and file.file_type != 'tree'
+    }
+    if not model.model_scope_file_path:
+        return [by_path[path] for path in sorted(by_path)]
+
+    selected = {
+        path for path in by_path if fnmatch.fnmatch(path, model.model_scope_file_path)
+    }
+    if not selected:
+        return []
+    extra_pattern = get_mmproj_filename(model)
+    if extra_pattern:
+        extra = select_most_suitable_extra_file(
+            [path for path in by_path if fnmatch.fnmatch(path, extra_pattern)]
+        )
+        if extra:
+            selected.add(extra)
+    return [by_path[path] for path in sorted(selected)]
 
 
 class HfDownloader:
@@ -204,9 +237,29 @@ class ModelScopeDownloader:
 
     @classmethod
     def get_model_file_info(cls, model: Model) -> List[FileEntry]:
-        api = HubApi()
-        repo_files = api.get_model_files(model.model_scope_model_id, recursive=True)
-        file_list = [FileEntry(f.get("Path"), f.get("Size")) for f in repo_files]
+        # Both SDK paths must retain Type for directory filtering and Sha256
+        # for cached-file progress. ModelScope <1.38 returns them from
+        # get_model_files; 1.38+ drops them there, so use the raw listing
+        # consumed by snapshot_download instead.
+        if Version(modelscope.__version__) >= Version('1.38.0'):
+            from modelscope_hub import HubApi as ModelScopeHubApi
+
+            repo_files = ModelScopeHubApi().legacy.list_repo_files(
+                model.model_scope_model_id, 'model', recursive=True
+            )
+        else:
+            repo_files = HubApi().get_model_files(
+                model.model_scope_model_id, recursive=True
+            )
+        file_list = [
+            FileEntry(
+                f.get('Path'),
+                f.get('Size'),
+                file_type=f.get('Type') or f.get('type'),
+                sha256=f.get('Sha256') or f.get('sha256'),
+            )
+            for f in repo_files
+        ]
         return file_list
 
     @classmethod
@@ -218,6 +271,7 @@ class ModelScopeDownloader:
         local_dir: Optional[Union[str, os.PathLike[str]]] = None,
         cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
         owner_worker_id: Optional[int] = None,
+        matching_files: Optional[List[str]] = None,
     ) -> List[str]:
         """Download a model from Model Scope.
 
@@ -242,9 +296,10 @@ class ModelScopeDownloader:
         logger.info(f"Retrieving file lock: {lock_filename}")
         with HeartbeatSoftFileLock(lock_filename, owner_worker_id=owner_worker_id):
             if file_path:
-                matching_files = match_model_scope_file_paths(
-                    model_id, file_path, extra_file_path
-                )
+                if matching_files is None:
+                    matching_files = match_model_scope_file_paths(
+                        model_id, file_path, extra_file_path
+                    )
                 if len(matching_files) == 0:
                     raise ValueError(
                         f"No file found in {model_id} that match {file_path}"
@@ -260,5 +315,6 @@ class ModelScopeDownloader:
             modelscope_snapshot_download(
                 model_id=model_id,
                 local_dir=local_dir,
+                allow_patterns=matching_files,
             )
             return [local_dir]

@@ -1,5 +1,6 @@
 import pytest
 from tenacity import retry, stop_after_attempt, wait_fixed
+from gpustack.utils import hub
 from gpustack.utils.hub import (
     get_hugging_face_model_min_gguf_path,
     get_model_scope_model_min_gguf_path,
@@ -236,6 +237,23 @@ def test_match_files_with_mmproj_at_root():
         "Qwen3.5-4B-Q4_K_S.gguf",
         "mmproj-F32.gguf",
     ]
+
+
+def test_modelscope_match_requires_main_file_before_mmproj(monkeypatch):
+    class FakeHubApi:
+        def get_model_files(self, *args, **kwargs):
+            return [{"Path": "mmproj-F32.gguf"}]
+
+    monkeypatch.setattr(hub, "HubApi", FakeHubApi)
+
+    assert (
+        match_model_scope_file_paths(
+            model_id="test/model",
+            file_path="missing.gguf",
+            extra_file_path="*mmproj*.gguf",
+        )
+        == []
+    )
 
 
 def test_match_file_paths_in_subdir_and_mmproj_at_root():
