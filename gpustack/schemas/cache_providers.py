@@ -301,9 +301,9 @@ class CacheProviderIntegration(BaseModel):
 class CacheProviderResourceProfile(BaseModel):
     """How capacity config maps to per-instance host resource claims.
     ram_gib is a template over the declared field values (e.g.
-    "{{ram_size}}"); the service form's placement pre-flight renders it
-    to warn about workers that cannot hold an instance. The scheduler
-    does not enforce it."""
+    "{{ram_size}}"). The server records this RAM reservation on each
+    instance so subsequent model placements account for it. This is a
+    scheduling reservation, not a container memory limit."""
 
     ram_gib: Optional[str] = None
     cpu: Optional[float] = None

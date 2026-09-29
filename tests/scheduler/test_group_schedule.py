@@ -244,6 +244,7 @@ async def _run(placement, commit_map=None, topology=None, group_instances=None):
             group_schedule.Cluster, "one_by_id", AsyncMock(return_value=cluster)
         ),
         patch.object(group_schedule, "GroupCapacity", FakeCapacity),
+        patch.object(group_schedule, "cache_instances_in", AsyncMock(return_value=[])),
         patch.object(
             group_schedule,
             "solve_group_placement",

@@ -1,3 +1,4 @@
+from gpustack.policies.resource_view import ResourceView
 import pytest
 
 from gpustack.policies.base import ModelInstanceScheduleCandidate
@@ -34,7 +35,7 @@ async def test_spread_prefers_worker_with_zero_current_instances():
     # One current model instance already on w2
     mis = [new_model_instance(1, "mi1", model.id, worker_id=w2.id, gpu_indexes=[0])]
 
-    scorer = PlacementScorer(model, mis)
+    scorer = PlacementScorer(model, mis, resource_view=ResourceView(mis))
     candidates = [make_candidate(w1, [0]), make_candidate(w2, [0])]
     scored = await scorer.score(candidates)
 
@@ -58,7 +59,7 @@ async def test_spread_prefers_worker_with_fewer_current_instances_when_all_have_
         new_model_instance(3, "mi3", model.id, worker_id=w2.id, gpu_indexes=[1]),
     ]
 
-    scorer = PlacementScorer(model, mis)
+    scorer = PlacementScorer(model, mis, resource_view=ResourceView(mis))
     candidates = [make_candidate(w1, [0]), make_candidate(w2, [0])]
     scored = await scorer.score(candidates)
 
@@ -97,7 +98,7 @@ async def test_spread_considers_other_model_instances_as_secondary_weight():
         ),
     ]
 
-    scorer = PlacementScorer(model, mis)
+    scorer = PlacementScorer(model, mis, resource_view=ResourceView(mis))
     candidates = [make_candidate(w1, [0]), make_candidate(w2, [0])]
     scored = await scorer.score(candidates)
 
@@ -119,7 +120,7 @@ async def test_spread_prefers_gpu_with_fewer_instances_on_same_worker():
         new_model_instance(2, "mi2", model.id, worker_id=w1.id, gpu_indexes=[0]),
     ]
 
-    scorer = PlacementScorer(model, mis)
+    scorer = PlacementScorer(model, mis, resource_view=ResourceView(mis))
     candidates = [make_candidate(w1, [0]), make_candidate(w1, [1])]
     scored = await scorer.score(candidates)
 

@@ -8,6 +8,7 @@ hosts as it can, which is the combination that empties the pool with cards
 still free.
 """
 
+from gpustack.policies.resource_view import ResourceView
 from types import SimpleNamespace
 
 import pytest
@@ -181,7 +182,9 @@ class TestPortsCommittedDuringOneSolve:
     def _capacity(model):
         from gpustack.scheduler.group_capacity import GroupCapacity
 
-        cap = GroupCapacity(SimpleNamespace(), model, [], [])
+        cap = GroupCapacity(
+            SimpleNamespace(), model, [], [], resource_view=ResourceView([])
+        )
         for role in (RoleNameEnum.PREFILL.value, RoleNameEnum.DECODE.value):
             cap._projected[role] = SimpleNamespace(model=model)
         return cap

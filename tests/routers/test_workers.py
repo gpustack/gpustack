@@ -448,3 +448,50 @@ def test_worker_visibility_filter_scopes_cluster_bound_system():
     assert _make_worker_visibility_filter(legacy)(
         SimpleNamespace(cluster_id=4, owner_principal_id=None)
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_list_batches_allocations_for_visible_workers(monkeypatch):
+    from contextlib import asynccontextmanager
+    from gpustack.routes import workers as route
+    from gpustack.policies.base import Allocated
+    from gpustack.schemas.workers import WorkerListParams
+    from gpustack.schemas.common import Pagination
+    from tests.fixtures.workers.fixtures import linux_cpu_1
+
+    from datetime import datetime, timezone
+
+    workers = [linux_cpu_1(), linux_cpu_1()]
+    for worker in workers:
+        worker.ifname = "eth0"
+        worker.port = 10150
+        worker.created_at = worker.updated_at = datetime.now(timezone.utc)
+        worker.state = WorkerStateEnum.READY
+    workers[0].id, workers[1].id = 1, 2
+    pagination = Pagination(page=1, perPage=100, total=2, totalPage=1)
+    query = AsyncMock(
+        return_value=SimpleNamespace(items=workers, pagination=pagination)
+    )
+    monkeypatch.setattr(route.Worker, "paginated_by_query", query)
+    conditions = ["tenant visibility"]
+    monkeypatch.setattr(route, "tenant_list_conditions", lambda *args: conditions)
+    monkeypatch.setattr(route, "_make_worker_visibility_filter", lambda ctx: None)
+    allocations = AsyncMock(
+        return_value={1: Allocated(ram=10, vram={}), 2: Allocated(ram=20, vram={})}
+    )
+    monkeypatch.setattr(route, "get_workers_allocated", allocations)
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    monkeypatch.setattr(route, "async_session", session)
+    result = await route.get_workers(
+        SimpleNamespace(worker=None), object(), WorkerListParams()
+    )
+    allocations.assert_awaited_once()
+    assert list(allocations.call_args.args[0]) == [1, 2]
+    assert query.call_args.kwargs["extra_conditions"] is conditions
+    assert [
+        worker.model_dump()["status"]["memory"]["allocated"] for worker in result.items
+    ] == [10, 20]

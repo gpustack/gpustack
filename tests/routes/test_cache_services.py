@@ -1544,10 +1544,12 @@ async def test_logs_proxies_single_instance_to_its_worker(monkeypatch):
     monkeypatch.setattr(
         cache_services_route.Worker, "one_by_id", AsyncMock(return_value=worker)
     )
-    request_to_worker = AsyncMock(
-        return_value=(SimpleNamespace(status=200), b"cache server log line\n")
-    )
-    monkeypatch.setattr(cache_services_route, "request_to_worker", request_to_worker)
+
+    async def chunks(**kwargs):
+        yield b"cache server log line\n", {}, 200
+
+    stream_to_worker = MagicMock(side_effect=chunks)
+    monkeypatch.setattr(cache_services_route, "stream_to_worker", stream_to_worker)
 
     response = await cache_services_route.get_cache_service_logs(
         request=_logs_request(),
@@ -1556,8 +1558,8 @@ async def test_logs_proxies_single_instance_to_its_worker(monkeypatch):
         log_options=LogOptions(tail=100, follow=False),
     )
 
-    request_to_worker.assert_awaited_once()
-    call_kwargs = request_to_worker.await_args.kwargs
+    stream_to_worker.assert_called_once()
+    call_kwargs = stream_to_worker.call_args.kwargs
     assert call_kwargs["worker"] is worker
     assert call_kwargs["path"] == "cacheServiceInstanceLogs/21"
     assert call_kwargs["params"] == {
@@ -1566,7 +1568,9 @@ async def test_logs_proxies_single_instance_to_its_worker(monkeypatch):
         "cache_service_id": 9,
     }
     assert response.status_code == 200
-    assert response.body == b"cache server log line\n"
+    assert [chunk async for chunk in response.body_iterator] == [
+        (b"cache server log line\n", {}, 200)
+    ]
 
 
 @pytest.mark.asyncio
@@ -1586,10 +1590,12 @@ async def test_instance_logs_proxy_to_instance_worker(monkeypatch):
     monkeypatch.setattr(
         cache_services_route.Worker, "one_by_id", AsyncMock(return_value=worker)
     )
-    request_to_worker = AsyncMock(
-        return_value=(SimpleNamespace(status=200), b"instance log line\n")
-    )
-    monkeypatch.setattr(cache_services_route, "request_to_worker", request_to_worker)
+
+    async def chunks(**kwargs):
+        yield b"instance log line\n", {}, 200
+
+    stream_to_worker = MagicMock(side_effect=chunks)
+    monkeypatch.setattr(cache_services_route, "stream_to_worker", stream_to_worker)
 
     response = await cache_services_route.get_cache_service_instance_logs(
         request=_logs_request(),
@@ -1599,7 +1605,7 @@ async def test_instance_logs_proxy_to_instance_worker(monkeypatch):
         log_options=LogOptions(tail=50, follow=False),
     )
 
-    call_kwargs = request_to_worker.await_args.kwargs
+    call_kwargs = stream_to_worker.call_args.kwargs
     assert call_kwargs["worker"] is worker
     assert call_kwargs["path"] == "cacheServiceInstanceLogs/22"
     assert call_kwargs["params"] == {
@@ -1747,6 +1753,8 @@ async def test_delete_proceeds_without_shared_references(monkeypatch):
         session=MagicMock(), ctx=_user_ctx(), id=9
     )
     service.delete.assert_awaited_once()
+    options = cache_services_route.CacheService.one_by_id.await_args.kwargs["options"]
+    assert options[0].path[1].key == "instances"
 
 
 # ---- test-connection ----
@@ -2445,3 +2453,95 @@ def test_a_password_typed_declared_field_is_redacted(monkeypatch):
     assert public.config.fields["token"] == cache_services_route.SECRET_PLACEHOLDER
     # the row itself keeps the secret: redaction is for the reader
     assert service.config.fields["token"] == "s3cret"
+
+
+@pytest.mark.asyncio
+async def test_log_proxy_streams_pages_and_preserves_range_headers(monkeypatch):
+    advanced = []
+
+    async def chunks(**kwargs):
+        advanced.append(1)
+        yield b"line\n", {"X-Log-Offset": "4", "X-Log-Total-Lines": "8"}, 200
+        advanced.append(2)
+        yield b"next\n", {}, 200
+
+    stream = MagicMock(side_effect=chunks)
+    monkeypatch.setattr(cache_services_route, "stream_to_worker", stream)
+    response = await cache_services_route._proxy_instance_logs(
+        _logs_request(),
+        _service_instance(),
+        SimpleNamespace(id=5),
+        LogOptions(previous=True, offset=4, limit=2),
+    )
+    assert not advanced
+    params = stream.call_args.kwargs["params"]
+    assert params["previous"] is True
+    assert params["offset"] == 4
+    assert params["limit"] == 2
+    assert stream.call_args.kwargs["timeout"].total is None
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+        if message["type"] == "http.response.start":
+            assert advanced == [1]
+
+    await response.stream_response(send)
+    assert (b"X-Log-Offset", b"4") in sent[0]["headers"]
+    assert advanced == [1, 2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"parameters": {"": ["--ram", "40"]}},
+        {"parameters": {"": ["--ram=40"]}},
+        {"env": {"CACHE_RAM": "40"}},
+    ],
+)
+async def test_update_rejects_capacity_overrides_before_saving(monkeypatch, override):
+    service = _existing_service()
+    provider = _provider()
+    from gpustack.schemas.cache_providers import CacheProviderResourceProfile
+
+    provider.resource_profile = CacheProviderResourceProfile(ram_gib="{{ram_size}}")
+    provider.versions[provider.default_version].run_args = "--ram {{ram_size}}"
+    provider.versions[provider.default_version].env = {"CACHE_RAM": "{{ram_size}}"}
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=service)
+    )
+    _patch_provider(monkeypatch, provider)
+    _patch_worker_lookup(monkeypatch)
+    with pytest.raises(BadRequestException) as error:
+        await cache_services_route.update_cache_service(
+            MagicMock(),
+            _user_ctx(),
+            9,
+            _update_in(config=CacheServiceConfig(fields={"ram_size": 20}, **override)),
+        )
+    assert error.value.status_code == 400
+    assert "Configure cache RAM" in error.value.message
+    service.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_resource_validation_uses_stored_config_when_omitted(monkeypatch):
+    from gpustack.schemas.cache_providers import CacheProviderResourceProfile
+
+    service = _existing_service(config=CacheServiceConfig(fields={"ram_size": 20}))
+    provider = _provider()
+    provider.resource_profile = CacheProviderResourceProfile(ram_gib="{{ram_size}}")
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=service)
+    )
+    _patch_provider(monkeypatch, provider)
+    _patch_worker_lookup(monkeypatch)
+    payload = CacheServiceUpdate(
+        name="svc", provider_name="LMCache", cluster_id=1, worker_id=5
+    )
+    assert "config" not in payload.model_fields_set
+    await cache_services_route.update_cache_service(
+        MagicMock(), _user_ctx(), 9, payload
+    )
+    service.update.assert_awaited_once()
