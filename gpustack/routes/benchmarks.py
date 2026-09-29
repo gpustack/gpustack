@@ -1468,7 +1468,7 @@ async def export_benchmarks(
     )
     exported_benchmarks = []
     for b in benchmarks:
-        eb = b.model_dump(exclude=set(exclude_fields))
+        eb = b.model_dump(mode="json", exclude=set(exclude_fields))
         exported_benchmarks.append(order_benchmark_export_fields(eb))
 
     export_data = {"benchmarks": exported_benchmarks}
