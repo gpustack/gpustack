@@ -7,6 +7,7 @@ from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    ConflictException,
     InternalServerErrorException,
     InvalidException,
     NotFoundException,
@@ -35,6 +36,7 @@ from gpustack.schemas import (
 from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolumeAttachment,
 )
+from gpustack.schemas.gpu_instances import GPUInstancePhase
 from gpustack.schemas.principals import platform_principal_id
 from gpustack.server.bus import EventType
 from gpustack.routes.gpu_instances_helper import (
@@ -45,6 +47,11 @@ from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 
 router = APIRouter()
+
+# How many holders a delete-rejection message names before it says "and
+# others" — the same cap as the finalizer controller's blocked-delete reason,
+# so the synchronous 409 and the async backstop describe the same wall.
+_CONFLICT_HOLDERS_NAMED = 3
 
 
 @router.get("", response_model=GPUInstancePersistentVolumesPublic)
@@ -194,6 +201,9 @@ async def delete_gpu_instance_persistent_volume(
     Stamps ``status.phase = Deleting`` and retains the row; the PV
     finalizer controller cleans up the downstream CRs across clusters and
     then hard-deletes the row.
+
+    Rejects with 409 while a holder's instance is not itself ``Deleting`` —
+    such a delete could never finalize.
     """
     ret = ensure_writable(
         await GPUInstancePersistentVolume.one_by_id(
@@ -202,6 +212,8 @@ async def delete_gpu_instance_persistent_volume(
         ),
         ctx,
     )
+
+    await _ensure_delete_not_blocked(session, ret)
 
     source = _build_delete_phase_source(ret)
     async with handle_error(
@@ -212,6 +224,43 @@ async def delete_gpu_instance_persistent_volume(
             source=source,
         )
         return ret
+
+
+def _describe_holder(attachment: GPUInstancePersistentVolumeAttachment) -> str:
+    """``<name> (<phase>)``, matching the controller's holder description;
+    an unresolved phase is stated as the bare name."""
+    return (
+        f"{attachment.name} ({attachment.phase})"
+        if attachment.phase
+        else f"{attachment.name}"
+    )
+
+
+async def _ensure_delete_not_blocked(
+    session: AsyncSession, pv: GPUInstancePersistentVolume
+) -> None:
+    """Reject the delete while a holder's instance is not itself ``Deleting``.
+
+    ``GPUInstance.persistent_volume_id`` is not phase-filtered, so a Stopped
+    instance holds the volume exactly like a running one, and an accepted
+    delete could never finalize. An instance in ``Deleting`` does not block:
+    its own teardown releases the reference, so the volume delete proceeds and
+    finalizes right after it.
+    """
+    attachments = (await _attachments_by_volume(session, [pv.id])).get(pv.id, [])
+    blocking = [a for a in attachments if a.phase != GPUInstancePhase.DELETING]
+    if not blocking:
+        return
+    described = [_describe_holder(a) for a in blocking[:_CONFLICT_HOLDERS_NAMED]]
+    if len(blocking) > _CONFLICT_HOLDERS_NAMED:
+        described.append("and others")
+    raise ConflictException(
+        message=(
+            "The volume is still attached to GPU instance(s): "
+            f"{', '.join(described)}. "
+            "Detach the volume or delete the instance before deleting it."
+        )
+    )
 
 
 async def _attachments_by_volume(
