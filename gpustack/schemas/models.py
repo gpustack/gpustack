@@ -1174,6 +1174,9 @@ class ModelSpecBase(SQLModel, ModelSource):
 
 
 class ModelBase(ModelSpecBase):
+    revision_history_limit: int = Field(
+        default=10, ge=0, nullable=False, sa_column_kwargs={"server_default": "10"}
+    )
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
     owner_principal_id: int = Field(
         default_factory=_platform_principal_id,

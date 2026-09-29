@@ -244,7 +244,10 @@ from gpustack.schemas.gpu_instances import (
     GPUInstancesPublic,
 )
 
+from gpustack.schemas.model_revisions import ModelRevision
+
 __all__ = [
+    "ModelRevision",
     "ApiKey",
     "ApiKeyCreate",
     "ApiKeyPublic",

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import traceback
 from datetime import datetime, timezone
 from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple, Union
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -14,6 +15,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack import envs
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    HTTPException,
     ConflictException,
     InternalServerErrorException,
     BadRequestException,
@@ -94,7 +96,7 @@ from gpustack.schemas.model_routes import (
     TargetStateEnum,
 )
 from gpustack.schemas.links import ModelRoutePrincipalLink
-from gpustack.schemas.principals import platform_principal_id
+from gpustack.schemas.principals import PrincipalType, platform_principal_id
 from gpustack.server.services import (
     ModelRouteService,
     ModelInstanceService,
@@ -103,6 +105,13 @@ from gpustack.server.services import (
     revoke_model_access_cache,
 )
 from gpustack.server.controllers import model_spec_digest
+from gpustack.server.model_revisions import (
+    append_revision,
+    deployment_spec,
+    ensure_baseline,
+    lock_model,
+    record_update,
+)
 from gpustack.server.scaling_scheduler import compute_desired_replicas
 from gpustack.server.cache_provider_catalog import get_cache_provider
 from gpustack.server.lora_adapters_discovery import list_adapters_for_base
@@ -2287,7 +2296,10 @@ async def _check_model_create(
 
 
 async def _persist_model_create(
-    session: AsyncSession, model_in: ModelCreate, target_org_id: int
+    session: AsyncSession,
+    model_in: ModelCreate,
+    target_org_id: int,
+    created_by: Optional[int] = None,
 ) -> Model:
     """Insert the model and, when ``enable_model_route`` is set, its
     route, target, Org grant and LoRA child routes. Never commits, so a
@@ -2317,6 +2329,7 @@ async def _persist_model_create(
         model_in_dict["access_policy"] = AccessPolicyEnum.ALLOWED_PRINCIPALS
 
     model: Model = await Model.create(session, source=model_in_dict, auto_commit=False)
+    await append_revision(session, model, 1, created_by)
     if not model_in.enable_model_route:
         return model
     await _create_model_route(session, model, grant_owning_org=org_scoped_default)
@@ -2421,7 +2434,12 @@ async def create_model(
     await _check_model_create(session, ctx, model_in, target_org_id, cluster)
 
     try:
-        model = await _persist_model_create(session, model_in, target_org_id)
+        model = await _persist_model_create(
+            session,
+            model_in,
+            target_org_id,
+            getattr(getattr(ctx, "user", None), "id", None),
+        )
         await session.commit()
         if model_in.enable_model_route:
             await revoke_model_access_cache(session=session)
@@ -2430,7 +2448,13 @@ async def create_model(
         raise
     except Exception as e:
         await session.rollback()
-        raise InternalServerErrorException(message=f"Failed to create model: {e}")
+        # Exception messages can contain SQL parameters, including configuration.
+        logger.error(
+            "Failed to create model: %s\n%s",
+            type(e).__name__,
+            "".join(traceback.format_tb(e.__traceback__)),
+        )
+        raise InternalServerErrorException(message="Failed to create model") from None
 
     return model
 
@@ -2970,7 +2994,7 @@ async def import_models(
         raise BadRequestException(message="\n".join(unconfirmed))
 
     try:
-        models = await _persist_deployments(session, items, target_org_id)
+        models = await _persist_deployments(session, items, target_org_id, ctx)
         await session.commit()
     except BadRequestException:
         await session.rollback()
@@ -3006,7 +3030,10 @@ async def import_models(
 
 
 async def _persist_model_update(
-    session: AsyncSession, existing: Model, model_in: ModelCreate
+    session: AsyncSession,
+    existing: Model,
+    model_in: ModelCreate,
+    created_by: Optional[int] = None,
 ) -> Model:
     """Replace ``existing`` with the entry and settle its routes. Never
     commits.
@@ -3021,9 +3048,12 @@ async def _persist_model_update(
     holds the document's field names: the document says ``cluster``, by name,
     and the route has already resolved it.
     """
+    latest = await ensure_baseline(session, existing)
+    before = deployment_spec(existing)
     patch = {field: getattr(model_in, field) for field in OVERWRITABLE_FIELDS}
     patch["cluster_id"] = model_in.cluster_id
     await ModelService(session).update(existing, patch, auto_commit=False)
+    await record_update(session, existing, before, latest, created_by)
 
     own = await _own_model_routes(session, existing)
     primary = next((route for route in own if route.name == existing.name), None)
@@ -3057,6 +3087,7 @@ async def _persist_deployments(
     session: AsyncSession,
     items: List[_ImportItem],
     target_org_id: int,
+    ctx: TenantContext,
 ) -> List[Model]:
     """Write every entry without committing, and answer with the row each one
     settled on, in document order.
@@ -3068,8 +3099,14 @@ async def _persist_deployments(
     it is relabelled here with the entry it belongs to, like every other error
     the import reports.
     """
+    locked = {}
+    for model_id in sorted({item.existing.id for item in items if item.existing}):
+        locked[model_id] = await lock_model(session, ctx, model_id)
+    created_by = getattr(getattr(ctx, "user", None), "id", None)
     models = []
     for item in items:
+        if item.existing:
+            item = item._replace(existing=locked[item.existing.id])
         label = entry_label(item.plan.index, item.plan.name)
         if item.plan.action is DeploymentActionEnum.UNCHANGED:
             # The document already describes this row. Nothing to write, and
@@ -3092,11 +3129,15 @@ async def _persist_deployments(
                 if blockers:
                     raise BadRequestException(message=blockers[0])
                 models.append(
-                    await _persist_model_update(session, item.existing, item.entry)
+                    await _persist_model_update(
+                        session, item.existing, item.entry, created_by
+                    )
                 )
             else:
                 models.append(
-                    await _persist_model_create(session, item.entry, target_org_id)
+                    await _persist_model_create(
+                        session, item.entry, target_org_id, created_by
+                    )
                 )
         except BadRequestException as e:
             raise BadRequestException(message=f"{label}: {e.message}")
@@ -3110,9 +3151,45 @@ async def _persist_deployments(
 async def update_model(
     session: SessionDep, ctx: TenantContextDep, id: int, model_in: ModelUpdate
 ):
-    model = await Model.one_by_id(session, id)
-    assert_resource_visible(ctx, model, not_found_message="Model not found")
+    model = await lock_model(session, ctx, id)
+    return await save_model_update(session, ctx, model, model_in)
 
+
+async def save_model_update(
+    session: AsyncSession, ctx: TenantContext, model: Model, model_in: ModelUpdate
+) -> Model:
+    """Apply a validated edit and its history atomically; the parent is locked."""
+    try:
+        user = getattr(ctx, "user", None)
+        is_system = getattr(user, "kind", None) == PrincipalType.SYSTEM
+        latest = None if is_system else await ensure_baseline(session, model)
+        before = deployment_spec(model) if latest is not None else None
+        await _apply_model_update(session, ctx, model, model_in)
+        if latest is not None:
+            await record_update(
+                session, model, before, latest, getattr(user, "id", None)
+            )
+        await session.commit()
+    except HTTPException:
+        await session.rollback()
+        raise
+    except Exception as e:
+        await session.rollback()
+        # Keep stack locations without logging configuration from the exception.
+        logger.error(
+            "Failed to update model: %s\n%s",
+            type(e).__name__,
+            "".join(traceback.format_tb(e.__traceback__)),
+        )
+        raise InternalServerErrorException(message="Failed to update model") from None
+    await revoke_model_access_cache(session=session)
+    return model
+
+
+async def _apply_model_update(
+    session: AsyncSession, ctx: TenantContext, model: Model, model_in: ModelUpdate
+) -> Model:
+    """Validate and apply configuration, including derived routes, without committing."""
     # Block re-pointing a model at another Org's (e.g. the Default org's
     # shared) or a non-visible cluster: its cluster must stay owned by the
     # model's Org.
@@ -3173,30 +3250,19 @@ async def update_model(
         model_in.cluster_id or model.cluster_id,
     )
 
-    try:
-        await ModelService(session).update(model, model_in, auto_commit=False)
-        updated = await Model.one_by_id(session, id)
-        if not updated:
-            raise RuntimeError("Model not found after update")
-        base_route = await ModelRoute.one_by_field(session, "name", updated.name)
-        if base_route:
-            await create_lora_model_routes(
-                session,
-                updated,
-                access_policy=updated.access_policy,
-                generic_proxy=updated.generic_proxy,
-            )
-            await cleanup_orphan_lora_routes(session, updated)
-        await session.commit()
-        await revoke_model_access_cache(session=session)
-    except BadRequestException:
-        await session.rollback()
-        raise
-    except Exception as e:
-        await session.rollback()
-        raise InternalServerErrorException(message=f"Failed to update model: {e}")
-
-    return updated
+    await ModelService(session).update(model, model_in, auto_commit=False)
+    base_route = await ModelRoute.one_by_fields(
+        session, {"name": model.name, "owner_principal_id": model.owner_principal_id}
+    )
+    if base_route:
+        await create_lora_model_routes(
+            session,
+            model,
+            access_policy=model.access_policy,
+            generic_proxy=model.generic_proxy,
+        )
+        await cleanup_orphan_lora_routes(session, model)
+    return model
 
 
 class ModelRestartResult(BaseModel):

@@ -22,7 +22,7 @@ from gpustack.routes.models import (
     create_model,
     export_models,
     import_models,
-    update_model,
+    _apply_model_update,
     validate_model_in,
 )
 from gpustack.routes.model_common import ModelStateFilterEnum
@@ -42,6 +42,7 @@ from gpustack.schemas.model_routes import (
     ModelRoute,
     ModelRouteTarget,
 )
+from gpustack.schemas.model_revisions import ModelRevision
 from gpustack.schemas.models import (
     BackendEnum,
     GPUSelector,
@@ -255,10 +256,10 @@ async def _run_update(monkeypatch, ctx, cluster_return):
         "gpustack.routes.models.Cluster.one_by_id",
         AsyncMock(return_value=cluster_return),
     )
-    await update_model(
+    await _apply_model_update(
         MagicMock(),
         ctx,
-        1,
+        model,
         ModelUpdate(
             name="m1",
             source=SourceEnum.HUGGING_FACE,
@@ -338,7 +339,7 @@ async def _capture_update_patch(monkeypatch, model, model_in):
     monkeypatch.setattr(models_route, "validate_shared_kv_cache", AsyncMock())
     monkeypatch.setattr(models_route, "ModelService", _Service)
     monkeypatch.setattr(
-        "gpustack.routes.models.ModelRoute.one_by_field", AsyncMock(return_value=None)
+        "gpustack.routes.models.ModelRoute.one_by_fields", AsyncMock(return_value=None)
     )
     monkeypatch.setattr(models_route, "revoke_model_access_cache", AsyncMock())
 
@@ -346,8 +347,27 @@ async def _capture_update_patch(monkeypatch, model, model_in):
     session.commit = AsyncMock()
     session.rollback = AsyncMock()
 
-    await update_model(session, _ctx(CUSTOM_ORG_ID), 1, model_in)
+    await _apply_model_update(session, _ctx(CUSTOM_ORG_ID), model, model_in)
     return captured["source"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [None, 0, 4])
+async def test_update_preserves_retention_unless_explicitly_set(monkeypatch, limit):
+    model = Model(
+        **_model_update(backend=BackendEnum.VLLM).model_dump(
+            exclude={"revision_history_limit"}
+        ),
+        revision_history_limit=2,
+    )
+    values = {} if limit is None else {"revision_history_limit": limit}
+    source = await _capture_update_patch(
+        monkeypatch, model, _model_update(backend=BackendEnum.VLLM, **values)
+    )
+    monkeypatch.setattr(Model, "save", AsyncMock())
+    monkeypatch.setattr(Model, "_publish_event_after_commit", lambda *args: None)
+    await model.update(MagicMock(), source, auto_commit=False)
+    assert model.revision_history_limit == (2 if limit is None else limit)
 
 
 @pytest.mark.asyncio
@@ -394,10 +414,10 @@ async def test_a_sparse_update_cannot_pin_a_second_runtime(monkeypatch):
     monkeypatch.setattr(models_route, "validate_gather_layer", AsyncMock())
 
     with pytest.raises(BadRequestException) as exc_info:
-        await update_model(
+        await _apply_model_update(
             MagicMock(),
             _ctx(CUSTOM_ORG_ID),
-            1,
+            model,
             _model_update(
                 backend=BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly"
             ),
@@ -740,10 +760,10 @@ async def test_update_model_rejects_gpu_selector_on_vgpu_model(monkeypatch):
     )
 
     with pytest.raises(BadRequestException):
-        await update_model(
+        await _apply_model_update(
             MagicMock(),
             _ctx(CUSTOM_ORG_ID),
-            1,
+            stored,
             ModelUpdate(
                 name="m1",
                 source=SourceEnum.HUGGING_FACE,
@@ -768,6 +788,7 @@ TABLES = (
     Principal.__table__,
     Cluster.__table__,
     Model.__table__,
+    ModelRevision.__table__,
     ModelInstance.__table__,
     ModelRoute.__table__,
     ModelRouteTarget.__table__,
@@ -1337,7 +1358,7 @@ async def test_import_round_trips_an_export(engine, no_gpu_lookup):
         assert [entry.action.value for entry in result.entries] == ["unchanged"] * 3
         assert result.valid is True
 
-        for table in (ModelRouteTarget, ModelRoute, Model):
+        for table in (ModelRevision, ModelRouteTarget, ModelRoute, Model):
             await session.exec(delete(table))
         await session.commit()
         assert await _count(session, Model.__table__) == 0
@@ -1374,7 +1395,7 @@ async def test_each_deployment_returns_to_its_own_cluster(engine, no_gpu_lookup)
             "c2",
         ]
 
-        for table in (ModelRouteTarget, ModelRoute, Model):
+        for table in (ModelRevision, ModelRouteTarget, ModelRoute, Model):
             await session.exec(delete(table))
         await session.commit()
 

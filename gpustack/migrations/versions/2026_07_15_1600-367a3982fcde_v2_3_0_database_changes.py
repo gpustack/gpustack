@@ -89,6 +89,9 @@ Bundles the pre-release schema changes for v2.3.0:
    server default, which backfills existing rows to the pre-existing behavior
    and leaves no NULL/false ambiguity for callers.
 
+8. ``model_revisions`` stores deployment configuration history;
+   ``models.revision_history_limit`` controls automatic retention of older entries.
+
 Revision ID: 367a3982fcde
 Revises: c4d7e8f9a0b1
 Create Date: 2026-07-15 16:00:00.000000
@@ -270,6 +273,7 @@ def upgrade() -> None:
     never got to the guarded part, so the promise above held for one section and was
     false for the revision.
     """
+    _upgrade_model_revisions()
     if not table_exists('gpu_instance_types'):
         op.create_table(
             'gpu_instance_types',
@@ -390,6 +394,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if table_exists('model_revisions'):
+        op.drop_table('model_revisions')
+    if column_exists('models', 'revision_history_limit'):
+        op.drop_column('models', 'revision_history_limit')
     _downgrade_metering_sku_shape()
     _downgrade_benchmark_load_curves()
 
@@ -876,3 +884,21 @@ def _delete_principals(conn, principal_ids: List[int]) -> Tuple[int, List[int]]:
             except sa.exc.IntegrityError:
                 skipped.append(principal_id)
     return deleted, skipped
+
+
+def _upgrade_model_revisions() -> None:
+    if not column_exists('models', 'revision_history_limit'):
+        op.add_column('models', sa.Column(
+            'revision_history_limit', sa.Integer(), nullable=False, server_default='10'
+        ))
+    if not table_exists('model_revisions'):
+        op.create_table(
+            'model_revisions',
+            sa.Column('id', sa.Integer(), primary_key=True),
+            sa.Column('model_id', sa.Integer(), sa.ForeignKey('models.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('revision', sa.Integer(), nullable=False),
+            sa.Column('spec', sa.JSON(), nullable=False),
+            sa.Column('created_at', UTCDateTime(), nullable=False),
+            sa.Column('created_by', sa.Integer(), sa.ForeignKey('principals.id', ondelete='SET NULL'), nullable=True),
+            sa.UniqueConstraint('model_id', 'revision'),
+        )
