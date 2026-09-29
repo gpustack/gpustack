@@ -1,6 +1,6 @@
 import pytest
 
-from gpustack.utils.envs import sanitize_env
+from gpustack.utils.envs import filter_env_vars, sanitize_env
 
 
 @pytest.mark.parametrize(
@@ -53,4 +53,37 @@ from gpustack.utils.envs import sanitize_env
 )
 def test_sanitize_env(name, env, expected):
     actual = sanitize_env(env)
+    assert actual == expected, f"Case {name} expected {expected}, but got {actual}"
+
+
+@pytest.mark.parametrize(
+    "name, env, expected",
+    [
+        ("Empty", {}, {}),
+        (
+            "MigCapabilityDeclarationsDropped",
+            {
+                # Declared by the worker DaemonSet; a model pod inheriting them
+                # is rejected by the NVIDIA runtime's CDI modifier as
+                # non-privileged.
+                "NVIDIA_MIG_CONFIG_DEVICES": "all",
+                "NVIDIA_MIG_MONITOR_DEVICES": "all",
+                "SOME_OTHER_ENV": "value",
+            },
+            {"SOME_OTHER_ENV": "value"},
+        ),
+        (
+            "OtherRuntimeVarsDropped",
+            {
+                "CUDA_VISIBLE_DEVICES": "0",
+                "NVIDIA_VISIBLE_DEVICES": "all",
+                "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
+                "NVIDIA_DISABLE_REQUIRE": "1",
+            },
+            {},
+        ),
+    ],
+)
+def test_filter_env_vars(name, env, expected):
+    actual = filter_env_vars(env)
     assert actual == expected, f"Case {name} expected {expected}, but got {actual}"
