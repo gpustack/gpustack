@@ -8,6 +8,7 @@ install it came from. Only the schema and the dump live here; the routes do
 the visibility checks and the transaction.
 """
 
+from copy import deepcopy
 from datetime import datetime, timezone
 from enum import Enum
 from types import UnionType
@@ -46,6 +47,7 @@ SERVER_MANAGED_FIELDS = frozenset(
         "cluster_id",
         "owner_principal_id",
         "access_policy",
+        "revision_history_limit",
     }
 )
 
@@ -93,6 +95,41 @@ class DeploymentExportRequest(BaseModel):
     """Narrow the export to one cluster."""
 
 
+def deployment_config_view(
+    data: Dict[str, Any], model: Type[BaseModel] = ModelCreate
+) -> Dict[str, Any]:
+    """Render configuration in schema order, omitting unset model fields.
+
+    Only declared model fields are cleaned. Free-form dictionaries, unknown
+    historical fields, and explicit empty overrides keep their values. No
+    validation or defaults are applied, so old snapshots remain inspectable.
+    The result is detached from the configuration used for persistence.
+    """
+    result = {}
+    for name in dict.fromkeys([*model.model_fields, *data]):
+        if name not in data:
+            continue
+        field = model.model_fields.get(name)
+        value = data[name]
+        if field is not None and value is None:
+            continue
+        nested = _nested_model(field.annotation) if field is not None else None
+        if nested is not None and isinstance(value, dict):
+            result[name] = deployment_config_view(value, nested)
+        elif nested is not None and isinstance(value, list):
+            result[name] = [
+                (
+                    deployment_config_view(item, nested)
+                    if isinstance(item, dict)
+                    else deepcopy(item)
+                )
+                for item in value
+            ]
+        else:
+            result[name] = deepcopy(value)
+    return result
+
+
 def _bare_lora_entry(entry: Dict[str, Any], prefix: str) -> Dict[str, Any]:
     lora_name = entry.get("lora_name") or ""
     if lora_name.startswith(prefix):
@@ -114,6 +151,7 @@ def _entry_projection(
 
     A deployment with no cluster leaves ``cluster_name`` out entirely, like every
     other unset field."""
+    data = deployment_config_view(data)
     data["enable_model_route"] = enable_model_route
     if cluster_name is not None:
         data["cluster_name"] = cluster_name
@@ -130,7 +168,7 @@ def deployment_entry(
 ) -> Dict[str, Any]:
     """One document entry for a stored deployment."""
     return _entry_projection(
-        model.model_dump(mode="json", exclude_none=True),
+        model.model_dump(mode="json"),
         model.name,
         enable_model_route,
         cluster_name,
@@ -151,7 +189,7 @@ def entry_document_form(
     show where the deployment actually goes.
     """
     return _entry_projection(
-        entry.model_dump(mode="json", exclude_none=True),
+        entry.model_dump(mode="json"),
         entry.name,
         bool(entry.enable_model_route),
         cluster_name,

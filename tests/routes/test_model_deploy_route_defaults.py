@@ -65,6 +65,7 @@ async def _run_create(monkeypatch, replicas: int):
     monkeypatch.setattr(
         models_routes, "apply_scaling_schedule_baseline", lambda m: None
     )
+    monkeypatch.setattr(models_routes, "append_revision", AsyncMock())
     monkeypatch.setattr(models_routes, "revoke_model_access_cache", AsyncMock())
     monkeypatch.setattr(models_routes, "create_lora_model_routes", AsyncMock())
     monkeypatch.setattr(

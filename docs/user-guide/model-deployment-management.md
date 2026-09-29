@@ -232,6 +232,33 @@ The following rules apply when importing:
 - **The file says which organization it lands in.** A platform admin viewing `All` has no organization selected, so `Follow the file` reads one off the clusters the file names. A file naming clusters from two organizations, or none this GPUStack has, is refused rather than defaulting anywhere — pick a specific cluster for the import, or switch to the organization first.
 - When an entry lands in a different cluster from the one it was exported from, `gpu_ids` under `gpu_selector` and `worker_selector` still refer to the GPUs and workers of the original cluster. Change them to values from the new cluster, or remove them to let the scheduler place the deployment; otherwise the import fails because the GPUs cannot be found.
 
+## Deployment Revision History
+
+GPUStack records a configuration revision when you create a model deployment or change its deployment settings, including updates imported from YAML. Saving the same configuration, restarting instances, and automatic changes such as scheduled scaling do not create revisions. Existing deployments receive an initial snapshot when their history is first opened or their configuration is first updated; earlier configurations cannot be recovered.
+
+1. Find the deployment in the model deployment list.
+2. Open its `Operations` menu and select `Revision history`.
+3. Select a revision to compare it with its immediate predecessor in a read-only YAML diff. For example, selecting `v2` shows `v1` on the left and `v2` on the right. The latest revision remains available for inspection. An initial revision, or one whose predecessor has been deleted or pruned, shows its full configuration instead.
+4. Click the `Roll back to this revision` action on an older revision’s row. The same drawer switches to a preview titled `Roll back <name> to vN`, comparing the current deployment configuration with that revision. The revision list is hidden while reviewing the rollback. Click `Back to history` to return to your previous selection and page. To apply the configuration, click `Roll back` directly in the preview; no additional confirmation dialog is shown. The latest revision has no rollback action. Rollback is disabled when the configurations match. The server validates the configuration using the same rules as a normal edit. A successful rollback that changes configuration creates a new revision.
+
+Rollback restores deployment settings, including backend configuration, environment variables, placement, replicas, scheduled scaling, and LoRA adapters. It preserves the deployment's name, description, organization, cluster, access policy, and revision retention setting. Independent model route settings are not restored; derived LoRA routes follow the restored adapters.
+
+If a saved snapshot lacks a field, rollback preserves that field's current value. The rollback preview includes the preserved value so it matches the configuration that will be submitted. An explicit `null` in the saved snapshot still clears the field. Incompatible configuration schema changes require a history migration.
+
+Revision views use the same configuration formatting as YAML import and export: unset model fields are omitted and fields follow schema order. Explicit values such as `false`, `0`, and empty overrides remain visible. Clearing a setting appears as removing its line from the diff. This formatting only affects the displayed configuration; rollback uses the complete saved snapshot.
+
+The preview has a `Restart on rollback` checkbox, selected by default, on the left of the footer alongside the action buttons. After saving the restored configuration, the UI requests a deployment restart to recreate its instances. Clear the checkbox to save without restarting; a yellow notice appears when the configuration changes require recreating instances. Once the rollback and any requested restart succeed, the drawer closes and the deployment list refreshes. If the configuration is saved but restarting fails, the drawer stays open, reports both outcomes, and provides `Retry restart`, which does not repeat the rollback. A successful retry also closes the drawer and refreshes the list. Calling the rollback API directly only restores configuration.
+
+The latest revision identifies the newest saved configuration, not a guarantee that all running instances use it. Restarting is asynchronous and does not provide a zero-downtime transition. Configuration validity is checked when you submit the rollback, so a preview can still fail to apply if referenced resources or supported settings have changed.
+
+### Revision Retention
+
+Deployments retain **10** older revisions in addition to the latest one by default. The deployment form does not expose this setting. Advanced users can adjust `revision_history_limit` through the API. Set it to **0** to keep only the latest revision. Lowering the limit immediately removes excess history, starting with the oldest entries, without creating a configuration revision.
+
+The history drawer does not offer individual revision deletion; automatic cleanup follows the deployment's retention limit. The API allows deleting older revisions, but the latest revision cannot be deleted. Deleting the deployment removes all its revisions. Removed revisions cannot be recovered.
+
+History has the same organization and access restrictions as editing the deployment and is unavailable to worker and cluster SYSTEM principals. Environment variables are stored with their original values, so an older revision may retain credentials until that revision is deleted or automatically pruned.
+
 ## View Model Instance
 
 1. Find the model deployment you want to check on the deployment list page.
