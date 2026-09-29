@@ -548,10 +548,11 @@ def _limit_warnings(
     stopped us (raise it), `budget_exhausted` means the measurement budget did
     (raise that instead; the range was never the constraint).
 
-    Telling them apart from the grid is not merely imprecise, it is impossible for
-    one case: a run ended by `max_total_seconds` leaves exactly the same curve as
-    one that stopped of its own accord, so the inference path below reported "raise
-    the upper bound" for a run the CLOCK ended. Hence the facts.
+    The final stop reason includes Phase 2 refinement. Its point or time budget
+    can expire after Phase 1 has already found a bracket, leaving an incomplete
+    answer even when the recommended load is below the highest measured point.
+    Without ramp facts, a time cap cannot be distinguished from a completed run
+    by looking at the measured grid alone.
 
     A THIRD bound exists and is not the user's: the saturation probe's soft cap.
     `not_saturated` must never be reported for it — its advice is "raise
@@ -559,6 +560,11 @@ def _limit_warnings(
     cap from a fresh measurement on every run. Observed: a run configured 4..1024
     stopped at 31 (cap = ceil(25.6 * 1.2)) and was told to raise the 1024.
     """
+    stop = (ramp or {}).get("stop_reason")
+    if stop in (RAMP_STOP_BUDGET_POINTS, RAMP_STOP_BUDGET_SECONDS):
+        which = "seconds" if stop == RAMP_STOP_BUDGET_SECONDS else "points"
+        return [{"code": "budget_exhausted", "params": {"which": which}}]
+
     bracket = (ramp or {}).get("bracket_reason")
     if bracket is not None:
         if bracket == RAMP_STOP_UPPER_BOUND and not overloaded_any:
