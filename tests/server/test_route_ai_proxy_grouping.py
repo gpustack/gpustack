@@ -263,13 +263,16 @@ async def test_native_anthropic_api_edit_reaches_the_route(
     model = new_model(MODEL_ID, "base", huggingface_repo_id="repo/base")
     model.cluster_id = CLUSTER_ID
     hydrated = new_model(MODEL_ID, "base", huggingface_repo_id="repo/base")
-    hydrated.model_route_targets = [_target(1)]
 
     publish = AsyncMock()
     with (
         patch(
             "gpustack.server.controllers.Model.one_by_id",
             AsyncMock(return_value=hydrated),
+        ),
+        patch(
+            "gpustack.server.controllers.ModelRouteTarget.all_by_fields",
+            AsyncMock(return_value=[_target(1)]),
         ),
         patch("gpustack.server.controllers.event_bus.publish", publish),
     ):

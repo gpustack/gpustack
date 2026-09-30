@@ -6390,13 +6390,14 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
     model: Model = await Model.one_by_id(
         session=session,
         id=model.id,
-        options=[
-            selectinload(Model.model_route_targets),
-        ],
     )
     if not model:
         return
-    targets = model.model_route_targets
+    # The model may already be in the session's identity map, where get()
+    # skips loader options and a noload relationship stays empty.
+    targets = await ModelRouteTarget.all_by_fields(
+        session, fields={"model_id": model.id, "deleted_at": None}
+    )
     for target in targets:
         if should_notify:
             target_copy = ModelRouteTarget(**target.model_dump())
