@@ -39,6 +39,7 @@ from gpustack.security import (
     verify_hashed_secret,
     verify_secret_key_digest,
     get_key_pair,
+    mask_secret,
 )
 from gpustack.server.cache import delete_cache_by_key
 from gpustack.server.passwords import verify_password
@@ -500,7 +501,7 @@ async def get_user_from_api_token(
         for candidate in access_keys:
             api_key = await APIKeyService(session).get_by_access_key(candidate)
             if api_key:
-                logger.trace(f"Found API key for access key: {candidate}")
+                logger.trace(f"Found API key for access key: {mask_secret(candidate)}")
                 break
         if api_key is None:
             return None, None
@@ -705,9 +706,7 @@ async def worker_auth(
         return
     model_name = request.headers.get("X-Higress-Llm-Model")
     if model_name is not None:
-        cred = token_value
-        show_len = max(1, min(6, len(cred)))
-        masked_token = f"{'*' * (len(cred) - show_len)}{cred[-show_len:]}"
+        masked_token = mask_secret(token_value)
         logger.debug(f"Verifying worker token {masked_token} via server authentication")
         cached_auth = make_auth_token_via_server(request.app.state.http_client_no_proxy)
         is_valid = await cached_auth(server_url, token_value, model_name)

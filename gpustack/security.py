@@ -247,6 +247,20 @@ def custom_key_hash(secret_key: str) -> str:
     return hashlib.blake2b(secret_key.encode(), digest_size=16).hexdigest()
 
 
+def mask_secret(value: Optional[str], reveal: int = 4) -> str:
+    """Mask a credential for logging. Reveals at most half the characters,
+    capped at `reveal`, so a short secret is not shown in full. Empty
+    renders as a readable placeholder instead of an empty string."""
+    if not value:
+        return "<empty>"
+    reveal = max(0, reveal)
+    show_len = min(reveal, len(value) // 2)
+    masked = "*" * (len(value) - show_len)
+    if show_len:
+        return f"{masked}{value[-show_len:]}"
+    return masked
+
+
 def is_valid_format(key: str) -> Tuple[bool, str, str]:
     if not key.startswith(f"{API_KEY_PREFIX}_"):
         return False, "", ""

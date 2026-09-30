@@ -716,6 +716,44 @@ async def test_unusable_digest_warns_once_per_key(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
+async def test_get_user_from_api_token_masks_the_access_key_in_its_trace_log(
+    monkeypatch, caplog
+):
+    """Regression for #6118: a matched access key must never reach the log in
+    full, even at TRACE level."""
+    from gpustack.logging import TRACE_LEVEL
+    from gpustack.api.auth import get_user_from_api_token
+
+    access_key = "abcd1234abcd1234"
+    valid = _api_token_double(access_key=access_key)
+
+    async def fake_get_by_access_key(self, candidate):
+        return valid
+
+    async def fake_get_by_id(self, user_id):
+        return type("User", (), {"is_active": True, "id": 7})()
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.UserService.get_by_id", fake_get_by_id)
+    monkeypatch.setattr(
+        "gpustack.api.auth.verify_hashed_secret", lambda hashed, secret: True
+    )
+
+    with caplog.at_level(TRACE_LEVEL, logger="gpustack.api.auth"):
+        await get_user_from_api_token(
+            _RollbackRecordingSession([]),
+            f"gpustack_{access_key}_c11c75ed6334ea9505da4ad9c11c75ed",
+        )
+
+    trace_lines = [r.message for r in caplog.records if "Found API key" in r.message]
+    assert len(trace_lines) == 1
+    assert access_key not in trace_lines[0]
+    assert trace_lines[0].endswith(access_key[-4:])
+
+
+@pytest.mark.asyncio
 async def test_get_user_from_api_token_rejects_wrong_secret(monkeypatch):
     """A key whose secret fails argon2 verification yields no user."""
     from gpustack.api.auth import get_user_from_api_token
@@ -759,6 +797,36 @@ async def test_worker_auth_accepts_x_api_key():
     request.app.state.http_client_no_proxy = object()
 
     assert await worker_auth(request=request, x_api_key="worker-token") is None
+
+
+@pytest.mark.asyncio
+async def test_worker_auth_masks_the_token_in_its_log_line(monkeypatch, caplog):
+    """Regression for #6118: the higress model-auth debug log must not carry
+    the raw worker token, and a short token must not be revealed in full."""
+    import logging
+
+    raw_token = "abc123"  # <=6 chars: the old inline logic revealed this in full
+    request = type("Request", (), {})()
+    request.headers = {"X-Higress-Llm-Model": "claude-sonnet"}
+    request.app = type("App", (), {})()
+    request.app.state = type("State", (), {})()
+    request.app.state.token = "worker-token"
+    request.app.state.config = DummyWorkerConfig()
+    request.app.state.http_client_no_proxy = object()
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.make_auth_token_via_server",
+        lambda client: AsyncMock(return_value=True),
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="gpustack.api.auth"):
+        assert await worker_auth(request=request, x_api_key=raw_token) is None
+
+    debug_lines = [
+        r.message for r in caplog.records if "Verifying worker token" in r.message
+    ]
+    assert len(debug_lines) == 1
+    assert raw_token not in debug_lines[0]
 
 
 @pytest.mark.asyncio

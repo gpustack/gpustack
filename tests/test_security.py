@@ -11,6 +11,7 @@ from gpustack.security import (
     gateway_digest,
     generate_access_key,
     generate_secret_key,
+    mask_secret,
     new_secret_key_digest,
     secret_key_digest_eligible,
     secret_key_digest_usable,
@@ -22,6 +23,30 @@ from gpustack.security import (
 def test_generated_secret_key_shape():
     assert len(generate_secret_key()) == GENERATED_SECRET_KEY_BYTES * 2
     assert len(generate_access_key()) == 16
+
+
+def test_mask_secret_empty_is_a_placeholder_not_an_empty_string():
+    assert mask_secret("") == "<empty>"
+    assert mask_secret(None) == "<empty>"
+
+
+def test_mask_secret_handles_negative_reveal_safely():
+    assert mask_secret("abcdefghij", reveal=-1) == "**********"
+
+
+@pytest.mark.parametrize("value", ["a", "ab", "abcdef", generate_access_key()])
+def test_mask_secret_never_reveals_more_than_half(value):
+    masked = mask_secret(value)
+    assert len(masked) == len(value)
+    revealed = len(value) - masked.count("*")
+    assert revealed <= len(value) // 2
+
+
+def test_mask_secret_caps_the_revealed_suffix_on_long_values():
+    value = generate_access_key() + generate_secret_key()  # 48 chars
+    masked = mask_secret(value)
+    assert masked.endswith(value[-4:])
+    assert masked.count("*") == len(value) - 4
 
 
 def test_digest_round_trip():
