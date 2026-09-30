@@ -1,4 +1,4 @@
-"""Tests for opt-in OpenTelemetry request tracing (issue #5609, stage 1).
+"""Tests for opt-in OpenTelemetry request tracing.
 
 These avoid importing the full gpustack package (which pulls heavy server deps)
 and exercise ``setup_tracing`` against the real OTel SDK + FastAPI
@@ -6,23 +6,18 @@ instrumentation with an in-memory exporter.
 """
 
 import pytest
+
 pytest.importorskip("opentelemetry.sdk.trace")
 pytest.importorskip("opentelemetry.instrumentation.fastapi")
 
-
-
-import importlib
-import sys
-
-import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: E402
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: E402
     InMemorySpanExporter,
 )
 
-import gpustack.observability.tracing as tracing_mod
+import gpustack.observability.tracing as tracing_mod  # noqa: E402
 
 
 @pytest.fixture
@@ -79,9 +74,7 @@ def test_enabled_emits_one_server_span_joined_to_inbound_trace(exporter):
     resp = client.get(
         "/v1/models",
         headers={
-            "traceparent": (
-                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
-            )
+            "traceparent": ("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
         },
     )
     assert resp.status_code == 200
@@ -90,9 +83,7 @@ def test_enabled_emits_one_server_span_joined_to_inbound_trace(exporter):
     assert len(server_spans) == 1
     span = server_spans[0]
     # Same trace id as the inbound W3C traceparent: end-to-end correlation.
-    assert format(span.context.trace_id, "032x") == (
-        "0af7651916cd43dd8448eb211c80319c"
-    )
+    assert format(span.context.trace_id, "032x") == ("0af7651916cd43dd8448eb211c80319c")
     assert span.attributes.get("http.method") == "GET"
     assert span.attributes.get("http.route") == "/v1/models"
     assert span.attributes.get("http.status_code") == 200
@@ -156,9 +147,53 @@ def test_missing_dependency_starts_without_tracing(exporter, monkeypatch, caplog
         provider = tracing_mod.setup_tracing(app, enabled=True)
     assert provider is None
     assert any("not installed" in r.message for r in caplog.records)
+
     # Server still serves.
     @app.get("/healthz")
     def healthz():
         return {"ok": True}
 
     assert TestClient(app).get("/healthz").status_code == 200
+
+
+def test_failed_exporter_leaves_app_untouched(exporter, monkeypatch, caplog):
+    """When the OTLP exporter cannot be imported, no instrumentation and no
+    shutdown handler are installed: the app is left exactly as it was."""
+    import builtins
+
+    real_import = builtins.__import__
+    blocked = {"opentelemetry.exporter.otlp.proto.http.trace_exporter"}
+
+    def guarded(name, *args, **kwargs):
+        if name in blocked:
+            raise ImportError(f"simulated missing {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded)
+    app = FastAPI()
+
+    @app.get("/healthz")
+    def healthz():
+        return {"ok": True}
+
+    with caplog.at_level("WARNING"):
+        provider = tracing_mod.setup_tracing(app, enabled=True)
+    assert provider is None
+    assert any("OTLP HTTP span exporter" in r.message for r in caplog.records)
+    # No instrumentation hook and no shutdown flush were attached.
+    assert app.router.on_shutdown == []
+    assert list(app.user_middleware) == []
+
+
+def test_shutdown_handler_flushes_provider(exporter):
+    """The provider's shutdown is wired to the app so batched spans near
+    process exit are not dropped."""
+    app = FastAPI()
+
+    @app.get("/healthz")
+    def healthz():
+        return {"ok": True}
+
+    provider = _instrument(app, exporter)
+    assert provider is not None
+    assert provider.shutdown in app.router.on_shutdown

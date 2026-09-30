@@ -1,8 +1,8 @@
 """Opt-in OpenTelemetry request tracing for the GPUStack server.
 
-Stage-1 seam for https://github.com/gpustack/gpustack/issues/5609: one server
-span per inbound HTTP request, joined to the trace the gateway (Envoy/Higress)
-already starts via W3C ``traceparent``, exported over standard OTLP.
+Emit one server span per inbound HTTP request, joined to the trace the
+gateway (Envoy/Higress) already starts via W3C ``traceparent``, and export
+over standard OTLP.
 
 Hard rules:
 * Default off: ``setup_tracing`` returns before importing OpenTelemetry when
@@ -10,9 +10,11 @@ Hard rules:
 * Optional dependency: the OpenTelemetry packages live in the
   ``gpustack[tracing]`` extra; enabled-but-missing logs one warning and keeps
   serving instead of failing startup.
-* Async export only: production uses a BatchSpanProcessor.
-
-The exporter is driven entirely by standard ``OTEL_EXPORTER_OTLP_*`` env vars.
+* Async export only: production uses a BatchSpanProcessor, flushed on app
+  shutdown so spans near termination are not lost.
+* The exporter is driven entirely by standard ``OTEL_EXPORTER_OTLP_*`` env
+  vars; no exporter is constructed before the OTel packages are known to be
+  importable, so a failed setup leaves the app untouched.
 """
 
 from __future__ import annotations
@@ -38,9 +40,7 @@ def _build_provider(
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
 
-    provider = TracerProvider(
-        resource=Resource.create({"service.name": service_name})
-    )
+    provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
     if exporter is not None and processor_cls is not None:
         provider.add_span_processor(processor_cls(exporter))
     if set_global:
@@ -48,6 +48,17 @@ def _build_provider(
 
         trace.set_tracer_provider(provider)
     return provider
+
+
+def _server_request_hook(span: Any, scope: Any) -> None:
+    """Annotate the active server span with the gateway's x-request-id."""
+    request_id = None
+    for key, value in scope.get("headers") or ():
+        if key == b"x-request-id":
+            request_id = value.decode("utf-8", "replace")
+            break
+    if request_id is not None and span is not None and span.is_recording():
+        span.set_attribute("gpustack.request_id", request_id)
 
 
 def setup_tracing(
@@ -62,6 +73,9 @@ def setup_tracing(
     """Install request tracing on ``app`` when ``enabled``.
 
     Returns the TracerProvider, or None when tracing is off/unavailable.
+    The app is left untouched on any failure path: the OTel packages and the
+    exporter are resolved first, and only then are the instrumentation and
+    the request-id hook attached.
     """
     global _tracer_provider
 
@@ -78,8 +92,6 @@ def setup_tracing(
             "(pip install 'gpustack[tracing]'); starting without tracing."
         )
         return None
-
-    _add_request_context_middleware(app)
 
     if exporter is None:
         try:
@@ -104,22 +116,19 @@ def setup_tracing(
     )
     # Pass the provider explicitly: it must be used even in environments where
     # a global provider is already installed (and OTel forbids overriding it).
-    FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
+    FastAPIInstrumentor.instrument_app(
+        app,
+        tracer_provider=provider,
+        server_request_hook=_server_request_hook,
+    )
+    # BatchSpanProcessor keeps spans in memory until its flush interval or
+    # buffer size; without a shutdown hook, spans still queued when the
+    # server exits are discarded. ``router.on_shutdown`` is the mechanism
+    # consumed by the app lifespan in both Starlette 0.x and 1.x (the legacy
+    # ``add_event_handler`` API was removed in Starlette 1.0).
+    app.router.on_shutdown.append(provider.shutdown)
     _tracer_provider = provider
     logger.info(
         "OpenTelemetry request tracing enabled (service.name=%s).", service_name
     )
     return provider
-
-
-def _add_request_context_middleware(app: "FastAPI") -> None:
-    """Annotate the active server span with Envoy's x-request-id."""
-    from opentelemetry import trace
-
-    @app.middleware("http")
-    async def request_context_middleware(request, call_next):
-        span = trace.get_current_span()
-        request_id = request.headers.get("x-request-id")
-        if request_id is not None and span is not None and span.is_recording():
-            span.set_attribute("gpustack.request_id", request_id)
-        return await call_next(request)

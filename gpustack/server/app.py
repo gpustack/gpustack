@@ -48,7 +48,7 @@ def create_app(cfg: Config) -> FastAPI:
         redoc_url=None if (cfg and cfg.disable_openapi_docs) else "/redoc",
         openapi_url=None if (cfg and cfg.disable_openapi_docs) else "/openapi.json",
     )
-    if cfg.enable_tracing:
+    if cfg and cfg.enable_tracing:
         tracing.setup_tracing(app, enabled=True)
     # Before patch_docs: it auto-mounts its own plain StaticFiles at /static
     # unless that path is already taken, and whichever mount lands first wins

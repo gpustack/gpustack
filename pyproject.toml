@@ -74,8 +74,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# OpenTelemetry request tracing (issue #5609). Only needed when
-# --enable-tracing is used.
+# OpenTelemetry request tracing. Only needed when --enable-tracing is used.
 tracing = [
     "opentelemetry-api>=1.45.0",
     "opentelemetry-sdk>=1.45.0",
@@ -99,6 +98,12 @@ dev = [
     "shellcheck-py>=0.10.0.1",
     "twine>=5.1.1",
     "matplotlib>=3.10.7",
+    # Make `make test` execute the tracing tests even without the optional
+    # `tracing` extra installed (CI runs `uv sync --locked` without extras).
+    "opentelemetry-api>=1.45.0",
+    "opentelemetry-sdk>=1.45.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.0",
+    "opentelemetry-instrumentation-fastapi>=0.66b0",
 ]
 
 docs = [

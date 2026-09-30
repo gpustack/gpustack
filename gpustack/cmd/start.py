@@ -337,9 +337,11 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     server_group.add_argument(
         "--enable-tracing",
         action=OptionalBoolAction,
-        help=("Enable OpenTelemetry distributed request tracing. Spans are "
-              "exported over OTLP using the OTEL_EXPORTER_OTLP_* environment "
-              "variables. Requires the gpustack[tracing] extra."),
+        help=(
+            "Enable OpenTelemetry distributed request tracing. Spans are "
+            "exported over OTLP using the OTEL_EXPORTER_OTLP_* environment "
+            "variables. Requires the gpustack[tracing] extra."
+        ),
         default=get_gpustack_env_bool("ENABLE_TRACING"),
     )
     server_group.add_argument(
