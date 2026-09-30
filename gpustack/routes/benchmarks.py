@@ -672,7 +672,19 @@ def _validate_dataset_seed(benchmark_in: BenchmarkCreate) -> None:
 
 
 def _validate_token_windows(benchmark_in: BenchmarkCreate) -> None:
-    """An inverted token-length window yields no valid length."""
+    """Token lengths must be positive and bounded windows must be ordered."""
+    for field in (
+        "dataset_input_min",
+        "dataset_input_max",
+        "dataset_output_min",
+        "dataset_output_max",
+        "dataset_input_tokens",
+        "dataset_output_tokens",
+    ):
+        value = getattr(benchmark_in, field, None)
+        if value is not None and value <= 0:
+            raise BadRequestException(message=f"Field {field} must be > 0")
+
     for lo_field, hi_field in (
         ("dataset_input_min", "dataset_input_max"),
         ("dataset_output_min", "dataset_output_max"),
