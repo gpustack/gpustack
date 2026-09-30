@@ -36,6 +36,7 @@ def create_app(cfg: Config) -> FastAPI:
         )
         app.state.http_client_no_proxy = aiohttp.ClientSession(connector=connector)
         yield
+        tracing.shutdown_tracing(app)
         await app.state.http_client.close()
         await app.state.http_client_no_proxy.close()
 

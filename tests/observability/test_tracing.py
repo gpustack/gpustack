@@ -185,9 +185,10 @@ def test_failed_exporter_leaves_app_untouched(exporter, monkeypatch, caplog):
     assert list(app.user_middleware) == []
 
 
-def test_shutdown_handler_flushes_provider(exporter):
-    """The provider's shutdown is wired to the app so batched spans near
-    process exit are not dropped."""
+def test_shutdown_is_not_registered_on_the_inert_router_hook(exporter):
+    """The server app passes a custom lifespan, so Starlette never runs
+    ``app.router.on_shutdown``; the provider is retained on ``app.state`` for
+    the app's own lifespan to shut down instead."""
     app = FastAPI()
 
     @app.get("/healthz")
@@ -196,4 +197,5 @@ def test_shutdown_handler_flushes_provider(exporter):
 
     provider = _instrument(app, exporter)
     assert provider is not None
-    assert provider.shutdown in app.router.on_shutdown
+    assert provider is app.state.tracer_provider
+    assert list(app.router.on_shutdown) == []

@@ -10,8 +10,13 @@ Hard rules:
 * Optional dependency: the OpenTelemetry packages live in the
   ``gpustack[tracing]`` extra; enabled-but-missing logs one warning and keeps
   serving instead of failing startup.
-* Async export only: production uses a BatchSpanProcessor, flushed when the
-  app's lifespan exits so spans near termination are not lost.
+* Async export only: production uses a BatchSpanProcessor, flushed from the
+  app's own lifespan on shutdown so spans near termination are not lost.
+  GPUStack builds the server app with a custom lifespan, which Starlette uses
+  instead of its default one — and the default lifespan is the only thing that
+  runs a router's startup/shutdown handler lists. The provider is therefore
+  kept on ``app.state`` and flushed through :func:`shutdown_tracing` rather
+  than registered on ``app.router.on_shutdown``.
 * The exporter is driven entirely by standard ``OTEL_EXPORTER_OTLP_*`` env
   vars; no exporter is constructed before the OTel packages are known to be
   importable, and any failure while wiring tracing is caught so a failed setup
@@ -21,7 +26,6 @@ Hard rules:
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
@@ -36,8 +40,6 @@ def _build_provider(
     service_name: str,
     exporter: Any,
     processor_cls: Any,
-    *,
-    set_global: bool = True,
 ) -> Any:
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
@@ -45,10 +47,6 @@ def _build_provider(
     provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
     if exporter is not None and processor_cls is not None:
         provider.add_span_processor(processor_cls(exporter))
-    if set_global:
-        from opentelemetry import trace
-
-        trace.set_tracer_provider(provider)
     return provider
 
 
@@ -63,62 +61,6 @@ def _server_request_hook(span: Any, scope: Any) -> None:
         span.set_attribute("gpustack.request_id", request_id)
 
 
-def _chain_shutdown_flush(app: "FastAPI", provider: Any) -> None:
-    """Flush queued batch spans when the app's lifespan exits.
-
-    Registering the flush on ``app.router.on_shutdown`` does not reach it: a
-    router's startup/shutdown handler lists are run by Starlette's *default*
-    lifespan, and the server app is built with an explicit one, so those lists
-    stay inert. Chaining the flush onto whichever lifespan the app actually
-    uses covers both the default and the explicit case.
-    """
-    inner_lifespan = app.router.lifespan_context
-
-    @asynccontextmanager
-    async def lifespan_with_flush(app_: Any) -> Any:
-        async with inner_lifespan(app_) as maybe_state:
-            try:
-                yield maybe_state
-            finally:
-                provider.shutdown()
-
-    app.router.lifespan_context = lifespan_with_flush
-
-
-def _resolve_exporter(exporter: Any) -> Any:
-    """Return the exporter to use, or None when none can be built.
-
-    A caller-supplied exporter is used as-is. Otherwise the OTLP HTTP exporter
-    is imported and constructed -- the only place the standard
-    ``OTEL_EXPORTER_OTLP_*`` env vars are read -- and any failure is logged and
-    reported to the caller as None so the app is never touched.
-    """
-    if exporter is not None:
-        return exporter
-
-    try:
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-        )
-    except ImportError:
-        logger.warning(
-            "Tracing is enabled but the OTLP HTTP span exporter is not "
-            "available. Install the 'tracing' extra; starting without tracing."
-        )
-        return None
-
-    try:
-        return OTLPSpanExporter()
-    except Exception:
-        logger.warning(
-            "Tracing is enabled but the OTLP exporter could not be configured "
-            "(check the OTEL_EXPORTER_OTLP_* env vars); starting without "
-            "tracing.",
-            exc_info=True,
-        )
-        return None
-
-
 def setup_tracing(
     app: "FastAPI",
     *,
@@ -131,9 +73,8 @@ def setup_tracing(
     """Install request tracing on ``app`` when ``enabled``.
 
     Returns the TracerProvider, or None when tracing is off/unavailable.
-    The app is left untouched on any failure path: the OTel packages and the
-    exporter are resolved first, and only then are the instrumentation, the
-    request-id hook and the shutdown flush attached.
+    Any failure while wiring tracing is logged and swallowed: the server keeps
+    serving, and nothing is instrumented or left behind on the app.
     """
     global _tracer_provider
 
@@ -151,17 +92,27 @@ def setup_tracing(
         )
         return None
 
-    exporter = _resolve_exporter(exporter)
     if exporter is None:
-        return None
+        try:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter,
+            )
+
+            exporter = OTLPSpanExporter()
+        except ImportError:
+            logger.warning(
+                "Tracing is enabled but the OTLP HTTP span exporter is not "
+                "available. Install the 'tracing' extra; starting without "
+                "tracing."
+            )
+            return None
 
     if processor_cls is None:
         processor_cls = BatchSpanProcessor
 
+    provider = None
     try:
-        provider = _build_provider(
-            service_name, exporter, processor_cls, set_global=set_global
-        )
+        provider = _build_provider(service_name, exporter, processor_cls)
         # Pass the provider explicitly: it must be used even in environments
         # where a global provider is already installed (and OTel forbids
         # overriding it).
@@ -170,17 +121,44 @@ def setup_tracing(
             tracer_provider=provider,
             server_request_hook=_server_request_hook,
         )
-        _chain_shutdown_flush(app, provider)
     except Exception:
+        # A half-built provider owns a background export thread; stop it so the
+        # failure leaves no processor or thread behind.
+        if provider is not None:
+            provider.shutdown()
         logger.warning(
-            "Tracing is enabled but could not be initialised; starting "
+            "Tracing is enabled but the OpenTelemetry setup failed; starting "
             "without tracing.",
             exc_info=True,
         )
         return None
 
+    if set_global:
+        from opentelemetry import trace
+
+        trace.set_tracer_provider(provider)
+
+    # The server app owns a custom lifespan, so it never runs
+    # ``app.router.on_shutdown``; keep the provider for the app's lifespan to
+    # shut down through ``shutdown_tracing``.
+    app.state.tracer_provider = provider
     _tracer_provider = provider
     logger.info(
         "OpenTelemetry request tracing enabled (service.name=%s).", service_name
     )
     return provider
+
+
+def shutdown_tracing(app: "FastAPI") -> None:
+    """Flush and stop the tracer provider installed by :func:`setup_tracing`.
+
+    Call this from the application's own lifespan teardown. It is a no-op when
+    tracing is disabled or its setup failed.
+    """
+    global _tracer_provider
+    provider = getattr(app.state, "tracer_provider", None)
+    if provider is None:
+        return
+    provider.shutdown()
+    app.state.tracer_provider = None
+    _tracer_provider = None
