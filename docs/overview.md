@@ -21,7 +21,7 @@ template: overview.html
 
 <!-- github-buttons -->
 
-## Overview
+# Overview
 
 GPUStack is an open-source GPU cluster manager designed for efficient AI model deployment. It configures and orchestrates inference engines — vLLM, SGLang, TensorRT-LLM, or your own — to optimize performance across GPU clusters.
 

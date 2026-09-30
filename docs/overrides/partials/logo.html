@@ -1,0 +1,11 @@
+{#-
+  Overrides the stock logo partial to ship both marks, because the header
+  is no longer a coloured block: on the light scheme it is white, where
+  the white logo would be invisible. CSS in stylesheets/extra.css shows
+  exactly one of these per colour scheme.
+
+  theme.logo in mkdocs.yml stays as the dark-scheme (white) mark so that
+  anything else reading that setting still resolves to a real file.
+-#}
+<img src="{{ 'assets/logo.png' | url }}" alt="{{ config.site_name }}" class="gps-logo gps-logo--light">
+<img src="{{ 'assets/logo-white.png' | url }}" alt="{{ config.site_name }}" class="gps-logo gps-logo--dark">
