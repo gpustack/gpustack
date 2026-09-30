@@ -2,9 +2,9 @@
 
 A model deployed with replicas > 1 spawns a route whose traffic is
 scheduled between the deployment's instances by the gateway — the
-auto-created target carries no split weight and the least-load
-capability is enabled by default. Single-replica deployments keep the
-plain weighted shape.
+auto-created target carries no split weight and the least-load and
+session-affinity capabilities are enabled by default. Single-replica
+deployments keep the plain weighted shape.
 """
 
 from types import SimpleNamespace
@@ -35,7 +35,7 @@ def _model_in(replicas: int) -> ModelCreate:
 
 
 async def _run_create(monkeypatch, replicas: int):
-    recorder = _Recorder()
+    recorders = {"least-load": _Recorder(), "session-affinity": _Recorder()}
     created = {}
 
     async def fake_model_create(cls, session, source, auto_commit=True):
@@ -54,8 +54,7 @@ async def _run_create(monkeypatch, replicas: int):
         return source
 
     def fake_get_plugin(name):
-        assert name == "least-load"
-        return recorder
+        return recorders[name]
 
     session = MagicMock(commit=AsyncMock(), rollback=AsyncMock())
     ctx = SimpleNamespace(current_principal_id=1)
@@ -86,23 +85,48 @@ async def _run_create(monkeypatch, replicas: int):
     await models_routes.create_model(
         session=session, ctx=ctx, model_in=_model_in(replicas)
     )
-    return created, recorder
+    return created, recorders
 
 
 @pytest.mark.asyncio
 async def test_multi_replica_route_enables_least_load(monkeypatch):
-    created, recorder = await _run_create(monkeypatch, replicas=2)
+    created, recorders = await _run_create(monkeypatch, replicas=2)
 
     # no split weight: capability scoring decides between instances
     assert created["target"].weight == 0
     # the least-load capability rides the plugin's own write path
-    assert recorder.hook_calls == [("create", {"enabled": True})]
+    assert recorders["least-load"].hook_calls == [("create", {"enabled": True})]
+
+
+@pytest.mark.asyncio
+async def test_multi_replica_route_enables_session_affinity(monkeypatch):
+    from gpustack.routes.plugins.session_affinity.config import (
+        DEFAULT_SESSION_KEYS,
+        SessionAffinityConfig,
+    )
+
+    _, recorders = await _run_create(monkeypatch, replicas=2)
+
+    assert recorders["session-affinity"].hook_calls == [
+        (
+            "create",
+            {"enabled": True, "sessionKeys": [dict(k) for k in DEFAULT_SESSION_KEYS]},
+        )
+    ]
+    # the default chain parses: header sources first, body source last
+    section = recorders["session-affinity"].hook_calls[0][1]
+    config = SessionAffinityConfig.model_validate(section)
+    assert [k.model_dump(exclude_none=True) for k in config.sessionKeys] == [
+        {"header": "session-id"},
+        {"header": "x-client-request-id"},
+        {"bodyKey": "prompt_cache_key"},
+    ]
 
 
 @pytest.mark.asyncio
 async def test_single_replica_route_keeps_weighted_shape(monkeypatch):
-    created, recorder = await _run_create(monkeypatch, replicas=1)
+    created, recorders = await _run_create(monkeypatch, replicas=1)
 
     assert created["target"].weight == 100
     # nothing to schedule between instances — no capability default
-    assert recorder.hook_calls == []
+    assert all(r.hook_calls == [] for r in recorders.values())

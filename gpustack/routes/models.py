@@ -2379,29 +2379,36 @@ async def _create_model_route(
     )
     if (model.replicas or 0) > 1:
         from gpustack.routes.plugins import get_route_plugin
+        from gpustack.routes.plugins.session_affinity.config import (
+            DEFAULT_SESSION_KEYS,
+        )
 
-        least_load = get_route_plugin("least-load")
-        if least_load is not None:
-            # Best-effort by design: through the plugin's own write path
-            # so the default lands exactly as a client's plugins section
-            # would, but a missing or partially-migrated plugin table must
-            # not turn the whole deployment create into a 500 — the
-            # route works without the capability, and the next write can
-            # add it back. The savepoint isolates the plugin write: a
-            # DB-level failure rolls back to here without poisoning the
-            # caller's uncommitted transaction.
-            try:
-                async with session.begin_nested():
-                    await least_load.on_route_write(
-                        "create", model_route, {"enabled": True}, session
-                    )
-            except Exception:
-                logger.warning(
-                    "Failed to enable the least-load capability on the route "
-                    "for model %s; the route is created without it",
-                    model.name,
-                    exc_info=True,
-                )
+        # The capability defaults for a multi-replica deployment:
+        # least-load decides between instances per request, session
+        # affinity keeps a conversation on the instance that already has
+        # its KV cache. Each entry goes through the plugin's own write
+        # path so the default lands exactly as a client's plugins
+        # section would.
+        capability_defaults = (
+            ("least-load", {"enabled": True}),
+            (
+                "session-affinity",
+                {
+                    "enabled": True,
+                    "sessionKeys": [dict(key) for key in DEFAULT_SESSION_KEYS],
+                },
+            ),
+        )
+        for plugin_name, section in capability_defaults:
+            plugin = get_route_plugin(plugin_name)
+            if plugin is None:
+                continue
+            # A failing write (e.g. a missing policy table after an
+            # incomplete migration) fails the deployment create and rolls
+            # the whole transaction back — the same outcome as any other
+            # route write failing, and visible in tests rather than
+            # silently degrading the route.
+            await plugin.on_route_write("create", model_route, section, session)
     if grant_owning_org:
         # Auto-grant the owning Org on the primary route so its
         # members see it out of the box. The route is brand new,

@@ -23,6 +23,17 @@ class SessionKey(BaseModel):
         return self
 
 
+DEFAULT_SESSION_KEYS: List[Dict[str, str]] = [
+    {"header": "session-id"},
+    {"header": "x-client-request-id"},
+    {"bodyKey": "prompt_cache_key"},
+]
+"""Session-key chain used when the capability is enabled without an
+explicit one (e.g. the deploy-time default). Header sources first so the
+common case never buffers a body copy; the body source is last and only
+gates the suffixes named by enableOnPathSuffix."""
+
+
 class SessionAffinityConfig(BaseModel):
     enabled: bool = True
 
