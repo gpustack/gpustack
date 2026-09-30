@@ -427,12 +427,29 @@ def downgrade() -> None:
 
 def _index_exists(table_name: str, index_name: str) -> bool:
     """Whether ``index_name`` is already defined on ``table_name``."""
+    if op.get_bind().dialect.name == 'mysql':
+        return bool(_mysql_index_columns(table_name, index_name))
     inspector = Inspector.from_engine(op.get_bind())
     return any(ix['name'] == index_name for ix in inspector.get_indexes(table_name))
 
 
+def _mysql_index_columns(table_name: str, index_name: str) -> List[str]:
+    """Read an index directly from MySQL-compatible database metadata."""
+    rows = op.get_bind().execute(
+        sa.text(
+            "SELECT COLUMN_NAME FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table_name "
+            "AND INDEX_NAME = :index_name ORDER BY SEQ_IN_INDEX"
+        ),
+        {'table_name': table_name, 'index_name': index_name},
+    )
+    return [row[0] for row in rows]
+
+
 def _unique_constraint_columns(table_name: str, constraint_name: str) -> List[str]:
-    """Columns of a named unique constraint, or ``[]`` when it is absent."""
+    """Columns of a named unique constraint or unique index, if present."""
+    if op.get_bind().dialect.name == 'mysql':
+        return _mysql_index_columns(table_name, constraint_name)
     inspector = Inspector.from_engine(op.get_bind())
     for uc in inspector.get_unique_constraints(table_name):
         if uc['name'] == constraint_name:
