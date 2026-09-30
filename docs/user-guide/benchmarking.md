@@ -13,6 +13,15 @@ GPUStack can run benchmarks against running model instances. Benchmarks are exec
 3. Select an instance and fill in the configurations.
 4. Click the `Save` button.
 
+### ShareGPT workload lengths
+
+For the built-in ShareGPT dataset, optionally set a minimum input token length,
+a maximum, or both. GPUStack keeps first-turn prompts whose tokenizer counts
+meet the supplied limits. The output token length is optional: when set,
+the same maximum is requested for every retained prompt; when omitted, each
+prompt uses its reference answer length from the dataset. If the range matches
+no prompts, the run fails before sending benchmark requests.
+
 ## View Benchmark Results
 
 1. Go to the `Benchmarks` page.
