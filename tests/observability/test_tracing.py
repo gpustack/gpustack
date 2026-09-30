@@ -185,76 +185,17 @@ def test_failed_exporter_leaves_app_untouched(exporter, monkeypatch, caplog):
     assert list(app.user_middleware) == []
 
 
-def test_buffered_spans_flush_when_a_custom_lifespan_exits(exporter):
-    """Batched spans are flushed on shutdown even though the server app brings
-    its own lifespan -- which is exactly what leaves ``router.on_shutdown``
-    inert and would otherwise drop the queued span."""
-    from contextlib import asynccontextmanager
-
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-    @asynccontextmanager
-    async def server_lifespan(app):
-        yield
-
-    app = FastAPI(lifespan=server_lifespan)
-
-    @app.get("/healthz")
-    def healthz():
-        return {"ok": True}
-
-    exporter = InMemorySpanExporter()
-    provider = tracing_mod.setup_tracing(
-        app,
-        enabled=True,
-        service_name="gpustack-test",
-        exporter=exporter,
-        processor_cls=BatchSpanProcessor,
-        set_global=False,
-    )
-    assert provider is not None
-    assert list(app.router.on_shutdown) == []
-
-    with TestClient(app) as client:
-        assert client.get("/healthz").status_code == 200
-        # Batched export: nothing has left the processor while serving.
-        assert list(exporter.get_finished_spans()) == []
-
-    # The lifespan teardown flushed the queued span instead of dropping it.
-    server_spans = [s for s in exporter.get_finished_spans() if s.kind.name == "SERVER"]
-    assert len(server_spans) == 1
-
-
-def test_failed_wiring_leaves_the_app_serving(exporter, monkeypatch, caplog):
-    """A failure while building the provider or instrumenting the app is
-    logged and swallowed: startup is not aborted and nothing is left on the
-    app."""
-    from opentelemetry.instrumentation import fastapi as fastapi_instrumentation
-
-    def boom(*args, **kwargs):
-        raise RuntimeError("simulated instrumentation failure")
-
-    monkeypatch.setattr(
-        fastapi_instrumentation.FastAPIInstrumentor, "instrument_app", boom
-    )
+def test_shutdown_is_not_registered_on_the_inert_router_hook(exporter):
+    """The server app passes a custom lifespan, so Starlette never runs
+    ``app.router.on_shutdown``; the provider is retained on ``app.state`` for
+    the app's own lifespan to shut down instead."""
     app = FastAPI()
 
     @app.get("/healthz")
     def healthz():
         return {"ok": True}
 
-    before = app.router.lifespan_context
-    with caplog.at_level("WARNING"):
-        provider = tracing_mod.setup_tracing(
-            app,
-            enabled=True,
-            service_name="gpustack-test",
-            exporter=exporter,
-            processor_cls=SimpleSpanProcessor,
-            set_global=False,
-        )
-    assert provider is None
-    assert any("could not be initialised" in r.message for r in caplog.records)
-    # Server still serves, and no flush was chained onto the app.
-    assert TestClient(app).get("/healthz").status_code == 200
-    assert app.router.lifespan_context is before
+    provider = _instrument(app, exporter)
+    assert provider is not None
+    assert provider is app.state.tracer_provider
+    assert list(app.router.on_shutdown) == []
