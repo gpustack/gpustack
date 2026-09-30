@@ -127,6 +127,68 @@ class TestRenderRoute:
         with patch.object(ModelRouteTarget, "all_by_field", classmethod(shim)):
             assert asyncio.run(render_route(None, route)) is None
 
+    def test_target_weight_is_split_across_instances(self):
+        # A target's weight is its models' total share, so each instance
+        # carries weight * lcm(counts) / count: 1 replica at 100 against 2
+        # replicas at 100 must draw 2:1:1, and lowering the 2-replica weight
+        # to 50 must draw 4:1:1 — not 1:1:1 / 2:1:1 from handing the raw
+        # target weight to every candidate.
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from gpustack.routes.plugins.lb import reconciler
+        from gpustack.routes.plugins.lb.reconciler import render_route
+        from gpustack.schemas.model_routes import (
+            ModelRoute,
+            ModelRouteTarget,
+            TargetStateEnum,
+        )
+
+        def _registry(name):
+            return SimpleNamespace(port=80, get_service_name=lambda: name)
+
+        async def destinations(session, target):
+            # target 1 -> 1 instance, target 2 -> 2 instances
+            count = 1 if target.id == 1 else 2
+            return [
+                (1, f"m{target.id}-{i}", _registry(f"model-{target.id}-{i}.static"))
+                for i in range(count)
+            ]
+
+        def _route(weight_b):
+            return ModelRoute(id=1, name="r", targets=0, ready_targets=0), [
+                ModelRouteTarget(
+                    id=1,
+                    name="t1",
+                    route_name="r",
+                    route_id=1,
+                    weight=100,
+                    state=TargetStateEnum.ACTIVE,
+                ),
+                ModelRouteTarget(
+                    id=2,
+                    name="t2",
+                    route_name="r",
+                    route_id=1,
+                    weight=weight_b,
+                    state=TargetStateEnum.ACTIVE,
+                ),
+            ]
+
+        for weight_b, expected in ((100, [200, 100, 100]), (50, [200, 50, 50])):
+            route, targets = _route(weight_b)
+
+            async def shim(cls, session, field=None, value=None, _targets=targets):
+                return _targets
+
+            with (
+                patch.object(ModelRouteTarget, "all_by_field", classmethod(shim)),
+                patch.object(reconciler, "_destinations_for_target", destinations),
+            ):
+                candidates, _ = asyncio.run(render_route(None, route))
+            assert [c["weight"] for c in candidates] == expected
+
 
 class TestSyncModelRouteLb:
     """The LB matchRule is declared on the collector, not written
