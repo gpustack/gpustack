@@ -517,6 +517,18 @@ def provider_proxy_plugin_spec(
     match_rules = []
     sorted_providers: List[ModelProvider] = sorted(providers, key=lambda p: p.id)
     for provider in sorted_providers:
+        # Imported lazily: the plugin package's __init__ pulls the route
+        # plugin, which pulls this module -- a module-level import cycles.
+        from gpustack.routes.plugins.decision_service.providers import (
+            is_decision_config,
+        )
+
+        if is_decision_config(provider.config):
+            # A Jev decision service feeds the gpustack-lb-decision-service
+            # plugin's providers catalogue, not the inference proxy;
+            # riding the ai-proxy catalogue would deploy an unreachable
+            # provider and a matchRule on a service nobody selects.
+            continue
         registry = provider_registry(provider)
         if registry is None:
             continue

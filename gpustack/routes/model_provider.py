@@ -18,11 +18,17 @@ from gpustack.schemas.model_provider import (
     ModelProviderListParams,
     ProviderModelsInput,
     ModelProviderTypeEnum,
+    TypesafeConfig,
+    TestDecisionModelInput,
     TestProviderModelInput,
     TestProviderModelResult,
     ProviderModel,
     OpenAIConfig,
     V1_MODELS_URI,
+)
+from gpustack.routes.plugins.decision_service.providers import (
+    DECISION_PROVIDER_TYPES,
+    is_decision_config,
 )
 from gpustack.schemas.models import CategoryEnum
 from gpustack.schemas.model_routes import ModelRouteTarget
@@ -249,6 +255,24 @@ async def update_model_provider(
                 message=f"Model provider with name '{input.name}' already exists."
             )
     deleted_models = deleted_model_names(provider.models or [], input.models or [])
+    # An ordinary provider already serving inference targets cannot become a
+    # decision service: the targets would survive the type flip (their
+    # validation only runs on target writes) while the provider drops out
+    # of the ai-proxy catalogue -- routes pointing at nothing.
+    if is_decision_config(input.config) and not is_decision_config(provider.config):
+        existing_targets = await ModelRouteTarget.all_by_field(
+            session, "provider_id", id
+        )
+        if existing_targets:
+            raise InvalidException(
+                message=(
+                    f"provider {provider.name} is referenced by "
+                    f"{len(existing_targets)} inference route target(s); it "
+                    "cannot change to a decision-service type "
+                    "(gpustack-lb-typesafe) while those targets exist. "
+                    "Remove the targets first."
+                )
+            )
     try:
         input_dict = input.model_dump(exclude={"api_tokens"})
         if input.api_tokens is not None:
@@ -319,6 +343,10 @@ def determine_model_category(
     provider_type: ModelProviderTypeEnum,
     model: Dict[str, Any],
 ) -> List[str]:
+    if provider_type in DECISION_PROVIDER_TYPES:
+        # Decision-engine versions (jev-latest, ...), not servable models:
+        # the one category the UI filters the decision-model dropdowns by.
+        return ["decision"]
     if provider_type == ModelProviderTypeEnum.DOUBAO:
         domain: str = model.get("domain", "").lower()
         if domain in category_values:
@@ -338,19 +366,36 @@ class CustomOAIModel(OAIModel):
 
 
 def _model_list(response: httpx.Response) -> List[Dict[str, Any]]:
-    """The ``data`` array of a model-list response.
+    """The model array of a model-list response.
 
     A path that is not a model list often answers 200 anyway -- a gateway's UI,
     an error object, a bare array -- so a body that cannot be read as one counts
     as a failed candidate rather than a 500. Both the decode and the shape raise
     ``ValueError``, leaving the caller one thing to catch.
+
+    OpenAI-compatible servers answer ``{"data": [...]}``; the Jev decision
+    services answer ``{"models": [...]}`` (jevcompat SPEC) -- both are model
+    lists, so both are accepted. Item shape differences do not matter here:
+    ``get_model_name`` already reads ``id`` or ``name``.
     """
     content = response.json()
     if not isinstance(content, dict):
         raise ValueError(
-            f"expected a JSON object with a data array, got {type(content).__name__}"
+            "expected a JSON object with a data or models array, got "
+            f"{type(content).__name__}"
         )
-    return content.get("data") or []
+    data = content.get("data")
+    if isinstance(data, list):
+        # An empty data array is an empty model list, not a missing key --
+        # the models fallback must not turn it into someone else's list.
+        return data
+    models = content.get("models")
+    if isinstance(models, list):
+        return models
+    raise ValueError(
+        "expected a data or models array, got "
+        f"{type(data if data is not None else models).__name__}"
+    )
 
 
 async def _first_model_list(
@@ -589,6 +634,242 @@ def _is_thinking_restricted_qwen_rejection(
         provider_type == ModelProviderTypeEnum.QWEN
         and exc.response.status_code == 400
         and "enable_thinking" in exc.response.text
+    )
+
+
+# The decision-service ping question: two synthetic candidates, so the
+# service exercises the same model_selection path a route's request would
+# take (criteria < 2 would be skipped by the plugin as not worth an opinion,
+# and the same shape is what the service itself reasons over).
+_DECISION_TEST_QUESTION = {
+    "type": "choice",
+    "instructions": (
+        "This is a connectivity test sent by GPUStack. Pick either candidate."
+    ),
+    "criteria": {
+        "candidate-a": "A synthetic candidate used only for testing.",
+        "candidate-b": "Another synthetic candidate used only for testing.",
+    },
+}
+
+
+async def _try_decision_model(
+    config: TypesafeConfig,
+    api_token: Optional[str],
+    model_name: Optional[str],
+    proxy_url: Optional[str],
+) -> TestProviderModelResult:
+    """Ping a Jev decision service through its real decision path.
+
+    POSTs the service's own ``/v1/systemone`` endpoint a minimal
+    model_selection question — the same call the gateway plugin makes per
+    request — so a pass certifies endpoint, token and the decision path at
+    once, strictly more than the ``/v1/models`` fetch the provider form
+    uses. Any 2xx counts as a pass: the verdict body is the plugin's to
+    consume, not ours. The request shape is the jevcompat wire contract:
+    ``model`` (the decision-engine alias, omitted when neither the caller
+    nor the provider config names one), ``state``, and the question under
+    ``questions.model_selection``. The endpoint is the provider's custom
+    base url or the TypeSafe hosted default.
+    """
+    endpoint, decision_url = config.get_chat_url()
+    alias = model_name or config.model
+    data: Dict[str, Any] = {
+        "state": "GPUStack decision-service connectivity test.",
+        "questions": {"model_selection": _DECISION_TEST_QUESTION},
+    }
+    if alias:
+        data["model"] = alias
+    headers = {}
+    if api_token:
+        headers["Authorization"] = f"Bearer {api_token}"
+    # Never logs the token: the body is what a 400 "Invalid request" comes
+    # down to, and the URL carries no secret either.
+    logger.info(
+        "testing decision service %s: POST %s body=%s",
+        config.type.value,
+        decision_url,
+        data,
+    )
+    async with httpx.AsyncClient(
+        base_url=f"{endpoint}",
+        proxy=proxy_url,
+        trust_env=True,
+    ) as client:
+        try:
+            response = await client.post(
+                url=decision_url, json=data, headers=headers, timeout=30
+            )
+            response.raise_for_status()
+            # Reachable is not the same as usable: a proxy's HTML error
+            # page answers 200 on some deployments, and a JSON body that is
+            # an error envelope is a failed decision, not a verdict. A
+            # JSON object without an error key is the minimum shape every
+            # jevcompat verdict shares.
+            try:
+                verdict = response.json()
+            except ValueError:
+                return TestProviderModelResult(
+                    model_name=model_name or config.model or "",
+                    accessible=False,
+                    error_message=(
+                        "Decision service answered 2xx with a non-JSON "
+                        f"body: {response.text[:200]!r}"
+                    ),
+                )
+            if not isinstance(verdict, dict):
+                return TestProviderModelResult(
+                    model_name=model_name or config.model or "",
+                    accessible=False,
+                    error_message=(
+                        "Decision service answered 2xx without a JSON "
+                        f"object: {str(verdict)[:200]}"
+                    ),
+                )
+            if "error" in verdict:
+                return TestProviderModelResult(
+                    model_name=model_name or config.model or "",
+                    accessible=False,
+                    error_message=(
+                        "Decision service answered 2xx with an error "
+                        f"envelope: {str(verdict)[:200]}"
+                    ),
+                )
+            # The official ChoiceAnswer contract nests the verdict under
+            # answers.<question> with choice, confidence and probabilities
+            # all required -- anything else is reachable but not usable.
+            answers = verdict.get("answers")
+            answer = (
+                answers.get("model_selection") if isinstance(answers, dict) else None
+            )
+            if not isinstance(answer, dict):
+                return TestProviderModelResult(
+                    model_name=model_name or config.model or "",
+                    accessible=False,
+                    error_message=(
+                        "Decision service answered 2xx without a "
+                        "model_selection answer: " + str(verdict)[:200]
+                    ),
+                )
+            choice = answer.get("choice")
+            if not isinstance(choice, str) or not choice.strip():
+                return TestProviderModelResult(
+                    model_name=model_name or config.model or "",
+                    accessible=False,
+                    error_message=(
+                        "Decision service answered 2xx without a usable "
+                        f"verdict (no choice): {str(verdict)[:200]}"
+                    ),
+                )
+            confidence = answer.get("confidence")
+            probabilities = answer.get("probabilities")
+            if (
+                not isinstance(confidence, (int, float))
+                or not isinstance(probabilities, dict)
+                or not probabilities
+            ):
+                return TestProviderModelResult(
+                    model_name=model_name or config.model or "",
+                    accessible=False,
+                    error_message=(
+                        "Decision service verdict is missing required "
+                        "confidence/probabilities: " + str(verdict)[:200]
+                    ),
+                )
+            return TestProviderModelResult(
+                model_name=model_name or config.model or "",
+                accessible=True,
+            )
+        except httpx.HTTPStatusError as exc:
+            return TestProviderModelResult(
+                model_name=model_name or config.model or "",
+                accessible=False,
+                # truncated: an HTML error page from a proxy in front of
+                # the service can be arbitrarily large
+                error_message=(
+                    "Decision service error: "
+                    f"{exc.response.status_code} {exc.response.text[:500]}"
+                ),
+            )
+        except httpx.RequestError as exc:
+            raise InternalServerErrorException(
+                message=f"Network error: {exc.__class__.__name__}: {exc}"
+            )
+
+
+@router.post(
+    "/test-decision-model",
+    response_model=TestProviderModelResult,
+    response_model_exclude_none=True,
+)
+async def try_decision_model_with_provider(
+    input: TestDecisionModelInput,
+):
+    if input.config is None:
+        raise InvalidException(message="config is required to test a decision service")
+    if not is_decision_config(input.config):
+        raise InvalidException(
+            message=(
+                f"provider type {input.config.type} is not a decision service "
+                "(gpustack-lb-typesafe type)"
+            )
+        )
+    return await _try_decision_model(
+        input.config, input.api_token, input.model_name, input.proxy_url
+    )
+
+
+@router.post(
+    "/{id}/test-decision-model",
+    response_model=TestProviderModelResult,
+    response_model_exclude_none=True,
+)
+async def try_decision_model_with_specific_provider(
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    input: TestDecisionModelInput,
+):
+    provider = await ModelProvider.one_by_id(session=session, id=id)
+    if not provider or provider.deleted_at is not None:
+        raise NotFoundException(message=f"provider {id} not found")
+    assert_resource_visible(
+        ctx,
+        provider,
+        not_found_message=f"provider {id} not found",
+    )
+    if not is_decision_config(provider.config):
+        raise InvalidException(
+            message=(
+                f"provider {provider.name} is not a decision service "
+                "(gpustack-lb-typesafe type)"
+            )
+        )
+    config = provider.config
+    if input.config is not None:
+        # an override that is not a decision config is a caller error, not
+        # something to silently swap back for the stored config
+        if not is_decision_config(input.config):
+            raise InvalidException(
+                message=(
+                    f"provider type {input.config.type} is not a decision "
+                    "service (gpustack-lb-typesafe type)"
+                )
+            )
+        config = input.config
+    return await _try_decision_model(
+        config,
+        (
+            input.api_token
+            if input.api_token is not None
+            else (provider.api_tokens[0] if provider.api_tokens else None)
+        ),
+        input.model_name,
+        (
+            input.proxy_url
+            if "proxy_url" in input.model_fields_set
+            else provider.proxy_url
+        ),
     )
 
 

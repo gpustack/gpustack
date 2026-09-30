@@ -51,4 +51,5 @@ __all__ = [
 from gpustack.routes.plugins import lb  # noqa: E402,F401
 from gpustack.routes.plugins import least_load  # noqa: E402,F401
 from gpustack.routes.plugins import session_affinity  # noqa: E402,F401
+from gpustack.routes.plugins import decision_service  # noqa: E402,F401
 from gpustack.routes.plugins import fallback  # noqa: E402,F401

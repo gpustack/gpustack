@@ -218,6 +218,14 @@ from gpustack.routes.plugins import (
     RouteReconcileContext,
     dispatch_route_reconcile,
 )
+from gpustack.routes.plugins.decision_service.providers import (
+    DECISION_PROVIDER_TYPES,
+    sync_decision_service_providers,
+)
+from gpustack.routes.plugins.decision_service.plugin import (
+    decision_referencing_route_ids,
+)
+from gpustack.routes.plugins.capability_policy import CapabilityPolicy
 from gpustack.gateway import get_async_k8s_config
 from gpustack.schemas.model_provider import (
     ModelProvider,
@@ -6419,6 +6427,19 @@ async def sync_categories_and_meta(session: AsyncSession, model: Model, event: E
             )
 
 
+def _is_decision_payload(value: Any) -> bool:
+    """Whether a provider config value -- a pydantic model, the raw dict an
+    event payload can carry, or a bare type value -- names a decision
+    provider type."""
+    if isinstance(value, BaseModel):
+        type_value = getattr(value, "type", None)
+    elif isinstance(value, dict):
+        type_value = value.get("type")
+    else:
+        type_value = value
+    return type_value in DECISION_PROVIDER_TYPES
+
+
 class ModelProviderController:
     def __init__(self, cfg: Config):
         self._config = cfg
@@ -6517,6 +6538,103 @@ class ModelProviderController:
             logger.error(f"Failed to ensure provider's ai_proxy config: {e}")
             raise
 
+    async def _ensure_decision_service_config(self):
+        """Rebuild the gpustack-lb-decision-service providers catalogue
+        (the gpustack-lb-typesafe type ModelProviders). Separate
+        from the ai-proxy pass: a different CR, a different set of
+        providers (only the gpustack-lb-typesafe type), and a failure in
+        one must not mask the other."""
+        try:
+            async with async_session() as session:
+                await sync_decision_service_providers(
+                    cfg=self._config,
+                    session=session,
+                    extensions_api=self._higress_extension_api,
+                )
+        except Exception as e:
+            logger.error(f"Failed to ensure decision-service provider config: {e}")
+            raise
+
+    async def _notify_decision_service_routes(self, event: Event) -> None:
+        """Re-reconcile routes whose decision-service section is affected by
+        a provider change: a deletion (row or id-only payload -- it cannot
+        be ruled out that the deleted row was a decision provider), a type
+        move off or back onto the decision types, a ``models`` cache
+        refresh, or a change of the provider's default ``model`` -- any of
+        these can flip what the render guard decides. The reconcile then
+        strips or restores each matchRule while the stored policy is left
+        untouched.
+
+        Field access goes through ``event_field``/``resolve_event_id``:
+        cross-instance events can carry an id-only payload where attribute
+        access would raise before any notification went out."""
+        provider_id = resolve_event_id(event)
+        if provider_id is None:
+            return
+        changed = event.changed_fields or {}
+        if event.type == EventType.DELETED:
+            payload_config = event_field(event.data, "config")
+            if payload_config is not None and not _is_decision_payload(payload_config):
+                return
+        else:
+            config_change = changed.get("config")
+            # _changed_scalar normalizes both producer shapes: the local
+            # find_history path stores ([old], [new]) and the cross-instance
+            # detect_changes path stores a flat (old, new).
+            old_value = (
+                _changed_scalar(config_change[0])
+                if config_change and len(config_change) > 0
+                else None
+            )
+            new_value = (
+                _changed_scalar(config_change[1])
+                if config_change and len(config_change) > 1
+                else None
+            )
+            was_decision = old_value is not None and _is_decision_payload(old_value)
+            is_decision = new_value is not None and _is_decision_payload(new_value)
+
+            def _payload_model(value) -> Optional[Any]:
+                if isinstance(value, BaseModel):
+                    return getattr(value, "model", None)
+                if isinstance(value, dict):
+                    return value.get("model")
+                return None
+
+            model_changed = _payload_model(old_value) != _payload_model(new_value)
+            # notify when the provider left or re-entered the decision
+            # types (a stripped rule can come back), when its default model
+            # changed (the effective alias a route renders may be valid
+            # again), or when the pulled models cache changed (an alias may
+            # have gone)
+            if not (
+                was_decision != is_decision
+                or (is_decision and model_changed)
+                or "models" in changed
+            ):
+                return
+        try:
+            async with async_session() as session:
+                policies = await CapabilityPolicy.all_by_fields(
+                    session, fields={"capability": "decision-service"}
+                )
+                route_ids = decision_referencing_route_ids(policies, provider_id)
+                for route_id in sorted(route_ids):
+                    route = await ModelRoute.one_by_id(session, route_id)
+                    if route is None:
+                        continue
+                    route_copy = ModelRoute.model_validate(route.model_dump())
+                    await event_bus.publish(
+                        route_copy.__class__.__name__.lower(),
+                        Event(type=EventType.UPDATED, data=route_copy),
+                    )
+        except Exception as e:
+            logger.error(
+                "Failed to notify decision-service routes for provider %s: %s",
+                provider_id,
+                e,
+            )
+
     async def _notify_provider_model_routes(
         self, session: AsyncSession, model_provider: ModelProvider, event: Event
     ):
@@ -6574,6 +6692,35 @@ class ModelProviderController:
                 Event(type=EventType.UPDATED, data=route_copy),
             )
 
+    async def _ensure_catalogues_and_notify(self, event: Event) -> None:
+        """Run the ai-proxy and decision-service passes independently: both
+        log-and-reraise on failure, so sequencing them directly would let an
+        ai-proxy failure mask the decision-service catalogue sync and the
+        route re-notification. Each runs regardless of the other; the first
+        error (ai-proxy wins only because it is checked first) is re-raised
+        after both had their chance."""
+        ai_proxy_error: Optional[BaseException] = None
+        decision_error: Optional[BaseException] = None
+        try:
+            await self._ensure_provider_ai_proxy_config()
+        except Exception as e:
+            ai_proxy_error = e
+        try:
+            await self._ensure_decision_service_config()
+        except Exception as e:
+            decision_error = e
+        try:
+            await self._notify_decision_service_routes(event)
+        except Exception as e:
+            # the notifier already logs its own errors; recorded so the
+            # failure surfaces with the others instead of disappearing
+            if decision_error is None:
+                decision_error = e
+        if ai_proxy_error is not None:
+            raise ai_proxy_error
+        if decision_error is not None:
+            raise decision_error
+
     async def _reconcile(self, event: Event):
         """
         Reconcile the model provider.
@@ -6583,7 +6730,7 @@ class ModelProviderController:
             return
         if event.type == EventType.DELETED:
             await self._ensure_provider_registry(model_provider, event)
-            await self._ensure_provider_ai_proxy_config()
+            await self._ensure_catalogues_and_notify(event)
             return
         async with async_session() as session:
             model_provider: ModelProvider = await ModelProvider.one_by_id(
@@ -6592,7 +6739,7 @@ class ModelProviderController:
             if not model_provider:
                 return
             await self._ensure_provider_registry(model_provider, event)
-            await self._ensure_provider_ai_proxy_config()
+            await self._ensure_catalogues_and_notify(event)
             await self._notify_provider_model_routes(session, model_provider, event)
 
 
