@@ -311,6 +311,49 @@ scrape_configs:
           higress: {cfg.gateway_namespace}-higress-gateway
 """
 
+    if cfg.gateway_mode == GatewayModeEnum.incluster:
+        # The in-cluster gateway pods carry the standard prometheus.io/*
+        # annotations (set by the higress-core chart), so pod service discovery
+        # follows replicas and pod recreation without further configuration.
+        # Discovery uses the server pod's own service account, which the chart
+        # grants pods get/list/watch to.
+        prometheus_config += f"""  - job_name: higress-gateway-pods
+    metrics_path: /stats/prometheus
+    scrape_interval: 5s
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - {cfg.gateway_namespace}
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: "true"
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: keep
+        regex: .*higress-gateway.*
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\\d+)?;(\\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels:
+          - __meta_kubernetes_pod_container_port_number
+          - __meta_kubernetes_pod_annotation_prometheus_io_port
+        action: keep
+        regex: ^(\\d+);\\1$
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - target_label: higress
+        replacement: {cfg.gateway_namespace}-higress-gateway
+"""
+
     prometheus_config_path.write_text(prometheus_config)
 
     grafana_provisioning_dir = Path(
