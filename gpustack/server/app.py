@@ -18,6 +18,7 @@ from gpustack.security import JWTManager
 from gpustack.gateway.utils import worker_websocket_connect_callback
 from gpustack.websocket_proxy.message_server import MessageServerHandler
 from gpustack.extension import Plugin, iter_plugin_classes, resolve_version_info
+from gpustack.observability import tracing
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,10 @@ def create_app(cfg: Config) -> FastAPI:
         )
         app.state.http_client_no_proxy = aiohttp.ClientSession(connector=connector)
         yield
+        try:
+            tracing.shutdown_tracing(app)
+        except Exception:
+            logger.exception("Failed to shut down the tracing provider")
         await app.state.http_client.close()
         await app.state.http_client_no_proxy.close()
 
@@ -47,6 +52,8 @@ def create_app(cfg: Config) -> FastAPI:
         redoc_url=None if (cfg and cfg.disable_openapi_docs) else "/redoc",
         openapi_url=None if (cfg and cfg.disable_openapi_docs) else "/openapi.json",
     )
+    if cfg and cfg.enable_tracing:
+        tracing.setup_tracing(app, enabled=True)
     # Before patch_docs: it auto-mounts its own plain StaticFiles at /static
     # unless that path is already taken, and whichever mount lands first wins
     # every request under it. Registering ours first means the docs assets

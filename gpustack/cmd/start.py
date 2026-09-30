@@ -335,6 +335,16 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env_bool("DISABLE_BUILTIN_OBSERVABILITY"),
     )
     server_group.add_argument(
+        "--enable-tracing",
+        action=OptionalBoolAction,
+        help=(
+            "Enable OpenTelemetry distributed request tracing. Spans are "
+            "exported over OTLP using the OTEL_EXPORTER_OTLP_* environment "
+            "variables. Requires the gpustack[tracing] extra."
+        ),
+        default=get_gpustack_env_bool("ENABLE_TRACING"),
+    )
+    server_group.add_argument(
         "--builtin-prometheus-port",
         type=int,
         help="Port for the embedded Prometheus service. Default is 19090.",
@@ -927,6 +937,7 @@ def set_server_options(args, config_data: dict):
         "gateway_ingress_class",
         "shuihua_api_base_url",
         "disable_builtin_observability",
+        "enable_tracing",
         "builtin_prometheus_port",
         "builtin_grafana_port",
         "prometheus_url",
