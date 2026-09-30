@@ -36,7 +36,7 @@ from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
     NetworkingIstioIoV1Alpha3Api,
 )
 from gpustack.gateway.labels_annotations import managed_labels
-from gpustack.gateway.utils import DestinationTupleList
+from gpustack.gateway.utils import DestinationTupleList, scale_weight
 from gpustack.routes.plugins.artifacts import RouteArtifactCollector
 from gpustack.routes.plugins.lb.config import (
     LB_CONTEXT_CR_NAME as CONTEXT_CR_NAME,
@@ -166,11 +166,31 @@ async def render_route(
     candidates: List[Dict[str, Any]] = []
     model_mappers: Dict[str, Dict[str, str]] = {}
 
+    rendered_targets: List[Tuple[ModelRouteTarget, DestinationTupleList]] = []
     for target in active_targets:
+        registries = await _destinations_for_target(session, target)
+        if registries:
+            rendered_targets.append((target, registries))
+
+    # A target's weight is its models' TOTAL share, so its instances split
+    # it: handing the raw target weight to every candidate would scale each
+    # model's traffic by its replica count (1 replica at 100 vs 2 replicas
+    # at 100 draws 1:1:1 instead of 2:1:1). The ingress path reaches the
+    # same split through hamilton_calculate_weight's LCM scaling; here the
+    # scaled weight lands on candidates untouched — the plugin's dice roll
+    # is over totalWeight with no sum-to-100 budget, so the split stays
+    # exact with no Hamilton rounding.
+    scaled_weights = [
+        w
+        for w, _ in scale_weight([(t.weight or 0, len(r)) for t, r in rendered_targets])
+    ]
+
+    for (target, registries), per_instance_weight in zip(
+        rendered_targets, scaled_weights
+    ):
         # Provider targets have no instances and no engine metrics;
         # the plugin skips instance selection for kind: provider.
         kind = "provider" if target.provider_id is not None else "instance"
-        registries = await _destinations_for_target(session, target)
         for _, model_name, registry in registries:
             candidates.append(
                 _build_candidate(
@@ -178,16 +198,15 @@ async def render_route(
                     target.id,
                     kind,
                     model_name,
-                    target.weight,
+                    per_instance_weight,
                     target.max_running_requests,
                 )
             )
-        if registries:
-            # The main-path rewrite rides the LB selection: each candidate
-            # already carries its own upstream name, and the wildcard keeps
-            # the mapping total when the caller's model name is unknown to
-            # this target.
-            model_mappers[str(target.id)] = {"*": registries[0][1]}
+        # The main-path rewrite rides the LB selection: each candidate
+        # already carries its own upstream name, and the wildcard keeps
+        # the mapping total when the caller's model name is unknown to
+        # this target.
+        model_mappers[str(target.id)] = {"*": registries[0][1]}
 
     if not candidates:
         return None
