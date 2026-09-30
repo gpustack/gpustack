@@ -60,6 +60,9 @@ spec:
             {{- if index .Values "higress-core" "enabled" }}
             - name: GPUSTACK_GATEWAY_NAMESPACE
               value: "{{ .Release.Namespace }}"
+            {{- else if .Values.gateway.namespace }}
+            - name: GPUSTACK_GATEWAY_NAMESPACE
+              value: "{{ .Values.gateway.namespace }}"
             {{- end }}
             - name: GPUSTACK_DEFAULT_CLUSTER_KUBERNETES
               value: 'true'

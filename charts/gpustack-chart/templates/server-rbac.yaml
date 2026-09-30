@@ -48,9 +48,53 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create"]
+  # read-only: lets the in-server Prometheus discover gateway pods by their
+  # prometheus.io/* annotations via kubernetes_sd_configs
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+{{- /* gateway.namespace is meaningful only for an externally installed Higress:
+     the bundled higress-core sub-chart always deploys in the release
+     namespace, so the env above pins the release namespace there. */ -}}
+{{- $externalGatewayNamespace := "" }}
+{{- if and (not (index .Values "higress-core" "enabled")) .Values.gateway.namespace }}
+{{- $externalGatewayNamespace = .Values.gateway.namespace }}
+{{- end }}
+{{- if ne $externalGatewayNamespace "" }}
+---
+# same read-only pods access, in the namespace an externally installed Higress
+# gateway runs in; the built-in Prometheus scrapes it from the server pod
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-server-gateway-pod-metrics-viewer
+  namespace: {{ $externalGatewayNamespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-server-gateway-pod-metrics-viewer
+  namespace: {{ $externalGatewayNamespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-server
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ .Release.Name }}-server-gateway-pod-metrics-viewer
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
