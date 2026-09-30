@@ -17,6 +17,22 @@ def _config_of(type_value: str):
     return TypeAdapter(ProviderConfigType).validate_python({"type": type_value})
 
 
+def test_every_endpoint_backed_type_keeps_its_public_endpoint():
+    # A provider class whose _public_endpoint is lost stops resolving a
+    # base url for providers without an explicit endpoint, silently
+    # breaking model discovery for that type.
+    for type_value in ModelProviderTypeEnum:
+        if type_value == ModelProviderTypeEnum.GENERIC:
+            continue  # no config class, the standing exception
+        config = _config_of(type_value.value)
+        if getattr(config, "endpoint", None) is not None:
+            continue
+        public = getattr(config, "_public_endpoint", None)
+        if public is None:
+            continue  # endpoint-less types are configured per provider
+        assert config.get_base_url(), f"{type_value} lost its public endpoint"
+
+
 class TestProviderTypeCoverage:
     """``ModelProviderTypeEnum`` mirrors the provider types ai-proxy accepts, so
     it is edited whenever the plugin gains one -- and adding the member is only
