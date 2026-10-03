@@ -25,7 +25,7 @@ from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
 from gpustack.security import JWTManager
 from gpustack import envs
-from gpustack.api.auth import SESSION_COOKIE_NAME
+from gpustack.api.auth import SESSION_COOKIE_NAME, auth_cookie_attrs
 
 from gpustack.server.metrics_collector import (
     ModelUsageMetrics,
@@ -422,12 +422,17 @@ class RefreshTokenMiddleware(BaseHTTPMiddleware):
                         new_token = jwt_manager.create_jwt_token(
                             username=payload['sub']
                         )
+                        # Through the shared helper so a renewed cookie keeps
+                        # every attribute the login path gave it. Spelling them
+                        # out here instead loses `secure`, which defaults to
+                        # False: over HTTPS the session silently continues on a
+                        # cookie weaker than the one it replaced.
                         response.set_cookie(
                             key=SESSION_COOKIE_NAME,
                             value=new_token,
-                            httponly=True,
-                            max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-                            expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+                            **auth_cookie_attrs(
+                                request, envs.JWT_TOKEN_EXPIRE_MINUTES * 60
+                            ),
                         )
             except (ExpiredSignatureError, DecodeError):
                 pass

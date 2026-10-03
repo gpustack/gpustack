@@ -1,21 +1,28 @@
+import ast
 import asyncio
 import ssl
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import urljoin
 
 import pytest
 from fastapi import FastAPI
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
+from starlette.responses import Response
 from gpustack.api.exceptions import register_handlers
 from gpustack.api.auth import (
     GATEWAY_AUTH_TOKEN_HEADER,
+    auth_cookie_attrs,
+    auth_cookie_path,
     client_ip_getter,
     get_current_user,
     worker_auth,
 )
+from gpustack.config.config import Config, get_global_config, set_global_config
 from gpustack.api.exceptions import BadRequestException, UnauthorizedException
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.schemas.users import AuthProviderEnum
@@ -903,6 +910,7 @@ async def test_oidc_callback_uses_system_trust_store(monkeypatch):
             )()
 
     request = type("Request", (), {})()
+    request.scope = {}
     request.app = type("App", (), {})()
     request.app.state = type("State", (), {})()
     request.app.state.server_config = type(
@@ -931,10 +939,11 @@ async def test_oidc_callback_uses_system_trust_store(monkeypatch):
     )()
     request.query_params = {"code": "auth-code", "state": "test-state"}
     request.cookies = {"gpustack_oidc_state": "test-state"}
-    # Read by the session-cookie hardening (``secure=request.url.scheme
-    # == "https"``). Pretend the inbound request was HTTPS so the
-    # ``secure`` flag would have flipped on in production.
-    request.url = type("URL", (), {"scheme": "https"})()
+    # ``scheme`` is read by the session-cookie hardening
+    # (``secure=request.url.scheme == "https"``) — pretend the inbound request
+    # was HTTPS so the ``secure`` flag would have flipped on in production.
+    # ``path`` is read by the relative redirect the callback ends on.
+    request.url = type("URL", (), {"scheme": "https", "path": "/auth/oidc/callback"})()
 
     monkeypatch.setattr("gpustack.routes.auth.httpx.AsyncClient", FakeAsyncClient)
     monkeypatch.setattr("gpustack.routes.auth.use_proxy_env_for_url", lambda url: False)
@@ -1301,8 +1310,8 @@ def test_saml_settings_defaults_allow_repeat_attribute_name():
 def _saml_callback_request(saml_response_b64: str, **config_overrides) -> object:
     """Build a request double for the SAML callback tests. The
     callback derives OneLogin's ``current_url`` from ``saml_sp_acs_url``,
-    not from ``request.url``, so the URL fields on the request are
-    only used for the ``get_data`` payload."""
+    not from ``request.url``, so the URL fields on the request feed the
+    ``get_data`` payload and the relative redirect the callback ends on."""
 
     request = MagicMock()
     request.method = "POST"
@@ -1312,6 +1321,10 @@ def _saml_callback_request(saml_response_b64: str, **config_overrides) -> object
 
     request.form = _form
     request.query_params = {}
+    # Both feed the redirect the callback returns, which climbs one level per
+    # segment of this path, so they have to be real values rather than mocks.
+    request.url.path = "/auth/saml/callback"
+    request.scope = {}
 
     cfg = request.app.state.server_config
     cfg.external_auth_type = AuthProviderEnum.SAML
@@ -1933,3 +1946,185 @@ async def test_no_gateway_means_no_gateway_assertions(monkeypatch):
         None,
     )
     assert not calls["by_access_key"], "the lookup must not even be attempted"
+
+
+# --- SSO callback redirect targets -----------------------------------------
+
+
+def _redirect_request(path: str, root_path: str = "") -> MagicMock:
+    request = MagicMock()
+    request.url.path = path
+    request.scope = {"root_path": root_path} if root_path else {}
+    return request
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/auth/oidc/callback",
+        "/auth/cas/callback",
+        "/auth/saml/callback",
+        # One segment deeper than its siblings, so any hardcoded number of hops
+        # is wrong for one of them.
+        "/auth/saml/logout/callback",
+    ],
+)
+@pytest.mark.parametrize("mount", ["", "/gpustack", "/inner/gpustack"])
+def test_ui_relative_url_lands_on_the_ui_root(route, mount):
+    """The redirect has to resolve to the UI root wherever the server is mounted.
+
+    Asserted through ``urljoin`` — the same RFC 3986 resolution a browser does —
+    rather than against a hand-computed string. Counting hops by hand is exactly
+    how this went wrong once: the last path segment is the document rather than a
+    directory, and an off-by-one there is *invisible at the root*, because RFC
+    3986 discards ``..`` that would escape above ``/``. Only a mounted prefix
+    reveals it, and only by resolving rather than string-matching.
+    """
+    relative = auth_route._ui_relative_url(_redirect_request(route))
+
+    landed = urljoin(f"http://gpustack.example.com{mount}{route}", relative)
+
+    assert landed == f"http://gpustack.example.com{mount}/"
+
+
+def test_ui_relative_url_discounts_root_path():
+    """Starlette reports ``root_path`` as part of ``scope["path"]``. Counting it
+    would climb a level too far per prefix segment and overshoot the UI root."""
+    request = _redirect_request("/gpustack/auth/oidc/callback", root_path="/gpustack")
+
+    landed = urljoin(
+        "http://gpustack.example.com/gpustack/auth/oidc/callback",
+        auth_route._ui_relative_url(request),
+    )
+
+    assert landed == "http://gpustack.example.com/gpustack/"
+
+
+def test_ui_relative_url_puts_error_code_outside_the_fragment():
+    """The login form reads the code from ``window.location.search``, so it has
+    to sit in the real query string; the route goes in the fragment because the
+    UI is hash-routed. Putting it inside the fragment still reaches the login
+    page but silently loses the message."""
+    request = _redirect_request("/auth/cas/callback")
+
+    landed = urljoin(
+        "http://gpustack.example.com/inner/gpustack/auth/cas/callback",
+        auth_route._ui_relative_url(request, auth_route.AUTH_FAILED_ERROR_CODE),
+    )
+
+    assert landed == (
+        "http://gpustack.example.com/inner/gpustack/?error=auth_failed#/login"
+    )
+
+
+# --- Cookie Path under a mount prefix --------------------------------------
+
+
+@pytest.fixture
+def mounted_config(tmp_path):
+    """Install a server mounted at ``/gpustack`` as the process-wide config.
+
+    ``auth_cookie_path`` reads the global rather than ``request.app.state`` so the
+    renewal middleware can call it too, so this is the seam to drive it from. The
+    previous config is put back because conftest installs a root-path one for the
+    whole module.
+    """
+    previous = get_global_config()
+    set_global_config(
+        Config(
+            token="test",
+            jwt_secret_key="test",
+            data_dir=str(tmp_path / "data"),
+            server_external_url="https://example.com/gpustack",
+        )
+    )
+    yield
+    set_global_config(previous)
+
+
+def _cookie_attr(header: str, name: str):
+    for part in header.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key.lower() == name.lower():
+            return value
+    return None
+
+
+def _http_request():
+    return SimpleNamespace(url=SimpleNamespace(scheme="http"))
+
+
+def test_cookies_are_scoped_to_the_mount_prefix(mounted_config):
+    response = Response()
+    response.set_cookie(
+        key="gpustack_session", value="token", **auth_cookie_attrs(_http_request(), 60)
+    )
+
+    assert _cookie_attr(response.headers["set-cookie"], "path") == "/gpustack"
+
+
+def test_cookie_path_degrades_to_the_root_without_a_config(monkeypatch):
+    # The renewal middleware and the routes both reach for this, and a request
+    # can arrive before a config is installed — a raise there would turn every
+    # response into a 500 rather than an unscoped cookie.
+    monkeypatch.setattr("gpustack.api.auth.get_global_config", lambda: None)
+
+    assert auth_cookie_path() == "/"
+
+
+@pytest.mark.asyncio
+async def test_logout_deletes_the_cookie_it_actually_set(mounted_config):
+    """Deletion has to name the same ``Path`` as the cookie it is removing.
+
+    A cookie is identified by name+domain+path, so a ``delete_cookie`` that omits
+    ``path`` addresses the one at ``/`` — a cookie login never created. The
+    request succeeds, the response looks right, and the session survives logout.
+    Asserted against the set side rather than the literal prefix so the two
+    cannot drift apart in opposite directions and still pass.
+    """
+    set_header = Response()
+    set_header.set_cookie(
+        key="gpustack_session", value="token", **auth_cookie_attrs(_http_request(), 60)
+    )
+    expected_path = _cookie_attr(set_header.headers["set-cookie"], "path")
+
+    request = MagicMock()
+    request.app.state.server_config = SimpleNamespace(external_auth_type=None)
+    request.cookies = {}
+
+    response = await auth_route.logout(request)
+
+    deletions = response.headers.getlist("set-cookie")
+    assert len(deletions) == 3
+    for header in deletions:
+        assert _cookie_attr(header, "path") == expected_path
+        # Max-Age=0 is what makes it a deletion rather than a fresh cookie.
+        assert _cookie_attr(header, "max-age") == "0"
+
+
+def test_every_cookie_deletion_names_a_path():
+    """Structural, because the six call sites are not reachable from one test.
+
+    They sit across SAML logout, OIDC callback and ``/auth/logout``, each with its
+    own prerequisites, and the omission is invisible where it is easiest to look:
+    at the root deployment the prefix is ``""`` and Starlette's default ``path``
+    is already ``"/"``, so the header comes out byte-identical either way.
+    """
+    tree = ast.parse(Path(auth_route.__file__).read_text())
+    deletions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "delete_cookie"
+    ]
+
+    # Guard the guard: an empty list would pass the assertion below vacuously if
+    # the deletions ever moved to another module.
+    assert deletions
+    missing = [
+        node.lineno
+        for node in deletions
+        if not any(keyword.arg == "path" for keyword in node.keywords)
+    ]
+    assert missing == []
