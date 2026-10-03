@@ -1,10 +1,11 @@
 import os
+import shlex
 import sys
 import argparse
 import logging
 from pathlib import Path
 from shutil import move
-from typing import List, Dict
+from typing import Any, List, Dict
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.envs import MIGRATION_DATA_DIR, DATA_MIGRATION
@@ -209,12 +210,16 @@ def prepare_postgres_config(cfg: Config):
     # prepare postgres dirs
     # same reason as gateway_shared_config_dir
     config_path = prepare_env("GPUSTACK_POSTGRES_CONFIG", "postgresql")
-    with open(config_path, "w") as f:
-        f.write(f"DATA_DIR={cfg.data_dir}\n")
-        f.write(f"LOG_DIR={cfg.log_dir}\n")
-        f.write(f"EMBEDDED_DATABASE_PORT={cfg.database_port}\n")
-        f.write(f"STATE_MIGRATION_DONE_FILE={get_migration_done_file(cfg)}\n")
-        f.write(f"POSTGRES_DATA_DIR={os.path.join(cfg.postgres_base_dir(), 'data')}\n")
+    write_env_file(
+        config_path,
+        {
+            "DATA_DIR": cfg.data_dir,
+            "LOG_DIR": cfg.log_dir,
+            "EMBEDDED_DATABASE_PORT": cfg.database_port,
+            "STATE_MIGRATION_DONE_FILE": get_migration_done_file(cfg),
+            "POSTGRES_DATA_DIR": os.path.join(cfg.postgres_base_dir(), 'data'),
+        },
+    )
 
 
 def get_migration_done_file(cfg: Config) -> Path:
@@ -227,14 +232,18 @@ def prepare_gateway_config(cfg: Config):
     higress_embedded_kubeconfig = Path(cfg.higress_base_dir()) / "kubeconfig"
 
     if cfg.gateway_mode == GatewayModeEnum.embedded:
-        with open(config_path, "w") as f:
-            f.write(f"DATA_DIR={cfg.data_dir}\n")
-            f.write(f"LOG_DIR={cfg.log_dir}\n")
-            f.write(f"GATEWAY_HTTP_PORT={cfg.get_gateway_port()}\n")
-            f.write(f"GATEWAY_HTTPS_PORT={cfg.tls_port}\n")
-            f.write(f"GATEWAY_CONCURRENCY={cfg.gateway_concurrency}\n")
-            f.write(f"GPUSTACK_API_PORT={cfg.get_api_port()}\n")
-            f.write(f"EMBEDDED_KUBECONFIG_PATH={higress_embedded_kubeconfig}\n")
+        write_env_file(
+            config_path,
+            {
+                "DATA_DIR": cfg.data_dir,
+                "LOG_DIR": cfg.log_dir,
+                "GATEWAY_HTTP_PORT": cfg.get_gateway_port(),
+                "GATEWAY_HTTPS_PORT": cfg.tls_port,
+                "GATEWAY_CONCURRENCY": cfg.gateway_concurrency,
+                "GPUSTACK_API_PORT": cfg.get_api_port(),
+                "EMBEDDED_KUBECONFIG_PATH": higress_embedded_kubeconfig,
+            },
+        )
         with open(higress_embedded_kubeconfig, "w") as f:
             f.write(
                 f"""apiVersion: v1
@@ -259,17 +268,19 @@ current-context: higress
 
 def prepare_observability_config(cfg: Config):
     env_config_path = prepare_env("GPUSTACK_OBSERVABILITY_CONFIG", "observability")
-    with open(env_config_path, "w") as f:
-        f.write(f"DATA_DIR={cfg.data_dir}\n")
-        f.write(f"LOG_DIR={cfg.log_dir}\n")
-        f.write(f"PROMETHEUS_PORT={cfg.builtin_prometheus_port}\n")
-        f.write(f"GF_SERVER_HTTP_PORT={cfg.builtin_grafana_port}\n")
-        f.write(f"PROMETHEUS_DATA_DIR={os.path.join(cfg.data_dir, 'prometheus')}\n")
-        f.write(f"GF_PATHS_DATA={os.path.join(cfg.data_dir, 'grafana')}\n")
-        f.write(f"GF_PATHS_LOGS={os.path.join(cfg.log_dir, 'grafana')}\n")
-        f.write(
-            f"GF_PATHS_PLUGINS={os.path.join(cfg.data_dir, 'grafana', 'plugins')}\n"
-        )
+    write_env_file(
+        env_config_path,
+        {
+            "DATA_DIR": cfg.data_dir,
+            "LOG_DIR": cfg.log_dir,
+            "PROMETHEUS_PORT": cfg.builtin_prometheus_port,
+            "GF_SERVER_HTTP_PORT": cfg.builtin_grafana_port,
+            "PROMETHEUS_DATA_DIR": os.path.join(cfg.data_dir, 'prometheus'),
+            "GF_PATHS_DATA": os.path.join(cfg.data_dir, 'grafana'),
+            "GF_PATHS_LOGS": os.path.join(cfg.log_dir, 'grafana'),
+            "GF_PATHS_PLUGINS": os.path.join(cfg.data_dir, 'grafana', 'plugins'),
+        },
+    )
 
     prometheus_config_path = Path(
         os.getenv("PROMETHEUS_CONFIG_FILE", "/etc/prometheus/prometheus.yml")
@@ -418,6 +429,17 @@ def prepare_s6_overlay(
     create_s6_services(
         s6_overlay_path, *(set(enabled_services) | set(dependency_services))
     )
+
+
+def write_env_file(path: Path, values: Dict[str, Any]):
+    """
+    Write values as KEY=VALUE lines for the s6 service scripts, which read the
+    file with bash `source`. Each value is single-quoted by shlex.quote so bash
+    assigns it literally: no word splitting, globbing or command substitution.
+    """
+    with open(path, "w", newline="\n") as f:
+        for key, value in values.items():
+            f.write(f"{key}={shlex.quote(str(value))}\n")
 
 
 def prepare_env(env_name: str, scope: str, env_file_name: str = ".env") -> Path:
