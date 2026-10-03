@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import urljoin
 
 import pytest
 from fastapi import FastAPI
@@ -903,6 +904,7 @@ async def test_oidc_callback_uses_system_trust_store(monkeypatch):
             )()
 
     request = type("Request", (), {})()
+    request.scope = {}
     request.app = type("App", (), {})()
     request.app.state = type("State", (), {})()
     request.app.state.server_config = type(
@@ -931,10 +933,11 @@ async def test_oidc_callback_uses_system_trust_store(monkeypatch):
     )()
     request.query_params = {"code": "auth-code", "state": "test-state"}
     request.cookies = {"gpustack_oidc_state": "test-state"}
-    # Read by the session-cookie hardening (``secure=request.url.scheme
-    # == "https"``). Pretend the inbound request was HTTPS so the
-    # ``secure`` flag would have flipped on in production.
-    request.url = type("URL", (), {"scheme": "https"})()
+    # ``scheme`` is read by the session-cookie hardening
+    # (``secure=request.url.scheme == "https"``) — pretend the inbound request
+    # was HTTPS so the ``secure`` flag would have flipped on in production.
+    # ``path`` is read by the relative redirect the callback ends on.
+    request.url = type("URL", (), {"scheme": "https", "path": "/auth/oidc/callback"})()
 
     monkeypatch.setattr("gpustack.routes.auth.httpx.AsyncClient", FakeAsyncClient)
     monkeypatch.setattr("gpustack.routes.auth.use_proxy_env_for_url", lambda url: False)
@@ -1301,8 +1304,8 @@ def test_saml_settings_defaults_allow_repeat_attribute_name():
 def _saml_callback_request(saml_response_b64: str, **config_overrides) -> object:
     """Build a request double for the SAML callback tests. The
     callback derives OneLogin's ``current_url`` from ``saml_sp_acs_url``,
-    not from ``request.url``, so the URL fields on the request are
-    only used for the ``get_data`` payload."""
+    not from ``request.url``, so the URL fields on the request feed the
+    ``get_data`` payload and the relative redirect the callback ends on."""
 
     request = MagicMock()
     request.method = "POST"
@@ -1312,6 +1315,10 @@ def _saml_callback_request(saml_response_b64: str, **config_overrides) -> object
 
     request.form = _form
     request.query_params = {}
+    # Both feed the redirect the callback returns, which climbs one level per
+    # segment of this path, so they have to be real values rather than mocks.
+    request.url.path = "/auth/saml/callback"
+    request.scope = {}
 
     cfg = request.app.state.server_config
     cfg.external_auth_type = AuthProviderEnum.SAML
@@ -1933,3 +1940,72 @@ async def test_no_gateway_means_no_gateway_assertions(monkeypatch):
         None,
     )
     assert not calls["by_access_key"], "the lookup must not even be attempted"
+
+
+# --- SSO callback redirect targets -----------------------------------------
+
+
+def _redirect_request(path: str, root_path: str = "") -> MagicMock:
+    request = MagicMock()
+    request.url.path = path
+    request.scope = {"root_path": root_path} if root_path else {}
+    return request
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/auth/oidc/callback",
+        "/auth/cas/callback",
+        "/auth/saml/callback",
+        # One segment deeper than its siblings, so any hardcoded number of hops
+        # is wrong for one of them.
+        "/auth/saml/logout/callback",
+    ],
+)
+@pytest.mark.parametrize("mount", ["", "/gpustack", "/inner/gpustack"])
+def test_ui_relative_url_lands_on_the_ui_root(route, mount):
+    """The redirect has to resolve to the UI root wherever the server is mounted.
+
+    Asserted through ``urljoin`` — the same RFC 3986 resolution a browser does —
+    rather than against a hand-computed string. Counting hops by hand is exactly
+    how this went wrong once: the last path segment is the document rather than a
+    directory, and an off-by-one there is *invisible at the root*, because RFC
+    3986 discards ``..`` that would escape above ``/``. Only a mounted prefix
+    reveals it, and only by resolving rather than string-matching.
+    """
+    relative = auth_route._ui_relative_url(_redirect_request(route))
+
+    landed = urljoin(f"http://gpustack.example.com{mount}{route}", relative)
+
+    assert landed == f"http://gpustack.example.com{mount}/"
+
+
+def test_ui_relative_url_discounts_root_path():
+    """Starlette reports ``root_path`` as part of ``scope["path"]``. Counting it
+    would climb a level too far per prefix segment and overshoot the UI root."""
+    request = _redirect_request("/gpustack/auth/oidc/callback", root_path="/gpustack")
+
+    landed = urljoin(
+        "http://gpustack.example.com/gpustack/auth/oidc/callback",
+        auth_route._ui_relative_url(request),
+    )
+
+    assert landed == "http://gpustack.example.com/gpustack/"
+
+
+def test_ui_relative_url_puts_error_code_outside_the_fragment():
+    """The login form reads the code from ``window.location.search``, so it has
+    to sit in the real query string; the route goes in the fragment because the
+    UI is hash-routed. Putting it inside the fragment still reaches the login
+    page but silently loses the message."""
+    request = _redirect_request("/auth/cas/callback")
+
+    landed = urljoin(
+        "http://gpustack.example.com/inner/gpustack/auth/cas/callback",
+        auth_route._ui_relative_url(request, auth_route.AUTH_FAILED_ERROR_CODE),
+    )
+
+    assert landed == (
+        "http://gpustack.example.com/inner/gpustack/?error=auth_failed#/login"
+    )
