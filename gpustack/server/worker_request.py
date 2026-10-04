@@ -189,8 +189,9 @@ async def request_to_worker(
 
 # SSE fields that describe the event whose ``data:`` line follows. A blank line
 # ends an event, so terminating one of these on its own would dispatch an event
-# without data and drop its name from the data that comes next.
-_SSE_EVENT_PREFIX_FIELDS = ("event:", "id:", "retry:")
+# without data and drop its name from the data that comes next. A comment line
+# (``:``) can sit between them and the data, so it gets the same treatment.
+_SSE_EVENT_PREFIX_FIELDS = ("event:", "id:", "retry:", ":")
 
 
 def _process_stream_line(line_bytes: bytes) -> str:

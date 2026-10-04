@@ -66,3 +66,36 @@ async def test_data_only_stream_still_gets_one_event_per_line():
     relayed = await _relay(upstream)
 
     assert relayed == 'data: {"id":"1"}\n\ndata: {"id":"2"}\n\ndata: [DONE]\n\n'
+
+
+@pytest.mark.asyncio
+async def test_comment_line_inside_an_event_does_not_end_it():
+    upstream = b'event: message
+: keep-alive
+data: {"a":1}
+
+'
+
+    relayed = await _relay(upstream)
+
+    assert relayed == upstream.decode()
+
+
+@pytest.mark.asyncio
+async def test_comment_line_between_events_stays_a_comment():
+    upstream = b'data: {"id":"1"}
+
+: ping
+
+data: {"id":"2"}
+
+'
+
+    relayed = await _relay(upstream)
+
+    assert relayed == 'data: {"id":"1"}
+
+: ping
+data: {"id":"2"}
+
+'
