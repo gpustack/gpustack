@@ -296,6 +296,73 @@ class TestCPUWorkerDisabled:
         render("--set", "worker.cpuEnabled=false")
 
 
+class TestUnsupportedVendorNames:
+    """A vendor the DaemonSet template will not render is refused, not dropped.
+
+    `worker-daemonset.yaml` iterates the canonical vendor list, so a name outside
+    it produces no DaemonSet. With the CPU DaemonSet on, such a release used to
+    install successfully while a whole class of GPU nodes never registered a
+    worker; a typo in a multi-vendor list left the release looking half-healthy,
+    since the recognised vendors' DaemonSets still rendered.
+    """
+
+    def test_accepts_a_fully_supported_vendor_list(self):
+        docs = render(
+            "--set",
+            "worker.enabled=true",
+            "--set",
+            "worker.gpuVendors={nvidia,ascend}",
+        )
+        assert names(docs, "DaemonSet") >= {
+            "gpustack-worker",
+            "gpustack-worker-nvidia",
+            "gpustack-worker-ascend",
+        }
+
+    def test_refuses_a_single_misspelling(self):
+        error = render_error(
+            "--set", "worker.enabled=true", "--set", "worker.gpuVendors={bogus}"
+        )
+        # The offending entry, so the typo is identifiable from the message ...
+        assert "bogus" in error
+        # ... and the names it would have accepted, so it is fixable from the
+        # message alone.
+        assert "nvidia" in error and "ascend" in error
+
+    def test_refuses_a_multi_vendor_list_with_one_misspelling(self):
+        # The worst case the guard exists for: the recognised vendor still
+        # renders its DaemonSet, so the release looks healthy and the missing
+        # one is easy to attribute anywhere but a values typo.
+        error = render_error(
+            "--set",
+            "worker.enabled=true",
+            "--set",
+            "worker.gpuVendors={nvidia,bogus}",
+        )
+        assert "bogus" in error
+        assert "nvidia" in error
+
+    def test_refuses_a_misspelling_even_alongside_the_cpu_daemonset(self):
+        # With the CPU DaemonSet off, the existing cpuEnabled guard only fires
+        # when *no* supported vendor remains. A recognised vendor plus a typo
+        # leaves the CPU DaemonSet off and the typo's nodes without a worker,
+        # which the new guard catches on its own.
+        error = render_error(
+            "--set",
+            "worker.enabled=true",
+            "--set",
+            "worker.cpuEnabled=false",
+            "--set",
+            "worker.gpuVendors={nvidia,bogus}",
+        )
+        assert "bogus" in error
+
+    def test_a_server_only_release_is_unaffected(self):
+        # Nothing worker-side renders, so a stale vendor list must not block a
+        # control-plane-only install.
+        render("--set", "worker.gpuVendors={bogus}")
+
+
 class TestWorkerOnly:
     def test_deploys_no_server_side_components(self):
         docs = render(*WORKER_ONLY, *SERVER_AND_TOKEN)
