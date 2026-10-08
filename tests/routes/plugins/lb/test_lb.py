@@ -380,7 +380,7 @@ class TestMapperPathSuffixes:
         # ``model`` field is left as the route name.
         from gpustack.routes.plugins.lb.gateway import mapper_enable_on_path_suffixes
 
-        assert "/v1/video/sync" in mapper_enable_on_path_suffixes
+        assert "/v1/videos/sync" in mapper_enable_on_path_suffixes
 
     def test_context_role_carries_the_suffix_list(self, monkeypatch):
         from gpustack.routes.plugins.lb.gateway import (
