@@ -15,12 +15,12 @@ GPUStack manages multiple Kubernetes clusters and provides a unified interface f
     After the upgraded worker is healthy, remove the orphaned v0.5.x scheduling objects with the operator's cleanup script:
 
     ```bash
-    curl -sSLO https://raw.githubusercontent.com/gpustack/gpustack-operator/main/docs/migration/cleanup-v0.5-orphans.sh
+    curl -fsSLO https://raw.githubusercontent.com/gpustack/gpustack-operator/main/docs/operate/migration/cleanup-v0.5-orphans.sh
     bash cleanup-v0.5-orphans.sh --dry-run   # preview, changes nothing
     bash cleanup-v0.5-orphans.sh             # delete the orphans
     ```
 
-    If an earlier upgrade attempt already wedged (Kueue CRDs stuck `Terminating`, the worker never becoming Ready), see the operator's [migration troubleshooting](https://github.com/gpustack/gpustack-operator/blob/main/docs/migration/troubleshooting.md). For the full procedure, follow the operator's [migration guide](https://github.com/gpustack/gpustack-operator/blob/main/docs/migration/from-v0.5.md).
+    If an earlier upgrade attempt already wedged (Kueue CRDs stuck `Terminating`, the worker never becoming Ready), see the operator's [migration troubleshooting](https://docs.gpustack.ai/gpustack-operator/main/docs/operate/migration/troubleshooting/). For the full procedure, follow the operator's [migration guide](https://docs.gpustack.ai/gpustack-operator/main/docs/operate/migration/from-v0.5/).
 
 ## Prerequisites
 
@@ -116,7 +116,7 @@ Each instance type card shows the following information:
 
 #### Unit Resources of an Instance Type
 
-The unit resources are the host CPU and RAM granted per unit of a type — for an accelerator type, per whole device. Types derived from nodes are sized from per-product presets maintained by the operator (see the [unit resources reference](https://github.com/gpustack/gpustack-operator/blob/main/docs/reference/instance-type-unit-resources.md)); a logical slice or physical partition is then sized from the preset by its VRAM share. You can also [author your own types](gpuservice-instance-types.md#adding-an-instance-type) with custom unit resources.
+The unit resources are the host CPU and RAM granted per unit of a type — for an accelerator type, per whole device. Types derived from nodes are sized from per-product presets maintained by the operator (see the [unit resources reference](https://docs.gpustack.ai/gpustack-operator/main/docs/reference/instance-type-unit-resources/)); a logical slice or physical partition is then sized from the preset by its VRAM share. You can also [author your own types](gpuservice-instance-types.md#adding-an-instance-type) with custom unit resources.
 
 #### Selecting a Whole, Sliced, or Partitioned Device
 
@@ -177,7 +177,7 @@ The `GPU`, `VRAM`, `CPU`, `RAM`, and `Storage` columns show live utilization gau
 
 A figure that cannot be measured is shown as empty rather than zero — for example, a MIG partition reports no GPU core utilization (the driver cannot measure it), so its `GPU` gauge stays `--` while its `VRAM` gauge still works.
 
-The figures come from the operator's instance metrics subresource and node exporter; see the [Instance Metrics reference](https://github.com/gpustack/gpustack-operator/blob/main/docs/reference/instance-metrics.md) for every field, its source, and its limits.
+The figures come from the operator's instance metrics subresource and node exporter; see the [Instance Metrics reference](https://docs.gpustack.ai/gpustack-operator/main/docs/reference/instance-metrics/) for every field, its source, and its limits.
 
 !!! note "About the gauges above"
 
