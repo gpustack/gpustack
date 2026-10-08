@@ -427,10 +427,26 @@ class TestProviderEntries:
                 "id": "provider-2",
                 "type": "systemone",
                 "endpoint": "http://jev.tenant-a.internal:8010",
-                "apiToken": "tenant-a-key",
+                "apiTokens": ["tenant-a-key"],
                 "cluster": "outbound|8010||provider-2.dns",
             }
         ]
+
+    def test_provider_entry_carries_full_token_list_for_failover(self):
+        # All of the provider's api_tokens ship as the canonical apiTokens
+        # list so the wasm plugin can retry the decision callout with the
+        # next key on 401/403/429; only the first key must not be emitted.
+        entries = decision_provider_entries(
+            [
+                _provider(
+                    provider_id=4,
+                    endpoint="http://jev.tenant-a.internal:8010",
+                    api_tokens=["primary-key", "fallback-key"],
+                )
+            ]
+        )
+        assert entries[0]["apiTokens"] == ["primary-key", "fallback-key"]
+        assert "apiToken" not in entries[0]
 
     def test_hosted_endpoint_used_when_no_custom_base_url(self):
         # One provider type covers both flavors: endpoint omitted = the
@@ -444,7 +460,7 @@ class TestProviderEntries:
                 "id": "provider-3",
                 "type": "systemone",
                 "endpoint": "https://api.typesafe.ai",
-                "apiToken": "k",
+                "apiTokens": ["k"],
                 "cluster": "outbound|443||provider-3.dns",
             }
         ]
