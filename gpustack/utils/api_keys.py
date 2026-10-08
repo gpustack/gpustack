@@ -1,4 +1,20 @@
+from typing import Optional
+
 from gpustack.security import API_KEY_PREFIX
+
+
+def mask_credential(value: Optional[str]) -> str:
+    """Return a log-safe representation of a credential.
+
+    Empty values get an explicit placeholder, and short values are fully
+    masked so logging never reveals a complete secret. Longer values retain
+    only their final four characters for correlation during troubleshooting.
+    """
+    if not value:
+        return "<empty>"
+    if len(value) <= 4:
+        return "*" * len(value)
+    return f"{'*' * min(len(value) - 4, 64)}{value[-4:]}"
 
 
 def get_masked_api_key_value(value: str, is_custom: bool = False) -> str:
