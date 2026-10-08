@@ -1,12 +1,15 @@
 import hashlib
 
 import base64
+from datetime import timedelta
 
+import jwt
 import pytest
 
 from gpustack import envs, security
 from gpustack.security import (
     GENERATED_SECRET_KEY_BYTES,
+    JWTManager,
     SECRET_KEY_DIGEST_ALGORITHM,
     gateway_digest,
     generate_access_key,
@@ -17,6 +20,65 @@ from gpustack.security import (
     verify_hashed_secret,
     verify_secret_key_digest,
 )
+
+
+@pytest.mark.parametrize("payload", [{"worker_id": 1}, {"sub": "alice"}])
+def test_jwt_data_round_trip(payload):
+    manager = JWTManager(secret_key=generate_secret_key())
+
+    assert manager.decode_jwt_data(manager.create_token(payload)) == payload
+
+
+def test_jwt_session_round_trip():
+    manager = JWTManager(secret_key=generate_secret_key())
+
+    claims = manager.decode_jwt_token(manager.create_jwt_token("alice"))
+
+    assert claims["sub"] == "alice"
+    assert "exp" in claims
+
+
+def test_jwt_rejects_expired_token():
+    manager = JWTManager(secret_key=generate_secret_key())
+    token = manager.create_token({"worker_id": 1}, timedelta(seconds=-60))
+
+    with pytest.raises(jwt.ExpiredSignatureError):
+        manager.decode_jwt_data(token)
+
+
+def test_jwt_rejects_token_signed_with_another_key():
+    issuer = JWTManager(secret_key=generate_secret_key())
+    verifier = JWTManager(secret_key=generate_secret_key())
+
+    with pytest.raises(jwt.InvalidSignatureError):
+        verifier.decode_jwt_token(issuer.create_jwt_token("alice"))
+
+
+@pytest.mark.parametrize("algorithm", ["none", "HS384"])
+def test_jwt_rejects_unconfigured_algorithm(algorithm):
+    manager = JWTManager(secret_key=generate_secret_key() + generate_secret_key())
+    key = "" if algorithm == "none" else manager.secret_key
+    token = jwt.encode({"sub": "alice"}, key, algorithm=algorithm)
+
+    with pytest.raises(jwt.InvalidAlgorithmError):
+        manager.decode_jwt_token(token)
+
+
+def test_jwt_rejects_header_recursion_as_invalid_token(monkeypatch):
+    manager = JWTManager(secret_key=generate_secret_key())
+    token = manager.create_jwt_token("alice")
+    parse_error = RecursionError("JSON nesting exceeds the decoder limit")
+
+    def decode_header(data):
+        raise parse_error
+
+    # JSON decoder nesting limits vary between Python versions.
+    monkeypatch.setattr(jwt.api_jws.json, "loads", decode_header)
+
+    with pytest.raises(jwt.DecodeError) as exc_info:
+        manager.decode_jwt_token(token)
+
+    assert exc_info.value.__cause__ is parse_error
 
 
 def test_generated_secret_key_shape():

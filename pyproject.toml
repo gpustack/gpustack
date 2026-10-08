@@ -22,7 +22,7 @@ dependencies = [
     "attrs>=24.2.0",
     "aiosqlite>=0.20.0",
     "sqlalchemy[asyncio]>=2.0.38,<2.1",
-    "pyjwt>=2.8.0",
+    "pyjwt>=2.15.0",
     "argon2-cffi>=23.1.0",
     "python-multipart>=0.0.17",
     "dataclasses-json>=0.6.7",
@@ -34,7 +34,7 @@ dependencies = [
     "importlib-resources>=6.4.0",
     "pytest-asyncio>=0.23.7",
     "certifi>=2024.0.0",
-    "cryptography>=43.0.0",
+    "cryptography>=50.0.0",
     "tzdata>=2024.1",
     "modelscope>=1.28",
     "uvicorn>=0.32.0",
@@ -48,7 +48,7 @@ dependencies = [
     "tenacity>=9.0.0",
     "aiocache>=0.12.3",
     "aiofiles>=23.2.1",
-    "aiohttp>=3.11.2",
+    "aiohttp>=3.14.3",
     "python-json-logger>=3.3.0",
     "asyncmy>=0.2.10",
     "pymysql>=1.1.1",
@@ -71,6 +71,15 @@ dependencies = [
     # Usage export, xlsx path only (CSV needs nothing beyond the stdlib).
     # Pure Python, no build step.
     "xlsxwriter>=3.2.9",
+    # Minimum transitive versions also apply to wheel installations.
+    "anyio>=4.14.2",
+    "mako>=1.4.2",
+    "multidict>=6.9.1",
+    "oauthlib>=4.0.0",
+    "pyasn1>=0.6.4",
+    # ModelScope declares setuptools as a runtime dependency.
+    "setuptools>=83.0.0",
+    "urllib3>=2.8.0",
 ]
 
 [dependency-groups]
@@ -82,10 +91,10 @@ dev = [
     "flake8-bugbear>=24.4.26",
     "black>=24.4.2",
     "pytest>=8.2.0",
-    "openapi-python-client>=0.20.0",
     "httpx-aiohttp>=0.1.4",
     "deptry>=0.16.1",
     "pre-commit>=3.7.1",
+    "virtualenv>=21.7.13",
     "shellcheck-py>=0.10.0.1",
     "twine>=5.1.1",
     "matplotlib>=3.10.7",
@@ -93,7 +102,7 @@ dev = [
 
 docs = [
     "mkdocs>=1.6.0",
-    "mkdocs-material>=9.5.27",
+    "mkdocs-material>=9.7.7",
     "mike>=2.1.3",
     "mkdocs-glightbox>=0.4.0",
     "mkdocs-redirects>=1.2.2",
@@ -125,4 +134,4 @@ force-exclude = '''
 '''
 
 [tool.uv.extra-build-dependencies]
-openai-whisper = ["setuptools~=81.0.0"]
+openai-whisper = ["setuptools~=83.0"]
