@@ -25,6 +25,10 @@ from gpustack.config.config import Config
 from gpustack.gateway.client.extensions_higress_io_v1_api import WasmPluginSpec
 from gpustack.gateway.client.networking_higress_io_v1_api import McpBridgeRegistry
 from gpustack.gateway.plugins import plugin_spec_overrides
+from gpustack.gateway.utils import (
+    anthropic_model_exact,
+    openai_model_prefixes,
+)
 from gpustack.routes.plugins import RouteGatewayEntry
 from gpustack.routes.plugins.lb.config import LB_CONTEXT_CR_NAME
 from gpustack.utils.network import is_ipaddress
@@ -40,6 +44,21 @@ LB_FINISHER_CR_NAME = "gpustack-lb"
 # registry (``gpustack-enterprise-redis``) so both editions can coexist
 # on one McpBridge.
 REDIS_REGISTRY_NAME = "gpustack-redis"
+
+# The mapper rewrites the body's ``model`` field only on paths whose suffix
+# is listed here. The plugin ships its own default list, but setting the
+# key explicitly replaces it — so this list is the gateway's full routed
+# set (OpenAI- and Anthropic-style paths, legacy versioned variants
+# included) plus the plugin's DashScope-style synthesis suffixes kept for
+# parity, plus the synchronous video path the default list predates.
+# Without an explicit list, /v1/video/sync bodies would reach the upstream
+# with the route name instead of the deployment's model name.
+mapper_enable_on_path_suffixes: List[str] = [
+    route
+    for prefixes in (openai_model_prefixes, anthropic_model_exact)
+    for route_prefix in prefixes
+    for route in route_prefix.flattened_prefixes()
+] + ["/image-synthesis", "/video-synthesis"]
 
 # Filter-chain positions from the plugins README's intended chain: the
 # LB band runs after every rejection point (ext-auth 360, ip-acl 350)
@@ -136,7 +155,10 @@ def lb_gateway_entries(cfg: Config) -> List[RouteGatewayEntry]:
                 priority=800,
                 **plugin_spec_overrides("gpustack-model-mapper", cfg=cfg),
                 defaultConfigDisable=False,
-                defaultConfig={"modelMapping": {}},
+                defaultConfig={
+                    "modelMapping": {},
+                    "enableOnPathSuffix": list(mapper_enable_on_path_suffixes),
+                },
                 matchRules=[],
                 failStrategy="FAIL_OPEN",
             )
@@ -308,6 +330,7 @@ def _lb_gateway_entries(cfg: Config) -> List[RouteGatewayEntry]:
         "mode": "context",
         # keeps the model-mapper behaviour on routes without LB
         "modelMapping": {},
+        "enableOnPathSuffix": list(mapper_enable_on_path_suffixes),
     }
     finisher_default: Dict[str, Any] = {"mode": "finisher"}
     if redis_block is not None:

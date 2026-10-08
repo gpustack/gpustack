@@ -350,6 +350,7 @@ class TestGatewayEntriesDegrade:
         from gpustack.routes.plugins.lb.gateway import (
             LB_CONTEXT_CR_NAME,
             lb_gateway_entries,
+            mapper_enable_on_path_suffixes,
         )
         import gpustack.gateway.plugins as plugins_module
 
@@ -363,7 +364,47 @@ class TestGatewayEntriesDegrade:
         entries = lb_gateway_entries(None)
         assert [e.name for e in entries] == [LB_CONTEXT_CR_NAME]
         assert entries[0].create_only is True
-        assert entries[0].spec.defaultConfig == {"modelMapping": {}}
+        assert entries[0].spec.defaultConfig["modelMapping"] == {}
+        # Degraded or not, the plain mapper entry carries the same explicit
+        # path-suffix list, so the model rewrite follows the routed paths.
+        assert (
+            entries[0].spec.defaultConfig["enableOnPathSuffix"]
+            == mapper_enable_on_path_suffixes
+        )
+
+
+class TestMapperPathSuffixes:
+    def test_sync_video_route_is_mapped(self):
+        # The synchronous video path is a routed OpenAI-style model path:
+        # it must appear in the mapper's enableOnPathSuffix, or the body's
+        # ``model`` field is left as the route name.
+        from gpustack.routes.plugins.lb.gateway import mapper_enable_on_path_suffixes
+
+        assert "/v1/video/sync" in mapper_enable_on_path_suffixes
+
+    def test_context_role_carries_the_suffix_list(self, monkeypatch):
+        from gpustack.routes.plugins.lb.gateway import (
+            _lb_gateway_entries,
+            mapper_enable_on_path_suffixes,
+        )
+
+        entries = _lb_gateway_entries(None)
+        context = next(e for e in entries if e.name == "gpustack-model-mapper")
+        assert context.spec.defaultConfig["enableOnPathSuffix"] == (
+            mapper_enable_on_path_suffixes
+        )
+
+    def test_suffix_list_covers_every_routed_model_path(self):
+        # The explicit list replaces the plugin defaults, so it must be a
+        # superset of every path the gateway actually routes for models.
+        from gpustack.gateway import (
+            supported_anthropic_routes,
+            supported_openai_routes,
+        )
+        from gpustack.routes.plugins.lb.gateway import mapper_enable_on_path_suffixes
+
+        for route in supported_openai_routes + supported_anthropic_routes:
+            assert route in mapper_enable_on_path_suffixes
 
 
 class TestRedisFromUrl:
