@@ -86,25 +86,25 @@ def test_incluster_gateway_scrape_job_uses_pod_discovery(tmp_path, monkeypatch):
     assert sd["role"] == "pod"
     assert sd["namespaces"]["names"] == ["gpustack"]
 
-    # only higress-gateway pods are kept, and only the target whose container
-    # port matches the annotated metrics port survives — pod discovery emits
-    # one target per container port, which would otherwise scrape the same
-    # endpoint once per port
+    # only higress-gateway pods are kept. Prometheus relabel regexes are RE2,
+    # which has no backreferences, so a rule comparing the container port to
+    # the annotated port is not expressible; the address rewrite above maps
+    # every target of a pod to the same annotated endpoint, and Prometheus
+    # collapses targets that end up with identical label sets.
     keeps = {
         tuple(r["source_labels"]): r["regex"]
         for r in job["relabel_configs"]
         if r.get("action") == "keep"
     }
     assert keeps[("__meta_kubernetes_pod_name",)] == ".*higress-gateway.*"
-    assert (
-        keeps[
-            (
-                "__meta_kubernetes_pod_container_port_number",
-                "__meta_kubernetes_pod_annotation_prometheus_io_port",
-            )
-        ]
-        == "^(\\d+);\\1$"
-    )
+    # No relabel regex may contain a backreference: Prometheus compiles them
+    # with RE2 and refuses to load the whole config file otherwise.
+    for rule in job["relabel_configs"]:
+        if "regex" not in rule:
+            continue
+        assert "\\" not in rule["regex"].replace(
+            "\\d", ""
+        ), f"regex {rule['regex']!r} uses an escape RE2 may reject"
 
     targets = {
         (r["target_label"], r.get("replacement"))
