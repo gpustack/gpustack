@@ -215,12 +215,14 @@ openai_model_prefixes: List[RoutePrefix] = [
         ]
     ),
     RoutePrefix(["/rerank"], additional_versions=["/v2"]),
-    # Synchronous video generation (vLLM-Omni / SGLang diffusion). The
-    # gateway treats it as an OpenAI-style model route: the request body
-    # carries ``model``, so model-name resolution and mapping apply, while
-    # ai-proxy passes it through untouched (no ApiName is registered for
-    # it upstream).
-    RoutePrefix(["/video/sync"]),
+    # Synchronous video generation (vLLM-Omni / SGLang diffusion,
+    # multipart in, raw video bytes out). The gateway treats it as an
+    # OpenAI-style model route: the request body carries ``model``, so
+    # model-name resolution and mapping apply, while ai-proxy passes it
+    # through untouched (no ApiName is registered for it upstream, which
+    # also means neither the multipart body nor the binary response is
+    # ever buffered by the gateway).
+    RoutePrefix(["/videos/sync"]),
 ]
 
 anthropic_model_exact: List[RoutePrefix] = [
