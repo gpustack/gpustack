@@ -488,7 +488,7 @@ async def _proxy_instance_logs(
 
     def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
         msg = (
-            str(e)
+            f"Unable to read logs: {type(e).__name__}"
             if not isinstance(e, TimeoutError)
             else "Log stream timed out. Please reopen the log page."
         )

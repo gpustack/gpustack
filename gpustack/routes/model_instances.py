@@ -298,7 +298,7 @@ async def get_serving_logs(  # noqa: C901
 
     def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
         msg = (
-            str(e)
+            f"Unable to read logs: {type(e).__name__}"
             if not isinstance(e, TimeoutError)
             else f"Log stream timed out ({t.total} seconds). Please reopen the log page."
         )
