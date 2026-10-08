@@ -23,7 +23,6 @@ from gpustack.scheduler.calculator import (
     calculate_local_model_weight_size,
 )
 
-
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
 logger = logging.getLogger(__name__)
@@ -203,10 +202,10 @@ def is_diffusion_model(path: str) -> bool:
 
 @router.get("/files/model-weight-size")
 async def get_model_weight_size(
-    path: str = Query(..., description="Directory path to scan"),
+    path: str = Query(..., description="Directory or single file path to scan"),
 ):
     """
-    Calculate the total size of model weight files in a directory.
+    Calculate the total size of model weight files in a directory or a single file.
 
     Security:
     - Uses os.path.realpath to resolve symlinks and prevent directory traversal
@@ -217,11 +216,14 @@ async def get_model_weight_size(
         validated_path = validate_path_security(path)
 
         if not os.path.exists(validated_path):
-            raise HTTPException(status_code=404, detail=f"Directory not found: {path}")
+            raise HTTPException(status_code=404, detail=f"Path not found: {path}")
+
+        if os.path.isfile(validated_path):
+            return {"size": os.path.getsize(validated_path)}
 
         if not os.path.isdir(validated_path):
             raise HTTPException(
-                status_code=400, detail=f"Path is not a directory: {path}"
+                status_code=400, detail=f"Path is not a file or directory: {path}"
             )
 
         is_diffusion = is_diffusion_model(validated_path)

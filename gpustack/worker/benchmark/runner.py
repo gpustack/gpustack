@@ -49,6 +49,8 @@ from gpustack.utils.runtime import transform_workload_plan
 
 logger = logging.getLogger(__name__)
 
+_BENCHMARK_PROCESSOR_ENV = "GPUSTACK_BENCHMARK_PROCESSOR"
+
 # Where the CA bundle lands inside the benchmark container. It is injected as
 # file content by the runtime (see BenchmarkRunner._progress_ca_file), so this
 # path only has to make sense in the container -- nothing is written on the host.
@@ -103,6 +105,23 @@ def _local_model_snapshot(
     return endpoint_snapshot
 
 
+def _benchmark_processor_path(snapshot: ModelInstanceSnapshot) -> Optional[str]:
+    """Return the tokenizer path configured for a benchmark, if any.
+
+    A model whose weights are a single file cannot use that file as a
+    Transformers processor path. The override is carried in the model's env
+    snapshot so it follows the deployment to the worker that runs the
+    benchmark.
+    """
+    configured = (snapshot.env or {}).get(_BENCHMARK_PROCESSOR_ENV)
+    if configured:
+        return configured
+
+    if snapshot.resolved_path and os.path.isfile(snapshot.resolved_path):
+        return os.path.dirname(snapshot.resolved_path)
+    return snapshot.resolved_path
+
+
 def _transient_phase_arg(value: float) -> str:
     """Render a warmup/cooldown value as a guidellm TransientPhaseConfig object.
 
@@ -136,6 +155,7 @@ class BenchmarkRunner:
     _config: Config
     _benchmark: Benchmark
     _model_path: str
+    _processor_path: str
     _model_endpoint: str
     _model_backend_parameters: Optional[List[str]]
     _api_url: str
@@ -203,6 +223,9 @@ class BenchmarkRunner:
 
             self._benchmark_dir = self._config.benchmark_dir
             self._model_path = local_snapshot.resolved_path
+            self._processor_path = (
+                _benchmark_processor_path(local_snapshot) or self._model_path
+            )
             self._model_endpoint = f"http://{instance_snapshot.worker_ip}:{instance_snapshot.ports[0] if instance_snapshot.ports else ''}"
             self._model_backend_parameters = instance_snapshot.backend_parameters
             # `route` mode aims at the deployment instead of the member: the
@@ -532,7 +555,7 @@ class BenchmarkRunner:
             "--sample-requests",
             "0",
             "--processor",
-            self._model_path,
+            getattr(self, "_processor_path", self._model_path),
             "--output-dir",
             f"{self._benchmark_dir}",
             "--outputs",
@@ -729,20 +752,18 @@ class BenchmarkRunner:
             A list of ContainerMount objects for the model instance.
         """
         mounts: List[ContainerMount] = []
+        processor_path = getattr(self, "_processor_path", self._model_path)
         if (
             self._model_path
             and self._benchmark_dir
             and not runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT
         ):
-            model_dir = os.path.dirname(self._model_path)
-            mounts.extend(
-                [
-                    ContainerMount(
-                        path=model_dir,
-                    ),
-                    ContainerMount(
-                        path=self._benchmark_dir,
-                    ),
-                ]
-            )
+            model_dirs = set()
+            for path in (self._model_path, processor_path):
+                if path:
+                    directory = os.path.dirname(path)
+                    if directory:
+                        model_dirs.add(directory)
+            mounts.extend([ContainerMount(path=path) for path in sorted(model_dirs)])
+            mounts.append(ContainerMount(path=self._benchmark_dir))
         return mounts
