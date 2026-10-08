@@ -46,12 +46,21 @@ from gpustack.config.registration import (
     read_registration_token,
     read_worker_token,
     determine_default_registry,
+    registration_token_filename,
+    worker_token_filename,
 )
 from gpustack.ssl_context import make_ssl_context
 from gpustack.utils.certificates import read_server_ca_bundle
 from gpustack.utils.network import (
     get_first_non_loopback_ip,
     use_proxy_env_for_url,
+)
+from gpustack.utils.file import (
+    CREDENTIAL_FILE_MODE,
+    DATA_DIR_MODE,
+    ensure_dir,
+    restrict_permissions,
+    write_credential_file,
 )
 from gpustack.utils import platform
 
@@ -568,7 +577,24 @@ class Config(WorkerConfig, BaseSettings):
                 )
 
     def make_dirs(self):
-        os.makedirs(self.data_dir, exist_ok=True)
+        # The data dir holds every credential this process mints or accepts
+        # (the JWT signing secret, registration and worker tokens, the initial
+        # admin password). It is kept unlistable rather than fully private:
+        # the embedded PostgreSQL runs as its own user and must traverse it,
+        # and the credential files themselves are 0600, so traversal without
+        # read rights exposes nothing. Credential files present at startup
+        # are re-tightened on every start; on a read-only mount (the chart's
+        # bootstrap-password Secret) that chmod is a best-effort no-op.
+        ensure_dir(self.data_dir, DATA_DIR_MODE)
+        for credential_filename in (
+            "jwt_secret_key",
+            registration_token_filename,
+            worker_token_filename,
+            "initial_admin_password",
+        ):
+            credential_path = os.path.join(self.data_dir, credential_filename)
+            if os.path.exists(credential_path):
+                restrict_permissions(credential_path, CREDENTIAL_FILE_MODE)
         os.makedirs(self.cache_dir, exist_ok=True)
         os.makedirs(self.bin_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -880,9 +906,8 @@ class Config(WorkerConfig, BaseSettings):
                 key = file.read().strip()
         else:
             key = secrets.token_hex(32)
-            os.makedirs(self.data_dir, exist_ok=True)
-            with open(key_path, "w") as file:
-                file.write(key)
+            ensure_dir(self.data_dir, DATA_DIR_MODE)
+            write_credential_file(key_path, key)
 
         self.jwt_secret_key = key
 
