@@ -44,6 +44,7 @@ from gpustack.server.cache import delete_cache_by_key
 from gpustack.server.passwords import verify_password
 from gpustack.server.services import APIKeyService, UserService
 from gpustack.extension import Plugin, plugin_needs_instantiation
+from gpustack.utils.api_keys import mask_credential
 from gpustack.websocket_proxy.authenticator import (
     Authenticator as WebsocketAuthenticator,
 )
@@ -668,7 +669,9 @@ async def get_user_from_api_token(
         for candidate in access_keys:
             api_key = await APIKeyService(session).get_by_access_key(candidate)
             if api_key:
-                logger.trace(f"Found API key for access key: {candidate}")
+                logger.trace(
+                    "Found API key for access key: %s", mask_credential(candidate)
+                )
                 break
         if api_key is None and "" not in access_keys:
             # A token in the standard shape can still be the legacy cluster
