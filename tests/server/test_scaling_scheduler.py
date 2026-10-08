@@ -5,7 +5,7 @@ import pytest
 import sqlalchemy as sa
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlmodel import col, text
+from sqlmodel import col, select, text
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.schemas.models import (
@@ -21,6 +21,7 @@ from gpustack.routes.models import (
     apply_scaling_schedule_baseline,
     validate_model_in,
 )
+import gpustack.server.scaling_scheduler as scaling_scheduler
 from gpustack.server.scaling_scheduler import compute_desired_replicas
 
 TZ = "Asia/Shanghai"
@@ -338,3 +339,72 @@ async def test_tick_query_skips_models_without_a_schedule():
             assert sorted(m.name for m in rows) == ["disabled", "enabled"]
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_batches_changed_replicas_after_one_reload(monkeypatch):
+    """A tick reloads candidates together and commits changed rows together."""
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as conn:
+        await conn.run_sync(Model.__table__.create)
+
+    schedule = ScalingSchedule(
+        enabled=True,
+        baseline_replicas=0,
+        rules=[_rule("0 0 * * *", 24 * HOUR, 2)],
+    )
+    async with AsyncSession(engine) as session:
+        session.add_all(
+            [
+                Model(
+                    name="changed-a",
+                    source=SourceEnum.HUGGING_FACE,
+                    huggingface_repo_id="a/b",
+                    replicas=0,
+                    scaling_schedule=schedule.model_copy(deep=True),
+                ),
+                Model(
+                    name="changed-b",
+                    source=SourceEnum.HUGGING_FACE,
+                    huggingface_repo_id="a/b",
+                    replicas=1,
+                    scaling_schedule=schedule.model_copy(deep=True),
+                ),
+                Model(
+                    name="already-at-target",
+                    source=SourceEnum.HUGGING_FACE,
+                    huggingface_repo_id="a/b",
+                    replicas=2,
+                    scaling_schedule=schedule.model_copy(deep=True),
+                ),
+            ]
+        )
+        await session.commit()
+
+    original_batch_update = scaling_scheduler.ModelService.batch_update
+    batch_calls = []
+
+    async def record_batch_update(service, models):
+        batch_calls.append([(model.name, model.replicas) for model in models])
+        return await original_batch_update(service, models)
+
+    monkeypatch.setattr(
+        scaling_scheduler.ModelService, "batch_update", record_batch_update
+    )
+    monkeypatch.setattr(
+        scaling_scheduler,
+        "async_session",
+        lambda: AsyncSession(engine, expire_on_commit=False),
+    )
+
+    await scaling_scheduler.ScalingScheduler(interval=0)._sync_scheduled_replicas()
+
+    assert batch_calls == [[("changed-a", 2), ("changed-b", 2)]]
+    async with AsyncSession(engine) as session:
+        rows = (await session.exec(select(Model).order_by(Model.name))).all()
+    assert [(row.name, row.replicas) for row in rows] == [
+        ("already-at-target", 2),
+        ("changed-a", 2),
+        ("changed-b", 2),
+    ]
+    await engine.dispose()

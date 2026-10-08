@@ -134,7 +134,7 @@ class ScalingScheduler:
         # Resolve "now" once so every model in this tick is evaluated against
         # the same instant (avoids cross-minute drift within a batch).
         now = datetime.now(resolve_rollup_tz())
-        to_update: list[tuple[int, int]] = []
+        to_update: list[int] = []
         for model in models:
             schedule = model.scaling_schedule
             if not schedule or not schedule.enabled:
@@ -142,24 +142,36 @@ class ScalingScheduler:
             desired = compute_desired_replicas(schedule, now)
             if desired is None or desired == model.replicas:
                 continue
-            to_update.append((model.id, desired))
+            to_update.append(model.id)
 
         if not to_update:
             return
 
         async with async_session() as session:
-            service = ModelService(session)
-            for model_id, desired in to_update:
-                # Reload under this session and re-check to avoid clobbering a
-                # concurrent manual change with a stale desired value.
-                model = await Model.one_by_id(session, model_id)
-                if model is None or model.deleted_at is not None:
-                    continue
-                if model.replicas == desired:
+            # Reload all candidates in one query so a manual change made after
+            # the first snapshot is still respected without paying one query
+            # and one transaction for every model in the batch.
+            models = await Model.all_by_fields(
+                session,
+                extra_conditions=[
+                    col(Model.deleted_at).is_(None),
+                    Model.id.in_(to_update),
+                ],
+            )
+            updates = []
+            for model in models:
+                desired = compute_desired_replicas(model.scaling_schedule, now)
+                if desired is None or model.replicas == desired:
                     continue
                 previous = model.replicas
                 model.replicas = desired
-                await service.update(model)
+                updates.append((model, previous, desired))
+
+            if not updates:
+                return
+
+            await ModelService(session).batch_update([item[0] for item in updates])
+            for model, previous, desired in updates:
                 logger.info(
                     f"Scheduled scaling: model {model.name} replicas "
                     f"{previous} -> {desired}"
