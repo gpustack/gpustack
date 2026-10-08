@@ -19,7 +19,7 @@ from gpustack.utils.envs import get_gpustack_env
 higress_version = "2.1.9"
 
 ssh_server_version = "v1.3.0"
-kueue_version = "v0.18.4"
+kueue_version = "v0.18.10"
 node_feature_discovery_version = "v0.19.0-gpustack1"
 csi_nfs_driver_version = "v4.13.4"
 csi_s3_driver_version = "v0.43.7"
@@ -28,6 +28,12 @@ csi_resizer_version = "v2.2.0"
 csi_snapshotter_version = "v8.6.0"
 csi_livenessprobe_version = "v2.19.0"
 csi_node_driver_registrar_version = "v2.17.0"
+topograph_version = "v1.0.0"
+mooncake_version = "0.3.13.post1-cpu"
+llm_router_version = "v0.2.0"
+envoy_version = "distroless-v1.33.2"
+llm_d_router_disagg_sidecar_version = "v0.10.0"
+python_version = "3.12-alpine"
 
 # Append images used by GPUStack here. The GPUStack image itself is appended
 # from _append_self_image() instead, since it cannot be resolved at import time.
@@ -37,6 +43,9 @@ append_images(
     f"gpustack/mirrored-higress-higress:{higress_version}",
     f"gpustack/mirrored-higress-pilot:{higress_version}",
     f"gpustack/mirrored-higress-gateway:{higress_version}",
+    # GPUStack Operator and its workload dependencies.
+    # Includes SSH instances, Kueue, node discovery, and CSI storage.
+    # Optional workloads use Topograph, Mooncake, routers, and the Python downloader.
     f"gpustack/gpustack-operator:{__operator_version__}",
     f"gpustack/ssh-server:{ssh_server_version}",
     f"gpustack/mirrored-kueue:{kueue_version}",
@@ -48,6 +57,12 @@ append_images(
     f"gpustack/mirrored-csi-snapshotter:{csi_snapshotter_version}",
     f"gpustack/mirrored-csi-livenessprobe:{csi_livenessprobe_version}",
     f"gpustack/mirrored-csi-node-driver-registrar:{csi_node_driver_registrar_version}",
+    f"gpustack/mirrored-nvidia-topograph:{topograph_version}",
+    f"gpustack/mirrored-mooncake:{mooncake_version}",
+    f"gpustack/llm-router:{llm_router_version}",
+    f"gpustack/mirrored-envoy:{envoy_version}",
+    f"gpustack/mirrored-llm-d-router-disagg-sidecar:{llm_d_router_disagg_sidecar_version}",
+    f"gpustack/mirrored-python:{python_version}",
 )
 
 

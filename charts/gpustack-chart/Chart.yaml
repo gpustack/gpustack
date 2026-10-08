@@ -29,6 +29,6 @@ dependencies:
   # Gated on `worker.enabled`: the operator exists to run worker workloads, so a
   # server-only install has no use for it.
   - name: gpustack-operator
-    version: "0.8.6"
+    version: "0.9.0"
     repository: "https://docs.gpustack.ai/gpustack-operator/charts"
     condition: worker.enabled
