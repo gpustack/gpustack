@@ -25,7 +25,7 @@ def _route(meta=None):
     return ModelRoute(id=1, name="r", targets=0, ready_targets=0, meta=meta)
 
 
-def _provider(provider_id=2, endpoint=None, api_tokens=None):
+def _provider(provider_id=2, endpoint=None, api_tokens=None, model=None):
     return ModelProvider(
         id=provider_id,
         name=f"jev-{provider_id}",
@@ -33,6 +33,7 @@ def _provider(provider_id=2, endpoint=None, api_tokens=None):
             {
                 "type": ModelProviderTypeEnum.GPUSTACK_LB_TYPESAFE.value,
                 **({"endpoint": endpoint} if endpoint else {}),
+                **({"model": model} if model else {}),
             }
         ),
         api_tokens=api_tokens or [],
@@ -55,6 +56,7 @@ class TestDecisionServiceRouteConfig:
     def test_weight_range(self):
         base = {
             "providerId": 2,
+            "decisionModel": "jev-latest",
             "modelSelection": {"criteria": {"m1": "fast", "m2": "smart"}},
         }
         with pytest.raises(ValidationError):
@@ -90,14 +92,36 @@ class TestDecisionServiceRouteConfig:
         rule = DecisionServiceRouteConfig.model_validate(
             {
                 "providerId": 2,
+                "decisionModel": "jev-latest",
                 "modelSelection": {"criteria": {"m1": "fast", "m2": "smart"}},
             }
         ).to_gateway_rule()
         assert rule == {
             "enabled": True,
             "activeProviderId": "provider-2",
+            "decisionModel": "jev-latest",
             "modelSelection": {"criteria": {"m1": "fast", "m2": "smart"}},
         }
+
+    def test_decision_model_required(self):
+        # A blank decision model would ship the decision request without a
+        # model field, so the service performs no routing decision and the
+        # policy silently does not run.
+        with pytest.raises(ValidationError):
+            DecisionServiceRouteConfig.model_validate(
+                {
+                    "providerId": 2,
+                    "modelSelection": {"criteria": {"m1": "fast"}},
+                }
+            )
+        with pytest.raises(ValidationError):
+            DecisionServiceRouteConfig.model_validate(
+                {
+                    "providerId": 2,
+                    "decisionModel": "   ",
+                    "modelSelection": {"criteria": {"m1": "fast"}},
+                }
+            )
 
 
 class _MemoryStore:
@@ -153,6 +177,7 @@ class TestHooks:
             {
                 "providerId": 2,
                 "weight": 5,
+                "decisionModel": "jev-latest",
                 "modelSelection": {"criteria": {"m1": "fast", "m2": "smart"}},
             },
             session=None,
@@ -162,6 +187,7 @@ class TestHooks:
         assert row.config == {
             "enabled": True,
             "providerId": 2,
+            "decisionModel": "jev-latest",
             "modelSelection": {"criteria": {"m1": "fast", "m2": "smart"}},
         }
         # the route row itself is untouched — storage is the plugin's own
@@ -203,6 +229,7 @@ class TestHooks:
                 _route(),
                 {
                     "providerId": 9,
+                    "decisionModel": "jev-latest",
                     "modelSelection": {"criteria": {"m1": "fast", "m2": "smart"}},
                 },
                 session=object(),
@@ -230,6 +257,7 @@ class TestHooks:
                 route,
                 {
                     "providerId": 9,
+                    "decisionModel": "jev-latest",
                     "modelSelection": {"criteria": {"m1": "fast", "m2": "smart"}},
                 },
                 session=object(),
@@ -250,6 +278,7 @@ class TestHooks:
                 _route(),
                 {
                     "providerId": 9,
+                    "decisionModel": "jev-latest",
                     "modelSelection": {"criteria": {"m1": "fast", "m2": "smart"}},
                 },
                 session=object(),
@@ -273,6 +302,7 @@ class TestIsEffectiveOn:
             config={
                 "enabled": True,
                 "providerId": 7,
+                "decisionModel": "jev-latest",
                 "modelSelection": {"criteria": {"m1": "fast", "m2": "smart"}},
             },
         )
@@ -287,7 +317,7 @@ class TestIsEffectiveOn:
         store.rows[("decision-service", 1)] = CapabilityPolicy(
             capability="decision-service",
             route_id=1,
-            config={"enabled": True, "providerId": 7},
+            config={"enabled": True, "providerId": 7, "decisionModel": "jev-latest"},
         )
         assert not await decision_service_plugin.is_effective_on(_route(), None)
 
@@ -304,6 +334,7 @@ class TestIsEffectiveOn:
             config={
                 "enabled": True,
                 "providerId": 7,
+                "decisionModel": "jev-latest",
                 "modelSelection": {"criteria": {"m1": "fast", "m2": "smart"}},
             },
         )
@@ -363,6 +394,48 @@ class TestIsEffectiveOn:
         # cache never pulled: absence is not evidence the alias is gone
         monkeypatch.setattr(ModelProvider, "one_by_id", one_by_id_with_models([]))
         assert await decision_service_plugin.is_effective_on(_route(), session)
+
+    @pytest.mark.asyncio
+    async def test_legacy_section_without_decision_model_degrades_to_inert(
+        self, monkeypatch
+    ):
+        # Rows written before decisionModel became required carry none
+        # (exclude_none dropped it at write time). The read path keeps the
+        # old precedence -- the provider's own model -- and degrades to
+        # inert instead of raising out of reconciliation.
+        store = _MemoryStore()
+        store.install(monkeypatch)
+        store.rows[("decision-service", 1)] = CapabilityPolicy(
+            capability="decision-service",
+            route_id=1,
+            config={
+                "enabled": True,
+                "providerId": 7,
+                "modelSelection": {"criteria": {"m1": "fast", "m2": "smart"}},
+            },
+        )
+
+        def one_by_id_with_model(model):
+            provider = _provider(
+                provider_id=7,
+                endpoint="http://jev.internal:8010",
+                model=model,
+            )
+
+            async def one_by_id(cls, sess, provider_id):
+                return provider
+
+            return classmethod(one_by_id)
+
+        # provider default backfills the missing decisionModel
+        monkeypatch.setattr(
+            ModelProvider, "one_by_id", one_by_id_with_model("jev-latest")
+        )
+        assert await decision_service_plugin.is_effective_on(_route(), object())
+
+        # no provider default either: the policy is inert, not broken
+        monkeypatch.setattr(ModelProvider, "one_by_id", one_by_id_with_model(None))
+        assert not await decision_service_plugin.is_effective_on(_route(), object())
 
     def test_referencing_route_ids_selects_policies_pointing_at_the_provider(self):
         from gpustack.routes.plugins.decision_service.plugin import (
