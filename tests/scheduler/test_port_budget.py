@@ -133,6 +133,22 @@ class TestPortsTaken:
         cache = [SimpleNamespace(worker_id=1, port=40010, metrics_port=40011)]
         assert port_budget.ports_taken_on(1, model_instances, cache) == 3
 
+    def test_cache_declared_ports_include_unaliased_http_port(self):
+        cache = [
+            SimpleNamespace(
+                worker_id=1,
+                port=40054,
+                ports={"port": 40054, "http": 40032},
+            )
+        ]
+
+        assert port_budget.ports_taken_on(1, [], cache) == 2
+
+    def test_cache_declared_port_sequence_is_safe_to_read(self):
+        cache = [SimpleNamespace(worker_id=1, port=40054, ports=[40054, 40032])]
+
+        assert port_budget.ports_taken_on(1, [], cache) == 2
+
     def test_an_unplaced_cache_instance_is_skipped(self):
         cache = [SimpleNamespace(worker_id=None, port=40010, metrics_port=None)]
         assert port_budget.ports_taken_on(1, [], cache) == 0

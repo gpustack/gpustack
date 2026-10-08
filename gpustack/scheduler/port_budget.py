@@ -27,6 +27,7 @@ count it already had.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Iterable, Optional, Set
 
 from gpustack.schemas.pd_modes import PDPortScopeEnum
@@ -122,6 +123,17 @@ def ports_taken_on(
     for instance in cache_instances:
         if getattr(instance, "worker_id", None) != worker_id:
             continue
+        # Cache providers can declare names such as `http` that are not
+        # denormalized into the instance's address fields. The persisted map
+        # is the complete reservation and is what the worker allocator uses.
+        declared_ports = getattr(instance, "ports", None)
+        if isinstance(declared_ports, Mapping):
+            declared_ports = declared_ports.values()
+        elif not isinstance(declared_ports, (list, tuple, set)):
+            declared_ports = ()
+        for port in declared_ports:
+            if port is not None:
+                taken.add(port)
         for port in (
             getattr(instance, "port", None),
             getattr(instance, "metrics_port", None),
