@@ -103,7 +103,10 @@ def validate_provider(provider: Union[ModelProviderCreate, ModelProviderUpdate])
     except ValueError as e:
         raise InvalidException(message=f"{e}")
 
-    if len(provider.api_tokens) > 1:
+    # Decision services fail over their keys inside the wasm plugin, not
+    # through ai-proxy's failover config, so they never need an llm model
+    # for the multi-token requirement.
+    if len(provider.api_tokens) > 1 and not is_decision_config(provider.config):
         llm_model = next(
             (model for model in provider.models or [] if model.category == "llm"),
             None,
