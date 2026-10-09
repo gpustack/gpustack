@@ -2177,7 +2177,9 @@ async def _sync_replicas_per_role(
     # It also holds back a router that has not been created yet, which is the
     # same answer to the same question -- a router rendered from peers that
     # predate the edit is a cross-generation pairing like any other.
-    spec_moved = bool(generation) and generation_digest != digest
+    # Use the same version write-back exemption as the model's stale marker:
+    # recording the build the members already run does not change their spec.
+    spec_moved = bool(await _stale_members(session, model, generation))
 
     for role in model.roles:
         have = [i for i in generation if i.role == role.name]
