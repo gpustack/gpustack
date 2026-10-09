@@ -166,6 +166,10 @@ async def _cancel_on_client_disconnect(
     except asyncio.CancelledError:
         work.cancel()
         watcher.cancel()
+        await asyncio.gather(work, watcher, return_exceptions=True)
+        # Cancellation can race an upstream response that already owns a connection.
+        if not work.cancelled() and work.exception() is None:
+            discard(work.result())
         raise
 
     if not watcher.done():
@@ -177,8 +181,8 @@ async def _cancel_on_client_disconnect(
         else:
             # The watcher raced the cancellation and already consumed the
             # http.disconnect message; nobody is listening anymore.
-            result = work.result()
-            discard(result)
+            if not work.cancelled() and work.exception() is None:
+                discard(work.result())
             raise _ClientDisconnected()
         return work.result()
 
@@ -346,13 +350,22 @@ async def proxy(path: str, request: Request):  # noqa: C901
             if record_fn:
                 record_fn(int(target_instance_id))
 
+        async def stream_response():
+            try:
+                async for chunk in _stream_body(
+                    body_iter,
+                    first_chunk,
+                    envs.PROXY_STREAM_IDLE_TIMEOUT if streaming else None,
+                ):
+                    yield chunk
+            finally:
+                # A failed or cancelled stream may never run the background task.
+                resp.close()
+
         response = StreamingResponse(
-            _stream_body(
-                body_iter,
-                first_chunk,
-                envs.PROXY_STREAM_IDLE_TIMEOUT if streaming else None,
-            ),
+            stream_response(),
             status_code=resp.status,
+            # Also close when disconnect handling prevents iteration from starting.
             background=BackgroundTask(resp.close),
         )
         # Use append (not the headers= constructor kwarg) so duplicate header
