@@ -104,6 +104,8 @@ QWEN3_TTS_SUPPORTED_LANGS = {
 }
 
 
+QWEN3_TTS_ARCHITECTURE = "Qwen3TTSForConditionalGeneration"
+
 # Voices supported by Qwen3-TTS
 # https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/blob/main/config.json#L129
 QWEN3_TTS_SUPPORTED_VOICES = [
@@ -132,6 +134,8 @@ def get_model_meta(pretrained_config: PretrainedConfig) -> Optional[Dict[str, an
 
     model_meta: dict[str, any] = {}
 
+    model_meta["architecture"] = architectures[0]
+
     arch_set = set(architectures)
     if "VoxtralForConditionalGeneration" in arch_set:
         model_meta["languages"] = list(VOXTRAL_SUPPORTED_LANGS.keys())
@@ -147,7 +151,7 @@ def get_model_meta(pretrained_config: PretrainedConfig) -> Optional[Dict[str, an
         for arch in arch_set
     ):
         model_meta["languages"] = list(ISO639_1_SUPPORTED_LANGS.keys())
-    elif "Qwen3TTSForConditionalGeneration" in arch_set:
+    elif QWEN3_TTS_ARCHITECTURE in arch_set:
         model_meta["languages"] = list(
             QWEN3_TTS_SUPPORTED_LANGS.values()
         )  # Qwen3-TTS uses full language names
