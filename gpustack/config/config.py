@@ -877,7 +877,16 @@ class Config(WorkerConfig, BaseSettings):
             self.external_auth_type = AuthProviderEnum.OIDC
             self.openid_configuration = get_openid_configuration(
                 self.oidc_issuer,
-                insecure_skip_tls_verify=self.external_auth_insecure_skip_tls_verify,
+                # This fetch runs during Config.__init__, before the global
+                # config exists and before make_ssl_context could see
+                # insecure_tls -- whose documented scope includes the
+                # external-auth IdP handshake. Passing it here skips the
+                # handshake directly and keeps the factory's cache from
+                # being seeded with a verifying context first.
+                insecure_skip_tls_verify=(
+                    self.external_auth_insecure_skip_tls_verify
+                    or bool(self.insecure_tls)
+                ),
             )
         elif self.saml_idp_server_url:
             self.external_auth_type = AuthProviderEnum.SAML
