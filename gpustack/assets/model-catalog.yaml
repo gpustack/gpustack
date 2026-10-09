@@ -446,6 +446,54 @@ model_sets:
       backend_parameters:
         - --mm-encoder-tp-mode=data
         - --max-model-len=65536
+- name: Qwen3.8-27B
+  description: Qwen3.8-27B is a dense vision-language model with 27B language-model parameters, hybrid attention, a native 256K context window, and support for image and video understanding, coding, and tool use.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 27
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - vision
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-08-14"
+  specs:
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.8-27B
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --reasoning-parser=qwen3
+        - --tool-call-parser=qwen3_coder
+        - --enable-auto-tool-choice
+    # A2 image from the vLLM Ascend Qwen3.8-27B recipe.
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3.8-27B
+      backend: vLLM
+      image_name: quay.io/ascend/vllm-ascend:qwen3.8-a2
+      env:
+        HCCL_BUFFSIZE: "512"
+      backend_parameters:
+        - --max-model-len=65536
+        - --trust-remote-code
+        - --reasoning-parser=qwen3
+        - --tool-call-parser=qwen3_coder
+        - --enable-auto-tool-choice
+        - --gpu-memory-utilization=0.85
+        - --max-num-seqs=32
+        - --max-num-batched-tokens=16384
+        - --compilation-config={"cudagraph_mode":"FULL_DECODE_ONLY"}
 - name: Qwen3.6-27B
   description: Qwen3.6-27B is a dense 27B image-text-to-text model in Alibaba's Qwen3.6 series, with the qwen3_5 architecture.
   home: https://qwen.ai
@@ -1022,6 +1070,85 @@ model_sets:
         - --reasoning-parser=hy_v3
         - --enable-auto-tool-choice
         - --max-model-len=65536
+- name: GLM-5.3-Flash
+  description: GLM-5.3-Flash is Z.ai's multimodal MoE model with 320B total parameters, 18B activated parameters, hybrid sparse and linear attention, native FP8 weights, and a 1M-token context window for coding and tool use.
+  home: https://z.ai
+  icon: /static/catalog_icons/zai.png
+  size: 320
+  activated_size: 18
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+    - tools
+  licenses:
+    - mit
+  release_date: "2026-08-26"
+  specs:
+    - mode: standard
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0,<10.0" # Hopper
+      source: huggingface
+      huggingface_repo_id: zai-org/GLM-5.3-Flash
+      backend: vLLM
+      env:
+        VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+      backend_parameters:
+        - --max-model-len=65536
+        - --reasoning-parser=glm47
+        - --tool-call-parser=glm47
+        - --enable-auto-tool-choice
+        - --no-enable-flashinfer-autotune
+    # FP8 KV cache is supported on Blackwell for this model.
+    - mode: standard
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=10.0" # Blackwell or later
+      source: huggingface
+      huggingface_repo_id: zai-org/GLM-5.3-Flash
+      backend: vLLM
+      env:
+        VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+      backend_parameters:
+        - --max-model-len=65536
+        - --reasoning-parser=glm47
+        - --tool-call-parser=glm47
+        - --enable-auto-tool-choice
+        - --kv-cache-dtype=fp8
+- name: GLM-5.3
+  description: GLM-5.3 is Z.ai's MoE language model with a 1M-token context window, native FP8 weights, and improved coding, reasoning, and long-horizon tool use.
+  home: https://z.ai
+  icon: /static/catalog_icons/zai.png
+  # Backbone parameter count excludes the auxiliary MTP layer.
+  size: 743
+  activated_size: 39
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - tools
+  licenses:
+    - glm-5.3
+  release_date: "2026-08-28"
+  specs:
+    - mode: standard
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: huggingface
+      huggingface_repo_id: zai-org/GLM-5.3
+      backend: vLLM
+      backend_parameters:
+        - --reasoning-parser=glm47
+        - --tool-call-parser=glm47
+        - --enable-auto-tool-choice
+        - --max-model-len=65536
+        - --kv-cache-dtype=fp8
 - name: GLM-5.2
   description: GLM-5.2 is Z.ai's flagship Mixture-of-Experts model built on the glm_moe_dsa architecture (DeepSeek Sparse Attention), with strong agentic, reasoning, and coding capabilities and a 1M-token context window.
   home: https://z.ai
@@ -1431,6 +1558,37 @@ model_sets:
         - --reasoning-parser=deepseek_v4
         - --tool-call-parser=deepseek_v4
         - --enable-auto-tool-choice
+- name: DeepSeek-V4.1-Flash
+  description: DeepSeek-V4.1-Flash is a vision-language MoE model with a 552B-parameter backbone and 196B of Engram memory, activating 8B parameters per prompt token and 16B per output token. It supports a 1M-token context window and tool calling.
+  home: https://www.deepseek.com
+  icon: /static/catalog_icons/deepseek.png
+  size: 552
+  activated_size: 16
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+    - tools
+  licenses:
+    - mit
+  release_date: "2026-09-10"
+  specs:
+    - mode: standard
+      quantization: MXFP4
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: huggingface
+      huggingface_repo_id: deepseek-ai/DeepSeek-V4.1-Flash
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --trust-remote-code
+        - --tokenizer-mode=deepseek_v41
+        - --reasoning-parser=deepseek_v41
+        - --tool-call-parser=deepseek_v41
+        - --enable-auto-tool-choice
 - name: DeepSeek-V4-Flash
   description: DeepSeek-V4-Flash is a smaller, faster variant in the DeepSeek-V4 family with the deepseek_v4 architecture, suitable for low-latency inference scenarios.
   home: https://www.deepseek.com
@@ -1657,6 +1815,61 @@ model_sets:
         - --enable-auto-tool-choice
         - --trust-remote-code
         - --enable-expert-parallel
+- name: Kimi-K3
+  description: Kimi-K3 is a native multimodal MoE model with 2.8T total parameters and 104B activated parameters, Kimi Delta Attention, Attention Residuals, native MXFP4 quantization, and a 1M-token context window for reasoning, coding, and tool use.
+  home: https://www.moonshot.ai
+  icon: /static/catalog_icons/kimi.png
+  size: 2.8
+  size_unit: T
+  activated_size: 104
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+    - tools
+  licenses:
+    - kimi-k3
+  release_date: "2026-07-27"
+  specs:
+    - mode: standard
+      quantization: MXFP4
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=10.0" # Blackwell or later
+      source: huggingface
+      huggingface_repo_id: moonshotai/Kimi-K3
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --tool-call-parser=kimi_k3
+        - --reasoning-parser=kimi_k3
+        - --enable-auto-tool-choice
+        - --trust-remote-code
+    # Hopper uses Marlin for the native MXFP4 checkpoint.
+    - mode: standard
+      quantization: MXFP4
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0,<10.0" # Hopper
+      source: huggingface
+      huggingface_repo_id: moonshotai/Kimi-K3
+      backend: vLLM
+      env:
+        VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+        VLLM_USE_V2_MODEL_RUNNER: "1"
+        PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+      backend_parameters:
+        - --max-model-len=65536
+        - --tool-call-parser=kimi_k3
+        - --reasoning-parser=kimi_k3
+        - --enable-auto-tool-choice
+        - --trust-remote-code
+        - --moe-backend=marlin
+        - --attention-backend=FLASHMLA
+        - --disable-custom-all-reduce
+        - --no-enable-flashinfer-autotune
+        - --gpu-memory-utilization=0.95
 - name: Kimi-K2.5
   description: Kimi-K2.5 is a multimodal mixture-of-experts model with 1T total parameters and 32B activated parameters. It features native INT4 quantization, vision support, dual operating modes (thinking/instant), agent swarm capabilities, and excels at visual reasoning, coding with vision, and complex tool orchestration.
   home: https://www.moonshot.ai
@@ -1771,6 +1984,33 @@ model_sets:
         - --enable-auto-tool-choice
         - --reasoning-parser=kimi_k2
         - --trust-remote-code
+- name: Muse-Glimmer-30B
+  description: Muse-Glimmer-30B is Meta's dense vision-language model distilled from Muse Spark, with a dedicated perception encoder, 128K context, and support for reasoning, tool use, and local agentic workflows.
+  home: https://huggingface.co/meta-models/Muse-Glimmer-30B
+  icon: /static/catalog_icons/meta.png
+  size: 30
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - vision
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-08-10"
+  specs:
+    - mode: standard
+      quantization: BF16
+      gpu_filters:
+        vendor: nvidia
+      source: huggingface
+      huggingface_repo_id: meta-models/Muse-Glimmer-30B
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --tool-call-parser=muse_glimmer
+        - --reasoning-parser=muse_glimmer
+        - --enable-auto-tool-choice
 - name: Step-3.5-Flash
   description: Step-3.5-Flash is a fast, cost-effective multimodal model with 196B total parameters and 11B active parameters (MoE), optimized for quick inference. Built on StepFun's Step3 architecture, it delivers strong performance across text and vision tasks with efficient token usage.
   home: https://www.stepfun.com
@@ -1999,6 +2239,40 @@ model_sets:
       backend_parameters:
         - --max-model-len=65536
         - --trust-remote-code
+- name: MiMo-V2.6-Pro-MOPD
+  description: MiMo-V2.6-Pro-MOPD is Xiaomi's multimodal MoE model with 1.02T total parameters, 42B activated parameters, and a 1M-token context window. It supports text, image, video, and audio understanding, with MOPD2 distillation improving agentic tool use.
+  home: https://github.com/XiaomiMiMo
+  icon: /static/catalog_icons/XiaomiMiMo.png
+  size: 1.02
+  size_unit: T
+  activated_size: 42
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+    - tools
+  licenses:
+    - mit
+  release_date: "2026-09-27"
+  specs:
+    - mode: standard
+      # MoE weights use MXFP4 storage with FP8 computation.
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: huggingface
+      huggingface_repo_id: XiaomiMiMo/MiMo-V2.6-Pro-MOPD
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --trust-remote-code
+        - --gpu-memory-utilization=0.95
+        - --reasoning-parser=mimo
+        - --tool-call-parser=mimo
+        - --enable-auto-tool-choice
+        - --generation-config=vllm
 - name: MiMo-V2.5-Pro
   description: MiMo-V2.5-Pro is the text-only flagship variant of Xiaomi's MiMo-V2.5 series, optimized for agentic coding tasks with long-context support.
   home: https://github.com/XiaomiMiMo
