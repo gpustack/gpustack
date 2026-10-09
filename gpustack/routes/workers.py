@@ -19,6 +19,7 @@ from gpustack.api.exceptions import (
     ForbiddenException,
     InvalidException,
 )
+from gpustack.api.auth import is_server_token_principal
 from gpustack.config.config import get_global_config
 from gpustack.api.tenant import (
     bypass_tenant_filter,
@@ -552,11 +553,27 @@ def retry_create_unique_worker_uuid(workers: List[Worker]) -> str:
     )
 
 
-def _resolve_create_worker_cluster_id(user, worker_in: WorkerCreate) -> int:
-    # Fall back to the caller's cluster when the request body omits it.
-    # For a SYSTEM principal that's the cluster bootstrap account, its
-    # ``cluster`` is the back-populated relationship via
-    # ``Cluster.system_principal_id`` (selectinload'd by the auth flow).
+def _resolve_create_worker_cluster_id(user: Principal, worker_in: WorkerCreate) -> int:
+    if not (user.is_admin or is_server_token_principal(user)):
+        if user.kind != PrincipalType.SYSTEM:
+            raise ForbiddenException(message="Only platform admin can register workers")
+        # Registration credentials are limited to the cluster that owns them.
+        # An unlinked SYSTEM account does not carry platform-wide authority.
+        scoped_cluster_id = None
+        if user.worker is not None:
+            scoped_cluster_id = user.worker.cluster_id
+        elif user.cluster is not None:
+            scoped_cluster_id = user.cluster.id
+        if scoped_cluster_id is None:
+            raise ForbiddenException(
+                message="Missing cluster scope for worker registration"
+            )
+        if worker_in.cluster_id not in (None, scoped_cluster_id):
+            raise ForbiddenException(
+                message="Cannot register workers in another cluster"
+            )
+        return scoped_cluster_id
+
     fallback = user.cluster.id if user.cluster is not None else None
     cluster_id = worker_in.cluster_id if worker_in.cluster_id is not None else fallback
     if cluster_id is None:
@@ -645,16 +662,9 @@ async def _persist_worker_registration(
 
 @router.post("", response_model=WorkerRegistrationPublic)
 async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
-    # Worker registration runs through two paths: (1) v1_base_router with
-    # a human session — admin-only, since spinning up workers is a
-    # platform-level action; (2) cluster_client_router with the cluster
-    # service-account token (``user.kind == SYSTEM``). Allow both, deny
-    # the rest.
-    if not (user.is_admin or user.kind == PrincipalType.SYSTEM):
-        raise ForbiddenException(message="Only platform admin can register workers")
+    cluster_id = _resolve_create_worker_cluster_id(user, worker_in)
     async with create_worker_semaphore:
         async with async_session() as session:
-            cluster_id = _resolve_create_worker_cluster_id(user, worker_in)
             all_workers = await Worker.all_by_fields(session, {"deleted_at": None})
             existing_worker = get_existing_worker(cluster_id, worker_in, all_workers)
             check_worker_name_conflict(
@@ -689,6 +699,7 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                 # following args are only used when creating a new worker
                 provider=cluster.provider,
                 cluster=cluster,
+                cluster_id=cluster_id,
                 token=new_token,
             )
             if new_worker.worker_uuid == "":
