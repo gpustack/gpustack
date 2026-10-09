@@ -336,6 +336,8 @@ system_reserved:
 # ========= huggingface ===========
 huggingface_token: xxxxxx
 enable_hf_transfer: false
+# ========= TLS ===========
+insecure_tls: false
 ```
 
 The above YAML lists all currently supported options for the `Worker Configuration YAML`. For the meaning of each option, refer to the full GPUStack [config file documentation](../cli-reference/start.md#config-file). The `proxy_mode` option controls how the server reaches the worker — see [Worker Connection Modes](#worker-connection-modes).

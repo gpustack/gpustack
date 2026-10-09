@@ -1038,7 +1038,10 @@ def get_registration_from_cluster(
         and server_url == global_config.server_external_url.rstrip("/")
     )
     if (
-        global_config
+        # Verification is skipped outright, so the CA bootstrap checksum
+        # would be dead weight in the registration command.
+        not sensitive_registration.insecure_tls
+        and global_config
         and is_server_configured_endpoint
         and server_url.startswith("https://")
     ):
