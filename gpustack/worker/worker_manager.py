@@ -62,6 +62,7 @@ class WorkerManager:
         self._clientset = ClientSet(
             base_url=self._cfg.get_server_url(),
             api_key=token,
+            insecure_tls=self._cfg.insecure_tls,
         )
         self._status_client = WorkerStatusClient(self._clientset.http_client)
 
@@ -110,6 +111,7 @@ class WorkerManager:
             server_url=self._cfg.get_server_url(),
             registration_token=self._cfg.token,
             wait_token_file=self._is_embedded,
+            insecure_tls=self._cfg.insecure_tls,
         )
         external_id = None
         external_id_path = os.path.join(self._cfg.data_dir, 'external_id')
