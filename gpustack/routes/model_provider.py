@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import logging
 import hashlib
@@ -7,6 +8,8 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import selectinload
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+from gpustack import envs
+from gpustack.utils import network
 from gpustack.schemas.model_provider import (
     ANTHROPIC_API_VERSION,
     MaskedAPIToken,
@@ -50,6 +53,95 @@ from openai.pagination import SyncPage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _is_provider_default_endpoint(config, endpoint: Optional[str]) -> bool:
+    """Whether ``endpoint`` is exactly the config class's own hosted default.
+
+    The hosted defaults (`_public_endpoint` + `_default_schema`) are constants
+    this server ships, not values the caller chose, so they are outside what
+    the egress gate protects against and must keep working out of the box
+    once the gate is on -- an operator should not have to allowlist
+    api.typesafe.ai to test a decision config that never named a custom
+    endpoint. The match is on the full origin (scheme, host, port): a
+    caller-supplied URL on the same host but a different scheme or port is
+    not the default and stays subject to the gate.
+    """
+    default_host = getattr(config, "_public_endpoint", None)
+    if not default_host or not endpoint:
+        return False
+    default_scheme = getattr(config, "_default_schema", "https") or "https"
+    parsed = urlparse(endpoint)
+    if parsed.scheme != default_scheme:
+        return False
+    if (parsed.hostname or "").lower() != default_host.lower():
+        return False
+    default_port = {"http": 80, "https": 443}[default_scheme]
+    return parsed.port is None or parsed.port == default_port
+
+
+async def _assert_provider_egress_allowed(
+    endpoint: Optional[str], proxy_url: Optional[str] = None
+) -> None:
+    """Reject caller-supplied URLs the deployment has gated off.
+
+    ``PROVIDER_TEST_EGRESS_ALLOWLIST`` is the gate: once non-empty it is the
+    whole rule -- a base URL (and, when the request carries one, the proxy
+    URL) that does not use an allowed scheme, or whose host matches no name
+    entry and resolves to any address outside the CIDR entries, is refused
+    before any connection is opened. A base URL that equals the config
+    class's hosted default is not caller-supplied and is passed in as None
+    by the callers. Errors name the hostname only: the URL itself may embed
+    credentials in its userinfo, which has no place in a response.
+
+    Resolving the host here and letting httpx resolve it again is still a
+    DNS-rebinding window -- the address checked is not the address dialed.
+    Closing that would mean pinning the verified address into the connection
+    (at the cost of TLS SNI/certificate handling), which this gate does not
+    attempt; it raises the bar for probing, it is not an airlock. Proxies
+    configured through the environment are the operator's own and are not
+    checked.
+    """
+    allowlist = envs.PROVIDER_TEST_EGRESS_ALLOWLIST
+    if not allowlist:
+        return
+    targets = [
+        ("provider base URL", endpoint, ("http", "https")),
+        ("proxy URL", proxy_url, ("http", "https", "socks5", "socks5h")),
+    ]
+    for kind, url, schemes in targets:
+        if url is None:
+            continue
+        parsed = urlparse(url)
+        if parsed.scheme not in schemes or not parsed.hostname:
+            raise InvalidException(
+                message=(f"{kind} is empty or not a URL of an allowed scheme")
+            )
+        hostname = parsed.hostname
+        # httpx normalizes the host through IDNA before dialing (faß.example
+        # becomes xn--fa-hia.example), while getaddrinfo would encode it
+        # differently (fass.example) -- validate the name the client will
+        # actually dial, so the two never disagree. The raw host comes from
+        # re-parsing the full URL: rebuilding it from parsed.hostname would
+        # drop the brackets of an IPv6 literal and fail to parse.
+        hostname = httpx.URL(url).raw_host.decode("ascii")
+        disallowed = await asyncio.to_thread(
+            network.egress_disallowed_address, hostname, allowlist
+        )
+        if disallowed == network.EGRESS_HOST_UNRESOLVED:
+            raise InvalidException(
+                message=(
+                    f"{kind} host {hostname!r} could not be resolved for verification "
+                    "against GPUSTACK_PROVIDER_TEST_EGRESS_ALLOWLIST"
+                )
+            )
+        if disallowed is not None:
+            raise InvalidException(
+                message=(
+                    f"{kind} host {hostname!r} resolves to {disallowed}, which is "
+                    "outside GPUSTACK_PROVIDER_TEST_EGRESS_ALLOWLIST"
+                )
+            )
 
 
 @router.get("", response_model=ModelProvidersPublic, response_model_exclude_none=True)
@@ -465,6 +557,10 @@ async def get_models_from_provider(
             f"provider type {input.config.type} not supported for fetching models"
         )
         return result
+    await _assert_provider_egress_allowed(
+        None if _is_provider_default_endpoint(input.config, base_url) else base_url,
+        input.proxy_url,
+    )
 
     model_uris = [model_uri]
     async with httpx.AsyncClient(
@@ -571,6 +667,10 @@ async def try_model_with_provider(
         raise InvalidException(
             message=f"provider type {input.config.type} does not support testing model accessibility"
         )
+    await _assert_provider_egress_allowed(
+        None if _is_provider_default_endpoint(input.config, endpoint) else endpoint,
+        input.proxy_url,
+    )
     max_output_token_dict = _get_model_output_token_dict(input.model_name)
     data = {
         "model": input.model_name,
@@ -676,6 +776,10 @@ async def _try_decision_model(
     base url or the TypeSafe hosted default.
     """
     endpoint, decision_url = config.get_chat_url()
+    await _assert_provider_egress_allowed(
+        None if _is_provider_default_endpoint(config, endpoint) else endpoint,
+        proxy_url,
+    )
     alias = model_name or config.model
     data: Dict[str, Any] = {
         "state": "GPUStack decision-service connectivity test.",

@@ -74,6 +74,7 @@ The **Applies to** column indicates where the environment variable should be set
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | --------------- |
 | `GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES` | JWT token expiration time in minutes.                                                                                                                                                    | `120`   | Server          |
 | `GPUSTACK_INSECURE_TLS`             | Skip certificate verification on GPUStack's own HTTPS connections: the worker's to the server, including benchmark progress reporting, and the server's to an external-auth IdP. Connections to model sources and the update service keep verifying. Use only on trusted networks where the server certificate cannot be verified. | `false` | Server & Worker |
+| `GPUSTACK_PROVIDER_TEST_EGRESS_ALLOWLIST` | Allowlist of CIDRs, IP addresses and DNS names that the provider endpoints dialing a caller-supplied base URL (`/get-models`, `/test-model`, `/test-decision-model`) may reach. A target is allowed only when its hostname equals or ends with one of the names (dot boundary), or every resolved address falls inside one of the CIDRs; anything else — including a non-http(s) base URL — is refused. Empty means no restriction. e.g., `api.openai.com,10.0.1.0/24,vllm.internal.corp` | (empty) | Server          |
 
 ### Gateway Configuration
 

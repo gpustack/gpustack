@@ -64,6 +64,85 @@ def is_ipaddress(ip_str: str) -> bool:
         return False
 
 
+def _egress_allowlist_parts(
+    allowlist: List[str],
+) -> Tuple[List[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]], List[str]]:
+    """Split an allowlist into (networks, names).
+
+    An entry parses as a network when it is a CIDR or a bare IP address
+    (treated as a /32 or /128); anything else is a DNS name matched by exact
+    hostname or suffix on a dot boundary.
+    """
+    networks = []
+    names = []
+    for entry in allowlist:
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+            continue
+        except ValueError:
+            pass
+        names.append(entry.lower().rstrip("."))
+    return networks, names
+
+
+# Returned by egress_disallowed_address when the host could not be resolved
+# at all. With a proxy in play the proxy resolves the target, so "cannot
+# verify" must not authorize the request -- the caller treats this like any
+# other disallowed target.
+EGRESS_HOST_UNRESOLVED = "<unresolved>"
+
+
+def egress_disallowed_address(host: str, allowlist: List[str]) -> Optional[str]:
+    """The first resolved address ``host`` may not be dialed on, or None.
+
+    The allowlist is the whole rule: a target is allowed only when the
+    hostname equals or ends with one of the name entries (dot boundary), or
+    every address ``getaddrinfo`` returns falls inside one of the network
+    entries. A name that cannot be resolved fails closed with
+    EGRESS_HOST_UNRESOLVED: the request may still be forwardable through a
+    proxy that can resolve it, so an unverifiable host is never authorized.
+
+    Args:
+        host: A hostname or literal IP address, already normalized the way
+            the HTTP client will dial it (IDNA for Unicode names).
+        allowlist: CIDR / IP / DNS-name entries; empty means unrestricted.
+
+    Returns:
+        The offending address as a string, EGRESS_HOST_UNRESOLVED when
+        resolution failed, or None when the target is allowed (or the
+        allowlist is empty).
+    """
+    if not allowlist:
+        return None
+    networks, names = _egress_allowlist_parts(allowlist)
+    hostname = host.lower().rstrip(".")
+    if any(hostname == name or hostname.endswith("." + name) for name in names):
+        return None
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (OSError, UnicodeError):
+        # gaierror is an OSError; UnicodeError is what a hostname getaddrinfo
+        # cannot encode raises before any query. Fail closed either way.
+        return EGRESS_HOST_UNRESOLVED
+    for info in infos:
+        address = info[4][0]
+        # A literal IPv6 address may carry a scope id (fe80::1%eth0), which
+        # ipaddress.ip_address rejects.
+        if "%" in address:
+            address = address.split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            return address
+        # Membership across IP versions raises TypeError, and a dual-stack
+        # name resolves to both, so the versions must agree first.
+        if not any(
+            ip.version == network.version and ip in network for network in networks
+        ):
+            return address
+    return None
+
+
 def _get_ifname_by_local_ip(
     ip_address: str,
     address_family: socket.AddressFamily = socket.AF_INET,
