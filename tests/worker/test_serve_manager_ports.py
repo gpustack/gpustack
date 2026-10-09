@@ -153,6 +153,117 @@ def test_named_band_lands_in_both_indexes():
     assert band.base != mi.port
 
 
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+@pytest.mark.parametrize(
+    "parameters, dp", [([], 1), (["--dp=2"], 2), (["--data-parallel-size", "4"], 4)]
+)
+def test_internal_nixl_reserves_all_dp_side_channels(role, parameters, dp):
+    manager = _manager()
+    mi = _instance(role=role, cards=dp * 2)
+    model = _pd_model(backend_parameters=parameters)
+
+    manager._assign_ports(mi, model, BackendEnum.VLLM)
+
+    band = mi.named_ports["kv_side_channel"]
+    expected = set(range(band.base, band.base + dp))
+    assert band.count == dp
+    assert expected <= set(mi.ports)
+    assert expected <= manager._assigned_ports[mi.id]
+
+
+def test_internal_nixl_uses_role_dp_and_refences_it_on_restart():
+    manager = _manager()
+    mi = _instance(role="decode", cards=4)
+    model = _pd_model(
+        backend_parameters=["--dp=4"],
+        roles=[RoleSpec(name="decode", backend_parameters=["--tp=2", "--dp=2"])],
+    )
+    projected = role_effective_model(model, "decode")
+    manager._assign_ports(mi, projected, BackendEnum.VLLM)
+    band = mi.named_ports["kv_side_channel"]
+    assert band.count == 2
+
+    restarted = _manager()
+    restarted._assign_ports(mi, projected, BackendEnum.VLLM)
+    fresh = _instance(2, cards=4)
+    restarted._assign_ports(fresh, projected, BackendEnum.VLLM)
+    assert not set(mi.ports) & set(fresh.ports)
+
+
+@pytest.mark.parametrize(
+    "mode, width", [(PDModeEnum.VLLM_NIXL, 4), (PDModeEnum.VLLM_ASCEND_MOONCAKE, 8)]
+)
+def test_spanning_internal_member_fences_global_rank_offsets(mode, width):
+    manager = _manager()
+    mi = _instance(cards=4)
+    mi.distributed_servers = DistributedServers(
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(worker_id=2, gpu_indexes=list(range(4)))
+        ],
+    )
+    model = _pd_model(
+        mode, backend_parameters=["--tp=2", "--distributed-executor-backend=mp"]
+    )
+    manager._assign_ports(mi, model, BackendEnum.VLLM)
+    name = "kv_side_channel" if mode == PDModeEnum.VLLM_NIXL else "kv_port"
+    band = mi.named_ports[name]
+    assert band.count == width
+
+    follower = _manager(worker_id=2)
+    follower._assign_ports(mi, model, BackendEnum.VLLM)
+    assert set(range(band.base, band.base + width)) <= follower._assigned_ports[mi.id]
+
+
+@pytest.mark.parametrize(
+    "tp, dp, pp, pcp", [(2, 2, 1, 1), (2, 2, 2, 1), (2, 2, 1, 2), (2, 2, 2, 2)]
+)
+def test_mooncake_band_covers_every_parallel_rank(tp, dp, pp, pcp):
+    cards = tp * dp * pp * pcp
+    mi = _instance(cards=cards)
+    model = _pd_model(
+        PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        backend_parameters=[
+            f"--tp={tp}",
+            f"--dp={dp}",
+            f"--pp={pp}",
+            f"--prefill-context-parallel-size={pcp}",
+        ],
+    )
+    manager = _manager()
+    manager._assign_ports(mi, model, BackendEnum.VLLM)
+    band = mi.named_ports["kv_port"]
+    handshake_ports = {
+        band.base + d * tp * pp * pcp + (p * pcp + c) * tp + t
+        for d in range(dp)
+        for p in range(pp)
+        for c in range(pcp)
+        for t in range(tp)
+    }
+    assert band.count == cards
+    assert handshake_ports == set(range(band.base, band.base + band.count))
+    assert handshake_ports <= manager._assigned_ports[mi.id]
+
+
+def test_spanning_nixl_derives_dp_with_pp_and_prefill_context_parallelism():
+    mi = _instance(cards=8)
+    mi.distributed_servers = DistributedServers(
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(worker_id=2, gpu_indexes=list(range(8)))
+        ],
+    )
+    model = _pd_model(
+        backend_parameters=[
+            "--tp=2",
+            "--pp=2",
+            "--prefill-context-parallel-size=2",
+            "--distributed-executor-backend=mp",
+        ]
+    )
+    manager = _manager()
+    manager._assign_ports(mi, model, BackendEnum.VLLM)
+    assert mi.named_ports["kv_side_channel"].count == 2
+
+
 def test_router_role_reads_the_router_declaration():
     """A router's bands sit on `mode.router`, not in `mode.roles`."""
     manager = _manager()

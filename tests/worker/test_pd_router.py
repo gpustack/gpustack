@@ -88,6 +88,19 @@ def test_the_catalog_router_renders_a_complete_command():
     assert plan.health_path == "/health"
 
 
+@pytest.mark.parametrize("mode", ["vllm-nixl", "vllm-ascend-mooncake"])
+def test_internal_lb_router_uses_one_http_upstream_per_member(mode):
+    plan = render_router(get_pd_mode(mode), VARIABLES, PEERS)
+    assert "--intra-node-data-parallel-size" not in plan.command
+    for role, addresses in PEERS.items():
+        urls = [
+            plan.command[index + 1]
+            for index, arg in enumerate(plan.command)
+            if arg == f"--{role}"
+        ]
+        assert urls == [f"http://{peer.ip}:{peer.port}" for peer in addresses]
+
+
 def test_the_routers_own_placeholders_resolve():
     plan = render_router(get_pd_mode("vllm-nixl"), VARIABLES, PEERS)
 
