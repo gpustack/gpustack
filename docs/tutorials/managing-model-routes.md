@@ -47,3 +47,46 @@ If a running inference service (such as ollama or lm-studio) wants to use GPUSta
 6. The first model of the provider will be used to pre-configure the route. Adjust the route configuration as needed.
 7. Click the `Save` button to apply the model route. Your model is now proxied by GPUStack.
 8. Authorize access to this route using `Access Setting` in the `Operations` column.
+
+
+### Access Backend-Specific Endpoints via Generic Proxy
+
+Some inference backends expose non-OpenAI-standard endpoints (for example
+vLLM's `POST /tokenize` and `POST /detokenize`, which run the tokenizer and
+chat template without GPU inference). These backend-specific endpoints are
+served through the **generic proxy** instead of the OpenAI-compatible model
+surface, so each model route only exposes the endpoints its backend actually
+provides.
+
+1. Enable **Generic Proxy** on the model route (toggle in the route
+   settings).
+   > [!NOTE]
+   > Managing model routes (and calling the generic proxy) requires an API
+   > key with route-management permission, not a plain inference key.
+2. Get the route id:
+
+   ```bash
+   curl http://<gpustack_server_url>/v2/model-routes \
+     -H "Authorization: Bearer <api-key>"
+   ```
+
+3. Call the backend endpoint through the proxy — the path after
+   `/model/proxy/<route-id>` is passed through to the model instance
+   unmodified:
+
+   ```bash
+   curl -X POST http://<gpustack_server_url>/model/proxy/<route-id>/tokenize \
+     -H "Authorization: Bearer <api-key>" \
+     -H "Content-Type: application/json" \
+     -d '{"model": "<model-name>", "prompt": "hello"}'
+   # → {"count": 2, "max_model_len": 1048576, "tokens": [...]}
+   #
+   # Note: the root-path /tokenize endpoint expects a `prompt` string.
+   # (vLLM's versioned /v1/tokenize variant accepts a `messages` array instead —
+   # handy if your harness already holds a chat-style payload.)
+   ```
+
+This is handy for **context-window preflight**: compute the exact prompt
+token count with the same tokenizer the engine will use, before sending the
+real request — useful for agent harnesses that trigger context compression
+or reject over-window requests early.
