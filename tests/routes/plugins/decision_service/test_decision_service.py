@@ -219,7 +219,7 @@ class TestHooks:
 
     @pytest.mark.asyncio
     async def test_unknown_provider_id_rejected(self, monkeypatch):
-        async def one_by_id(cls, session, provider_id):
+        async def one_by_id(cls, session, provider_id, for_update=False):
             return None
 
         monkeypatch.setattr(ModelProvider, "one_by_id", classmethod(one_by_id))
@@ -245,7 +245,7 @@ class TestHooks:
         provider = _provider(provider_id=9, endpoint="http://jev.internal:8010")
         provider.owner_principal_id = 42
 
-        async def one_by_id(cls, session, provider_id):
+        async def one_by_id(cls, session, provider_id, for_update=False):
             return provider
 
         monkeypatch.setattr(ModelProvider, "one_by_id", classmethod(one_by_id))
@@ -268,7 +268,7 @@ class TestHooks:
         provider = _provider(provider_id=9, endpoint="http://jev.internal:8010")
         provider.deleted_at = 1
 
-        async def one_by_id(cls, session, provider_id):
+        async def one_by_id(cls, session, provider_id, for_update=False):
             return provider
 
         monkeypatch.setattr(ModelProvider, "one_by_id", classmethod(one_by_id))
@@ -339,7 +339,7 @@ class TestIsEffectiveOn:
             },
         )
 
-        async def one_by_id(cls, session, provider_id):
+        async def one_by_id(cls, session, provider_id, for_update=False):
             return None
 
         monkeypatch.setattr(ModelProvider, "one_by_id", classmethod(one_by_id))

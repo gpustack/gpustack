@@ -33,10 +33,15 @@ from gpustack.routes.plugins.decision_service.providers import (
     DECISION_PROVIDER_TYPES,
     is_decision_config,
 )
+from gpustack.routes.plugins.decision_service.plugin import (
+    decision_referencing_route_ids,
+)
+from gpustack.routes.plugins.capability_policy import CapabilityPolicy
 from gpustack.schemas.models import CategoryEnum
-from gpustack.schemas.model_routes import ModelRouteTarget
+from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    BadRequestException,
     InternalServerErrorException,
     NotFoundException,
     InvalidException,
@@ -404,6 +409,7 @@ async def delete_model_provider(session: SessionDep, ctx: TenantContextDep, id: 
     existing = await ModelProvider.one_by_id(
         session=session,
         id=id,
+        for_update=True,
         options=[selectinload(ModelProvider.model_route_targets)],
     )
     if not existing or existing.deleted_at is not None:
@@ -413,6 +419,43 @@ async def delete_model_provider(session: SessionDep, ctx: TenantContextDep, id: 
         existing,
         not_found_message=f"provider {id} not found",
     )
+    # A decision-service provider pinned by a route's decision policy would
+    # leave the route rendering a dangling providerId after deletion. The
+    # row lock above serializes this check with the route-write path:
+    # `_validate_provider_id` takes the same lock on the provider row, so a
+    # concurrent route write cannot validate and store a new providerId
+    # between the reference scan and the delete commit.
+    if is_decision_config(existing.config):
+        policies = await CapabilityPolicy.all_by_fields(
+            # deleted_at: None matches every other policy read
+            # (`policy_for_route`, `capability_sections`): a soft-deleted
+            # row keeps its old providerId but no longer pins anything.
+            session,
+            fields={"capability": "decision-service", "deleted_at": None},
+        )
+        route_ids = decision_referencing_route_ids(policies, id)
+        if route_ids:
+            # CapabilityPolicy rows carry no owner column, so the route
+            # lookup itself is scoped to the caller: a stale or foreign
+            # policy can neither leak another Org's route names nor block
+            # this delete. References the caller cannot see render inert
+            # (the plugin strips an unresolvable providerId), so deleting
+            # past them is safe.
+            routes = await ModelRoute.all_by_fields(
+                session,
+                extra_conditions=[
+                    ModelRoute.id.in_(route_ids),
+                    *tenant_list_conditions(ctx, ModelRoute),
+                ],
+            )
+            names = sorted(route.name for route in routes)
+            if names:
+                raise BadRequestException(
+                    message=(
+                        "Decision service provider is in use by route(s): "
+                        + ", ".join(names)
+                    )
+                )
     try:
         await existing.delete(session=session)
     except Exception as e:

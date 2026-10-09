@@ -157,7 +157,11 @@ async def _validate_provider_id(
     tests)."""
     if provider_id is None or session is None:
         return
-    provider = await ModelProvider.one_by_id(session, provider_id)
+    # The row lock pairs with the delete path in
+    # routes/model_provider.py: both hold it while reading/writing the
+    # references, so a provider delete cannot race a route write that is
+    # mid-validation of this providerId.
+    provider = await ModelProvider.one_by_id(session, provider_id, for_update=True)
     if (
         provider is None
         or provider.deleted_at is not None
