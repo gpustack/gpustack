@@ -38,6 +38,30 @@ def _band(base, count):
 
 
 class TestMemberDemand:
+    @pytest.mark.parametrize("parameters", [["--tp=16"], ["--dp=0"]])
+    def test_invalid_spanning_topology_leaves_the_band_unresolved(self, parameters):
+        model = _model("vllm-nixl", parameters + ["--distributed-executor-backend=mp"])
+        assert (
+            port_budget.member_port_demand(model, "prefill", 4, gpu_per_node=[4, 4])
+            == 1
+        )
+
+    @pytest.mark.parametrize(
+        "parameters, expected",
+        [([], 2), (["--dp=2"], 3), (["--data-parallel-size", "4"], 5)],
+    )
+    def test_internal_nixl_counts_dp_side_channels(self, parameters, expected):
+        model = _model("vllm-nixl", parameters)
+        assert port_budget.member_port_demand(model, "prefill", 8) == expected
+
+    @pytest.mark.parametrize("mode, expected", [("vllm-nixl", 5), (MOONCAKE, 9)])
+    def test_spanning_member_covers_global_rank_range(self, mode, expected):
+        model = _model(mode, ["--tp=2", "--distributed-executor-backend=mp"])
+        assert (
+            port_budget.member_port_demand(model, "prefill", 4, gpu_per_node=[4, 4])
+            == expected
+        )
+
     def test_a_plain_model_takes_one_port(self):
         """No PD mode, no bands — the count the scheduler already assumed."""
         assert port_budget.member_port_demand(_model(), None, 8) == 1
@@ -271,3 +295,59 @@ class TestPortsCommittedDuringOneSolve:
         # 64 ports in the range: nine per member at eight cards, three at two.
         assert wide == 64 // (1 + 8)
         assert narrow == 20, "three ports each leaves room for every slot offered"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode, demand", [("vllm-nixl", 7), (MOONCAKE, 13)])
+    @pytest.mark.parametrize("reverse", [False, True])
+    async def test_spanning_budget_covers_every_candidate_for_a_primary(
+        self, mode, demand, reverse, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        from gpustack.scheduler import group_capacity
+
+        model = _model(mode, ["--tp=2", "--distributed-executor-backend=mp"])
+        model.distributed_inference_across_workers = True
+        cap = self._capacity(model)
+        cap._config = SimpleNamespace(service_port_range="40000-40012")
+        workers = {
+            worker_id: SimpleNamespace(
+                id=worker_id,
+                status=SimpleNamespace(memory=SimpleNamespace(total=1)),
+            )
+            for worker_id in [1, 2, 3]
+        }
+        candidates = [
+            SimpleNamespace(
+                worker=workers[1],
+                gpu_indexes=list(range(4)),
+                subordinate_workers=[
+                    SimpleNamespace(worker_id=worker_id, gpu_indexes=list(range(cards)))
+                ],
+            )
+            for worker_id, cards in [(2, 8), (3, 4)]
+        ]
+        if reverse:
+            candidates.reverse()
+        monkeypatch.setattr(
+            group_capacity, "role_takes_no_accelerator", lambda *a: False
+        )
+        monkeypatch.setattr(
+            group_capacity,
+            "count_offer_slots",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    slots=2, placements=candidates, notes=[], claim=None
+                )
+            ),
+        )
+
+        await cap._spanning("prefill", list(workers), workers, [], 2, {})
+        cap._committed_ports = cap._committed_port_demand(
+            [SimpleNamespace(worker_id=1, role="prefill")]
+        )
+
+        assert cap._committed_ports == {1: demand, 2: demand, 3: demand}
+        assert cap._within_port_budget(
+            "decode", 1, SimpleNamespace(slots=2), 4, gpu_per_node=[4, 4]
+        ) == (13 - demand) // (5 if mode == "vllm-nixl" else 9)

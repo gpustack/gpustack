@@ -87,7 +87,7 @@ from gpustack.worker.pd_injection import (
     ACCELERATOR_COUNT_KEY,
     band_count_key,
     band_specs_for,
-    band_width,
+    member_band_width,
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
@@ -2216,11 +2216,15 @@ class ServeManager(ContainerLogPersister):
                     "give each member a different base for a band they are "
                     "supposed to meet on."
                 )
-            count = band_width(
-                spec,
-                cards=len(mi.gpu_indexes or []),
-                backend_parameters=model.backend_parameters,
+            subordinate = (
+                mi.distributed_servers.subordinate_workers
+                if mi.distributed_servers
+                else []
             )
+            gpu_per_node = [len(mi.gpu_indexes or [])] + [
+                len(worker.gpu_indexes or []) for worker in subordinate or []
+            ]
+            count = member_band_width(spec, model, gpu_per_node)
             if count is None:
                 # Skipping the band leaves `{{ports.<name>}}` unresolved in the
                 # launch, which the renderer logs and the engine rejects by
