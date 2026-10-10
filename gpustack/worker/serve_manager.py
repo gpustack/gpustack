@@ -619,6 +619,7 @@ class ServeManager(ContainerLogPersister):
                     ModelInstanceStateEnum.STARTING,
                     ModelInstanceStateEnum.RUNNING,
                     ModelInstanceStateEnum.ERROR,
+                    ModelInstanceStateEnum.UNREACHABLE,
                 )
             ):
                 continue
