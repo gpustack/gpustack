@@ -7,6 +7,7 @@ the same story from opposite ends, so they are pinned in one file.
 """
 
 import socket
+from unittest.mock import Mock
 
 import pytest
 
@@ -14,6 +15,7 @@ from gpustack.utils import network
 from gpustack.utils.network import (
     PortRangeExhaustedError,
     get_free_band,
+    get_free_port,
     is_port_available,
 )
 
@@ -39,6 +41,65 @@ def ports_busy(monkeypatch):
         )
 
     return install
+
+
+@pytest.mark.parametrize(
+    "taken",
+    [set(range(50000, 50064)), set(range(40000, 40063)) | {50000}],
+)
+def test_get_free_port_counts_only_reservations_in_its_range(
+    taken, all_ports_free, monkeypatch
+):
+    monkeypatch.setattr(network.random, "randint", lambda start, end: end)
+
+    assert get_free_port("40000-40063", taken) == 40063
+
+
+def test_get_free_port_keeps_searching_after_a_busy_probe_outside_reservations(
+    ports_busy, monkeypatch
+):
+    ports_busy({40000})
+    monkeypatch.setattr(network.random, "randint", Mock(side_effect=[40000, 40001]))
+    taken = {50000}
+
+    assert get_free_port("40000-40001", taken) == 40001
+    assert taken == {50000, 40000}
+
+
+def test_get_free_port_reports_exhaustion_after_all_in_range_probes(
+    ports_busy, monkeypatch
+):
+    ports_busy({40000, 40001})
+    pick = Mock(side_effect=[40000, 40001])
+    monkeypatch.setattr(network.random, "randint", pick)
+    taken = {50000}
+
+    with pytest.raises(PortRangeExhaustedError, match="only 0 of the 2 ports"):
+        get_free_port("40000-40001", taken)
+
+    assert pick.call_count == 2
+    assert taken == {50000, 40000, 40001}
+
+
+def test_get_free_port_skips_reserved_ports_before_probing(
+    monkeypatch,
+):
+    monkeypatch.setattr(network.random, "randint", Mock(side_effect=[40000, 40001]))
+    probe = Mock(return_value=True)
+    monkeypatch.setattr(network, "is_port_available", probe)
+
+    assert get_free_port("40000-40001", {40000}, host="127.0.0.2") == 40001
+    probe.assert_called_once_with(40001, "127.0.0.2")
+
+
+def test_get_free_port_rejects_a_fully_reserved_range_without_probing(monkeypatch):
+    probe = Mock()
+    monkeypatch.setattr(network, "is_port_available", probe)
+
+    with pytest.raises(PortRangeExhaustedError, match="only 0 of the 2 ports"):
+        get_free_port("40000-40001", {40000, 40001, 50000})
+
+    probe.assert_not_called()
 
 
 def test_get_free_band_returns_the_first_contiguous_run(all_ports_free):

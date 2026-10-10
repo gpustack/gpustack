@@ -279,7 +279,8 @@ def get_free_port(
     if unavailable_ports is None:
         unavailable_ports = set()
 
-    if len(unavailable_ports) >= end - start + 1:
+    unavailable_count = sum(start <= port <= end for port in unavailable_ports)
+    if unavailable_count >= end - start + 1:
         raise PortRangeExhaustedError(
             _describe_exhaustion(start, end, 1, unavailable_ports)
         )
@@ -292,7 +293,8 @@ def get_free_port(
             return port
         else:
             unavailable_ports.add(port)
-            if len(unavailable_ports) == end - start + 1:
+            unavailable_count += 1
+            if unavailable_count == end - start + 1:
                 raise PortRangeExhaustedError(
                     _describe_exhaustion(start, end, 1, unavailable_ports)
                 )
