@@ -4281,14 +4281,12 @@ async def sync_model_status(session: AsyncSession, model: Model) -> bool:  # noq
     # pre-upgrade model stale on the first pass after an upgrade.
     stale = await _stale_members(session, model, instances)
 
-    # The restart guard's other half. Set by the endpoint before it tears the
-    # generation down, released here the moment the rebuilt one is serving —
-    # which is the only event that actually means "the replacements are no
-    # longer at risk". It rides the same change gate rather than getting its
-    # own write, so releasing the guard costs nothing on a pass that was
-    # already publishing the transition into RUNNING.
+    # Release the restart guard when the rebuilt deployment is serving or its
+    # deployment switch is off. A stopped deployment has no replacements to
+    # protect, even while its last members are being removed. The same change
+    # gate publishes the release even when no other status field changes.
     restarting_since = model.restarting_since
-    if restarting_since is not None and state == ModelStateEnum.RUNNING:
+    if model.replicas == 0 or state == ModelStateEnum.RUNNING:
         restarting_since = None
 
     if (
