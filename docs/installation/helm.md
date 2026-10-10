@@ -145,7 +145,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
   --set 'worker.gpuVendors={nvidia}'
 ```
 
-Supported `worker.gpuVendors` values: `nvidia`, `mthreads`, `amd`, `ascend`, `hygon`, `metax`, `iluvatar`, `cambricon`, `thead`.
+Supported `worker.gpuVendors` values: `nvidia`, `mthreads`, `amd`, `ascend`, `hygon`, `metax`, `iluvatar`, `cambricon`, `thead`. Any other name fails the render rather than being dropped: no DaemonSet is rendered for an unsupported vendor, so a typo would otherwise install successfully while the nodes that vendor serves gained no worker.
 
 !!! note
 
@@ -264,7 +264,7 @@ The most commonly used parameters are listed below. For the complete and authori
 | `gateway.ingressClassname`             | `higress`                | Higress IngressClass name; enables in-cluster gateway mode when found.     |
 | `higress-core.enabled`                 | `true`                   | Deploy the bundled Higress gateway; disable if already installed.          |
 | `worker.enabled`                       | `false`                  | Render worker DaemonSets.                                                 |
-| `worker.gpuVendors`                    | `[nvidia]`               | GPU vendors; one DaemonSet per vendor plus the CPU DaemonSet.              |
+| `worker.gpuVendors`                    | `[nvidia]`               | GPU vendors; one DaemonSet each plus the CPU one; unsupported names fail.  |
 | `worker.cpuEnabled`                    | `true`                   | Render the CPU worker DaemonSet; `false` requires a GPU vendor.            |
 | `worker.nodeSelector`                  | `{}`                     | Base worker nodeSelector; replaces `global.nodeSelector` when non-empty.   |
 | `worker.port`                          | `10150`                  | Worker service port.                                                      |
