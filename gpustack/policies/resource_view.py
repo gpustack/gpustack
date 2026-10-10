@@ -43,7 +43,7 @@ def compute_worker_allocated(
                 if sw.worker_id != worker_id:
                     continue
                 if sw.computed_resource_claim and (
-                    gpu_type is None or mi.gpu_type == gpu_type
+                    gpu_type is None or mi.gpu_type is None or mi.gpu_type == gpu_type
                 ):
                     add_vram(sw.computed_resource_claim)
 
