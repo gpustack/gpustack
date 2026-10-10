@@ -49,6 +49,8 @@ def deployment_spec(model: ModelBase) -> Dict[str, Any]:
     """Return detached, normalized user configuration without identity or status."""
     data = model.model_dump(mode="json", include=set(REVISION_FIELDS))
     schedule = data.get("scaling_schedule")
+    if schedule:
+        schedule.pop("paused", None)
     if schedule and schedule.get("enabled"):
         data["replicas"] = schedule["baseline_replicas"]
     _normalize_spec(data, model.name)

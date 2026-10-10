@@ -85,6 +85,7 @@ from gpustack.schemas.models import (
     ModelPublic,
     ModelsPublic,
     RoleNameEnum,
+    ScalingSchedule,
     role_effective_model,
 )
 from gpustack.schemas.model_routes import (
@@ -403,6 +404,48 @@ async def get_model_cache_metrics(
     )
 
 
+def _preserve_scaling_schedule_pause(
+    schedule: Optional[ScalingSchedule],
+    stored: Optional[Model] = None,
+    allow_override: bool = False,
+) -> Optional[ScalingSchedule]:
+    """Keep runtime pause state on an enabled plan, independently of edits."""
+    if schedule is None:
+        return None
+    previous = stored.scaling_schedule if stored is not None else None
+    if allow_override and "paused" in schedule.model_fields_set:
+        paused = schedule.enabled and schedule.paused
+    else:
+        paused = bool(
+            schedule.enabled and previous and previous.enabled and previous.paused
+        )
+    return schedule.model_copy(update={"paused": paused})
+
+
+def _merge_scaling_schedule_update(
+    model_in: ModelUpdate, stored: Model, allow_pause_override: bool = True
+) -> None:
+    """Keep sparse edits subject to the stored schedule's replica ownership."""
+    if "scaling_schedule" in model_in.model_fields_set:
+        model_in.scaling_schedule = _preserve_scaling_schedule_pause(
+            model_in.scaling_schedule, stored, allow_override=allow_pause_override
+        )
+        return
+    schedule = stored.scaling_schedule
+    if (
+        schedule
+        and schedule.enabled
+        and "replicas" in model_in.model_fields_set
+        and model_in.replicas != stored.replicas
+    ):
+        raise BadRequestException(
+            message="Disable scheduled scaling before manually changing replicas."
+        )
+    # Validation and reconciliation need the stored schedule, but an unrelated
+    # edit must not persist a schedule the caller did not submit.
+    object.__setattr__(model_in, "scaling_schedule", schedule)
+
+
 def apply_scaling_schedule_baseline(
     model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
 ) -> None:
@@ -421,6 +464,9 @@ def apply_scaling_schedule_baseline(
     """
     schedule = getattr(model_in, "scaling_schedule", None)
     if not schedule or not schedule.enabled:
+        return
+    if schedule.paused:
+        model_in.replicas = 0
         return
     effective = compute_desired_replicas(schedule)
     if effective is not None:
@@ -449,6 +495,37 @@ def _max_intended_replicas(
         schedule.baseline_replicas,
         *(rule.replicas for rule in schedule.rules),
     )
+
+
+def _is_schedule_pause_only_update(
+    model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase], stored: Optional[Model]
+) -> bool:
+    """Allow stopping an unchanged plan even when its placement is unavailable."""
+    schedule = model_in.scaling_schedule
+    previous = stored.scaling_schedule if stored is not None else None
+    if not (
+        schedule
+        and schedule.enabled
+        and schedule.paused
+        and previous
+        and previous.enabled
+    ):
+        return False
+    if schedule.model_dump(exclude={"paused"}) != previous.model_dump(
+        exclude={"paused"}
+    ):
+        return False
+    fields = model_in.model_fields_set - {"replicas", "scaling_schedule"}
+    if (
+        not is_custom_backend(model_in.backend)
+        and model_in.image_name
+        and model_in.image_name == stored.image_name
+        and model_in.backend_version is None
+    ):
+        # An unchanged image selects the runtime; clearing its unused catalog
+        # version does not change the deployment's placement configuration.
+        fields.discard("backend_version")
+    return all(getattr(model_in, field) == getattr(stored, field) for field in fields)
 
 
 def validate_roles(  # noqa: C901
@@ -1111,10 +1188,20 @@ async def validate_model_in(
     )
     await validate_gather_layer(session, model_in, cluster_id=cluster_id, stored=stored)
 
-    if getattr(model_in, "gpu_type_selector", None) is not None:
+    # API responses use short LoRA names; compare their stored form when
+    # deciding whether a request only pauses an unchanged deployment.
+    if not is_custom_backend(model_in.backend):
+        validate_and_normalize_lora_list(model_in)
+
+    pause_only = _is_schedule_pause_only_update(model_in, stored)
+    if not pause_only and getattr(model_in, "gpu_type_selector", None) is not None:
         await validate_gpu_type_selector(session, model_in, cluster_id=cluster_id)
 
-    if model_in.gpu_selector is not None and _max_intended_replicas(model_in) > 0:
+    if (
+        not pause_only
+        and model_in.gpu_selector is not None
+        and _max_intended_replicas(model_in) > 0
+    ):
         await validate_gpu_ids(session, model_in, cluster_id=cluster_id)
 
     if is_custom_backend(model_in.backend):
@@ -1184,8 +1271,6 @@ async def validate_model_in(
         for param_names, error_message in unsupported_params:
             if find_parameter(model_in.backend_parameters, param_names):
                 raise BadRequestException(message=error_message)
-
-    validate_and_normalize_lora_list(model_in)
 
 
 def validate_and_normalize_lora_list(
@@ -2255,6 +2340,9 @@ async def _validate_model_spec(
     Mutates ``model_in`` in place: LoRA names are normalized to the stored
     ``<base>:<short>`` form and the scaling-schedule baseline is applied.
     """
+    model_in.scaling_schedule = _preserve_scaling_schedule_pause(
+        model_in.scaling_schedule, allow_override=True
+    )
     await validate_model_in(session, model_in)
     # Server-side assignment, after validation: validation must see the replica
     # count the caller submitted, not the schedule-driven one.
@@ -3050,6 +3138,11 @@ async def _persist_model_update(
     before = deployment_spec(existing)
     patch = {field: getattr(model_in, field) for field in OVERWRITABLE_FIELDS}
     patch["cluster_id"] = model_in.cluster_id
+    patch["scaling_schedule"] = _preserve_scaling_schedule_pause(
+        model_in.scaling_schedule, existing
+    )
+    if patch["scaling_schedule"] and patch["scaling_schedule"].paused:
+        patch["replicas"] = 0
     await ModelService(session).update(existing, patch, auto_commit=False)
     await record_update(session, existing, before, latest, created_by)
 
@@ -3237,6 +3330,12 @@ async def _apply_model_update(
         if field not in fields_set:
             object.__setattr__(model_in, field, getattr(model, field))
 
+    # Workers report runtime versions through whole-object PUTs; their stale
+    # schedule snapshot must not change an operator's execution state.
+    user_kind = getattr(getattr(ctx, "user", None), "kind", None)
+    _merge_scaling_schedule_update(
+        model_in, model, allow_pause_override=user_kind != PrincipalType.SYSTEM
+    )
     await validate_model_in(session, model_in, stored=model)
     # Server-side assignment, after validation: validation must see the replica
     # count the caller submitted, not the schedule-driven one.

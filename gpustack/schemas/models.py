@@ -319,6 +319,9 @@ class ScalingSchedule(BaseModel):
 
     enabled: bool = False
     """Whether scheduled scaling drives this model's replicas."""
+    paused: bool = False
+    """Whether execution of an enabled schedule is paused. Only meaningful
+    while scheduled scaling is enabled; excluded from configuration history."""
     baseline_replicas: Optional[int] = Field(default=None, ge=0)
     """Replica count when ``now`` is outside every rule window. Required while
     the schedule is enabled — together with ``rules`` it is the sole input to
