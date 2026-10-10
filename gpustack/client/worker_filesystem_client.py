@@ -101,11 +101,11 @@ class WorkerFilesystemClient:
         path: str,
     ) -> int:
         """
-        Get the size of model weight files in a directory on a worker.
+        Get the size of model weight files in a directory or a single file on a worker.
 
         Args:
             worker: The worker to query
-            path: The directory path to scan
+            path: The directory path or single file path to scan
 
         Returns:
             The total size in bytes

@@ -18,10 +18,14 @@ from gpustack.schemas.benchmark import (
     BenchmarkSnapshot,
     ModelInstanceSnapshot,
 )
-from gpustack.worker.benchmark.runner import BenchmarkRunner, _local_model_snapshot
+from gpustack.worker.benchmark.runner import (
+    BenchmarkRunner,
+    _benchmark_processor_path,
+    _local_model_snapshot,
+)
 
 
-def _snapshot(name, worker_id, path, ports=None) -> ModelInstanceSnapshot:
+def _snapshot(name, worker_id, path, ports=None, **kwargs) -> ModelInstanceSnapshot:
     return ModelInstanceSnapshot(
         id=abs(hash(name)) % 1000,
         name=name,
@@ -30,6 +34,7 @@ def _snapshot(name, worker_id, path, ports=None) -> ModelInstanceSnapshot:
         ports=ports or [40050],
         resolved_path=path,
         computed_resource_claim=None,
+        **kwargs,
     )
 
 
@@ -85,7 +90,7 @@ class TestModelIsNamed:
     `GET /v1/models` and the response had no `data` key, so the run died with a
     KeyError before sending a request."""
 
-    def _args(self, model_name, dataset_name="Random"):
+    def _args(self, model_name, dataset_name="Random", processor_path=None):
         runner = object.__new__(BenchmarkRunner)
         runner._benchmark = SimpleNamespace(
             id=1,
@@ -114,6 +119,7 @@ class TestModelIsNamed:
         )
         runner._model_endpoint = "http://10.0.0.1:40050"
         runner._model_path = "/cache/qwen3"
+        runner._processor_path = processor_path or runner._model_path
         runner._model_backend_parameters = []
         runner._benchmark_dir = "/var/lib/gpustack/benchmarks"
         runner._api_url = "http://10.0.0.1:9091/v2/benchmarks/1/state"
@@ -135,6 +141,10 @@ class TestModelIsNamed:
         assert "--model" not in args
         assert "None" not in args
 
+    def test_model_processor_override_is_forwarded(self):
+        args = self._args("qwen3", processor_path="/cache/qwen3-tokenizer")
+        assert args[args.index("--processor") + 1] == "/cache/qwen3-tokenizer"
+
     def test_sharegpt_passes_input_range_and_fixed_output(self):
         args = self._args("qwen3", dataset_name="ShareGPT")
         assert args[args.index("--sharegpt-min-input-tokens") + 1] == "256"
@@ -147,6 +157,39 @@ def test_the_processor_is_the_local_path(path):
     endpoint = _snapshot("mi", worker_id=10, path=path)
     benchmark = _benchmark(worker_id=10, members=[endpoint])
     assert _local_model_snapshot(benchmark, endpoint).resolved_path == path
+
+
+def test_model_env_can_override_a_single_file_processor_path():
+    snapshot = _snapshot(
+        "mi",
+        worker_id=10,
+        path="/cache/qwen3/model.ninfer",
+        env={"GPUSTACK_BENCHMARK_PROCESSOR": "/cache/qwen3-tokenizer"},
+    )
+    assert _benchmark_processor_path(snapshot) == "/cache/qwen3-tokenizer"
+
+
+def test_single_file_without_processor_override_uses_its_parent(tmp_path):
+    weight = tmp_path / "model.ninfer"
+    weight.write_bytes(b"weights")
+    snapshot = _snapshot("mi", worker_id=10, path=str(weight))
+
+    assert _benchmark_processor_path(snapshot) == str(tmp_path)
+
+
+def test_processor_parent_is_mounted_alongside_the_weight_parent():
+    runner = object.__new__(BenchmarkRunner)
+    runner._model_path = "/cache/qwen3/model.ninfer"
+    runner._processor_path = "/cache/qwen3-tokenizer"
+    runner._benchmark_dir = "/var/lib/gpustack/benchmarks"
+
+    mounts = runner._get_configured_mounts()
+
+    assert [mount.path for mount in mounts] == [
+        "/cache",
+        "/cache/qwen3",
+        "/var/lib/gpustack/benchmarks",
+    ]
 
 
 class TestRouteModeAimsAtTheDeployment:

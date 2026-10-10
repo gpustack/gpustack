@@ -608,40 +608,9 @@ def get_model_vision_num_attention_heads(pretrained_config: Any) -> Optional[int
         return None
 
 
-async def get_local_model_weight_size(
-    local_path: str,
-    workers: Optional[List[Worker]] = None,
-    is_diffusion: bool = False,
+async def _get_local_model_weight_size_from_workers(
+    local_path: str, workers: List[Worker]
 ) -> int:
-    """
-    Get the local model weight size in bytes.
-
-    If the model exists locally (on the server), calculate it locally.
-    Otherwise, if workers are provided, check if the model exists on any worker and get the size from there.
-
-    Args:
-        local_path: Path to the model directory
-        workers: Optional list of workers to check
-        is_diffusion: Whether this is a diffusion model (default: False)
-
-    Returns:
-        Total size in bytes
-    """
-    if os.path.exists(local_path):
-        if not os.path.isdir(local_path):
-            raise NotADirectoryError(
-                f"The specified path '{local_path}' is not a directory."
-            )
-        try:
-            # Use utility function to calculate size
-            return calculate_local_model_weight_size(local_path, is_diffusion)
-        except Exception as e:
-            logger.error(f"Failed to calculate size locally for {local_path}: {e}")
-            raise e
-
-    if not workers:
-        raise FileNotFoundError(f"The specified path '{local_path}' does not exist.")
-
     async def try_get_size_from_worker(worker: Worker) -> Optional[int]:
         """Try to get model weight size from a single worker."""
         try:
@@ -659,15 +628,66 @@ async def get_local_model_weight_size(
             )
             return None
 
-    # Concurrently try all workers and return the first successful result
     logger.info(f"Broadcasting model weight size request to {len(workers)} workers")
-    tasks = [try_get_size_from_worker(worker) for worker in workers]
+    tasks = [
+        asyncio.create_task(try_get_size_from_worker(worker)) for worker in workers
+    ]
+    try:
+        for completed_task in asyncio.as_completed(tasks):
+            result = await completed_task
+            if result is not None:
+                return result
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Use as_completed to get results as they finish
-    for completed_task in asyncio.as_completed(tasks):
-        result = await completed_task
-        if result is not None:
-            return result
+    raise FileNotFoundError(
+        f"Could not get model weight size from any worker for '{local_path}'."
+    )
+
+
+async def get_local_model_weight_size(
+    local_path: str,
+    workers: Optional[List[Worker]] = None,
+    is_diffusion: bool = False,
+) -> int:
+    """
+    Get the local model weight size in bytes.
+
+    If the model exists locally (on the server), calculate it locally.
+    Otherwise, if workers are provided, check if the model exists on any worker and get the size from there.
+
+    Args:
+        local_path: Path to the model directory or a single weight file
+        workers: Optional list of workers to check
+        is_diffusion: Whether this is a diffusion model (default: False)
+
+    Returns:
+        Total size in bytes
+    """
+    if os.path.exists(local_path):
+        if os.path.isfile(local_path):
+            try:
+                return os.path.getsize(local_path)
+            except OSError as e:
+                logger.error(f"Failed to calculate size locally for {local_path}: {e}")
+                raise
+        if not os.path.isdir(local_path):
+            raise NotADirectoryError(
+                f"The specified path '{local_path}' is not a file or directory."
+            )
+        try:
+            # Use utility function to calculate size
+            return calculate_local_model_weight_size(local_path, is_diffusion)
+        except Exception as e:
+            logger.error(f"Failed to calculate size locally for {local_path}: {e}")
+            raise e
+
+    if not workers:
+        raise FileNotFoundError(f"The specified path '{local_path}' does not exist.")
+    return await _get_local_model_weight_size_from_workers(local_path, workers)
 
 
 def group_worker_gpu_by_memory(
