@@ -39,7 +39,7 @@ In this reading of a freshly added cluster, the H100 type offers one whole devic
 
 When `Derive Instance Types from Nodes` is **Enabled** (the default) on a GPU Service cluster, the operator discovers every node's devices and authors the matching instance types automatically — one per accelerator model, plus a CPU-only type. The list above is such a derived set.
 
-The unit CPU/RAM of a derived type comes from per-product presets maintained by the operator, documented in the [Instance Type Unit Resources reference](https://github.com/gpustack/gpustack-operator/blob/main/docs/reference/instance-type-unit-resources.md). Storage is always 100 GiB, and a derived CPU-only type is always 1 CPU / 2 GiB RAM.
+The unit CPU/RAM of a derived type comes from per-product presets maintained by the operator, documented in the [Instance Type Unit Resources reference](https://docs.gpustack.ai/gpustack-operator/main/docs/reference/instance-type-unit-resources/). Storage is always 100 GiB, and a derived CPU-only type is always 1 CPU / 2 GiB RAM.
 
 Derived types are owned by the operator:
 
@@ -113,6 +113,6 @@ kubectl -n gpustack-system rollout restart ds/gpustack-operator-device-manager-n
 
 See the operator's MIG operations runbooks for each vendor's full procedure, prerequisites, and limitations — including that MIG instances never survive a node reboot:
 
-- [NVIDIA MIG operations](https://github.com/gpustack/gpustack-operator/blob/main/docs/operation/nvidia-mig.md)
-- [T-Head MIG operations](https://github.com/gpustack/gpustack-operator/blob/main/docs/operation/thead-mig.md)
-- [Hygon MIG operations](https://github.com/gpustack/gpustack-operator/blob/main/docs/operation/hygon-mig.md) — on Hygon the mode is node-wide, and a partitioned node serves only partitions.
+- [NVIDIA MIG operations](https://docs.gpustack.ai/gpustack-operator/main/docs/modules/devices/nvidia-mig/)
+- [T-Head MIG operations](https://docs.gpustack.ai/gpustack-operator/main/docs/modules/devices/thead-mig/)
+- [Hygon MIG operations](https://docs.gpustack.ai/gpustack-operator/main/docs/modules/devices/hygon-mig/) — on Hygon the mode is node-wide, and a partitioned node serves only partitions.
