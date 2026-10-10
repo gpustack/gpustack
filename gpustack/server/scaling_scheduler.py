@@ -150,31 +150,37 @@ class ScalingScheduler:
 
         async with async_session() as session:
             service = ModelService(session)
-            for model_id in to_update:
-                # Serialize with manual edits and evaluate the latest schedule
-                # while holding the lock through the replica update's commit.
-                # A transaction ends even when the latest row needs no update,
-                # so skipped rows never retain locks while the batch proceeds.
-                async with session.begin():
-                    statement = (
-                        select(Model)
-                        .where(Model.id == model_id)
-                        .with_for_update()
-                        .execution_options(populate_existing=True)
-                    )
-                    model = (await session.exec(statement)).one_or_none()
-                    if model is None or model.deleted_at is not None:
+            updates = []
+            async with session.begin():
+                # Lock in ID order and refresh ORM state before evaluating
+                # schedules, so manual edits serialize with the whole batch.
+                statement = (
+                    select(Model)
+                    .where(Model.id.in_(to_update))
+                    .order_by(Model.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                models = (await session.exec(statement)).all()
+                for model in models:
+                    if model.deleted_at is not None:
                         continue
                     desired = compute_desired_replicas(model.scaling_schedule, now)
                     if desired is None or model.replicas == desired:
                         continue
                     previous = model.replicas
-                    await service.update(
-                        model, {"replicas": desired}, auto_commit=False
+                    model.replicas = desired
+                    updates.append((model, previous, desired))
+                if updates:
+                    await service.batch_update(
+                        [model for model, _, _ in updates], auto_commit=False
                     )
-                # A reader can refill caches with the old row while the write
-                # is uncommitted. Evict those snapshots after the commit too.
+
+            # Readers can refill caches with old rows before the commit.
+            # Evict those snapshots after the entire transaction completes.
+            if updates:
                 await Model._invalidate_cached_all()
+            for model, previous, desired in updates:
                 await delete_cache_by_key(service.get_by_id, model.id)
                 await delete_cache_by_key(service.get_by_name, model.name)
                 logger.info(
