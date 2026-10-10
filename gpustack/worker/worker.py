@@ -28,7 +28,13 @@ from gpustack.schemas.config import (
 )
 from gpustack import envs
 from gpustack.routes import config as route_config, debug, probes
-from gpustack.routes.worker import logs, proxy, filesystem, cluster_proxy
+from gpustack.routes.worker import (
+    logs,
+    proxy,
+    filesystem,
+    cluster_proxy,
+    websocket_proxy,
+)
 from gpustack.routes.token import worker_auth
 from gpustack.api.auth import worker_auth as worker_request_auth
 from gpustack.server import catalog
@@ -403,6 +409,7 @@ class Worker:
             dependencies=[Depends(worker_request_auth)],
         )
         app.include_router(proxy.router)
+        app.include_router(websocket_proxy.router)
         app.include_router(filesystem.router)
         app.include_router(cluster_proxy.router)
         app.add_api_route(
