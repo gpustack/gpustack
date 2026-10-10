@@ -32,7 +32,7 @@ from .cache_providers import (
     validate_template_filters,
 )
 from .runner_source import RunnerOverrideEntry, merged_runners
-from .source import SourceContent, SourceMixin, SourceTypeEnum
+from .source import SourceContent, SourceMixin, SourceTypeEnum, validate_icon
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +265,20 @@ def normalize_cache_provider_yaml(raw: Optional[str], strict: bool = False) -> s
 
     Declaration order is preserved: it is the order the cards appear in.
     """
-    return dump_cache_providers(load_cache_providers_document(raw, strict))
+    providers = load_cache_providers_document(raw, strict)
+    # A logo is an opaque URL a browser resolves, so every one in the document
+    # gets the same scheme allowlist the model catalog and the community
+    # backends apply to theirs — a declaration that would store ``javascript:``
+    # or an SVG data: URI is refused here rather than served to every reader of
+    # the catalog. The card and its L2 backends carry their own, and the UI
+    # renders both.
+    for provider in providers:
+        if provider.icon:
+            provider.icon = validate_icon(provider.icon)
+        for backend in provider.l2_backends.values():
+            if backend.icon:
+                backend.icon = validate_icon(backend.icon)
+    return dump_cache_providers(providers)
 
 
 def merge_cache_providers(

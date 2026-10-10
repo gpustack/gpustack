@@ -205,6 +205,87 @@ def test_the_filter_that_exists_passes():
 
 
 @pytest.mark.parametrize(
+    "icon",
+    [
+        "https://example.com/logo.png",
+        "/static/catalog_icons/demo.png",
+        "data:image/png;base64,QQ==",
+    ],
+)
+def test_a_card_icon_a_browser_can_resolve_is_stored(icon):
+    document = _document(_provider("Demo", icon=icon))
+    stored = yaml.safe_load(normalize_cache_provider_yaml(document, strict=True))
+    assert stored[0]["icon"] == icon
+
+
+def test_a_declaration_without_an_icon_is_stored_without_one():
+    """``exclude_none`` drops the field rather than writing an explicit null,
+    so a declaration that never named a logo comes back reading as it went in."""
+    document = _document(_provider("Demo"))
+    stored = yaml.safe_load(normalize_cache_provider_yaml(document, strict=True))
+    assert "icon" not in stored[0]
+
+
+@pytest.mark.parametrize(
+    "icon",
+    [
+        "javascript:alert(1)",
+        "JavaScript:alert(1)",  # the scheme match is case-insensitive
+        "java\tscript:alert(1)",  # a character a browser drops before the scheme
+        "vbscript:msgbox",
+        "data:image/svg+xml;base64,PHN2Zz48L2c+",  # SVG can carry script
+        "data:text/html;base64,PHNjcmlwdD4=",  # not a raster data: URI
+        "icons/demo.png",  # relative: nothing resolves it
+        "//evil.example/x.png",  # protocol-relative: another origin
+    ],
+)
+def test_a_card_icon_that_carries_active_content_is_refused(icon):
+    """The logo is an opaque URL the browser resolves, so a declaration that
+    would store an active-content scheme is refused here — the same allowlist
+    the model catalog and the community backends apply to their icons."""
+    document = _document(_provider("Demo", icon=icon))
+    with pytest.raises(ValueError, match="icon"):
+        normalize_cache_provider_yaml(document, strict=True)
+
+
+def test_an_l2_backend_icon_a_browser_can_resolve_is_stored():
+    document = _document(
+        _provider(
+            "Demo",
+            l2_backends={
+                "redis": {
+                    "display_name": {"default": "Redis"},
+                    "icon": "/static/catalog_icons/redis.svg",
+                }
+            },
+        )
+    )
+    stored = yaml.safe_load(normalize_cache_provider_yaml(document, strict=True))
+    assert (
+        stored[0]["l2_backends"]["redis"]["icon"] == "/static/catalog_icons/redis.svg"
+    )
+
+
+def test_an_l2_backend_icon_that_carries_active_content_is_refused():
+    """An L2 backend carries its own logo and the card endpoint returns them
+    with the provider, so the allowlist covers them too — the field is nested,
+    not absent, and a document can name it without naming a card icon."""
+    document = _document(
+        _provider(
+            "Demo",
+            l2_backends={
+                "redis": {
+                    "display_name": {"default": "Redis"},
+                    "icon": "javascript:alert(1)",
+                }
+            },
+        )
+    )
+    with pytest.raises(ValueError, match="icon"):
+        normalize_cache_provider_yaml(document, strict=True)
+
+
+@pytest.mark.parametrize(
     "injection",
     [
         # Every field a mapping: what the shape of the value alone cannot tell
