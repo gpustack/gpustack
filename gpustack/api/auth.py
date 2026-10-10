@@ -693,23 +693,41 @@ async def worker_auth(
         Optional[HTTPAuthorizationCredentials], Depends(bearer_auth)
     ] = None,
     x_api_key: Annotated[Optional[str], Depends(api_key_header_auth)] = None,
-):
+) -> None:
+    """Require a worker or registration token for worker management APIs."""
     token_value = (bearer_token.credentials if bearer_token else None) or x_api_key
     if not token_value:
         raise UnauthorizedException(message="Invalid authentication credentials")
     token = request.app.state.token
     config: Config = request.app.state.config
     registration_token = config.token
-    server_url = config.get_server_url()
     if token_value in [token, registration_token]:
         return
+    raise UnauthorizedException(message="Invalid authentication credentials")
+
+
+async def worker_proxy_auth(
+    request: Request,
+    bearer_token: Annotated[
+        Optional[HTTPAuthorizationCredentials], Depends(bearer_auth)
+    ] = None,
+    x_api_key: Annotated[Optional[str], Depends(api_key_header_auth)] = None,
+) -> None:
+    """Allow delegated model authorization only for the inference proxy."""
+    try:
+        await worker_auth(request, bearer_token, x_api_key)
+        return
+    except UnauthorizedException:
+        pass
+
+    token_value = (bearer_token.credentials if bearer_token else None) or x_api_key
+    if not token_value:
+        raise UnauthorizedException(message="Invalid authentication credentials")
     model_name = request.headers.get("X-Higress-Llm-Model")
     if model_name is not None:
-        cred = token_value
-        show_len = max(1, min(6, len(cred)))
-        masked_token = f"{'*' * (len(cred) - show_len)}{cred[-show_len:]}"
-        logger.debug(f"Verifying worker token {masked_token} via server authentication")
+        logger.debug("Verifying inference proxy credentials via server authentication")
         cached_auth = make_auth_token_via_server(request.app.state.http_client_no_proxy)
+        server_url = request.app.state.config.get_server_url()
         is_valid = await cached_auth(server_url, token_value, model_name)
         if is_valid:
             return
