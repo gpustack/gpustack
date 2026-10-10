@@ -3,10 +3,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gpustack.schemas.clusters import Cluster
+from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget, TargetStateEnum
 from gpustack.schemas.models import ModelInstanceStateEnum, RoleNameEnum, RoleSpec
+from gpustack.schemas.workers import Worker, WorkerStateEnum, WorkerStatus
 from gpustack.server.bus import Event, EventType
 from gpustack.server.controllers import (
+    WorkerController,
     calculate_destinations,
     notify_model_ai_proxy_change,
     notify_model_route_target,
@@ -251,7 +254,13 @@ async def test_all_zero_weight_targets_still_yield_destinations():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "changed_field, should_notify",
-    [("native_anthropic_api", True), ("replicas", True), ("description", False)],
+    [
+        ("native_anthropic_api", True),
+        ("replicas", True),
+        ("description", False),
+        ("worker_proxy_address", True),
+        ("worker_proxy_mode", True),
+    ],
 )
 async def test_native_anthropic_api_edit_reaches_the_route(
     changed_field, should_notify
@@ -287,6 +296,81 @@ async def test_native_anthropic_api_edit_reaches_the_route(
         )
 
     assert publish.await_count == (1 if should_notify else 0)
+
+
+class _NullSession:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *args):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_tunnel_recovery_fanout_rebuilds_the_route():
+    """A tunnel worker's proxy address coming back is the last event of the
+    outage ordering: the instances are RUNNING again and ``ready_replicas``
+    has already settled, so the fan-out from ``_notify_relatives`` is the
+    only trigger left that can rebuild the gateway route. The
+    route-target notification is made directly rather than riding the model
+    event, whose ``changed_fields`` the coordinator drops on the wire -- a
+    bare event is filtered out by ``notify_model_route_target`` and the
+    route stays missing indefinitely."""
+    worker = Worker(
+        id=1,
+        name="tunnel-worker",
+        state=WorkerStateEnum.READY,
+        hostname="host-b",
+        ip="10.0.0.2",
+        ifname="eth0",
+        port=10128,
+        worker_uuid="uuid-b",
+        status=WorkerStatus.get_default_status(),
+        proxy_mode=ModelInstanceProxyModeEnum.TUNNEL,
+        proxy_address="http://10.0.0.2:10129",
+    )
+    instance = new_model_instance(1, "instance-1", MODEL_ID, worker_id=1)
+    instance.model = _model()
+
+    publish = AsyncMock()
+    with (
+        patch(
+            "gpustack.server.controllers.async_session",
+            return_value=_NullSession(),
+        ),
+        patch(
+            "gpustack.server.controllers.ModelInstance.all_by_fields",
+            AsyncMock(return_value=[instance]),
+        ),
+        patch(
+            "gpustack.server.controllers.Model.one_by_id",
+            AsyncMock(return_value=_model()),
+        ),
+        patch(
+            "gpustack.server.controllers.ModelRouteTarget.all_by_fields",
+            AsyncMock(return_value=[_target(1)]),
+        ),
+        patch("gpustack.server.controllers.event_bus.publish", publish),
+    ):
+        controller = WorkerController.__new__(WorkerController)
+        await controller._notify_relatives(
+            Event(
+                type=EventType.UPDATED,
+                data=worker,
+                changed_fields={"proxy_address": (None, worker.proxy_address)},
+            )
+        )
+
+    # One bare model event per model on the worker, plus the direct
+    # route-target notification that does not depend on ``changed_fields``
+    # surviving the event bus.
+    assert publish.await_count == 2
+    model_event, target_event = (
+        publish.await_args_list[0].args[1],
+        publish.await_args_list[1].args[1],
+    )
+    assert model_event.data.id == MODEL_ID
+    assert "model" in target_event.changed_fields
 
 
 @pytest.mark.asyncio
