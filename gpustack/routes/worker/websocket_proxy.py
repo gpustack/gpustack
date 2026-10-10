@@ -28,6 +28,10 @@ from gpustack.utils.network import use_proxy_env_for_url
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Bound early payloads and empty-frame overhead while waiting for upstream.
+_MAX_HANDSHAKE_BYTES = 1024 * 1024
+_MAX_HANDSHAKE_MESSAGES = 64
+
 _HANDSHAKE_HEADERS = frozenset(
     {
         "host",
@@ -110,12 +114,35 @@ def _format_host(host: str) -> str:
     return host
 
 
+def _buffer_handshake_message(
+    pending_messages: List[dict], message: dict, buffered_bytes: int
+) -> int:
+    if message["type"] == "websocket.disconnect":
+        raise WebSocketDisconnect(message.get("code", 1006), message.get("reason", ""))
+    payload = message.get("bytes")
+    size = (
+        len(payload)
+        if payload is not None
+        else len((message.get("text") or "").encode("utf-8"))
+    )
+    if (
+        len(pending_messages) >= _MAX_HANDSHAKE_MESSAGES
+        or buffered_bytes + size > _MAX_HANDSHAKE_BYTES
+    ):
+        raise WebSocketException(
+            code=1009, reason="Too much data before upstream handshake"
+        )
+    pending_messages.append(message)
+    return buffered_bytes + size
+
+
 async def _connect_upstream(
     websocket: WebSocket, handshake: Coroutine
 ) -> Tuple[aiohttp.ClientWebSocketResponse, List[dict]]:
     """Cancel a pending handshake if the downstream client goes away."""
     connect_task = asyncio.create_task(handshake)
     pending_messages: List[dict] = []
+    buffered_bytes = 0
     disconnect_task = asyncio.create_task(websocket.receive())
     try:
         while True:
@@ -125,22 +152,20 @@ async def _connect_upstream(
             if connect_task in done:
                 if disconnect_task in done:
                     message = disconnect_task.result()
-                    if message["type"] == "websocket.disconnect":
-                        raise WebSocketDisconnect(
-                            message.get("code", 1006), message.get("reason", "")
-                        )
-                    pending_messages.append(message)
+                    _buffer_handshake_message(pending_messages, message, buffered_bytes)
                 else:
                     disconnect_task.cancel()
                     await asyncio.gather(disconnect_task, return_exceptions=True)
+                    if not disconnect_task.cancelled():
+                        _buffer_handshake_message(
+                            pending_messages, disconnect_task.result(), buffered_bytes
+                        )
                 return connect_task.result(), pending_messages
 
             message = disconnect_task.result()
-            if message["type"] == "websocket.disconnect":
-                raise WebSocketDisconnect(
-                    message.get("code", 1006), message.get("reason", "")
-                )
-            pending_messages.append(message)
+            buffered_bytes = _buffer_handshake_message(
+                pending_messages, message, buffered_bytes
+            )
             disconnect_task = asyncio.create_task(websocket.receive())
     except BaseException:
         # A successful handshake can race either a disconnect or cancellation.

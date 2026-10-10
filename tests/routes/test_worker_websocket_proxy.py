@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import aiohttp
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.websockets import WebSocketDisconnect
 
@@ -502,3 +502,214 @@ async def test_completed_handshake_racing_a_disconnect_is_closed():
     with pytest.raises(WebSocketDisconnect):
         await websocket_proxy._connect_upstream(websocket, handshake())
     assert len(upstream.closes) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "messages,byte_limit,frame_limit",
+    [
+        (
+            [
+                {"type": "websocket.receive", "text": "ééé"},
+                {"type": "websocket.receive", "bytes": b"abc"},
+            ],
+            8,
+            64,
+        ),
+        ([{"type": "websocket.receive", "bytes": b""}] * 4, 1024, 3),
+    ],
+)
+async def test_handshake_buffer_overflow_rejects_and_cancels_connect(
+    monkeypatch, messages, byte_limit, frame_limit
+):
+    monkeypatch.setattr(
+        websocket_proxy, "_MAX_HANDSHAKE_BYTES", byte_limit, raising=False
+    )
+    monkeypatch.setattr(
+        websocket_proxy, "_MAX_HANDSHAKE_MESSAGES", frame_limit, raising=False
+    )
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def stalled(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    async with connection(monkeypatch, connect_error=stalled) as (downstream, _, _):
+        await asyncio.wait_for(started.wait(), 1)
+        for message in messages:
+            await downstream.messages.put(message)
+        assert (await downstream.next_message()) == {
+            "type": "websocket.close",
+            "code": 1009,
+            "reason": "Too much data before upstream handshake",
+        }
+        await downstream.finish()
+        assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_buffer_overflow_closes_handshake_that_completes_at_the_same_time(
+    monkeypatch,
+):
+    monkeypatch.setattr(websocket_proxy, "_MAX_HANDSHAKE_BYTES", 1, raising=False)
+    messages = asyncio.Queue()
+    await messages.put({"type": "websocket.connect"})
+    await messages.put({"type": "websocket.receive", "bytes": b"ab"})
+    websocket = WebSocket({"type": "websocket"}, messages.get, AsyncMock())
+    await websocket.receive()
+    upstream = Upstream()
+
+    async def handshake():
+        return upstream
+
+    with pytest.raises(WebSocketException) as error:
+        await websocket_proxy._connect_upstream(websocket, handshake())
+    assert error.value.code == 1009
+    assert len(upstream.closes) == 1
+
+
+@pytest.mark.asyncio
+async def test_slow_handshake_preserves_mixed_frames_at_buffer_limits(monkeypatch):
+    monkeypatch.setattr(websocket_proxy, "_MAX_HANDSHAKE_BYTES", 8, raising=False)
+    monkeypatch.setattr(websocket_proxy, "_MAX_HANDSHAKE_MESSAGES", 3, raising=False)
+    messages = asyncio.Queue()
+    await messages.put({"type": "websocket.connect"})
+    early = [
+        {"type": "websocket.receive", "text": "ééé"},
+        {"type": "websocket.receive", "bytes": b"xy"},
+        {"type": "websocket.receive", "text": ""},
+    ]
+    for message in early:
+        await messages.put(message)
+    consumed, release, waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    reads = 0
+
+    async def receive():
+        nonlocal reads
+        reads += 1
+        if reads == 5:
+            consumed.set()
+        try:
+            return await messages.get()
+        except asyncio.CancelledError:
+            waiting.set()
+            raise
+
+    websocket = WebSocket({"type": "websocket"}, receive, AsyncMock())
+    await websocket.receive()
+    upstream = Upstream()
+
+    async def handshake():
+        await release.wait()
+        return upstream
+
+    task = asyncio.create_task(
+        websocket_proxy._connect_upstream(websocket, handshake())
+    )
+    try:
+        await asyncio.wait_for(consumed.wait(), 1)
+        release.set()
+        response, pending = await asyncio.wait_for(task, 1)
+        assert response is upstream
+        assert pending == early
+        assert waiting.is_set()
+        assert upstream.closes == []
+        await messages.put({"type": "websocket.receive", "bytes": b"later"})
+        await messages.put({"type": "websocket.disconnect", "code": 1000})
+        assert await websocket_proxy._from_client(websocket, upstream, pending) == (
+            1000,
+            "",
+        )
+        assert upstream.sent == [
+            ("text", "ééé"),
+            ("bytes", b"xy"),
+            ("text", ""),
+            ("bytes", b"later"),
+        ]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_handshake_cancel_after_buffering_drains_both_tasks(monkeypatch):
+    consumed, cancelled, reader_cancelled = (
+        asyncio.Event(),
+        asyncio.Event(),
+        asyncio.Event(),
+    )
+    reads = 0
+
+    async def receive():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return {"type": "websocket.connect"}
+        if reads == 2:
+            return {"type": "websocket.receive", "text": "early"}
+        consumed.set()
+        try:
+            await asyncio.Future()
+        finally:
+            reader_cancelled.set()
+
+    async def handshake():
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    websocket = WebSocket({"type": "websocket"}, receive, AsyncMock())
+    await websocket.receive()
+    task = asyncio.create_task(
+        websocket_proxy._connect_upstream(websocket, handshake())
+    )
+    try:
+        await asyncio.wait_for(consumed.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+        assert cancelled.is_set() and reader_cancelled.is_set()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disconnect", [False, True])
+async def test_handshake_preserves_receive_that_wins_watcher_cancellation(disconnect):
+    waiting = asyncio.Event()
+    message = (
+        {"type": "websocket.disconnect", "code": 1000}
+        if disconnect
+        else {"type": "websocket.receive", "text": "racing-frame"}
+    )
+
+    async def receive():
+        waiting.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            return message
+
+    upstream = Upstream()
+
+    async def handshake():
+        await waiting.wait()
+        return upstream
+
+    websocket = SimpleNamespace(receive=receive)
+    if disconnect:
+        with pytest.raises(WebSocketDisconnect):
+            await websocket_proxy._connect_upstream(websocket, handshake())
+        assert len(upstream.closes) == 1
+    else:
+        result, pending = await websocket_proxy._connect_upstream(
+            websocket, handshake()
+        )
+        assert result is upstream
+        assert pending == [message]
+        assert upstream.closes == []
