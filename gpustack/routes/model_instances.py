@@ -11,6 +11,7 @@ from fastapi.responses import (
 )
 from urllib.parse import urlencode
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.server.services import ModelInstanceService
@@ -24,10 +25,7 @@ from gpustack.api.exceptions import (
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
 from gpustack.api.tenant import (
-    bypass_tenant_filter,
     assert_resource_visible,
-    cluster_scoped_system,
-    scoped_cluster_row_visible,
     tenant_list_conditions,
 )
 from gpustack.server.db import async_session
@@ -132,27 +130,13 @@ async def get_model_instances(
     if state:
         fields["state"] = state
 
-    # System principals (workers, cluster service accounts) and admin in
-    # "All" mode must see every Org's instances regardless of their
-    # ``principal_id`` — otherwise a worker's awatch stream
-    # would silently filter out instances scheduled to it on clusters
-    # outside its Personal Org.
-    if ctx.current_principal_id is not None and not bypass_tenant_filter(ctx):
-        fields["owner_principal_id"] = ctx.current_principal_id
-
     if params.watch:
-        # Cluster-bound service accounts (worker / cluster bootstrap)
-        # only stream instances of their own cluster.
-        filter_func = (
-            (lambda data: scoped_cluster_row_visible(ctx, data))
-            if cluster_scoped_system(ctx)
-            else None
-        )
         return StreamingResponse(
-            ModelInstance.streaming(
+            tenant_streaming(
+                ModelInstance,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=filter_func,
             ),
             media_type="text/event-stream",
         )

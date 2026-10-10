@@ -231,6 +231,9 @@ async def test_get_model_routes_stream_applies_state_filter(monkeypatch):
     monkeypatch.setattr(MyModel, "streaming", fake_streaming)
 
     await model_routes._get_model_routes(
+        ctx=TenantContext(
+            user=None, is_platform_admin=True, current_principal_id=None, org_role=None
+        ),
         params=ModelRouteListParams(page=1, perPage=24, watch=True),
         state=ModelStateFilterEnum.READY,
         target_class=MyModel,
@@ -669,7 +672,7 @@ async def test_get_model_routes_admin_act_as_watch_applies_grant_filter(monkeypa
     async def fake_fetch_granted_route_ids(ctx):
         return {17}
 
-    def fake_streaming(fields=None, fuzzy_fields=None, filter_func=None):
+    def fake_streaming(fields=None, fuzzy_fields=None, filter_func=None, **kwargs):
         captured["fields"] = fields
         captured["filter_func"] = filter_func
 

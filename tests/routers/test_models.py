@@ -676,11 +676,8 @@ def test_model_watch_filter_applies_state(
     """The /models watch stream honors ``state``. A payload carrying no
     ``state`` field — a row from before the column existed — is still
     filtered by the replica counts, unchanged."""
-    monkeypatch.setattr(models_route, "cluster_scoped_system", lambda ctx: False)
 
-    visible = models_route._make_model_watch_filter(
-        ctx=None, categories=None, state=state
-    )
+    visible = models_route._make_model_watch_filter(categories=None, state=state)
     data = SimpleNamespace(ready_replicas=ready, replicas=replicas)
     assert visible(data) is expected
 
@@ -707,11 +704,8 @@ def test_model_watch_filter_reads_the_model_state_field(
 ):
     """Once the row carries a status field, the filter reads it instead of
     re-deriving readiness from the counters."""
-    monkeypatch.setattr(models_route, "cluster_scoped_system", lambda ctx: False)
 
-    visible = models_route._make_model_watch_filter(
-        ctx=None, categories=None, state=state
-    )
+    visible = models_route._make_model_watch_filter(categories=None, state=state)
     # ready_replicas is deliberately inconsistent with model_state here: the
     # filter must not fall back to it when a state is present.
     data = SimpleNamespace(state=model_state, ready_replicas=0, replicas=replicas)
@@ -721,10 +715,9 @@ def test_model_watch_filter_reads_the_model_state_field(
 def test_model_watch_filter_passes_id_only_delete_events(monkeypatch):
     """ID-only DELETED payloads lack replica counts and must not be dropped
     by the state filter, else watch clients hold stale rows."""
-    monkeypatch.setattr(models_route, "cluster_scoped_system", lambda ctx: False)
 
     visible = models_route._make_model_watch_filter(
-        ctx=None, categories=None, state=ModelStateFilterEnum.READY
+        categories=None, state=ModelStateFilterEnum.READY
     )
     assert visible({"id": 7}) is True
 

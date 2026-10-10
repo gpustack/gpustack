@@ -4,7 +4,7 @@ from sqlalchemy import true
 from sqlalchemy.orm import selectinload
 from sqlmodel import and_, col, func, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
-from typing import Any, Callable, List, Optional, Set, Tuple, Union, Dict
+from typing import Any, Awaitable, Callable, List, Optional, Set, Tuple, Union, Dict
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from gpustack.schemas.model_routes import (
@@ -39,10 +39,13 @@ from gpustack.schemas.models import Model
 from gpustack.server.controllers import notify_model_ai_proxy_change
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.tenant import (
     TenantContext,
     assert_resource_visible,
+    bypass_tenant_filter,
     tenant_list_conditions,
+    tenant_stream_filter,
 )
 from gpustack.schemas.users import User
 from gpustack.api.exceptions import (
@@ -263,6 +266,14 @@ def _model_route_grant_predicate(
     return _ok
 
 
+def _route_consumption_stream_filter(
+    *predicates: Optional[Callable[[Any], bool]],
+) -> Callable[[Any], bool]:
+    """Combine grant and per-user policies for the consumption views."""
+    active = [predicate for predicate in predicates if predicate is not None]
+    return lambda data: all(predicate(data) for predicate in active)
+
+
 def _state_conditions(
     target_class: Union[ModelRoute, MyModel],
     state: Optional[ModelStateFilterEnum],
@@ -342,8 +353,6 @@ async def _get_model_routes(
         stream_predicates = [
             p
             for p in (
-                my_model_stream_filter,
-                route_grant_stream_filter,
                 (
                     (
                         lambda d: state_stream_filter(
@@ -364,11 +373,24 @@ async def _get_model_routes(
                     return False
             return True
 
+        # Consumption views include grants and public routes; management
+        # streams use the entry point's owner-scoped default.
+        visibility_filter = (
+            _route_consumption_stream_filter(
+                my_model_stream_filter, route_grant_stream_filter
+            )
+            if target_class is MyModel or include_grants
+            else None
+        )
+
         return StreamingResponse(
-            target_class.streaming(
+            tenant_streaming(
+                target_class,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 filter_func=_stream_filter,
+                visibility_filter=visibility_filter,
             ),
             media_type="text/event-stream",
         )
@@ -1418,10 +1440,39 @@ def validate_provider_model_name(
         )
 
 
+def _target_stream_visibility(
+    ctx: TenantContext,
+) -> Callable[[Any], Union[bool, Awaitable[bool]]]:
+    if bypass_tenant_filter(ctx):
+        return lambda data: True
+
+    visible = tenant_stream_filter(ctx, ModelRoute)
+    # Parent snapshots use the shared cache's write invalidation and TTL.
+    # Rebuild the index only when the snapshot changes; visibility is still
+    # evaluated against this connection's tenant context for every event.
+    snapshot: Any = None
+    routes_by_id: Dict[int, Any] = {}
+
+    async def parent_visible(data: Any) -> bool:
+        nonlocal snapshot, routes_by_id
+        route_id = getattr(data, "route_id", None)
+        if route_id is None:
+            return False
+        routes = await ModelRoute.cached_all()
+        if routes is not snapshot:
+            routes_by_id = {route.id: route for route in routes}
+            snapshot = routes
+        parent = routes_by_id.get(route_id)
+        return parent is not None and parent.deleted_at is None and visible(parent)
+
+    return parent_visible
+
+
 @target_router.get(
     "", response_model=ModelRouteTargetsPublic, response_model_exclude_none=True
 )
 async def get_model_route_targets(
+    ctx: TenantContextDep,
     params: ModelRouteTargetListParams = Depends(),
     name: str = None,
     search: str = None,
@@ -1445,9 +1496,26 @@ async def get_model_route_targets(
     )
     fields.update(ext_fields)
 
+    extra_conditions = []
+    if not bypass_tenant_filter(ctx):
+        extra_conditions.append(
+            ModelRouteTarget.route_id.in_(
+                select(ModelRoute.id).where(
+                    ModelRoute.deleted_at.is_(None),
+                    *tenant_list_conditions(ctx, ModelRoute),
+                )
+            )
+        )
+
     if params.watch:
         return StreamingResponse(
-            ModelRouteTarget.streaming(fields=fields, fuzzy_fields=fuzzy_fields),
+            tenant_streaming(
+                ModelRouteTarget,
+                ctx,
+                fields=fields,
+                fuzzy_fields=fuzzy_fields,
+                visibility_filter=_target_stream_visibility(ctx),
+            ),
             media_type="text/event-stream",
         )
 
@@ -1456,6 +1524,7 @@ async def get_model_route_targets(
             session=session,
             fields=fields,
             fuzzy_fields=fuzzy_fields,
+            extra_conditions=extra_conditions,
             page=params.page,
             per_page=params.perPage,
             order_by=params.order_by,

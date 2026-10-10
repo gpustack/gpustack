@@ -39,6 +39,7 @@ from gpustack.routes.plugins.decision_service.plugin import (
 from gpustack.routes.plugins.capability_policy import CapabilityPolicy
 from gpustack.schemas.models import CategoryEnum
 from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     BadRequestException,
@@ -168,7 +169,12 @@ async def get_model_providers(
 
     if params.watch:
         return StreamingResponse(
-            ModelProvider.streaming(fields=fields, fuzzy_fields=fuzzy_fields),
+            tenant_streaming(
+                ModelProvider,
+                ctx,
+                fields=fields,
+                fuzzy_fields=fuzzy_fields,
+            ),
             media_type="text/event-stream",
         )
 

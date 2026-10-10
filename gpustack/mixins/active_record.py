@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import importlib
+from inspect import isawaitable
 import json
 import logging
 import math
@@ -851,17 +852,19 @@ class ActiveRecordMixin:
             id(subscriber),
         )
 
-        if replay_existing:
-            include_created = event_types is None or EventType.CREATED in event_types
-            if include_created:
-                initial_items = await cls.cached_all(options=options)
-                for item in initial_items:
-                    yield Event(type=EventType.CREATED, data=item)
-
-        heartbeat_interval = timedelta(seconds=15)
-        last_event_time = datetime.now(timezone.utc)
-
         try:
+            if replay_existing:
+                include_created = (
+                    event_types is None or EventType.CREATED in event_types
+                )
+                if include_created:
+                    initial_items = await cls.cached_all(options=options)
+                    for item in initial_items:
+                        yield Event(type=EventType.CREATED, data=item)
+
+            heartbeat_interval = timedelta(seconds=15)
+            last_event_time = datetime.now(timezone.utc)
+
             while True:
                 try:
                     event = await asyncio.wait_for(
@@ -883,7 +886,7 @@ class ActiveRecordMixin:
         cls,
         fields: Optional[dict] = None,
         fuzzy_fields: Optional[dict] = None,
-        filter_func: Optional[Callable[[Any], bool]] = None,
+        filter_func: Optional[Callable[[Any], Union[bool, Awaitable[bool]]]] = None,
         options: Optional[List] = None,
         event_transform: Optional[Callable[[Event], Awaitable[None]]] = None,
     ) -> AsyncGenerator[str, None]:
@@ -892,7 +895,7 @@ class ActiveRecordMixin:
         Args:
             fields: Exact match filters as key-value pairs
             fuzzy_fields: Fuzzy match filters
-            filter_func: Optional filter function to apply to event data
+            filter_func: Optional sync or async predicate applied before projection
             options: SQLAlchemy options for eager loading relationships (e.g., selectinload)
             event_transform: Optional async hook called with the public Event
                 right before serialization. May mutate ``event.data`` in
@@ -901,8 +904,9 @@ class ActiveRecordMixin:
                 allocated computed from current ModelInstance bindings so
                 the watch stream matches the REST response.
         """
+        events = cls.subscribe(source="streaming", options=options)
         try:
-            async for event in cls.subscribe(source="streaming", options=options):
+            async for event in events:
                 if event.type == EventType.HEARTBEAT:
                     yield "\n\n"
                     continue
@@ -913,8 +917,12 @@ class ActiveRecordMixin:
                 if not cls._match_fuzzy_fields(event, fuzzy_fields):
                     continue
 
-                if filter_func and not filter_func(event.data):
-                    continue
+                if filter_func:
+                    matched = filter_func(event.data)
+                    if isawaitable(matched):
+                        matched = await matched
+                    if not matched:
+                        continue
 
                 public_event = Event(
                     type=event.type,
@@ -938,6 +946,8 @@ class ActiveRecordMixin:
             raise
         except Exception as e:
             logger.error(f"Error in streaming {cls.__name__}: {e}")
+        finally:
+            await events.aclose()
 
     @classmethod
     def _match_fields(cls, event: Any, fields: Optional[dict]) -> bool:

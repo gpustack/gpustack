@@ -2,12 +2,10 @@ from typing import Dict
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.tenant import (
-    bypass_tenant_filter,
     assert_resource_visible,
     tenant_list_conditions,
-    cluster_scoped_system,
-    scoped_cluster_row_visible,
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.server.db import async_session
@@ -22,7 +20,6 @@ from gpustack.schemas.gpu_devices import (
     GPUDevicesPublic,
     GPUDevicePublic,
 )
-
 
 router = APIRouter()
 
@@ -75,26 +72,13 @@ async def get_gpus(
 
     extra_conditions = tenant_list_conditions(ctx, GPUDevice)
 
-    def _gpu_visible(g) -> bool:
-        if cluster_scoped_system(ctx):
-            return scoped_cluster_row_visible(ctx, g)
-        if bypass_tenant_filter(ctx):
-            return True
-        org_id = getattr(g, "owner_principal_id", None)
-        if (
-            ctx.current_principal_id is not None
-            and org_id is not None
-            and org_id == ctx.current_principal_id
-        ):
-            return True
-        return False
-
     if params.watch:
         return StreamingResponse(
-            GPUDevice.streaming(
+            tenant_streaming(
+                GPUDevice,
+                ctx,
                 fuzzy_fields=fuzzy_fields,
                 fields=fields,
-                filter_func=_gpu_visible,
                 event_transform=_inject_allocated_into_event,
             ),
             media_type="text/event-stream",

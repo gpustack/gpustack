@@ -13,6 +13,7 @@ from sqlmodel import or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack import envs
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     HTTPException,
@@ -61,11 +62,8 @@ from gpustack.schemas.workers import GPUDeviceStatus, Worker
 from gpustack.utils.version import version_in_range
 from gpustack.api.tenant import (
     TenantContext,
-    bypass_tenant_filter,
     assert_cluster_visible,
     assert_resource_visible,
-    cluster_scoped_system,
-    scoped_cluster_row_visible,
     tenant_list_conditions,
 )
 from gpustack.server.db import async_session
@@ -154,14 +152,9 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _make_model_watch_filter(ctx, categories, state=None):
-    """Watch-stream visibility: cluster-bound service accounts only see
-    their own cluster's models; everyone keeps the categories and state
-    filters. Predicates are pre-built so inactive filters cost nothing on
-    the per-event hot path."""
+def _make_model_watch_filter(categories, state=None):
+    """Match the watch stream against category and state business filters."""
     predicates = []
-    if cluster_scoped_system(ctx):
-        predicates.append(lambda data: scoped_cluster_row_visible(ctx, data))
     if state is not None:
         predicates.append(lambda data: model_state_stream_filter(data, state))
     if categories:
@@ -200,21 +193,14 @@ async def get_models(
     if backend:
         fields["backend"] = backend
 
-    # Streaming uses field-equality only; scope by current org so non-admin
-    # users never see cross-org rows via the live stream. Admin without an
-    # explicit org context keeps the unfiltered cross-org stream. System
-    # users (workers / cluster accounts) bypass owner scoping — they serve
-    # every Org's models — but cluster-bound service accounts are narrowed
-    # to their own cluster's rows below.
-    if ctx.current_principal_id is not None and not bypass_tenant_filter(ctx):
-        fields["owner_principal_id"] = ctx.current_principal_id
-
     if params.watch:
         return StreamingResponse(
-            Model.streaming(
+            tenant_streaming(
+                Model,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=_make_model_watch_filter(ctx, categories, state),
+                filter_func=_make_model_watch_filter(categories, state),
             ),
             media_type="text/event-stream",
         )
@@ -347,7 +333,12 @@ async def get_model_instances(ctx: TenantContextDep, id: int, params: ListParams
             assert_resource_visible(ctx, model, not_found_message="Model not found")
         fields = {"model_id": id}
         return StreamingResponse(
-            ModelInstance.streaming(fields=fields),
+            tenant_streaming(
+                ModelInstance,
+                ctx,
+                fields=fields,
+                visibility_filter=lambda data: getattr(data, "model_id", None) == id,
+            ),
             media_type="text/event-stream",
         )
 

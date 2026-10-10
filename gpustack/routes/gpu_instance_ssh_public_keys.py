@@ -4,6 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 from starlette.responses import StreamingResponse
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -59,7 +60,9 @@ async def get_gpu_instance_ssh_public_keys(
 
     if params.watch:
         return StreamingResponse(
-            GPUInstanceSSHPublicKey.streaming(
+            tenant_streaming(
+                GPUInstanceSSHPublicKey,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
             ),

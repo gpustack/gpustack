@@ -6,6 +6,7 @@ from pathlib import Path
 from sqlalchemy.orm import selectinload
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     ConflictException,
@@ -17,11 +18,8 @@ from gpustack.api.tenant import (
     TenantContext,
     assert_cluster_visible,
     assert_cluster_writable,
-    bypass_tenant_filter,
     assert_resource_visible,
     tenant_list_conditions,
-    cluster_scoped_system,
-    scoped_cluster_row_visible,
 )
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.workers import Worker
@@ -59,24 +57,6 @@ async def _authorize_model_file_worker(
     # alone does not grant permission to manage files on its workers.
     assert_cluster_writable(ctx, cluster)
     return cluster
-
-
-def _make_model_file_visibility_filter(ctx):
-    def _visible(m: ModelFile) -> bool:
-        if cluster_scoped_system(ctx):
-            return scoped_cluster_row_visible(ctx, m)
-        if bypass_tenant_filter(ctx):
-            return True
-        org_id = getattr(m, "owner_principal_id", None)
-        if (
-            ctx.current_principal_id is not None
-            and org_id is not None
-            and org_id == ctx.current_principal_id
-        ):
-            return True
-        return False
-
-    return _visible
 
 
 def _model_file_search_clause(search: str):
@@ -124,16 +104,13 @@ async def get_model_files(
     worker_id: int = None,
 ):
     fields = {"worker_id": worker_id} if worker_id else {}
-    visible = _make_model_file_visibility_filter(ctx)
 
     if params.watch:
         filter_func = (
-            (lambda data: visible(data) and search_model_file_filter(data, search))
-            if search
-            else visible
+            (lambda data: search_model_file_filter(data, search)) if search else None
         )
         return StreamingResponse(
-            ModelFile.streaming(fields=fields, filter_func=filter_func),
+            tenant_streaming(ModelFile, ctx, fields=fields, filter_func=filter_func),
             media_type="text/event-stream",
         )
 

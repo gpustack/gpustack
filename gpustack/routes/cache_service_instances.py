@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from sqlmodel import select
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     ForbiddenException,
     InternalServerErrorException,
@@ -14,6 +15,7 @@ from gpustack.api.tenant import (
     cluster_scoped_system,
     scoped_cluster_row_visible,
     tenant_list_conditions,
+    tenant_stream_filter,
 )
 from gpustack.schemas.cache_services import (
     CacheService,
@@ -60,10 +62,7 @@ async def get_cache_service_instances(
         # callers are filtered against the services they own at stream
         # start.
         if cluster_scoped_system(ctx):
-
-            def filter_func(data):
-                return scoped_cluster_row_visible(ctx, data)
-
+            filter_func = tenant_stream_filter(ctx, CacheServiceInstance)
         elif ctx.current_principal_id is not None and not bypass_tenant_filter(ctx):
             async with async_session() as session:
                 services = await CacheService.all_by_fields(
@@ -77,12 +76,16 @@ async def get_cache_service_instances(
                 return getattr(data, "cache_service_id", None) in visible_service_ids
 
         else:
-            filter_func = None
+
+            def filter_func(data):
+                return bypass_tenant_filter(ctx)
 
         return StreamingResponse(
-            CacheServiceInstance.streaming(
+            tenant_streaming(
+                CacheServiceInstance,
+                ctx,
                 fields=fields,
-                filter_func=filter_func,
+                visibility_filter=filter_func,
             ),
             media_type="text/event-stream",
         )

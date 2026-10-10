@@ -22,7 +22,7 @@ def _params(watch=False):
 
 
 def _ctx():
-    return SimpleNamespace(current_principal_id=None)
+    return SimpleNamespace(current_principal_id=None, is_platform_admin=True, user=None)
 
 
 async def _conditions(**kwargs):
@@ -58,9 +58,6 @@ async def _stream_filter(**kwargs):
     with (
         patch.object(route.Benchmark, "streaming", _fake_streaming),
         patch.object(route, "tenant_list_conditions", lambda *_a, **_k: []),
-        patch.object(
-            route, "_make_benchmark_visibility_filter", lambda _ctx: lambda _d: True
-        ),
     ):
         await route._get_benchmarks(ctx=_ctx(), params=_params(watch=True), **kwargs)
 

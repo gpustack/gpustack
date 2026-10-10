@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Response, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -22,12 +23,9 @@ from gpustack.api.exceptions import (
 from gpustack.api.auth import is_server_token_principal
 from gpustack.config.config import get_global_config
 from gpustack.api.tenant import (
-    bypass_tenant_filter,
     assert_resource_visible,
     assert_org_owned_writable,
     tenant_list_conditions,
-    cluster_scoped_system,
-    scoped_cluster_row_visible,
 )
 from gpustack.server.deps import (
     SessionDep,
@@ -165,28 +163,6 @@ async def _inject_allocated_into_event(event: Event):
         device.memory.allocated = vram_allocated_for_index(vram, device.index)
 
 
-def _make_worker_visibility_filter(ctx):
-    """Return a row-level visibility predicate mirroring the SQL filter
-    produced by ``tenant_list_conditions``: cluster-scoped SYSTEM accounts
-    are narrowed to their own cluster, everyone else is owner-only."""
-
-    def _visible(w) -> bool:
-        if cluster_scoped_system(ctx):
-            return scoped_cluster_row_visible(ctx, w)
-        if bypass_tenant_filter(ctx):
-            return True
-        org_id = getattr(w, "owner_principal_id", None)
-        if (
-            ctx.current_principal_id is not None
-            and org_id is not None
-            and org_id == ctx.current_principal_id
-        ):
-            return True
-        return False
-
-    return _visible
-
-
 def _build_worker_list_filters(name, uuid, cluster_id, search):
     fuzzy_fields = {"name": search} if search else {}
     fields = {}
@@ -229,14 +205,14 @@ async def get_workers(
     # tenant filtering scopes the list to the caller's own Org — a shared
     # cluster does not expose the owner's workers to the grantee.
     extra_conditions = tenant_list_conditions(ctx, Worker)
-    visible = _make_worker_visibility_filter(ctx)
 
     if params.watch:
         return StreamingResponse(
-            Worker.streaming(
+            tenant_streaming(
+                Worker,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=visible,
                 event_transform=_inject_allocated_into_event,
             ),
             media_type="text/event-stream",
