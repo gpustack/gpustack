@@ -277,10 +277,15 @@ async def create_model_provider(
             session=session,
             id=input.clone_from_id,
         )
-        if not clone_from:
+        if not clone_from or clone_from.deleted_at is not None:
             raise NotFoundException(
                 message=f"provider {input.clone_from_id} to clone from not found"
             )
+        assert_resource_visible(
+            ctx,
+            clone_from,
+            not_found_message=f"provider {input.clone_from_id} to clone from not found",
+        )
         existing_tokens = clone_from.api_tokens or []
     input_dict["api_tokens"] = parse_api_tokens(
         existing_tokens=existing_tokens, api_tokens=input.api_tokens
