@@ -12,6 +12,7 @@ from enum import Enum
 from sqlalchemy.orm import selectinload
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     BadRequestException,
@@ -33,12 +34,14 @@ from gpustack.schemas.config import (
 from gpustack.api.tenant import (
     TenantContext,
     bypass_tenant_filter,
+    cluster_scoped_system,
     cluster_visibility_conditions,
     assert_cluster_visible,
     assert_cluster_writable,
     validate_owner_principal,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
+from gpustack.server.bus import event_field
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.server.worker_request import stream_to_worker
@@ -130,6 +133,8 @@ def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
 
 def _is_cluster_visible(cluster: Cluster, ctx: TenantContext) -> bool:
     """Python-side mirror of cluster_visibility_conditions for in-memory lists."""
+    if cluster_scoped_system(ctx):
+        return event_field(cluster, "id") == ctx.scoped_cluster_id
     if bypass_tenant_filter(ctx):
         return True
     if (
@@ -145,6 +150,8 @@ def _is_cluster_visible(cluster: Cluster, ctx: TenantContext) -> bool:
 def _is_cluster_manageable(cluster: Cluster, ctx: TenantContext) -> bool:
     """Manageability mirror: drops cross-Org grants. Bypass for admin
     in "All" mode (sees everything regardless)."""
+    if cluster_scoped_system(ctx):
+        return event_field(cluster, "id") == ctx.scoped_cluster_id
     if bypass_tenant_filter(ctx):
         return True
     return (
@@ -155,6 +162,8 @@ def _is_cluster_manageable(cluster: Cluster, ctx: TenantContext) -> bool:
 
 def _cluster_manageable_conditions(ctx: TenantContext) -> List[Any]:
     """SQL twin of :func:`_is_cluster_manageable`."""
+    if cluster_scoped_system(ctx):
+        return [Cluster.id == ctx.scoped_cluster_id]
     if bypass_tenant_filter(ctx):
         return []
     if ctx.current_principal_id is None:
@@ -234,11 +243,14 @@ async def get_clusters(
             else (lambda c: _is_cluster_visible(c, ctx))
         )
         return StreamingResponse(
-            Cluster.streaming(
+            tenant_streaming(
+                Cluster,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 options=CLUSTER_LOAD_OPTIONS,
-                filter_func=lambda c: visibility_check(c) and _matches_gpu_filter(c),
+                visibility_filter=visibility_check,
+                filter_func=_matches_gpu_filter,
             ),
             media_type="text/event-stream",
         )
@@ -1038,7 +1050,10 @@ def get_registration_from_cluster(
         and server_url == global_config.server_external_url.rstrip("/")
     )
     if (
-        global_config
+        # Verification is skipped outright, so the CA bootstrap checksum
+        # would be dead weight in the registration command.
+        not sensitive_registration.insecure_tls
+        and global_config
         and is_server_configured_endpoint
         and server_url.startswith("https://")
     ):

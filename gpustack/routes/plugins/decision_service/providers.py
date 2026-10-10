@@ -114,8 +114,11 @@ def decision_provider_entry(provider: ModelProvider) -> Optional[Dict[str, Any]]
     }
     if config.model:
         entry["model"] = config.model
+    # Canonical credential form: the plugin tries the keys in order and
+    # retries the callout with the next one on 401/403/429 (invalid or
+    # quota-exhausted key); the legacy singular apiToken is deprecated.
     if provider.api_tokens:
-        entry["apiToken"] = provider.api_tokens[0]
+        entry["apiTokens"] = list(provider.api_tokens)
     # The cluster always comes from the provider's own ``provider-{id}``
     # registry — the registry name never equals the endpoint host, so the
     # endpoint-derived name the plugin would fall back to never resolves.

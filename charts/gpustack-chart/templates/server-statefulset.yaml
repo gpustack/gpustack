@@ -173,6 +173,10 @@ spec:
         - name: bootstrap-password
           secret:
             secretName: {{ .Release.Name }}-server-bootstrap-password
+            # Owner-only: the mounted file is the initial admin password. The
+            # subPath mount is read-only, so the server cannot tighten it at
+            # runtime and the volume mode is the effective one.
+            defaultMode: 0600
         {{- end }}
         {{- if .Values.server.dataVolume.hostPath }}
         - name: gpustack-data-dir

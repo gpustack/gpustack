@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -137,10 +138,12 @@ async def get_api_keys(
 
     if params.watch:
         return StreamingResponse(
-            ApiKey.streaming(
+            tenant_streaming(
+                ApiKey,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=lambda api_key: not _is_hidden_api_key(api_key),
+                visibility_filter=lambda api_key: not _is_hidden_api_key(api_key),
                 options=[selectinload(ApiKey.user)],
             ),
             media_type="text/event-stream",

@@ -125,6 +125,9 @@ Rules:
   `fix(scheduler): …`, `refactor(clusters): …`, `docs: …`, `chore(deps): …`.
   The subject is lowercase, imperative, and says what changed in the product — not what
   files moved.
+- Focus commit messages on the problem, solution, and relevant context.
+  Put validation details in the PR description or task summary. Avoid listing
+  unaffected areas unless relevant to understanding the change.
 - **Do not add `Co-Authored-By` or other agent-attribution trailers.**
 - **Never use a GitHub closing keyword in front of an issue reference** — `close`,
   `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved` — in a
@@ -145,7 +148,8 @@ Rules:
 - Target `main`. Backports to `v*-dev` happen by labelling a merged PR
   `backport/<branch>`.
 - PR description: what changed, why, how it was verified. Call out schema migrations,
-  new dependencies, and breaking API changes explicitly.
+  new dependencies, and breaking API changes when present. Mention unaffected areas
+  only when relevant to understanding the change.
 
 ## Notes
 

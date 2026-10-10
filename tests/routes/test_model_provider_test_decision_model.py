@@ -14,6 +14,7 @@ import pytest
 from gpustack.api.exceptions import InvalidException
 from gpustack.routes import model_provider as route_module
 from gpustack.schemas.model_provider import (
+    ModelProviderCreate,
     ModelProviderTypeEnum,
     OpenAIConfig,
     TypesafeConfig,
@@ -242,6 +243,37 @@ class TestDecisionPingRejections:
 
         assert result.accessible is True
         assert asked[0]["auth"] is None
+
+
+class TestFailoverTokenValidation:
+    """The multi-token failover prerequisite is an ai-proxy concern: decision
+    services fail their keys over inside the wasm plugin, not through
+    ai-proxy's failover config, so they are exempt from the llm-model
+    requirement."""
+
+    def test_decision_provider_allows_multiple_tokens_without_llm_model(self):
+        provider = ModelProviderCreate.model_validate(
+            {
+                "name": "jev",
+                "config": {"type": ModelProviderTypeEnum.GPUSTACK_LB_TYPESAFE.value},
+                "models": [{"name": "jev-latest", "category": "decision"}],
+                "api_tokens": [{"input": "primary-key"}, {"input": "fallback-key"}],
+            }
+        )
+        route_module.validate_provider(provider)
+
+    def test_inference_provider_still_requires_llm_model_for_failover(self):
+        provider = ModelProviderCreate.model_validate(
+            {
+                "name": "openai",
+                "config": {"type": ModelProviderTypeEnum.OPENAI.value},
+                "models": [{"name": "text-embedding-x", "category": "embedding"}],
+                "api_tokens": [{"input": "primary-key"}, {"input": "fallback-key"}],
+            }
+        )
+        with pytest.raises(InvalidException) as exc_info:
+            route_module.validate_provider(provider)
+        assert "llm model is required" in exc_info.value.message
 
 
 class TestTypeTransitionGuard:

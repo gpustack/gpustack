@@ -99,10 +99,10 @@ process and child processes. Existing operator-provided certificates are retaine
 replacing an injected bootstrap CA does not retain earlier injected bundles.
 
 As a last resort, when the server certificate cannot be verified on a worker at
-all, set `GPUSTACK_INSECURE_TLS=true` on that worker to skip certificate
-verification on its connection to the server. Traffic stays encrypted but is no
-longer protected against interception, so use it only on trusted networks. See
-[Environment Variables](../environment-variables.md).
+all, start that worker with `--insecure-tls` (or `GPUSTACK_INSECURE_TLS=true`)
+to skip certificate verification on its connection to the server. Traffic stays
+encrypted but is no longer protected against interception, so use it only on
+trusted networks. See [CLI Reference](../cli-reference/start.md).
 
 ### Using an External Database
 

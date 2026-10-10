@@ -873,12 +873,16 @@ class ModelService:
         await delete_cache_by_key(self.get_by_name, model.name)
         return result
 
-    async def batch_update(self, models: List[Model]) -> int:
+    async def batch_update(
+        self, models: List[Model], *, auto_commit: bool = True
+    ) -> int:
         """Persist model updates in one transaction and invalidate their caches."""
         if not models:
             return 0
 
-        updated = await Model.batch_update(self.session, models)
+        updated = await Model.batch_update(
+            self.session, models, auto_commit=auto_commit
+        )
         for model in models:
             await delete_cache_by_key(self.get_by_id, model.id)
             await delete_cache_by_key(self.get_by_name, model.name)

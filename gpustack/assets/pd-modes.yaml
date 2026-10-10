@@ -285,11 +285,9 @@ modes:
       prefill:
         ports:
           # The engine default (5600) is fixed, so two prefills on one host
-          # collide by construction. count is 1 because phase one ships no local
-          # data parallelism; with DP the engine offsets the port by the
-          # data-parallel index and the band's width is that replica count — a
-          # connector-specific rule, not a platform formula.
-          - { name: kv_side_channel, count: 1, inject_to: env }
+          # collide by construction. Each DP engine offsets this base by its
+          # global DP index; reserve the whole range even with internal HTTP LB.
+          - { name: kv_side_channel, count: "{{data_parallel_size}}", inject_to: env }
         connector:
           kv_connector: NixlConnector
           kv_role: kv_producer
@@ -308,7 +306,7 @@ modes:
           UCX_NET_DEVICES: "{{net_device}}"
       decode:
         ports:
-          - { name: kv_side_channel, count: 1, inject_to: env }
+          - { name: kv_side_channel, count: "{{data_parallel_size}}", inject_to: env }
         connector:
           kv_connector: NixlConnector
           kv_role: kv_consumer
@@ -767,11 +765,12 @@ modes:
       prefill:
         ports:
           # kv_port is a base address and the connector binds one port per
-          # worker rank, so the band is as wide as the member's card count:
+          # worker rank. Reserve all the member's cards across its hosts so
+          # global DP offsets remain inside the shared band:
           #
           #   handshake_port = kv_port
-          #                  + data_parallel_rank * tp_size * pp_size
-          #                  + (pp_rank + pcp_rank) * tp_size + tp_rank
+          #                  + data_parallel_rank * tp_size * pp_size * pcp_size
+          #                  + (pp_rank * pcp_size + pcp_rank) * tp_size + tp_rank
           #
           # The width is the connector's rule, declared here rather than derived
           # in code, and it has no engine default at all. The dp term only

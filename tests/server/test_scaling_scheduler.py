@@ -1,10 +1,13 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
 import sqlalchemy as sa
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.dialects import mysql, postgresql
 from sqlmodel import col, select, text
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -21,8 +24,8 @@ from gpustack.routes.models import (
     apply_scaling_schedule_baseline,
     validate_model_in,
 )
-import gpustack.server.scaling_scheduler as scaling_scheduler
 from gpustack.server.scaling_scheduler import compute_desired_replicas
+from gpustack.server import scaling_scheduler
 
 TZ = "Asia/Shanghai"
 HOUR = 3600
@@ -34,6 +37,15 @@ def _pin_rollup_tz(monkeypatch):
     # resolve_rollup_tz() (envs.TIMEZONE -> OS tz -> UTC). Pin it to TZ so the
     # cron-window assertions don't depend on the host's timezone.
     monkeypatch.setattr("gpustack.envs.TIMEZONE", TZ)
+
+
+@pytest.fixture
+def cache_invalidations(monkeypatch):
+    all_models = AsyncMock()
+    service = AsyncMock()
+    monkeypatch.setattr(Model, "_invalidate_cached_all", all_models)
+    monkeypatch.setattr(scaling_scheduler, "delete_cache_by_key", service)
+    return all_models, service
 
 
 def _at(hour: int, minute: int, day: int = 16) -> datetime:
@@ -290,6 +302,98 @@ def test_window_length_is_absolute_across_dst(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change, expected",
+    [
+        ("unchanged", 2),
+        ("disabled", None),
+        ("removed", None),
+        ("rules", 5),
+        ("baseline", 5),
+        ("converged", None),
+        ("deleted", None),
+        ("paused", None),
+        ("missing", None),
+    ],
+)
+async def test_tick_locks_and_rechecks_latest_schedule(
+    monkeypatch, change, expected, cache_invalidations
+):
+    schedule = _schedule(baseline_replicas=1, rules=[_rule("0 0 * * *", 24 * HOUR, 2)])
+    snapshot = Model(
+        id=1,
+        name="scheduled",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="a/b",
+        replicas=0,
+        scaling_schedule=schedule,
+    )
+    latest = snapshot.model_copy(deep=True)
+    if change == "disabled":
+        latest.scaling_schedule.enabled = False
+    elif change == "removed":
+        latest.scaling_schedule = None
+    elif change == "rules":
+        latest.scaling_schedule.rules[0].replicas = 5
+    elif change == "baseline":
+        latest.scaling_schedule.baseline_replicas = 5
+        latest.scaling_schedule.rules = [_rule("0 0 1 1 *", HOUR, 2)]
+    elif change == "converged":
+        latest.replicas = 2
+    elif change == "paused":
+        latest.scaling_schedule.paused = True
+    elif change == "deleted":
+        latest.deleted_at = _at(10, 0)
+    elif change == "missing":
+        latest = None
+
+    read_session = MagicMock()
+    write_session = MagicMock()
+    result = MagicMock()
+    result.all.return_value = [latest] if latest is not None else []
+    write_session.exec = AsyncMock(return_value=result)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock()
+    write_session.begin.return_value = transaction
+    service = MagicMock()
+    service.batch_update = AsyncMock()
+    sessions = iter([read_session, write_session])
+
+    @asynccontextmanager
+    async def session():
+        yield next(sessions)
+
+    monkeypatch.setattr(scaling_scheduler, "async_session", session)
+    monkeypatch.setattr(Model, "all_by_fields", AsyncMock(return_value=[snapshot]))
+    monkeypatch.setattr(scaling_scheduler, "ModelService", lambda s: service)
+    monkeypatch.setattr(
+        scaling_scheduler,
+        "compute_desired_replicas",
+        lambda schedule, now: compute_desired_replicas(schedule, _at(10, 0)),
+    )
+
+    await scaling_scheduler.ScalingScheduler()._sync_scheduled_replicas()
+
+    statement = write_session.exec.call_args.args[0]
+    for dialect in (postgresql.dialect(), mysql.dialect()):
+        assert str(statement.compile(dialect=dialect)).endswith("FOR UPDATE")
+    if expected is None:
+        service.batch_update.assert_not_awaited()
+        for invalidation in cache_invalidations:
+            invalidation.assert_not_awaited()
+    else:
+        assert latest.replicas == expected
+        service.batch_update.assert_awaited_once_with([latest], auto_commit=False)
+        cache_invalidations[0].assert_awaited_once()
+        assert cache_invalidations[1].await_count == 2
+    transaction.__aexit__.assert_awaited_once_with(None, None, None)
+    assert statement.get_execution_options()["populate_existing"] is True
+    if change == "disabled":
+        assert latest.replicas == 0
+
+
+@pytest.mark.asyncio
 async def test_tick_query_skips_models_without_a_schedule():
     # The tick narrows to rows carrying a schedule. A model without one stores
     # the JSON literal 'null', not SQL NULL, so a plain IS NOT NULL predicate
@@ -342,6 +446,163 @@ async def test_tick_query_skips_models_without_a_schedule():
 
 
 @pytest.mark.asyncio
+async def test_tick_locks_batch_in_one_transaction(monkeypatch, cache_invalidations):
+    schedule = _schedule(baseline_replicas=1, rules=[_rule("0 0 * * *", 24 * HOUR, 2)])
+    snapshots = [
+        Model(
+            id=i,
+            name=f"scheduled-{i}",
+            source=SourceEnum.HUGGING_FACE,
+            huggingface_repo_id="a/b",
+            replicas=0,
+            scaling_schedule=schedule,
+        )
+        for i in range(1, 4)
+    ]
+    latest = [model.model_copy(deep=True) for model in snapshots]
+    latest[1].scaling_schedule.paused = True
+    events = []
+    sessions = []
+    write_session = MagicMock()
+
+    @asynccontextmanager
+    async def transaction():
+        events.append("begin")
+        try:
+            yield
+        finally:
+            events.append("end")
+
+    async def execute(statement):
+        events.append("lock")
+        result = MagicMock()
+        result.all.return_value = latest
+        return result
+
+    async def update(models, *, auto_commit):
+        assert auto_commit is False
+        assert [(model.id, model.replicas) for model in models] == [(1, 2), (3, 2)]
+        events.append("update")
+
+    write_session.begin.side_effect = transaction
+    write_session.exec = AsyncMock(side_effect=execute)
+
+    @asynccontextmanager
+    async def session():
+        sessions.append(MagicMock() if not sessions else write_session)
+        yield sessions[-1]
+
+    service = MagicMock()
+    service.batch_update = AsyncMock(side_effect=update)
+    service_factory = MagicMock(return_value=service)
+    monkeypatch.setattr(scaling_scheduler, "async_session", session)
+    monkeypatch.setattr(Model, "all_by_fields", AsyncMock(return_value=snapshots))
+    monkeypatch.setattr(scaling_scheduler, "ModelService", service_factory)
+    await scaling_scheduler.ScalingScheduler()._sync_scheduled_replicas()
+
+    assert len(sessions) == 2
+    service_factory.assert_called_once_with(write_session)
+    assert events == ["begin", "lock", "update", "end"]
+    statement = write_session.exec.call_args.args[0]
+    assert statement.get_execution_options()["populate_existing"] is True
+    for dialect in (postgresql.dialect(), mysql.dialect()):
+        sql = str(statement.compile(dialect=dialect))
+        assert "ORDER BY models.id" in sql
+        assert sql.endswith("FOR UPDATE")
+
+
+@pytest.mark.asyncio
+async def test_tick_evicts_cache_repopulated_before_commit(
+    monkeypatch, cache_invalidations
+):
+    model = Model(
+        id=1,
+        name="scheduled",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="a/b",
+        replicas=0,
+        scaling_schedule=_schedule(
+            baseline_replicas=1, rules=[_rule("0 0 * * *", 24 * HOUR, 2)]
+        ),
+    )
+    database = {"replicas": 0}
+    cache = {}
+    observed = []
+
+    async def read():
+        cache.setdefault("replicas", database["replicas"])
+        return cache["replicas"]
+
+    async def evict():
+        cache.clear()
+
+    @asynccontextmanager
+    async def transaction():
+        yield
+        # A concurrent reader can cache the committed row during a pending write.
+        observed.append(await read())
+        database["replicas"] = model.replicas
+
+    async def update(rows, *, auto_commit):
+        assert auto_commit is False
+        assert rows == [model]
+        await evict()
+
+    write_session = MagicMock()
+    write_session.begin.side_effect = transaction
+    result = MagicMock()
+    result.all.return_value = [model]
+    write_session.exec = AsyncMock(return_value=result)
+    sessions = iter([MagicMock(), write_session])
+
+    @asynccontextmanager
+    async def session():
+        yield next(sessions)
+
+    service = MagicMock()
+    service.batch_update = AsyncMock(side_effect=update)
+    cache_invalidations[0].side_effect = evict
+    monkeypatch.setattr(scaling_scheduler, "async_session", session)
+    monkeypatch.setattr(Model, "all_by_fields", AsyncMock(return_value=[model]))
+    monkeypatch.setattr(scaling_scheduler, "ModelService", lambda s: service)
+    await scaling_scheduler.ScalingScheduler()._sync_scheduled_replicas()
+
+    assert observed == [0]
+    assert await read() == 2
+    cache_invalidations[1].assert_any_await(service.get_by_id, model.id)
+    cache_invalidations[1].assert_any_await(service.get_by_name, model.name)
+
+
+@pytest.mark.asyncio
+async def test_tick_skips_paused_snapshot_without_requesting_a_write(monkeypatch):
+    model = Model(
+        id=1,
+        name='paused',
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id='org/model',
+        replicas=0,
+        scaling_schedule=_schedule(
+            paused=True, baseline_replicas=1, rules=[_rule("0 9 * * *", HOUR, 2)]
+        ),
+    )
+    sessions = []
+
+    @asynccontextmanager
+    async def session():
+        sessions.append(MagicMock())
+        yield sessions[-1]
+
+    monkeypatch.setattr(scaling_scheduler, 'async_session', session)
+    monkeypatch.setattr(Model, 'all_by_fields', AsyncMock(return_value=[model]))
+    service = MagicMock()
+    service.batch_update = AsyncMock()
+    monkeypatch.setattr(scaling_scheduler, 'ModelService', lambda s: service)
+    await scaling_scheduler.ScalingScheduler()._sync_scheduled_replicas()
+    assert len(sessions) == 1
+    service.batch_update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_scheduler_batches_changed_replicas_after_one_reload(monkeypatch):
     """A tick reloads candidates together and commits changed rows together."""
     engine = create_async_engine("sqlite+aiosqlite://")
@@ -377,6 +638,13 @@ async def test_scheduler_batches_changed_replicas_after_one_reload(monkeypatch):
                     replicas=2,
                     scaling_schedule=schedule.model_copy(deep=True),
                 ),
+                Model(
+                    name="paused",
+                    source=SourceEnum.HUGGING_FACE,
+                    huggingface_repo_id="a/b",
+                    replicas=0,
+                    scaling_schedule=schedule.model_copy(update={"paused": True}),
+                ),
             ]
         )
         await session.commit()
@@ -384,9 +652,10 @@ async def test_scheduler_batches_changed_replicas_after_one_reload(monkeypatch):
     original_batch_update = scaling_scheduler.ModelService.batch_update
     batch_calls = []
 
-    async def record_batch_update(service, models):
+    async def record_batch_update(service, models, *, auto_commit):
         batch_calls.append([(model.name, model.replicas) for model in models])
-        return await original_batch_update(service, models)
+        assert auto_commit is False
+        return await original_batch_update(service, models, auto_commit=auto_commit)
 
     monkeypatch.setattr(
         scaling_scheduler.ModelService, "batch_update", record_batch_update
@@ -406,5 +675,6 @@ async def test_scheduler_batches_changed_replicas_after_one_reload(monkeypatch):
         ("already-at-target", 2),
         ("changed-a", 2),
         ("changed-b", 2),
+        ("paused", 0),
     ]
     await engine.dispose()

@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Response, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -19,14 +20,12 @@ from gpustack.api.exceptions import (
     ForbiddenException,
     InvalidException,
 )
+from gpustack.api.auth import is_server_token_principal
 from gpustack.config.config import get_global_config
 from gpustack.api.tenant import (
-    bypass_tenant_filter,
     assert_resource_visible,
     assert_org_owned_writable,
     tenant_list_conditions,
-    cluster_scoped_system,
-    scoped_cluster_row_visible,
 )
 from gpustack.server.deps import (
     SessionDep,
@@ -164,28 +163,6 @@ async def _inject_allocated_into_event(event: Event):
         device.memory.allocated = vram_allocated_for_index(vram, device.index)
 
 
-def _make_worker_visibility_filter(ctx):
-    """Return a row-level visibility predicate mirroring the SQL filter
-    produced by ``tenant_list_conditions``: cluster-scoped SYSTEM accounts
-    are narrowed to their own cluster, everyone else is owner-only."""
-
-    def _visible(w) -> bool:
-        if cluster_scoped_system(ctx):
-            return scoped_cluster_row_visible(ctx, w)
-        if bypass_tenant_filter(ctx):
-            return True
-        org_id = getattr(w, "owner_principal_id", None)
-        if (
-            ctx.current_principal_id is not None
-            and org_id is not None
-            and org_id == ctx.current_principal_id
-        ):
-            return True
-        return False
-
-    return _visible
-
-
 def _build_worker_list_filters(name, uuid, cluster_id, search):
     fuzzy_fields = {"name": search} if search else {}
     fields = {}
@@ -228,14 +205,14 @@ async def get_workers(
     # tenant filtering scopes the list to the caller's own Org — a shared
     # cluster does not expose the owner's workers to the grantee.
     extra_conditions = tenant_list_conditions(ctx, Worker)
-    visible = _make_worker_visibility_filter(ctx)
 
     if params.watch:
         return StreamingResponse(
-            Worker.streaming(
+            tenant_streaming(
+                Worker,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=visible,
                 event_transform=_inject_allocated_into_event,
             ),
             media_type="text/event-stream",
@@ -552,11 +529,27 @@ def retry_create_unique_worker_uuid(workers: List[Worker]) -> str:
     )
 
 
-def _resolve_create_worker_cluster_id(user, worker_in: WorkerCreate) -> int:
-    # Fall back to the caller's cluster when the request body omits it.
-    # For a SYSTEM principal that's the cluster bootstrap account, its
-    # ``cluster`` is the back-populated relationship via
-    # ``Cluster.system_principal_id`` (selectinload'd by the auth flow).
+def _resolve_create_worker_cluster_id(user: Principal, worker_in: WorkerCreate) -> int:
+    if not (user.is_admin or is_server_token_principal(user)):
+        if user.kind != PrincipalType.SYSTEM:
+            raise ForbiddenException(message="Only platform admin can register workers")
+        # Registration credentials are limited to the cluster that owns them.
+        # An unlinked SYSTEM account does not carry platform-wide authority.
+        scoped_cluster_id = None
+        if user.worker is not None:
+            scoped_cluster_id = user.worker.cluster_id
+        elif user.cluster is not None:
+            scoped_cluster_id = user.cluster.id
+        if scoped_cluster_id is None:
+            raise ForbiddenException(
+                message="Missing cluster scope for worker registration"
+            )
+        if worker_in.cluster_id not in (None, scoped_cluster_id):
+            raise ForbiddenException(
+                message="Cannot register workers in another cluster"
+            )
+        return scoped_cluster_id
+
     fallback = user.cluster.id if user.cluster is not None else None
     cluster_id = worker_in.cluster_id if worker_in.cluster_id is not None else fallback
     if cluster_id is None:
@@ -645,16 +638,9 @@ async def _persist_worker_registration(
 
 @router.post("", response_model=WorkerRegistrationPublic)
 async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
-    # Worker registration runs through two paths: (1) v1_base_router with
-    # a human session — admin-only, since spinning up workers is a
-    # platform-level action; (2) cluster_client_router with the cluster
-    # service-account token (``user.kind == SYSTEM``). Allow both, deny
-    # the rest.
-    if not (user.is_admin or user.kind == PrincipalType.SYSTEM):
-        raise ForbiddenException(message="Only platform admin can register workers")
+    cluster_id = _resolve_create_worker_cluster_id(user, worker_in)
     async with create_worker_semaphore:
         async with async_session() as session:
-            cluster_id = _resolve_create_worker_cluster_id(user, worker_in)
             all_workers = await Worker.all_by_fields(session, {"deleted_at": None})
             existing_worker = get_existing_worker(cluster_id, worker_in, all_workers)
             check_worker_name_conflict(
@@ -689,6 +675,7 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                 # following args are only used when creating a new worker
                 provider=cluster.provider,
                 cluster=cluster,
+                cluster_id=cluster_id,
                 token=new_token,
             )
             if new_worker.worker_uuid == "":

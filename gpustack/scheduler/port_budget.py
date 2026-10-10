@@ -27,7 +27,7 @@ count it already had.
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Optional, Set
+from typing import Iterable, List, Optional, Set
 
 from gpustack.schemas.pd_modes import PDPortScopeEnum
 from gpustack.utils.network import parse_port_range
@@ -38,7 +38,7 @@ from gpustack.utils.network import parse_port_range
 # copy here would drift into a scheduler that promises room the allocator does
 # not find.
 from gpustack.schemas.models import member_worker_ids
-from gpustack.worker.pd_injection import band_specs_for, band_width
+from gpustack.worker.pd_injection import band_specs_for, member_band_width
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +46,14 @@ logger = logging.getLogger(__name__)
 _BASE_PORTS = 1
 
 
-def member_port_demand(model, role: Optional[str], cards: int) -> int:
+def member_port_demand(
+    model, role: Optional[str], cards: int, gpu_per_node: Optional[List[int]] = None
+) -> int:
     """Ports one member of `role` occupies on the host it lands on.
 
-    `cards` is how many accelerators this member would be given there, which
-    is what `{{accelerator_count}}` resolves to — the same number the worker
-    will read off `gpu_indexes` once the member is placed.
+    `cards` is the single-host allocation. Spanning placements pass
+    `gpu_per_node` so the shared band covers every global rank offset on
+    each host, just as the worker allocator does.
 
     **A band that cannot be resolved counts as zero, and that is not an
     underestimate.** The worker skips such a band too (leaving
@@ -65,11 +67,7 @@ def member_port_demand(model, role: Optional[str], cards: int) -> int:
             # Refused outright on the worker. Budgeting for it would be
             # reserving ports for a member that will not start.
             continue
-        count = band_width(
-            spec,
-            cards=cards,
-            backend_parameters=getattr(model, "backend_parameters", None),
-        )
+        count = member_band_width(spec, model, gpu_per_node or [cards])
         if count:
             demand += count
     return demand

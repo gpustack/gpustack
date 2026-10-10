@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from kubernetes_asyncio import client
 from starlette.responses import StreamingResponse
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import BadRequestException, NotFoundException
 from gpustack.api.tenant import TenantContext, cluster_visibility_conditions
 from gpustack.gpu_instances import gateway_client
@@ -236,10 +237,12 @@ async def get_gpu_instance_types(
         # JSON body would break its reader — and a filter_func over an empty set
         # is exactly an empty stream.
         return StreamingResponse(
-            GPUInstanceType.streaming(
+            tenant_streaming(
+                GPUInstanceType,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=_make_instance_type_visibility_filter(allowed_ids),
+                visibility_filter=_make_instance_type_visibility_filter(allowed_ids),
             ),
             media_type="text/event-stream",
         )
@@ -540,7 +543,7 @@ def _make_instance_type_visibility_filter(
 ) -> Callable[[Any], bool]:
     """Row-level twin of the read's ``cluster_id IN (...)``, for the watch stream.
 
-    Serves the same purpose as ``_make_worker_visibility_filter``: the SQL
+    Serves the same purpose as ``tenant_stream_filter``: the SQL
     ``extra_conditions`` never reach bus events, so without this the stream would
     leak rows the REST read hides. ``getattr`` rather than plain attribute access
     because a DELETED event can carry an id-only dict when the change detector held
@@ -549,7 +552,7 @@ def _make_instance_type_visibility_filter(
     cannot be attributed to an allowed one, so it is dropped.
 
     It does NOT share that helper's self-healing property, and the difference
-    matters. ``_make_worker_visibility_filter`` re-derives visibility from each
+    matters. ``tenant_stream_filter`` re-derives visibility from each
     row's own ``owner_principal_id``, so it tracks grants as they change. This one
     closes over a snapshot of the ``clusters`` table taken when the stream opened,
     because the table it filters carries no owner of its own. So for the life of one

@@ -330,7 +330,8 @@ class PDPortSpec(BaseModel):
     allocation time. The width is decided by the connector, not by a
     platform formula — Mooncake's kv_port is a base address and the connector
     binds one port per *worker rank*, so the band is the member's card count
-    (``{{accelerator_count}}``; measured TP8/DP1 -> 41100-41107 and DP2xTP2 ->
+    (``{{accelerator_count}}``, summed across a spanning member's hosts;
+    measured TP8/DP1 -> 41100-41107 and DP2xTP2 ->
     20001-20004), while NIXL's side channel is offset per DP index instead."""
 
     inject_to: PDInjectTargetEnum = PDInjectTargetEnum.ENV

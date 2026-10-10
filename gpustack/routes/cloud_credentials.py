@@ -3,6 +3,7 @@ from functools import partial
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     BadRequestException,
@@ -50,7 +51,12 @@ async def list(
 
     if params.watch:
         return StreamingResponse(
-            CloudCredential.streaming(fields=fields, fuzzy_fields=fuzzy_fields),
+            tenant_streaming(
+                CloudCredential,
+                ctx,
+                fields=fields,
+                fuzzy_fields=fuzzy_fields,
+            ),
             media_type="text/event-stream",
         )
 

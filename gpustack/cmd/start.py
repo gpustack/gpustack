@@ -10,6 +10,7 @@ from typing import Any, Dict
 import yaml
 
 from gpustack.config.config import set_global_config
+from gpustack import envs
 from gpustack.extension import Plugin, iter_plugin_classes, resolve_version_info
 from gpustack.logging import setup_logging
 from gpustack.utils.envs import get_gpustack_env, get_gpustack_env_bool
@@ -117,6 +118,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         type=str,
         help="User Access Token to authenticate to the Hugging Face Hub.",
         default=os.getenv("HF_TOKEN"),
+    )
+    common_group.add_argument(
+        "--insecure-tls",
+        action=OptionalBoolAction,
+        help="Skip TLS verification on GPUStack's own HTTPS connections (worker to server, server to external-auth IdP). For trusted networks where the server certificate cannot be verified otherwise.",
+        default=get_gpustack_env_bool("INSECURE_TLS"),
     )
     common_group.add_argument(
         "--system-default-container-registry",
@@ -762,9 +769,22 @@ def _contribute_plugin_config(args: argparse.Namespace, config_data: dict):
             ) from e
 
 
+def export_insecure_tls_env(cfg: Config):
+    """Surface an ``--insecure-tls`` / config-file setting as the env variable.
+
+    This process already decided via the global config (see
+    ``make_ssl_context``), but spawned subprocesses -- the benchmark runner,
+    the embedded worker -- read ``GPUSTACK_INSECURE_TLS`` at import and have
+    no global config, so the switch has to reach them as env.
+    """
+    if cfg.insecure_tls:
+        os.environ[envs.INSECURE_TLS_ENV] = "true"
+
+
 def run(args: argparse.Namespace):
     try:
         cfg = parse_args(args)
+        export_insecure_tls_env(cfg)
         setup_logging(cfg.debug)
         debug_env_info()
         set_third_party_env(cfg=cfg)
@@ -846,6 +866,7 @@ def set_common_options(args, config_data: dict):
         "bin_dir",
         "pipx_path",
         "huggingface_token",
+        "insecure_tls",
         "system_default_container_registry",
         "image_name_override",
         "image_repo",

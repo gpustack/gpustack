@@ -16,14 +16,13 @@ every pass, for every model, without raising or logging — no exception, no log
 line, and a Model row that looked perfectly correct next to a route row that
 did not.
 
-These tests run against a real session rather than a mock one, because a mock
-cannot be wrong in this particular way. That is not quite enough on its own:
-SQLite does not reproduce the identity-map behaviour that PostgreSQL shows, so
-the first test plants the empty collection directly rather than staging the
-conditions that produce it. The rest exercise the real call sequence.
+These tests use real sessions over an in-memory database. Keeping a previously
+loaded Model alive in the session exercises the identity-map path that a mocked
+lookup with pre-populated relationships would hide.
 """
 
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -132,6 +131,55 @@ async def _as_reconcile_does(session, model_id) -> Model:
 
 def _updated(model: Model) -> Event:
     return Event(type=EventType.UPDATED, data=model)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changed_field, event_type, expected_ids",
+    [
+        ("ready_replicas", EventType.UPDATED, {1, 3}),
+        ("replicas", EventType.UPDATED, {1, 3}),
+        ("state", EventType.UPDATED, {1, 3}),
+        ("native_anthropic_api", EventType.UPDATED, {1, 3}),
+        ("description", EventType.UPDATED, set()),
+        ("ready_replicas", EventType.DELETED, set()),
+    ],
+)
+async def test_loaded_model_notifies_its_live_route_targets(
+    db, changed_field, event_type, expected_ids
+):
+    deleted = _target(id=4, route_id=4)
+    deleted.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    model = _model()
+    model.replicas = model.ready_replicas = 2
+    await db.seed(
+        model,
+        _model(id=2, name="other"),
+        *[_route(id=i, name=f"route-{i}") for i in range(1, 5)],
+        _target(),
+        _target(id=2, route_id=2, model_id=2),
+        _target(id=3, route_id=3),
+        deleted,
+    )
+    # Keep the row alive in the identity map, as ModelController does before
+    # notifying targets. A later session.get must not hide existing targets.
+    attached = await Model.one_by_id(db, 1)
+    assert attached.model_route_targets == []
+    event = Event(
+        type=event_type,
+        data=attached,
+        changed_fields={changed_field: ([1], [2])},
+    )
+    publish = AsyncMock()
+    with patch("gpustack.server.controllers.event_bus.publish", publish):
+        await notify_model_route_target(db, attached, event)
+
+    assert publish.await_count == len(expected_ids)
+    assert {call.args[1].data.id for call in publish.await_args_list} == expected_ids
+    for call in publish.await_args_list:
+        topic, notification = call.args
+        assert topic == "modelroutetarget"
+        assert notification.changed_fields["model"][1]["ready_replicas"] == 2
 
 
 @pytest.mark.asyncio

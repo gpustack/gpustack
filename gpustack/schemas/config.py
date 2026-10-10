@@ -40,10 +40,25 @@ class ModelInstanceProxyModeEnum(str, Enum):
 
 
 class SensitivePredefinedConfig(BaseModel):
+    """Fields delivered as env with the worker registration command.
+
+    Membership means a field is emitted into the registration env (read by
+    the worker before its first connection to the server), excluded from
+    the runtime worker-config broadcast, and included in a cloud
+    instance's config.yaml. ``huggingface_token`` rides this channel
+    because spawned subprocesses need it as env; ``insecure_tls`` because
+    TLS is negotiated at that first connection, before any runtime
+    delivery could arrive.
+    """
+
     # Common options
     huggingface_token: Optional[str] = Field(
         default=None, json_schema_extra={"env_var": "HF_TOKEN"}
     )
+    # Skip TLS verification of the server on GPUStack's own HTTPS
+    # connections. A worker also accepts it directly via --insecure-tls,
+    # the config file, or GPUSTACK_INSECURE_TLS alone.
+    insecure_tls: Optional[bool] = None
 
 
 class PredefinedConfig(SensitivePredefinedConfig):

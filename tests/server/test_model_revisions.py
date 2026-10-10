@@ -183,8 +183,10 @@ def test_schedule_snapshot_uses_baseline_instead_of_live_replica_count():
     )
     before = deployment_spec(current)
     current.replicas = 0
+    current.scaling_schedule.paused = True
     assert deployment_spec(current) == before
     assert before["replicas"] == 2
+    assert "paused" not in before["scaling_schedule"]
 
 
 @pytest.mark.parametrize("value", [-1, -10])

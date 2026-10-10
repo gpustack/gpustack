@@ -1,7 +1,7 @@
 """Unit tests for cluster-scoped SYSTEM principal visibility."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -97,6 +97,50 @@ def test_assert_cluster_visible_scoped():
     with pytest.raises(NotFoundException):
         assert_cluster_visible(ctx, SimpleNamespace(id=4))
     assert_cluster_visible(_system_ctx(), SimpleNamespace(id=4))
+
+
+@pytest.mark.parametrize("mine", [False, True])
+def test_cluster_list_and_watch_share_system_scope(mine):
+    from gpustack.routes.clusters import (
+        _cluster_manageable_conditions,
+        _is_cluster_manageable,
+        _is_cluster_visible,
+    )
+
+    visible = _is_cluster_manageable if mine else _is_cluster_visible
+    ctx = _system_ctx(cluster_id=3)
+    assert visible(SimpleNamespace(id=3), ctx)
+    assert not visible(SimpleNamespace(id=4), ctx)
+    assert visible(SimpleNamespace(id=4), _system_ctx())
+    conditions = (
+        _cluster_manageable_conditions(ctx)
+        if mine
+        else cluster_visibility_conditions(ctx, Cluster)
+    )
+    (condition,) = conditions
+    assert condition.compare(Cluster.id == 3)
+
+
+@pytest.mark.asyncio
+async def test_gpu_instance_list_scopes_cluster_bound_system(monkeypatch):
+    from gpustack.routes import gpu_instances
+    from gpustack.schemas.common import Pagination
+    from gpustack.schemas.gpu_instances import GPUInstance, GPUInstanceListParams
+
+    query = AsyncMock(
+        return_value=SimpleNamespace(
+            items=[], pagination=Pagination(page=1, perPage=20, total=0, totalPage=0)
+        )
+    )
+    monkeypatch.setattr(GPUInstance, "paginated_by_query", query)
+    monkeypatch.setattr(gpu_instances, "async_session", MagicMock())
+    monkeypatch.setattr(gpu_instances, "_types_by_snapshot", AsyncMock(return_value={}))
+    ctx = _system_ctx(cluster_id=3)
+    await gpu_instances.get_gpu_instances(ctx=ctx, params=GPUInstanceListParams())
+    conditions = query.call_args.kwargs["extra_conditions"]
+    expected = tenant_list_conditions(ctx, GPUInstance)
+    assert len(conditions) == len(expected) == 1
+    assert conditions[0].compare(expected[0])
 
 
 def test_hybrid_backend_conditions_scoped_to_cluster_owner():

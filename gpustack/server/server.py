@@ -82,6 +82,7 @@ from gpustack.server.lora_model_routes import (
     create_lora_model_routes,
 )
 from gpustack.utils.lora_model_source import normalized_lora_list
+from gpustack.utils.file import write_credential_file
 from gpustack.server.init_db import init_db, get_query_count
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
@@ -962,8 +963,7 @@ class Server:
             else:
                 bootstrap_password = generate_secure_password()
                 try:
-                    with open(password_file, "w", encoding="utf-8") as file:
-                        file.write(bootstrap_password + "\n")
+                    write_credential_file(password_file, bootstrap_password + "\n")
                     logger.info(
                         "Generated initial admin password. "
                         f"You can get it from {password_file}"
