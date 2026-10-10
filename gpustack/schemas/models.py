@@ -1241,7 +1241,7 @@ class Model(ModelBase, BaseModelMixin, table=True):
         sa_column=Column(UTCDateTime), default=None
     )
     """When `POST /{id}/restart` last tore this deployment down, cleared once
-    it is serving again. The window a second restart must be refused in.
+    it is serving again or stopped. The window a second restart must be refused in.
 
     **It exists because the fact is not derivable.** The rows cannot be asked:
     live members spanning more than one `spec_digest` reads like
@@ -1252,10 +1252,11 @@ class Model(ModelBase, BaseModelMixin, table=True):
     exactly those replacements and costs the group another full startup, with
     nothing in the UI to say why it went back to pending.
 
-    Cleared by `sync_model_status` on reaching RUNNING, and lapsing on its own
-    after `RESTART_IN_FLIGHT_LAPSE_SECONDS`. The lapse is not a tidy-up: a
-    group that never converges is precisely the one an operator needs to
-    restart again, and a guard with no expiry would answer 409 forever."""
+    Cleared by `sync_model_status` on reaching RUNNING or setting `replicas`
+    to zero, and lapsing on its own after `RESTART_IN_FLIGHT_LAPSE_SECONDS`.
+    The lapse is not a tidy-up: a group that never converges is precisely the
+    one an operator needs to restart again, and a guard with no expiry would
+    answer 409 forever."""
 
     instances: list["ModelInstance"] = Relationship(
         sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},

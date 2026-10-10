@@ -3488,7 +3488,8 @@ async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
 def _restart_in_flight(model: Model) -> bool:
     """Whether a previous restart is still rebuilding this deployment.
 
-    Read off `Model.restarting_since`, which the status pass clears on RUNNING.
+    Read off `Model.restarting_since`, which the status pass clears when the
+    deployment is RUNNING or stopped.
     Two things it is deliberately not:
 
     - **Not a digest comparison.** The teardown is synchronous and the reconcile
