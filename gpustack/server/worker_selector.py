@@ -1,9 +1,9 @@
-import asyncio
 import logging
 from typing import List, Optional
 
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.schemas.workers import Worker
+from gpustack.utils.task import first_successful
 
 logger = logging.getLogger(__name__)
 
@@ -82,28 +82,26 @@ class WorkerSelector:
             First worker that has the path, or None if not found
         """
 
-        async def check_worker(worker: Worker) -> tuple[Worker, bool]:
-            """Check if a worker has the specified path."""
+        async def check_worker(worker: Worker) -> Optional[Worker]:
+            """Return the worker if it has the specified path, otherwise None."""
             try:
                 exists_response = await self._filesystem_client.path_exists(
                     worker, path
                 )
-                return worker, exists_response.exists
+                return worker if exists_response.exists else None
             except Exception as e:
                 logger.warning(
                     f"Failed to check path {path} on worker {worker.id}: {e}"
                 )
-                return worker, False
+                return None
 
-        # Create tasks for all workers
-        tasks = [check_worker(worker) for worker in workers]
-
-        # Execute tasks concurrently and get results as they complete
-        for completed_task in asyncio.as_completed(tasks):
-            worker, exists = await completed_task
-            if exists:
-                logger.info(f"Found path {path} on worker {worker.id}")
-                return worker
+        # Execute checks concurrently and take the first worker that has the path
+        found_worker = await first_successful(
+            check_worker(worker) for worker in workers
+        )
+        if found_worker:
+            logger.info(f"Found path {path} on worker {found_worker.id}")
+            return found_worker
 
         # No worker has the path
         logger.warning(f"Path {path} not found on any worker")
