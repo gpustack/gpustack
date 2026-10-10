@@ -248,6 +248,43 @@ def test_a_card_icon_that_carries_active_content_is_refused(icon):
         normalize_cache_provider_yaml(document, strict=True)
 
 
+def test_an_l2_backend_icon_a_browser_can_resolve_is_stored():
+    document = _document(
+        _provider(
+            "Demo",
+            l2_backends={
+                "redis": {
+                    "display_name": {"default": "Redis"},
+                    "icon": "/static/catalog_icons/redis.svg",
+                }
+            },
+        )
+    )
+    stored = yaml.safe_load(normalize_cache_provider_yaml(document, strict=True))
+    assert (
+        stored[0]["l2_backends"]["redis"]["icon"] == "/static/catalog_icons/redis.svg"
+    )
+
+
+def test_an_l2_backend_icon_that_carries_active_content_is_refused():
+    """An L2 backend carries its own logo and the card endpoint returns them
+    with the provider, so the allowlist covers them too — the field is nested,
+    not absent, and a document can name it without naming a card icon."""
+    document = _document(
+        _provider(
+            "Demo",
+            l2_backends={
+                "redis": {
+                    "display_name": {"default": "Redis"},
+                    "icon": "javascript:alert(1)",
+                }
+            },
+        )
+    )
+    with pytest.raises(ValueError, match="icon"):
+        normalize_cache_provider_yaml(document, strict=True)
+
+
 @pytest.mark.parametrize(
     "injection",
     [
