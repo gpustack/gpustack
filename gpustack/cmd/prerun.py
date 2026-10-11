@@ -337,11 +337,6 @@ scrape_configs:
         regex: ([^:]+)(?::\\d+)?;(\\d+)
         replacement: $1:$2
         target_label: __address__
-      - source_labels:
-          - __meta_kubernetes_pod_container_port_number
-          - __meta_kubernetes_pod_annotation_prometheus_io_port
-        action: keep
-        regex: ^(\\d+);\\1$
       - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
         action: replace
         target_label: __metrics_path__

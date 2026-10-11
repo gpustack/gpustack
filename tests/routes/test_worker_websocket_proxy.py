@@ -1,7 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
@@ -82,10 +82,20 @@ async def connection(
     denial_response=False,
     worker_ip="127.0.0.1",
     early_messages=None,
+    authorization_status=200,
+    authorization_error=None,
+    authorization_enter=None,
 ):
     upstream = upstream or Upstream()
     connect = AsyncMock(return_value=upstream, side_effect=connect_error)
     session = SimpleNamespace(ws_connect=connect)
+    authorization_client = SimpleNamespace(
+        get=MagicMock(side_effect=authorization_error)
+    )
+    authorization_client.get.return_value.__aenter__ = AsyncMock(
+        return_value=SimpleNamespace(status=authorization_status),
+        side_effect=authorization_enter,
+    )
     app = FastAPI()
     app.include_router(http_proxy.router)
     app.include_router(websocket_proxy.router)
@@ -99,7 +109,11 @@ async def connection(
         40123 if id == 7 else None
     )
     app.state.http_client = session if proxy_env else SimpleNamespace()
-    app.state.http_client_no_proxy = session if not proxy_env else SimpleNamespace()
+    app.state.http_client_no_proxy = (
+        SimpleNamespace(ws_connect=connect, get=authorization_client.get)
+        if not proxy_env
+        else authorization_client
+    )
     monkeypatch.setattr(websocket_proxy, "use_proxy_env_for_url", lambda _: proxy_env)
 
     headers = {
@@ -137,6 +151,7 @@ async def connection(
     if denial_response:
         scope["extensions"] = {"websocket.http.response": {}}
     downstream = Downstream()
+    downstream.authorization_request = authorization_client.get
     await downstream.messages.put({"type": "websocket.connect"})
     for message in early_messages or []:
         await downstream.messages.put(message)
@@ -273,6 +288,144 @@ async def test_model_credential_uses_server_auth_before_connect(monkeypatch, val
         if not valid:
             await downstream.finish()
             connect.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header", ["authorization", "x-api-key"])
+@pytest.mark.parametrize("status", [200, 401, 403, 500])
+@pytest.mark.parametrize("path", ["/v1/realtime", "/proxy/v1/realtime"])
+async def test_websocket_proxy_delegates_authorization_at_http_client_boundary(
+    monkeypatch, caplog, header, status, path
+):
+    credential = "inference-only-key"
+    credentials = {
+        header: f"Bearer {credential}" if header == "authorization" else credential,
+        "x-higress-llm-model": "allowed-model",
+    }
+    caplog.set_level("DEBUG", logger=auth.__name__)
+    async with connection(
+        monkeypatch, path=path, credentials=credentials, authorization_status=status
+    ) as (downstream, _, connect):
+        message = await downstream.next_message()
+        assert message["type"] == (
+            "websocket.accept" if status == 200 else "websocket.close"
+        )
+        downstream.authorization_request.assert_called_once_with(
+            "http://server/token-auth",
+            headers={
+                "Authorization": f"Bearer {credential}",
+                "X-Higress-Llm-Model": "allowed-model",
+            },
+        )
+        if status == 200:
+            connect.assert_awaited_once()
+        else:
+            assert message["code"] == 1008
+            await downstream.finish()
+            connect.assert_not_called()
+    assert (
+        "Verifying inference proxy credentials via server authentication" in caplog.text
+    )
+    assert credential not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_websocket_waits_for_model_authorization_before_accepting(monkeypatch):
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def authorize():
+        started.set()
+        await release.wait()
+        return SimpleNamespace(status=200)
+
+    async with connection(
+        monkeypatch,
+        credentials={
+            "authorization": "Bearer inference-only-key",
+            "x-higress-llm-model": "allowed-model",
+        },
+        authorization_enter=authorize,
+    ) as (downstream, _, connect):
+        await asyncio.wait_for(started.wait(), 1)
+        assert downstream.sent.empty()
+        connect.assert_not_called()
+        release.set()
+        assert (await downstream.next_message())["type"] == "websocket.accept"
+        connect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        {},
+        {"x-higress-llm-model": "allowed-model"},
+        {"authorization": "Bearer inference-only-key"},
+        {"x-api-key": "inference-only-key"},
+    ],
+)
+async def test_websocket_missing_credentials_or_model_never_contact_server(
+    monkeypatch, credentials
+):
+    async with connection(monkeypatch, credentials=credentials) as (
+        downstream,
+        _,
+        connect,
+    ):
+        message = await downstream.next_message()
+        assert message["type"] == "websocket.close" and message["code"] == 1008
+        await downstream.finish()
+        connect.assert_not_called()
+        downstream.authorization_request.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token", ["worker-token", "registration-token"])
+@pytest.mark.parametrize("header", ["authorization", "x-api-key"])
+async def test_websocket_control_plane_tokens_skip_server_authorization(
+    monkeypatch, token, header
+):
+    credentials = {
+        header: f"Bearer {token}" if header == "authorization" else token,
+        "x-higress-llm-model": "allowed-model",
+    }
+    async with connection(monkeypatch, credentials=credentials) as (
+        downstream,
+        _,
+        connect,
+    ):
+        assert (await downstream.next_message())["type"] == "websocket.accept"
+        connect.assert_awaited_once()
+        downstream.authorization_request.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header", ["authorization", "x-api-key"])
+@pytest.mark.parametrize(
+    "error",
+    [
+        aiohttp.ClientConnectionError("unavailable"),
+        asyncio.TimeoutError(),
+        OSError("unavailable"),
+    ],
+)
+async def test_websocket_auth_network_errors_never_accept_or_connect(
+    monkeypatch, caplog, header, error
+):
+    credential = "inference-only-key"
+    credentials = {
+        header: f"Bearer {credential}" if header == "authorization" else credential,
+        "x-higress-llm-model": "allowed-model",
+    }
+    async with connection(
+        monkeypatch, credentials=credentials, authorization_error=error
+    ) as (downstream, _, connect):
+        message = await downstream.next_message()
+        assert message["type"] == "websocket.close" and message["code"] == 1008
+        await downstream.finish()
+        connect.assert_not_called()
+        downstream.authorization_request.assert_called_once()
+    assert credential not in caplog.text
 
 
 @pytest.mark.asyncio

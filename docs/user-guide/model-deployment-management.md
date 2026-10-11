@@ -92,7 +92,7 @@ For a built-in vLLM or SGLang backend, `run_command` supplies initial startup ar
 
 ## Stop Model Deployment
 
-Stopping a model deployment will delete all model instances and release the resources. It is equivalent to scaling down the model to zero replicas.
+Stopping a model deployment sets its replica target to zero, deletes its instances, and releases resources. For deployments with scheduled scaling enabled, it also sets `scaling_schedule.paused` to suspend schedule execution. The enabled setting, baseline, and rules are preserved. Edits and rollbacks that keep the schedule enabled preserve its pause state; ordinary deployments use replica scaling without any pause state.
 
 1. Find the model deployment you want to stop on the deployment list page.
 2. Click the ellipsis button in the `Operations` column, then select `Stop`.
@@ -100,7 +100,9 @@ Stopping a model deployment will delete all model instances and release the reso
 
 ## Start Model Deployment
 
-Starting a model deployment is equivalent to scaling up the model to one replica.
+With scheduled scaling enabled, starting clears `scaling_schedule.paused` and GPUStack evaluates the schedule at the current time, without replaying missed windows. The replica target can remain zero outside active windows when the baseline is zero; the deployment is waiting for its schedule rather than paused. The action is labeled `Resume Schedule` for these deployments.
+
+Without an enabled schedule, starting sets the replica target to one. Disabling scheduled scaling is a separate configuration choice. Editing the replica count directly in the list switches to manual scaling after confirmation.
 
 1. Find the model deployment you want to start on the deployment list page.
 2. Click the ellipsis button in the `Operations` column, then select `Start`.
@@ -195,7 +197,7 @@ The last group of fields — `gpu_selector`, `gpu_type_selector`, `extended_kv_c
 
 `description` and `distributable` are carried through the file but have no control on the form.
 
-What the file leaves out: IDs, timestamps, runtime state such as ready replicas, metadata derived by the scheduler, the owning organization, the access policy, and LoRA runtime paths. The server regenerates these on import.
+What the file leaves out: IDs, timestamps, runtime state such as ready replicas and pause state, metadata derived by the scheduler, the owning organization, the access policy, and LoRA runtime paths. With scheduled scaling enabled, the exported replica count is the configured baseline rather than the current window target. The server regenerates runtime state on import; overwriting an existing deployment with an enabled paused schedule preserves its pause state.
 
 Selecting deployments from several clusters at once is fine: each entry records its own `cluster_name`, so one file describes them all and imports back whole. The cluster is written by name rather than by ID, so a file still restores correctly into a GPUStack that numbers its clusters differently — as a reinstall does.
 
@@ -234,7 +236,7 @@ The following rules apply when importing:
 
 ## Deployment Revision History
 
-GPUStack records a configuration revision when you create a model deployment or change its deployment settings, including updates imported from YAML. Saving the same configuration, restarting instances, and automatic changes such as scheduled scaling do not create revisions. Existing deployments receive an initial snapshot when their history is first opened or their configuration is first updated; earlier configurations cannot be recovered.
+GPUStack records a configuration revision when you create a model deployment or change its deployment settings, including updates imported from YAML. Saving the same configuration, pausing or resuming scheduled scaling, restarting instances, and automatic changes such as scheduled scaling do not create revisions. Existing deployments receive an initial snapshot when their history is first opened or their configuration is first updated; earlier configurations cannot be recovered.
 
 1. Find the deployment in the model deployment list.
 2. Open its `Operations` menu and select `Revision history`.

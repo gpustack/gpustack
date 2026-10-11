@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import RedirectResponse, StreamingResponse
 
 from gpustack import envs
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     BadRequestException,
@@ -17,9 +18,6 @@ from gpustack.api.exceptions import (
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.api.tenant import (
     assert_resource_visible,
-    bypass_tenant_filter,
-    cluster_scoped_system,
-    scoped_cluster_row_visible,
     tenant_list_conditions,
 )
 from gpustack.routes.models import assert_cluster_belongs_to_org
@@ -310,22 +308,7 @@ async def get_cache_services(
     if provider_name:
         fields["provider_name"] = provider_name
 
-    # System principals (workers, cluster service accounts) and admin in
-    # "All" mode must see every Org's cache services regardless of their
-    # ``principal_id`` — otherwise a worker's awatch stream would silently
-    # filter out services scheduled to it on clusters outside its
-    # Personal Org.
-    if ctx.current_principal_id is not None and not bypass_tenant_filter(ctx):
-        fields["owner_principal_id"] = ctx.current_principal_id
-
     if params.watch:
-        # Cluster-bound service accounts (worker / cluster bootstrap)
-        # only stream cache services of their own cluster.
-        filter_func = (
-            (lambda data: scoped_cluster_row_visible(ctx, data))
-            if cluster_scoped_system(ctx)
-            else None
-        )
         event_transform = None
         if not _system_caller(ctx):
 
@@ -356,10 +339,11 @@ async def get_cache_services(
 
             event_transform = redact_event
         return StreamingResponse(
-            CacheService.streaming(
+            tenant_streaming(
+                CacheService,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=filter_func,
                 event_transform=event_transform,
             ),
             media_type="text/event-stream",

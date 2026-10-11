@@ -40,11 +40,13 @@ if [ ! -f "$PASS_FILE" ]; then
 		ROOT_PASS=$(tr -dc 'A-Za-z0-9!@#$%^&*_+=' </dev/urandom | head -c 16)
 		ROOT_PASS="$(tr -dc 'A-Za-z' </dev/urandom | head -c 1)${ROOT_PASS:1}"
 	fi
-	echo "$ROOT_PASS" > "$PASS_FILE"
-	chmod 600 "$PASS_FILE"
+	# umask 077 so the superuser password is never world-readable, not even
+	# between the write and a later chmod.
+	(umask 077; echo "$ROOT_PASS" > "$PASS_FILE")
 	echo "[INFO] Postgres root password written to $PASS_FILE."
 elif [ -f "$PASS_FILE" ]; then
     ROOT_PASS=$(cat "$PASS_FILE")
+    chmod 600 "$PASS_FILE"
     echo "[INFO] Postgres root password read from $PASS_FILE."
 fi
 

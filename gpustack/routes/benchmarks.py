@@ -12,6 +12,7 @@ from fastapi.responses import (
 )
 from sqlmodel import func, or_
 from gpustack import envs
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -20,11 +21,8 @@ from gpustack.api.exceptions import (
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.api.tenant import (
-    bypass_tenant_filter,
     assert_resource_visible,
     tenant_list_conditions,
-    cluster_scoped_system,
-    scoped_cluster_row_visible,
 )
 from gpustack.mixins.active_record import fuzzy_like
 from gpustack.schemas.cache_services import CacheService
@@ -216,24 +214,6 @@ def gpu_summary_filter(data: Benchmark, gpu_summary: Optional[str]) -> bool:
     return _fuzzy_contains(gpu_summary, data.gpu_summary)
 
 
-def _make_benchmark_visibility_filter(ctx):
-    def _visible(b: Benchmark) -> bool:
-        if cluster_scoped_system(ctx):
-            return scoped_cluster_row_visible(ctx, b)
-        if bypass_tenant_filter(ctx):
-            return True
-        org_id = getattr(b, "owner_principal_id", None)
-        if (
-            ctx.current_principal_id is not None
-            and org_id is not None
-            and org_id == ctx.current_principal_id
-        ):
-            return True
-        return False
-
-    return _visible
-
-
 async def _get_benchmarks(  # noqa: C901
     ctx,
     params: BenchmarkListParams,
@@ -312,14 +292,13 @@ async def _get_benchmarks(  # noqa: C901
     elif target_mode:
         extra_conditions.append(Benchmark.target_mode == target_mode)
 
-    _benchmark_visible = _make_benchmark_visibility_filter(ctx)
-
     if params.watch:
         return StreamingResponse(
-            Benchmark.streaming(
+            tenant_streaming(
+                Benchmark,
+                ctx,
                 fields=fields,
-                filter_func=lambda data: _benchmark_visible(data)
-                and name_search_filter(data, search_terms)
+                filter_func=lambda data: name_search_filter(data, search_terms)
                 and gpu_summary_filter(data, gpu_summary)
                 and _fuzzy_contains(profile, data.profile)
                 and _fuzzy_contains(model_name, data.model_name)

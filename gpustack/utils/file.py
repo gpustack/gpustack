@@ -1,4 +1,5 @@
 import glob
+import logging
 import os
 import re
 import shutil
@@ -8,6 +9,70 @@ from typing import Callable
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from gpustack.utils import platform
+
+logger = logging.getLogger(__name__)
+
+# Modes for the data dir and the credentials inside it (the JWT signing
+# secret, registration and worker tokens, the initial admin password).
+#
+# The data dir is 0711 rather than 0700: the embedded PostgreSQL runs as its
+# own user and must traverse it on the way to <data_dir>/postgresql. 0711
+# grants that traversal to every principal while denying them a listing, and
+# the credential files inside are 0600, so traverse-only access to the
+# directory yields nothing.
+DATA_DIR_MODE = 0o711
+CREDENTIAL_FILE_MODE = 0o600
+
+
+def restrict_permissions(path: str, mode: int) -> None:
+    """Best-effort chmod to ``mode``; a failure is never fatal.
+
+    Args:
+        path: File or directory to tighten.
+        mode: Target permission bits.
+
+    A missing path and a read-only mount (the Helm chart subPath-mounts the
+    bootstrap-password Secret) are both expected in normal operation, so
+    failures are logged at debug and swallowed.
+    """
+    try:
+        os.chmod(path, mode)
+    except OSError as e:
+        logger.debug(f"Could not tighten permissions on {path} to {oct(mode)}: {e}")
+
+
+def write_credential_file(path: str, content: str) -> None:
+    """Overwrite ``path`` with ``content`` readable only by its owner.
+
+    The file is created 0600 and re-tightened afterwards: os.open applies the
+    mode only at creation, so an existing file whose mode is looser than 0600
+    is closed by the write as well, not only on a fresh install.
+
+    Args:
+        path: File to write.
+        content: Full file contents.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, CREDENTIAL_FILE_MODE)
+    with os.fdopen(fd, "w", encoding="utf-8") as file:
+        file.write(content)
+    restrict_permissions(path, CREDENTIAL_FILE_MODE)
+
+
+def ensure_dir(path: str, mode: int) -> None:
+    """Create ``path`` with ``mode``.
+
+    The explicit chmod is load-bearing: os.makedirs applies its mode through
+    the process umask, so a stricter umask would silently narrow the
+    directory (umask 077 turns mode=0711 into 0700, which the embedded
+    PostgreSQL cannot traverse).
+
+    Args:
+        path: Directory to create, with parents if needed. Intermediate
+            directories keep the umask default; only ``path`` is tightened.
+        mode: Permission bits to enforce on ``path``.
+    """
+    os.makedirs(path, mode=mode, exist_ok=True)
+    restrict_permissions(path, mode)
 
 
 def get_local_file_size_in_byte(file_path):

@@ -7,6 +7,7 @@ from gpustack.client.worker_manager_clients import (
     WorkerRegistrationClient,
 )
 from gpustack.security import API_KEY_PREFIX
+from gpustack.utils.file import write_credential_file
 from gpustack.utils.uuid import get_legacy_uuid
 from gpustack.utils.network import check_registry_reachable
 
@@ -29,8 +30,7 @@ def write_token(data_dir: str, filename: str, token: str):
             existing_token = f.read().strip()
         if existing_token == token:
             return  # Token is already written
-    with open(token_path, "w") as f:
-        f.write(token + "\n")
+    write_credential_file(token_path, token + "\n")
 
 
 def read_worker_token(data_dir: str) -> Optional[str]:

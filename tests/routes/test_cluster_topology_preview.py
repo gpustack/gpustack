@@ -71,7 +71,7 @@ def _stubs(workers, saved=None, allocated=None, models=None):
             new=AsyncMock(side_effect=fake_allocated),
         ),
         patch(
-            "gpustack.schemas.models.Model.all_by_field",
+            "gpustack.schemas.models.Model.all_by_fields",
             new=AsyncMock(return_value=models or []),
         ),
         # These cases are about the tree, not about who may see it: a caller
@@ -752,14 +752,15 @@ async def test_gather_references_are_scoped_to_the_caller():
     """
     seen = {}
 
-    async def _all_by_field(session, field, value, **kwargs):
-        seen.update(kwargs)
+    async def _all_by_fields(session, fields=None, extra_conditions=None, **kwargs):
+        seen["fields"] = fields
+        seen["extra_conditions"] = extra_conditions
         return []
 
     with (
         patch(
-            "gpustack.schemas.models.Model.all_by_field",
-            new=AsyncMock(side_effect=_all_by_field),
+            "gpustack.schemas.models.Model.all_by_fields",
+            new=AsyncMock(side_effect=_all_by_fields),
         ),
         patch(
             "gpustack.api.tenant.tenant_list_conditions",
@@ -768,6 +769,7 @@ async def test_gather_references_are_scoped_to_the_caller():
     ):
         await route._gather_references(None, object(), 1)
 
+    assert seen.get("fields") == {"cluster_id": 1}
     assert seen.get("extra_conditions") == ["OWNED-BY-CALLER"]
 
 

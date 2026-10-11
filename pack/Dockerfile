@@ -576,8 +576,12 @@ RUN --mount=type=cache,target=/root/.cache \
     tree -hs "$(pip show gpustack | grep Location: | head -n 1 | cut -d" " -f 2)/gpustack/third_party"
 
     # Set up environment
+    # 0711, not 0700: the embedded PostgreSQL runs as its own user and must
+    # traverse the data dir to reach <data_dir>/postgresql. Listing is denied
+    # to everyone else, the credential files inside are 0600, and a fresh
+    # named volume initialized from this directory inherits its mode.
     mkdir -p /var/lib/gpustack \
-        && chmod -R 0755 /var/lib/gpustack
+        && chmod -R 0711 /var/lib/gpustack
 
     # Review
     uv pip tree \

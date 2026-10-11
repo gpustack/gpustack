@@ -31,14 +31,27 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
 
-from gpustack.schemas.models import role_effective_model
-from gpustack.schemas.pd_modes import PDKVLeaseTargetEnum, PDMode, PDModeRole
+from gpustack.schemas.models import Model, role_effective_model
+from gpustack.schemas.pd_modes import (
+    PDKVLeaseTargetEnum,
+    PDMode,
+    PDModeRole,
+    PDPortSpec,
+)
 from gpustack.server.pd_mode_catalog import get_pd_mode
 from gpustack.server.pd_pairing import (
     selector_cards_per_replica,
     selector_spans_workers,
 )
-from gpustack.utils.command import find_int_parameter, flatten_to_argv
+from gpustack.utils.command import (
+    find_int_parameter,
+    flatten_to_argv,
+    resolve_executor_backend,
+)
+from gpustack.utils.vllm_topology import (
+    parse_user_parallelism,
+    validate_multinode_topology,
+)
 from gpustack.utils.template import render, render_values
 from gpustack.worker.kv_transfer import KV_TRANSFER_CONFIG_FLAG
 
@@ -142,10 +155,10 @@ def band_width(spec, *, cards: int, backend_parameters) -> Optional[int]:
     rank*, not per tensor-parallel rank:
 
         handshake_port = kv_port
-                       + data_parallel_rank * tp_size * pp_size [* pcp_size]
-                       + (pp_rank + pcp_rank) * tp_size + tp_rank
+                       + data_parallel_rank * tp_size * pp_size * pcp_size
+                       + (pp_rank * pcp_size + pcp_rank) * tp_size + tp_rank
 
-    so the band a member holds is `dp x tp x pp` wide -- its own card count. A
+    so the band a member holds is `dp x tp x pp x pcp` wide -- its card count. A
     `{{tensor_parallel_size}}` reading of the same rule is indistinguishable at
     TP8/DP1 and wrong at DP4xTP4, where it reserves 4 ports for a member that
     binds 16.
@@ -155,9 +168,9 @@ def band_width(spec, *, cards: int, backend_parameters) -> Optional[int]:
     the `tp_size` it renders into the connector descriptor. The two have to
     agree, which is why they share one alias table.
 
-    **None, never a guess, when the parameter is absent.** vLLM's own default is
-    1, but GPUStack injects a tensor-parallel size of its own further down the
-    vLLM path, so "the user did not write -tp" does not mean "one rank". The two
+    An absent DP size defaults to 1 for a single-node engine. Other absent
+    parallelism remains unresolved: GPUStack injects tensor parallelism further
+    down the vLLM path, so "the user did not write -tp" does not mean "one rank". The two
     failure modes are not comparable either: a band one port wide where the
     connector binds eight is exactly the collision this mechanism exists to
     prevent, and it surfaces as an instance wedged in `starting`, while an
@@ -184,7 +197,54 @@ def band_width(spec, *, cards: int, backend_parameters) -> Optional[int]:
     )
     if resolved is not None and resolved >= 1:
         return resolved
+    if key == "data_parallel_size" and resolved is None:
+        return 1
     return None
+
+
+def member_band_width(
+    spec: PDPortSpec, model: Model, gpu_per_node: List[int]
+) -> Optional[int]:
+    """Resolve a shared port band covering every rank of one member.
+
+    Args:
+        spec: The connector's port declaration.
+        model: The role-effective model used to launch the engine.
+        gpu_per_node: Scheduled accelerator counts, primary first.
+
+    Returns:
+        Band width, or None when the declaration cannot be resolved.
+
+    A spanning member carries one base and width to all its hosts. Reserving
+    the global range on each host covers global DP offsets even when a host
+    runs only the last ranks. MP defaults use the same topology resolver as
+    the vLLM command builder; the Ray path defaults to DP1.
+    """
+    parameters = list(getattr(model, "backend_parameters", None) or [])
+    if (
+        len(gpu_per_node) > 1
+        and band_count_key(spec) == "data_parallel_size"
+        and resolve_executor_backend(
+            parameters,
+            getattr(model, "backend_version", None),
+            getattr(model, "image_name", None),
+        )
+        == "mp"
+    ):
+        try:
+            topology = validate_multinode_topology(
+                gpu_per_node, parse_user_parallelism(parameters)
+            )
+        except ValueError as e:
+            logger.warning(
+                "Cannot resolve port band %r for model %r: %s",
+                spec.name,
+                getattr(model, "name", None),
+                e,
+            )
+            return None
+        parameters.append(f"--data-parallel-size={topology.dp}")
+    return band_width(spec, cards=sum(gpu_per_node), backend_parameters=parameters)
 
 
 # The RoleSpec fields worth exposing as {{roles.<role>.<field>}}. The

@@ -17,7 +17,7 @@ from fastapi.responses import PlainTextResponse
 from starlette.websockets import WebSocketState
 
 from gpustack import envs
-from gpustack.api.auth import worker_auth
+from gpustack.api.auth import worker_proxy_auth
 from gpustack.api.exceptions import NotFoundException, UnauthorizedException
 from gpustack.routes.worker.proxy import (
     get_model_instance_info_from_model_name,
@@ -54,7 +54,7 @@ _HANDSHAKE_HEADERS = frozenset(
 
 
 async def websocket_worker_auth(websocket: WebSocket) -> None:
-    """Apply the worker's credential checks without HTTP-only dependencies."""
+    """Apply inference-proxy authorization before accepting a WebSocket."""
     scheme, credentials = get_authorization_scheme_param(
         websocket.headers.get("authorization")
     )
@@ -64,7 +64,7 @@ async def websocket_worker_auth(websocket: WebSocket) -> None:
         else None
     )
     try:
-        await worker_auth(
+        await worker_proxy_auth(
             request=websocket,
             bearer_token=bearer,
             x_api_key=websocket.headers.get("x-api-key"),
