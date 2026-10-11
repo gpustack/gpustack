@@ -1303,6 +1303,8 @@ class AscendMindIEServer(InferenceServer):
             env["MINDIE_LOG_LEVEL"] = params.log_level.upper()
             # -- Server config
             server_config["maxLinkNum"] = params.max_link_num
+            server_config["tokenTimeout"] = params.token_timeout
+            server_config["e2eTimeout"] = params.e2e_timeout
             server_config["openAiSupport"] = params.openai_support
             # -- Backend config
             if params.kv_pool_config_parsed:
