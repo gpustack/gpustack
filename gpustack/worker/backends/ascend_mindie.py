@@ -647,7 +647,7 @@ class AscendMindIEParameters:
                     # If reach here, that means the field is an internal property,
                     # which would not register in the argument parser.
                     pass
-            if not hasattr(args_parsed, "npu_memory_fraction"):
+            if args_parsed.npu_memory_fraction is None:
                 self._from_envs(envs or {})
         else:
             self._from_envs(envs or {})
