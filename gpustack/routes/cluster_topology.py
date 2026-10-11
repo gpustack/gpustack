@@ -209,10 +209,9 @@ async def _gather_references(session, ctx, cluster_id: int) -> Dict[str, List[st
     from gpustack.schemas.models import Model
 
     out: Dict[str, List[str]] = {}
-    models = await Model.all_by_field(
+    models = await Model.all_by_fields(
         session,
-        "cluster_id",
-        cluster_id,
+        fields={"cluster_id": cluster_id},
         extra_conditions=list(tenant_list_conditions(ctx, Model)),
     )
     for model in models:

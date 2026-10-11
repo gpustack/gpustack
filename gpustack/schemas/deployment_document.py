@@ -29,7 +29,7 @@ from typing import (
 import yaml
 from pydantic import BaseModel, NonNegativeInt, ValidationError
 
-from .models import Model, ModelCreate, ModelPublic
+from .models import Model, ModelCreate, ModelPublic, ScalingSchedule
 from .source import unknown_keys
 
 # Fields the server derives or that bind a row to one environment. Dropped on
@@ -109,6 +109,8 @@ def deployment_config_view(
     for name in dict.fromkeys([*model.model_fields, *data]):
         if name not in data:
             continue
+        if model is ScalingSchedule and name == "paused":
+            continue
         field = model.model_fields.get(name)
         value = data[name]
         if field is not None and value is None:
@@ -167,8 +169,11 @@ def deployment_entry(
     model: Model, enable_model_route: bool, cluster_name: Optional[str]
 ) -> Dict[str, Any]:
     """One document entry for a stored deployment."""
+    data = model.model_dump(mode="json")
+    if model.scaling_schedule and model.scaling_schedule.enabled:
+        data["replicas"] = model.scaling_schedule.baseline_replicas
     return _entry_projection(
-        model.model_dump(mode="json"),
+        data,
         model.name,
         enable_model_route,
         cluster_name,

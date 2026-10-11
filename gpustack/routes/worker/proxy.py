@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
 
-from gpustack.api.auth import worker_auth
+from gpustack.api.auth import worker_proxy_auth
 from gpustack.api.exceptions import (
     GatewayTimeoutException,
     ServiceUnavailableException,
@@ -27,7 +27,7 @@ from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.utils.stall import stall_error_sse
 from gpustack.gateway.utils import get_instance_id_from_header, router_header_key
 
-router = APIRouter(dependencies=[Depends(worker_auth)])
+router = APIRouter(dependencies=[Depends(worker_proxy_auth)])
 
 logger = logging.getLogger(__name__)
 

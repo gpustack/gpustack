@@ -425,7 +425,7 @@ def test_worker_visibility_filter_scopes_cluster_bound_system():
     """The watch-stream row filter must narrow a cluster-bound SYSTEM
     account to its own cluster — the plain SYSTEM bypass would otherwise
     leak every cluster's workers."""
-    from gpustack.routes.workers import _make_worker_visibility_filter
+    from gpustack.api.tenant import tenant_stream_filter
     from gpustack.schemas.principals import PrincipalType
 
     scoped = SimpleNamespace(
@@ -434,7 +434,7 @@ def test_worker_visibility_filter_scopes_cluster_bound_system():
         current_principal_id=None,
         scoped_cluster_id=3,
     )
-    visible = _make_worker_visibility_filter(scoped)
+    visible = tenant_stream_filter(scoped, Worker)
     assert visible(SimpleNamespace(cluster_id=3, owner_principal_id=None))
     assert not visible(SimpleNamespace(cluster_id=4, owner_principal_id=None))
 
@@ -445,7 +445,7 @@ def test_worker_visibility_filter_scopes_cluster_bound_system():
         current_principal_id=None,
         scoped_cluster_id=None,
     )
-    assert _make_worker_visibility_filter(legacy)(
+    assert tenant_stream_filter(legacy, Worker)(
         SimpleNamespace(cluster_id=4, owner_principal_id=None)
     )
 
@@ -475,7 +475,6 @@ async def test_worker_list_batches_allocations_for_visible_workers(monkeypatch):
     monkeypatch.setattr(route.Worker, "paginated_by_query", query)
     conditions = ["tenant visibility"]
     monkeypatch.setattr(route, "tenant_list_conditions", lambda *args: conditions)
-    monkeypatch.setattr(route, "_make_worker_visibility_filter", lambda ctx: None)
     allocations = AsyncMock(
         return_value={1: Allocated(ram=10, vram={}), 2: Allocated(ram=20, vram={})}
     )

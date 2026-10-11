@@ -167,6 +167,9 @@ async def test_watch_filters_cluster_system_to_its_cluster(monkeypatch):
     filter_func = captured["filter_func"]
     assert filter_func(_instance_row(cluster_id=3)) is True
     assert filter_func(_instance_row(cluster_id=4)) is False
+    assert filter_func(_instance_row(cluster_id=None)) is True
+    assert filter_func({"id": 21}) is False
+    assert filter_func(SimpleNamespace(id=21)) is False
 
 
 @pytest.mark.asyncio
@@ -196,7 +199,34 @@ async def test_watch_unfiltered_for_platform_system(monkeypatch):
         ctx=_system_ctx(), params=_params(watch=True)
     )
 
-    assert captured["filter_func"] is None
+    assert captured["filter_func"](SimpleNamespace(cache_service_id=999))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("admin", [False, True])
+@pytest.mark.parametrize("principal_id", [None, ORG_PRINCIPAL])
+async def test_watch_bypass_requires_admin_without_principal(
+    monkeypatch, admin, principal_id
+):
+    captured = _patch_streaming(monkeypatch)
+    _patch_session(monkeypatch)
+    services = AsyncMock(return_value=[SimpleNamespace(id=9)])
+    monkeypatch.setattr(instances_route.CacheService, "all_by_fields", services)
+    ctx = _user_ctx(principal_id=principal_id)
+    ctx.is_platform_admin = admin
+
+    await instances_route.get_cache_service_instances(
+        ctx=ctx, params=_params(watch=True)
+    )
+
+    visible = captured["filter_func"]
+    assert visible(_instance_row(cache_service_id=8)) is (
+        admin and principal_id is None
+    )
+    assert visible(_instance_row(cache_service_id=9)) is (
+        admin or principal_id is not None
+    )
+    assert services.await_count == (0 if principal_id is None else 1)
 
 
 # ---- get by id ----

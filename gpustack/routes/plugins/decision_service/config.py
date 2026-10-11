@@ -9,7 +9,7 @@ it comes from a ``type=gpustack-lb-typesafe`` ModelProvider whose
 
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ModelSelectionConfig(BaseModel):
@@ -64,12 +64,21 @@ class DecisionServiceRouteConfig(BaseModel):
     """Contribution weight in the finisher's L1-weighted sum, in (0, N] —
     the wasm plugin's ``rankWeight``. None uses the plugin's compiled-in
     default (10)."""
-    decisionModel: Optional[str] = None
-    """Route-level override of the decision-engine model (e.g.
-    ``jev-latest`` / ``jev-preview``, discoverable via the service's
-    ``/v1/models``). Precedence on the wire: this > the provider entry's
-    ``model`` > omitted."""
+    decisionModel: str = Field(min_length=1)
+    """The decision-engine model for this route (e.g. ``jev-latest`` /
+    ``jev-preview``, discoverable via the service's ``/v1/models``).
+    Required: when blank the decision request ships without a ``model``
+    field and the service does not perform a routing decision, so the
+    policy would silently not run."""
     modelSelection: Optional[ModelSelectionConfig] = None
+
+    @field_validator("decisionModel")
+    @classmethod
+    def _decision_model_substantive(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("decisionModel must not be blank")
+        return stripped
 
     def to_gateway_rule(self) -> Dict[str, Any]:
         # Imported here to keep the schemas -> gateway dependency direction
@@ -79,9 +88,8 @@ class DecisionServiceRouteConfig(BaseModel):
         rule: Dict[str, Any] = {
             "enabled": self.enabled,
             "activeProviderId": provider_registry_name(self.providerId),
+            "decisionModel": self.decisionModel,
         }
-        if self.decisionModel is not None:
-            rule["decisionModel"] = self.decisionModel
         if self.modelSelection is not None:
             rule["modelSelection"] = self.modelSelection.to_gateway()
         if self.weight is not None:

@@ -23,7 +23,7 @@ Read resolution order for current_principal_id:
 """
 
 from dataclasses import dataclass, field
-from typing import Annotated, Any, List, Optional, Set
+from typing import Annotated, Any, Callable, List, Optional, Set
 
 from fastapi import Depends, Header, Request
 from sqlalchemy.orm import aliased
@@ -500,9 +500,10 @@ def tenant_list_conditions(
     """Build SQLAlchemy WHERE clauses to scope a list query to the caller.
 
     Visibility model:
-    - System principals (workers / cluster service accounts) and
-      platform admin without org context see everything — returns no
-      conditions.
+    - Cluster-bound system principals see their cluster's rows and rows
+      with NULL cluster_id. Models without cluster_id remain unfiltered.
+    - Other system principals and platform admins without org context
+      see everything — returns no conditions.
     - Everyone else with a principal context filters by
       ``model.owner_principal_id == ctx.current_principal_id``.
       Membership in the org is already enforced by
@@ -518,6 +519,34 @@ def tenant_list_conditions(
         conditions.append(model.owner_principal_id == ctx.current_principal_id)
 
     return conditions
+
+
+def tenant_stream_filter(ctx: TenantContext, model: Any) -> Callable[[Any], bool]:
+    """Mirror ``tenant_list_conditions`` for resolved tenant contexts in SSE.
+
+    Apply it before public projection to both cached replay and bus events.
+    Cluster-bound system principals retain the list's bypass for models
+    without cluster_id and its visibility of rows with NULL cluster_id.
+    Missing fields required by a scoped caller's policy cannot establish
+    visibility. Those payloads and non-bypass contexts without a principal
+    are rejected, even though the list helper assumes a resolved context.
+    """
+
+    def visible(resource: Any) -> bool:
+        if cluster_scoped_system(ctx):
+            if not hasattr(model, "cluster_id"):
+                return True
+            cluster_id = getattr(resource, "cluster_id", _UNSET)
+            return cluster_id is None or cluster_id == ctx.scoped_cluster_id
+        if bypass_tenant_filter(ctx):
+            return True
+        if ctx.current_principal_id is None:
+            return False
+        if not hasattr(model, "owner_principal_id"):
+            return True
+        return getattr(resource, "owner_principal_id", None) == ctx.current_principal_id
+
+    return visible
 
 
 def cluster_visibility_conditions(

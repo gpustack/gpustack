@@ -10,6 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import ValidationError
 
 from gpustack.routes.plugins import (
     RoutePlugin,
@@ -50,8 +51,7 @@ async def _provider_resolves(
     model the service still offers.
 
     Unresolvable here (deleted provider, one whose type moved off the
-    decision types, or a route whose effective model alias — the section's
-    ``decisionModel``, else the provider config's ``model`` — dropped out
+    decision types, or a route whose ``decisionModel`` dropped out
     of the provider's pulled ``models`` cache) must not render: the rule
     would point the callout at a target that no longer exists. The cache
     is only populated when someone pulls ``/v1/models``, so an empty cache
@@ -100,7 +100,47 @@ async def _config_for_route(
     policy = await policy_for_route(session, "decision-service", route_id)
     if policy is None:
         return None
-    return DecisionServiceRouteConfig.model_validate(section_from_policy(policy))
+    section = section_from_policy(policy)
+    if isinstance(section, dict) and not section.get("decisionModel"):
+        # Rows written before decisionModel became required carry none
+        # (exclude_none dropped it at write time); the old precedence chain
+        # fell back to the provider entry's own model, so reads keep doing
+        # that instead of failing reconciliation for pre-existing routes.
+        section = {
+            **section,
+            "decisionModel": await _provider_default_decision_model(
+                session, section.get("providerId")
+            ),
+        }
+    try:
+        return DecisionServiceRouteConfig.model_validate(section)
+    except ValidationError as e:
+        # A stored section that no longer parses must degrade to inert, not
+        # break the reconcile loop that reads it.
+        logger.warning(
+            "stored decision-service policy for route %s fails validation "
+            "(%s); treating the route as having no decision-service config",
+            route_id,
+            e,
+        )
+        return None
+
+
+async def _provider_default_decision_model(
+    session: Optional[AsyncSession], provider_id: Optional[int]
+) -> Optional[str]:
+    """The provider config's own decision-engine model, when provider_id
+    still names a live decision-service provider."""
+    if provider_id is None or session is None:
+        return None
+    provider = await ModelProvider.one_by_id(session, provider_id)
+    if (
+        provider is None
+        or provider.deleted_at is not None
+        or not is_decision_config(provider.config)
+    ):
+        return None
+    return provider.config.model
 
 
 async def _validate_provider_id(
@@ -117,7 +157,11 @@ async def _validate_provider_id(
     tests)."""
     if provider_id is None or session is None:
         return
-    provider = await ModelProvider.one_by_id(session, provider_id)
+    # The row lock pairs with the delete path in
+    # routes/model_provider.py: both hold it while reading/writing the
+    # references, so a provider delete cannot race a route write that is
+    # mid-validation of this providerId.
+    provider = await ModelProvider.one_by_id(session, provider_id, for_update=True)
     if (
         provider is None
         or provider.deleted_at is not None

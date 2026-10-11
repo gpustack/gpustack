@@ -277,6 +277,48 @@ def test_make_ssl_context_warns_when_insecure(monkeypatch, caplog):
     ), "expected a warning naming the variable that disabled verification"
 
 
+def test_make_ssl_context_honors_insecure_tls_config_option(monkeypatch):
+    """``--insecure-tls`` / the config file's ``insecure_tls`` must reach the
+    same context the env var does. The config path is what a cloud-provider
+    worker takes -- the cluster setting arrives in its config.yaml, not as
+    env -- so a decision that read the env var alone would silently verify
+    there."""
+    import gpustack.config.config as config_module
+
+    monkeypatch.setattr(ssl_context.envs, "INSECURE_TLS", False)
+    monkeypatch.setattr(
+        config_module,
+        "get_global_config",
+        lambda: SimpleNamespace(insecure_tls=True),
+    )
+    _clear_caches()
+
+    try:
+        ctx = make_ssl_context()
+        assert ctx.check_hostname is False
+        assert ctx.verify_mode is ssl.CERT_NONE
+    finally:
+        _clear_caches()
+
+
+def test_make_ssl_context_stays_secure_without_either_switch(monkeypatch):
+    import gpustack.config.config as config_module
+
+    monkeypatch.setattr(ssl_context.envs, "INSECURE_TLS", False)
+    monkeypatch.setattr(
+        config_module,
+        "get_global_config",
+        lambda: SimpleNamespace(insecure_tls=False),
+    )
+    _clear_caches()
+
+    try:
+        ctx = make_ssl_context()
+        assert ctx.verify_mode is ssl.CERT_REQUIRED
+    finally:
+        _clear_caches()
+
+
 def test_make_ssl_context_loads_nonempty_ca_bundle(monkeypatch):
     """Sanity check: the resolved context comes with some CA roots loaded.
 

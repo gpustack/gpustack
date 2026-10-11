@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.responses import StreamingResponse
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -991,7 +992,9 @@ async def get_inference_backends(  # noqa: C901
             )
 
         return StreamingResponse(
-            InferenceBackend.streaming(fields=fields, filter_func=_visible),
+            tenant_streaming(
+                InferenceBackend, ctx, fields=fields, visibility_filter=_visible
+            ),
             media_type="text/event-stream",
         )
 

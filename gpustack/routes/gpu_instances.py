@@ -37,6 +37,7 @@ from fastapi import APIRouter, Depends
 from sqlmodel import select
 from starlette.responses import StreamingResponse
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -45,6 +46,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.api.tenant import (
     bypass_tenant_filter,
+    tenant_list_conditions,
     TenantContext,
     assert_cluster_visible,
     assert_org_owned_writable,
@@ -112,7 +114,9 @@ async def get_gpu_instances(
 
     if params.watch:
         return StreamingResponse(
-            GPUInstance.streaming(
+            tenant_streaming(
+                GPUInstance,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 event_transform=_inject_type_snapshot_detail_into_event,
@@ -124,6 +128,7 @@ async def get_gpu_instances(
         paginated = await GPUInstance.paginated_by_query(
             session=session,
             fields=fields,
+            extra_conditions=tenant_list_conditions(ctx, GPUInstance),
             fuzzy_fields=fuzzy_fields,
             order_by=order_by_display_label(
                 params.order_by, display_name_label(GPUInstance)

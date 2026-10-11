@@ -2177,7 +2177,9 @@ async def _sync_replicas_per_role(
     # It also holds back a router that has not been created yet, which is the
     # same answer to the same question -- a router rendered from peers that
     # predate the edit is a cross-generation pairing like any other.
-    spec_moved = bool(generation) and generation_digest != digest
+    # Use the same version write-back exemption as the model's stale marker:
+    # recording the build the members already run does not change their spec.
+    spec_moved = bool(await _stale_members(session, model, generation))
 
     for role in model.roles:
         have = [i for i in generation if i.role == role.name]
@@ -4885,6 +4887,25 @@ class WorkerController:
                     fields={"worker_id": worker.id},
                     options=[selectinload(ModelInstance.model)],
                 )
+                # The worker's proxy change is not a column on Model, so it
+                # is carried to ``notify_model_route_target`` as a synthetic
+                # ``worker_*`` field. The notification is made directly here
+                # rather than riding the fanned-out model event: the
+                # coordinator drops ``changed_fields`` on the wire, so a
+                # consumer that received the model event cross-instance
+                # would re-diff an unchanged Model row, find nothing, and
+                # never rebuild the route -- which matters because the
+                # model's destinations are computed from the tunnel
+                # address, and a tunnel that recovers after
+                # ``ready_replicas`` has already settled has no other
+                # trigger left.
+                worker_changed_fields = {}
+                if proxy_address_changed is not None:
+                    worker_changed_fields["worker_proxy_address"] = (
+                        proxy_address_changed
+                    )
+                if proxy_mode_changed is not None:
+                    worker_changed_fields["worker_proxy_mode"] = proxy_mode_changed
                 notified_model = set()
                 for instance in instances:
                     if instance.model_id in notified_model:
@@ -4896,6 +4917,15 @@ class WorkerController:
                         Event(
                             type=EventType.UPDATED,
                             data=copied_model,
+                        ),
+                    )
+                    await notify_model_route_target(
+                        session=session,
+                        model=copied_model,
+                        event=Event(
+                            type=EventType.UPDATED,
+                            data=copied_model,
+                            changed_fields=worker_changed_fields,
                         ),
                     )
 
@@ -6377,11 +6407,22 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
         # `state` is what the target's ACTIVE gate reads, so a state change
         # has to reach the target even when the RUNNING count did not move
         # (a group whose upstream registration flips, for instance).
+        #
+        # The ``worker_*`` fields are synthetic: no column of that name
+        # exists on Model. ``WorkerController._notify_relatives`` passes
+        # them when a TUNNEL worker's proxy address or mode changes,
+        # because the model's destinations are computed from the tunnel
+        # address -- and when the tunnel recovers after
+        # ``ready_replicas`` has already gone back up, the replica-count
+        # path never fires again, so this is the only trigger that
+        # rebuilds the gateway route.
         related_fields = [
             "state",
             "ready_replicas",
             "replicas",
             "native_anthropic_api",
+            "worker_proxy_address",
+            "worker_proxy_mode",
         ]
         for field in related_fields:
             if field in event.changed_fields:
@@ -6390,13 +6431,14 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
     model: Model = await Model.one_by_id(
         session=session,
         id=model.id,
-        options=[
-            selectinload(Model.model_route_targets),
-        ],
     )
     if not model:
         return
-    targets = model.model_route_targets
+    # The model may already be in the session's identity map, where get()
+    # skips loader options and a noload relationship stays empty.
+    targets = await ModelRouteTarget.all_by_fields(
+        session, fields={"model_id": model.id, "deleted_at": None}
+    )
     for target in targets:
         if should_notify:
             target_copy = ModelRouteTarget(**target.model_dump())

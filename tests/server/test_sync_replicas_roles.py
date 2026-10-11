@@ -361,6 +361,63 @@ async def test_the_router_appears_once_its_peers_are_running():
     assert recorder.created[0].spec_digest == members[0].spec_digest
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "member_versions,recorded_version,parameters,created_roles",
+    [
+        (["0.23.0", "0.23.0"], "0.23.0", None, {"router": 1}),
+        (["0.23.0", "0.23.0"], "0.24.0", None, {}),
+        (["0.23.0", "0.24.0"], "0.23.0", None, {}),
+        (["0.23.0", None], "0.23.0", None, {}),
+        (["0.23.0", "0.23.0"], "0.23.0", ["--max-model-len=4096"], {}),
+    ],
+)
+async def test_router_creation_checks_version_writeback_and_real_edits(
+    member_versions, recorded_version, parameters, created_roles
+):
+    model = _model(roles=_pd_roles())
+    digest = await model_spec_digest(_pass(), model)
+    members = [
+        _instance(1, role="prefill", group_id="1-unpinned", spec_digest=digest),
+        _instance(2, role="decode", group_id="1-unpinned", spec_digest=digest),
+    ]
+    for member, version in zip(members, member_versions):
+        member.backend_version = version
+    model.backend_version = recorded_version
+    model.backend_parameters = parameters
+
+    recorder = await _run(model, members)
+
+    assert _by_role(recorder.created) == created_roles
+    assert not recorder.deleted
+    for created in recorder.created:
+        assert created.group_id == "1-unpinned"
+        assert created.spec_digest == digest
+        assert created.backend_version == recorded_version
+
+
+@pytest.mark.asyncio
+async def test_version_writeback_allows_adding_gpu_members_to_the_generation():
+    model = _model(roles=_pd_roles()[:-1])
+    digest = await model_spec_digest(_pass(), model)
+    members = [
+        _instance(1, role="prefill", group_id="1-unpinned", spec_digest=digest),
+        _instance(2, role="decode", group_id="1-unpinned", spec_digest=digest),
+    ]
+    for member in members:
+        member.backend_version = "0.23.0"
+    model.backend_version = "0.23.0"
+    model.roles[0].replicas = 2
+
+    recorder = await _run(model, members)
+
+    assert _by_role(recorder.created) == {"prefill": 1}
+    assert not recorder.deleted
+    assert recorder.created[0].group_id == "1-unpinned"
+    assert recorder.created[0].spec_digest == digest
+    assert recorder.created[0].backend_version == "0.23.0"
+
+
 # --- per-role convergence -------------------------------------------------- #
 
 

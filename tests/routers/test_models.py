@@ -53,6 +53,8 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
     ModelStateEnum,
     ModelUpdate,
+    ScalingSchedule,
+    ScalingScheduleRule,
     SourceEnum,
 )
 from gpustack.schemas.principals import (
@@ -311,7 +313,7 @@ def _stored_model(backend, image_name=None, run_command=None, backend_version=No
     return model
 
 
-async def _capture_update_patch(monkeypatch, model, model_in):
+async def _capture_update_patch(monkeypatch, model, model_in, *, apply_schedule=False):
     """Drive update_model past validation and return what ModelService saw."""
     captured = {}
 
@@ -333,9 +335,10 @@ async def _capture_update_patch(monkeypatch, model, model_in):
         AsyncMock(return_value=None),
     )
     monkeypatch.setattr(models_route, "validate_gather_layer", AsyncMock())
-    monkeypatch.setattr(
-        models_route, "apply_scaling_schedule_baseline", lambda *a, **k: None
-    )
+    if not apply_schedule:
+        monkeypatch.setattr(
+            models_route, "apply_scaling_schedule_baseline", lambda *a, **k: None
+        )
     monkeypatch.setattr(models_route, "validate_shared_kv_cache", AsyncMock())
     monkeypatch.setattr(models_route, "ModelService", _Service)
     monkeypatch.setattr(
@@ -349,6 +352,118 @@ async def _capture_update_patch(monkeypatch, model, model_in):
 
     await _apply_model_update(session, _ctx(CUSTOM_ORG_ID), model, model_in)
     return captured["source"]
+
+
+def _scaling_schedule(enabled=True, baseline=1):
+    return ScalingSchedule(
+        enabled=enabled,
+        baseline_replicas=baseline,
+        rules=[
+            ScalingScheduleRule(
+                start_cron="* * * * *", duration_seconds=86400, replicas=3
+            )
+        ],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replicas", [0, 5])
+async def test_sparse_manual_scaling_requires_disabling_schedule(monkeypatch, replicas):
+    model = _stored_model(BackendEnum.CUSTOM)
+    model.replicas = 3
+    model.scaling_schedule = _scaling_schedule()
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await _capture_update_patch(
+            monkeypatch, model, _model_update(replicas=replicas)
+        )
+    assert "Disable scheduled scaling" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replicas", [0, 2, 5])
+async def test_manual_scaling_disables_schedule_and_preserves_rules(
+    monkeypatch, replicas
+):
+    model = _stored_model(BackendEnum.CUSTOM)
+    model.replicas = 3
+    model.scaling_schedule = _scaling_schedule()
+    disabled = model.scaling_schedule.model_copy(update={"enabled": False})
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(replicas=replicas, scaling_schedule=disabled),
+        apply_schedule=True,
+    )
+
+    assert source.replicas == replicas
+    assert source.scaling_schedule.enabled is False
+    assert source.scaling_schedule.baseline_replicas == 1
+    assert source.scaling_schedule.rules == model.scaling_schedule.rules
+    assert "scaling_schedule" in source.model_fields_set
+    assert model.scaling_schedule.enabled is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replicas", [None, 3])
+async def test_sparse_edit_uses_stored_schedule_without_resubmitting_it(
+    monkeypatch, replicas
+):
+    model = _stored_model(BackendEnum.CUSTOM)
+    model.replicas = 3
+    model.scaling_schedule = _scaling_schedule()
+    fields = {} if replicas is None else {"replicas": replicas}
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(description="edited", **fields),
+        apply_schedule=True,
+    )
+
+    assert source.replicas == 3
+    assert "scaling_schedule" not in source.model_fields_set
+    assert source.scaling_schedule == model.scaling_schedule
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clear_schedule", [False, True])
+async def test_manual_scaling_allowed_with_disabled_or_removed_schedule(
+    monkeypatch, clear_schedule
+):
+    model = _stored_model(BackendEnum.CUSTOM)
+    model.replicas = 3
+    model.scaling_schedule = _scaling_schedule(enabled=clear_schedule)
+    fields = {"scaling_schedule": None} if clear_schedule else {}
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(replicas=0, **fields),
+        apply_schedule=True,
+    )
+
+    assert source.replicas == 0
+    if clear_schedule:
+        assert source.scaling_schedule is None
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_keeps_window_ownership_of_replicas(monkeypatch):
+    model = _stored_model(BackendEnum.CUSTOM)
+    model.replicas = 3
+    model.scaling_schedule = _scaling_schedule()
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(replicas=5, scaling_schedule=_scaling_schedule(baseline=5)),
+        apply_schedule=True,
+    )
+
+    assert source.replicas == 3
+    assert source.scaling_schedule.baseline_replicas == 5
 
 
 @pytest.mark.asyncio
@@ -676,11 +791,8 @@ def test_model_watch_filter_applies_state(
     """The /models watch stream honors ``state``. A payload carrying no
     ``state`` field — a row from before the column existed — is still
     filtered by the replica counts, unchanged."""
-    monkeypatch.setattr(models_route, "cluster_scoped_system", lambda ctx: False)
 
-    visible = models_route._make_model_watch_filter(
-        ctx=None, categories=None, state=state
-    )
+    visible = models_route._make_model_watch_filter(categories=None, state=state)
     data = SimpleNamespace(ready_replicas=ready, replicas=replicas)
     assert visible(data) is expected
 
@@ -707,11 +819,8 @@ def test_model_watch_filter_reads_the_model_state_field(
 ):
     """Once the row carries a status field, the filter reads it instead of
     re-deriving readiness from the counters."""
-    monkeypatch.setattr(models_route, "cluster_scoped_system", lambda ctx: False)
 
-    visible = models_route._make_model_watch_filter(
-        ctx=None, categories=None, state=state
-    )
+    visible = models_route._make_model_watch_filter(categories=None, state=state)
     # ready_replicas is deliberately inconsistent with model_state here: the
     # filter must not fall back to it when a state is present.
     data = SimpleNamespace(state=model_state, ready_replicas=0, replicas=replicas)
@@ -721,10 +830,9 @@ def test_model_watch_filter_reads_the_model_state_field(
 def test_model_watch_filter_passes_id_only_delete_events(monkeypatch):
     """ID-only DELETED payloads lack replica counts and must not be dropped
     by the state filter, else watch clients hold stale rows."""
-    monkeypatch.setattr(models_route, "cluster_scoped_system", lambda ctx: False)
 
     visible = models_route._make_model_watch_filter(
-        ctx=None, categories=None, state=ModelStateFilterEnum.READY
+        categories=None, state=ModelStateFilterEnum.READY
     )
     assert visible({"id": 7}) is True
 
