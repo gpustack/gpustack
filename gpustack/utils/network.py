@@ -5,6 +5,7 @@ from functools import lru_cache
 import os
 import random
 import socket
+import sys
 import time
 from typing import Optional, Set, Tuple, List, Union
 from urllib.parse import urlparse
@@ -399,6 +400,52 @@ def _bind_probe(port: int, host: str) -> Optional[bool]:
         return None
     except Exception:
         return None
+
+
+def is_port_reusable(port: int) -> bool:
+    """Check if a port can be rebound the way a real server binds it.
+
+    Binds with SO_REUSEADDR set, which is how the s6 services actually
+    listen, on both the wildcard address and loopback. A plain bind fails
+    on a port held only by residual TCP state (TIME_WAIT left by a
+    process that just exited, e.g. after a container recreate with
+    --network host), yet those services rebind such a port fine.
+
+    GPUStack services bind a mix of addresses (0.0.0.0 for the
+    gateway-facing ones, 127.0.0.1 for the embedded apiserver and
+    PostgreSQL), so every address is probed and all must bind: a reuse
+    bind against the *same* address as a live listener still fails with
+    EADDRINUSE on both Linux and macOS, keeping TIME_WAIT residue
+    distinguishable from a running instance of any of the services. A
+    reuse bind against a *different* address can coexist with a live
+    listener (on Linux only when the listener itself set SO_REUSEADDR,
+    which PostgreSQL does), which is why probing the wildcard alone
+    would not be enough. A listener on another specific local IP is not
+    probed; no GPUStack service binds such an address. Callers that must
+    never collide keep using `is_port_available`; this helper is for
+    fixed ports a service is about to bind itself.
+
+    Windows needs a guard: its SO_REUSEADDR has SO_REUSEPORT semantics
+    and binds over a live listener, so the probe cannot distinguish
+    TIME_WAIT residue from real occupancy there and reports False.
+
+    Args:
+        port (int): port to check.
+
+    Returns:
+        bool: True if a SO_REUSEADDR bind succeeds on every probed
+        address.
+    """
+    if sys.platform == "win32":
+        return False
+    for probe_host in ("0.0.0.0", "127.0.0.1"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((probe_host, port))
+        except OSError:
+            return False
+    return True
 
 
 def is_port_available(port: int, host: str = "127.0.0.1") -> bool:
