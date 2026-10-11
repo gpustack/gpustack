@@ -346,6 +346,21 @@ async def test_ascend_mindie_parameters_parallelism_violation(
         params.from_args_and_envs(args)
 
 
+@pytest.mark.parametrize(
+    "args, envs, expected",
+    [
+        [["--max-link-num", "100"], {"NPU_MEMORY_FRACTION": "0.5"}, 0.5],
+        [["--npu-memory-fraction", "0.5"], {"NPU_MEMORY_FRACTION": "0.9"}, 0.5],
+        [[], {"NPU_MEMORY_FRACTION": "0.5"}, 0.5],
+    ],
+)
+def test_ascend_mindie_parameters_npu_memory_fraction(args, envs, expected):
+    params = AscendMindIEParameters()
+    params.from_args_and_envs(args, envs)
+
+    assert params.npu_memory_fraction == expected
+
+
 def test_ascend_mindie_parameters_changed_backend_parameters():
     baseline = AscendMindIEParameters(max_seq_len=32768)
     baseline.from_args_and_envs([])
