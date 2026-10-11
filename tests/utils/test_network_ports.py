@@ -7,6 +7,7 @@ the same story from opposite ends, so they are pinned in one file.
 """
 
 import socket
+import sys
 from unittest.mock import Mock
 
 import pytest
@@ -17,6 +18,7 @@ from gpustack.utils.network import (
     get_free_band,
     get_free_port,
     is_port_available,
+    is_port_reusable,
 )
 
 
@@ -283,3 +285,85 @@ def test_is_port_available_returns_a_bool_for_an_unresolvable_host():
     probe.close()
 
     assert isinstance(is_port_available(port, "no-such-host.invalid"), bool)
+
+
+def _leave_timewait_on(port):
+    """Make the server side close first so `port` lands in TIME_WAIT."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(1)
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client.connect(("127.0.0.1", port))
+    conn, _ = srv.accept()
+    conn.close()
+    client.close()
+    srv.close()
+
+
+_WINDOWS_SKIP = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows SO_REUSEADDR binds over a live listener, so the reuse "
+    "probe cannot distinguish TIME_WAIT residue there",
+)
+
+
+@_WINDOWS_SKIP
+def test_is_port_reusable_accepts_a_timewait_only_port():
+    """The prerun scenario: a recreated --network-host container leaves
+    TIME_WAIT sockets on its fixed ports. The plain probe calls them taken,
+    but the services bind with SO_REUSEADDR and succeed, so the reuse
+    probe must too."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    port = srv.getsockname()[1]
+    srv.close()
+
+    _leave_timewait_on(port)
+
+    assert is_port_available(port, "127.0.0.1") is False
+    assert is_port_reusable(port) is True
+
+
+@_WINDOWS_SKIP
+def test_is_port_reusable_still_rejects_a_live_loopback_listener():
+    """The embedded apiserver and PostgreSQL bind 127.0.0.1, not the
+    wildcard address, and a reuse bind of a *different* address can
+    coexist with a live listener on Linux when that listener also set
+    SO_REUSEADDR (PostgreSQL does). A live loopback instance must stay
+    detectable, which is why every address is probed."""
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+
+        assert is_port_reusable(port) is False
+    finally:
+        holder.close()
+
+
+@_WINDOWS_SKIP
+def test_is_port_reusable_still_rejects_a_live_listener():
+    """A port held by an active listener must stay rejected: a reuse bind
+    only gets past dead sockets, never a live one."""
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        holder.bind(("0.0.0.0", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+
+        assert is_port_reusable(port) is False
+    finally:
+        holder.close()
+
+
+@_WINDOWS_SKIP
+def test_is_port_reusable_reports_a_free_port_reusable():
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    assert is_port_reusable(port) is True
