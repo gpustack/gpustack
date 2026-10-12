@@ -16,11 +16,14 @@ import logging
 from functools import lru_cache
 from typing import Any, Coroutine, Generator, List, Optional, TYPE_CHECKING, Tuple
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from gpustack.config.config import Config
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from gpustack.api.exceptions import HTTPException
     from gpustack.server.coordinator import Coordinator
 
 logger = logging.getLogger(__name__)
@@ -112,6 +115,37 @@ class Plugin:
         are expected to handle their own restart semantics. Default: no
         tasks."""
         return []
+
+    async def on_authenticated(
+        self,
+        request: Request,
+        session: "AsyncSession",
+        error: Optional["HTTPException"],
+    ) -> None:
+        """Called once at the end of ``authenticate_request``, with the
+        outcome of the authentication — both on success and on failure.
+
+        On success the resolved identity is already attached:
+        ``request.state.user`` (and ``request.state.api_key``, when the
+        request authenticated with an API key) hold it, and ``error`` is
+        None. On failure nothing is attached and ``error`` is the
+        HTTPException the request will fail with (401 for bad
+        credentials or a deactivated account, 500 when the lookup itself
+        failed).
+
+        Runs on every request that presents credentials, so it must be
+        cheap and cache its own state (parsed rules, etc.) rather than
+        hitting the DB unconditionally. The ``session`` is the auth
+        lookup's short-lived session — do not stash it or the objects it
+        yielded beyond the call. Do not start coroutines here.
+
+        On success, raise an HTTPException subclass (e.g.
+        ForbiddenException) to reject the request; any other exception is
+        logged and surfaces as a 500 — the hook fails closed. On failure
+        the request is already rejected, so exceptions from the hook are
+        only logged and never mask the real auth error.
+        """
+        pass
 
     @classmethod
     def setup_start_cmd(cls, parser) -> None:

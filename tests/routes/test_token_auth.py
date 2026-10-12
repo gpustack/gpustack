@@ -546,3 +546,57 @@ def test_consumer_golden_value():
         _build_consumer("3192253c1f4a9b7e", _principal())
         == "3192253c1f4a9b7e.gpustack-7"
     )
+
+
+@pytest.mark.asyncio
+async def test_hook_rejection_is_not_downgraded_to_anonymous(monkeypatch):
+    """A hook may reject an already-resolved identity with an
+    UnauthorizedException -- the same type a plain credential failure
+    raises. The credential path only attaches ``request.state.user``
+    after a successful resolution, so an attached identity marks a hook
+    rejection, which must propagate: downgrading it to anonymous would
+    let a PUBLIC route serve a request the hook explicitly refused."""
+    from gpustack.routes.token import _resolve_caller
+
+    async def _no_assertion(request, session):
+        return None, None
+
+    async def _rejected_by_hook(**kwargs):
+        request = kwargs["request"]
+        request.state.user = _principal()
+        raise UnauthorizedException(message="rejected by auth hook")
+
+    monkeypatch.setattr(
+        "gpustack.routes.token.authenticate_gateway_asserted_identity", _no_assertion
+    )
+    monkeypatch.setattr("gpustack.routes.token.authenticate_request", _rejected_by_hook)
+
+    with pytest.raises(UnauthorizedException):
+        await _resolve_caller(_request({}), session=object())
+
+
+@pytest.mark.asyncio
+async def test_credential_failure_still_downgrades_to_anonymous(monkeypatch):
+    """An ordinary bad credential keeps its PUBLIC-route behaviour: no
+    attached identity, so the caller resolves as anonymous rather than
+    failing the request."""
+    from gpustack.routes.token import _resolve_caller
+
+    async def _no_assertion(request, session):
+        return None, None
+
+    async def _bad_credential(**kwargs):
+        raise UnauthorizedException(message="bad credential")
+
+    monkeypatch.setattr(
+        "gpustack.routes.token.authenticate_gateway_asserted_identity", _no_assertion
+    )
+    monkeypatch.setattr("gpustack.routes.token.authenticate_request", _bad_credential)
+
+    user, api_key, consumer, asserted = await _resolve_caller(
+        _request({}), session=object()
+    )
+
+    assert user is None and api_key is None
+    assert consumer == "none"
+    assert asserted is False

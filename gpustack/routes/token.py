@@ -109,6 +109,14 @@ async def _resolve_caller(
             session=session,
         )
     except UnauthorizedException:
+        # Distinguish a hook's rejection from a plain credential failure:
+        # the credential path only attaches ``request.state.user`` after a
+        # successful resolution, so an attached identity means a hook
+        # rejected an already-authenticated caller. Downgrading that to
+        # anonymous would let a PUBLIC route serve a request the hook
+        # explicitly refused.
+        if hasattr(request.state, "user"):
+            raise
         logger.debug("Unauthenticated request to server token-auth endpoint")
         return None, None, "none", False
     except Exception as e:

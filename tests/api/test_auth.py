@@ -1933,3 +1933,335 @@ async def test_no_gateway_means_no_gateway_assertions(monkeypatch):
         None,
     )
     assert not calls["by_access_key"], "the lookup must not even be attempted"
+
+
+# --- authentication hooks ----------------------------------------------------
+
+from gpustack.api.auth import authenticate_request  # noqa: E402
+from gpustack.api.exceptions import (  # noqa: E402
+    ForbiddenException,
+    InternalServerErrorException,
+)
+from gpustack.extension import Plugin  # noqa: E402
+
+
+class _HookRecordingPlugin(Plugin):
+    """Plugin that overrides the auth hook and records its arguments."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def on_authenticated(self, request, session, error):
+        self.calls.append((request, session, error))
+
+
+class _HookRaisingPlugin(Plugin):
+    def __init__(self, exc):
+        self.exc = exc
+
+    async def on_authenticated(self, request, session, error):
+        raise self.exc
+
+
+class _PlainPlugin(Plugin):
+    """Plugin that does not override the auth hook."""
+
+    def __init__(self):
+        self.touched = False
+
+
+def _make_hook_request(plugins=None):
+    request = _make_request()
+    if plugins is not None:
+        request.app.state.extension_plugins = plugins
+    return request
+
+
+def _fake_async_session_factory(session):
+    @asynccontextmanager
+    async def fake_async_session():
+        yield session
+
+    return fake_async_session
+
+
+def _install_token_lookup(monkeypatch, user, api_key, session):
+    async def fake_get_user_from_api_token(sess, token):
+        assert sess is session
+        return user, api_key
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.get_user_from_api_token", fake_get_user_from_api_token
+    )
+    monkeypatch.setattr(
+        "gpustack.api.auth.async_session", _fake_async_session_factory(session)
+    )
+
+
+@pytest.mark.asyncio
+async def test_auth_hook_called_with_resolved_identity(monkeypatch):
+    """The hook sees the exact ``(request, session, user, api_key)`` the
+    token lookup resolved — same session, same objects."""
+    session = object()
+    user = type("User", (), {"is_active": True})()
+    api_key = _api_token_double()
+    plugin = _HookRecordingPlugin()
+    request = _make_hook_request(plugins=[_PlainPlugin(), plugin])
+    _install_token_lookup(monkeypatch, user, api_key, session)
+
+    result = await authenticate_request(
+        request,
+        bearer_token=HTTPAuthorizationCredentials(scheme="Bearer", credentials="tok"),
+    )
+
+    assert result is user
+    assert plugin.calls == [(request, session, None)]
+    assert request.state.api_key is api_key
+
+
+@pytest.mark.asyncio
+async def test_auth_hook_fires_for_basic_auth_with_no_api_key(monkeypatch):
+    """The hook is the end of the whole auth funnel, not an API-key-only
+    seam: basic credentials trigger it too, with ``api_key=None``."""
+    session = object()
+    plugin = _HookRecordingPlugin()
+    request = _make_hook_request(plugins=[plugin])
+    user = type("User", (), {"is_active": True})()
+
+    async def fake_authenticate_user(session, username, password):
+        return user
+
+    monkeypatch.setattr("gpustack.api.auth.authenticate_user", fake_authenticate_user)
+    monkeypatch.setattr(
+        "gpustack.api.auth.async_session", _fake_async_session_factory(session)
+    )
+
+    from fastapi.security import HTTPBasicCredentials
+
+    result = await authenticate_request(
+        request, basic_credentials=HTTPBasicCredentials(username="u", password="p")
+    )
+    assert result is user
+    assert plugin.calls == [(request, session, None)]
+
+
+@pytest.mark.asyncio
+async def test_auth_hook_fires_for_system_principal(monkeypatch):
+    """The system-principal path (server token via Basic auth) has no DB
+    lookup, but the hook contract still hands the plugin a session and
+    ``api_key=None``."""
+    session = object()
+    plugin = _HookRecordingPlugin()
+    request = _make_hook_request(plugins=[plugin])
+    request.app.state.server_config = type("Config", (), {"token": "server-token"})()
+    monkeypatch.setattr(
+        "gpustack.api.auth.async_session", _fake_async_session_factory(session)
+    )
+
+    from fastapi.security import HTTPBasicCredentials
+
+    result = await authenticate_request(
+        request,
+        basic_credentials=HTTPBasicCredentials(
+            username="system/worker/w1", password="server-token"
+        ),
+    )
+    assert result is not None
+    assert len(plugin.calls) == 1
+    assert plugin.calls[0][0] is request
+    assert plugin.calls[0][2] is None
+
+
+@pytest.mark.asyncio
+async def test_auth_hook_rejection_forbids_request(monkeypatch):
+    """A deliberate ``ForbiddenException`` from a hook propagates as-is —
+    the request is rejected even though the identity had already been
+    attached to ``request.state``."""
+    session = object()
+    user = type("User", (), {"is_active": True})()
+    plugin = _HookRaisingPlugin(ForbiddenException(message="blocked"))
+    request = _make_hook_request(plugins=[plugin])
+    _install_token_lookup(monkeypatch, user, _api_token_double(), session)
+
+    with pytest.raises(ForbiddenException):
+        await authenticate_request(
+            request,
+            bearer_token=HTTPAuthorizationCredentials(
+                scheme="Bearer", credentials="tok"
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_auth_hook_crash_fails_closed_without_leaking(monkeypatch, caplog):
+    """An unexpected hook error is logged with the plugin name and turns
+    into a 500 whose message does not carry the plugin's exception — the
+    message reaches the caller, and a plugin failure can contain SQL or
+    credential details."""
+    import logging
+
+    session = object()
+    user = type("User", (), {"is_active": True})()
+    plugin = _HookRaisingPlugin(RuntimeError("boom sql: SELECT secret"))
+    request = _make_hook_request(plugins=[plugin])
+    _install_token_lookup(monkeypatch, user, _api_token_double(), session)
+
+    with caplog.at_level(logging.ERROR, logger="gpustack.api.auth"):
+        with pytest.raises(InternalServerErrorException) as excinfo:
+            await authenticate_request(
+                request,
+                bearer_token=HTTPAuthorizationCredentials(
+                    scheme="Bearer", credentials="tok"
+                ),
+            )
+    assert "_HookRaisingPlugin" in caplog.text
+    assert "boom" not in str(excinfo.value)
+    assert "secret" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_auth_hook_rejection_is_not_logged_as_an_error(monkeypatch, caplog):
+    """A deliberate ForbiddenException from a hook is an expected
+    operational outcome, not a system error — it must propagate without
+    an ERROR-level traceback record."""
+    import logging
+
+    session = object()
+    user = type("User", (), {"is_active": True})()
+    plugin = _HookRaisingPlugin(ForbiddenException(message="blocked"))
+    request = _make_hook_request(plugins=[plugin])
+    _install_token_lookup(monkeypatch, user, _api_token_double(), session)
+
+    with caplog.at_level(logging.ERROR, logger="gpustack.api.auth"):
+        with pytest.raises(ForbiddenException):
+            await authenticate_request(
+                request,
+                bearer_token=HTTPAuthorizationCredentials(
+                    scheme="Bearer", credentials="tok"
+                ),
+            )
+    assert not caplog.records
+
+
+@pytest.mark.asyncio
+async def test_auth_hook_runs_for_gateway_asserted_identity(monkeypatch):
+    """The gateway-asserted path is a successful API-key authentication
+    with a Request and client context — hooks must see it, or key-binding
+    and audit plugins would be blind to every request the gateway
+    verified locally."""
+    from gpustack.api.auth import (
+        GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
+        authenticate_gateway_asserted_identity,
+    )
+
+    api_key = _api_token_double(access_key="3192253c1f4a9b7e", deleted_at=None)
+    user = _principal_double()
+    _install_key_lookups(monkeypatch, api_key=api_key, user=user)
+    plugin = _HookRecordingPlugin()
+    session = _SessionDouble()
+    request = _asserted_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: _GATEWAY_TOKEN,
+            GATEWAY_ASSERTED_ACCESS_KEY_HEADER: "3192253c1f4a9b7e",
+        }
+    )
+    request.app.state.extension_plugins = [plugin]
+
+    resolved = await authenticate_gateway_asserted_identity(request, session)
+
+    assert resolved == (user, api_key)
+    assert len(plugin.calls) == 1
+    assert plugin.calls[0][0] is request
+    assert plugin.calls[0][2] is None
+    assert request.state.user is user
+
+
+@pytest.mark.asyncio
+async def test_auth_hook_first_rejection_wins(monkeypatch):
+    """A crash in one plugin stops the loop; later hooks do not run."""
+    session = object()
+    user = type("User", (), {"is_active": True})()
+    crasher = _HookRaisingPlugin(RuntimeError("boom"))
+    later = _HookRecordingPlugin()
+    request = _make_hook_request(plugins=[crasher, later])
+    _install_token_lookup(monkeypatch, user, _api_token_double(), session)
+
+    with pytest.raises(InternalServerErrorException):
+        await authenticate_request(
+            request,
+            bearer_token=HTTPAuthorizationCredentials(
+                scheme="Bearer", credentials="tok"
+            ),
+        )
+    assert later.calls == []
+
+
+@pytest.mark.asyncio
+async def test_auth_hook_fires_on_failed_authentication(monkeypatch):
+    """The hook observes failures too: a token that resolves to nothing
+    reaches it once, with no identity and the 401 the request will fail
+    with."""
+    from gpustack.api.exceptions import UnauthorizedException
+
+    session = object()
+    plugin = _HookRecordingPlugin()
+    request = _make_hook_request(plugins=[plugin])
+    _install_token_lookup(monkeypatch, None, None, session)
+
+    with pytest.raises(UnauthorizedException):
+        await authenticate_request(
+            request,
+            bearer_token=HTTPAuthorizationCredentials(
+                scheme="Bearer", credentials="bad"
+            ),
+        )
+    assert len(plugin.calls) == 1
+    seen_request, _, seen_error = plugin.calls[0]
+    assert seen_request is request
+    assert not hasattr(seen_request.state, "user")
+    assert not hasattr(seen_request.state, "api_key")
+    assert isinstance(seen_error, UnauthorizedException)
+
+
+@pytest.mark.asyncio
+async def test_auth_hook_failure_does_not_mask_auth_error(monkeypatch):
+    """On an already-rejected request, a crashing hook is only logged —
+    it must not turn the 401 into a 500 or otherwise mask the real auth
+    error."""
+    from gpustack.api.exceptions import UnauthorizedException
+
+    session = object()
+    plugin = _HookRaisingPlugin(RuntimeError("boom"))
+    request = _make_hook_request(plugins=[plugin])
+    _install_token_lookup(monkeypatch, None, None, session)
+
+    with pytest.raises(UnauthorizedException):
+        await authenticate_request(
+            request,
+            bearer_token=HTTPAuthorizationCredentials(
+                scheme="Bearer", credentials="bad"
+            ),
+        )
+    assert not hasattr(request.state, "user")
+
+
+@pytest.mark.asyncio
+async def test_auth_no_plugin_install_unchanged(monkeypatch):
+    """Without plugins (or without ``extension_plugins`` at all), the
+    auth path behaves exactly as before."""
+    session = object()
+    user = type("User", (), {"is_active": True})()
+    api_key = _api_token_double()
+    for request in (
+        _make_hook_request(plugins=[]),
+        _make_hook_request(),  # no attribute at all
+    ):
+        _install_token_lookup(monkeypatch, user, api_key, session)
+        result = await authenticate_request(
+            request,
+            bearer_token=HTTPAuthorizationCredentials(
+                scheme="Bearer", credentials="tok"
+            ),
+        )
+        assert result is user
+        assert request.state.api_key is api_key

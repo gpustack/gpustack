@@ -184,7 +184,52 @@ async def get_current_user(
     )
 
 
-async def authenticate_request(
+async def run_authenticated_hooks(
+    request: Request,
+    session: AsyncSession,
+    error: Optional[HTTPException],
+) -> None:
+    """Run ``Plugin.on_authenticated`` for every plugin that overrides
+    it, in plugin-load order, with the final outcome of the
+    authentication. On success the resolved identity is already attached
+    to ``request.state`` (``user`` and, for API-key requests,
+    ``api_key``); ``error`` is None. On failure nothing is attached and
+    ``error`` carries the failure.
+
+    On success the hook may reject the request: an HTTPException passes
+    through as-is, anything else is logged and re-raised — a crashing
+    plugin fails closed and never widens access by being skipped. On
+    failure the request is already rejected, so exceptions from the hook
+    are only logged and never mask the real auth error."""
+    from gpustack.extension import Plugin
+
+    plugins = getattr(request.app.state, "extension_plugins", [])
+    for plugin in plugins:
+        if type(plugin).on_authenticated is Plugin.on_authenticated:
+            continue
+        try:
+            await plugin.on_authenticated(request, session, error)
+        except Exception as e:
+            if error is not None:
+                logger.warning(
+                    "auth hook %r failed on an already-rejected request",
+                    type(plugin).__name__,
+                    exc_info=True,
+                )
+                continue
+            if isinstance(e, HTTPException):
+                # A deliberate rejection is an expected outcome, not a
+                # system error — pass it through without a traceback.
+                raise
+            logger.exception("auth hook %r failed; rejecting", type(plugin).__name__)
+            # Raise a clean 500 rather than re-raising: the outer wrapper
+            # would interpolate str(e) into the message, which reaches the
+            # caller and can carry SQL or credential details from a plugin.
+            raise InternalServerErrorException(message="Failed to authenticate user")
+
+
+async def authenticate_request(  # noqa: C901 — one funnel, one outcome; splitting the
+    # branches off would hide that hooks observe every path's result.
     request: Request,
     basic_credentials: Optional[HTTPBasicCredentials] = None,
     bearer_token: Optional[HTTPAuthorizationCredentials] = None,
@@ -192,23 +237,32 @@ async def authenticate_request(
     cookie_token: Optional[str] = None,
     session: Optional[AsyncSession] = None,
 ) -> User:
+    """Resolve whichever credentials the request carries, then hand the
+    outcome — success or failure — to ``Plugin.on_authenticated`` before
+    admitting or rejecting the request."""
     if hasattr(request.state, "user"):
         user: User = getattr(request.state, "user")
         return user
+    if not (basic_credentials or cookie_token or bearer_token or x_api_key):
+        raise credentials_exception()
+
     api_key: Optional[ApiKey] = None
     user = None
+    error: Optional[HTTPException] = None
     try:
         server_config: Config = request.app.state.server_config
-        if basic_credentials and is_system_user(basic_credentials.username):
-            user = await authenticate_system_principal(server_config, basic_credentials)
-        elif basic_credentials or cookie_token or bearer_token or x_api_key:
-            # Scoped to just the auth lookup (not Depends(get_session)) so the
-            # connection/transaction isn't held open for the lifetime of the
-            # request -- otherwise a long-lived StreamingResponse (SSE watch,
-            # streaming inference proxy) leaves it idle-in-transaction until
-            # the stream ends, which can be hours. See #5678.
-            async with _optional_session(session) as session:
-                if basic_credentials:
+        # Scoped to just the auth lookup and the hooks (not
+        # Depends(get_session)) so the connection/transaction isn't held
+        # open for the lifetime of the request -- otherwise a long-lived
+        # StreamingResponse (SSE watch, streaming inference proxy) leaves
+        # it idle-in-transaction until the stream ends. See #5678.
+        async with _optional_session(session) as session:
+            try:
+                if basic_credentials and is_system_user(basic_credentials.username):
+                    user = await authenticate_system_principal(
+                        server_config, basic_credentials
+                    )
+                elif basic_credentials:
                     user = await authenticate_basic_user(session, basic_credentials)
                 elif cookie_token:
                     jwt_manager: JWTManager = request.app.state.jwt_manager
@@ -221,21 +275,40 @@ async def authenticate_request(
                     ) or x_api_key
                     if token is not None:
                         user, api_key = await get_user_from_api_token(session, token)
+                if user is not None and not user.is_active:
+                    raise UnauthorizedException(message="User account is deactivated")
+                if user is None:
+                    raise credentials_exception()
+            except HTTPException as e:
+                user = None
+                api_key = None
+                error = e
+            except Exception as e:
+                user = None
+                api_key = None
+                error = InternalServerErrorException(
+                    message=f"Failed to authenticate user: {e}"
+                )
 
-        if user:
-            if not user.is_active:
-                raise UnauthorizedException(message="User account is deactivated")
-            request.state.user = user
-            if api_key is not None:
-                request.state.api_key = api_key
-            return user
+            # The funnel is complete: on success the identity is attached
+            # to ``request.state`` (where the rest of the request pipeline
+            # and the hooks read it from), on failure ``error`` carries the
+            # outcome. Hooks see either way (audit), and on success a
+            # rejection raises here.
+            if error is None:
+                request.state.user = user
+                if api_key is not None:
+                    request.state.api_key = api_key
+            await run_authenticated_hooks(request, session, error)
+
+        if error is not None:
+            raise error
+        return request.state.user
 
     except HTTPException:
         raise
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to authenticate user: {e}")
-
-    raise credentials_exception()
 
 
 async def get_admin_user(
@@ -665,9 +738,14 @@ async def authenticate_gateway_asserted_identity(
         return None, None
 
     # Same state the credential path publishes, so ``inference_scope`` and the
-    # rest of the authorization checks read the key's scope either way.
+    # rest of the authorization checks read the key's scope either way. The
+    # auth hooks run here too: this is a successful API-key authentication,
+    # and it carries a Request with client context — skipping it would leave
+    # key-binding and audit plugins blind to every request the gateway
+    # verified locally.
     request.state.user = user
     request.state.api_key = api_key
+    await run_authenticated_hooks(request, session, None)
     return user, api_key
 
 
