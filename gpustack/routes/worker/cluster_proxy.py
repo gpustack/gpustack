@@ -9,12 +9,13 @@ from typing import Optional, Tuple
 import aiohttp
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from urllib.parse import unquote
 
 from gpustack.api.auth import worker_auth
 from gpustack.api.exceptions import (
+    InvalidException,
     InternalServerErrorException,
 )
-
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
@@ -68,6 +69,22 @@ _session_lock = asyncio.Lock()
 
 def _read_token() -> str:
     return TOKEN_PATH.read_text().strip()
+
+
+def _assert_plain_api_path(path: str) -> None:
+    """Defense in depth: the server authorizes a canonicalized path, but this
+    endpoint is also reachable by anything holding a worker token, so reject
+    traversal-shaped tails here too rather than letting the URL library
+    resolve them against the in-cluster API server."""
+    decoded = unquote(path)
+    if (
+        any(c in decoded for c in "%\\?#")
+        or any(ord(c) <= 0x20 or ord(c) == 0x7F for c in decoded)
+        or any(seg in (".", "..") for seg in decoded.split("/"))
+    ):
+        raise InvalidException(
+            message="Cluster proxy request path is not a plain Kubernetes API path"
+        )
 
 
 @functools.lru_cache(maxsize=1)
@@ -144,6 +161,7 @@ async def cluster_proxy(path: str, request: Request):
     authenticating the original caller; this endpoint trusts the worker
     bearer token (see worker_auth dependency).
     """
+    _assert_plain_api_path(path)
     base_url, _ = _resolve_kube_target()
     target_url = f"{base_url}/{path}"
 

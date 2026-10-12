@@ -17,6 +17,7 @@ from fastapi import FastAPI
 
 from gpustack.api.exceptions import (
     HTTPException,
+    ForbiddenException,
     InternalServerErrorException,
     ServiceUnavailableException,
     register_handlers,
@@ -115,3 +116,73 @@ async def test_handler_still_logs_an_unmarked_server_error(caplog):
         await handler(_request(), InternalServerErrorException("boom"))
 
     assert [r for r in caplog.records if r.levelno >= logging.ERROR] != []
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # Literal dot segment, as it arrives when the server port is reached
+        # directly (the gateway normalizes this form before it reaches us).
+        "apis/worker.gpustack.ai/v1/namespaces/own/../kube-system/secrets",
+        # Single-encoded dot segment after the gateway normalized plain ones:
+        # one decode round in _canonicalize_proxy_path yields "..".
+        "apis/worker.gpustack.ai/v1/namespaces/own/%2e%2e/kube-system/secrets",
+        # Double-encoded dot segment, which the gateway forwards verbatim;
+        # Starlette has already decoded it once, so the tail arrives as the
+        # single-encoded form above. Spelled out anyway to pin the behavior.
+        "apis/worker.gpustack.ai/v1/namespaces/own/%252e%252e/kube-system/secrets",
+        # Trailing escapes that survive a decode round, and backslashes.
+        "apis/worker.gpustack.ai/v1%00/namespaces/own/secrets",
+        "apis\\worker.gpustack.ai\\v1\\namespaces\\own\\secrets",
+        # Decoded URL delimiters: '#' or '?' reaching the canonicalizer after
+        # Starlette's own decode round (wire form %23 / %3f, or the literal
+        # characters for a direct caller) authorizes the suffix as a
+        # namespace segment while the forwarding URL library treats it as a
+        # fragment or query, turning a namespaced read into an all-namespace
+        # list. The double-encoded forms are included as the wire shape a
+        # gateway passes through verbatim; after Starlette's decode round
+        # they arrive here as the single-encoded forms above.
+        "apis/worker.gpustack.ai/v1/instances%23/namespaces/gpustack-user-6",
+        "apis/worker.gpustack.ai/v1/instances%3fnamespaces=gpustack-user-6",
+        "apis/worker.gpustack.ai/v1/instances#/namespaces/gpustack-user-6",
+        "apis/worker.gpustack.ai/v1/instances?namespaces=gpustack-user-6",
+        "apis/worker.gpustack.ai/v1/instances%2523/namespaces/gpustack-user-6",
+    ],
+)
+@pytest.mark.asyncio
+async def test_traversal_shaped_tails_are_rejected_before_any_lookup(raw):
+    """The authorized path and the forwarded path must be the same plain
+    Kubernetes API path: a tail that still looks like traversal or leftover
+    encoding after one decode round is refused before any cluster lookup, so
+    no caller class (manager included) can pass the scope check as one path
+    and reach the API server as another."""
+    with pytest.raises(ForbiddenException):
+        await clusters_route.cluster_apiserver_proxy(
+            request=MagicMock(),
+            ctx=_admin_ctx(),
+            id=CLUSTER_ID,
+            path=raw,
+        )
+
+
+@pytest.mark.parametrize(
+    "raw,canonical",
+    [
+        (
+            "apis/worker.gpustack.ai/v1/namespaces/own/gpuinstances",
+            "apis/worker.gpustack.ai/v1/namespaces/own/gpuinstances",
+        ),
+        # Empty segments collapse; leading slashes are not significant.
+        (
+            "/apis//worker.gpustack.ai/v1/namespaces/own",
+            "apis/worker.gpustack.ai/v1/namespaces/own",
+        ),
+        # A percent-escape that decodes to an ordinary character is fine.
+        (
+            "apis/worker.gpustack.ai/v1/namespaces/ow%6e/secrets",
+            "apis/worker.gpustack.ai/v1/namespaces/own/secrets",
+        ),
+    ],
+)
+def test_plain_tails_canonicalize_to_the_forwarded_form(raw, canonical):
+    assert clusters_route._canonicalize_proxy_path(raw) == canonical
