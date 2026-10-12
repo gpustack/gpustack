@@ -132,6 +132,7 @@ def _get_workload_sequence(states):
 def _build_serve_manager(worker_id: int = 1):
     clientset = MagicMock()
     clientset.model_instances.list.return_value = SimpleNamespace(items=[])
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
     cfg = SimpleNamespace(log_dir="/tmp")
     manager = ServeManager(lambda: worker_id, lambda: clientset, cfg)
     manager._inference_backend_manager = MagicMock()

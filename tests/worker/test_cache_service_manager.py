@@ -60,6 +60,7 @@ def runtime_boundaries(tmp_path):
 def _build_manager(worker_id: int = 1):
     clientset = MagicMock()
     clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[])
     clientset.cache_services.get.return_value = _new_cache_service()
     cfg = SimpleNamespace(
         service_port_range="40000-41000",
@@ -1606,6 +1607,9 @@ def test_deletion_during_provisioning_cancels_and_cleans_up_without_writeback():
         manager._stop_cache_service_instance(instance)
         writes_at_delete.append(update.call_count)
         assert cancelled.is_set()
+        assert instance.id in manager._assigned_ports
+        assert instance.id in manager._cache_service_instance_by_instance_id
+        assert instance.id in manager._starting
         return None
 
     with (
@@ -1626,7 +1630,9 @@ def test_deletion_during_provisioning_cancels_and_cleans_up_without_writeback():
     assert update.call_count == writes_at_delete[0]
     assert delete.call_count == 3
     assert instance.id not in manager._starting
+    assert instance.id not in manager._start_tokens
     assert instance.id not in manager._assigned_ports
+    assert instance.id not in manager._cache_service_instance_by_instance_id
 
 
 @pytest.mark.parametrize("operation", ["get", "update"])
@@ -2761,6 +2767,39 @@ def test_failed_deletion_is_retried_by_state_sync():
     assert delete.call_count == 2
     assert instance.id not in manager._assigned_ports
     assert instance.id not in manager._cache_service_instance_by_instance_id
+
+
+def test_cancelled_provisioning_cleanup_failure_is_retried_by_state_sync():
+    manager, clientset = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.STARTING)
+    manager._cache_service_instance_by_instance_id[instance.id] = instance
+    manager._assigned_ports[instance.id] = (40001, 40002)
+    assert manager._claim_start(instance.id)
+    cancelled = manager._start_tokens[instance.id]
+    cancelled.set()
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.delete_workload",
+            side_effect=[RuntimeError("runtime unavailable"), None],
+        ) as delete,
+        patch.object(manager._logs, "remove") as remove_logs,
+    ):
+        manager._finish_start(instance, cancelled)
+
+        assert manager._assigned_ports[instance.id] == (40001, 40002)
+        assert manager._cache_service_instance_by_instance_id[instance.id] is instance
+        assert instance.id not in manager._starting
+        assert instance.id not in manager._start_tokens
+        remove_logs.assert_not_called()
+
+        manager.sync_cache_service_instances_state()
+
+    assert delete.call_count == 2
+    assert instance.id not in manager._assigned_ports
+    assert instance.id not in manager._cache_service_instance_by_instance_id
+    remove_logs.assert_called_once_with(instance.id)
 
 
 @pytest.mark.parametrize("failure", ["provider", "claim"])

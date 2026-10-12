@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from gpustack.scheduler import port_budget
+from gpustack.schemas.cache_services import CacheServiceInstanceBase
 from gpustack.schemas.models import RoleNameEnum
 
 MOONCAKE = "vllm-ascend-mooncake"
@@ -35,6 +36,17 @@ def _instance(worker_id, ports=None, named_ports=None):
 
 def _band(base, count):
     return SimpleNamespace(base=base, count=count)
+
+
+def _cache_instance(worker_id, ports=None, port=None):
+    return CacheServiceInstanceBase(
+        name="cache-instance",
+        cache_service_id=1,
+        worker_id=worker_id,
+        cluster_id=1,
+        ports=ports,
+        port=port,
+    )
 
 
 class TestMemberDemand:
@@ -152,14 +164,37 @@ class TestPortsTaken:
         # 40000 plus the band 40001..40008.
         assert port_budget.ports_taken_on(1, [instance]) == 9
 
-    def test_cache_servers_come_out_of_the_same_pool(self):
+    @pytest.mark.parametrize(
+        "ports, port, expected",
+        [
+            ({"service": 40010, "metrics": 40011, "management": 40012}, 40010, 4),
+            ({"service": 40010, "metrics": 40011}, None, 3),
+            ({"service": 40010, "service_alias": 40010}, 40010, 2),
+            ({"service": 40000, "metrics": 40011}, 40000, 2),
+            ({"metrics": 40011}, 40010, 3),
+            (None, 40010, 2),
+            ({}, 40010, 2),
+            (None, None, 1),
+        ],
+    )
+    def test_cache_servers_come_out_of_the_same_pool(self, ports, port, expected):
         model_instances = [_instance(1, ports=[40000])]
-        cache = [SimpleNamespace(worker_id=1, port=40010, metrics_port=40011)]
-        assert port_budget.ports_taken_on(1, model_instances, cache) == 3
+        cache = [_cache_instance(1, ports=ports, port=port)]
+        assert port_budget.ports_taken_on(1, model_instances, cache) == expected
 
-    def test_an_unplaced_cache_instance_is_skipped(self):
-        cache = [SimpleNamespace(worker_id=None, port=40010, metrics_port=None)]
-        assert port_budget.ports_taken_on(1, [], cache) == 0
+    @pytest.mark.parametrize("worker_id, expected", [(1, 2), (2, 3), (3, 0)])
+    def test_cache_ports_are_counted_only_on_the_assigned_worker(
+        self, worker_id, expected
+    ):
+        cache = [
+            _cache_instance(1, ports={"service": 40010, "metrics": 40011}, port=40010),
+            _cache_instance(
+                2,
+                ports={"service": 40010, "metrics": 40011, "management": 40012},
+                port=40010,
+            ),
+        ]
+        assert port_budget.ports_taken_on(worker_id, [], cache) == expected
 
 
 class TestCapacity:
@@ -170,6 +205,18 @@ class TestCapacity:
 
     def test_ports_already_taken_reduce_it(self):
         assert port_budget.port_capacity("40000-40063", 9, 20) == 4
+
+    def test_all_cache_ports_reduce_member_capacity(self):
+        cache = [
+            _cache_instance(
+                1,
+                ports={"service": 40000, "metrics": 40001, "management": 40002},
+                port=40000,
+            )
+        ]
+        taken = port_budget.ports_taken_on(1, [], cache)
+
+        assert port_budget.port_capacity("40000-40009", 9, taken) == 0
 
     def test_a_full_pool_is_zero_not_negative(self):
         assert port_budget.port_capacity("40000-40063", 9, 64) == 0
