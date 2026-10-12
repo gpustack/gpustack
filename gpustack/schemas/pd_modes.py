@@ -91,6 +91,14 @@ class PDPeerStyleEnum(str, Enum):
     """
 
 
+class PDRouterMembershipUpdateEnum(str, Enum):
+    """How a router refreshes peers after scaling or instance recovery."""
+
+    DYNAMIC = "dynamic"
+    RESTART = "restart"
+    MANUAL = "manual"
+
+
 class PDRouterProtocolEnum(str, Enum):
     TWO_HOP = "two_hop"
     """Router calls prefill, then carries kv_transfer_params to decode."""
@@ -672,22 +680,20 @@ class PDRouter(BaseModel):
     peers: Optional[PDRouterPeers] = None
     capabilities: PDRouterCapabilities = PDRouterCapabilities()
     membership_api: PDMembershipAPI = PDMembershipAPI()
+    membership_update: PDRouterMembershipUpdateEnum = (
+        PDRouterMembershipUpdateEnum.MANUAL
+    )
+    """Dynamic uses the API; restart re-renders a managed router;
+    manual leaves peer configuration to the operator."""
 
     @property
     def membership_api_usable(self) -> bool:
         """Whether scale-out can go through the API *as this recipe launches it*.
 
-        Deliberately not an assertion in the loader. `membership_api` records
-        the shape upstream serves; `command` records what we actually start.
-        Those two legitimately disagree while a flag is declared but unverified
-        — which is today's state for `--enable-igw` — and a loader that refused
-        the mismatch would force the choice between deleting the knowledge and
-        enabling an untested flag.
-
-        So the mismatch gets a name instead. A consumer asking "can I add a
-        member without an outage" reads this and gets False, and it flips to
-        True the moment the flag is added to the recipe, with nothing else to
-        change.
+        An API declaration alone is insufficient: some builds require a launch
+        flag before the endpoints are reachable. A recipe declaring dynamic
+        updates must launch those flags, while manual/restart recipes may keep
+        an API declaration for reference without using it.
         """
         if not self.membership_api.available:
             return False
@@ -787,6 +793,20 @@ class PDRouter(BaseModel):
         duplicates = sorted({name for name in names if names.count(name) > 1})
         if duplicates:
             raise ValueError(f"duplicate named ports on the router: {duplicates}")
+        return self
+
+    @model_validator(mode="after")
+    def check_membership_update(self) -> "PDRouter":
+        if (
+            self.membership_update == PDRouterMembershipUpdateEnum.DYNAMIC
+            and not self.membership_api_usable
+        ):
+            raise ValueError("dynamic membership requires a usable membership API")
+        if (
+            self.membership_update == PDRouterMembershipUpdateEnum.RESTART
+            and self.protocol == PDRouterProtocolEnum.USER_PROVIDED
+        ):
+            raise ValueError("restart membership requires a managed router")
         return self
 
     def channel(self, target: PDInjectTargetEnum) -> Any:

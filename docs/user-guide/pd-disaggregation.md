@@ -118,9 +118,25 @@ and lets it re-form on the current configuration. Restarting only some roles is
 not offered, because that is exactly the request that produces the mixed pairing
 above.
 
-Scaling a role is different and does **not** require a restart — on a
-deployment with nothing pending. A replica count is not part of the shape the
-group is pinned to, so adding a prefill adds a prefill.
+Scaling changes each role's instance count without restarting the whole group,
+provided no configuration changes are pending. Router behavior depends on
+`router.membership_update` in `pd-modes.yaml`:
+
+| Policy | Shipped modes | Behavior on scaling or member recovery |
+| --- | --- | --- |
+| `dynamic` | vLLM NIXL, SGLang Mooncake/NIXL, vLLM Ascend Mooncake | GPUStack updates the router through its membership API. |
+| `restart` | vLLM Mooncake | GPUStack replaces the router after added GPU members are ready, refreshing startup peers and bootstrap metadata. Removed or restarted members trigger a refresh as soon as both sides have a usable peer. Surviving GPU instances keep running, but service is briefly unavailable and in-flight requests may fail. |
+| `manual` | Custom | The operator updates router peers and bootstrap metadata and restarts the router when necessary. |
+
+A user-supplied router run command uses manual membership management, even when
+the selected recipe supports automatic updates. The deployment form and replica
+editor display the policy from the catalog. Instance deletion also warns when
+recovery requires router replacement or operator action.
+
+Static router snapshots include instance identity, restart generation, HTTP
+address and named ports. A replacement or restart at the same address therefore
+still refreshes Mooncake bootstrap metadata. Existing routers without a snapshot
+are replaced once when their peers are ready.
 
 **With a saved change still waiting for its restart, a role cannot be scaled
 up.** A new member would be built from the edited configuration and would then

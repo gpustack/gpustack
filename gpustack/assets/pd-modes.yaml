@@ -320,6 +320,7 @@ modes:
           VLLM_NIXL_SIDE_CHANNEL_PORT: "{{ports.kv_side_channel}}"
           UCX_NET_DEVICES: "{{net_device}}"
     router:
+      membership_update: dynamic
       protocol: two_hop
       image: "{{runner_image}}"
       ports:
@@ -494,6 +495,7 @@ modes:
           kv_role: kv_consumer
           kv_load_failure_policy: '{{kv_load_failure_policy}}'
     router:
+      membership_update: restart
       protocol: two_hop
       image: '{{runner_image}}'
       ports:
@@ -654,6 +656,7 @@ modes:
           # both roles carry it. See prefill for what it costs to omit.
           MC_TCP_ENABLE_CONNECTION_POOL: "1"
     router:
+      membership_update: dynamic
       protocol: same_dispatch
       image: "{{runner_image}}"
       ports:
@@ -811,6 +814,7 @@ modes:
           SGLANG_DISAGGREGATION_NIXL_BACKEND: UCX
           UCX_NET_DEVICES: "{{net_device}}"
     router:
+      membership_update: dynamic
       protocol: same_dispatch
       image: "{{runner_image}}"
       ports:
@@ -1029,6 +1033,7 @@ modes:
           GLOO_SOCKET_IFNAME: "{{net_device}}"
           TP_SOCKET_IFNAME: "{{net_device}}"
     router:
+      membership_update: dynamic
       protocol: two_hop
       image: "{{runner_image}}"
       entrypoint:
@@ -1082,13 +1087,9 @@ modes:
         # visible only in the engine log. A router with metrics does not conjure
         # an engine-side counter that was never written.
         kv_expired_metric: false
-      # Read from upstream source, NOT measured. The single-router path drops
-      # `worker_type` before the PD router sees it and returns a hardcoded
-      # "requires specific add_prefill_server or add_decode_server methods";
-      # `--enable-igw` routes the call through the manager that dispatches on
-      # that field. `command` above does not carry the flag yet, so a consumer
-      # must read a failed call as "fall back to restart", never as "the group
-      # is broken".
+      # --enable-igw in connection_args routes membership updates through the
+      # manager, which dispatches worker_type to the appropriate PD registry.
+      # Probe the registry after an update to verify the peer was admitted.
       membership_api:
         add: POST /workers
         remove: DELETE /workers/{url}
@@ -1121,12 +1122,13 @@ modes:
     # recipe", never "no PD".
     backends: []
     # No built-in PD connector means no fixed cache composition example.
-    # On vLLM, a local cache and a user-supplied --kv-transfer-config use the
-    # same role-based worker composition order described under composed_cache.
+    # On vLLM, worker/kv_transfer.py composes a local cache and a user-supplied
+    # --kv-transfer-config with the PD connector first for both engine roles.
     # Shared-cache resolution stands down if the user supplies that flag;
     # an explicit MultiConnector must carry the complete connection config.
     roles: {}
     router:
+      membership_update: manual
       protocol: user_provided
     kv_lease: null
     # No connector GPUStack knows, so no tensor-parallel direction it can vouch

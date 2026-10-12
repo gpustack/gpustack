@@ -2086,6 +2086,37 @@ async def _release_and_delete(
     return names
 
 
+async def _refresh_static_routers(session, model, generation, spec_moved):
+    """Replace static routers from the serialized per-model replica pass."""
+    from gpustack.schemas.pd_modes import PDRouterMembershipUpdateEnum
+    from gpustack.server.pd_router_membership import (
+        expected_router_peers,
+        membership_policy,
+        router_refresh_ready,
+    )
+
+    if spec_moved or membership_policy(model) != PDRouterMembershipUpdateEnum.RESTART:
+        return
+    routers = pd_membership.router_instances(generation)
+    if not routers:
+        return
+    snapshot = await expected_router_peers(
+        session, model, generation, routers[0].group_id
+    )
+    changed = [
+        router
+        for router in routers
+        if router.router_peer_snapshot != snapshot
+        and router_refresh_ready(model, snapshot, router.router_peer_snapshot)
+    ]
+    if changed:
+        logger.info(
+            f"Rebuilding {len(changed)} router(s) of model {model.name} "
+            "to refresh startup peer and bootstrap metadata"
+        )
+        await _release_and_delete(session, changed)
+
+
 async def _sync_replicas_per_role(
     session: AsyncSession, model: Model
 ) -> Optional[float]:
@@ -2241,6 +2272,11 @@ async def _sync_replicas_per_role(
                 )
                 for _ in range(role.replicas - len(have))
             ]
+            from gpustack.server.pd_router_membership import seed_router_peer_snapshots
+
+            await seed_router_peer_snapshots(
+                session, model, generation, group_id, pending
+            )
             await ModelInstanceService(session).batch_create(pending)
             logger.debug(
                 f"Created {len(pending)} {role.name} instance(s) for "
@@ -2249,6 +2285,7 @@ async def _sync_replicas_per_role(
         elif len(have) > role.replicas:
             await _scale_down_role(session, model, role, have, generation)
 
+    await _refresh_static_routers(session, model, generation, spec_moved)
     return _next_drain_due(generation)
 
 
@@ -3962,6 +3999,43 @@ async def _router_dial(
     return worker.get_dial_address() or fallback, None, None
 
 
+async def _record_static_router_membership(session, model, instances):
+    """Keep stale startup metadata out of the deployment's RUNNING state."""
+    from gpustack.server.pd_router_membership import (
+        expected_router_peers,
+        MEMBERSHIP_REFRESH_REASON,
+        router_refresh_ready,
+        router_worker_ips,
+    )
+
+    routers = pd_membership.router_instances(instances)
+    reason = "waiting for router startup after membership update"
+    ok = bool(routers)
+    worker_ips = await router_worker_ips(session, model.cluster_id) if routers else {}
+    for router in routers:
+        snapshot = await expected_router_peers(
+            session, model, instances, router.group_id, worker_ip_by_id=worker_ips
+        )
+        if router.router_peer_snapshot != snapshot:
+            previous = router.router_peer_snapshot
+            if (
+                previous is not None
+                and all(peer in snapshot for peer in previous)
+                and not router_refresh_ready(model, snapshot, previous)
+            ):
+                # The existing peers still serve while pure scale-out waits.
+                continue
+            ok = False
+            reason = MEMBERSHIP_REFRESH_REASON
+            if await _stale_members(session, model, instances):
+                reason = "router membership changed; restart the deployment to apply configuration"
+            break
+    pd_membership.record(
+        model.id,
+        pd_membership.MembershipOutcome(ok=ok, reason=None if ok else reason),
+    )
+
+
 async def _reconcile_router_membership(
     session: AsyncSession, model: Model, instances: List[ModelInstance]
 ) -> None:
@@ -3981,15 +4055,19 @@ async def _reconcile_router_membership(
         pd_membership.forget(model.id)
         return
 
-    mode_name = model.disaggregation.mode.value
-    mode = get_pd_mode(mode_name)
-    if mode is None or not mode.router.membership_api_usable:
-        # Command-line path: the router knows its peers already. Recording
-        # nothing is what lets `upstream_registration_ready` stay vacuously
-        # true for these groups.
+    from gpustack.schemas.pd_modes import PDRouterMembershipUpdateEnum
+    from gpustack.server.pd_router_membership import membership_policy
+
+    policy = membership_policy(model)
+    if policy == PDRouterMembershipUpdateEnum.RESTART:
+        await _record_static_router_membership(session, model, instances)
+        return
+    if policy == PDRouterMembershipUpdateEnum.MANUAL:
         pd_membership.forget(model.id)
         return
 
+    mode_name = model.disaggregation.mode.value
+    mode = get_pd_mode(mode_name)
     routers = pd_membership.router_instances(instances)
     if not routers:
         pd_membership.record(
@@ -4223,9 +4301,8 @@ async def sync_model_status(session: AsyncSession, model: Model) -> bool:  # noq
     # traffic only once the router's own read-back reports it. Deriving RUNNING
     # first and registering after would publish an upstream that cannot serve.
     #
-    # A no-op for any group whose recipe does not launch what its membership
-    # API needs: `reconcile` returns ok immediately when
-    # `membership_api_usable` is false.
+    # The catalog chooses API read-back or comparison with startup peers.
+    # Static membership changes stay PARTIAL until a replacement router starts.
     await _reconcile_router_membership(session, model, instances)
 
     # The one failure a restart can fix, and only after it has persisted.
@@ -4258,6 +4335,15 @@ async def sync_model_status(session: AsyncSession, model: Model) -> bool:  # noq
         role_status=role_status,
         error_count=error_count,
     )
+
+    membership = membership_outcome_for(model.id)
+    if state == ModelStateEnum.PARTIAL and membership and not membership.ok:
+        state_message = (
+            "; ".join(
+                message for message in (state_message, membership.reason) if message
+            )
+            or None
+        )
 
     reasons, state_message = await _degradation_reasons(
         session,
