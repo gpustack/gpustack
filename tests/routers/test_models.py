@@ -334,7 +334,9 @@ async def _capture_update_patch(monkeypatch, model, model_in, *, apply_schedule=
         "gpustack.routes.models.assert_cluster_belongs_to_org",
         AsyncMock(return_value=None),
     )
-    monkeypatch.setattr(models_route, "validate_gather_layer", AsyncMock())
+    monkeypatch.setattr(
+        "gpustack.validation.pd.placement.validate_gather_layer", AsyncMock()
+    )
     if not apply_schedule:
         monkeypatch.setattr(
             models_route, "apply_scaling_schedule_baseline", lambda *a, **k: None
@@ -526,7 +528,9 @@ async def test_a_sparse_update_cannot_pin_a_second_runtime(monkeypatch):
         "gpustack.routes.models.assert_cluster_belongs_to_org",
         AsyncMock(return_value=None),
     )
-    monkeypatch.setattr(models_route, "validate_gather_layer", AsyncMock())
+    monkeypatch.setattr(
+        "gpustack.validation.pd.placement.validate_gather_layer", AsyncMock()
+    )
 
     with pytest.raises(BadRequestException) as exc_info:
         await _apply_model_update(

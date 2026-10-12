@@ -16,7 +16,7 @@ never gets traffic — a failure no message on the flag itself could explain.
 import pytest
 
 from gpustack.api.exceptions import BadRequestException
-from gpustack.routes.models import _reject_router_params_the_platform_owns
+from gpustack.validation.pd.roles import _reject_router_params_the_platform_owns
 from gpustack.schemas.models import DisaggregationSpec, PDModeEnum, RoleSpec
 
 
@@ -103,4 +103,24 @@ def test_a_hand_written_mode_refuses_nothing():
     user's — refusing one would be refusing a value nothing else supplies."""
     _reject_router_params_the_platform_owns(
         _roles(["--host", "1.2.3.4"]), _spec(PDModeEnum.CUSTOM)
+    )
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        ["--prefill http://other:8000"],
+        ["--host 0.0.0.0 --port 9000 --decode http://other:8001"],
+        ["--prefill-policy cache_aware --prefill=http://other:8000"],
+    ],
+)
+def test_peer_flags_in_pasted_command_lines_are_refused(parameters):
+    with pytest.raises(BadRequestException) as error:
+        _reject_router_params_the_platform_owns(_roles(parameters), _spec())
+    assert "set by GPUStack" in error.value.message
+
+
+def test_pasted_tunable_and_connection_flags_are_accepted():
+    _reject_router_params_the_platform_owns(
+        _roles(["--host 0.0.0.0 --port 9000 --prefill-policy cache_aware"]), _spec()
     )

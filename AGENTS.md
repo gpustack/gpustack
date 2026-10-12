@@ -27,6 +27,7 @@ gpustack/
   policies/       scheduler worker_filters / scorers / candidate_selectors
   routes/         FastAPI routers; routes.py wires every router and its auth tier
   schemas/        SQLModel tables + Pydantic request/response models
+  validation/     deployment configuration rules; pd/ groups PD validation
   server/         server runtime: controllers, event bus, services, collectors
   worker/         worker runtime, inference backends, benchmark and cache managers
 hack/             the scripts behind every make target

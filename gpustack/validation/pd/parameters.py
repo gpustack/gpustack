@@ -318,42 +318,6 @@ def violates_tensor_parallel_direction(
     return False
 
 
-def undecidable_factors(prefill, decode, model_parameters) -> List[str]:
-    """The pairing factors where one side declared and the other went silent.
-
-    Not a list of mismatches -- a mismatch between two determinable values is
-    refused at admission and never reaches here. This is the residue: the
-    places where GPUStack knows one side's value, cannot resolve the other's,
-    and therefore did not check. Naming that is the point, because the
-    alternative the user experiences is a check they believe happened.
-
-    Both sides silent is deliberately not on the list. Two roles taking the
-    same default from the same engine on the same model agree whatever it
-    resolves to, and marking them would put the badge on the ordinary way a
-    group is deployed.
-    """
-    prefill_params = role_parameters(prefill, model_parameters)
-    decode_params = role_parameters(decode, model_parameters)
-
-    factors: List[str] = []
-    if compare_max_model_len(prefill_params, decode_params)[0] == UNDECIDABLE:
-        factors.append("context length")
-
-    prefill_tp = effective_tensor_parallelism(prefill, prefill_params)
-    decode_tp = effective_tensor_parallelism(decode, decode_params)
-    if (prefill_tp is None) != (decode_tp is None):
-        factors.append("tensor parallelism")
-
-    for label, names in PAIRING_MUST_MATCH.items():
-        if (
-            compare_must_match(label, names, prefill_params, decode_params)
-            == UNDECIDABLE
-        ):
-            factors.append(label)
-
-    return factors
-
-
 def _same(left: Optional[str], right: Optional[str]) -> bool:
     if left is None or right is None:
         return False

@@ -195,8 +195,8 @@ class PDKVLease(BaseModel):
 class PDPairingToggle(BaseModel):
     """An engine switch both roles of a pair must land on the same way.
 
-    Distinct from the parameters compared in ``server/pd_pairing.py``: those
-    carry a value, this is a boolean argparse spells as a pair of mutually
+    The parameters compared in ``validation/pd/parameters.py`` carry values;
+    this is a boolean argparse spells as a pair of mutually
     exclusive flags, so what gets compared is *which flag came last*, not a
     value. That difference is why it could not go in that table.
     """

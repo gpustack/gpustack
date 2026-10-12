@@ -12,7 +12,7 @@ from contextlib import contextmanager
 import pytest
 
 from gpustack.api.exceptions import BadRequestException
-from gpustack.routes.models import validate_roles
+from gpustack.validation.pd.roles import validate_roles
 from gpustack.schemas.models import (
     DisaggregationSpec,
     Model,
@@ -445,6 +445,21 @@ def test_custom_mode_without_a_cache_is_fine():
             disaggregation=_pd(mode=PDModeEnum.CUSTOM),
         )
     )
+
+
+def test_custom_mode_cache_refusal_names_every_enabled_role():
+    with pytest.raises(BadRequestException) as refused:
+        validate_roles(
+            _model(
+                roles=[
+                    RoleSpec(name="prefill", extended_kv_cache=_cache()),
+                    RoleSpec(name="decode", extended_kv_cache=_cache()),
+                ],
+                disaggregation=_pd(mode=PDModeEnum.CUSTOM),
+            )
+        )
+    assert "'prefill'" in refused.value.message
+    assert "'decode'" in refused.value.message
 
 
 def test_sglang_never_touched_that_flag_and_is_unaffected():

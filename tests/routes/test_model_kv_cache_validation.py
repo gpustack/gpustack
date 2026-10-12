@@ -719,3 +719,179 @@ async def test_pd_explicit_engine_versions_do_not_block_cache_admission(
 
     await models_route.validate_shared_kv_cache(MagicMock(), model, OWNER_PRINCIPAL, 1)
     assert cache.enabled
+
+
+def _stored_pd_model(mode="vllm-nixl", ext=None):
+    from gpustack.schemas.models import Model, DisaggregationSpec, SourceEnum
+
+    return Model(
+        id=1,
+        name="pd",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/model",
+        backend="vLLM",
+        cluster_id=1,
+        owner_principal_id=OWNER_PRINCIPAL,
+        roles=[
+            RoleSpec(name="prefill"),
+            RoleSpec(name="decode"),
+            RoleSpec(name="router"),
+        ],
+        disaggregation=DisaggregationSpec(mode=mode),
+        extended_kv_cache=ext,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["cache", "mode", "roles"])
+async def test_sparse_pd_updates_validate_effective_cache_policy(monkeypatch, change):
+    from gpustack.schemas.models import ModelUpdate, DisaggregationSpec
+
+    _patch_lookups(monkeypatch, _service())
+    stored = _stored_pd_model("vllm-mooncake")
+    changes = {"extended_kv_cache": _shared_ext()}
+    if change == "mode":
+        stored.disaggregation = DisaggregationSpec(mode="custom")
+        stored.extended_kv_cache = _shared_ext()
+        changes = {"disaggregation": DisaggregationSpec(mode="vllm-mooncake")}
+    elif change == "roles":
+        changes = {"roles": [RoleSpec(name="decode", extended_kv_cache=_shared_ext())]}
+    update = ModelUpdate(
+        name=stored.name,
+        source=stored.source,
+        huggingface_repo_id=stored.huggingface_repo_id,
+        **changes,
+    )
+    with pytest.raises(BadRequestException) as error:
+        await models_route.validate_shared_kv_cache(
+            MagicMock(), update, OWNER_PRINCIPAL, 1, stored=stored
+        )
+    assert "does not support" in error.value.message
+
+
+@pytest.mark.asyncio
+async def test_sparse_cache_validation_preserves_unsubmitted_fields(monkeypatch):
+    from gpustack.schemas.models import ModelUpdate
+
+    _patch_lookups(monkeypatch, _service())
+    ext = _shared_ext()
+    ext.ram_ratio = 2.0
+    stored = _stored_pd_model("custom", ext)
+    before = stored.model_dump()
+    update = ModelUpdate(
+        name=stored.name,
+        source=stored.source,
+        huggingface_repo_id=stored.huggingface_repo_id,
+        description="updated",
+    )
+    fields = update.model_fields_set.copy()
+    await models_route.validate_shared_kv_cache(
+        MagicMock(), update, OWNER_PRINCIPAL, 1, stored=stored
+    )
+    assert update.model_fields_set == fields
+    assert stored.model_dump() == before
+    assert update.extended_kv_cache is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_cache_removal_does_not_validate_the_stored_cache(monkeypatch):
+    from gpustack.schemas.models import ModelUpdate
+
+    _patch_lookups(monkeypatch, _service())
+    stored = _stored_pd_model("custom", _shared_ext())
+    update = ModelUpdate(
+        name=stored.name,
+        source=stored.source,
+        huggingface_repo_id=stored.huggingface_repo_id,
+        extended_kv_cache=None,
+    )
+    await models_route.validate_shared_kv_cache(
+        MagicMock(), update, OWNER_PRINCIPAL, 1, stored=stored
+    )
+    models_route.CacheService.one_by_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sparse_shared_cache_update_preserves_explicit_role_local_cache_sizes(
+    monkeypatch,
+):
+    from gpustack.schemas.models import ModelUpdate
+
+    _patch_lookups(monkeypatch, _service())
+    local = ExtendedKVCacheConfig(enabled=True, ram_ratio=2.0, ram_size=16)
+    stored = _stored_pd_model(ext=ExtendedKVCacheConfig(enabled=True))
+    for role in stored.roles:
+        if role.name in ("prefill", "decode"):
+            role.extended_kv_cache = local.model_copy()
+        else:
+            role.extended_kv_cache = ExtendedKVCacheConfig(enabled=False)
+    before = stored.model_dump()
+    update = ModelUpdate(
+        name=stored.name,
+        source=stored.source,
+        huggingface_repo_id=stored.huggingface_repo_id,
+        extended_kv_cache=_shared_ext(),
+    )
+    fields = update.model_fields_set.copy()
+    await models_route.validate_shared_kv_cache(
+        MagicMock(), update, OWNER_PRINCIPAL, 1, stored=stored
+    )
+    assert stored.model_dump() == before
+    assert update.model_fields_set == fields
+    assert update.roles is None
+    assert update.extended_kv_cache.ram_ratio is None
+    assert update.extended_kv_cache.ram_size is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode,provider,backend",
+    [("vllm-mooncake", "Mooncake", "vLLM"), ("sglang-mooncake", "LMCache", "SGLang")],
+)
+@pytest.mark.parametrize("action", ["create", "description", "stop"])
+async def test_router_does_not_inherit_shared_cache_for_admission(
+    monkeypatch, mode, provider, backend, action
+):
+    from gpustack.schemas.models import ModelUpdate
+
+    service = _service()
+    service.provider_name = provider
+    _patch_lookups(
+        monkeypatch, service, provider_backends=(backend,), provider_name=provider
+    )
+    stored = _stored_pd_model(mode, _shared_ext())
+    stored.backend = backend
+    if action == "create":
+        model_in, previous = stored, None
+    else:
+        changes = (
+            {"description": "updated"} if action == "description" else {"replicas": 0}
+        )
+        model_in = ModelUpdate(
+            name=stored.name,
+            source=stored.source,
+            huggingface_repo_id=stored.huggingface_repo_id,
+            **changes,
+        )
+        previous = stored
+    await models_route.validate_shared_kv_cache(
+        MagicMock(), model_in, OWNER_PRINCIPAL, 1, stored=previous
+    )
+
+
+@pytest.mark.asyncio
+async def test_router_explicit_shared_cache_is_still_rejected(monkeypatch):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    service = _service()
+    service.provider_name = "Mooncake"
+    _patch_lookups(monkeypatch, service, provider_name="Mooncake")
+    model = _model_in(
+        None, roles=[_role("prefill"), _role("decode"), _role("router", _shared_ext())]
+    )
+    model.disaggregation = DisaggregationSpec(mode="vllm-mooncake")
+    with pytest.raises(BadRequestException) as refused:
+        await models_route.validate_shared_kv_cache(
+            MagicMock(), model, OWNER_PRINCIPAL, 1
+        )
+    assert "router" in refused.value.message

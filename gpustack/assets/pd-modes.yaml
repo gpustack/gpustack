@@ -181,8 +181,8 @@ composed_cache:
     top_level_only: [kv_load_failure_policy]
 
 # Boolean engine switches both roles of a pair must land on the same way.
-# Distinct from the parameters compared in `server/pd_pairing.py`: those carry a
-# value, these are booleans argparse spells as two mutually exclusive flags, so
+# Distinct from the parameters compared in `validation/pd/parameters.py`: those
+# carry a value, these are booleans argparse spells as two mutually exclusive flags, so
 # what gets compared is WHICH FLAG CAME LAST.
 pairing_toggles:
   - backend: vLLM

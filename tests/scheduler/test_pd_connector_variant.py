@@ -1,10 +1,20 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
+from datetime import datetime, timezone
+import asyncio
+import json
 
 import pytest
 
 from gpustack.scheduler import scheduler
-from gpustack.schemas.models import DisaggregationSpec, RoleSpec
+from gpustack.schemas.models import (
+    DisaggregationSpec,
+    RoleSpec,
+    ModelInstance,
+    ModelInstanceStateEnum,
+    PortBand,
+)
 from tests.utils.model import new_model
 
 
@@ -185,3 +195,142 @@ async def test_unreadable_override_does_not_abort_other_model_metadata(
     loader.assert_awaited_once()
     assert model.categories
     assert model.meta["pd_connector_variant"]
+
+
+@pytest.fixture
+def layout_runner(monkeypatch):
+    from gpustack.utils.template import deployment_variables
+    from gpustack.worker.pd_injection import render_pd_injection
+
+    persisted = [_model()]
+    persisted[0].backend_parameters = ["--tensor-parallel-size=1"]
+    now = datetime.now(timezone.utc)
+    instances = {
+        index: ModelInstance(
+            id=index,
+            name=f"pd-{role}",
+            model_id=1,
+            role=role,
+            source="huggingface",
+            huggingface_repo_id="org/model",
+            state=ModelInstanceStateEnum.PENDING,
+            created_at=now,
+            updated_at=now,
+        )
+        for index, role in enumerate(("prefill", "decode"), 1)
+    }
+    monkeypatch.setattr(scheduler, "async_session", lambda: MagicMock())
+    monkeypatch.setattr(
+        scheduler.ModelInstance,
+        "one_by_id",
+        AsyncMock(side_effect=lambda session, id: instances[id]),
+    )
+
+    async def load_model(session, id):
+        return persisted[0].model_copy(deep=True)
+
+    async def save_model(model):
+        persisted[0] = model.model_copy(deep=True)
+
+    monkeypatch.setattr(scheduler.Model, "one_by_id", AsyncMock(side_effect=load_model))
+    monkeypatch.setattr(scheduler.Worker, "all", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        scheduler, "prioritize_workers_with_model_files", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "ModelInstanceService",
+        lambda session: SimpleNamespace(update=AsyncMock()),
+    )
+    updates = AsyncMock(side_effect=save_model)
+    monkeypatch.setattr(
+        scheduler, "ModelService", lambda session: SimpleNamespace(update=updates)
+    )
+    monkeypatch.setattr(
+        scheduler, "evaluate_diffusion_model", AsyncMock(return_value=False)
+    )
+    rendered = {}
+
+    async def enqueue(instance):
+        model = persisted[0]
+        launch = instance.model_copy(
+            update={
+                "gpu_indexes": [0],
+                "port": 40000,
+                "group_id": "g",
+                "named_ports": {"kv_port": PortBand(base=5600, count=1)},
+            }
+        )
+        variables = deployment_variables(
+            model_path="/models/m",
+            port=40000,
+            worker_ip="10.0.0.1",
+            model_name=model.name,
+            gpu_count=1,
+            gpu_ids=[0],
+            role=instance.role,
+            group_id="g",
+        )
+        variables["net_device"] = "eth0"
+        injection = render_pd_injection(model, launch, variables)
+        rendered[instance.role] = json.loads(injection.args[1])["kv_connector"]
+
+    runner = scheduler.Scheduler(SimpleNamespace(cache_dir=None))
+    runner._queue = SimpleNamespace(put=AsyncMock(side_effect=enqueue))
+    return runner, instances, persisted, rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError, ValueError])
+async def test_metadata_failure_pins_fallback_before_a_member_can_start(
+    monkeypatch, layout_runner, failure
+):
+    runner, instances, persisted, rendered = layout_runner
+    monkeypatch.setattr(
+        scheduler,
+        "get_pretrained_config_with_workers",
+        AsyncMock(
+            side_effect=[
+                failure("metadata unavailable"),
+                SimpleNamespace(architectures=["Qwen3ForCausalLM"], model_type="qwen3"),
+            ]
+        ),
+    )
+    await runner._evaluate(instances[1])
+    assert persisted[0].meta.get("pd_connector_variant") == "hybrid"
+    assert persisted[0].meta.get("pd_connector_variant_source")
+    await runner._evaluate(instances[2])
+    assert rendered == {
+        "prefill": "MooncakeHybridConnector",
+        "decode": "MooncakeHybridConnector",
+    }
+
+
+@pytest.mark.asyncio
+async def test_parallel_pd_evaluations_share_one_persisted_connector(
+    monkeypatch, layout_runner
+):
+    runner, instances, _, rendered = layout_runner
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def load(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            await release.wait()
+            raise RuntimeError("metadata unavailable")
+        return SimpleNamespace(architectures=["Qwen3ForCausalLM"], model_type="qwen3")
+
+    monkeypatch.setattr(scheduler, "get_pretrained_config_with_workers", load)
+    first = asyncio.create_task(runner._evaluate(instances[1]))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    second = asyncio.create_task(runner._evaluate(instances[2]))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(first, second)
+    assert rendered == {
+        "prefill": "MooncakeHybridConnector",
+        "decode": "MooncakeHybridConnector",
+    }

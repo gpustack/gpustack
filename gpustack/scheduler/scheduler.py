@@ -5,6 +5,7 @@ import logging
 import os
 import queue
 from typing import Dict, List, Sequence, Tuple, Optional
+from weakref import WeakValueDictionary
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -92,6 +93,12 @@ from gpustack.scheduler.calculator import (
     check_diffusers_model_index_from_workers,
 )
 from gpustack.server.cache_services import resolve_instance_cache_config_safe
+from gpustack.validation.pd.parameters import DIFFER
+from gpustack.validation.pd.environment import (
+    PDPairingError,
+    environment_pairing_factors,
+    environment_pairing_needs_config,
+)
 from gpustack.server.services import (
     ModelInstanceService,
     ModelService,
@@ -125,6 +132,9 @@ class Scheduler:
         self._config = cfg
         self._check_interval = check_interval
         self._queue = AsyncUniqueQueue()
+        self._evaluation_locks: WeakValueDictionary[int, asyncio.Lock] = (
+            WeakValueDictionary()
+        )
         self._cache_dir = None
 
         if self._config.cache_dir is not None:
@@ -206,7 +216,19 @@ class Scheduler:
         except Exception as e:
             logger.error(f"Failed to evaluate instance {instance.id} from event: {e}")
 
-    async def _evaluate(self, instance: ModelInstance):  # noqa: C901
+    async def _evaluate(self, instance: ModelInstance):
+        """Serialize PD members' shared model metadata reads and writes."""
+        if getattr(instance, "role", None) not in ("prefill", "decode"):
+            await self._evaluate_instance(instance)
+            return
+        lock = self._evaluation_locks.get(instance.model_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._evaluation_locks[instance.model_id] = lock
+        async with lock:
+            await self._evaluate_instance(instance)
+
+    async def _evaluate_instance(self, instance: ModelInstance):  # noqa: C901
         """
         Evaluate the model instance's metadata.
         """
@@ -251,6 +273,8 @@ class Scheduler:
                             workers=sorted_workers,
                             raise_raw=True,
                         )
+                except PDPairingError:
+                    raise
                 except Exception as e:
                     # Even if the evaluation failed, we still want to proceed to deployment.
                     # Cases can be:
@@ -260,6 +284,11 @@ class Scheduler:
                         f"Failed to evaluate model {model.name or model.readable_source}: {e}"
                     )
 
+                # Pin the conservative layout when pretrained metadata evaluation
+                # fails or returns without choosing a connector, before enqueueing.
+                should_update_model = (
+                    _record_pd_connector_variant(model, None, []) or should_update_model
+                )
                 if should_update_model:
                     await ModelService(session).update(model)
 
@@ -1262,6 +1291,18 @@ async def evaluate_pretrained_config(
         meta_modified = True
 
     layout_config = await _pd_layout_config(model, pretrained_config, workers)
+    pairing_error = next(
+        (
+            factor.message
+            for factor in environment_pairing_factors(
+                model, pretrained_config=layout_config
+            )
+            if factor.verdict == DIFFER
+        ),
+        None,
+    )
+    if pairing_error:
+        raise PDPairingError(pairing_error)
     meta_modified = (
         _record_pd_connector_variant(model, layout_config, architectures)
         or meta_modified
@@ -1279,7 +1320,9 @@ async def _pd_layout_config(model: Model, config, workers: Optional[List[Worker]
     if config is not None or not model.disaggregation:
         return config
     mode = get_pd_mode(model.disaggregation.mode)
-    if not mode or not mode.connector_variants:
+    if not mode or (
+        not mode.connector_variants and not environment_pairing_needs_config(model)
+    ):
         return config
     effective = role_effective_model(model, "prefill")
     try:

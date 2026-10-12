@@ -56,8 +56,8 @@ def test_any_rung_is_named_the_same_way_including_the_accelerator_domain():
     """There is no `accelerator_domain` special value any more — the name is
     accepted here exactly like `Rack` is, as a plain layer id, and whether the
     cluster actually has a rung by that name is checked against the cluster
-    (`routes.models.validate_gather_layer`). The schema cannot do it: it has no
-    cluster in hand."""
+    (`validation.pd.placement.validate_gather_layer`). The schema cannot do it:
+    it has no cluster in hand."""
     spec = GatherSpec(
         strategy=GatherStrategyEnum.MUST_GATHER, layer="accelerator_domain"
     )
@@ -95,7 +95,7 @@ async def _validate_gather(layer, topology):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, patch
 
-    from gpustack.routes.models import validate_gather_layer
+    from gpustack.validation.pd.placement import validate_gather_layer
 
     cluster = SimpleNamespace(id=1, topology=topology)
     with patch(
@@ -266,7 +266,7 @@ async def _validate_host_floor(
     """Run the route-level check for a floor at the built-in host rung."""
     from unittest.mock import AsyncMock, patch
 
-    from gpustack.routes.models import validate_gather_layer
+    from gpustack.validation.pd.placement import validate_gather_layer
     from gpustack.schemas.models import RoleSpec
     from gpustack.topology.tree import NODE_LAYER
 
