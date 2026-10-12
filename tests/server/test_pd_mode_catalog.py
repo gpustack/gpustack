@@ -381,9 +381,9 @@ def test_port_band_count_is_declared_by_the_connector():
         band = ascend.role(role).ports[0]
         assert band.count == "{{accelerator_count}}"
         assert band.scope == PDPortScopeEnum.INSTANCE
-    # NIXL's side channel is offset per DP index instead; no shipped recipe
-    # uses local DP, so the declared width is one.
-    assert nixl.role("prefill").ports[0].count == 1
+    # NIXL binds one side channel per DP index, independent of HTTP LB.
+    for role in ("prefill", "decode"):
+        assert nixl.role(role).ports[0].count == "{{data_parallel_size}}"
 
 
 def test_shorthand_port_declaration_expands():

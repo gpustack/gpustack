@@ -31,6 +31,7 @@ from typing import Dict, Iterable, Optional, Set
 from sqlmodel import select, or_
 
 from gpustack.policies.base import Allocated
+from gpustack.policies.resource_view import compute_worker_allocated
 from gpustack.schemas.models import ModelInstance
 from gpustack.server.cache import delete_cache_by_key, locked_cached
 from gpustack.server.db import async_session
@@ -59,14 +60,10 @@ def _key_builder(_f, *args, **kwargs):
 
 
 @locked_cached(key=_key_builder)
-async def get_worker_allocated(worker_id: int) -> Allocated:
+async def _get_model_worker_allocated(worker_id: int) -> Allocated:
     """Return the cached ``Allocated`` for a single worker. On miss,
     aggregates current ModelInstance bindings for this worker (main +
     distributed subordinate)."""
-    # Lazy import to avoid a module-load cycle with policies.utils, which
-    # imports server.services (and services imports this module).
-    from gpustack.policies.utils import compute_worker_allocated
-
     async with async_session() as session:
         # main: cheap indexed filter.
         # distributed subordinates live inside the distributed_servers JSON
@@ -85,6 +82,46 @@ async def get_worker_allocated(worker_id: int) -> Allocated:
             )
         ).all()
     return compute_worker_allocated(rows, worker_id)
+
+
+async def get_worker_allocated(worker_id: int) -> Allocated:
+    """Combine cached model allocations with current cache reservations."""
+    from gpustack.server.cache_service_resources import get_cache_ram_by_worker
+
+    model_allocated = await _get_model_worker_allocated(worker_id)
+    async with async_session() as session:
+        cache_ram = await get_cache_ram_by_worker(session, worker_id=worker_id)
+    return Allocated(
+        ram=model_allocated.ram + cache_ram.get(worker_id, 0),
+        vram=dict(model_allocated.vram),
+    )
+
+
+async def get_workers_allocated(worker_ids: Iterable[int]) -> Dict[int, Allocated]:
+    """Read current reservations once for a batch of workers.
+
+    Workers whose model allocations cannot be read are omitted, so callers can
+    conservatively report their capacity as unavailable.
+    """
+    from gpustack.server.cache_service_resources import get_cache_ram_by_worker
+
+    worker_ids = list(set(worker_ids))
+    if not worker_ids:
+        return {}
+    async with async_session() as session:
+        cache_ram = await get_cache_ram_by_worker(session, worker_ids=worker_ids)
+    allocated = {}
+    for worker_id in worker_ids:
+        try:
+            model_allocated = await _get_model_worker_allocated(worker_id)
+        except Exception:
+            logger.exception("Could not read allocation for worker %s", worker_id)
+            continue
+        allocated[worker_id] = Allocated(
+            ram=model_allocated.ram + cache_ram.get(worker_id, 0),
+            vram=dict(model_allocated.vram),
+        )
+    return allocated
 
 
 async def invalidate_workers_allocated(instances: Iterable[ModelInstance]) -> None:

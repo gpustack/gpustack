@@ -11,6 +11,7 @@ soon as another scorer joins the chain. These tests pin the derivation instead
 of a number.
 """
 
+from gpustack.policies.resource_view import ResourceView
 from types import SimpleNamespace
 from typing import List
 
@@ -134,7 +135,10 @@ def _shipped_rest(workers, members, winner_id):
     """
     model = new_model(1, "m", huggingface_repo_id="a/b")
     return [
-        _CeilingScorer(PlacementScorer(model, []).score_ceiling, winner_id),
+        _CeilingScorer(
+            PlacementScorer(model, [], resource_view=ResourceView([])).score_ceiling,
+            winner_id,
+        ),
         _CeilingScorer(
             ModelFileLocalityScorer(
                 model, max_score=envs.SCHEDULER_SCALE_UP_LOCALITY_MAX_SCORE
@@ -278,7 +282,11 @@ def test_a_chain_without_a_topology_is_not_inflated():
     against absent scorers would quietly raise the weight for everyone.
     """
     model = new_model(1, "m", huggingface_repo_id="a/b")
-    placement_only = [_CeilingScorer(PlacementScorer(model, []).score_ceiling, 0)]
+    placement_only = [
+        _CeilingScorer(
+            PlacementScorer(model, [], resource_view=ResourceView([])).score_ceiling, 0
+        )
+    ]
     with_locality = placement_only + [
         _CeilingScorer(
             ModelFileLocalityScorer(

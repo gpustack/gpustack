@@ -7,6 +7,8 @@ the same story from opposite ends, so they are pinned in one file.
 """
 
 import socket
+import sys
+from unittest.mock import Mock
 
 import pytest
 
@@ -14,7 +16,9 @@ from gpustack.utils import network
 from gpustack.utils.network import (
     PortRangeExhaustedError,
     get_free_band,
+    get_free_port,
     is_port_available,
+    is_port_reusable,
 )
 
 
@@ -39,6 +43,65 @@ def ports_busy(monkeypatch):
         )
 
     return install
+
+
+@pytest.mark.parametrize(
+    "taken",
+    [set(range(50000, 50064)), set(range(40000, 40063)) | {50000}],
+)
+def test_get_free_port_counts_only_reservations_in_its_range(
+    taken, all_ports_free, monkeypatch
+):
+    monkeypatch.setattr(network.random, "randint", lambda start, end: end)
+
+    assert get_free_port("40000-40063", taken) == 40063
+
+
+def test_get_free_port_keeps_searching_after_a_busy_probe_outside_reservations(
+    ports_busy, monkeypatch
+):
+    ports_busy({40000})
+    monkeypatch.setattr(network.random, "randint", Mock(side_effect=[40000, 40001]))
+    taken = {50000}
+
+    assert get_free_port("40000-40001", taken) == 40001
+    assert taken == {50000, 40000}
+
+
+def test_get_free_port_reports_exhaustion_after_all_in_range_probes(
+    ports_busy, monkeypatch
+):
+    ports_busy({40000, 40001})
+    pick = Mock(side_effect=[40000, 40001])
+    monkeypatch.setattr(network.random, "randint", pick)
+    taken = {50000}
+
+    with pytest.raises(PortRangeExhaustedError, match="only 0 of the 2 ports"):
+        get_free_port("40000-40001", taken)
+
+    assert pick.call_count == 2
+    assert taken == {50000, 40000, 40001}
+
+
+def test_get_free_port_skips_reserved_ports_before_probing(
+    monkeypatch,
+):
+    monkeypatch.setattr(network.random, "randint", Mock(side_effect=[40000, 40001]))
+    probe = Mock(return_value=True)
+    monkeypatch.setattr(network, "is_port_available", probe)
+
+    assert get_free_port("40000-40001", {40000}, host="127.0.0.2") == 40001
+    probe.assert_called_once_with(40001, "127.0.0.2")
+
+
+def test_get_free_port_rejects_a_fully_reserved_range_without_probing(monkeypatch):
+    probe = Mock()
+    monkeypatch.setattr(network, "is_port_available", probe)
+
+    with pytest.raises(PortRangeExhaustedError, match="only 0 of the 2 ports"):
+        get_free_port("40000-40001", {40000, 40001, 50000})
+
+    probe.assert_not_called()
 
 
 def test_get_free_band_returns_the_first_contiguous_run(all_ports_free):
@@ -222,3 +285,85 @@ def test_is_port_available_returns_a_bool_for_an_unresolvable_host():
     probe.close()
 
     assert isinstance(is_port_available(port, "no-such-host.invalid"), bool)
+
+
+def _leave_timewait_on(port):
+    """Make the server side close first so `port` lands in TIME_WAIT."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(1)
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client.connect(("127.0.0.1", port))
+    conn, _ = srv.accept()
+    conn.close()
+    client.close()
+    srv.close()
+
+
+_WINDOWS_SKIP = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows SO_REUSEADDR binds over a live listener, so the reuse "
+    "probe cannot distinguish TIME_WAIT residue there",
+)
+
+
+@_WINDOWS_SKIP
+def test_is_port_reusable_accepts_a_timewait_only_port():
+    """The prerun scenario: a recreated --network-host container leaves
+    TIME_WAIT sockets on its fixed ports. The plain probe calls them taken,
+    but the services bind with SO_REUSEADDR and succeed, so the reuse
+    probe must too."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    port = srv.getsockname()[1]
+    srv.close()
+
+    _leave_timewait_on(port)
+
+    assert is_port_available(port, "127.0.0.1") is False
+    assert is_port_reusable(port) is True
+
+
+@_WINDOWS_SKIP
+def test_is_port_reusable_still_rejects_a_live_loopback_listener():
+    """The embedded apiserver and PostgreSQL bind 127.0.0.1, not the
+    wildcard address, and a reuse bind of a *different* address can
+    coexist with a live listener on Linux when that listener also set
+    SO_REUSEADDR (PostgreSQL does). A live loopback instance must stay
+    detectable, which is why every address is probed."""
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+
+        assert is_port_reusable(port) is False
+    finally:
+        holder.close()
+
+
+@_WINDOWS_SKIP
+def test_is_port_reusable_still_rejects_a_live_listener():
+    """A port held by an active listener must stay rejected: a reuse bind
+    only gets past dead sockets, never a live one."""
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        holder.bind(("0.0.0.0", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+
+        assert is_port_reusable(port) is False
+    finally:
+        holder.close()
+
+
+@_WINDOWS_SKIP
+def test_is_port_reusable_reports_a_free_port_reusable():
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    assert is_port_reusable(port) is True

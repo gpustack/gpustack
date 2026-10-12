@@ -365,6 +365,80 @@ async def test_cache_not_injected_coexists_with_running():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [
+        ModelInstanceStateEnum.PENDING,
+        ModelInstanceStateEnum.ANALYZING,
+        ModelInstanceStateEnum.SCHEDULED,
+        ModelInstanceStateEnum.INITIALIZING,
+        ModelInstanceStateEnum.DOWNLOADING,
+        ModelInstanceStateEnum.STARTING,
+    ],
+)
+async def test_provisional_cache_snapshot_does_not_mark_startup_degraded(state):
+    model = _model(
+        degradations=[DegradationReasonEnum.CACHE_NOT_INJECTED.value],
+        state_message="shared cache not injected: awaiting placement",
+    )
+    instance = _instance(
+        1, state, cache_config=_cache_config(False, "awaiting placement")
+    )
+
+    await _sync(model, [instance])
+
+    assert model.degradations is None
+    assert model.state_message is None
+    assert instance.cache_config.injected is False
+
+
+@pytest.mark.asyncio
+async def test_cache_attachment_during_startup_never_reports_degradation():
+    model = _model()
+    instance = _instance(
+        1,
+        ModelInstanceStateEnum.PENDING,
+        cache_config=_cache_config(False, "awaiting placement"),
+    )
+    await _sync(model, [instance])
+    assert model.degradations is None
+
+    instance.cache_config = _cache_config(True)
+    for state in (
+        ModelInstanceStateEnum.SCHEDULED,
+        ModelInstanceStateEnum.INITIALIZING,
+        ModelInstanceStateEnum.DOWNLOADING,
+        ModelInstanceStateEnum.STARTING,
+        ModelInstanceStateEnum.RUNNING,
+    ):
+        instance.state = state
+        await _sync(model, [instance])
+        assert model.degradations is None
+        assert model.state_message is None
+
+    assert model.state == ModelStateEnum.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_starting_replica_does_not_degrade_running_peers_cache():
+    model = _model(replicas=2)
+    instances = [
+        _instance(1, cache_config=_cache_config(True)),
+        _instance(
+            2,
+            ModelInstanceStateEnum.PENDING,
+            cache_config=_cache_config(False, "awaiting placement"),
+        ),
+    ]
+
+    await _sync(model, instances)
+
+    assert model.state == ModelStateEnum.RUNNING
+    assert model.degradations == [DegradationReasonEnum.RATIO_UNMET.value]
+    assert model.state_message == "1/2 replicas ready"
+
+
+@pytest.mark.asyncio
 async def test_cache_degradation_is_appended_to_the_state_message():
     model = _model(replicas=2)
     instances = [

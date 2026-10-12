@@ -85,7 +85,7 @@ class TestModelIsNamed:
     `GET /v1/models` and the response had no `data` key, so the run died with a
     KeyError before sending a request."""
 
-    def _args(self, model_name):
+    def _args(self, model_name, dataset_name="Random"):
         runner = object.__new__(BenchmarkRunner)
         runner._benchmark = SimpleNamespace(
             id=1,
@@ -97,9 +97,11 @@ class TestModelIsNamed:
             total_requests=None,
             max_seconds=None,
             stages=None,
-            dataset_name="Random",
+            dataset_name=dataset_name,
             dataset_input_tokens=1024,
             dataset_output_tokens=128,
+            dataset_input_min=256,
+            dataset_input_max=2048,
             dataset_seed=1,
             dataset_seed_increment=None,
             turns=None,
@@ -132,6 +134,12 @@ class TestModelIsNamed:
         args = self._args(None)
         assert "--model" not in args
         assert "None" not in args
+
+    def test_sharegpt_passes_input_range_and_fixed_output(self):
+        args = self._args("qwen3", dataset_name="ShareGPT")
+        assert args[args.index("--sharegpt-min-input-tokens") + 1] == "256"
+        assert args[args.index("--sharegpt-max-input-tokens") + 1] == "2048"
+        assert args[args.index("--sharegpt-max-output-tokens") + 1] == "128"
 
 
 @pytest.mark.parametrize("path", ["/cache/qwen3", "/other/path"])

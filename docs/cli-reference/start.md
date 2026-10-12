@@ -41,7 +41,8 @@ gpustack start [OPTIONS]
 | `-d` value, `--debug` value                 | `False`                                | To enable debug mode, the short flag -d is not supported in Windows because this flag is reserved by PowerShell for CommonParameters. |
 | `--data-dir` value                          | (empty)                                | Directory to store data. Default is OS specific.                                                                                      |
 | `--cache-dir` value                         | (empty)                                | Directory to store cache (e.g., model files). Defaults to <data-dir>/cache.                                                           |
-| `--huggingface-token` value                 | (empty)                                | User Access Token to authenticate to the Hugging Face Hub. Can also be configured via the `HF_TOKEN` environment variable.            |
+| `--huggingface-token` value                 | (empty)                                | User Access Token to authenticate to the Hugging Face Hub. Can also be configured via the `HF_TOKEN` environment variable.                                                                            |
+| `--insecure-tls`                            | `False`                                | Skip TLS verification on GPUStack's own HTTPS connections (worker to server, server to external-auth IdP). For trusted networks where the server certificate cannot be verified otherwise.                                                                                                                                                                                                              |
 | `--bin-dir` value                           | (empty)                                | Directory to store additional binaries, e.g., versioned backend executables.                                                          |
 | `--pipx-path` value                         | (empty)                                | Path to the pipx executable, used to install versioned backends.                                                                      |
 | `--system-default-container-registry` value | `docker.io`                            | Default container registry for GPUStack to pull system and inference images.<br/>Keep all GPUStack business images under the `gpustack` namespace; if a multi-level namespace is required, keep `gpustack` as the last level, e.g. `awesome.com/amazing-group/amazing-subgroup/gpustack`. Then set this flag (or the server/worker `system_default_container_registry` config key, or the `GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY` environment variable) to the parent path, e.g. `awesome.com/amazing-group/amazing-subgroup`.<br/>If the images cannot stay under the `gpustack` namespace (e.g. `gpustack-ai`), adjust `--image-repo` and `--benchmark-image-repo` accordingly. |
@@ -169,6 +170,7 @@ benchmark_dir: /path/to/benchmark_dir
 benchmark_image_repo: gpustack/benchmark-runner
 token: your_token
 huggingface_token: your_huggingface_token
+insecure_tls: false
 
 # Server Options
 port: 80

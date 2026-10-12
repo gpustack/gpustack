@@ -92,6 +92,7 @@ def get_legacy_api_router() -> APIRouter:
 
 
 async def list_models(
+    request: Request,
     user: CurrentUserDep,
     session: SessionDep,
     ctx: TenantContextDep,
@@ -132,12 +133,14 @@ async def list_models(
 
     routes = (await session.exec(statement)).all()
     principal_by_id = await _prefetch_owner_principals(session, routes)
-    return SyncPage[OAIModel](
-        data=[
-            _route_to_oai_model(route, principal_by_id, with_meta) for route in routes
-        ],
-        object="list",
-    )
+    models = [
+        _route_to_oai_model(route, principal_by_id, with_meta) for route in routes
+    ]
+    api_key = getattr(request.state, "api_key", None)
+    if api_key is not None and api_key.allowed_model_names:
+        allowed_names = set(api_key.allowed_model_names)
+        models = [model for model in models if model.id in allowed_names]
+    return SyncPage[OAIModel](data=models, object="list")
 
 
 def _route_to_oai_model(

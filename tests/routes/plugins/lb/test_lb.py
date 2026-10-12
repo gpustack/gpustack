@@ -127,6 +127,68 @@ class TestRenderRoute:
         with patch.object(ModelRouteTarget, "all_by_field", classmethod(shim)):
             assert asyncio.run(render_route(None, route)) is None
 
+    def test_target_weight_is_split_across_instances(self):
+        # A target's weight is its models' total share, so each instance
+        # carries weight * lcm(counts) / count: 1 replica at 100 against 2
+        # replicas at 100 must draw 2:1:1, and lowering the 2-replica weight
+        # to 50 must draw 4:1:1 — not 1:1:1 / 2:1:1 from handing the raw
+        # target weight to every candidate.
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from gpustack.routes.plugins.lb import reconciler
+        from gpustack.routes.plugins.lb.reconciler import render_route
+        from gpustack.schemas.model_routes import (
+            ModelRoute,
+            ModelRouteTarget,
+            TargetStateEnum,
+        )
+
+        def _registry(name):
+            return SimpleNamespace(port=80, get_service_name=lambda: name)
+
+        async def destinations(session, target):
+            # target 1 -> 1 instance, target 2 -> 2 instances
+            count = 1 if target.id == 1 else 2
+            return [
+                (1, f"m{target.id}-{i}", _registry(f"model-{target.id}-{i}.static"))
+                for i in range(count)
+            ]
+
+        def _route(weight_b):
+            return ModelRoute(id=1, name="r", targets=0, ready_targets=0), [
+                ModelRouteTarget(
+                    id=1,
+                    name="t1",
+                    route_name="r",
+                    route_id=1,
+                    weight=100,
+                    state=TargetStateEnum.ACTIVE,
+                ),
+                ModelRouteTarget(
+                    id=2,
+                    name="t2",
+                    route_name="r",
+                    route_id=1,
+                    weight=weight_b,
+                    state=TargetStateEnum.ACTIVE,
+                ),
+            ]
+
+        for weight_b, expected in ((100, [200, 100, 100]), (50, [200, 50, 50])):
+            route, targets = _route(weight_b)
+
+            async def shim(cls, session, field=None, value=None, _targets=targets):
+                return _targets
+
+            with (
+                patch.object(ModelRouteTarget, "all_by_field", classmethod(shim)),
+                patch.object(reconciler, "_destinations_for_target", destinations),
+            ):
+                candidates, _ = asyncio.run(render_route(None, route))
+            assert [c["weight"] for c in candidates] == expected
+
 
 class TestSyncModelRouteLb:
     """The LB matchRule is declared on the collector, not written
@@ -288,6 +350,7 @@ class TestGatewayEntriesDegrade:
         from gpustack.routes.plugins.lb.gateway import (
             LB_CONTEXT_CR_NAME,
             lb_gateway_entries,
+            mapper_enable_on_path_suffixes,
         )
         import gpustack.gateway.plugins as plugins_module
 
@@ -301,7 +364,47 @@ class TestGatewayEntriesDegrade:
         entries = lb_gateway_entries(None)
         assert [e.name for e in entries] == [LB_CONTEXT_CR_NAME]
         assert entries[0].create_only is True
-        assert entries[0].spec.defaultConfig == {"modelMapping": {}}
+        assert entries[0].spec.defaultConfig["modelMapping"] == {}
+        # Degraded or not, the plain mapper entry carries the same explicit
+        # path-suffix list, so the model rewrite follows the routed paths.
+        assert (
+            entries[0].spec.defaultConfig["enableOnPathSuffix"]
+            == mapper_enable_on_path_suffixes
+        )
+
+
+class TestMapperPathSuffixes:
+    def test_sync_video_route_is_mapped(self):
+        # The synchronous video path is a routed OpenAI-style model path:
+        # it must appear in the mapper's enableOnPathSuffix, or the body's
+        # ``model`` field is left as the route name.
+        from gpustack.routes.plugins.lb.gateway import mapper_enable_on_path_suffixes
+
+        assert "/v1/videos/sync" in mapper_enable_on_path_suffixes
+
+    def test_context_role_carries_the_suffix_list(self, monkeypatch):
+        from gpustack.routes.plugins.lb.gateway import (
+            _lb_gateway_entries,
+            mapper_enable_on_path_suffixes,
+        )
+
+        entries = _lb_gateway_entries(None)
+        context = next(e for e in entries if e.name == "gpustack-model-mapper")
+        assert context.spec.defaultConfig["enableOnPathSuffix"] == (
+            mapper_enable_on_path_suffixes
+        )
+
+    def test_suffix_list_covers_every_routed_model_path(self):
+        # The explicit list replaces the plugin defaults, so it must be a
+        # superset of every path the gateway actually routes for models.
+        from gpustack.gateway import (
+            supported_anthropic_routes,
+            supported_openai_routes,
+        )
+        from gpustack.routes.plugins.lb.gateway import mapper_enable_on_path_suffixes
+
+        for route in supported_openai_routes + supported_anthropic_routes:
+            assert route in mapper_enable_on_path_suffixes
 
 
 class TestRedisFromUrl:

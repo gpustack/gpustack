@@ -1,3 +1,4 @@
+from gpustack.policies.resource_view import ResourceView
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -166,7 +167,9 @@ async def run_selector(
             new=AsyncMock(return_value=devices),
         ),
     ):
-        selector = VGPUResourceFitSelector(config, model, [])
+        selector = VGPUResourceFitSelector(
+            config, model, [], resource_view=ResourceView([])
+        )
         candidates = await selector.select_candidates(workers)
     return selector, candidates
 
@@ -595,7 +598,9 @@ async def test_evaluation_spec_without_cluster_attr(config):
         patch(_PATCH_ESTIMATE, new=AsyncMock(return_value=30 * _GIB)),
         patch(_PATCH_RAM, return_value=0),
     ):
-        selector = VGPUResourceFitSelector(config, spec, [])
+        selector = VGPUResourceFitSelector(
+            config, spec, [], resource_view=ResourceView([])
+        )
         candidates = await selector.select_candidates(workers)
 
     assert "cluster_id" not in captured["fields"]
@@ -634,7 +639,9 @@ async def test_evaluation_spec_with_stamped_cluster(config):
         patch(_PATCH_ESTIMATE, new=AsyncMock(return_value=30 * _GIB)),
         patch(_PATCH_RAM, return_value=0),
     ):
-        selector = VGPUResourceFitSelector(config, spec, [])
+        selector = VGPUResourceFitSelector(
+            config, spec, [], resource_view=ResourceView([])
+        )
         candidates = await selector.select_candidates(workers)
 
     assert captured["fields"]["cluster_id"] == 42

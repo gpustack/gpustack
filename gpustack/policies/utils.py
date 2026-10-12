@@ -5,9 +5,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
+from gpustack.policies.resource_view import ResourceView
 from gpustack.policies.base import (
     Allocatable,
-    Allocated,
 )
 from gpustack.scheduler.calculator import calculate_local_model_weight_size
 from gpustack.schemas.model_files import ModelFileStateEnum
@@ -40,113 +40,6 @@ class WorkerGPUInfo(BaseModel):
     worker_name: str
     gpu_device: GPUDeviceStatus
     allocatable_vram: int  # in bytes
-
-
-def compute_worker_allocated(
-    all_model_instances: List[ModelInstance],
-    worker_id: int,
-    gpu_type: Optional[str] = None,
-) -> Allocated:
-    """Aggregate (ram, {gpu_index: vram}) for ``worker_id`` from current
-    ModelInstance assignments — main worker + distributed subordinates.
-
-    The single source of truth for "what's scheduled on this worker", used
-    by the scheduler (via :func:`get_worker_allocatable_resource`), the
-    workers REST API, and the worker-side collector. Mirrors the K8s
-    scheduler pattern of deriving Allocated from current workload→node
-    bindings rather than from anything the node self-reports.
-
-    For the main worker, both ram and per-GPU vram are counted. For
-    distributed subordinate workers, only vram is counted — the rpc-server
-    side doesn't consume the model's RAM.
-    """
-    allocated = Allocated(ram=0, vram={})
-
-    def add_vram(claim):
-        for gpu_index, vram in (claim.vram or {}).items():
-            allocated.vram[gpu_index] = allocated.vram.get(gpu_index, 0) + vram
-
-    for mi in all_model_instances:
-        if mi.worker_id == worker_id and (
-            gpu_type is None or mi.gpu_type is None or mi.gpu_type == gpu_type
-        ):
-            claim = mi.computed_resource_claim
-            if claim is not None:
-                allocated.ram += claim.ram or 0
-                if mi.gpu_indexes:
-                    add_vram(claim)
-
-        if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
-            for sw in mi.distributed_servers.subordinate_workers:
-                if sw.worker_id != worker_id:
-                    continue
-                if sw.computed_resource_claim and (
-                    gpu_type is None or mi.gpu_type == gpu_type
-                ):
-                    add_vram(sw.computed_resource_claim)
-
-    return allocated
-
-
-def get_worker_allocatable_resource(
-    all_model_instances: List[ModelInstance],
-    worker: Worker,
-    gpu_type: Optional[str] = None,
-) -> Allocatable:
-    """
-    Get the worker with the latest allocatable resources, if gpu_type is provided, only consider the GPUs of that type.
-    """
-
-    is_unified_memory = worker.status.memory.is_unified_memory
-    model_instances = get_worker_model_instances(all_model_instances, worker)
-    allocated = compute_worker_allocated(model_instances, worker.id, gpu_type)
-
-    allocatable = Allocatable(ram=0, vram={})
-    if worker.status.gpu_devices:
-        for _, gpu in enumerate(worker.status.gpu_devices):
-            gpu_index = gpu.index
-
-            if (
-                gpu.memory is None
-                or gpu.memory.total is None
-                or (gpu_type is not None and gpu.type != gpu_type)
-            ):
-                continue
-            allocatable_vram = max(
-                (
-                    gpu.memory.total
-                    - allocated.vram.get(gpu_index, 0)
-                    - worker.system_reserved.vram
-                ),
-                0,
-            )
-            allocatable.vram[gpu_index] = allocatable_vram
-
-    allocatable.ram = max(
-        (worker.status.memory.total - allocated.ram - worker.system_reserved.ram), 0
-    )
-
-    if is_unified_memory:
-        allocatable.ram = max(
-            allocatable.ram
-            - worker.system_reserved.vram
-            - sum(allocated.vram.values()),
-            0,
-        )
-
-        # For UMA, we need to set the gpu memory to the minimum of
-        # the calculated with max allow gpu memory and the allocatable memory.
-        if allocatable.vram:
-            allocatable.vram[0] = min(allocatable.ram, allocatable.vram[0])
-
-    logger.debug(
-        f"Worker {worker.name} gpu_type {gpu_type}, "
-        f"reserved memory: {worker.system_reserved.ram}, "
-        f"reserved gpu memory: {worker.system_reserved.vram}, "
-        f"allocatable memory: {allocatable.ram}, "
-        f"allocatable gpu memory: {allocatable.vram}"
-    )
-    return allocatable
 
 
 def group_gpu_devices_by_memory(
@@ -779,7 +672,7 @@ async def get_local_model_weight_size(
 
 def group_worker_gpu_by_memory(
     workers: List[Worker],
-    model_instances: List[ModelInstance],
+    resource_view: ResourceView,
     ram_claim: int = 0,
     gpu_type: Optional[str] = None,
 ) -> List[List[WorkerGPUInfo]]:
@@ -789,7 +682,7 @@ def group_worker_gpu_by_memory(
     the allocatable memory of other GPUs in the same group.
 
     Args:
-        engine: Database engine for calculating allocatable resources
+        resource_view: Resource view for this scheduling pass
         workers: List of workers containing GPU devices
         ram_claim: RAM claim in bytes to filter out workers that do not have enough RAM
 
@@ -815,7 +708,7 @@ def group_worker_gpu_by_memory(
             continue
 
         # Get allocatable resources for this worker
-        allocatable = get_worker_allocatable_resource(model_instances, worker, gpu_type)
+        allocatable = resource_view.allocatable(worker, gpu_type)
 
         if ram_not_enough(ram_claim, allocatable):
             continue

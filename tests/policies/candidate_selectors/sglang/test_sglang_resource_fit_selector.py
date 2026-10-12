@@ -10,6 +10,7 @@ from gpustack.policies.candidate_selectors.sglang_resource_fit_selector import (
     MemFractionStaticCalculator,
 )
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
+from gpustack.policies.resource_view import ResourceView
 from gpustack.scheduler import scheduler
 from gpustack.schemas.models import (
     CategoryEnum,
@@ -384,15 +385,16 @@ async def test_select_candidates(
     ):
         m.backend = BackendEnum.SGLANG
         mis = []
-        resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-        placement_scorer = PlacementScorer(m, mis)
+        resource_fit_selector = SGLangResourceFitSelector(
+            config, m, mis, resource_view=ResourceView(mis)
+        )
+        placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await placement_scorer.score(actual_candidates)
-        # find_candidate takes a session only to resolve a draft model's source, and
-        # returns before touching it when the model declares no speculative decoding.
+        # Supply the complete resource view so selection does not query storage.
         actual_candidate, _ = await scheduler.find_candidate(
-            None, config, m, workers, mis
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
         )
 
         try:
@@ -453,7 +455,9 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
         ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(None, config, m, workers, mis)
+        candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -535,7 +539,9 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
         ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(None, config, m, workers, mis)
+        candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -621,7 +627,9 @@ async def test_manual_schedule_to_3_workers_4_gpus(
         ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(None, config, m, workers(), mis)
+        candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers(), mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -681,8 +689,10 @@ async def test_auto_schedule_to_2_worker_2_gpu(config):
 
     mis = []
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -781,7 +791,9 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
         ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(None, config, m, workers, mis)
+        candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -869,7 +881,9 @@ async def test_auto_schedule_embedding_models(config):
         ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(None, config, m, workers, mis)
+        candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -920,8 +934,10 @@ async def test_auto_schedule_single_work_single_gpu(config):
         ),
     ]
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1037,8 +1053,10 @@ async def test_auto_schedule_single_work_multi_gpu(
 
     mis = []
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     original_init_model_params = resource_fit_selector._init_model_parameters
 
@@ -1093,7 +1111,9 @@ async def test_tp_divisibility_checks_vision_heads_for_sglang(config):
     )
     m.backend = BackendEnum.SGLANG
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, [])
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, [], resource_view=ResourceView([])
+    )
     resource_fit_selector._num_attention_heads = 0
     resource_fit_selector._vision_num_attention_heads = 16
     resource_fit_selector._model_params.vocab_size = None
@@ -1125,7 +1145,9 @@ async def test_tp_divisibility_skips_vision_heads_in_language_only_mode_for_sgla
     )
     m.backend = BackendEnum.SGLANG
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, [])
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, [], resource_view=ResourceView([])
+    )
     resource_fit_selector._num_attention_heads = 0
     resource_fit_selector._vision_num_attention_heads = 16
     resource_fit_selector._model_params.vocab_size = None
@@ -1152,8 +1174,10 @@ async def test_auto_schedule_multi_work_multi_gpu(config):
 
     mis = []
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1212,8 +1236,10 @@ async def test_sglang_backend_parameters(config):
 
     mis = []
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1263,8 +1289,10 @@ async def test_sglang_tensor_parallel_size(config):
 
     mis = []
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1309,7 +1337,7 @@ def test_sglang_tp_alias_drives_world_size_and_memory_calculation():
 
     calculator = MemFractionStaticCalculator(
         model=model,
-        model_instances=[],
+        resource_view=ResourceView([]),
         model_params=SimpleNamespace(),
         gpu_type="cuda",
         selected_gpu_indexes_by_gpu_type_and_worker={},
@@ -1332,7 +1360,7 @@ def test_sglang_dp_alias_drives_world_size_and_memory_calculation():
 
     calculator = MemFractionStaticCalculator(
         model=model,
-        model_instances=[],
+        resource_view=ResourceView([]),
         model_params=SimpleNamespace(),
         gpu_type="cuda",
         selected_gpu_indexes_by_gpu_type_and_worker={},
@@ -1363,8 +1391,10 @@ async def test_sglang_data_parallel_size(config):
 
     mis = []
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1413,8 +1443,10 @@ async def test_sglang_memory_fraction_static(config):
 
     mis = []
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1462,8 +1494,10 @@ async def test_auto_schedule_extended_kv_cache_ram_size(config):
 
     mis = []
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1524,8 +1558,10 @@ async def test_auto_schedule_extended_kv_cache_ram_ratio(config):
 
     mis = []
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1613,8 +1649,10 @@ async def test_output_schedule_msg(config, index, workers, model, expect_msg):
 
     mis = []
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1687,8 +1725,10 @@ async def test_lora_vram_claim_in_output_schedule_msg(config):
     )
     mis = []
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = SGLangResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1962,13 +2002,15 @@ async def test_select_candidates_from_different_gpu_types(
 
         mis = []
 
-        resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
-        scorer = PlacementScorer(m, mis)
+        resource_fit_selector = SGLangResourceFitSelector(
+            config, m, mis, resource_view=ResourceView(mis)
+        )
+        scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await scorer.score(actual_candidates)
         actual_candidate, _ = await scheduler.find_candidate(
-            None, config, m, workers, mis
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
         )
 
         try:
@@ -1995,7 +2037,7 @@ def _calculator(model=None, gpu_type="cuda"):
             "m1",
             huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
         ),
-        model_instances=[],
+        resource_view=ResourceView([]),
         model_params=SimpleNamespace(),
         gpu_type=gpu_type,
         selected_gpu_indexes_by_gpu_type_and_worker={},

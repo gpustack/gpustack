@@ -595,6 +595,14 @@ class BenchmarkRunner:
         if self._benchmark.dataset_name == DATASET_SHAREGPT:
             data = BENCHMARK_DATASET_SHAREGPT_PATH
             command_args.extend(["--data", data])
+            for attr, flag in (
+                ("dataset_input_min", "--sharegpt-min-input-tokens"),
+                ("dataset_input_max", "--sharegpt-max-input-tokens"),
+                ("dataset_output_tokens", "--sharegpt-max-output-tokens"),
+            ):
+                value = getattr(self._benchmark, attr, None)
+                if value is not None:
+                    command_args.extend([flag, str(value)])
         elif (
             self._benchmark.dataset_name == DATASET_RANDOM
             and self._benchmark.dataset_input_tokens is not None

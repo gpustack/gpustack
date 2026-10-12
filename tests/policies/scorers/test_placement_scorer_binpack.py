@@ -1,3 +1,4 @@
+from gpustack.policies.resource_view import ResourceView
 import pytest
 
 from gpustack.policies.base import Allocatable
@@ -14,7 +15,7 @@ async def test_binpack_scale_down_single_gpu_handles_none_ram_claim():
         huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
         placement_strategy=PlacementStrategyEnum.BINPACK,
     )
-    scorer = PlacementScorer(model, [])
+    scorer = PlacementScorer(model, [], resource_view=ResourceView([]))
 
     score = await scorer._score_binpack_item(
         gpu_indexes=[0],
@@ -41,7 +42,7 @@ async def test_binpack_scale_down_single_gpu_handles_none_vram_claim():
         huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
         placement_strategy=PlacementStrategyEnum.BINPACK,
     )
-    scorer = PlacementScorer(model, [])
+    scorer = PlacementScorer(model, [], resource_view=ResourceView([]))
 
     score = await scorer._score_binpack_item(
         gpu_indexes=[0],

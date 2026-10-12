@@ -185,6 +185,24 @@ GATEWAY_AUTH_ALLOW_CUSTOM_KEYS = (
     os.getenv("GPUSTACK_GATEWAY_AUTH_ALLOW_CUSTOM_KEYS", "true").lower() != "false"
 )
 
+# Comma-separated CIDRs and DNS names that the provider endpoints dialing a
+# caller-supplied base URL (/get-models, /test-model, /test-decision-model)
+# may reach. Empty -- the default -- means no restriction. Once non-empty the
+# allowlist is the whole rule: a target is allowed only when its hostname
+# equals or ends with one of the names (dot boundary), or every resolved
+# address falls inside one of the CIDRs; anything else -- including a public
+# address, and a non-http(s) base URL -- is refused before a connection is
+# opened. List the provider domains you use (e.g. api.openai.com) alongside
+# your internal ranges. Those routes are org-owner only, but on a
+# multi-tenant deployment an org owner is still an untrusted party for the
+# server's own network, and these endpoints both dial the target and hand
+# part of the response back.
+PROVIDER_TEST_EGRESS_ALLOWLIST = [
+    entry.strip()
+    for entry in os.getenv("GPUSTACK_PROVIDER_TEST_EGRESS_ALLOWLIST", "").split(",")
+    if entry.strip()
+]
+
 # Byte budget for the parts of the ext-auth CR the reconciler owns: the key
 # tables and one match rule per PUBLIC route. Both are sized from it, so
 # whichever grows leaves less room for the other instead of the two overrunning

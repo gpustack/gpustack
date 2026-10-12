@@ -28,7 +28,9 @@ from typing import Optional
 from gpustack.schemas.benchmark import (
     SLO_THRESHOLDS,
     BenchmarkLoadTypeEnum,
+    BenchmarkLoadModeEnum,
     SLOThreshold,
+    benchmark_load_mode,
 )
 from gpustack.worker.benchmark.artifacts import ramp_facts_path
 
@@ -290,9 +292,11 @@ def compute_validity(
 ) -> dict:
     """Judge whether the sweep explored enough to trust the result.
 
-    Returns ``{"sufficient": bool, "warnings": [...]}`` plus, when the facts are
-    available, ``stop_reason`` / ``stopped_at`` / ``slo_boundary_located`` and the
-    saturation probe's ``probe_ceiling`` / ``probe_bound`` / ``probe_relaxed``.
+    Returns ``coverage_applicable`` and ``warnings``. Search runs also report
+    ``sufficient`` plus, when available, ``stop_reason`` / ``stopped_at`` /
+    ``slo_boundary_located`` and the saturation probe's ``probe_ceiling`` /
+    ``probe_bound`` / ``probe_relaxed``. Non-search runs report only findings from
+    the measured points, without a search coverage verdict.
 
     Codes (rendered/localized by the UI):
     - ``slo_never_met``: SLO targets set but no measured point meets them -> the
@@ -352,6 +356,11 @@ def compute_validity(
         # SLO set but nothing met it — even the lowest load is too slow.
         warnings.append({"code": "slo_never_met", "params": {}})
 
+    if benchmark_load_mode(benchmark) is not BenchmarkLoadModeEnum.AUTO_TUNE:
+        # Fixed loads do not claim to locate a curve maximum or boundary.
+        # Point failures and unmet SLO targets remain useful measurements.
+        return {"coverage_applicable": False, "warnings": warnings}
+
     warnings.extend(
         _edge_warnings(
             benchmark, rate_points, best_points, overloaded_any, slo_set, ramp
@@ -366,7 +375,11 @@ def compute_validity(
     if not slo_set and 0 < len(rate_points) < 3 and not warnings:
         warnings.append({"code": "few_points", "params": {}})
 
-    out = {"sufficient": len(warnings) == 0, "warnings": warnings}
+    out = {
+        "coverage_applicable": True,
+        "sufficient": len(warnings) == 0,
+        "warnings": warnings,
+    }
     if slo_set and best_points.get("slo_met_rate") is not None:
         # Whether `slo_met_rate` is a measured boundary or a floor. Rides in
         # `validity` for the same two reasons as the stop reason: no migration

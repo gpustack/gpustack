@@ -7,6 +7,7 @@ which is what `demand_for` hands back, alongside how many of that role the
 cluster was measured to hold.
 """
 
+from gpustack.policies.resource_view import ResourceView
 from types import SimpleNamespace
 
 import pytest
@@ -70,7 +71,9 @@ class _PricedSelector:
 
 def _capacity(workers, model=None, selector=_PricedSelector):
     model = model or _model()
-    cap = GroupCapacity(SimpleNamespace(), model, workers, [])
+    cap = GroupCapacity(
+        SimpleNamespace(), model, workers, [], resource_view=ResourceView([])
+    )
     cap._selector = lambda m, instances, cpu_only, ram_claim=None: selector(instances)
     for role in ("prefill", "decode"):
         cap._eligible[role] = {w.id: w for w in workers}

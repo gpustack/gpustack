@@ -112,6 +112,7 @@ def upgrade() -> None:
             server_default='',
         ),
         sa.Column('component_addresses', sa.JSON(), nullable=True),
+        sa.Column('computed_resource_claim', sa.JSON(), nullable=True),
         sa.Column('ports', sa.JSON(), nullable=True),
         sa.Column('port', sa.Integer(), nullable=True),
         sa.Column('state', sqlmodel.sql.sqltypes.AutoString(), nullable=False),

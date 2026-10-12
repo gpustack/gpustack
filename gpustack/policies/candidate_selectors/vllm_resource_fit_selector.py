@@ -3,6 +3,7 @@ from collections import defaultdict
 import logging
 import re
 from typing import Dict, List, Optional, Tuple
+from gpustack.policies.resource_view import ResourceView
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
@@ -27,10 +28,10 @@ from gpustack.policies.utils import (
     sort_workers_by_gpu_count,
 )
 from gpustack.schemas.models import (
+    ModelInstance,
     CategoryEnum,
     ComputedResourceClaim,
     Model,
-    ModelInstance,
     ModelInstanceSubordinateWorker,
 )
 from gpustack.schemas.workers import GPUDevicesStatus, Worker
@@ -68,8 +69,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         cfg: Config,
         model: Model,
         model_instances: List[ModelInstance],
+        *,
+        resource_view: ResourceView,
     ):
-        super().__init__(cfg, model, model_instances)
+        super().__init__(cfg, model, model_instances, resource_view=resource_view)
 
         self._vram_claim = 0
         self._ram_claim = 0

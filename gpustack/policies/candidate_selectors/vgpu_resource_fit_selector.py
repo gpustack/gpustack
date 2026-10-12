@@ -3,6 +3,7 @@ import math
 import re
 from typing import List, Optional
 
+from gpustack.policies.resource_view import ResourceView
 from gpustack.config.config import Config
 from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
@@ -20,10 +21,10 @@ from gpustack.schemas.gpu_instance_types import (
     GPUInstanceTypeDetail,
 )
 from gpustack.schemas.models import (
+    ModelInstance,
     ComputedResourceClaim,
     GPUTypeSelector,
     Model,
-    ModelInstance,
     ModelInstanceSubordinateWorker,
 )
 from gpustack.gpu_instances.cluster_apis import ClusterOps
@@ -153,8 +154,10 @@ class VGPUResourceFitSelector(ScheduleCandidatesSelector):
         config: Config,
         model: Model,
         model_instances: List[ModelInstance],
+        *,
+        resource_view: ResourceView,
     ):
-        super().__init__(config, model, model_instances)
+        super().__init__(config, model, model_instances, resource_view=resource_view)
         self._messages: List[str] = []
         self._vram_claim = 0
         self._ram_claim = 0
@@ -256,6 +259,7 @@ class VGPUResourceFitSelector(ScheduleCandidatesSelector):
             self._model, self._config.huggingface_token, workers
         )
         self._ram_claim = get_model_ram_claim(self._model)
+        matching_workers = self._filter_reserved_ram(matching_workers)
 
         if self._vram_claim <= self._member_vram_capacity():
             return [
@@ -314,6 +318,18 @@ class VGPUResourceFitSelector(ScheduleCandidatesSelector):
         if matched is None or matched.status is None or matched.status.detail is None:
             return None
         return matched.status.detail
+
+    def _filter_reserved_ram(self, workers: List[Worker]) -> List[Worker]:
+        """Account for resource reservations before handing placement to Kubernetes."""
+        available = [
+            worker
+            for worker in workers
+            if not self._resource_view.has_reservation(worker.id)
+            or self.get_worker_allocatable_resource(worker).ram >= self._ram_claim
+        ]
+        if not available:
+            self._messages.append("Insufficient RAM after workload reservations.")
+        return available
 
     def _get_card_vram(self, detail: GPUInstanceTypeDetail) -> int:
         if not detail.memory:

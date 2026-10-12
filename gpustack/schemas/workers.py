@@ -50,7 +50,7 @@ class MemoryInfo(UtilizationInfo):
     # Not written by workers anymore — they neither know nor need to track
     # what's scheduled on them. Persisted DB values stay None going forward.
     # On the /v2/workers response this is populated server-side from current
-    # ModelInstance bindings; see policies.utils.compute_worker_allocated.
+    # ModelInstance bindings; see policies.resource_view.compute_worker_allocated.
     allocated: Annotated[
         Optional[int],
         deprecated(

@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import selectinload
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
@@ -48,7 +49,9 @@ async def list(
 
     if params.watch:
         return StreamingResponse(
-            WorkerPool.streaming(
+            tenant_streaming(
+                WorkerPool,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 options=WORKER_POOL_LOAD_OPTIONS,

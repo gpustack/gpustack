@@ -60,6 +60,62 @@ def test_no_prometheus_at_all_is_a_first_class_answer(tmp_path):
     assert cfg.get_prometheus_url() is None
 
 
+def test_incluster_gateway_scrape_job_uses_pod_discovery(tmp_path, monkeypatch):
+    """In incluster mode the gateway pods are not on localhost, so the builtin
+    Prometheus must discover them via pod annotations instead — and keep the
+    `higress` label the builtin Grafana dashboard selects on."""
+    import yaml
+
+    cfg = Config(
+        data_dir=str(tmp_path / "data"),
+        gateway_mode="incluster",
+        gateway_namespace="gpustack",
+    )
+    prometheus_config = tmp_path / "prometheus" / "prometheus.yml"
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.setenv("PROMETHEUS_CONFIG_FILE", str(prometheus_config))
+    monkeypatch.setenv("GF_PATHS_PROVISIONING", str(tmp_path / "grafana"))
+
+    prepare_observability_config(cfg)
+
+    config = yaml.safe_load(prometheus_config.read_text())
+    jobs = {job["job_name"]: job for job in config["scrape_configs"]}
+    job = jobs["higress-gateway-pods"]
+    assert job["metrics_path"] == "/stats/prometheus"
+    sd = job["kubernetes_sd_configs"][0]
+    assert sd["role"] == "pod"
+    assert sd["namespaces"]["names"] == ["gpustack"]
+
+    # only higress-gateway pods are kept. Prometheus relabel regexes are RE2,
+    # which has no backreferences, so a rule comparing the container port to
+    # the annotated port is not expressible; the address rewrite above maps
+    # every target of a pod to the same annotated endpoint, and Prometheus
+    # collapses targets that end up with identical label sets.
+    keeps = {
+        tuple(r["source_labels"]): r["regex"]
+        for r in job["relabel_configs"]
+        if r.get("action") == "keep"
+    }
+    assert keeps[("__meta_kubernetes_pod_name",)] == ".*higress-gateway.*"
+    # No relabel regex may contain a backreference: Prometheus compiles them
+    # with RE2 and refuses to load the whole config file otherwise.
+    for rule in job["relabel_configs"]:
+        if "regex" not in rule:
+            continue
+        assert "\\" not in rule["regex"].replace(
+            "\\d", ""
+        ), f"regex {rule['regex']!r} uses an escape RE2 may reject"
+
+    targets = {
+        (r["target_label"], r.get("replacement"))
+        for r in job["relabel_configs"]
+        if "target_label" in r
+    }
+    assert ("namespace", None) in targets
+    assert ("pod", None) in targets
+    assert ("higress", "gpustack-higress-gateway") in targets
+
+
 def test_prepare_prometheus_config_writes_observability_env(tmp_path, monkeypatch):
     cfg = Config(
         data_dir=str(tmp_path / "data"),

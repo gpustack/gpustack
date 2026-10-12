@@ -17,6 +17,7 @@ assert the commit produces exactly as many members as the solve promised, on
 disjoint cards.
 """
 
+from gpustack.policies.resource_view import ResourceView
 from types import SimpleNamespace
 
 import pytest
@@ -95,7 +96,9 @@ class _OneCardPerMember:
 
 
 def _capacity(workers, model):
-    cap = GroupCapacity(SimpleNamespace(), model, workers, [])
+    cap = GroupCapacity(
+        SimpleNamespace(), model, workers, [], resource_view=ResourceView([])
+    )
     cap._selector = lambda m, instances, cpu_only, ram_claim=None: _OneCardPerMember(
         instances
     )

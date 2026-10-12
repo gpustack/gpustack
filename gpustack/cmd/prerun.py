@@ -15,7 +15,11 @@ from gpustack.cmd.start import (
 )
 from gpustack.utils.envs import get_gpustack_env
 from gpustack.utils.ephemeral_ports import ensure_reserved_against_ephemeral
-from gpustack.utils.network import is_port_available, parse_port_range
+from gpustack.utils.network import (
+    is_port_available,
+    is_port_reusable,
+    parse_port_range,
+)
 from gpustack.utils.s6_services import (
     gateway_services,
     postgres_services,
@@ -125,11 +129,20 @@ def check_ports_availability(cfg: Config, *services: str):
     }
     should_fail = False
     for port, service in ports_to_check.items():
-        if not is_port_available(port):
-            logger.error(
-                f"Port {port} required for service '{service}' is not available."
+        if is_port_available(port):
+            continue
+        if is_port_reusable(port):
+            # Only residual TCP state (e.g. TIME_WAIT from a process that
+            # just exited) holds the port. The s6 services bind with
+            # SO_REUSEADDR, the same way this probe just did, so the port
+            # is effectively available for them.
+            logger.info(
+                f"Port {port} required for service '{service}' is held only by "
+                "residual TCP state and will be rebound."
             )
-            should_fail = True
+            continue
+        logger.error(f"Port {port} required for service '{service}' is not available.")
+        should_fail = True
     if should_fail:
         raise Exception("One or more required ports are not available.")
 
@@ -309,6 +322,44 @@ scrape_configs:
           - 127.0.0.1:{pilot_status_port}
         labels:
           higress: {cfg.gateway_namespace}-higress-gateway
+"""
+
+    if cfg.gateway_mode == GatewayModeEnum.incluster:
+        # The in-cluster gateway pods carry the standard prometheus.io/*
+        # annotations (set by the higress-core chart), so pod service discovery
+        # follows replicas and pod recreation without further configuration.
+        # Discovery uses the server pod's own service account, which the chart
+        # grants pods get/list/watch to.
+        prometheus_config += f"""  - job_name: higress-gateway-pods
+    metrics_path: /stats/prometheus
+    scrape_interval: 5s
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - {cfg.gateway_namespace}
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: "true"
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: keep
+        regex: .*higress-gateway.*
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\\d+)?;(\\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - target_label: higress
+        replacement: {cfg.gateway_namespace}-higress-gateway
 """
 
     prometheus_config_path.write_text(prometheus_config)

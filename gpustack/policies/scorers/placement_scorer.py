@@ -12,9 +12,7 @@ from gpustack.policies.base import (
     ModelInstanceScorer,
     ScheduleCandidatesScorer,
 )
-from gpustack.policies.utils import (
-    get_worker_allocatable_resource,
-)
+from gpustack.policies.resource_view import ResourceView
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
@@ -76,9 +74,12 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         inference_server_type_weight: Optional[InferenceServerTypeWeight] = None,
         spread_score_weights: Optional[SpreadScoreWeights] = None,
         max_score: Optional[float] = None,
+        *,
+        resource_view: ResourceView,
     ):
-        self._model = model
         self._model_instances = model_instances
+        self._resource_view = resource_view
+        self._model = model
         self._resource_weight = resource_weight or ResourceWeight()
         self._model_weight = model_weight or ModelWeight()
         self._inference_server_type_weight = (
@@ -143,9 +144,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         Score the candidates with the binpack strategy.
         """
         for candidate in candidates:
-            allocatable = get_worker_allocatable_resource(
-                self._model_instances, candidate.worker
-            )
+            allocatable = self._resource_view.allocatable(candidate.worker)
 
             final_score = 0
             score = await self._score_binpack_item(
@@ -197,7 +196,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
                 )
                 continue
 
-            allocatable = get_worker_allocatable_resource(self._model_instances, worker)
+            allocatable = self._resource_view.allocatable(worker)
 
             final_score = 0
             score = await self._score_binpack_item(
@@ -511,9 +510,8 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
 
             score = 0
             for subordinate_worker in subordinate_workers:
-                allocatable = get_worker_allocatable_resource(
-                    self._model_instances,
-                    worker_map.get(subordinate_worker.worker_id),
+                allocatable = self._resource_view.allocatable(
+                    worker_map.get(subordinate_worker.worker_id)
                 )
 
                 score += await self._score_binpack_item(

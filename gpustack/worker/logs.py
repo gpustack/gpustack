@@ -33,7 +33,6 @@ from gpustack.worker.log_sources import (
     surviving_segment_log_path,
 )
 
-
 logger = logging.getLogger(__name__)
 
 

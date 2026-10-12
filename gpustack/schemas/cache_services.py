@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 from sqlalchemy import JSON, Column, ForeignKey, Integer, String, UniqueConstraint
-from sqlmodel import Field, SQLModel, Text
+from sqlmodel import Field, Relationship, SQLModel, Text
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import (
@@ -183,6 +183,13 @@ class CacheService(CacheServiceBase, BaseModelMixin, table=True):
         ),
     )
 
+    # ActiveRecord's cascade queues instance deletion events in the same
+    # transaction, so workers can stop containers as soon as it commits.
+    instances: List["CacheServiceInstance"] = Relationship(
+        back_populates="cache_service",
+        sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
+    )
+
 
 class CacheServiceCreate(CacheServiceBase):
     pass
@@ -219,6 +226,13 @@ class CacheServiceInstanceBase(SQLModel):
     """Which of the provider's declared components this instance runs
     (e.g. "master" / "store"). Empty for single-component
     providers."""
+
+    computed_resource_claim: Optional[Dict[str, int]] = Field(
+        sa_column=Column(JSON), default=None
+    )
+    """Scheduling reservation in bytes, calculated by the server at binding.
+    None means no resource profile is declared; {"ram": 0} is an explicit
+    zero reservation. Restarting the container retains this reservation."""
 
     component_addresses: Optional[Dict[str, str]] = Field(
         sa_column=Column(JSON), default=None
@@ -315,13 +329,27 @@ class CacheServiceInstance(CacheServiceInstanceBase, BaseModelMixin, table=True)
 
     id: Optional[int] = Field(default=None, primary_key=True)
 
+    cache_service: Optional[CacheService] = Relationship(
+        back_populates="instances",
+        sa_relationship_kwargs={"lazy": "noload"},
+    )
+
 
 class CacheServiceInstanceCreate(CacheServiceInstanceBase):
     pass
 
 
-class CacheServiceInstanceUpdate(CacheServiceInstanceBase):
-    pass
+class CacheServiceInstanceUpdate(SQLModel):
+    """Worker-owned runtime fields; bindings and reservations belong to the server."""
+
+    ports: Optional[Dict[str, int]] = None
+    port: Optional[int] = None
+    state: CacheServiceStateEnum = CacheServiceStateEnum.PENDING
+    state_message: Optional[str] = None
+    healthy: Optional[bool] = None
+    last_check_at: Optional[datetime] = None
+    restart_count: Optional[int] = None
+    last_restart_time: Optional[datetime] = None
 
 
 class CacheServiceInstancePublic(CacheServiceInstanceBase):
@@ -449,7 +477,8 @@ class CacheConfigSnapshot(BaseModel):
     serving script before the engine starts."""
 
     injected: bool = False
-    """False means the instance starts without the shared cache (degraded)."""
+    """Whether this snapshot injects the shared cache. Before engine startup,
+    the snapshot can be re-resolved; False is a degradation once running."""
 
     reason: Optional[str] = None
     """Human-readable reason when injected is False."""

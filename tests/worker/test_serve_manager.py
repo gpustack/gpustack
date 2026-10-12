@@ -2010,11 +2010,11 @@ def test_a_reconnect_resumes_at_the_cursor_and_drops_the_replay(tmp_path: Path):
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             side_effect=fake_logs_workload,
         ),
         patch(
-            "gpustack.worker.serve_manager.get_workload",
+            "gpustack.worker.container_logs.get_workload",
             side_effect=_get_workload_sequence(states),
         ),
     ):
@@ -2046,13 +2046,13 @@ def test_a_runtime_that_stamps_nothing_does_not_pin_the_cursor(tmp_path: Path):
         return iter(streams.pop(0))
 
     with (
-        patch("gpustack.worker.serve_manager.time.time", lambda: now[0]),
+        patch("gpustack.worker.container_logs.time.time", lambda: now[0]),
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             side_effect=fake_logs_workload,
         ),
         patch(
-            "gpustack.worker.serve_manager.get_workload",
+            "gpustack.worker.container_logs.get_workload",
             side_effect=_get_workload_sequence(states),
         ),
     ):
@@ -2077,11 +2077,11 @@ def test_output_still_short_of_a_newline_reaches_the_archive(tmp_path: Path):
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             return_value=one_stream(),
         ),
         patch(
-            "gpustack.worker.serve_manager.get_workload",
+            "gpustack.worker.container_logs.get_workload",
             side_effect=_get_workload_sequence(
                 [SimpleNamespace(state=WorkloadStatusStateEnum.FAILED)]
             ),
@@ -2115,10 +2115,10 @@ def test_one_uninterrupted_stream_neither_reconnects_nor_marks(tmp_path: Path):
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             side_effect=fake_logs_workload,
         ),
-        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+        patch("gpustack.worker.container_logs.get_workload", return_value=None),
     ):
         manager._persist_container_logs("wl", log_path, _fake_stop_event(), resume=True)
 
@@ -2140,10 +2140,10 @@ def test_persist_container_logs_exits_when_workload_gone(tmp_path: Path):
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             side_effect=fake_logs_workload,
         ),
-        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+        patch("gpustack.worker.container_logs.get_workload", return_value=None),
     ):
         manager._persist_container_logs("wl", log_path, _fake_stop_event())
 
@@ -2169,11 +2169,11 @@ def test_a_line_the_stream_cut_short_is_completed_by_the_reconnect(tmp_path: Pat
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             side_effect=lambda **kwargs: iter(streams.pop(0)),
         ),
         patch(
-            "gpustack.worker.serve_manager.get_workload",
+            "gpustack.worker.container_logs.get_workload",
             side_effect=_get_workload_sequence(states),
         ),
     ):
@@ -2210,11 +2210,11 @@ def test_an_archive_with_content_is_never_truncated(tmp_path: Path, reconnects, 
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             side_effect=lambda **kwargs: streams.pop(0),
         ),
         patch(
-            "gpustack.worker.serve_manager.get_workload",
+            "gpustack.worker.container_logs.get_workload",
             side_effect=_get_workload_sequence(states),
         ),
     ):
@@ -2254,13 +2254,13 @@ def test_a_cursor_invented_from_the_clock_always_marks_the_seam(
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             return_value=iter(
                 _stamped((-3600, "long-before\n"), (-1800, "also-before\n"))
             ),
         ),
         patch(
-            "gpustack.worker.serve_manager.get_workload",
+            "gpustack.worker.container_logs.get_workload",
             side_effect=_get_workload_sequence(
                 [SimpleNamespace(state=WorkloadStatusStateEnum.FAILED)]
             ),
@@ -2303,9 +2303,9 @@ def test_only_the_replay_is_skipped(tmp_path: Path, replay, kept):
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload", return_value=iter(replay())
+            "gpustack.worker.container_logs.logs_workload", return_value=iter(replay())
         ),
-        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+        patch("gpustack.worker.container_logs.get_workload", return_value=None),
     ):
         manager._persist_container_logs(
             "wl", str(log_path), _fake_stop_event(), resume=True
@@ -2328,10 +2328,10 @@ def test_a_copier_stopped_while_connecting_writes_nothing(tmp_path: Path):
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             side_effect=connect_after_the_stop,
         ),
-        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+        patch("gpustack.worker.container_logs.get_workload", return_value=None),
     ):
         manager._persist_container_logs("wl", str(log_path), stop_event)
 
@@ -2391,11 +2391,11 @@ def test_a_reconnect_that_cannot_relocate_appends_behind_a_marker(tmp_path: Path
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             side_effect=lambda **kwargs: iter(streams.pop(0)),
         ),
         patch(
-            "gpustack.worker.serve_manager.get_workload",
+            "gpustack.worker.container_logs.get_workload",
             side_effect=_get_workload_sequence(states),
         ),
     ):
@@ -2423,10 +2423,10 @@ def test_a_worker_restart_resumes_from_the_cursor_on_disk(tmp_path: Path, head_b
         patch("gpustack.worker.log_sources.envs.SERVE_LOG_MAX_BYTES", 1000),
         patch("gpustack.worker.log_sources.envs.SERVE_LOG_HEAD_BYTES", head_bytes),
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             side_effect=[iter(_stamped(*history)), iter(replay)],
         ),
-        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+        patch("gpustack.worker.container_logs.get_workload", return_value=None),
     ):
         manager._persist_container_logs("wl", str(head), _fake_stop_event())
         # A second thread, as a restarted worker starts one, over the same
@@ -2487,10 +2487,10 @@ def test_a_resumed_archive_keeps_the_runtime_line_framing(
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             return_value=iter(replay),
         ) as logs_workload,
-        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+        patch("gpustack.worker.container_logs.get_workload", return_value=None),
     ):
         manager._persist_container_logs(
             "wl", str(log_path), _fake_stop_event(), resume=True
@@ -2514,9 +2514,9 @@ def test_an_archive_of_nothing_but_a_fragment_is_replayed_in_full(tmp_path: Path
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload", return_value=iter(replay)
+            "gpustack.worker.container_logs.logs_workload", return_value=iter(replay)
         ) as logs_workload,
-        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+        patch("gpustack.worker.container_logs.get_workload", return_value=None),
     ):
         manager._persist_container_logs(
             "wl", str(log_path), _fake_stop_event(), resume=True
@@ -2551,10 +2551,10 @@ def test_a_line_split_across_chunks_reaches_the_archive_whole(tmp_path: Path):
 
     with (
         patch(
-            "gpustack.worker.serve_manager.logs_workload",
+            "gpustack.worker.container_logs.logs_workload",
             return_value=stream(),
         ),
-        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+        patch("gpustack.worker.container_logs.get_workload", return_value=None),
     ):
         manager._persist_container_logs("wl", str(log_path), _fake_stop_event())
 
@@ -2661,7 +2661,8 @@ def test_starting_log_persistence_retires_the_previous_generation(tmp_path: Path
         return retire(model_instance_id, timeout)
 
     with (
-        patch("gpustack.worker.serve_manager.logs_workload", return_value=iter([])),
+        patch("gpustack.worker.container_logs.logs_workload", return_value=iter([])),
+        patch("gpustack.worker.container_logs.get_workload", return_value=None),
         patch("gpustack.worker.serve_manager.get_workload", return_value=None),
         patch.object(manager, "_retire_log_persistence", side_effect=probe_lock),
     ):

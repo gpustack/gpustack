@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 
 from gpustack import envs
-from gpustack.api.auth import worker_auth
+from gpustack.api.auth import worker_proxy_auth
 from gpustack.api.exceptions import register_handlers
 from gpustack.routes.worker import proxy as worker_proxy
 from gpustack.utils.stall import stall_error_sse
@@ -163,7 +163,7 @@ def _build_worker_app(port: int, instance_id: Optional[int] = None) -> FastAPI:
     app = FastAPI()
     register_handlers(app)
     app.include_router(worker_proxy.router)
-    app.dependency_overrides[worker_auth] = lambda: None
+    app.dependency_overrides[worker_proxy_auth] = lambda: None
     app.state.worker_ip_getter = lambda: "127.0.0.1"
 
     @app.middleware("http")

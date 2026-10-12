@@ -6,7 +6,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
-from gpustack.policies.utils import get_worker_allocatable_resource, ListMessageBuilder
+from gpustack.policies.utils import ListMessageBuilder
 from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
     ModelResourceClaim,
@@ -14,6 +14,7 @@ from gpustack.scheduler.calculator import (
     MemoryEstimate,
     calculate_gguf_model_resource_claim,
 )
+from gpustack.policies.resource_view import ResourceView
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
@@ -22,9 +23,9 @@ from gpustack.policies.candidate_selectors.base_candidate_selector import (
     ScheduleCandidatesSelector,
 )
 from gpustack.schemas.models import (
+    ModelInstance,
     ComputedResourceClaim,
     Model,
-    ModelInstance,
     ModelInstanceSubordinateWorker,
     is_image_model,
 )
@@ -76,8 +77,12 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         model: Model,
         model_instances: List[ModelInstance],
         cache_dir: Optional[str] = None,
+        *,
+        resource_view: ResourceView,
     ):
-        self._initialize_basic_data(model, model_instances, cache_dir)
+        self._initialize_basic_data(
+            model, model_instances, cache_dir, resource_view=resource_view
+        )
         self._initialize_cached_claim_data()
         self._initialize_model_parameters(model)
         self._initialize_selected_gpu_ids()
@@ -87,13 +92,18 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         model: Model,
         model_instances: List[ModelInstance],
         cache_dir: Optional[str],
+        *,
+        resource_view: ResourceView,
     ):
         """Initialize basic data."""
         self._model = model
         self._model_instances = model_instances
+        self._resource_view = resource_view
         self._cache_dir = cache_dir
         self._workers = []  # Initialize workers list for remote parsing
 
+        # The inherited get_worker_allocatable_resource uses this typed cache.
+        self._workers_allocatable_resource_by_gpu_type = {}
         self._workers_allocatable_resource = {}
         self._gpus_allocatable_vram = []
         self._workers_allocatable_vram = []
@@ -179,7 +189,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         if self._workers_allocatable_resource.get(worker.id):
             return self._workers_allocatable_resource.get(worker.id)
 
-        return get_worker_allocatable_resource(self._model_instances, worker)
+        return self._resource_view.allocatable(worker)
 
     def _get_claim_with_layers(
         self, layers: int, is_uma: bool = False

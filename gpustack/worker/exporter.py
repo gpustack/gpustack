@@ -13,7 +13,7 @@ from prometheus_client.core import (
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config
 from gpustack.logging import setup_logging
-from gpustack.policies.utils import compute_worker_allocated
+from gpustack.policies.resource_view import compute_worker_allocated
 from gpustack.utils.name import metric_name
 from gpustack.worker.collector import WorkerStatusCollector
 import uvicorn

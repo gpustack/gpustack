@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from gpustack.policies.base import MemberResourceClaim
-from gpustack.policies.utils import compute_worker_allocated
+from gpustack.policies.resource_view import compute_worker_allocated
 from gpustack.scheduler.offer_slot import count_offer_slots
 
 

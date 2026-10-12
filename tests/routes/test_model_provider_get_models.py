@@ -11,6 +11,7 @@ from gpustack.schemas.model_provider import (
     ModelProviderTypeEnum,
     OpenAIConfig,
     ProviderModelsInput,
+    TypesafeConfig,
     V1_MODELS_URI,
 )
 
@@ -49,6 +50,92 @@ def _get_models(config, **kwargs):
     return route_module.get_models_from_provider(
         ProviderModelsInput(api_token="sk-test", config=config, **kwargs)
     )
+
+
+class TestJevDecisionModels:
+    """The Jev decision services answer ``{"models": [...]}`` (jevcompat SPEC)
+    instead of OpenAI's ``{"data": [...]}``, and their entries are
+    decision-engine versions, not servable models. get-models must surface
+    them (id from ``name``) and categorise them as ``decision`` so the UI's
+    decision-model dropdowns can filter on it."""
+
+    def _systemone(self, endpoint=None) -> TypesafeConfig:
+        return TypesafeConfig.model_validate(
+            {
+                "type": ModelProviderTypeEnum.GPUSTACK_LB_TYPESAFE.value,
+                **({"endpoint": endpoint} if endpoint else {}),
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_jev_models_array_is_read(self, monkeypatch):
+        def respond(_path: str) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {
+                            "name": "jev-latest",
+                            "description": "The latest iteration",
+                            "release_date": "2026-09-10T18:38:01Z",
+                        },
+                        {"name": "jev-preview", "description": "A preview"},
+                    ]
+                },
+            )
+
+        asked = _stub_upstream(monkeypatch, respond)
+
+        result = await _get_models(self._systemone())
+
+        assert asked == ["/v1/models"]
+        assert [model.id for model in result.data] == [
+            "jev-latest",
+            "jev-preview",
+        ]
+        # engine versions, not servable models — the UI filters on this
+        assert all(model.categories == ["decision"] for model in result.data)
+
+    @pytest.mark.asyncio
+    async def test_custom_endpoint_is_the_derived_base(self, monkeypatch):
+        asked = _stub_upstream(
+            monkeypatch,
+            lambda path: httpx.Response(200, json={"models": [{"name": "jev-latest"}]}),
+        )
+
+        result = await _get_models(self._systemone("http://jev.tenant-a.internal:8010"))
+
+        assert asked == ["/v1/models"]
+        assert [model.id for model in result.data] == ["jev-latest"]
+
+    @pytest.mark.asyncio
+    async def test_data_array_still_wins_when_present(self, monkeypatch):
+        # A Jev-compatible server that also speaks OpenAI shape keeps working:
+        # ``data`` is the first key read, so the jev fallback never overrides it.
+        asked = _stub_upstream(
+            monkeypatch,
+            lambda _path: httpx.Response(200, json={"data": [{"id": "x"}]}),
+        )
+
+        result = await _get_models(self._systemone())
+
+        assert asked == ["/v1/models"]
+        assert [model.id for model in result.data] == ["x"]
+
+    @pytest.mark.asyncio
+    async def test_empty_data_array_is_an_empty_list_not_a_fallback(self, monkeypatch):
+        # ``{"data": []}`` is a valid empty model list; the models-key
+        # fallback must not turn it into another key's entries.
+        _stub_upstream(
+            monkeypatch,
+            lambda _path: httpx.Response(
+                200, json={"data": [], "models": [{"name": "jev-latest"}]}
+            ),
+        )
+
+        result = await _get_models(self._systemone())
+
+        assert result.data == []
 
 
 class TestModelListPathCandidates:
@@ -190,3 +277,23 @@ class TestModelListPathCandidates:
 
         assert asked == ["/anthropic/v1/models"]
         assert "Network error" in raised.value.message
+
+
+class TestModelListShape:
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"data": "some string"},
+            {"data": {"error": {"message": "boom"}}},
+            {"models": "nope"},
+            {},
+        ],
+    )
+    def test_non_list_shapes_are_failed_candidates(self, body):
+        # A 200 body whose data/models is not an array must surface as the
+        # documented failed candidate (ValueError), never flow through to
+        # get_model_name and an uncaught AttributeError.
+        from gpustack.routes.model_provider import _model_list
+
+        with pytest.raises(ValueError):
+            _model_list(httpx.Response(200, json=body))

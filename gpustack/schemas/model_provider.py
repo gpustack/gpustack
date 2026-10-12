@@ -96,6 +96,7 @@ class ModelProviderTypeEnum(str, Enum):
     QWEN = "qwen"
     SPARK = "spark"
     STEPFUN = "stepfun"
+    GPUSTACK_LB_TYPESAFE = "gpustack-lb-typesafe"
     TOGETHERAI = "together-ai"
     TRITON = "triton"
     YI = "yi"
@@ -574,6 +575,56 @@ class StepfunConfig(BaseProviderConfig):
     _public_endpoint: str = "api.stepfun.com"
 
 
+class TypesafeConfig(BaseProviderConfig):
+    """A Jev decision service consumed by the ``gpustack-lb-decision-service``
+    gateway plugin — NOT an inference upstream. Its endpoint/token feed the
+    plugin's ``providers`` catalogue and its ``provider-{id}`` McpBridge
+    registry is registered by the same ModelProvider machinery as any other
+    provider; it is excluded from the ai-proxy providers catalogue.
+
+    One provider covers both flavors: ``endpoint`` is a custom base url for
+    a self-hosted / third-party service, and omitted means the TypeSafe
+    hosted API (``https://api.typesafe.ai``) — the default the catalogue
+    entry and the decision test fall back to. The Envoy cluster is always
+    derived from the provider's own ``provider-{id}`` registry — there is
+    deliberately no ``cluster`` field: the registry name never equals the
+    endpoint host, so an endpoint-derived cluster name would never resolve
+    (see the plugin README's McpBridge section).
+    """
+
+    type: Literal[ModelProviderTypeEnum.GPUSTACK_LB_TYPESAFE]
+    endpoint: Optional[str] = None
+    model: Optional[str] = None
+    """Default decision-engine model of this service (jevcompat
+    ``request.model-alias``, e.g. ``jev-latest``); discoverable via the
+    service's ``/v1/models``. A route's ``decisionModel`` overrides it."""
+    _public_endpoint: str = "api.typesafe.ai"
+    _chat_uri = "/v1/systemone"
+    _model_uri = "/v1/models"
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("endpoint")
+    @classmethod
+    def _endpoint_parses(cls, value: Optional[str]) -> Optional[str]:
+        """Reject endpoints that only fail later, inside registry
+        generation — one malformed url used to break the whole decision
+        catalogue sync, for every organization."""
+        if value is None:
+            return value
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError(f"endpoint must be an http(s) base url, got {value!r}")
+        try:
+            parsed.port
+        except ValueError:
+            raise ValueError(f"endpoint port is not a number: {value!r}")
+        return value
+
+    def get_base_url(self) -> Optional[str]:
+        return self.endpoint if self.endpoint else super().get_base_url()
+
+
 class TogetherAIConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.TOGETHERAI]
     _public_endpoint: str = "api.together.xyz"
@@ -637,6 +688,7 @@ ProviderConfigType = Annotated[
         QwenConfig,
         SparkConfig,
         StepfunConfig,
+        TypesafeConfig,
         TogetherAIConfig,
         TritonConfig,
         YiConfig,
@@ -806,6 +858,14 @@ class ProviderModelsInput(BaseModel):
 
 class TestProviderModelInput(ProviderModelsInput):
     model_name: str
+
+
+class TestDecisionModelInput(ProviderModelsInput):
+    """A decision-service ping: unlike TestProviderModelInput, the alias is
+    optional — the provider's own ``model`` (or the service default) is
+    what a route would use when no override is set."""
+
+    model_name: Optional[str] = None
 
 
 class TestProviderModelResult(BaseModel):

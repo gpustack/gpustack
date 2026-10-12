@@ -41,6 +41,11 @@ def _point(rate, tps, tpot, *, total=100, ok=None, **extra):
     }
 
 
+def _search_benchmark(**fields):
+    """Benchmark config for coverage tests that exercise an adaptive search."""
+    return SimpleNamespace(auto_tune=True, **fields)
+
+
 # A real max-throughput sweep (shape taken from a 15-point run on qwen3-0.6b):
 # throughput climbs to a peak around rate 31 and then collapses while TPOT
 # explodes.
@@ -100,6 +105,7 @@ _BM74 = [
 ]
 
 _BM74_BENCHMARK = dict(
+    auto_tune=True,
     load_type="concurrency",
     lower_bound=4,
     upper_bound=1024,
@@ -172,9 +178,49 @@ class TestComputeValidity:
         # Throughput still rising at every point: the curve never turned over.
         return [_point(r, r * 1000.0, 0.5) for r in rates]
 
+    @pytest.mark.parametrize("rates", [[8], [8, 16, 32]])
+    def test_manual_stages_have_no_search_coverage_verdict(self, rates):
+        benchmark = SimpleNamespace(
+            auto_tune=False, stages=[{"rate": r} for r in rates]
+        )
+        points = self._climbing(rates)
+        best = analysis.compute_best_points(benchmark, points)
+
+        assert analysis.compute_validity(benchmark, points, best) == {
+            "coverage_applicable": False,
+            "warnings": [],
+        }
+
+    @pytest.mark.parametrize("stages", [None, [{"rate": 8}]])
+    def test_fixed_loads_keep_measurement_findings(self, stages):
+        benchmark = SimpleNamespace(auto_tune=False, stages=stages, slo_avg_tpot_ms=0.1)
+        points = [_point(8, 9000, 0.5, total=100, ok=80)]
+        best = analysis.compute_best_points(benchmark, points)
+
+        validity = analysis.compute_validity(benchmark, points, best)
+
+        assert validity["coverage_applicable"] is False
+        assert [w["code"] for w in validity["warnings"]] == [
+            "point_high_error",
+            "slo_never_met",
+        ]
+
+    @pytest.mark.parametrize("auto_tune", [False, True])
+    def test_single_point_coverage_depends_on_search_mode(self, auto_tune):
+        benchmark = SimpleNamespace(auto_tune=auto_tune, stages=None)
+        points = self._climbing([8])
+        best = analysis.compute_best_points(benchmark, points)
+
+        validity = analysis.compute_validity(benchmark, points, best)
+
+        assert validity["coverage_applicable"] is auto_tune
+        assert [w["code"] for w in validity["warnings"]] == (
+            ["not_saturated"] if auto_tune else []
+        )
+
     def test_hitting_the_search_range_says_raise_the_range(self):
         points = self._climbing([4, 8, 16, 32])
-        benchmark = SimpleNamespace(upper_bound=32, max_points=12)
+        benchmark = _search_benchmark(upper_bound=32, max_points=12)
         v = analysis.compute_validity(benchmark, points, {"recommended_rate": 32})
         assert [w["code"] for w in v["warnings"]] == ["not_saturated"]
         assert v["sufficient"] is False
@@ -184,7 +230,7 @@ class TestComputeValidity:
         # Advising "raise the bound" here points at the one number that was never
         # the constraint: the sweep never got to use the range it already had.
         points = self._climbing([4, 8, 16, 32])
-        benchmark = SimpleNamespace(upper_bound=1024, max_points=4)
+        benchmark = _search_benchmark(upper_bound=1024, max_points=4)
         v = analysis.compute_validity(benchmark, points, {"recommended_rate": 32})
         assert [w["code"] for w in v["warnings"]] == ["budget_exhausted"]
 
@@ -194,7 +240,7 @@ class TestComputeValidity:
             _point(8, 8000.0, 0.5, time_to_first_token_mean=40.0),
             _point(16, 16000.0, 0.5, time_to_first_token_mean=90.0),
         ]
-        benchmark = SimpleNamespace(
+        benchmark = _search_benchmark(
             load_type="concurrency",
             upper_bound=100,
             max_points=3,
@@ -223,7 +269,7 @@ class TestComputeValidity:
             _point(8, 2000.0, 0.9),
             _point(16, 2000.0, 2.0),
         ]
-        benchmark = SimpleNamespace(upper_bound=1024, max_points=12)
+        benchmark = _search_benchmark(upper_bound=1024, max_points=12)
         v = analysis.compute_validity(benchmark, points, {"recommended_rate": 4})
         assert "peak_at_floor" in [w["code"] for w in v["warnings"]]
 
@@ -233,7 +279,7 @@ class TestComputeValidity:
         points = [
             _point(64, 28249.0, 0.5, requests_per_second_mean=23.6),
         ]
-        benchmark = SimpleNamespace(
+        benchmark = _search_benchmark(
             load_type="fixed_rate", lower_bound=64, upper_bound=128, max_points=6
         )
         v = analysis.compute_validity(benchmark, points, {"recommended_rate": 64})
@@ -254,7 +300,7 @@ class TestComputeValidity:
             _point(4, 4000.0, 0.2, requests_per_second_mean=3.9),
             _point(8, 8000.0, 0.3, requests_per_second_mean=7.8),
         ]
-        benchmark = SimpleNamespace(
+        benchmark = _search_benchmark(
             load_type="fixed_rate", lower_bound=4, upper_bound=8, max_points=12
         )
         v = analysis.compute_validity(benchmark, points, {"recommended_rate": 8})
@@ -269,7 +315,7 @@ class TestComputeValidity:
             _point(4, 2000.0, 0.5, requests_per_second_mean=2.0),
             _point(8, 2100.0, 0.9, requests_per_second_mean=2.1),
         ]
-        benchmark = SimpleNamespace(
+        benchmark = _search_benchmark(
             load_type="concurrency", lower_bound=4, upper_bound=64, max_points=12
         )
         v = analysis.compute_validity(benchmark, points, {"recommended_rate": 4})
@@ -284,9 +330,13 @@ class TestComputeValidity:
             _point(32, 30000.0, 3.0),
             _point(64, 20000.0, 12.0),
         ]
-        benchmark = SimpleNamespace(upper_bound=1024, max_points=12)
+        benchmark = _search_benchmark(upper_bound=1024, max_points=12)
         v = analysis.compute_validity(benchmark, points, {"recommended_rate": 32})
-        assert v == {"sufficient": True, "warnings": []}
+        assert v == {
+            "coverage_applicable": True,
+            "sufficient": True,
+            "warnings": [],
+        }
 
 
 class TestBuildCommandArgs:
@@ -1177,7 +1227,7 @@ class TestValidityWarningNoise:
         # fixed-rate single point where the server plainly can't keep up ->
         # saturated_at_lower_bound is the cause to act on; no few_points noise.
         pts = [_point(64, 100.0, 0.5, requests_per_second_mean=23.6)]
-        benchmark = SimpleNamespace(
+        benchmark = _search_benchmark(
             load_type="fixed_rate", upper_bound=128, max_points=12
         )
         v = analysis.compute_validity(
@@ -1190,7 +1240,7 @@ class TestValidityWarningNoise:
     def test_few_points_still_reported_when_it_is_the_only_signal(self):
         # A short run with nothing stronger to say still gets the hint.
         pts = [_point(8, 9000.0, 0.3)]
-        benchmark = SimpleNamespace(
+        benchmark = _search_benchmark(
             load_type="concurrency", upper_bound=1024, max_points=12
         )
         v = analysis.compute_validity(benchmark, pts, {})
@@ -1261,6 +1311,7 @@ _BM93 = [
 
 
 _BM93_BENCHMARK = dict(
+    auto_tune=True,
     load_type="concurrency",
     upper_bound=1024,
     max_points=12,
@@ -1289,7 +1340,7 @@ class TestRampFactsBeatInference:
         # Still climbing at the top, points unspent (4 of 12): the grid concludes
         # "raise the upper bound", which was never the constraint.
         points = [_point(r, r * 1000.0, 0.5) for r in (4, 8, 16, 32)]
-        benchmark = SimpleNamespace(upper_bound=1024, max_points=12)
+        benchmark = _search_benchmark(upper_bound=1024, max_points=12)
         best = {"recommended_rate": 32}
 
         inferred = analysis.compute_validity(benchmark, points, best)
@@ -1304,7 +1355,7 @@ class TestRampFactsBeatInference:
     def test_the_point_cap_names_itself(self):
         points = [_point(r, r * 1000.0, 0.5) for r in (4, 8, 16, 32)]
         v = analysis.compute_validity(
-            SimpleNamespace(upper_bound=1024, max_points=4),
+            _search_benchmark(upper_bound=1024, max_points=4),
             points,
             {"recommended_rate": 32},
             self._facts("budget_points"),
@@ -1315,7 +1366,7 @@ class TestRampFactsBeatInference:
     def test_reaching_the_range_ceiling_still_says_raise_the_range(self):
         points = [_point(r, r * 1000.0, 0.5) for r in (4, 8, 16, 32)]
         v = analysis.compute_validity(
-            SimpleNamespace(upper_bound=32, max_points=12),
+            _search_benchmark(upper_bound=32, max_points=12),
             points,
             {"recommended_rate": 32},
             self._facts("upper_bound"),
@@ -1377,7 +1428,7 @@ class TestRampFactsBeatInference:
         assert [w["code"] for w in v["warnings"]] == ["slo_not_binding"]
 
     def test_a_legacy_sidecar_without_a_stop_reason_falls_back_to_the_bracket(self):
-        benchmark = SimpleNamespace(upper_bound=1024, max_points=12)
+        benchmark = _search_benchmark(upper_bound=1024, max_points=12)
         points = [_point(r, r * 1000.0, 0.5) for r in (4, 8, 16, 32)]
         v = analysis.compute_validity(
             benchmark,
@@ -1389,7 +1440,7 @@ class TestRampFactsBeatInference:
 
     def test_no_sidecar_leaves_no_stop_reason_key(self):
         v = analysis.compute_validity(
-            SimpleNamespace(upper_bound=1024, max_points=12),
+            _search_benchmark(upper_bound=1024, max_points=12),
             [_point(4, 1000.0, 0.5), _point(8, 2000.0, 0.5), _point(16, 3000.0, 0.5)],
             {"recommended_rate": 16},
         )
@@ -1571,7 +1622,7 @@ class TestSloBoundaryLocated:
 
     def test_a_run_without_an_slo_has_no_such_key(self):
         # Meaningless without thresholds — absent, not False.
-        benchmark = SimpleNamespace(upper_bound=1024, max_points=12)
+        benchmark = _search_benchmark(upper_bound=1024, max_points=12)
         best = analysis.compute_best_points(benchmark, _SWEEP)
         v = analysis.compute_validity(benchmark, _SWEEP, best)
         assert "slo_boundary_located" not in v
@@ -1637,7 +1688,7 @@ class TestPeakAndRecommendation:
             _point(34, 31006.6, 16.27),
             _point(36, 30419.0, 28.99),
         ]
-        benchmark = SimpleNamespace(
+        benchmark = _search_benchmark(
             load_type="fixed_rate", upper_bound=1024, max_points=12
         )
         out = analysis.compute_best_points(benchmark, bm92)
@@ -1666,7 +1717,7 @@ class TestPeakAndRecommendation:
         assert "not_saturated" not in codes
 
     def test_bm86_loose_slo_recommends_the_peak_without_a_reversed_warning(self):
-        benchmark = SimpleNamespace(
+        benchmark = _search_benchmark(
             load_type="concurrency",
             upper_bound=1024,
             max_points=12,
@@ -1691,7 +1742,7 @@ class TestPeakAndRecommendation:
         # (155ms of 160ms = 97%): here the SLO genuinely bound the answer, so there
         # is nothing to report. This is the case _SLO_HEADROOM_RATIO protects — the
         # headroom test, not the rates, is what separates it from bm93.
-        benchmark = SimpleNamespace(
+        benchmark = _search_benchmark(
             load_type="concurrency",
             upper_bound=1024,
             max_points=12,
@@ -1708,7 +1759,7 @@ class TestPeakAndRecommendation:
         # TTFT is loose (31%) but TPOT is nearly spent (1.21 of 1.3ms = 93%): the
         # run WAS shaped by a latency budget, just not by the one with slack. Taking
         # the loosest (or an average) would flag a binding SLO as irrelevant.
-        benchmark = SimpleNamespace(
+        benchmark = _search_benchmark(
             load_type="concurrency",
             upper_bound=1024,
             max_points=12,
@@ -1720,7 +1771,7 @@ class TestPeakAndRecommendation:
         assert v["warnings"] == []
 
     def test_no_slo_plateau_does_not_say_raise_the_bound(self):
-        benchmark = SimpleNamespace(upper_bound=1024, max_points=12)
+        benchmark = _search_benchmark(upper_bound=1024, max_points=12)
         out = analysis.compute_best_points(benchmark, _BM86)
         assert out["peak_rate"] == 512
         assert out["recommended_rate"] == 512
@@ -2439,7 +2490,7 @@ class TestTheProbesCapIsNotTheUsersRange:
 
     def _validity(self, ramp, upper_bound=1024):
         return analysis.compute_validity(
-            SimpleNamespace(upper_bound=upper_bound, max_points=12),
+            _search_benchmark(upper_bound=upper_bound, max_points=12),
             self._points(),
             {"recommended_rate": 31, "peak_rate": 31},
             ramp,

@@ -26,6 +26,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
+from gpustack.server.cache_service_resources import load_resource_view
 from gpustack.config.config import (
     Config,
     get_cluster_image_name,
@@ -95,6 +96,7 @@ from gpustack.schemas.config import (
     GatewayModeEnum,
     SensitivePredefinedConfig,
 )
+from gpustack.schemas.cache_service_resources import cache_service_resource_claim
 from gpustack.schemas.cache_services import (
     cache_service_spec_digest,
     CacheService,
@@ -218,6 +220,14 @@ from gpustack.routes.plugins import (
     RouteReconcileContext,
     dispatch_route_reconcile,
 )
+from gpustack.routes.plugins.decision_service.providers import (
+    DECISION_PROVIDER_TYPES,
+    sync_decision_service_providers,
+)
+from gpustack.routes.plugins.decision_service.plugin import (
+    decision_referencing_route_ids,
+)
+from gpustack.routes.plugins.capability_policy import CapabilityPolicy
 from gpustack.gateway import get_async_k8s_config
 from gpustack.schemas.model_provider import (
     ModelProvider,
@@ -673,8 +683,8 @@ class CacheServiceController:
     (narrowed to workers matching the service's worker_selector labels when
     one is set), following workers as they join and leave. Instances whose
     worker left the desired set are hard-deleted; their workloads are
-    cleaned up by the worker-side orphan cleaner. External services are
-    untouched.
+    stopped by the workers consuming their deletion events. The orphan
+    cleaner provides a fallback. External services are untouched.
     """
 
     RESYNC_INTERVAL_SECONDS = 60
@@ -708,8 +718,8 @@ class CacheServiceController:
     async def _watch_cache_services(self):
         async for event in CacheService.subscribe(source="cache_service_controller"):
             if event.type not in (EventType.CREATED, EventType.UPDATED):
-                # Service deletion is a hard delete; the instances table's
-                # ON DELETE CASCADE drops the rows with it.
+                # ActiveRecord's cascade deletes the instances and publishes
+                # their deletion events in the service's transaction.
                 continue
             cache_service: CacheService = event.data
             if cache_service is None:
@@ -990,6 +1000,19 @@ class CacheServiceController:
         instances = await CacheServiceInstance.all_by_fields(
             session, {"cache_service_id": service.id}
         )
+        if provider is not None:
+            for instance in instances:
+                if (
+                    instance.computed_resource_claim is None
+                    and instance.spec_digest == cache_service_spec_digest(service)
+                ):
+                    claim = cache_service_resource_claim(
+                        service, provider, instance.component
+                    )
+                    if claim is not None:
+                        await instance.update(
+                            session, {"computed_resource_claim": claim}
+                        )
         desired_by_component, error_message, reconcile = (
             await self._desired_component_workers(session, service, instances, provider)
         )
@@ -1107,6 +1130,11 @@ class CacheServiceController:
                         component_addresses=instance_addresses,
                         state=CacheServiceStateEnum.PENDING,
                         spec_digest=cache_service_spec_digest(service),
+                        computed_resource_claim=(
+                            cache_service_resource_claim(service, provider, component)
+                            if provider
+                            else None
+                        ),
                     ),
                 )
                 logger.info(
@@ -1423,21 +1451,51 @@ class CacheServiceController:
         # reconciles the instance set, not the spec; recovery is
         # delete-to-recreate) — say so instead of silently returning the
         # new spec from the API while containers run the old one.
-        # Instances predating the digest (None) are never flagged.
+        # A missing digest alone does not establish drift; resource claims
+        # are compared separately against the current declaration.
         current_digest = cache_service_spec_digest(service)
-        if any(
+        spec_drifted = any(
             instance.spec_digest and instance.spec_digest != current_digest
             for instance in instances
-        ):
-            drift_message = (
-                "configuration changed after instances started; delete "
-                "instances to recreate them with the current configuration"
+        )
+        if spec_drifted or self._resource_claims_drifted(service, provider, instances):
+            reason = (
+                "configuration changed after instances started"
+                if spec_drifted
+                else "resource reservation is missing or differs from the current declaration"
             )
+            drift_message = f"{reason}; delete instances to recreate them with the current configuration"
             message = f"{message}; {drift_message}" if message else drift_message
 
         await self._set_service_state(
             session, service, state=state, state_message=message, healthy=healthy
         )
+
+    @staticmethod
+    def _resource_claims_drifted(service, provider, instances) -> bool:
+        """Keep running reservations fixed and surface declaration changes for recreation."""
+        if provider is None:
+            return False
+        # TODO: Unified workloads should retain their resolved launch spec so
+        # legacy reservations can be reconstructed without guessing capacity.
+        claims = {}
+        for instance in instances:
+            if instance.computed_resource_claim is None and instance.state not in (
+                CacheServiceStateEnum.RUNNING,
+                CacheServiceStateEnum.ERROR,
+            ):
+                continue
+            component = instance.component or ""
+            if component not in claims:
+                try:
+                    claims[component] = cache_service_resource_claim(
+                        service, provider, component
+                    )
+                except ValueError:
+                    return True
+            if instance.computed_resource_claim != claims[component]:
+                return True
+        return False
 
     async def _set_service_state(
         self,
@@ -2119,7 +2177,9 @@ async def _sync_replicas_per_role(
     # It also holds back a router that has not been created yet, which is the
     # same answer to the same question -- a router rendered from peers that
     # predate the edit is a cross-generation pairing like any other.
-    spec_moved = bool(generation) and generation_digest != digest
+    # Use the same version write-back exemption as the model's stale marker:
+    # recording the build the members already run does not change their spec.
+    spec_moved = bool(await _stale_members(session, model, generation))
 
     for role in model.roles:
         have = [i for i in generation if i.role == role.name]
@@ -2806,12 +2866,17 @@ async def find_scale_down_candidates(
                 )
             )
 
+        async with async_session() as session:
+            resource_view = await load_resource_view(
+                session, instances, cluster_id=model.cluster_id
+            )
         scorers.append(
             PlacementScorer(
                 model,
                 instances,
                 scale_type=ScaleTypeEnum.SCALE_DOWN,
                 max_score=placement_max_score,
+                resource_view=resource_view,
             )
         )
 
@@ -3582,10 +3647,9 @@ async def _degradation_reasons(
     looks at neither the cache nor the ratio -- which is the whole reason they
     are a separate list rather than a state.
 
-    `state` is taken rather than re-derived, and only the ratio reads it: the
-    markers below describe placement or configuration and are true whether or
-    not the deployment is serving, while "short of the shape you asked for"
-    says something about the service itself.
+    `state` is taken rather than re-derived, and only the ratio reads it.
+    Cache degradation comes from running instances' startup snapshots;
+    placement and configuration markers can apply before the deployment serves.
 
     Returns the reasons and a possibly-extended `state_message`: one of them
     (the cache) carries a detail worth putting in front of the user, and
@@ -4077,11 +4141,14 @@ async def sync_model_status(session: AsyncSession, model: Model) -> bool:  # noq
                 ready_by_role[instance.role] = ready_by_role.get(instance.role, 0) + 1
         elif instance.state == ModelInstanceStateEnum.ERROR:
             error_count += 1
-        # A resolved cache the instance could not attach to is a degradation,
-        # not a failure: the instance starts anyway, just without the shared
-        # cache. `cache_config` is None when no cache service was
-        # selected at all, which is not a degradation.
-        if instance.cache_config is not None and not instance.cache_config.injected:
+        # Only a running engine can be degraded by missing its shared cache.
+        # Before startup, the snapshot is provisional: placement supplies the
+        # worker, and cache readiness can refresh it before the engine starts.
+        if (
+            instance.state == ModelInstanceStateEnum.RUNNING
+            and instance.cache_config is not None
+            and not instance.cache_config.injected
+        ):
             cache_not_injected = True
             if cache_reason is None:
                 cache_reason = instance.cache_config.reason
@@ -4820,6 +4887,25 @@ class WorkerController:
                     fields={"worker_id": worker.id},
                     options=[selectinload(ModelInstance.model)],
                 )
+                # The worker's proxy change is not a column on Model, so it
+                # is carried to ``notify_model_route_target`` as a synthetic
+                # ``worker_*`` field. The notification is made directly here
+                # rather than riding the fanned-out model event: the
+                # coordinator drops ``changed_fields`` on the wire, so a
+                # consumer that received the model event cross-instance
+                # would re-diff an unchanged Model row, find nothing, and
+                # never rebuild the route -- which matters because the
+                # model's destinations are computed from the tunnel
+                # address, and a tunnel that recovers after
+                # ``ready_replicas`` has already settled has no other
+                # trigger left.
+                worker_changed_fields = {}
+                if proxy_address_changed is not None:
+                    worker_changed_fields["worker_proxy_address"] = (
+                        proxy_address_changed
+                    )
+                if proxy_mode_changed is not None:
+                    worker_changed_fields["worker_proxy_mode"] = proxy_mode_changed
                 notified_model = set()
                 for instance in instances:
                     if instance.model_id in notified_model:
@@ -4831,6 +4917,15 @@ class WorkerController:
                         Event(
                             type=EventType.UPDATED,
                             data=copied_model,
+                        ),
+                    )
+                    await notify_model_route_target(
+                        session=session,
+                        model=copied_model,
+                        event=Event(
+                            type=EventType.UPDATED,
+                            data=copied_model,
+                            changed_fields=worker_changed_fields,
                         ),
                     )
 
@@ -6312,11 +6407,22 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
         # `state` is what the target's ACTIVE gate reads, so a state change
         # has to reach the target even when the RUNNING count did not move
         # (a group whose upstream registration flips, for instance).
+        #
+        # The ``worker_*`` fields are synthetic: no column of that name
+        # exists on Model. ``WorkerController._notify_relatives`` passes
+        # them when a TUNNEL worker's proxy address or mode changes,
+        # because the model's destinations are computed from the tunnel
+        # address -- and when the tunnel recovers after
+        # ``ready_replicas`` has already gone back up, the replica-count
+        # path never fires again, so this is the only trigger that
+        # rebuilds the gateway route.
         related_fields = [
             "state",
             "ready_replicas",
             "replicas",
             "native_anthropic_api",
+            "worker_proxy_address",
+            "worker_proxy_mode",
         ]
         for field in related_fields:
             if field in event.changed_fields:
@@ -6325,13 +6431,14 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
     model: Model = await Model.one_by_id(
         session=session,
         id=model.id,
-        options=[
-            selectinload(Model.model_route_targets),
-        ],
     )
     if not model:
         return
-    targets = model.model_route_targets
+    # The model may already be in the session's identity map, where get()
+    # skips loader options and a noload relationship stays empty.
+    targets = await ModelRouteTarget.all_by_fields(
+        session, fields={"model_id": model.id, "deleted_at": None}
+    )
     for target in targets:
         if should_notify:
             target_copy = ModelRouteTarget(**target.model_dump())
@@ -6417,6 +6524,19 @@ async def sync_categories_and_meta(session: AsyncSession, model: Model, event: E
                 source={"categories": model.categories, "meta": merged_meta},
                 auto_commit=True,
             )
+
+
+def _is_decision_payload(value: Any) -> bool:
+    """Whether a provider config value -- a pydantic model, the raw dict an
+    event payload can carry, or a bare type value -- names a decision
+    provider type."""
+    if isinstance(value, BaseModel):
+        type_value = getattr(value, "type", None)
+    elif isinstance(value, dict):
+        type_value = value.get("type")
+    else:
+        type_value = value
+    return type_value in DECISION_PROVIDER_TYPES
 
 
 class ModelProviderController:
@@ -6517,6 +6637,103 @@ class ModelProviderController:
             logger.error(f"Failed to ensure provider's ai_proxy config: {e}")
             raise
 
+    async def _ensure_decision_service_config(self):
+        """Rebuild the gpustack-lb-decision-service providers catalogue
+        (the gpustack-lb-typesafe type ModelProviders). Separate
+        from the ai-proxy pass: a different CR, a different set of
+        providers (only the gpustack-lb-typesafe type), and a failure in
+        one must not mask the other."""
+        try:
+            async with async_session() as session:
+                await sync_decision_service_providers(
+                    cfg=self._config,
+                    session=session,
+                    extensions_api=self._higress_extension_api,
+                )
+        except Exception as e:
+            logger.error(f"Failed to ensure decision-service provider config: {e}")
+            raise
+
+    async def _notify_decision_service_routes(self, event: Event) -> None:
+        """Re-reconcile routes whose decision-service section is affected by
+        a provider change: a deletion (row or id-only payload -- it cannot
+        be ruled out that the deleted row was a decision provider), a type
+        move off or back onto the decision types, a ``models`` cache
+        refresh, or a change of the provider's default ``model`` -- any of
+        these can flip what the render guard decides. The reconcile then
+        strips or restores each matchRule while the stored policy is left
+        untouched.
+
+        Field access goes through ``event_field``/``resolve_event_id``:
+        cross-instance events can carry an id-only payload where attribute
+        access would raise before any notification went out."""
+        provider_id = resolve_event_id(event)
+        if provider_id is None:
+            return
+        changed = event.changed_fields or {}
+        if event.type == EventType.DELETED:
+            payload_config = event_field(event.data, "config")
+            if payload_config is not None and not _is_decision_payload(payload_config):
+                return
+        else:
+            config_change = changed.get("config")
+            # _changed_scalar normalizes both producer shapes: the local
+            # find_history path stores ([old], [new]) and the cross-instance
+            # detect_changes path stores a flat (old, new).
+            old_value = (
+                _changed_scalar(config_change[0])
+                if config_change and len(config_change) > 0
+                else None
+            )
+            new_value = (
+                _changed_scalar(config_change[1])
+                if config_change and len(config_change) > 1
+                else None
+            )
+            was_decision = old_value is not None and _is_decision_payload(old_value)
+            is_decision = new_value is not None and _is_decision_payload(new_value)
+
+            def _payload_model(value) -> Optional[Any]:
+                if isinstance(value, BaseModel):
+                    return getattr(value, "model", None)
+                if isinstance(value, dict):
+                    return value.get("model")
+                return None
+
+            model_changed = _payload_model(old_value) != _payload_model(new_value)
+            # notify when the provider left or re-entered the decision
+            # types (a stripped rule can come back), when its default model
+            # changed (the effective alias a route renders may be valid
+            # again), or when the pulled models cache changed (an alias may
+            # have gone)
+            if not (
+                was_decision != is_decision
+                or (is_decision and model_changed)
+                or "models" in changed
+            ):
+                return
+        try:
+            async with async_session() as session:
+                policies = await CapabilityPolicy.all_by_fields(
+                    session, fields={"capability": "decision-service"}
+                )
+                route_ids = decision_referencing_route_ids(policies, provider_id)
+                for route_id in sorted(route_ids):
+                    route = await ModelRoute.one_by_id(session, route_id)
+                    if route is None:
+                        continue
+                    route_copy = ModelRoute.model_validate(route.model_dump())
+                    await event_bus.publish(
+                        route_copy.__class__.__name__.lower(),
+                        Event(type=EventType.UPDATED, data=route_copy),
+                    )
+        except Exception as e:
+            logger.error(
+                "Failed to notify decision-service routes for provider %s: %s",
+                provider_id,
+                e,
+            )
+
     async def _notify_provider_model_routes(
         self, session: AsyncSession, model_provider: ModelProvider, event: Event
     ):
@@ -6574,6 +6791,35 @@ class ModelProviderController:
                 Event(type=EventType.UPDATED, data=route_copy),
             )
 
+    async def _ensure_catalogues_and_notify(self, event: Event) -> None:
+        """Run the ai-proxy and decision-service passes independently: both
+        log-and-reraise on failure, so sequencing them directly would let an
+        ai-proxy failure mask the decision-service catalogue sync and the
+        route re-notification. Each runs regardless of the other; the first
+        error (ai-proxy wins only because it is checked first) is re-raised
+        after both had their chance."""
+        ai_proxy_error: Optional[BaseException] = None
+        decision_error: Optional[BaseException] = None
+        try:
+            await self._ensure_provider_ai_proxy_config()
+        except Exception as e:
+            ai_proxy_error = e
+        try:
+            await self._ensure_decision_service_config()
+        except Exception as e:
+            decision_error = e
+        try:
+            await self._notify_decision_service_routes(event)
+        except Exception as e:
+            # the notifier already logs its own errors; recorded so the
+            # failure surfaces with the others instead of disappearing
+            if decision_error is None:
+                decision_error = e
+        if ai_proxy_error is not None:
+            raise ai_proxy_error
+        if decision_error is not None:
+            raise decision_error
+
     async def _reconcile(self, event: Event):
         """
         Reconcile the model provider.
@@ -6583,7 +6829,7 @@ class ModelProviderController:
             return
         if event.type == EventType.DELETED:
             await self._ensure_provider_registry(model_provider, event)
-            await self._ensure_provider_ai_proxy_config()
+            await self._ensure_catalogues_and_notify(event)
             return
         async with async_session() as session:
             model_provider: ModelProvider = await ModelProvider.one_by_id(
@@ -6592,7 +6838,7 @@ class ModelProviderController:
             if not model_provider:
                 return
             await self._ensure_provider_registry(model_provider, event)
-            await self._ensure_provider_ai_proxy_config()
+            await self._ensure_catalogues_and_notify(event)
             await self._notify_provider_model_routes(session, model_provider, event)
 
 

@@ -5,10 +5,11 @@ from typing import Optional
 
 import sqlalchemy as sa
 from croniter import croniter
-from sqlmodel import col
+from sqlmodel import col, select
 
 from gpustack import envs
 from gpustack.schemas.models import Model, ScalingSchedule
+from gpustack.server.cache import delete_cache_by_key
 from gpustack.server.db import async_session
 from gpustack.server.services import ModelService
 from gpustack.utils.rollup_tz import resolve_rollup_tz
@@ -37,10 +38,10 @@ def compute_desired_replicas(
     wall-clock hour occurring twice), croniter resolves the earlier occurrence
     and the window can read as closed for part of that hour.
 
-    Returns None when the schedule is disabled, has no usable rules, or is
+    Returns None when the schedule is disabled or paused, has no usable rules, or is
     outside every window with no baseline configured (nothing to enforce).
     """
-    if not schedule or not schedule.enabled or not schedule.rules:
+    if not schedule or not schedule.enabled or schedule.paused or not schedule.rules:
         return None
 
     tz = resolve_rollup_tz()
@@ -134,32 +135,48 @@ class ScalingScheduler:
         # Resolve "now" once so every model in this tick is evaluated against
         # the same instant (avoids cross-minute drift within a batch).
         now = datetime.now(resolve_rollup_tz())
-        to_update: list[tuple[int, int]] = []
+        to_update: list[int] = []
         for model in models:
             schedule = model.scaling_schedule
-            if not schedule or not schedule.enabled:
+            if not schedule or not schedule.enabled or schedule.paused:
                 continue
             desired = compute_desired_replicas(schedule, now)
             if desired is None or desired == model.replicas:
                 continue
-            to_update.append((model.id, desired))
+            to_update.append(model.id)
 
         if not to_update:
             return
 
         async with async_session() as session:
             service = ModelService(session)
-            for model_id, desired in to_update:
-                # Reload under this session and re-check to avoid clobbering a
-                # concurrent manual change with a stale desired value.
-                model = await Model.one_by_id(session, model_id)
-                if model is None or model.deleted_at is not None:
-                    continue
-                if model.replicas == desired:
-                    continue
-                previous = model.replicas
-                model.replicas = desired
-                await service.update(model)
+            for model_id in to_update:
+                # Serialize with manual edits and evaluate the latest schedule
+                # while holding the lock through the replica update's commit.
+                # A transaction ends even when the latest row needs no update,
+                # so skipped rows never retain locks while the batch proceeds.
+                async with session.begin():
+                    statement = (
+                        select(Model)
+                        .where(Model.id == model_id)
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    )
+                    model = (await session.exec(statement)).one_or_none()
+                    if model is None or model.deleted_at is not None:
+                        continue
+                    desired = compute_desired_replicas(model.scaling_schedule, now)
+                    if desired is None or model.replicas == desired:
+                        continue
+                    previous = model.replicas
+                    await service.update(
+                        model, {"replicas": desired}, auto_commit=False
+                    )
+                # A reader can refill caches with the old row while the write
+                # is uncommitted. Evict those snapshots after the commit too.
+                await Model._invalidate_cached_all()
+                await delete_cache_by_key(service.get_by_id, model.id)
+                await delete_cache_by_key(service.get_by_name, model.name)
                 logger.info(
                     f"Scheduled scaling: model {model.name} replicas "
                     f"{previous} -> {desired}"

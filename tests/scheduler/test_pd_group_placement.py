@@ -31,6 +31,7 @@ Every assertion names **which worker and which cards**, because "a placement
 was returned" is the one thing all three defects above also did.
 """
 
+from gpustack.policies.resource_view import ResourceView
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Sequence, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -651,7 +652,9 @@ async def test_e_a_worker_reporting_no_memory_is_unknown_not_zero(config):
 
     pretrained, backend_session = _offline()
     with pretrained, backend_session:
-        capacity = GroupCapacity(config, model, fleet, [], [])
+        capacity = GroupCapacity(
+            config, model, fleet, [], [], resource_view=ResourceView([])
+        )
         slots = await capacity("prefill", [w.id for w in fleet], [])
 
     # Host 8 reports no memory; host 9 has two cards' worth of room.

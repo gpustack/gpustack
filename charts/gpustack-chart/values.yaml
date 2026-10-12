@@ -221,6 +221,12 @@ clusterDomain: cluster.local
 gateway:
   # IngressClass name for the Higress gateway; GPUStack checks if it exists in the cluster to enable in-cluster gateway mode
   ingressClassname: higress
+  # Namespace where the Higress gateway pods run. Leave empty when the bundled
+  # higress-core sub-chart deploys the gateway (it runs in the release
+  # namespace). Set it when Higress is installed separately so the built-in
+  # Prometheus can discover the gateway pods there; the chart grants the
+  # server's ServiceAccount read-only pods access in that namespace.
+  namespace: ""
 
 # higress-core sub-chart configuration.
 # Set enabled: true to deploy Higress gateway alongside GPUStack.

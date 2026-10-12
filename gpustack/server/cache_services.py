@@ -235,8 +235,9 @@ async def resolve_instance_cache_config(
     """
     Resolve the shared-cache connection snapshot for an instance of the
     given model. Returns None when the model does not use a shared cache.
-    A snapshot with injected=False means the instance starts degraded
-    (without the shared cache); the reason field explains why.
+    A snapshot with injected=False carries no shared-cache injection; the
+    reason field explains why. It can be refreshed before engine startup,
+    and represents degradation only if the engine runs without the cache.
 
     ``worker`` is the instance's assigned worker. A node-local provider
     resolves against it, so calls made before scheduling yield an explicit

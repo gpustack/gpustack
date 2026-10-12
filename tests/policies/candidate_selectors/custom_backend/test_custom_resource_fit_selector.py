@@ -1,3 +1,4 @@
+from gpustack.policies.resource_view import ResourceView
 from unittest.mock import patch
 
 from tests.utils.mock import mock_async_session
@@ -56,8 +57,10 @@ async def test_schedule_single_work_multi_gpu(
 
     mis = []
 
-    resource_fit_selector = CustomBackendResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = CustomBackendResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     if index == 1:
         # Simulate a scenario where the model's num_attention_heads cannot be evenly divided by the gpu_count through auto-scheduling.
@@ -127,8 +130,10 @@ async def test_failed_cases_auto_schedule(
 
     mis = []
 
-    resource_fit_selector = CustomBackendResourceFitSelector(config, model, mis)
-    placement_scorer = PlacementScorer(model, mis)
+    resource_fit_selector = CustomBackendResourceFitSelector(
+        config, model, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(model, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -161,7 +166,9 @@ async def test_failed_cases_auto_schedule(
 def _selector(config, params):
     model = make_model(1, None, "Qwen/Qwen3-8B")
     model.backend_parameters = params
-    return CustomBackendResourceFitSelector(config, model, [])
+    return CustomBackendResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
 
 
 class _Card:
@@ -238,8 +245,7 @@ def _distribute(selector, worker, free_per_gpu):
         vram={i: free for i, free in enumerate(free_per_gpu)}, ram=64 * 1024**3
     )
     with patch(
-        "gpustack.policies.candidate_selectors."
-        "custom_backend_resource_fit_selector.get_worker_allocatable_resource",
+        "gpustack.policies.resource_view.ResourceView.allocatable",
         return_value=allocatable,
     ):
         candidates = selector.find_single_worker_multi_gpu_candidates([worker])

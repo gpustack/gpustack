@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import traceback
 from datetime import datetime, timezone
 from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple, Union
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -12,8 +13,10 @@ from sqlmodel import or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack import envs
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    HTTPException,
     ConflictException,
     InternalServerErrorException,
     BadRequestException,
@@ -59,11 +62,8 @@ from gpustack.schemas.workers import GPUDeviceStatus, Worker
 from gpustack.utils.version import version_in_range
 from gpustack.api.tenant import (
     TenantContext,
-    bypass_tenant_filter,
     assert_cluster_visible,
     assert_resource_visible,
-    cluster_scoped_system,
-    scoped_cluster_row_visible,
     tenant_list_conditions,
 )
 from gpustack.server.db import async_session
@@ -85,6 +85,7 @@ from gpustack.schemas.models import (
     ModelPublic,
     ModelsPublic,
     RoleNameEnum,
+    ScalingSchedule,
     role_effective_model,
 )
 from gpustack.schemas.model_routes import (
@@ -94,7 +95,7 @@ from gpustack.schemas.model_routes import (
     TargetStateEnum,
 )
 from gpustack.schemas.links import ModelRoutePrincipalLink
-from gpustack.schemas.principals import platform_principal_id
+from gpustack.schemas.principals import PrincipalType, platform_principal_id
 from gpustack.server.services import (
     ModelRouteService,
     ModelInstanceService,
@@ -103,6 +104,13 @@ from gpustack.server.services import (
     revoke_model_access_cache,
 )
 from gpustack.server.controllers import model_spec_digest
+from gpustack.server.model_revisions import (
+    append_revision,
+    deployment_spec,
+    ensure_baseline,
+    lock_model,
+    record_update,
+)
 from gpustack.server.scaling_scheduler import compute_desired_replicas
 from gpustack.server.cache_provider_catalog import get_cache_provider
 from gpustack.server.lora_adapters_discovery import list_adapters_for_base
@@ -145,14 +153,9 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _make_model_watch_filter(ctx, categories, state=None):
-    """Watch-stream visibility: cluster-bound service accounts only see
-    their own cluster's models; everyone keeps the categories and state
-    filters. Predicates are pre-built so inactive filters cost nothing on
-    the per-event hot path."""
+def _make_model_watch_filter(categories, state=None):
+    """Match the watch stream against category and state business filters."""
     predicates = []
-    if cluster_scoped_system(ctx):
-        predicates.append(lambda data: scoped_cluster_row_visible(ctx, data))
     if state is not None:
         predicates.append(lambda data: model_state_stream_filter(data, state))
     if categories:
@@ -191,21 +194,14 @@ async def get_models(
     if backend:
         fields["backend"] = backend
 
-    # Streaming uses field-equality only; scope by current org so non-admin
-    # users never see cross-org rows via the live stream. Admin without an
-    # explicit org context keeps the unfiltered cross-org stream. System
-    # users (workers / cluster accounts) bypass owner scoping — they serve
-    # every Org's models — but cluster-bound service accounts are narrowed
-    # to their own cluster's rows below.
-    if ctx.current_principal_id is not None and not bypass_tenant_filter(ctx):
-        fields["owner_principal_id"] = ctx.current_principal_id
-
     if params.watch:
         return StreamingResponse(
-            Model.streaming(
+            tenant_streaming(
+                Model,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=_make_model_watch_filter(ctx, categories, state),
+                filter_func=_make_model_watch_filter(categories, state),
             ),
             media_type="text/event-stream",
         )
@@ -338,7 +334,12 @@ async def get_model_instances(ctx: TenantContextDep, id: int, params: ListParams
             assert_resource_visible(ctx, model, not_found_message="Model not found")
         fields = {"model_id": id}
         return StreamingResponse(
-            ModelInstance.streaming(fields=fields),
+            tenant_streaming(
+                ModelInstance,
+                ctx,
+                fields=fields,
+                visibility_filter=lambda data: getattr(data, "model_id", None) == id,
+            ),
             media_type="text/event-stream",
         )
 
@@ -403,6 +404,48 @@ async def get_model_cache_metrics(
     )
 
 
+def _preserve_scaling_schedule_pause(
+    schedule: Optional[ScalingSchedule],
+    stored: Optional[Model] = None,
+    allow_override: bool = False,
+) -> Optional[ScalingSchedule]:
+    """Keep runtime pause state on an enabled plan, independently of edits."""
+    if schedule is None:
+        return None
+    previous = stored.scaling_schedule if stored is not None else None
+    if allow_override and "paused" in schedule.model_fields_set:
+        paused = schedule.enabled and schedule.paused
+    else:
+        paused = bool(
+            schedule.enabled and previous and previous.enabled and previous.paused
+        )
+    return schedule.model_copy(update={"paused": paused})
+
+
+def _merge_scaling_schedule_update(
+    model_in: ModelUpdate, stored: Model, allow_pause_override: bool = True
+) -> None:
+    """Keep sparse edits subject to the stored schedule's replica ownership."""
+    if "scaling_schedule" in model_in.model_fields_set:
+        model_in.scaling_schedule = _preserve_scaling_schedule_pause(
+            model_in.scaling_schedule, stored, allow_override=allow_pause_override
+        )
+        return
+    schedule = stored.scaling_schedule
+    if (
+        schedule
+        and schedule.enabled
+        and "replicas" in model_in.model_fields_set
+        and model_in.replicas != stored.replicas
+    ):
+        raise BadRequestException(
+            message="Disable scheduled scaling before manually changing replicas."
+        )
+    # Validation and reconciliation need the stored schedule, but an unrelated
+    # edit must not persist a schedule the caller did not submit.
+    object.__setattr__(model_in, "scaling_schedule", schedule)
+
+
 def apply_scaling_schedule_baseline(
     model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
 ) -> None:
@@ -421,6 +464,9 @@ def apply_scaling_schedule_baseline(
     """
     schedule = getattr(model_in, "scaling_schedule", None)
     if not schedule or not schedule.enabled:
+        return
+    if schedule.paused:
+        model_in.replicas = 0
         return
     effective = compute_desired_replicas(schedule)
     if effective is not None:
@@ -449,6 +495,37 @@ def _max_intended_replicas(
         schedule.baseline_replicas,
         *(rule.replicas for rule in schedule.rules),
     )
+
+
+def _is_schedule_pause_only_update(
+    model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase], stored: Optional[Model]
+) -> bool:
+    """Allow stopping an unchanged plan even when its placement is unavailable."""
+    schedule = model_in.scaling_schedule
+    previous = stored.scaling_schedule if stored is not None else None
+    if not (
+        schedule
+        and schedule.enabled
+        and schedule.paused
+        and previous
+        and previous.enabled
+    ):
+        return False
+    if schedule.model_dump(exclude={"paused"}) != previous.model_dump(
+        exclude={"paused"}
+    ):
+        return False
+    fields = model_in.model_fields_set - {"replicas", "scaling_schedule"}
+    if (
+        not is_custom_backend(model_in.backend)
+        and model_in.image_name
+        and model_in.image_name == stored.image_name
+        and model_in.backend_version is None
+    ):
+        # An unchanged image selects the runtime; clearing its unused catalog
+        # version does not change the deployment's placement configuration.
+        fields.discard("backend_version")
+    return all(getattr(model_in, field) == getattr(stored, field) for field in fields)
 
 
 def validate_roles(  # noqa: C901
@@ -1111,10 +1188,20 @@ async def validate_model_in(
     )
     await validate_gather_layer(session, model_in, cluster_id=cluster_id, stored=stored)
 
-    if getattr(model_in, "gpu_type_selector", None) is not None:
+    # API responses use short LoRA names; compare their stored form when
+    # deciding whether a request only pauses an unchanged deployment.
+    if not is_custom_backend(model_in.backend):
+        validate_and_normalize_lora_list(model_in)
+
+    pause_only = _is_schedule_pause_only_update(model_in, stored)
+    if not pause_only and getattr(model_in, "gpu_type_selector", None) is not None:
         await validate_gpu_type_selector(session, model_in, cluster_id=cluster_id)
 
-    if model_in.gpu_selector is not None and _max_intended_replicas(model_in) > 0:
+    if (
+        not pause_only
+        and model_in.gpu_selector is not None
+        and _max_intended_replicas(model_in) > 0
+    ):
         await validate_gpu_ids(session, model_in, cluster_id=cluster_id)
 
     if is_custom_backend(model_in.backend):
@@ -1184,8 +1271,6 @@ async def validate_model_in(
         for param_names, error_message in unsupported_params:
             if find_parameter(model_in.backend_parameters, param_names):
                 raise BadRequestException(message=error_message)
-
-    validate_and_normalize_lora_list(model_in)
 
 
 def validate_and_normalize_lora_list(
@@ -2255,6 +2340,9 @@ async def _validate_model_spec(
     Mutates ``model_in`` in place: LoRA names are normalized to the stored
     ``<base>:<short>`` form and the scaling-schedule baseline is applied.
     """
+    model_in.scaling_schedule = _preserve_scaling_schedule_pause(
+        model_in.scaling_schedule, allow_override=True
+    )
     await validate_model_in(session, model_in)
     # Server-side assignment, after validation: validation must see the replica
     # count the caller submitted, not the schedule-driven one.
@@ -2287,7 +2375,10 @@ async def _check_model_create(
 
 
 async def _persist_model_create(
-    session: AsyncSession, model_in: ModelCreate, target_org_id: int
+    session: AsyncSession,
+    model_in: ModelCreate,
+    target_org_id: int,
+    created_by: Optional[int] = None,
 ) -> Model:
     """Insert the model and, when ``enable_model_route`` is set, its
     route, target, Org grant and LoRA child routes. Never commits, so a
@@ -2317,6 +2408,7 @@ async def _persist_model_create(
         model_in_dict["access_policy"] = AccessPolicyEnum.ALLOWED_PRINCIPALS
 
     model: Model = await Model.create(session, source=model_in_dict, auto_commit=False)
+    await append_revision(session, model, 1, created_by)
     if not model_in.enable_model_route:
         return model
     await _create_model_route(session, model, grant_owning_org=org_scoped_default)
@@ -2366,29 +2458,36 @@ async def _create_model_route(
     )
     if (model.replicas or 0) > 1:
         from gpustack.routes.plugins import get_route_plugin
+        from gpustack.routes.plugins.session_affinity.config import (
+            DEFAULT_SESSION_KEYS,
+        )
 
-        least_load = get_route_plugin("least-load")
-        if least_load is not None:
-            # Best-effort by design: through the plugin's own write path
-            # so the default lands exactly as a client's plugins section
-            # would, but a missing or partially-migrated plugin table must
-            # not turn the whole deployment create into a 500 — the
-            # route works without the capability, and the next write can
-            # add it back. The savepoint isolates the plugin write: a
-            # DB-level failure rolls back to here without poisoning the
-            # caller's uncommitted transaction.
-            try:
-                async with session.begin_nested():
-                    await least_load.on_route_write(
-                        "create", model_route, {"enabled": True}, session
-                    )
-            except Exception:
-                logger.warning(
-                    "Failed to enable the least-load capability on the route "
-                    "for model %s; the route is created without it",
-                    model.name,
-                    exc_info=True,
-                )
+        # The capability defaults for a multi-replica deployment:
+        # least-load decides between instances per request, session
+        # affinity keeps a conversation on the instance that already has
+        # its KV cache. Each entry goes through the plugin's own write
+        # path so the default lands exactly as a client's plugins
+        # section would.
+        capability_defaults = (
+            ("least-load", {"enabled": True}),
+            (
+                "session-affinity",
+                {
+                    "enabled": True,
+                    "sessionKeys": [dict(key) for key in DEFAULT_SESSION_KEYS],
+                },
+            ),
+        )
+        for plugin_name, section in capability_defaults:
+            plugin = get_route_plugin(plugin_name)
+            if plugin is None:
+                continue
+            # A failing write (e.g. a missing policy table after an
+            # incomplete migration) fails the deployment create and rolls
+            # the whole transaction back — the same outcome as any other
+            # route write failing, and visible in tests rather than
+            # silently degrading the route.
+            await plugin.on_route_write("create", model_route, section, session)
     if grant_owning_org:
         # Auto-grant the owning Org on the primary route so its
         # members see it out of the box. The route is brand new,
@@ -2421,7 +2520,12 @@ async def create_model(
     await _check_model_create(session, ctx, model_in, target_org_id, cluster)
 
     try:
-        model = await _persist_model_create(session, model_in, target_org_id)
+        model = await _persist_model_create(
+            session,
+            model_in,
+            target_org_id,
+            getattr(getattr(ctx, "user", None), "id", None),
+        )
         await session.commit()
         if model_in.enable_model_route:
             await revoke_model_access_cache(session=session)
@@ -2430,7 +2534,13 @@ async def create_model(
         raise
     except Exception as e:
         await session.rollback()
-        raise InternalServerErrorException(message=f"Failed to create model: {e}")
+        # Exception messages can contain SQL parameters, including configuration.
+        logger.error(
+            "Failed to create model: %s\n%s",
+            type(e).__name__,
+            "".join(traceback.format_tb(e.__traceback__)),
+        )
+        raise InternalServerErrorException(message="Failed to create model") from None
 
     return model
 
@@ -2970,7 +3080,7 @@ async def import_models(
         raise BadRequestException(message="\n".join(unconfirmed))
 
     try:
-        models = await _persist_deployments(session, items, target_org_id)
+        models = await _persist_deployments(session, items, target_org_id, ctx)
         await session.commit()
     except BadRequestException:
         await session.rollback()
@@ -3006,7 +3116,10 @@ async def import_models(
 
 
 async def _persist_model_update(
-    session: AsyncSession, existing: Model, model_in: ModelCreate
+    session: AsyncSession,
+    existing: Model,
+    model_in: ModelCreate,
+    created_by: Optional[int] = None,
 ) -> Model:
     """Replace ``existing`` with the entry and settle its routes. Never
     commits.
@@ -3021,9 +3134,17 @@ async def _persist_model_update(
     holds the document's field names: the document says ``cluster``, by name,
     and the route has already resolved it.
     """
+    latest = await ensure_baseline(session, existing)
+    before = deployment_spec(existing)
     patch = {field: getattr(model_in, field) for field in OVERWRITABLE_FIELDS}
     patch["cluster_id"] = model_in.cluster_id
+    patch["scaling_schedule"] = _preserve_scaling_schedule_pause(
+        model_in.scaling_schedule, existing
+    )
+    if patch["scaling_schedule"] and patch["scaling_schedule"].paused:
+        patch["replicas"] = 0
     await ModelService(session).update(existing, patch, auto_commit=False)
+    await record_update(session, existing, before, latest, created_by)
 
     own = await _own_model_routes(session, existing)
     primary = next((route for route in own if route.name == existing.name), None)
@@ -3057,6 +3178,7 @@ async def _persist_deployments(
     session: AsyncSession,
     items: List[_ImportItem],
     target_org_id: int,
+    ctx: TenantContext,
 ) -> List[Model]:
     """Write every entry without committing, and answer with the row each one
     settled on, in document order.
@@ -3068,8 +3190,14 @@ async def _persist_deployments(
     it is relabelled here with the entry it belongs to, like every other error
     the import reports.
     """
+    locked = {}
+    for model_id in sorted({item.existing.id for item in items if item.existing}):
+        locked[model_id] = await lock_model(session, ctx, model_id)
+    created_by = getattr(getattr(ctx, "user", None), "id", None)
     models = []
     for item in items:
+        if item.existing:
+            item = item._replace(existing=locked[item.existing.id])
         label = entry_label(item.plan.index, item.plan.name)
         if item.plan.action is DeploymentActionEnum.UNCHANGED:
             # The document already describes this row. Nothing to write, and
@@ -3092,11 +3220,15 @@ async def _persist_deployments(
                 if blockers:
                     raise BadRequestException(message=blockers[0])
                 models.append(
-                    await _persist_model_update(session, item.existing, item.entry)
+                    await _persist_model_update(
+                        session, item.existing, item.entry, created_by
+                    )
                 )
             else:
                 models.append(
-                    await _persist_model_create(session, item.entry, target_org_id)
+                    await _persist_model_create(
+                        session, item.entry, target_org_id, created_by
+                    )
                 )
         except BadRequestException as e:
             raise BadRequestException(message=f"{label}: {e.message}")
@@ -3110,9 +3242,45 @@ async def _persist_deployments(
 async def update_model(
     session: SessionDep, ctx: TenantContextDep, id: int, model_in: ModelUpdate
 ):
-    model = await Model.one_by_id(session, id)
-    assert_resource_visible(ctx, model, not_found_message="Model not found")
+    model = await lock_model(session, ctx, id)
+    return await save_model_update(session, ctx, model, model_in)
 
+
+async def save_model_update(
+    session: AsyncSession, ctx: TenantContext, model: Model, model_in: ModelUpdate
+) -> Model:
+    """Apply a validated edit and its history atomically; the parent is locked."""
+    try:
+        user = getattr(ctx, "user", None)
+        is_system = getattr(user, "kind", None) == PrincipalType.SYSTEM
+        latest = None if is_system else await ensure_baseline(session, model)
+        before = deployment_spec(model) if latest is not None else None
+        await _apply_model_update(session, ctx, model, model_in)
+        if latest is not None:
+            await record_update(
+                session, model, before, latest, getattr(user, "id", None)
+            )
+        await session.commit()
+    except HTTPException:
+        await session.rollback()
+        raise
+    except Exception as e:
+        await session.rollback()
+        # Keep stack locations without logging configuration from the exception.
+        logger.error(
+            "Failed to update model: %s\n%s",
+            type(e).__name__,
+            "".join(traceback.format_tb(e.__traceback__)),
+        )
+        raise InternalServerErrorException(message="Failed to update model") from None
+    await revoke_model_access_cache(session=session)
+    return model
+
+
+async def _apply_model_update(
+    session: AsyncSession, ctx: TenantContext, model: Model, model_in: ModelUpdate
+) -> Model:
+    """Validate and apply configuration, including derived routes, without committing."""
     # Block re-pointing a model at another Org's (e.g. the Default org's
     # shared) or a non-visible cluster: its cluster must stay owned by the
     # model's Org.
@@ -3162,6 +3330,12 @@ async def update_model(
         if field not in fields_set:
             object.__setattr__(model_in, field, getattr(model, field))
 
+    # Workers report runtime versions through whole-object PUTs; their stale
+    # schedule snapshot must not change an operator's execution state.
+    user_kind = getattr(getattr(ctx, "user", None), "kind", None)
+    _merge_scaling_schedule_update(
+        model_in, model, allow_pause_override=user_kind != PrincipalType.SYSTEM
+    )
     await validate_model_in(session, model_in, stored=model)
     # Server-side assignment, after validation: validation must see the replica
     # count the caller submitted, not the schedule-driven one.
@@ -3173,30 +3347,19 @@ async def update_model(
         model_in.cluster_id or model.cluster_id,
     )
 
-    try:
-        await ModelService(session).update(model, model_in, auto_commit=False)
-        updated = await Model.one_by_id(session, id)
-        if not updated:
-            raise RuntimeError("Model not found after update")
-        base_route = await ModelRoute.one_by_field(session, "name", updated.name)
-        if base_route:
-            await create_lora_model_routes(
-                session,
-                updated,
-                access_policy=updated.access_policy,
-                generic_proxy=updated.generic_proxy,
-            )
-            await cleanup_orphan_lora_routes(session, updated)
-        await session.commit()
-        await revoke_model_access_cache(session=session)
-    except BadRequestException:
-        await session.rollback()
-        raise
-    except Exception as e:
-        await session.rollback()
-        raise InternalServerErrorException(message=f"Failed to update model: {e}")
-
-    return updated
+    await ModelService(session).update(model, model_in, auto_commit=False)
+    base_route = await ModelRoute.one_by_fields(
+        session, {"name": model.name, "owner_principal_id": model.owner_principal_id}
+    )
+    if base_route:
+        await create_lora_model_routes(
+            session,
+            model,
+            access_policy=model.access_policy,
+            generic_proxy=model.generic_proxy,
+        )
+        await cleanup_orphan_lora_routes(session, model)
+    return model
 
 
 class ModelRestartResult(BaseModel):

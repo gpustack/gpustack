@@ -53,11 +53,12 @@ def _topology(**kwargs):
 def _stubs(workers, saved=None, allocated=None, models=None):
     allocated = allocated or {}
 
-    async def fake_allocated(worker_id):
-        entry = allocated.get(worker_id, {})
-        if entry == "raise":
-            raise RuntimeError("no global config")
-        return SimpleNamespace(ram=0, vram=entry)
+    async def fake_allocated(worker_ids):
+        return {
+            worker_id: SimpleNamespace(ram=0, vram=allocated.get(worker_id, {}))
+            for worker_id in worker_ids
+            if allocated.get(worker_id) != "raise"
+        }
 
     cluster = SimpleNamespace(id=1, topology=saved)
     return (
@@ -66,11 +67,11 @@ def _stubs(workers, saved=None, allocated=None, models=None):
         patch.object(route, "assert_cluster_visible", lambda *a, **k: None),
         patch.object(route, "assert_org_owned_writable", lambda *a, **k: None),
         patch(
-            "gpustack.server.worker_allocated_cache.get_worker_allocated",
+            "gpustack.server.worker_allocated_cache.get_workers_allocated",
             new=AsyncMock(side_effect=fake_allocated),
         ),
         patch(
-            "gpustack.schemas.models.Model.all_by_field",
+            "gpustack.schemas.models.Model.all_by_fields",
             new=AsyncMock(return_value=models or []),
         ),
         # These cases are about the tree, not about who may see it: a caller
@@ -751,14 +752,15 @@ async def test_gather_references_are_scoped_to_the_caller():
     """
     seen = {}
 
-    async def _all_by_field(session, field, value, **kwargs):
-        seen.update(kwargs)
+    async def _all_by_fields(session, fields=None, extra_conditions=None, **kwargs):
+        seen["fields"] = fields
+        seen["extra_conditions"] = extra_conditions
         return []
 
     with (
         patch(
-            "gpustack.schemas.models.Model.all_by_field",
-            new=AsyncMock(side_effect=_all_by_field),
+            "gpustack.schemas.models.Model.all_by_fields",
+            new=AsyncMock(side_effect=_all_by_fields),
         ),
         patch(
             "gpustack.api.tenant.tenant_list_conditions",
@@ -767,4 +769,26 @@ async def test_gather_references_are_scoped_to_the_caller():
     ):
         await route._gather_references(None, object(), 1)
 
+    assert seen.get("fields") == {"cluster_id": 1}
     assert seen.get("extra_conditions") == ["OWNED-BY-CALLER"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unavailable", [False, True])
+async def test_worker_capacity_batches_reservations_and_fails_closed(unavailable):
+    allocations = AsyncMock(
+        return_value={
+            1: SimpleNamespace(vram={0: 10}),
+            2: SimpleNamespace(vram={}),
+        },
+        side_effect=RuntimeError("reservations unavailable") if unavailable else None,
+    )
+    with patch(
+        "gpustack.server.worker_allocated_cache.get_workers_allocated", allocations
+    ):
+        capacities = await route._worker_capacity([_worker(1, "w1"), _worker(2, "w2")])
+    allocations.assert_awaited_once()
+    assert list(allocations.call_args.args[0]) == [1, 2]
+    assert [capacities[wid].free_gpus for wid in [1, 2]] == (
+        [0, 0] if unavailable else [1, 2]
+    )

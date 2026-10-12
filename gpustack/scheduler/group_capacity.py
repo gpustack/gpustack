@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
+from gpustack.schemas.models import ModelInstance
 from gpustack.config.config import Config
 from gpustack.scheduler import port_budget
 from gpustack.policies.base import MemberResourceClaim, WorkerFilterChain
@@ -45,12 +46,12 @@ from gpustack.policies.worker_filters.pd_mode_filter import PDModeRuntimeFilter
 from gpustack.policies.worker_filters.status_filter import StatusFilter
 from gpustack.schemas.models import (
     Model,
-    ModelInstance,
     role_effective_model,
     role_container_resources,
     role_takes_no_accelerator,
 )
 from gpustack.schemas.workers import Worker
+from gpustack.policies.resource_view import ResourceView
 from gpustack.scheduler.offer_slot import _stand_in_for, count_offer_slots
 
 logger = logging.getLogger(__name__)
@@ -101,12 +102,16 @@ class GroupCapacity:
         workers: Sequence[Worker],
         model_instances: Sequence[ModelInstance],
         cache_instances: Sequence[object] = (),
+        *,
+        resource_view: ResourceView,
     ):
         self._config = config
         self._model = model
         self._workers = {w.id: w for w in workers}
-        self._model_instances = list(model_instances)
+        # Cache bindings contribute ports; RAM/VRAM come from resource_view.
         self._cache_instances = list(cache_instances)
+        self._model_instances = list(model_instances)
+        self._resource_view = resource_view.with_model_instances(self._model_instances)
         # worker_id -> ports already spoken for there. Computed on first use
         # and kept, because a solve asks about the same workers once per role.
         self._ports_taken: Dict[int, int] = {}
@@ -151,6 +156,9 @@ class GroupCapacity:
         # occupies, primary first. Empty for every role that fits on a single
         # machine, which is every role placed today.
         self._spans: Dict[tuple, List[int]] = {}
+        # A primary may have several spanning candidates. Until commit chooses
+        # one, charge their widest port band on every possible host.
+        self._spanning_port_demands: Dict[tuple, Tuple[int, Set[int]]] = {}
 
     async def __call__(
         self,
@@ -230,6 +238,7 @@ class GroupCapacity:
 
         out: Dict[int, int] = {}
         for worker_id in worker_ids:
+            self._spanning_port_demands.pop((role, worker_id), None)
             worker = eligible.get(worker_id)
             if worker is None:
                 # Filtered out for this role — a measured, definite zero, not
@@ -530,8 +539,22 @@ class GroupCapacity:
             # host that carries one of its ranks, so a host short of them stops
             # the whole combination rather than a fraction of it.
             cards = len(getattr(candidate, "gpu_indexes", None) or [])
+            gpu_per_node = [cards] + [
+                len(getattr(worker, "gpu_indexes", None) or [])
+                for worker in (getattr(candidate, "subordinate_workers", None) or [])
+            ]
+            demand = port_budget.member_port_demand(
+                self._projected[role].model, role, cards, gpu_per_node=gpu_per_node
+            )
+            widest, hosts = self._spanning_port_demands.get((role, primary), (0, set()))
+            self._spanning_port_demands[(role, primary)] = (
+                max(widest, demand),
+                hosts.union(span),
+            )
             allowed = min(
-                self._within_port_budget(role, worker_id, offer, cards)
+                self._within_port_budget(
+                    role, worker_id, offer, cards, gpu_per_node=gpu_per_node
+                )
                 for worker_id in span
             )
             out[primary] = min(out.get(primary, 0) + 1, max(allowed, 0))
@@ -677,16 +700,37 @@ class GroupCapacity:
             role = getattr(entry, "role", None)
             if worker_id is None or not role or role not in self._projected:
                 continue
+            spanning = self._spanning_port_demands.get((role, worker_id))
+            if spanning is not None:
+                demand, hosts = spanning
+                for machine in hosts:
+                    out[machine] = out.get(machine, 0) + demand
+                continue
             offers = self._offers.get((role, worker_id)) or []
             cards = len(getattr(offers[0], "gpu_indexes", None) or []) if offers else 0
+            gpu_per_node = [cards] + [
+                len(getattr(worker, "gpu_indexes", None) or [])
+                for worker in (
+                    getattr(offers[0], "subordinate_workers", None) or []
+                    if offers
+                    else []
+                )
+            ]
             demand = port_budget.member_port_demand(
-                self._projected[role].model, role, cards
+                self._projected[role].model, role, cards, gpu_per_node=gpu_per_node
             )
             for machine in self._spans.get((role, worker_id), [worker_id]):
                 out[machine] = out.get(machine, 0) + demand
         return out
 
-    def _within_port_budget(self, role: str, worker_id: int, offer, cards: int) -> int:
+    def _within_port_budget(
+        self,
+        role: str,
+        worker_id: int,
+        offer,
+        cards: int,
+        gpu_per_node: Optional[List[int]] = None,
+    ) -> int:
         """`offer.slots`, capped by what the host has ports for.
 
         Applied here rather than as a filter of its own so a port shortage
@@ -701,8 +745,8 @@ class GroupCapacity:
         makes ONE offer holding every combination it found — so reading the
         first placement there prices every combination at the width of
         whichever happened to come back first. It is the primary's card count
-        either way: `{{accelerator_count}}` resolves from `gpu_indexes` on the
-        instance row, and that row carries the primary's cards.
+        for a single-node placement. Spanning placements pass all nodes' card
+        counts because their shared band covers global rank offsets.
         """
         if offer.slots <= 0:
             return offer.slots
@@ -710,7 +754,9 @@ class GroupCapacity:
         # The role's projection, which is what the worker's own resolver
         # receives: `backend_parameters` there are the role's effective ones.
         projected = self._projected[role].model
-        demand = port_budget.member_port_demand(projected, role, cards)
+        demand = port_budget.member_port_demand(
+            projected, role, cards, gpu_per_node=gpu_per_node
+        )
 
         if worker_id not in self._ports_taken:
             self._ports_taken[worker_id] = port_budget.ports_taken_on(
@@ -816,6 +862,7 @@ class GroupCapacity:
             instances,
             cpu_only=cpu_only,
             ram_claim=ram_claim,
+            resource_view=self._resource_view.with_model_instances(instances),
         )
 
     def _limit_for(self, role: str) -> int:

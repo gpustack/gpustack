@@ -5,6 +5,7 @@ from functools import lru_cache
 import os
 import random
 import socket
+import sys
 import time
 from typing import Optional, Set, Tuple, List, Union
 from urllib.parse import urlparse
@@ -62,6 +63,85 @@ def is_ipaddress(ip_str: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _egress_allowlist_parts(
+    allowlist: List[str],
+) -> Tuple[List[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]], List[str]]:
+    """Split an allowlist into (networks, names).
+
+    An entry parses as a network when it is a CIDR or a bare IP address
+    (treated as a /32 or /128); anything else is a DNS name matched by exact
+    hostname or suffix on a dot boundary.
+    """
+    networks = []
+    names = []
+    for entry in allowlist:
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+            continue
+        except ValueError:
+            pass
+        names.append(entry.lower().rstrip("."))
+    return networks, names
+
+
+# Returned by egress_disallowed_address when the host could not be resolved
+# at all. With a proxy in play the proxy resolves the target, so "cannot
+# verify" must not authorize the request -- the caller treats this like any
+# other disallowed target.
+EGRESS_HOST_UNRESOLVED = "<unresolved>"
+
+
+def egress_disallowed_address(host: str, allowlist: List[str]) -> Optional[str]:
+    """The first resolved address ``host`` may not be dialed on, or None.
+
+    The allowlist is the whole rule: a target is allowed only when the
+    hostname equals or ends with one of the name entries (dot boundary), or
+    every address ``getaddrinfo`` returns falls inside one of the network
+    entries. A name that cannot be resolved fails closed with
+    EGRESS_HOST_UNRESOLVED: the request may still be forwardable through a
+    proxy that can resolve it, so an unverifiable host is never authorized.
+
+    Args:
+        host: A hostname or literal IP address, already normalized the way
+            the HTTP client will dial it (IDNA for Unicode names).
+        allowlist: CIDR / IP / DNS-name entries; empty means unrestricted.
+
+    Returns:
+        The offending address as a string, EGRESS_HOST_UNRESOLVED when
+        resolution failed, or None when the target is allowed (or the
+        allowlist is empty).
+    """
+    if not allowlist:
+        return None
+    networks, names = _egress_allowlist_parts(allowlist)
+    hostname = host.lower().rstrip(".")
+    if any(hostname == name or hostname.endswith("." + name) for name in names):
+        return None
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (OSError, UnicodeError):
+        # gaierror is an OSError; UnicodeError is what a hostname getaddrinfo
+        # cannot encode raises before any query. Fail closed either way.
+        return EGRESS_HOST_UNRESOLVED
+    for info in infos:
+        address = info[4][0]
+        # A literal IPv6 address may carry a scope id (fe80::1%eth0), which
+        # ipaddress.ip_address rejects.
+        if "%" in address:
+            address = address.split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            return address
+        # Membership across IP versions raises TypeError, and a dual-stack
+        # name resolves to both, so the versions must agree first.
+        if not any(
+            ip.version == network.version and ip in network for network in networks
+        ):
+            return address
+    return None
 
 
 def _get_ifname_by_local_ip(
@@ -200,7 +280,8 @@ def get_free_port(
     if unavailable_ports is None:
         unavailable_ports = set()
 
-    if len(unavailable_ports) >= end - start + 1:
+    unavailable_count = sum(start <= port <= end for port in unavailable_ports)
+    if unavailable_count >= end - start + 1:
         raise PortRangeExhaustedError(
             _describe_exhaustion(start, end, 1, unavailable_ports)
         )
@@ -213,7 +294,8 @@ def get_free_port(
             return port
         else:
             unavailable_ports.add(port)
-            if len(unavailable_ports) == end - start + 1:
+            unavailable_count += 1
+            if unavailable_count == end - start + 1:
                 raise PortRangeExhaustedError(
                     _describe_exhaustion(start, end, 1, unavailable_ports)
                 )
@@ -318,6 +400,52 @@ def _bind_probe(port: int, host: str) -> Optional[bool]:
         return None
     except Exception:
         return None
+
+
+def is_port_reusable(port: int) -> bool:
+    """Check if a port can be rebound the way a real server binds it.
+
+    Binds with SO_REUSEADDR set, which is how the s6 services actually
+    listen, on both the wildcard address and loopback. A plain bind fails
+    on a port held only by residual TCP state (TIME_WAIT left by a
+    process that just exited, e.g. after a container recreate with
+    --network host), yet those services rebind such a port fine.
+
+    GPUStack services bind a mix of addresses (0.0.0.0 for the
+    gateway-facing ones, 127.0.0.1 for the embedded apiserver and
+    PostgreSQL), so every address is probed and all must bind: a reuse
+    bind against the *same* address as a live listener still fails with
+    EADDRINUSE on both Linux and macOS, keeping TIME_WAIT residue
+    distinguishable from a running instance of any of the services. A
+    reuse bind against a *different* address can coexist with a live
+    listener (on Linux only when the listener itself set SO_REUSEADDR,
+    which PostgreSQL does), which is why probing the wildcard alone
+    would not be enough. A listener on another specific local IP is not
+    probed; no GPUStack service binds such an address. Callers that must
+    never collide keep using `is_port_available`; this helper is for
+    fixed ports a service is about to bind itself.
+
+    Windows needs a guard: its SO_REUSEADDR has SO_REUSEPORT semantics
+    and binds over a live listener, so the probe cannot distinguish
+    TIME_WAIT residue from real occupancy there and reports False.
+
+    Args:
+        port (int): port to check.
+
+    Returns:
+        bool: True if a SO_REUSEADDR bind succeeds on every probed
+        address.
+    """
+    if sys.platform == "win32":
+        return False
+    for probe_host in ("0.0.0.0", "127.0.0.1"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((probe_host, port))
+        except OSError:
+            return False
+    return True
 
 
 def is_port_available(port: int, host: str = "127.0.0.1") -> bool:

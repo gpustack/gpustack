@@ -132,7 +132,16 @@ everywhere at once.
 
 ## Use API Key
 
-GPUStack supports using the API key as a bearer token. The following is an example using curl:
+GPUStack supports using the API key as a bearer token.
+
+The OpenAI-compatible `GET /v1/models` endpoint returns only ready models visible
+to the user and current organization context. If the API key is restricted to
+allowed models, the list is further filtered to those model IDs, including any
+organization prefix (for example, `team-a/qwen3`). This also applies to the legacy
+`GET /v1-openai/models` endpoint and to keys created by administrators. An unset
+or empty `allowed_model_names` list imposes no additional model restriction.
+
+The following is an example using curl:
 
 ```bash
 export GPUSTACK_API_KEY=your_api_key

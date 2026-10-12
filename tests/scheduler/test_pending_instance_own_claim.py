@@ -1,6 +1,6 @@
 """An instance must not be weighed against its own resource claim.
 
-`get_worker_allocatable_resource` computes a GPU's free VRAM as
+`ResourceView.allocatable` computes a GPU's free VRAM as
 `total - sum(claims of every instance on it) - system_reserved`, and the
 scheduler hands it every row from `ModelInstance.all()` -- including the one it
 is currently placing.
@@ -20,11 +20,12 @@ with that instance's own claim as the only occupant.
 """
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gpustack.policies.utils import get_worker_allocatable_resource
+from gpustack.policies.resource_view import ResourceView
+
 from gpustack.scheduler import scheduler
 
 TOTAL = 68719476736  # 64 GiB, one 910B2 die
@@ -73,7 +74,7 @@ class TestTheArithmeticThatBlocksIt:
         worker = _worker()
         stuck = _instance(404)
 
-        allocatable = get_worker_allocatable_resource([stuck], worker)
+        allocatable = ResourceView([stuck]).allocatable(worker)
 
         for idx in (6, 7):
             ratio = allocatable.vram[idx] / TOTAL
@@ -86,8 +87,8 @@ class TestTheArithmeticThatBlocksIt:
         worker = _worker()
         stuck = _instance(404)
 
-        allocatable = get_worker_allocatable_resource(
-            [mi for mi in [stuck] if mi.id != 404], worker
+        allocatable = ResourceView([mi for mi in [stuck] if mi.id != 404]).allocatable(
+            worker
         )
 
         for idx in (6, 7):
@@ -101,9 +102,9 @@ class TestTheArithmeticThatBlocksIt:
         sibling = _instance(500)
         stuck = _instance(404)
 
-        allocatable = get_worker_allocatable_resource(
-            [mi for mi in [sibling, stuck] if mi.id != 404], worker
-        )
+        allocatable = ResourceView(
+            [mi for mi in [sibling, stuck] if mi.id != 404]
+        ).allocatable(worker)
 
         for idx in (6, 7):
             assert allocatable.vram[idx] == TOTAL - CLAIM
@@ -127,9 +128,9 @@ class TestTheArithmeticThatBlocksIt:
             sibling.computed_resource_claim = None
         stuck = _instance(404)
 
-        allocatable = get_worker_allocatable_resource(
-            [mi for mi in siblings + [stuck] if mi.id != 404], worker
-        )
+        allocatable = ResourceView(
+            [mi for mi in siblings + [stuck] if mi.id != 404]
+        ).allocatable(worker)
 
         for idx in (6, 7):
             assert allocatable.vram[idx] == TOTAL
@@ -141,7 +142,7 @@ class TestTheArithmeticThatBlocksIt:
         fresh = _instance(404)
         fresh.computed_resource_claim = None
 
-        allocatable = get_worker_allocatable_resource([fresh], worker)
+        allocatable = ResourceView([fresh]).allocatable(worker)
 
         for idx in (6, 7):
             assert allocatable.vram[idx] == TOTAL
@@ -154,7 +155,8 @@ class _Recorder:
 
     def __init__(self, *args, **kwargs):
         self.model = next(a for a in args if hasattr(a, "backend_parameters"))
-        self.instances = next(a for a in args if isinstance(a, list))
+        self.resource_view = kwargs["resource_view"]
+        self.instances = next(a for a in args if isinstance(a, (list, tuple)))
         type(self).seen.append(self)
 
     async def select_candidates(self, workers):
@@ -183,12 +185,15 @@ def harness():
         async def score(self, candidates):
             return candidates
 
-    def _placement_scorer(model, model_instances):
+    def _placement_scorer(model, model_instances, *, resource_view, **kwargs):
         scorers_seen.append(model_instances)
         return SimpleNamespace()
 
     with patch.multiple(
         scheduler,
+        load_resource_view=AsyncMock(
+            side_effect=lambda session, instances, **kwargs: ResourceView(instances)
+        ),
         WorkerFilterChain=_FilterChain,
         CandidateScoreChain=_ScoreChain,
         PlacementScorer=_placement_scorer,
@@ -211,7 +216,7 @@ def _model():
     )
 
 
-async def _run(instances, exclude_instance_id=None):
+async def _run(instances, exclude_instance_id=None, resource_view=None):
     return await scheduler.find_candidate(
         None,
         SimpleNamespace(cache_dir=None),
@@ -219,6 +224,7 @@ async def _run(instances, exclude_instance_id=None):
         [_worker()],
         instances,
         exclude_instance_id=exclude_instance_id,
+        resource_view=resource_view,
     )
 
 
@@ -259,3 +265,21 @@ class TestFindCandidateDropsTheRowItIsPlacing:
         await _run([stuck, sibling], exclude_instance_id=999)
 
         assert [mi.id for mi in harness.selector.seen[0].instances] == [404, 500]
+
+
+@pytest.mark.asyncio
+async def test_retry_preserves_reservations_from_the_supplied_view(harness):
+    from gpustack.policies.base import Allocated
+
+    stuck, sibling = _instance(404), _instance(500)
+    resource_view = ResourceView([stuck, sibling], {3: Allocated(ram=123, vram={})})
+    with patch.object(scheduler, "load_resource_view", AsyncMock()) as load:
+        await _run(
+            [stuck, sibling], exclude_instance_id=404, resource_view=resource_view
+        )
+
+    load.assert_not_called()
+    allocation = harness.selector.seen[0].resource_view.allocated(3)
+    assert allocation.ram == 123
+    assert allocation.vram == {6: CLAIM, 7: CLAIM}
+    assert resource_view.allocated(3).vram == {6: 2 * CLAIM, 7: 2 * CLAIM}

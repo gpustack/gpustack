@@ -167,6 +167,9 @@ async def test_watch_filters_cluster_system_to_its_cluster(monkeypatch):
     filter_func = captured["filter_func"]
     assert filter_func(_instance_row(cluster_id=3)) is True
     assert filter_func(_instance_row(cluster_id=4)) is False
+    assert filter_func(_instance_row(cluster_id=None)) is True
+    assert filter_func({"id": 21}) is False
+    assert filter_func(SimpleNamespace(id=21)) is False
 
 
 @pytest.mark.asyncio
@@ -196,7 +199,34 @@ async def test_watch_unfiltered_for_platform_system(monkeypatch):
         ctx=_system_ctx(), params=_params(watch=True)
     )
 
-    assert captured["filter_func"] is None
+    assert captured["filter_func"](SimpleNamespace(cache_service_id=999))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("admin", [False, True])
+@pytest.mark.parametrize("principal_id", [None, ORG_PRINCIPAL])
+async def test_watch_bypass_requires_admin_without_principal(
+    monkeypatch, admin, principal_id
+):
+    captured = _patch_streaming(monkeypatch)
+    _patch_session(monkeypatch)
+    services = AsyncMock(return_value=[SimpleNamespace(id=9)])
+    monkeypatch.setattr(instances_route.CacheService, "all_by_fields", services)
+    ctx = _user_ctx(principal_id=principal_id)
+    ctx.is_platform_admin = admin
+
+    await instances_route.get_cache_service_instances(
+        ctx=ctx, params=_params(watch=True)
+    )
+
+    visible = captured["filter_func"]
+    assert visible(_instance_row(cache_service_id=8)) is (
+        admin and principal_id is None
+    )
+    assert visible(_instance_row(cache_service_id=9)) is (
+        admin or principal_id is not None
+    )
+    assert services.await_count == (0 if principal_id is None else 1)
 
 
 # ---- get by id ----
@@ -326,6 +356,28 @@ async def test_update_allows_system_writeback(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_writeback_cannot_replace_binding_or_resource_claim(monkeypatch):
+    instance = _instance_row(update=AsyncMock())
+    monkeypatch.setattr(
+        instances_route.CacheServiceInstance,
+        "one_by_id",
+        AsyncMock(return_value=instance),
+    )
+    await instances_route.update_cache_service_instance(
+        session=MagicMock(),
+        ctx=_system_ctx(),
+        id=21,
+        instance_in=_update_in(
+            worker_id=99, computed_resource_claim={"ram": 0}, port=40001
+        ),
+    )
+    payload = instance.update.await_args.args[1]
+    assert payload["port"] == 40001
+    assert "worker_id" not in payload
+    assert "computed_resource_claim" not in payload
+
+
+@pytest.mark.asyncio
 async def test_update_rejects_non_system_callers(monkeypatch):
     instance = _instance_row(update=AsyncMock())
     monkeypatch.setattr(
@@ -359,3 +411,40 @@ async def test_update_missing_instance_is_not_found(monkeypatch):
             id=21,
             instance_in=_update_in(),
         )
+
+
+def test_client_serializes_the_complete_runtime_update():
+    import json
+    from gpustack.client.generated_cache_service_instance_client import (
+        CacheServiceInstanceClient,
+    )
+
+    http = MagicMock()
+    response = http.get_httpx_client.return_value.put.return_value
+    response.status_code = 200
+    response.json.return_value = {
+        "id": 21,
+        "name": "cache",
+        "cache_service_id": 9,
+        "worker_id": 5,
+        "cluster_id": 3,
+        "created_at": "2026-09-30T00:00:00Z",
+        "updated_at": "2026-09-30T00:00:00Z",
+    }
+    CacheServiceInstanceClient(http).update(
+        21,
+        CacheServiceInstanceUpdate(
+            state=CacheServiceStateEnum.RUNNING, healthy=True, state_message=None
+        ),
+    )
+    payload = http.get_httpx_client.return_value.put.call_args.kwargs["content"]
+    assert json.loads(payload) == {
+        "ports": None,
+        "port": None,
+        "state": "running",
+        "state_message": None,
+        "healthy": True,
+        "last_check_at": None,
+        "restart_count": None,
+        "last_restart_time": None,
+    }

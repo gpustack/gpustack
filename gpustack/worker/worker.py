@@ -310,7 +310,7 @@ class Worker:
         )
         run_periodically_in_thread(self._benchmark_manager.sync_benchmark_state, 3, 15)
         run_periodically_in_thread(
-            self._cache_service_manager.sync_cache_service_instances_state, 15, 15
+            self._cache_service_manager.sync_cache_service_instances_state, 3, 3
         )
         # Ahead of the instance loops above by one pass: the catalog decides
         # what those loops launch and probe.

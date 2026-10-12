@@ -1,3 +1,4 @@
+from gpustack.policies.resource_view import ResourceView
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -36,7 +37,9 @@ async def test_auto_single_worker_candidate_has_gpu_type(config):
         backend=BackendEnum.ASCEND_MINDIE.value,
     )
     worker = linux_ascend_1_910b_64gx8(return_device=1)
-    selector = AscendMindIEResourceFitSelector(config, model, [])
+    selector = AscendMindIEResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
     selector._serving_params.world_size = 1
     selector._serving_params.npu_memory_fraction = 0.5
 
@@ -302,7 +305,9 @@ async def test_select_candidates_3x_64gx1_1x_64gx0(config, m, expected):
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
+    resource_fit_selector = AscendMindIEResourceFitSelector(
+        config, m, model_instances, resource_view=ResourceView(model_instances)
+    )
 
     with (
         patch(
@@ -431,7 +436,9 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
+    resource_fit_selector = AscendMindIEResourceFitSelector(
+        config, m, model_instances, resource_view=ResourceView(model_instances)
+    )
     with (
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
@@ -558,7 +565,9 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
+    resource_fit_selector = AscendMindIEResourceFitSelector(
+        config, m, model_instances, resource_view=ResourceView(model_instances)
+    )
 
     with (
         patch(
@@ -1119,7 +1128,9 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
+    resource_fit_selector = AscendMindIEResourceFitSelector(
+        config, m, model_instances, resource_view=ResourceView(model_instances)
+    )
 
     with (
         patch(
@@ -1588,7 +1599,9 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
+    resource_fit_selector = AscendMindIEResourceFitSelector(
+        config, m, model_instances, resource_view=ResourceView(model_instances)
+    )
 
     with (
         patch(
@@ -1725,7 +1738,9 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
         for device in workers[0].status.gpu_devices:
             device.type = "unknown"
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
+    resource_fit_selector = AscendMindIEResourceFitSelector(
+        config, m, model_instances, resource_view=ResourceView(model_instances)
+    )
 
     with (
         patch(
@@ -1929,7 +1944,9 @@ async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
+    resource_fit_selector = AscendMindIEResourceFitSelector(
+        config, m, model_instances, resource_view=ResourceView(model_instances)
+    )
     if index == 3:
         for worker in workers:
             worker.system_reserved.ram = worker.status.memory.total - 500
@@ -2035,7 +2052,9 @@ async def test_select_candidates(config, case_name, m, workers, expected_candida
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
+    resource_fit_selector = AscendMindIEResourceFitSelector(
+        config, m, model_instances, resource_view=ResourceView(model_instances)
+    )
 
     with (
         patch(
@@ -2165,7 +2184,9 @@ async def test_lora_vram_estimation(config, case_name, lora_list):
         lora_list=lora_list,
     )
     workers = [linux_ascend_1_910b_64gx8(return_device=1)]
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, model, [])
+    resource_fit_selector = AscendMindIEResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
 
     def fake_weight_size(m, token=None):
         return 2 * 1024**3
@@ -2296,15 +2317,21 @@ async def test_lora_vram_claim_in_diagnostic_message(config):
             return_value=workers,
         ),
     ):
-        s_a = AscendMindIEResourceFitSelector(config, model_with_lora, [])
+        s_a = AscendMindIEResourceFitSelector(
+            config, model_with_lora, [], resource_view=ResourceView([])
+        )
         await s_a._init_model_parameters(workers)
         u_with = await s_a._estimate_usage(workers)
-        s_b = AscendMindIEResourceFitSelector(config, model_no_lora, [])
+        s_b = AscendMindIEResourceFitSelector(
+            config, model_no_lora, [], resource_view=ResourceView([])
+        )
         await s_b._init_model_parameters(workers)
         u_no = await s_b._estimate_usage(workers)
         assert u_with.vram - u_no.vram == lora_bytes
 
-        selector = AscendMindIEResourceFitSelector(config, model_with_lora, [])
+        selector = AscendMindIEResourceFitSelector(
+            config, model_with_lora, [], resource_view=ResourceView([])
+        )
         await selector._init_model_parameters(workers)
         await selector.select_candidates(workers)
 

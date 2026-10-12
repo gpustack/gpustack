@@ -23,6 +23,7 @@ from gpustack.routes import (
     model_evaluations,
     model_files,
     model_instances,
+    model_revisions,
     model_sets,
     organization_members,
     organizations,
@@ -304,6 +305,12 @@ worker_client_router.include_router(
 # Tenant-aware routers: any logged-in user can hit them; the handlers
 # filter by TenantContext (owner_principal_id / cluster visibility).
 tenant_routers = model_routers + [
+    {
+        "router": model_revisions.router,
+        "prefix": "/models",
+        "tags": ["Models"],
+        "dependencies": _org_owner_only,
+    },
     {"router": gpu_devices.router, "prefix": "/gpu-devices", "tags": ["GPU Devices"]},
     {
         "router": model_provider.router,

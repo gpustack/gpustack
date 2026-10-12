@@ -773,8 +773,8 @@ class BenchmarkRuntime(SQLModel):
     # Best operating points (computed by the worker from the stage grid).
     peak_rate: Optional[float] = Field(default=None)  # rate at throughput peak
     # Test-coverage validity, computed by the worker from the stage grid:
-    # {"sufficient": bool, "warnings": [{"code": str, "params": {...}}]}. Drives
-    # the detail page's coverage warning banner.
+    # {"coverage_applicable": bool, "warnings": [{"code": str, "params": {...}}]}.
+    # Fixed-load runs have no coverage verdict but can still report point findings.
     validity: Optional[Dict[str, Any]] = Field(sa_type=JSON, default=None)
 
 

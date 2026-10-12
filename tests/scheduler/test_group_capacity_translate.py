@@ -20,6 +20,7 @@ What is pinned here is the *contract*, not the implementation: whatever
 claim.
 """
 
+from gpustack.policies.resource_view import ResourceView
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -78,7 +79,9 @@ class _FakeSelector:
 
 
 def _capacity(workers):
-    cap = GroupCapacity(SimpleNamespace(), _model(), workers, [])
+    cap = GroupCapacity(
+        SimpleNamespace(), _model(), workers, [], resource_view=ResourceView([])
+    )
     # Both stubbed: the real ones need model metadata off the network, and what
     # is under test is the translation between them.
     cap._selector = lambda model, instances, cpu_only, ram_claim=None: _FakeSelector(
@@ -208,7 +211,9 @@ def _two_card_model():
 
 def _dealing_capacity(workers, roles):
     model = _two_card_model()
-    cap = GroupCapacity(SimpleNamespace(), model, workers, [])
+    cap = GroupCapacity(
+        SimpleNamespace(), model, workers, [], resource_view=ResourceView([])
+    )
     cap._selector = lambda m, instances, cpu_only, ram_claim=None: (
         _DealingSelector(instances)
     )
