@@ -101,6 +101,25 @@ def test_internal_lb_router_uses_one_http_upstream_per_member(mode):
         assert urls == [f"http://{peer.ip}:{peer.port}" for peer in addresses]
 
 
+def test_mooncake_router_registers_peers_from_its_startup_command():
+    """Static membership needs the single router to consume its CLI peers."""
+    peers = {
+        "prefill": [PeerAddress("10.0.0.1", 40027, {"bootstrap": 40000})],
+        "decode": [PeerAddress("10.0.0.2", 40028)],
+    }
+    command = render_router(get_pd_mode("vllm-mooncake"), VARIABLES, peers).command
+
+    assert "--enable-igw" not in command
+    assert "--vllm-pd-disaggregation" in command
+    assert command[command.index("--kv-connector") + 1] == "mooncake"
+    prefill_index = command.index("--prefill")
+    assert command[prefill_index + 1 : prefill_index + 3] == [
+        "http://10.0.0.1:40027",
+        "40000",
+    ]
+    assert command[command.index("--decode") + 1] == "http://10.0.0.2:40028"
+
+
 def test_the_routers_own_placeholders_resolve():
     plan = render_router(get_pd_mode("vllm-nixl"), VARIABLES, PEERS)
 

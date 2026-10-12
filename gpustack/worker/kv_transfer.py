@@ -1,39 +1,8 @@
-"""One `--kv-transfer-config`, however many things want to write it.
+"""Compose vLLM KV descriptors in documented PD-first order.
 
-Three sources want that flag — the PD mode's connector, the extended KV cache
-(local LMCache or a cache service's injected snapshot), and whatever the user
-typed in `backend_parameters` — and vLLM reads it once. Until this module the
-answer was to forbid the overlap, which made a disaggregated deployment and a
-shared KV cache mutually exclusive.
-
-That was never an engine limit. vLLM ships a `MultiConnector` that composes
-child connectors under one flag, listing them in
-`kv_connector_extra_config.connectors`, and its documented semantics are
-*load from the first connector advertising the tokens, save to all*. So the
-two are not in conflict; they are complementary, and the composition is
-GPUStack's to assemble.
-
-**Order is priority, and it differs per role** — which is the whole reason
-this is not a set union:
-
-- **prefill** gets `[cache, pd]`. Ask the shared cache first: a prefix it
-  already holds is prefill work that does not have to happen at all, and what
-  is left is the part disaggregation exists to optimise. "Save to all" then
-  writes the computed KV back to the cache *and* hands it to decode.
-- **decode** gets `[pd, cache]`. The request already carries
-  `do_remote_prefill`, so its KV is known to be waiting on the prefill side;
-  the cache is the fallback, not the first question.
-
-Getting that backwards is not a performance detail. A decode that asks a
-cache first can be served a stale or partial entry ahead of the KV its own
-prefill just computed for it.
-
-Deliberately a post-pass over the assembled argv rather than a rewrite of
-either producer. The PD injector renders its descriptor from the mode
-catalog, and a cache provider renders its own arguments through a contract
-this module has no business reaching into; both keep emitting exactly what
-they emit today, and a deployment with only one of them comes out of here
-byte-identical.
+MultiConnector loads from the first child advertising tokens and saves to
+all children. Both PD roles use [PD, Store]; the outer role describes the
+PD member while each child retains its own transfer or cache role.
 """
 
 import json
@@ -46,30 +15,8 @@ KV_TRANSFER_CONFIG_FLAG = "--kv-transfer-config"
 
 MULTI_CONNECTOR = "MultiConnector"
 
-# The composite both produces and consumes: it carries a producer (the PD
-# connector on a prefill) and a store that is read and written (the cache).
-# The child connectors keep their own roles, which is what the engine acts on.
-_COMPOSITE_ROLE = "kv_both"
-
-# Which side of the pair asks the cache first, and which asks the PD connector
-# first. Both are named, rather than one of them being "everything else": a
-# role in neither set — a router, a role-less deployment — keeps the order the
-# arguments arrived in, because inventing a priority for a role whose semantics
-# are unknown is how a wrong answer gets served confidently.
-#
-# Deliberately not `role not in _CACHE_FIRST_ROLES`, which reverses for every
-# role that is not prefill and so leaves that third case with no behaviour of
-# its own. That spelling reads identically on a P/D pair and is wrong off it.
-# The case it reaches is not the router — a managed one is
-# projected onto the custom backend before the server class is chosen
-# (`pd_router.apply_managed_router`), so it never gets as far as vLLM's argv —
-# but a role-less deployment: the *local* LMCache branch emits its descriptor
-# with no check for a hand-written `--kv-transfer-config` (the shared-cache
-# branch stands down instead, `server/cache_services.py`), so those two arrive
-# together with role None and were composed in the opposite order to the one
-# this comment promised.
-_CACHE_FIRST_ROLES = frozenset({"prefill"})
-_PD_FIRST_ROLES = frozenset({"decode"})
+_COMPOSITE_ROLES = {"prefill": "kv_producer", "decode": "kv_consumer"}
+_PD_FIRST_ROLES = frozenset(_COMPOSITE_ROLES)
 
 TOP_LEVEL_ONLY_KEYS: Tuple[str, ...] = ()
 """Fallback for callers that pass no declaration — compose nothing extra.
@@ -194,9 +141,8 @@ def compose_descriptors(
 ) -> Dict[str, Any]:
     """Fold several connector descriptors into one `MultiConnector`.
 
-    `descriptors` arrives cache-first; the role that wants the opposite gets it
-    reversed here, so the caller never has to know the rule. A role with no
-    stated preference keeps the order it arrived in.
+    `descriptors` arrives cache-first. Both PD roles reverse that order;
+    unrelated roles retain the supplied order.
 
     `top_level_only` names the settings this engine reads only off the top
     level; they are lifted out of the children onto the composite. The caller
@@ -206,7 +152,7 @@ def compose_descriptors(
     ordered = list(descriptors)
     if role in _PD_FIRST_ROLES:
         ordered.reverse()
-    elif role not in _CACHE_FIRST_ROLES:
+    else:
         # Named rather than silent: the order this comes out in is then the
         # order two unrelated producers happened to be assembled in, and the
         # only way to see that from a launch log is to be told.
@@ -217,7 +163,7 @@ def compose_descriptors(
         )
     composed = {
         "kv_connector": MULTI_CONNECTOR,
-        "kv_role": _COMPOSITE_ROLE,
+        "kv_role": _COMPOSITE_ROLES.get(role, "kv_both"),
         "kv_connector_extra_config": {"connectors": ordered},
     }
     _lift_top_level_only(ordered, composed, top_level_only)
@@ -238,8 +184,8 @@ def compose_kv_transfer_config(
             fewer than two of the flag, which is every deployment that uses
             disaggregation or a KV cache but not both.
         role: The PD role this member serves, which decides the order.
-        cache_first: The descriptor that must lead for a cache-first role,
-            when the caller knows which one came from the cache. Without it
+        cache_first: The cache descriptor, used to normalize input ordering before
+            placing the PD descriptor first. Without it
             the arguments' own order is taken as cache-first, which is the
             order they are assembled in.
         top_level_only: Settings this engine reads only off the top-level

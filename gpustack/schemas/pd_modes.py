@@ -125,14 +125,13 @@ class PDKVLease(BaseModel):
     The parameter name, the default and the injection target all differ per
     connector, and the windows differ by two orders of magnitude (NIXL 30s,
     Mooncake 480s, MoRIIO 3600s), so this cannot be a platform-wide
-    constant. Whether the expiry is observable differs too: NIXL exports a
-    Prometheus counter, Mooncake exports none.
+    constant. Expiry observability also depends on the connector and runtime.
     """
 
     connector: str
-    """Connector identity, and the key modes reference. Unqualified ids are
-    vLLM ``kv_connector`` implementations; ``sglang-*`` ids are SGLang
-    ``--disaggregation-transfer-backend`` values, whose KV lifecycle is a
+    """Connector identity, and the key modes reference. Unqualified ids identify
+    upstream vLLM connectors; ``ascend-*`` identifies vLLM-Ascend and
+    ``sglang-*`` identifies SGLang transports, whose KV lifecycle is a
     different mechanism (bootstrap timeout, not a lease)."""
 
     param: Optional[str] = None
@@ -209,6 +208,22 @@ class PDPairingToggle(BaseModel):
     to act on the mismatch."""
 
 
+class PDCacheServiceRole(BaseModel):
+    """Store connector settings for one PD role."""
+
+    kv_role: Optional[Literal["kv_producer", "kv_consumer", "kv_both"]] = None
+    kv_connector_module_path: Optional[str] = None
+
+
+class PDCacheService(BaseModel):
+    """A mode's supported cache provider and its composition requirements."""
+
+    provider: str
+    backend_versions: Optional[str] = None
+    """Known compatible engine range; explicit versions may deploy outside it."""
+    roles: Dict[str, PDCacheServiceRole] = {}
+
+
 class PDCacheRefusal(BaseModel):
     """Roles that may not take a shared cache on this engine, and why.
 
@@ -232,20 +247,11 @@ class PDCacheRefusal(BaseModel):
 
 
 class PDComposedCache(BaseModel):
-    """What an engine requires once a shared cache is folded in beside the PD
-    connector, keyed by the engine that does the folding.
+    """Engine parser fields lifted onto a composed connector.
 
-    A member that takes both lands them in one ``--kv-transfer-config``, and
-    that composition has requirements neither side owns: not the mode's, since
-    every recipe on the same engine shares them, and not the cache provider's,
-    since swapping providers does not change whether the engine can compose at
-    all. Declared once here rather than spelled into each mode.
-
-    **Absence is the answer for engines that never compose.** SGLang attaches
-    its cache through ``--enable-lmcache`` and a config file, so no entry is
-    declared for it and nothing is enforced — rather than an entry whose
-    fields are permissive enough to always pass, which would read as "checked"
-    when the check is meaningless.
+    Shared-cache compatibility and Store roles come from each mode's
+    ``cache_services`` recipes. Optional catalog-level metadata remains
+    readable without imposing a backend-wide shared-cache gate.
     """
 
     backend: str
@@ -958,6 +964,18 @@ class PDMode(BaseModel):
     which roles are admissible, so opening up encoder / draft later stays a
     validation change, not a catalog schema change."""
 
+    cache_services: Optional[List[PDCacheService]] = None
+    """Allowed shared-cache recipes. None delegates compatibility to the
+    provider; an empty list supports no shared cache."""
+
+    in_process_cache_versions: Optional[str] = None
+    """Known compatible local-cache engine range; explicit versions are advisory."""
+
+    connector_variants: Dict[str, str] = {}
+    """Model KV layout -> connector implementation, shared by P and D."""
+    default_connector_variant: Optional[str] = None
+    """Required when variants are declared, for unreadable model KV layouts."""
+
     router: Optional[PDRouter] = None
 
     kv_lease: Optional[PDKVLease] = None
@@ -986,6 +1004,46 @@ class PDMode(BaseModel):
 
     def role(self, name: str) -> Optional[PDModeRole]:
         return self.roles.get(name)
+
+    def cache_service(self, provider: str) -> Optional[PDCacheService]:
+        return next(
+            (item for item in self.cache_services or [] if item.provider == provider),
+            None,
+        )
+
+    def cache_service_role(
+        self, provider: str, role: Optional[str]
+    ) -> Optional[PDCacheServiceRole]:
+        """Return the provider's Store connector settings for a PD role."""
+        recipe = self.cache_service(provider)
+        return recipe.roles.get(role) if recipe and role else None
+
+    def cache_service_reason(self, provider: str, role: Optional[str]) -> Optional[str]:
+        """Explain unsupported providers or roles; version ranges are advisory."""
+        if self.cache_services is None:
+            return None
+        recipe = self.cache_service(provider)
+        if recipe is None:
+            return f"PD mode '{self.name}' does not support cache provider '{provider}'"
+        if role is not None and role not in recipe.roles:
+            return f"PD mode '{self.name}' does not support {provider} on role '{role}'"
+        return None
+
+    @model_validator(mode="after")
+    def check_cache_services(self) -> "PDMode":
+        providers = [item.provider for item in self.cache_services or []]
+        if len(providers) != len(set(providers)):
+            raise ValueError("cache_services contains duplicate providers")
+        for item in self.cache_services or []:
+            if set(item.roles) - set(self.roles):
+                raise ValueError(f"cache provider {item.provider} names unknown roles")
+        if (
+            self.connector_variants or self.default_connector_variant is not None
+        ) and self.default_connector_variant not in self.connector_variants:
+            raise ValueError(
+                "default_connector_variant must name a declared connector variant"
+            )
+        return self
 
     @model_validator(mode="after")
     def check_templates(self) -> "PDMode":
@@ -1108,7 +1166,7 @@ class PDModeCatalog(BaseModel):
     kv_leases: Dict[str, PDKVLease] = {}
     composed_cache: Dict[str, PDComposedCache] = {}
     """Keyed by backend. An engine with no entry composes without a declared
-    requirement — see `PDComposedCache` for why absence is deliberate."""
+    requirement; absence leaves connector requirements to the mode recipe."""
 
     pairing_toggles: List[PDPairingToggle] = []
     """Boolean engine switches both roles must agree on, across every mode of
@@ -1117,9 +1175,8 @@ class PDModeCatalog(BaseModel):
     kv_transfer_metrics: Dict[str, PDTransferMetrics] = {}
     """Keyed by the same connector id as ``kv_leases``, and required to
     cover every connector that appears there: an entry whose fields are all
-    null declares "this connector exports nothing", which is a measured
-    fact about Mooncake, while a *missing* entry would be an oversight that
-    reads identically at runtime."""
+    null explicitly declares unavailable metrics. A missing entry would
+    read identically at runtime without documenting the connector's support."""
 
     modes: List[PDMode] = []
 

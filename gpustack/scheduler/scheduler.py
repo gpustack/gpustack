@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import queue
-from typing import List, Sequence, Tuple, Optional
+from typing import Dict, List, Sequence, Tuple, Optional
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -97,7 +97,7 @@ from gpustack.server.services import (
     ModelService,
     ModelFileService,
 )
-from gpustack.utils.command import find_parameter
+from gpustack.utils.command import find_last_parameter, find_parameter
 from gpustack.utils.gpu import group_gpu_ids_by_worker
 from gpustack.utils.hub import has_diffusers_model_index
 from gpustack.utils.math import largest_power_of_2_leq
@@ -1207,6 +1207,7 @@ async def evaluate_pretrained_config(
     except Exception:
         pass
     # 2) Check overrided architectures if specified in backend parameters.
+    pretrained_config = None
     architectures = get_vllm_override_architectures(model)
     if not architectures:
         try:
@@ -1260,9 +1261,106 @@ async def evaluate_pretrained_config(
         model.meta = known_meta
         meta_modified = True
 
+    layout_config = await _pd_layout_config(model, pretrained_config, workers)
+    meta_modified = (
+        _record_pd_connector_variant(model, layout_config, architectures)
+        or meta_modified
+    )
+
     categories_modified = set_model_categories(model, model_type)
     gpus_per_replica_modified = set_model_gpus_per_replica(model)
     return categories_modified or gpus_per_replica_modified or meta_modified
+
+
+async def _pd_layout_config(model: Model, config, workers: Optional[List[Worker]]):
+    """Inspect source KV layout even when an architecture override supplies categories."""
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+
+    if config is not None or not model.disaggregation:
+        return config
+    mode = get_pd_mode(model.disaggregation.mode)
+    if not mode or not mode.connector_variants:
+        return config
+    effective = role_effective_model(model, "prefill")
+    try:
+        return await get_pretrained_config_with_workers(
+            effective,
+            workers=workers,
+            trust_remote_code=_extract_trust_remote_code(effective),
+        )
+    except Exception:
+        logger.debug(
+            "Source KV layout unavailable for model %s; using the PD recipe fallback",
+            model.id,
+        )
+        return None
+
+
+def _record_pd_connector_variant(
+    model: Model, config, architectures: List[str]
+) -> bool:
+    """Pin a layout, including conservative fallbacks, to the deployment inputs."""
+    import hashlib
+
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+    from gpustack.utils.pd_connector import pd_connector_variant
+
+    if not model.disaggregation:
+        return False
+    mode = get_pd_mode(model.disaggregation.mode)
+    if not mode or not mode.connector_variants:
+        return False
+    effective = role_effective_model(model, "prefill")
+    inputs = {
+        key: getattr(effective, key, None)
+        for key in (
+            "source",
+            "huggingface_repo_id",
+            "huggingface_filename",
+            "model_scope_model_id",
+            "model_scope_file_path",
+            "local_path",
+            "backend_parameters",
+        )
+    }
+    signature = hashlib.sha256(
+        json.dumps(inputs, sort_keys=True, default=str).encode()
+    ).hexdigest()
+    meta = model.meta or {}
+    if (
+        meta.get("pd_connector_variant_source") == signature
+        and meta.get("pd_connector_variant") in mode.connector_variants
+    ):
+        return False
+    layout_config = config
+    overrides = find_last_parameter(
+        effective.backend_parameters, ["hf-overrides", "hf_overrides"]
+    )
+    if overrides:
+        if isinstance(layout_config, dict):
+            base = layout_config
+        elif layout_config is None:
+            base = {}
+        else:
+            base = vars(layout_config)
+        parsed = _parse_hf_overrides(overrides)
+        layout_config = (
+            {"architectures": architectures, **base, **parsed}
+            if parsed is not None
+            else None
+        )
+    variant = pd_connector_variant(layout_config)
+    # Override fragments cannot rule out hybrid fields in an unreadable source.
+    if config is None and variant == "standard":
+        variant = None
+    # Members must keep one connector even if metadata becomes readable after
+    # another member starts. The Ascend fallback supports both KV layouts.
+    model.meta = {
+        **meta,
+        "pd_connector_variant": variant or mode.default_connector_variant,
+        "pd_connector_variant_source": signature,
+    }
+    return True
 
 
 def _extract_trust_remote_code(model: Model) -> bool:
@@ -1270,6 +1368,15 @@ def _extract_trust_remote_code(model: Model) -> bool:
     if model.backend_parameters and "--trust-remote-code" in model.backend_parameters:
         return True
     return False
+
+
+def _parse_hf_overrides(raw: str) -> Optional[Dict]:
+    """Return interpretable JSON overrides without rejecting other syntax."""
+    try:
+        values = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return values if isinstance(values, dict) else None
 
 
 def get_vllm_override_architectures(model: Model) -> List[str]:
@@ -1284,10 +1391,14 @@ def get_vllm_override_architectures(model: Model) -> List[str]:
     if backend != BackendEnum.VLLM:
         return []
 
-    hf_overrides = find_parameter(model.backend_parameters, ["hf-overrides"])
+    hf_overrides = find_last_parameter(
+        model.backend_parameters, ["hf-overrides", "hf_overrides"]
+    )
     if hf_overrides:
-        overrides_dict = json.loads(hf_overrides)
-        return overrides_dict.get("architectures", [])
+        overrides_dict = _parse_hf_overrides(hf_overrides)
+        architectures = (overrides_dict or {}).get("architectures")
+        if isinstance(architectures, list):
+            return architectures
     return []
 
 

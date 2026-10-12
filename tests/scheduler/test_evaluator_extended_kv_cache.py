@@ -171,3 +171,27 @@ def test_cache_not_locally_enabled_reports_nothing(extended_kv_cache):
         )
         is None
     )
+
+
+@pytest.mark.parametrize("version", ["0.20.2", "0.20.2-custom", None])
+def test_pd_explicit_engine_range_is_advisory_for_local_cache(version):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    model = _model(_local(), version)
+    model.disaggregation = DisaggregationSpec(mode="vllm-ascend-mooncake")
+    assert (
+        evaluate_local_extended_kv_cache(model, [_worker(("ascend", "Ascend910B3"))])
+        is None
+    )
+
+
+def test_pd_advisory_engine_range_keeps_accelerator_incompatibility():
+    from gpustack.schemas.models import DisaggregationSpec
+
+    model = _model(_local(), "0.20.2")
+    model.disaggregation = DisaggregationSpec(mode="vllm-ascend-mooncake")
+    message = evaluate_local_extended_kv_cache(
+        model, [_worker(("ascend", "Ascend310P3"))]
+    )
+    assert "310P" in message
+    assert "0.21.0" not in message

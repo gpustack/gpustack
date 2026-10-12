@@ -157,6 +157,10 @@ gpustack_metrics:
     type: Counter
     description: "Failed KV transfers reported by the engine."
 
+  gpustack:pd_kv_receive_failed:
+    type: Counter
+    description: "Failed KV receives between prefill and decode reported by the engine."
+
   gpustack:pd_kv_lease_expired:
     type: Counter
     description: "Requests whose KV lease expired unread: their prefill was computed and thrown away. Tracked on the PREFILL instance."
@@ -334,6 +338,13 @@ runtime_mapping:
       vllm:nixl_xfer_time_seconds: gpustack:pd_kv_transfer_seconds
       vllm:nixl_num_failed_transfers: gpustack:pd_kv_transfer_failed
       vllm:nixl_num_kv_expired_reqs: gpustack:pd_kv_lease_expired
+      # GPUStack runner Mooncake PD metrics, separate from Store metrics.
+      vllm:mooncake_bytes_transferred: gpustack:pd_kv_transfer_bytes
+      vllm:mooncake_xfer_time_seconds: gpustack:pd_kv_transfer_seconds
+      vllm:mooncake_num_descriptors: gpustack:pd_kv_transfer_descriptors
+      vllm:mooncake_num_failed_transfers: gpustack:pd_kv_transfer_failed
+      vllm:mooncake_num_failed_recvs: gpustack:pd_kv_receive_failed
+      vllm:mooncake_num_kv_expired_reqs: gpustack:pd_kv_lease_expired
       # The router's own counters. It is a model instance like any other; its
       # exposition just lives on a separate port band (see `_metrics_port`).
       vllm_router_pd_prefill_requests: gpustack:pd_router_prefill_requests

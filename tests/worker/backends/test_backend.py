@@ -1,4 +1,5 @@
 import json
+import logging
 import types
 
 import pytest
@@ -554,7 +555,9 @@ def _vllm_backend_with_kv_cache(
 ):
     backend = VLLMServer.__new__(VLLMServer)
     backend._model = types.SimpleNamespace(
-        extended_kv_cache=extended_kv_cache, backend_version=backend_version
+        extended_kv_cache=extended_kv_cache,
+        backend_version=backend_version,
+        image_name=None,
     )
     backend._model_instance = types.SimpleNamespace(cache_config=cache_config)
     backend._get_device_info = lambda: device_info
@@ -1992,7 +1995,7 @@ def _composed(arguments):
     return [c["kv_connector"] for c in value["kv_connector_extra_config"]["connectors"]]
 
 
-def test_a_prefill_command_asks_the_cache_before_its_own_connector():
+def test_a_prefill_command_asks_the_pd_connector_before_cache():
     backend = _vllm_backend_for_composition(
         "prefill",
         ["--kv-transfer-config", _CACHE_JSON],
@@ -2001,7 +2004,7 @@ def test_a_prefill_command_asks_the_cache_before_its_own_connector():
 
     arguments, _ = backend._build_command_args(port=4000, is_distributed=False)
 
-    assert _composed(arguments) == ["LMCacheMPConnector", "NixlConnector"]
+    assert _composed(arguments) == ["NixlConnector", "LMCacheMPConnector"]
 
 
 def test_a_decode_command_asks_its_own_connector_first():
@@ -2248,3 +2251,99 @@ def test_the_pd_connector_is_reported_as_injected_in_either_parameter_format(
 
     assert "--kv-transfer-config" in " ".join(injected)
     assert "--max-model-len" not in " ".join(injected)
+
+
+@pytest.mark.parametrize("legacy_snapshot", [False, True])
+@pytest.mark.parametrize(
+    "should_disable_compat,env,expect_script",
+    [
+        (False, {}, False),
+        (True, {}, True),
+        (True, {"GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED": "1"}, False),
+    ],
+)
+def test_cache_package_metadata_cannot_guard_engine_start(
+    legacy_snapshot, should_disable_compat, env, expect_script
+):
+    snapshot_data = {
+        "cache_service_id": 5,
+        "injected": True,
+        "files": {},
+        "required_packages": {"lmcache": ">=99999"},
+    }
+    server = _script_server(should_disable_compat)
+    server._model_instance.cache_config = (
+        types.SimpleNamespace(**snapshot_data)
+        if legacy_snapshot
+        else CacheConfigSnapshot.model_validate(snapshot_data)
+    )
+
+    script = server._get_serving_command_script(env)
+
+    if expect_script:
+        assert "rm -rf /usr/local/cuda/compat" in script
+        assert "GPUSTACK_CACHE_PACKAGES_EOF" not in script
+        assert "PD cache requires" not in script
+    else:
+        assert script is None
+
+
+@pytest.mark.parametrize("version", ["0.25.3", "0.26.0", "0.25.3-custom", None])
+def test_local_nixl_explicit_engine_versions_can_start(version):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    backend = _vllm_backend_with_kv_cache(ExtendedKVCacheConfig(enabled=True))
+    backend._model.disaggregation = DisaggregationSpec(mode="vllm-nixl")
+    backend._model.backend_version = version
+    assert backend._build_extended_kv_cache_arguments(None)
+
+
+@pytest.mark.parametrize("version", ["0.20.2", "0.23.0", "0.20.2-custom"])
+def test_local_ascend_pd_keeps_requested_cache_outside_engine_range(version):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    backend = _vllm_backend_with_kv_cache(ExtendedKVCacheConfig(enabled=True))
+    backend._model.disaggregation = DisaggregationSpec(mode="vllm-ascend-mooncake")
+    backend._model.backend_version = version
+    args = backend._build_ascend_local_kv_cache_arguments("Ascend910B3")
+    assert "SimpleCPUOffloadConnector" in args[1]
+
+
+@pytest.mark.parametrize(
+    "version,image,warning,informational",
+    [
+        ("0.20.2", None, True, False),
+        ("0.20.2-custom", None, False, True),
+        ("0.20.2+custom", None, False, True),
+        ("0.20.2rc1", None, False, True),
+        ("0.20.2", "custom/ascend:latest", False, True),
+        ("0.23.0", None, False, False),
+    ],
+)
+def test_ascend_pd_old_builtin_cache_version_is_advisory(
+    version, image, warning, informational, caplog
+):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    backend = _vllm_backend_with_kv_cache(ExtendedKVCacheConfig(enabled=True))
+    backend._model.disaggregation = DisaggregationSpec(mode="vllm-ascend-mooncake")
+    backend._model.backend_version = version
+    backend._model.image_name = image
+    caplog.set_level(logging.INFO)
+    assert backend._build_ascend_local_kv_cache_arguments("Ascend910B3")
+    assert ("PD engine-version ranges are advisory" in caplog.text) is warning
+    assert (
+        "PD KV cache offload compatibility is unverified" in caplog.text
+    ) is informational
+    if informational:
+        assert all(record.levelno == logging.INFO for record in caplog.records)
+
+
+def test_ascend_pd_unsupported_device_still_disables_cache(caplog):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    backend = _vllm_backend_with_kv_cache(ExtendedKVCacheConfig(enabled=True))
+    backend._model.disaggregation = DisaggregationSpec(mode="vllm-ascend-mooncake")
+    backend._model.backend_version = "0.20.2"
+    assert backend._build_ascend_local_kv_cache_arguments("Ascend310P3") == []
+    assert "310P" in caplog.text

@@ -3439,6 +3439,8 @@ def _engine_version_below_recipe_floor(model: Model) -> bool:
     disaggregation = getattr(model, "disaggregation", None)
     if disaggregation is None:
         return False
+    if getattr(model, "image_name", None):
+        return False
 
     mode_name = disaggregation.mode.value
     mode = get_pd_mode(mode_name)
@@ -3474,6 +3476,7 @@ def _engine_version_below_recipe_floor(model: Model) -> bool:
         or getattr(model, "backend_version", None)
         for role in (model.roles or [])
         if not role_takes_no_accelerator(model, role.name)
+        and not getattr(role, "image_name", None)
     }
     pinned.add(getattr(model, "backend_version", None))
 
