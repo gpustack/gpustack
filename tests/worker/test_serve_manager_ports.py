@@ -44,6 +44,7 @@ PORT_RANGE = "40000-40063"
 def _manager(port_range: str = PORT_RANGE, worker_id: int = 1) -> ServeManager:
     clientset = MagicMock()
     clientset.model_instances.list.return_value = SimpleNamespace(items=[])
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
     cfg = SimpleNamespace(
         log_dir="/tmp",
         service_port_range=port_range,

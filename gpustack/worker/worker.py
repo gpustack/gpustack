@@ -48,6 +48,7 @@ from gpustack.worker.inference_backend_manager import InferenceBackendManager
 from gpustack.worker.model_file_manager import ModelFileManager
 from gpustack.worker.runtime_metrics_aggregator import RuntimeMetricsAggregator
 from gpustack.worker.serve_manager import ServeManager
+from gpustack.worker.port_reservations import WorkerPortReservations
 from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.tools_manager import ToolsManager
 from gpustack.worker.worker_manager import WorkerManager
@@ -142,10 +143,12 @@ class Worker:
             cache=self._runtime_metrics_cache,
         )
 
+        port_reservations = WorkerPortReservations()
         self._serve_manager = ServeManager(
             worker_id_getter=self.worker_id,
             clientset_getter=self.clientset,
             cfg=self._config,
+            port_reservations=port_reservations,
         )
 
         self._benchmark_manager = BenchmarkManager(
@@ -161,6 +164,7 @@ class Worker:
             clientset_getter=self.clientset,
             cfg=self._config,
             provider_catalog=self._cache_provider_manager,
+            port_reservations=port_reservations,
         )
 
         self._workload_cleaner = WorkloadCleaner(

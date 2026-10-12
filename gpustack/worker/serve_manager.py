@@ -66,6 +66,10 @@ from gpustack.worker.pd_router import (
     managed_router_health_path,
 )
 from gpustack.worker.pd_diagnostics import RestartTracker, diagnose
+from gpustack.worker.port_reservations import (
+    WorkerPortReservations,
+    model_instance_ports,
+)
 
 from gpustack.schemas.models import (
     BackendEnum,
@@ -100,9 +104,6 @@ _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE = "Inference health check failed."
 
 # Last-resort message for a workload that stopped serving without saying why.
 _WORKLOAD_FAILED_MESSAGE = "Inference server exited or unhealthy."
-
-# Global lock for port assignment to avoid pickle serialization issues
-_port_lock = threading.Lock()
 
 # The `count` spelling that means "as many ports as this member has cards".
 
@@ -375,6 +376,7 @@ class ServeManager(ContainerLogPersister):
         worker_id_getter: Callable[[], int],
         clientset_getter: Callable[[], ClientSet],
         cfg: Config,
+        port_reservations: Optional[WorkerPortReservations] = None,
     ):
         self._worker_id_getter = worker_id_getter
         self._config = cfg
@@ -388,8 +390,8 @@ class ServeManager(ContainerLogPersister):
         self._model_cache_by_instance = {}
         self._model_instance_by_instance_id = {}
 
-        # Instance-level port tracking to avoid conflicts
-        self._assigned_ports: Dict[int, Set[int]] = {}
+        self._port_reservations = port_reservations or WorkerPortReservations()
+        self._assigned_ports = self._port_reservations.model_ports
         self._restart_backoff_counts: Dict[int, int] = {}
         # Recognises a member that keeps restarting without ever serving. In
         # this process rather than on the row because the signal is a rate, and
@@ -1941,23 +1943,22 @@ class ServeManager(ContainerLogPersister):
             model: The model associated with the instance.
             backend: The backend type (e.g., vLLM, SGLang).
         """
-        with _port_lock:
+        with self._port_reservations.allocation(
+            self._clientset, self._worker_id, model_instance_id=mi.id
+        ) as unavailable_ports:
             if mi.port:
-                # Ports already assigned (a restart reusing what was
-                # persisted), so nothing to allocate — but they still have to
-                # be re-registered. This process's view of what is taken lives
-                # only in `_assigned_ports`, so returning without refilling it
-                # leaves the whole band looking free to the next instance
-                # started here. Harmless while an instance held one port;
-                # with a band of `1 + Σcount` it hands the same ports out
-                # twice after a worker restart.
+                # Published ports stay stable across restarts, but cannot be
+                # reused if another workload also claims them.
+                conflicts = (
+                    model_instance_ports(mi, self._worker_id) & unavailable_ports
+                )
+                if conflicts:
+                    raise RuntimeError(
+                        f"Model instance ports {sorted(conflicts)} are reserved "
+                        "by another instance. Recreate the conflicting instance."
+                    )
                 self._register_assigned_ports(mi)
                 return
-
-            if self._assigned_ports:
-                unavailable_ports = set.union(*self._assigned_ports.values())
-            else:
-                unavailable_ports = set()
 
             # Main serving port
             mi.port = network.get_free_port(
@@ -2069,11 +2070,7 @@ class ServeManager(ContainerLogPersister):
                     )
                     mi.named_ports = named_ports
 
-            self._assigned_ports[mi.id] = set(mi.ports)
-            for band in (mi.named_ports or {}).values():
-                self._assigned_ports[mi.id] |= set(
-                    range(band.base, band.base + max(band.count, 1))
-                )
+            self._register_assigned_ports(mi)
 
     def _mark_crash_loop(
         self, mi: ModelInstance, workload, is_main_worker: bool
@@ -2175,13 +2172,9 @@ class ServeManager(ContainerLogPersister):
 
         Covers both indexes: the named bands are whole runs, and only their
         base is stored, so the fence has to be re-expanded from `count`.
-        Callers must hold `_port_lock`.
+        Callers must use the shared port reservation allocation context.
         """
-        taken: Set[int] = set(mi.ports or [])
-        if mi.port:
-            taken.add(mi.port)
-        for band in (mi.named_ports or {}).values():
-            taken |= set(range(band.base, band.base + max(band.count, 1)))
+        taken = model_instance_ports(mi, self._worker_id)
         if taken:
             self._assigned_ports[mi.id] = taken
 
@@ -2210,7 +2203,7 @@ class ServeManager(ContainerLogPersister):
         instances of one role, which does not exist yet; nothing declares one,
         so allocating it per instance is strictly safer than pretending.
 
-        Callers must hold `_port_lock`.
+        Callers must use the shared port reservation allocation context.
         """
         mode_name = getattr(getattr(model, "disaggregation", None), "mode", None)
         specs = band_specs_for(model, mi.role, context=f"Model instance {mi.name}")
@@ -2376,7 +2369,7 @@ class ServeManager(ContainerLogPersister):
 
         # Cleanup internal states.
         self._provisioning_processes.pop(mi.id, None)
-        self._assigned_ports.pop(mi.id, None)
+        self._port_reservations.release_model(mi.id)
         self._error_model_instances.pop(mi.id, None)
         self._model_cache_by_instance.pop(mi.id, None)
         self._model_instance_by_instance_id.pop(mi.id, None)
