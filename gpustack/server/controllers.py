@@ -113,12 +113,12 @@ from gpustack.server.cache_provider_catalog import (
     builtin_catalog_text,
     get_cache_provider,
 )
-from gpustack.server.pd_pairing import (
+from gpustack.validation.pd.pairing import undecidable_factors
+from gpustack.validation.pd.parameters import (
     PAIRING_ANY_PARALLELISM,
     PAIRING_TP,
     role_parameters,
     tensor_parallel_rule,
-    undecidable_factors,
     violates_tensor_parallel_direction,
 )
 from gpustack.utils.command import find_last_int_parameter, find_last_parameter
@@ -3588,7 +3588,7 @@ def _pairing_unverified(model: Model) -> bool:
     group that was accepted reads as a group that was checked, and until now a
     single silent role was enough to make that untrue.
 
-    Not "the pair is wrong". `server.pd_pairing` spells out why the silent
+    Not "the pair is wrong". `validation.pd.parameters` spells out why the silent
     side's value cannot be resolved here for any of these factors, and most
     deployments this marks are correct. The claim is only that nothing verified
     them.
@@ -3597,7 +3597,12 @@ def _pairing_unverified(model: Model) -> bool:
     if prefill is None or decode is None:
         return False
     return bool(
-        undecidable_factors(prefill, decode, getattr(model, "backend_parameters", None))
+        undecidable_factors(
+            prefill,
+            decode,
+            getattr(model, "backend_parameters", None),
+            model=model,
+        )
     )
 
 

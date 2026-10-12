@@ -5,8 +5,8 @@ both sides' effective values. Until now "prefill wrote it, decode did not" was
 read as nothing to compare, which is how the ordinary misconfiguration — edit
 one role, leave the other — passed a check the user believes ran.
 
-Substituting the engines' defaults was the wrong repair, and `server.pd_pairing`
-records why for each factor. So the gap is reported in two places instead:
+`validation.pd.parameters` records why the engines' defaults cannot settle
+these factors. The gap is reported in two places:
 
 * `pairing_unverified` on the spec, saying a factor was declared on one side
   and left silent on the other;
@@ -299,7 +299,11 @@ def test_two_unreadable_windows_are_not_taken_for_silence():
     a prefill at 128k beside a decode at 32k in the branch that means "neither
     said anything, so both take the window from the model config" — and called
     them agreed. That is the mismatch this comparison exists for."""
-    from gpustack.server.pd_pairing import AGREE, UNDECIDABLE, compare_max_model_len
+    from gpustack.validation.pd.parameters import (
+        AGREE,
+        UNDECIDABLE,
+        compare_max_model_len,
+    )
 
     verdict, prefill, decode = compare_max_model_len(
         ["--max-model-len=128k"], ["--max-model-len=32k"]
@@ -320,7 +324,7 @@ def test_one_unreadable_window_beside_a_silent_role_is_not_agreement():
     """A role that wrote `128k` and one that wrote nothing are not the same
     deployment: the second takes whatever the model config says, and nothing
     here knows that the first resolves to it."""
-    from gpustack.server.pd_pairing import UNDECIDABLE, compare_max_model_len
+    from gpustack.validation.pd.parameters import UNDECIDABLE, compare_max_model_len
 
     verdict, _, _ = compare_max_model_len(["--max-model-len=128k"], [])
 
@@ -330,6 +334,6 @@ def test_one_unreadable_window_beside_a_silent_role_is_not_agreement():
 def test_both_silent_still_agree():
     """The ordinary case, unchanged: neither role names a window, so both take
     it from the same model config."""
-    from gpustack.server.pd_pairing import AGREE, compare_max_model_len
+    from gpustack.validation.pd.parameters import AGREE, compare_max_model_len
 
     assert compare_max_model_len([], [])[0] == AGREE

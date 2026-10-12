@@ -22,7 +22,7 @@ from contextlib import contextmanager
 import pytest
 
 from gpustack.api.exceptions import BadRequestException
-from gpustack.routes.models import validate_role_pairing
+from gpustack.validation.pd.pairing import validate_role_pairing
 from gpustack.schemas.models import (
     DisaggregationSpec,
     GPUSelector,
@@ -32,7 +32,7 @@ from gpustack.schemas.models import (
     RoleSpec,
     SourceEnum,
 )
-from gpustack.server.pd_pairing import undecidable_factors
+from gpustack.validation.pd.pairing import undecidable_factors
 
 
 @contextmanager
@@ -192,9 +192,9 @@ def test_custom_injects_no_connector_so_no_direction_is_enforced():
 def test_an_unresolvable_mode_falls_back_to_the_nixl_rule(monkeypatch):
     """What every recipe was held to before the direction became declarable,
     so a catalog that cannot answer changes nothing."""
-    from gpustack.routes import models as routes_models
+    from gpustack.validation.pd import pairing
 
-    monkeypatch.setattr(routes_models, "get_pd_mode", lambda name: None)
+    monkeypatch.setattr(pairing, "get_pd_mode", lambda name: None)
     with rejects("decode runs tensor parallelism 4, below prefill's 8"):
         validate_role_pairing(
             _model_in(_roles(prefill_params=["-tp", "8"], decode_params=["-tp", "4"]))
@@ -315,6 +315,31 @@ def test_a_sparse_update_is_judged_against_the_stored_roles():
 
 _HMA_ENABLE = "--no-disable-hybrid-kv-cache-manager"
 _HMA_DISABLE = "--disable-hybrid-kv-cache-manager"
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        [_HMA_ENABLE.replace("-hybrid-kv-cache-manager", "_hybrid_kv_cache_manager")],
+        ["--no_disable_hybrid_kv_cache_manager"],
+        [f"--tensor-parallel-size 1 {_HMA_ENABLE}"],
+        ["--no_disable_hybrid_kv_cache_manager --tensor-parallel-size 1"],
+    ],
+)
+def test_hma_switch_aliases_and_pasted_flags_are_checked(parameters):
+    with rejects("hybrid KV cache manager"):
+        validate_role_pairing(_model_in(_roles(prefill_params=parameters)))
+
+
+def test_pasted_hma_switches_use_the_last_alias():
+    validate_role_pairing(
+        _model_in(
+            _roles(
+                [f"{_HMA_DISABLE} --no_disable_hybrid_kv_cache_manager"],
+                [_HMA_ENABLE],
+            )
+        )
+    )
 
 
 def test_one_role_re_enabling_hma_is_rejected():

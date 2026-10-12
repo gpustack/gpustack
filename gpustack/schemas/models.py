@@ -741,8 +741,8 @@ class GatherSpec(BaseModel):
 
     Every value here names a layer the cluster actually declares, including
     `accelerator_domain`, which is an ordinary custom layer like any other.
-    `routes.models.validate_gather_layer` refuses anything else — the solver
-    stands an unknown layer down rather than failing, so an unchecked name
+    `validation.pd.placement.validate_gather_layer` refuses anything else — the
+    solver stands an unknown layer down rather than failing, so an unchecked name
     would be a `MustGather` nothing enforces.
     """
 

@@ -311,6 +311,22 @@ save time rather than at run time:
   compose the cache into — write the combined configuration yourself.
 - **Scheduled scaling and disaggregation cannot be combined.**
 
+For `vllm-nixl`, compatibility checks include role-specific environment variables.
+`VLLM_KV_CACHE_LAYOUT` accepts equivalent aliases (`NHD`/`LBNHC` and
+`HND`/`LBHNC`). On MLA models, `VLLM_MLA_DISABLE` must produce compatible latent
+KV representations. NIXL's recurrent-state transfer requires
+`VLLM_SSM_CONV_STATE_LAYOUT=DS` on supported runtimes. For chunked local attention,
+`VLLM_ALLOW_CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE` is checked together with the
+HMA flags. Explicit attention backend choices are also compared.
+
+A role with an unset environment inherits the deployment's environment; an
+explicit dictionary replaces it, including an empty dictionary. Model-dependent
+checks use the source configuration and role overrides. Unknown configurations,
+runtime versions and transfer layouts are reported through `pairing_unverified`.
+Network addresses, ports, device names and performance settings may differ between
+roles. Experimental layout permutation remains subject to the engine's direction
+and HMA restrictions.
+
 ## Limitations
 
 - The router runs as a single replica.

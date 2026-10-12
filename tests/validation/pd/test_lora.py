@@ -23,7 +23,7 @@ from contextlib import contextmanager
 import pytest
 
 from gpustack.api.exceptions import BadRequestException
-from gpustack.routes.models import validate_roles
+from gpustack.validation.pd.roles import validate_roles
 from gpustack.schemas.models import (
     DisaggregationSpec,
     LoraListEntry,

@@ -10,7 +10,7 @@ and got neither is worse off than someone told the mode cannot honour it.
 
 import pytest
 
-from gpustack.routes.models import _reject_a_policy_the_mode_cannot_apply
+from gpustack.validation.pd.roles import _reject_a_policy_the_mode_cannot_apply
 from gpustack.schemas.models import DisaggregationSpec, PDModeEnum
 from gpustack.api.exceptions import BadRequestException
 
@@ -62,7 +62,7 @@ def test_the_rule_is_read_off_the_recipe_not_a_list_of_names():
     with nothing here to remember to update. Pinned by checking that the
     accepted set is exactly the set of recipes whose roles carry the key in
     their connector descriptor."""
-    from gpustack.routes.models import _mode_renders_connector_key
+    from gpustack.validation.pd.roles import _mode_renders_connector_key
     from gpustack.server.pd_mode_catalog import get_pd_mode
 
     for mode in PDModeEnum:
