@@ -137,25 +137,72 @@ alternatives, and GPUStack combines them for you: attach a cache service as
 usual and the two connectors are folded into one configuration the engine
 accepts.
 
-The order differs per role, and it is the order that makes the pair worth
-having:
+Each vLLM role with a cache generates `MultiConnector[PD, Store]`. The wrapper uses
+`kv_producer` on prefill and `kv_consumer` on decode. Each child retains the
+role required by its transport or store.
 
-- **Prefill asks the cache first.** A prefix the cache already holds is prefill
-  work that does not have to happen at all, and what remains is the part
-  disaggregation exists to speed up. The KV it does compute is written back to
-  the cache *and* handed to decode in the same step.
-- **Decode asks its own prefill first.** The request already carries the
-  handshake saying its KV is waiting there; the cache is the fallback behind
-  it.
+| Mode | No cache | In-process cache | Cache service |
+| --- | --- | --- | --- |
+| `vllm-nixl` (NVIDIA default) | `NixlConnector` | `NixlConnector` + `LMCacheConnectorV1` | Prefill only: `NixlConnector` + LMCache; LMCache only |
+| `vllm-mooncake` (NVIDIA) | `MooncakeConnector` | `MooncakeConnector` + `LMCacheConnectorV1` | `MooncakeConnector` + `MooncakeStoreConnector`; Mooncake only |
+| `vllm-ascend-mooncake` | Model-selected Mooncake PD connector | PD connector + `SimpleCPUOffloadConnector` | PD connector + `AscendStoreConnector`; Mooncake only |
 
-This also widens where disaggregation pays. Its usual objection is that a
-workload with a high prefix hit rate turns prefill memory-bound, which removes
-the asymmetry the split is built on — attaching a cache on the prefill side
-removes the hit part of that cost entirely, leaving the part the split actually
-helps with.
+The in-process LMCache child uses `kv_both` on both roles. Shared LMCache is
+supported on prefill only for NIXL. Its MP connector can load a cached prefix
+even when MultiConnector assigns the request's load to NIXL; the second async
+completion can crash decode ([vLLM #53049](https://github.com/vllm-project/vllm/issues/53049)).
+NVIDIA Mooncake Store uses `kv_both` on prefill and `kv_consumer` on decode.
+Ascend Store uses `kv_producer` on prefill and `kv_consumer` on decode. These
+configurations follow
+[vLLM 0.29 Mooncake Store](https://docs.vllm.ai/en/v0.29.0/features/mooncake_store_connector_usage/#disaggregated-prefill-decode-xpyd)
+and [vLLM-Ascend 0.23 KV pool](https://docs.vllm.ai/projects/ascend/en/v0.23.0/user_guide/feature_guide/kv_pool.html).
 
-Which roles take a cache is per role, so attaching one only to prefill is a
-supported and often sufficient configuration.
+Ascend selects `MooncakeConnectorV1` for standard KV layouts, including Qwen3,
+GLM-5 and DeepSeek V3.1, and `MooncakeHybridConnector` for hybrid layouts such
+as DeepSeek V4, V4 Flash and V4 Pro. Selection reads the pretrained configuration,
+including compressed attention and recurrent layers, rather than the deployment
+name. Both roles use the same stored selection. If layout metadata is unavailable,
+the hybrid connector handles the standard-layout fallback. GPUStack retains
+that choice for the deployment's model inputs so metadata becoming available
+after a member starts cannot make another member use a different connector.
+
+NIXL cache composition uses the real-block contract available from vLLM 0.26.
+PD recipes declare supported cache providers and connector settings; they do
+not define or check cache-service releases or client-package requirements. Cache providers own
+their service and client compatibility. The runner dependency remains at 0.5.4.
+Both NVIDIA modes use vLLM 0.27.1 or later as the bundled runner baseline:
+those CUDA runners provide `vllm-router` 0.1.15, which runs from the engine's
+image. The Ascend mode uses the CANN 0.23 baseline for the same reason. These
+floors describe GPUStack's bundled images, rather than the first upstream
+release of each connector.
+
+NVIDIA Mooncake with a shared Store has an additional 0.29 baseline. GPUStack's
+0.29 runners include the rejected-load fix: a Store child must skip a load
+assigned to the PD child. MultiConnector passes zero external tokens to an
+unselected Store, and the fix checks `can_load` before issuing a pending load.
+This also applies to decode-side cache hits. Stock vLLM 0.29 requires that
+backport; upstream 0.30 includes it. See the
+[runner fix](https://github.com/gpustack/runner/commit/f0264ed).
+
+Attach a service separately on each role that needs it. The dropdown filters
+services by mode, provider and role. The API enforces these compatibility rules.
+PD engine-version ranges are advisory: selecting an out-of-range built-in engine
+version shows a warning for the mode or enabled cache, but deployment and cache
+injection are still allowed. Custom versions and explicit images do not show
+these warnings.
+Startup failures are reported through the instance's status and logs.
+
+Auto currently selects a runner by backend, accelerator runtime and platform;
+it does not filter versions by the PD mode or cache composition ranges. SGLang
+attaches LMCache or MeshFusion through flags and a config file rather than a
+vLLM MultiConnector.
+
+NVIDIA Mooncake requires its transfer-engine runtime and RDMA support in the
+inference image. GPUStack runner images also expose Mooncake transfer/expiry
+metrics; transfer counters are read on prefill. GPUStack allocates a unique
+prefill bootstrap port and passes
+it to the router. With vllm-router 0.1.15, membership changes restart the router
+to refresh bootstrap metadata; they may briefly interrupt traffic.
 
 ## Networking requirements
 

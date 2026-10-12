@@ -1,3 +1,4 @@
+import json
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8,6 +9,9 @@ from gpustack.server.cache_provider_catalog import asset_providers
 from gpustack.schemas.cache_providers import (
     CacheProvider,
     CacheProviderHealthCheck,
+    CacheProviderIntegration,
+    CacheProviderInjection,
+    CacheProviderKVTransferConfig,
 )
 from gpustack.schemas.cache_services import (
     CacheService,
@@ -546,12 +550,11 @@ def disaggregated_shared_cache_model(backend_version):
 
 
 @pytest.mark.asyncio
-async def test_a_cache_composed_with_pd_needs_the_multiconnector_fix():
-    """Below vLLM 0.26.0 the cache connector is handed empty blocks whenever it
-    is not the chosen one, so it stores nothing and the pool never warms. The
-    engine runs and disaggregation works — the cache is dead weight that reports
-    no error, which is exactly what a degradation reason is for."""
-    model = disaggregated_shared_cache_model("0.25.3")
+@pytest.mark.parametrize(
+    "version", ["0.24.1", "0.25.3", "0.26.0", "0.25.3-custom", None]
+)
+async def test_pd_explicit_engine_ranges_do_not_drop_requested_cache(version):
+    model = disaggregated_shared_cache_model(version)
     with patch_lookups(managed_cache_service()):
         snapshot = await resolve_instance_cache_config(
             MagicMock(),
@@ -560,9 +563,8 @@ async def test_a_cache_composed_with_pd_needs_the_multiconnector_fix():
             role="prefill",
         )
 
-    assert snapshot.injected is False
-    assert "46865" in snapshot.reason
-    assert not snapshot.args
+    assert snapshot.injected is True
+    assert snapshot.args
 
 
 @pytest.mark.asyncio
@@ -586,6 +588,7 @@ async def test_the_composed_floor_is_not_applied_to_sglang():
     floor applied to the wrong backend would disable the cache outright."""
     model = disaggregated_shared_cache_model("0.5.13")
     model.backend = "SGLang"
+    model.disaggregation.mode = "sglang-mooncake"
     with patch_lookups(managed_cache_service()):
         snapshot = await resolve_instance_cache_config(
             MagicMock(),
@@ -617,10 +620,7 @@ async def test_the_composed_floor_does_not_apply_without_disaggregation():
 
 
 @pytest.mark.asyncio
-async def test_a_refused_role_starts_without_the_cache():
-    """The catalog refuses a cache on decode: vLLM's connectors pull, so decode
-    is already loading, and a second async load per request trips the
-    scheduler's assert the first time the pool hits."""
+async def test_decode_shared_lmcache_is_not_injected():
     model = disaggregated_shared_cache_model("0.27.1")
     with patch_lookups(managed_cache_service()):
         snapshot = await resolve_instance_cache_config(
@@ -630,12 +630,10 @@ async def test_a_refused_role_starts_without_the_cache():
             role="decode",
         )
 
-    assert snapshot.injected is False
-    # The wording comes from the catalog; what this pins is that the reason
-    # names the refused role and cites the upstream defect.
-    assert "'decode'" in snapshot.reason
-    assert "53049" in snapshot.reason
+    assert not snapshot.injected
     assert not snapshot.args
+    assert "does not support LMCache on role 'decode'" in snapshot.reason
+    assert snapshot.reason.endswith("instance starts without shared KV cache")
 
 
 @pytest.mark.asyncio
@@ -661,6 +659,7 @@ async def test_a_sglang_pair_takes_a_cache_on_both_roles():
     loaders — verified on a live pair."""
     model = disaggregated_shared_cache_model("0.5.13")
     model.backend = "SGLang"
+    model.disaggregation.mode = "sglang-mooncake"
     with patch_lookups(managed_cache_service()):
         snapshot = await resolve_instance_cache_config(
             MagicMock(),
@@ -751,3 +750,174 @@ async def test_a_role_only_cache_is_resolved_for_that_role():
     assert snapshot is not None
     # No service id on the role, so it degrades rather than silently skipping.
     assert snapshot.injected is False
+
+
+@pytest.mark.asyncio
+async def test_decode_shared_lmcache_is_refused_even_on_a_recent_engine():
+    model = disaggregated_shared_cache_model("0.29.0")
+    with patch_lookups(managed_cache_service(provider_version="0.5.4")):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=SimpleNamespace(id=2, ip="10.0.0.5", deleted_at=None),
+            role="decode",
+        )
+    assert not snapshot.injected
+    assert not snapshot.args
+    assert "decode" in snapshot.reason
+    assert snapshot.reason.endswith("instance starts without shared KV cache")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode_available,message",
+    [(True, "does not support cache provider"), (False, "Unknown PD mode")],
+)
+async def test_pd_mode_rejects_an_incompatible_provider_at_resolution(
+    monkeypatch, mode_available, message
+):
+    model = disaggregated_shared_cache_model("0.29.0")
+    model.disaggregation.mode = "vllm-mooncake"
+    if not mode_available:
+        monkeypatch.setattr(
+            "gpustack.server.cache_services.get_pd_mode", lambda _: None
+        )
+    with patch_lookups(managed_cache_service(provider_version="0.5.4")):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=SimpleNamespace(id=2, ip="10.0.0.5", deleted_at=None),
+            role="prefill",
+        )
+    assert not snapshot.injected
+    assert not snapshot.args
+    assert message in snapshot.reason
+    assert snapshot.reason.endswith("instance starts without shared KV cache")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode,engine,role,store_role",
+    [
+        ("vllm-mooncake", "0.29.0", "prefill", "kv_both"),
+        ("vllm-mooncake", "0.29.0", "decode", "kv_consumer"),
+        ("vllm-mooncake", "0.27.1", "decode", "kv_consumer"),
+        ("vllm-mooncake", "0.27.1-custom", "prefill", "kv_both"),
+        ("vllm-ascend-mooncake", "0.23.0", "prefill", "kv_producer"),
+        ("vllm-ascend-mooncake", "0.23.0", "decode", "kv_consumer"),
+        ("vllm-ascend-mooncake", "0.20.2", "prefill", "kv_producer"),
+    ],
+)
+async def test_mooncake_store_role_follows_mode_recipe(mode, engine, role, store_role):
+    provider = CacheProvider(
+        name="Mooncake",
+        custom_version=True,
+        inference_backend_integrations=[
+            CacheProviderIntegration(
+                backend="vLLM",
+                injection=CacheProviderInjection(
+                    kv_transfer_config=CacheProviderKVTransferConfig(
+                        kv_connector="MooncakeStoreConnector", kv_role="kv_both"
+                    )
+                ),
+            )
+        ],
+    )
+    model = disaggregated_shared_cache_model(engine)
+    model.disaggregation.mode = mode
+    with (
+        patch_lookups(
+            managed_cache_service(provider_name="Mooncake", provider_version="0.3.10"),
+            instances=[cache_service_instance(component="")],
+        ),
+        patch(
+            "gpustack.server.cache_services.get_cache_provider",
+            AsyncMock(return_value=provider),
+        ),
+    ):
+        snapshot = await resolve_instance_cache_config(
+            MagicMock(),
+            model,
+            worker=SimpleNamespace(id=2, ip="10.0.0.5", deleted_at=None),
+            role=role,
+        )
+    assert snapshot.injected, snapshot.reason
+    assert json.loads(snapshot.args[1])["kv_role"] == store_role
+    assert (
+        provider.integration_for("vLLM").injection.kv_transfer_config.kv_role
+        == "kv_both"
+    )
+
+
+@pytest.mark.parametrize("has_integration", [False, True])
+def test_pd_store_settings_cannot_be_silently_ignored(has_integration):
+    from gpustack.server.cache_services import _pd_cache_configuration
+
+    provider = CacheProvider(
+        name="Mooncake",
+        custom_version=True,
+        inference_backend_integrations=(
+            [
+                CacheProviderIntegration(
+                    backend="vLLM",
+                    injection=CacheProviderInjection(
+                        args=["--cache-host", "localhost"]
+                    ),
+                )
+            ]
+            if has_integration
+            else []
+        ),
+    )
+    model = disaggregated_shared_cache_model("0.29.0")
+    model.disaggregation.mode = "vllm-mooncake"
+    original = provider.model_dump()
+    _, _, reason = _pd_cache_configuration(model, provider, "vLLM", None, "decode")
+    assert reason is not None
+    assert "Store connector" in reason
+    assert provider.model_dump() == original
+
+
+def test_pd_empty_store_settings_allow_argument_based_cache_integration():
+    from gpustack.server.cache_services import _pd_cache_configuration
+
+    provider = CacheProvider(
+        name="LMCache",
+        custom_version=True,
+        inference_backend_integrations=[
+            CacheProviderIntegration(
+                backend="SGLang",
+                injection=CacheProviderInjection(args=["--enable-lmcache"]),
+            )
+        ],
+    )
+    model = disaggregated_shared_cache_model("0.5.13")
+    model.backend = "SGLang"
+    model.disaggregation.mode = "sglang-mooncake"
+    result, _, reason = _pd_cache_configuration(
+        model, provider, "SGLang", None, "prefill"
+    )
+    assert reason is None
+    assert result.integration_for("SGLang").injection.args == ["--enable-lmcache"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "backend,mode", [("vLLM", "vllm-mooncake"), ("SGLang", "sglang-mooncake")]
+)
+async def test_router_never_attaches_the_models_shared_cache(backend, mode):
+    from gpustack.schemas.models import RoleSpec
+
+    model = disaggregated_shared_cache_model("0.29.0")
+    model.backend = backend
+    model.disaggregation.mode = mode
+    model.roles = [
+        RoleSpec(name="prefill"),
+        RoleSpec(name="decode"),
+        RoleSpec(name="router"),
+    ]
+    with patch_lookups(managed_cache_service()):
+        assert (
+            await resolve_instance_cache_config(MagicMock(), model, role="router")
+            is None
+        )

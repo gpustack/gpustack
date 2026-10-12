@@ -970,3 +970,83 @@ def test_a_peer_pinned_across_machines_refuses_rather_than_borrows():
         render_pd_injection(model, instance, _variables())
 
     assert "tensor_parallel_size" in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "variant,connector",
+    [
+        ("standard", "MooncakeConnectorV1"),
+        ("hybrid", "MooncakeHybridConnector"),
+    ],
+)
+def test_ascend_pair_uses_the_same_model_layout_variant(variant, connector):
+    model = _model(
+        mode=PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        backend_parameters=["--tensor-parallel-size=1"],
+        meta={"pd_connector_variant": variant},
+    )
+    for role in ("prefill", "decode"):
+        injection = render_pd_injection(
+            model,
+            _instance(role, named_ports={"kv_port": PortBand(base=5600, count=1)}),
+            _variables(),
+        )
+        assert json.loads(injection.args[1])["kv_connector"] == connector
+
+
+@pytest.mark.parametrize("variant", [None, "", "unknown", [], {}])
+def test_ascend_invalid_layout_metadata_uses_the_conservative_default(variant):
+    model = _model(
+        mode=PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        backend_parameters=["--tensor-parallel-size=1"],
+        meta={"pd_connector_variant": variant},
+    )
+    for role in ("prefill", "decode"):
+        injection = render_pd_injection(
+            model,
+            _instance(role, named_ports={"kv_port": PortBand(base=5600, count=1)}),
+            _variables(),
+        )
+        assert _connector(injection)["kv_connector"] == "MooncakeHybridConnector"
+
+
+@pytest.mark.parametrize("default", [None, "", "unknown"])
+@pytest.mark.parametrize("variant", [None, "unknown"])
+def test_connector_fallback_without_a_usable_default_fails_clearly(
+    monkeypatch, default, variant
+):
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+
+    mode = get_pd_mode(PDModeEnum.VLLM_ASCEND_MOONCAKE).model_copy(
+        update={"default_connector_variant": default}
+    )
+    monkeypatch.setattr("gpustack.worker.pd_injection.get_pd_mode", lambda name: mode)
+    model = _model(
+        mode=PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        backend_parameters=["--tensor-parallel-size=1"],
+        meta={"pd_connector_variant": variant},
+    )
+    with pytest.raises(
+        PDInjectionError,
+        match="PD mode 'vllm-ascend-mooncake'.*default_connector_variant",
+    ):
+        render_pd_injection(
+            model,
+            _instance(named_ports={"kv_port": PortBand(base=5600, count=1)}),
+            _variables(),
+        )
+
+
+def test_nvidia_mooncake_renders_bootstrap_and_pd_roles():
+    model = _model(mode=PDModeEnum.VLLM_MOONCAKE)
+    for role, kv_role in (("prefill", "kv_producer"), ("decode", "kv_consumer")):
+        injection = render_pd_injection(
+            model,
+            _instance(role, named_ports={"bootstrap": PortBand(base=5600, count=1)}),
+            _variables(),
+        )
+        assert json.loads(injection.args[1])["kv_connector"] == "MooncakeConnector"
+        assert json.loads(injection.args[1])["kv_role"] == kv_role
+        assert injection.env["VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT"] == "60"
+        if role == "prefill":
+            assert injection.env["VLLM_MOONCAKE_BOOTSTRAP_PORT"] == "5600"

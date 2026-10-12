@@ -714,20 +714,10 @@ class VLLMServer(InferenceServer):
             ("--served-model-name", self._model_instance.model_name),
         )
 
-        # Last, because it is the only point where every writer of
-        # --kv-transfer-config has contributed: the cache's arrives with the
-        # engine arguments far above, the PD connector's with the user's
-        # parameters just now. Placing it any earlier composes whatever has
-        # been assembled so far and lets the rest through un-merged, which is
-        # a duplicate flag rather than a composition — measured, and it
-        # reached a container.
-        #
-        # They are complementary rather than conflicting: a prefill asks the
-        # shared cache first (a prefix it already holds is prefill work that
-        # need not happen at all), a decode asks its own prefill first (the
-        # request already says the KV is waiting there). The cache's own
-        # descriptor is handed over so the order follows origin rather than
-        # whichever branch happened to append last.
+        # Compose after cache injection and user parameters have contributed
+        # their descriptors, so the engine receives one --kv-transfer-config.
+        # Both PD roles put the PD connector first and the cache second. Passing
+        # the cache descriptor identifies its origin independently of flag order.
         arguments = compose_kv_transfer_config(
             arguments,
             getattr(self._model_instance, "role", None),
@@ -965,12 +955,34 @@ class VLLMServer(InferenceServer):
         cards it was given keeps the sizing independent of the engine's
         parallelism, and equal to what ``get_computed_ram_claim`` set aside.
         """
-        reason = ascend_local_kv_cache_unsupported_reason(
-            arch_family, self._model.backend_version
-        )
+        version = self._model.backend_version
+        reason = ascend_local_kv_cache_unsupported_reason(arch_family, version)
         if reason:
-            logger.warning(f"{reason} Skipping KV cache offload configuration.")
-            return []
+            if not getattr(
+                self._model, "disaggregation", None
+            ) or ascend_local_kv_cache_unsupported_reason(arch_family, None):
+                logger.warning(f"{reason} Skipping KV cache offload configuration.")
+                return []
+            from packaging.version import InvalidVersion, Version
+
+            try:
+                parsed = Version(version)
+            except InvalidVersion:
+                parsed = None
+            if parsed and not (
+                parsed.local or parsed.is_prerelease or self._model.image_name
+            ):
+                logger.warning(
+                    "%s PD engine-version ranges are advisory; attempting requested KV cache offload configuration.",
+                    reason,
+                )
+            else:
+                logger.info(
+                    "PD KV cache offload compatibility is unverified for the custom "
+                    "image or non-release build. Built-in version check: %s "
+                    "Attempting requested KV cache offload configuration.",
+                    reason,
+                )
 
         extra_config = {}
         ram_bytes = self._resolve_local_kv_cache_bytes()

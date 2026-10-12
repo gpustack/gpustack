@@ -61,6 +61,7 @@ def _service(owner_principal_id=OWNER_PRINCIPAL, cluster_id=1):
         owner_principal_id=owner_principal_id,
         cluster_id=cluster_id,
         provider_name="LMCache",
+        provider_version="0.5.5",
     )
 
 
@@ -76,13 +77,14 @@ def _patch_lookups(
     frameworks=None,
     workers=(),
     versions=None,
+    provider_name="LMCache",
 ):
 
     monkeypatch.setattr(
         models_route.CacheService, "one_by_id", AsyncMock(return_value=service)
     )
     provider = CacheProvider(
-        name="LMCache",
+        name=provider_name,
         custom_version=True,
         inference_backend_integrations=[
             CacheProviderIntegration(
@@ -627,3 +629,93 @@ async def test_clearing_happens_after_the_service_is_accepted(monkeypatch):
         )
 
     assert ext.ram_ratio == 1.2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode,version",
+    [
+        ("vllm-nixl", "0.5.4"),
+        ("vllm-nixl", "0.5.5"),
+        ("vllm-mooncake", "0.5.5"),
+        ("vllm-ascend-mooncake", "0.5.5"),
+    ],
+)
+async def test_pd_decode_lmcache_provider_is_not_supported(monkeypatch, mode, version):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    service = _service()
+    service.provider_version = version
+    _patch_lookups(monkeypatch, service)
+    model = _model_in(
+        None,
+        backend="vLLM",
+        backend_version="0.29.0",
+        roles=[_role("decode", _shared_ext())],
+    )
+    model.disaggregation = DisaggregationSpec(mode=mode)
+    with pytest.raises(BadRequestException):
+        await models_route.validate_shared_kv_cache(
+            MagicMock(), model, OWNER_PRINCIPAL, 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_inherited_pd_cache_cannot_attach_lmcache_to_decode(monkeypatch):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    service = _service()
+    service.provider_version = "0.5.4"
+    _patch_lookups(monkeypatch, service)
+    model = _model_in(
+        _shared_ext(),
+        backend="vLLM",
+        backend_version="0.29.0",
+        roles=[_role("prefill"), _role("decode")],
+    )
+    model.disaggregation = DisaggregationSpec(mode="vllm-nixl")
+    with pytest.raises(BadRequestException) as error:
+        await models_route.validate_shared_kv_cache(
+            MagicMock(), model, OWNER_PRINCIPAL, 1
+        )
+    assert "decode" in error.value.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode,provider,version",
+    [
+        ("vllm-nixl", "LMCache", "0.24.1"),
+        ("vllm-nixl", "LMCache", "0.25.3"),
+        ("vllm-mooncake", "Mooncake", "0.27.1"),
+        ("vllm-ascend-mooncake", "Mooncake", "0.20.2"),
+        ("vllm-nixl", "LMCache", "0.24.1-custom"),
+    ],
+)
+@pytest.mark.parametrize("cache_mode", [KVCacheModeEnum.LOCAL, KVCacheModeEnum.SHARED])
+async def test_pd_explicit_engine_versions_do_not_block_cache_admission(
+    monkeypatch, mode, provider, version, cache_mode
+):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    service = _service()
+    service.provider_name = provider
+    _patch_lookups(monkeypatch, service, versions=">=0.29.0", provider_name=provider)
+    cache = (
+        _shared_ext()
+        if cache_mode == KVCacheModeEnum.SHARED
+        else ExtendedKVCacheConfig(enabled=True)
+    )
+    model = _model_in(
+        None,
+        backend="vLLM",
+        backend_version=version,
+        roles=[
+            _role("prefill", cache),
+            _role("decode", cache if cache_mode == KVCacheModeEnum.LOCAL else None),
+        ],
+    )
+    model.disaggregation = DisaggregationSpec(mode=mode)
+
+    await models_route.validate_shared_kv_cache(MagicMock(), model, OWNER_PRINCIPAL, 1)
+    assert cache.enabled

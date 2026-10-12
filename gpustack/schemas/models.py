@@ -660,6 +660,7 @@ class PDModeEnum(str, Enum):
     """
 
     VLLM_NIXL = "vllm-nixl"
+    VLLM_MOONCAKE = "vllm-mooncake"
     SGLANG_MOONCAKE = "sglang-mooncake"
     SGLANG_NIXL = "sglang-nixl"
     VLLM_ASCEND_MOONCAKE = "vllm-ascend-mooncake"

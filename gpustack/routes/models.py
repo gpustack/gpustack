@@ -1914,10 +1914,9 @@ def _cache_declarations(model_in) -> List[_CacheDeclaration]:
     `RoleEffectiveModel` out of a request body to read three fields off it is a
     conversion the projection was not written for.
 
-    Deduplicated on the three fields that decide the answer, so a group whose
-    roles all inherit the Model's cache on the Model's engine is checked exactly
-    once and cannot start reporting a refusal against a role name for a value
-    the user wrote at the model level.
+    PD declarations retain their role because Store connector settings
+    differ between prefill and decode. Other deployments
+    deduplicate identical cache/backend configurations.
     """
     model_ext = getattr(model_in, "extended_kv_cache", None)
     model_backend = getattr(model_in, "backend", None)
@@ -1951,6 +1950,7 @@ def _cache_declarations(model_in) -> List[_CacheDeclaration]:
         if declaration is None:
             continue
         key = (
+            declaration.role if getattr(model_in, "disaggregation", None) else None,
             declaration.ext.model_dump_json(),
             declaration.backend,
             declaration.backend_version,
@@ -2052,7 +2052,11 @@ async def validate_shared_kv_cache(
     _reject_a_split_cache_pool(declarations)
     for declaration in declarations:
         await _validate_one_cache_declaration(
-            session, declaration, owner_principal_id, effective_cluster_id
+            session,
+            declaration,
+            owner_principal_id,
+            effective_cluster_id,
+            getattr(model_in, "disaggregation", None),
         )
     _drop_local_only_cache_knobs(declarations)
 
@@ -2105,6 +2109,7 @@ async def _validate_one_cache_declaration(
     declaration: _CacheDeclaration,
     owner_principal_id: int,
     effective_cluster_id: Optional[int],
+    disaggregation=None,
 ) -> None:
     ext = declaration.ext
     where = declaration.where
@@ -2144,6 +2149,19 @@ async def _validate_one_cache_declaration(
                 f"model{where}."
             )
         )
+
+    if disaggregation:
+        mode = get_pd_mode(disaggregation.mode)
+        if mode is None:
+            raise BadRequestException(
+                message=f"Unknown PD mode '{disaggregation.mode}'" + where
+            )
+        reason = mode.cache_service_reason(
+            cache_service.provider_name,
+            declaration.role,
+        )
+        if reason:
+            raise BadRequestException(message=reason + where)
 
     provider = await get_cache_provider(session, cache_service.provider_name)
     backend = declaration.backend or BackendEnum.VLLM.value
@@ -2186,6 +2204,9 @@ async def _validate_one_cache_declaration(
             )
         )
 
+    # PD engine ranges are advisory for explicit versions so operators can
+    # deploy images with their own connector fixes. Standalone cache users
+    # still follow the provider integration's version contract.
     # A pinned engine version below an integration's declared floor would
     # receive injected args the engine does not accept (e.g.
     # --shutdown-timeout) and fail to start. Reject when the version
@@ -2193,7 +2214,7 @@ async def _validate_one_cache_declaration(
     # versions fail open, and an unpinned version is resolved at deploy
     # time (the injection resolver re-checks it there).
     engine_version = declaration.backend_version
-    if engine_version:
+    if engine_version and not disaggregation:
         candidates = (
             [provider.integration_for(backend, framework) for framework in frameworks]
             if frameworks

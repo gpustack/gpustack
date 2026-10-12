@@ -123,6 +123,8 @@ def test_the_shipped_config_declares_the_conversions_it_needs():
     for raw, unified in (
         ("vllm:nixl_bytes_transferred", "gpustack:pd_kv_transfer_bytes"),
         ("vllm:nixl_xfer_time_seconds", "gpustack:pd_kv_transfer_seconds"),
+        ("vllm:mooncake_bytes_transferred", "gpustack:pd_kv_transfer_bytes"),
+        ("vllm:mooncake_xfer_time_seconds", "gpustack:pd_kv_transfer_seconds"),
     ):
         name, scale = get_unified_metric_family_name(config, raw, "vLLM", None)
         assert (name, scale) == (unified, 1.0), raw

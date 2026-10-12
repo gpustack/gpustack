@@ -910,6 +910,11 @@ def evaluate_local_extended_kv_cache(
     extended_kv_cache = model.extended_kv_cache
     if not (extended_kv_cache and extended_kv_cache.is_local()):
         return None
+    # PD engine-version ranges are advisory; accelerator compatibility is
+    # still evaluated before deployment.
+    backend_version = (
+        None if getattr(model, "disaggregation", None) else model.backend_version
+    )
 
     def supported(gpu) -> bool:
         if gpu.vendor in (
@@ -920,7 +925,7 @@ def evaluate_local_extended_kv_cache(
         if gpu.vendor == ManufacturerEnum.ASCEND.value:
             return (
                 ascend_local_kv_cache_unsupported_reason(
-                    gpu.arch_family, model.backend_version
+                    gpu.arch_family, backend_version
                 )
                 is None
             )
@@ -940,7 +945,7 @@ def evaluate_local_extended_kv_cache(
     # 910B on a version below the floor blocks for two different reasons, and
     # acting on one of them alone leaves the deployment where it was.
     reasons = {
-        ascend_local_kv_cache_unsupported_reason(gpu.arch_family, model.backend_version)
+        ascend_local_kv_cache_unsupported_reason(gpu.arch_family, backend_version)
         for gpu in gpus
         if gpu.vendor == ManufacturerEnum.ASCEND.value
     }

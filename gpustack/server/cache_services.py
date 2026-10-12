@@ -15,7 +15,13 @@ from gpustack.schemas.cache_services import (
     CacheServiceInstance,
     CacheServiceStateEnum,
 )
-from gpustack.schemas.models import Model, get_backend, role_effective_model
+from gpustack.schemas.models import (
+    Model,
+    get_backend,
+    role_effective_model,
+    role_takes_no_accelerator,
+)
+from gpustack.schemas.pd_modes import PDCacheServiceRole
 from gpustack.schemas.workers import Worker
 from gpustack.utils.command import flatten_to_argv
 from gpustack.utils.version import version_in_range
@@ -23,6 +29,7 @@ from gpustack.server.cache_provider_catalog import (
     get_cache_provider,
     render_injection,
 )
+from gpustack.server.pd_mode_catalog import get_pd_mode
 
 logger = logging.getLogger(__name__)
 
@@ -128,101 +135,44 @@ def _declared_attach_address(
     return render_optional_template(spec.address_template, resolved_fields)
 
 
-def _composes_with_the_pd_connector(effective: Model, integration) -> bool:
-    """Whether this member would land a cache connector in the same flag the
-    disaggregation recipe writes.
-
-    Both halves have to be true: the deployment is disaggregated, and the
-    provider's integration actually renders a connector descriptor. A provider
-    that attaches some other way (SGLang's config file) composes with nothing,
-    whatever the deployment looks like.
-    """
-    if getattr(effective, "disaggregation", None) is None:
-        return False
-    if integration is None:
-        return False
-    return integration.injection.kv_transfer_config is not None
-
-
-def _composed_cache_for(effective: Model):
-    """This deployment's backend entry in the `composed_cache` registry, or
-    None when the engine declares nothing about composing."""
-    from gpustack.schemas.models import get_backend
-    from gpustack.server.pd_mode_catalog import get_composed_cache
-
-    return get_composed_cache(get_backend(effective))
-
-
-def _composed_connector_version_floor(
+def _pd_cache_configuration(
     effective: Model,
-    integration,
-) -> Optional[str]:
-    """Reason to stand down when the engine is too old to run the composition,
-    or None when it is fine.
-
-    The requirement itself is declared per backend in `pd-modes.yaml` under
-    `composed_cache`, next to the other engine-behaviour registries, rather
-    than spelled here: it belongs to neither the mode nor the provider, and a
-    backend that declares nothing is simply not checked. Unparseable versions
-    fail open, like every other version gate here.
-    """
-    if not _composes_with_the_pd_connector(effective, integration):
-        return None
-    if not effective.backend_version:
-        return None
-
-    declared = _composed_cache_for(effective)
-    if declared is None or not declared.min_version:
-        return None
-    if (
-        version_in_range(effective.backend_version, f">={declared.min_version}")
-        is not False
-    ):
-        return None
-    detail = declared.description or "the composition does not work"
-    reference = f" ({declared.reference})" if declared.reference else ""
-    return (
-        f"Backend version {effective.backend_version} is below "
-        f"{declared.min_version}, where {detail}{reference}; "
-        "instance starts without shared KV cache"
-    )
-
-
-def _refused_cache_reason(
-    effective: Model,
-    integration,
+    provider: CacheProvider,
+    backend: str,
+    framework: Optional[str],
     role: Optional[str],
-) -> Optional[str]:
-    """Reason this role may not take the shared cache, or None when it may.
-
-    Which roles are refused is declared per backend in `pd-modes.yaml` under
-    `composed_cache.refuse_cache_on`, so "may prefill take a cache, may decode"
-    is answerable by reading the document — no rule of that shape is written
-    here.
-
-    For vLLM the refused role is decode: its connectors pull, so decode is
-    already loading the KV prefill computed, and the engine cannot also run a
-    cache connector's load on the same member. prefill is unaffected and is the
-    side worth attaching anyway — measured on a live 1P1D, it served 1024 of a
-    1277-token prompt out of the pool with the engine's own prefix cache empty.
-
-    Only an engine declaring `composed_cache` gets here at all. SGLang
-    attaches through `--enable-lmcache` and a config file, never lands in the
-    PD connector's flag, and takes a cache on both roles — verified on a live
-    SGLang pair.
-    """
-    if not role or not _composes_with_the_pd_connector(effective, integration):
-        return None
-    declared = _composed_cache_for(effective)
-    refusal = declared.refuse_cache_on if declared else None
-    if refusal is None or role not in refusal.roles:
-        return None
-    detail = refusal.description or "the engine refuses one here"
-    reference = f" ({refusal.reference})" if refusal.reference else ""
-    return (
-        f"Not attached on the '{role}' role by design: {detail}{reference}. "
-        "Other roles keep theirs."
-    )
+) -> Tuple[CacheProvider, Optional[PDCacheServiceRole], Optional[str]]:
+    """Apply a mode's Store recipe without mutating the shared provider catalog."""
+    if not effective.disaggregation:
+        return provider, None, None
+    mode_name = effective.disaggregation.mode
+    mode = get_pd_mode(mode_name)
+    if mode is None:
+        return provider, None, f"Unknown PD mode '{mode_name}'"
+    reason = mode.cache_service_reason(provider.name, role)
+    if reason:
+        return provider, None, reason
+    settings = mode.cache_service_role(provider.name, role)
+    integration = provider.integration_for(backend, framework)
+    if settings and (settings.kv_role or settings.kv_connector_module_path):
+        if integration is None or integration.injection.kv_transfer_config is None:
+            return (
+                provider,
+                None,
+                f"PD mode '{mode_name}' requires Store connector settings for "
+                f"{provider.name} on role '{role}', but its '{backend}' "
+                "integration declares no KV transfer connector",
+            )
+        # Resolve the copied integration so overrides cannot mutate the catalog.
+        provider = provider.model_copy(deep=True)
+        descriptor = provider.integration_for(
+            backend, framework
+        ).injection.kv_transfer_config
+        if settings.kv_role:
+            descriptor.kv_role = settings.kv_role
+        if settings.kv_connector_module_path:
+            descriptor.kv_connector_module_path = settings.kv_connector_module_path
+    return provider, settings, None
 
 
 async def resolve_instance_cache_config(
@@ -257,14 +207,11 @@ async def resolve_instance_cache_config(
     every member would silently give the whole group whatever the deployment
     said, which is the opposite of what a per-role override asked for.
 
-    For a vLLM pair the asymmetry is more than a preference. Prefill alone is
-    the configuration that was measured working end to end; both sides enabled
-    is the one that kills the decode engine as soon as the pool hits, because
-    the two connectors decode then runs both load asynchronously and vLLM's
-    `MultiConnector` deduplicates only saves. A SGLang pair does not share that
-    hazard — its integration attaches through `--enable-lmcache` and a config
-    file, never composing into one connector — and takes a cache on both roles.
+    Mode/provider recipes decide which roles may attach and which Store
+    roles to render. Requirements are rechecked for existing deployments.
     """
+    if role_takes_no_accelerator(model, role):
+        return None
     effective = role_effective_model(model, role) if role else model
     ext = effective.extended_kv_cache
     if not ext or not ext.is_shared():
@@ -409,6 +356,9 @@ async def resolve_instance_cache_config(
     # cache, and none of the injection applies (the user owns the whole
     # connector wiring).
     integration = provider.integration_for(backend, framework)
+    # PD engine ranges are advisory: inject the requested cache and let the
+    # engine report unsupported configuration. Standalone cache users retain
+    # the provider integration's version contract.
     # Version floor for existing/unvalidated models: an engine below the
     # integration's declared range would crash on injected args it does
     # not know (e.g. --shutdown-timeout), so degrade instead of
@@ -417,6 +367,7 @@ async def resolve_instance_cache_config(
         integration is not None
         and integration.versions
         and effective.backend_version
+        and not effective.disaggregation
         and version_in_range(effective.backend_version, integration.versions) is False
     ):
         return CacheConfigSnapshot(
@@ -430,22 +381,17 @@ async def resolve_instance_cache_config(
                 "instance starts without shared KV cache"
             ),
         )
-    composed_floor_reason = _composed_connector_version_floor(effective, integration)
-    if composed_floor_reason is not None:
+    provider, _, reason = _pd_cache_configuration(
+        effective, provider, backend, framework, role
+    )
+    if reason:
         return CacheConfigSnapshot(
             **snapshot_base,
             endpoint=snapshot_endpoint,
             injected=False,
-            reason=composed_floor_reason,
+            reason=f"{reason}; instance starts without shared KV cache",
         )
-    refused_reason = _refused_cache_reason(effective, integration, role)
-    if refused_reason is not None:
-        return CacheConfigSnapshot(
-            **snapshot_base,
-            endpoint=snapshot_endpoint,
-            injected=False,
-            reason=refused_reason,
-        )
+    integration = provider.integration_for(backend, framework)
     slot = integration.injection.kv_transfer_config if integration else None
     # backend_parameters is semantically a concatenated argv (an element
     # may be one token, a "--key value" pair, or a whole pasted command
