@@ -75,11 +75,17 @@ def create_app(cfg: Config) -> FastAPI:
 
     app.state.jwt_manager = JWTManager(cfg.jwt_secret_key)
     app.state.websocket_authenticator = BearerTokenAuthenticator()
+
+    # The product deployment has no federation peers: nothing ever
+    # configures one, and the federation branch admits any
+    # caller-supplied x-server-* identity. Keep the production endpoint
+    # on worker client connections only.
     app.state.message_server_handler = MessageServerHandler(
         listen_address=cfg.get_proxy_listen_address(cfg.get_advertise_address()),
         listen_port=cfg.api_port,
         proxy_port=cfg.get_proxy_port(),
         authenticator=app.state.websocket_authenticator,
+        server_info_getter=lambda websocket: None,
         callback_on_connect=partial(
             worker_websocket_connect_callback,
             proxy_address=cfg.get_proxy_url(),
