@@ -624,6 +624,18 @@ class InferenceServer(ABC):
             model, instance.role, peers=peers, variables=variables
         )
         _refuse_unrendered_router(rendered, instance)
+        from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+        if not next(
+            (r.run_command for r in (model.roles or []) if r.name == instance.role),
+            None,
+        ):
+            self._update_model_instance(
+                instance.id,
+                router_peer_snapshot=router_peer_snapshot(
+                    members, instance.group_id, worker_ips
+                ),
+            )
         return rendered
 
     def _net_device_plane(self):

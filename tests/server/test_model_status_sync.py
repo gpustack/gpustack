@@ -1183,3 +1183,23 @@ async def test_the_window_opening_and_closing_both_publish():
     assert opened.draining == 1
     assert changed is True
     assert model.role_status["prefill"].draining == 0
+
+
+@pytest.mark.asyncio
+async def test_membership_refresh_reason_is_visible_in_model_status():
+    from gpustack.server import pd_membership
+
+    model = _model(roles=_pd_roles(prefill=1))
+    reason = "router membership changed; rebuilding router"
+    pd_membership.record(
+        model.id, pd_membership.MembershipOutcome(ok=False, reason=reason)
+    )
+    try:
+        with patch(
+            "gpustack.server.controllers._reconcile_router_membership", AsyncMock()
+        ):
+            await _sync(model, _members({"prefill": 1, "decode": 1, "router": 1}))
+        assert model.state == ModelStateEnum.PARTIAL
+        assert reason in model.state_message
+    finally:
+        pd_membership.forget(model.id)

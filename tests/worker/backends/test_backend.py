@@ -2347,3 +2347,66 @@ def test_ascend_pd_unsupported_device_still_disables_cache(caplog):
     backend._model.backend_version = "0.20.2"
     assert backend._build_ascend_local_kv_cache_arguments("Ascend310P3") == []
     assert "310P" in caplog.text
+
+
+def test_managed_router_records_the_same_peers_it_renders(monkeypatch):
+    from unittest.mock import MagicMock
+    from gpustack.schemas.models import (
+        DisaggregationSpec,
+        Model,
+        ModelInstance,
+        PortBand,
+        RoleSpec,
+        SourceEnum,
+    )
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+    import gpustack.worker.pd_router as renderer
+
+    model = Model(
+        name="m",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/repo",
+        disaggregation=DisaggregationSpec(mode="vllm-mooncake"),
+        roles=[RoleSpec(name="router")],
+    )
+    peer = types.SimpleNamespace(
+        id=1,
+        model_id=1,
+        role="prefill",
+        group_id="g",
+        worker_id=7,
+        port=8000,
+        state="running",
+        named_ports={"bootstrap": PortBand(base=9000)},
+        draining_since=None,
+        restart_count=2,
+        last_restart_time=None,
+    )
+    draining = types.SimpleNamespace(**{**vars(peer), "id": 2, "draining_since": "now"})
+    server = _StubServer.__new__(_StubServer)
+    server._model_instance = ModelInstance(
+        name="router",
+        model_id=1,
+        model_name="m",
+        source=SourceEnum.HUGGING_FACE,
+        role="router",
+        group_id="g",
+        id=3,
+    )
+    server._clientset = MagicMock()
+    server._clientset.model_instances.list.return_value.items = [peer, draining]
+    server._clientset.workers.get.return_value = types.SimpleNamespace(ip="10.0.0.1")
+    server._template_variables = MagicMock(return_value={})
+    server._pd_template_variables = MagicMock(return_value={})
+    server._update_model_instance = MagicMock()
+    apply = MagicMock(
+        return_value=types.SimpleNamespace(run_command="router", image_name="image")
+    )
+    monkeypatch.setattr(renderer, "apply_managed_router", apply)
+    server._apply_managed_router(model)
+    assert apply.call_args.kwargs["peers"] == {
+        "prefill": [renderer.PeerAddress("10.0.0.1", 8000, {"bootstrap": 9000})]
+    }
+    server._update_model_instance.assert_called_once_with(
+        3, router_peer_snapshot=router_peer_snapshot([peer], "g", {7: "10.0.0.1"})
+    )

@@ -1778,6 +1778,13 @@ class ModelInstanceBase(SQLModel, ModelSource):
     )
     """Connector ports by declared name. Values are bands, not points."""
 
+    router_peer_snapshot: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+    )
+    """Peers expected at creation, overwritten with peers rendered at router
+    startup. Engine identities allow address reuse to be detected."""
+
     draining_since: Optional[datetime] = Field(
         sa_column=Column(UTCDateTime), default=None
     )

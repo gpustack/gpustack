@@ -1330,3 +1330,25 @@ def test_nvidia_mooncake_metrics_follow_the_sender_and_keep_ascend_capabilities_
     assert mode.router.capabilities.kv_expired_metric
     assert not get_pd_mode("vllm-ascend-mooncake").router.capabilities.kv_expired_metric
     assert not mode.router.membership_api.available
+
+
+@pytest.mark.parametrize(
+    "name,policy",
+    [
+        ("vllm-nixl", "dynamic"),
+        ("vllm-mooncake", "restart"),
+        ("sglang-mooncake", "dynamic"),
+        ("sglang-nixl", "dynamic"),
+        ("vllm-ascend-mooncake", "dynamic"),
+        ("custom", "manual"),
+    ],
+)
+def test_catalog_declares_membership_update_policy(name, policy):
+    assert get_pd_mode(name).router.membership_update == policy
+
+
+def test_dynamic_membership_requires_a_launched_api():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="membership API"):
+        PDRouter(protocol="user_provided", membership_update="dynamic")
