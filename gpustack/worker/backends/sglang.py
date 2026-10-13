@@ -464,9 +464,12 @@ class SGLangServer(InferenceServer):
         user_backend_parameters = self._flatten_backend_param()
         arguments.extend(user_backend_parameters)
 
-        # Set host and port.
+        # Match the served model name to the deployment name used in API requests.
         extend_args_no_exist(
-            arguments, ("--host", self._worker.ip), ("--port", str(port))
+            arguments,
+            ("--host", self._worker.ip),
+            ("--port", str(port)),
+            ("--served-model-name", self._model_instance.model_name),
         )
 
         injected = self._get_injected_backend_parameters(

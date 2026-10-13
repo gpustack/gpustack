@@ -936,13 +936,36 @@ def test_vllm_command_args_exclude_user_backend_parameters_from_injected():
     assert injected == ["--port", "4000", "--served-model-name", "llm"]
 
 
-def test_sglang_command_args_include_model_and_late_system_flags_as_injected():
+@pytest.mark.parametrize(
+    "run_command, served_model_args",
+    [
+        (None, []),
+        ("--model-path {{model_path}}", []),
+        (
+            "--model-path {{model_path}} --served-model-name custom-name",
+            ["--served-model-name", "custom-name"],
+        ),
+        (
+            "--model-path {{model_path}} --served-model-name=custom-name",
+            ["--served-model-name=custom-name"],
+        ),
+    ],
+)
+def test_sglang_command_args_include_model_and_late_system_flags_as_injected(
+    run_command, served_model_args
+):
     backend = SGLangServer.__new__(SGLangServer)
-    backend.inference_backend = None
+    backend.inference_backend = InferenceBackend(
+        backend_name=BackendEnum.SGLANG,
+        default_version="0.5.21",
+        version_configs={},
+    )
     backend._model_path = "/models/llm"
     backend._worker = types.SimpleNamespace(ip="192.168.50.10")
     backend._model_instance = types.SimpleNamespace(
         gpu_indexes=[],
+        model_name="llm-deployment",
+        port=4000,
         ports=[4000],
         computed_resource_claim=None,
         mounted_loras=None,
@@ -950,6 +973,7 @@ def test_sglang_command_args_include_model_and_late_system_flags_as_injected():
     backend._model = types.SimpleNamespace(
         backend_parameters=[],
         backend_version=None,
+        run_command=run_command,
         env={"GPUSTACK_DISABLE_METRICS": "1"},
         extended_kv_cache=None,
         speculative_config=None,
@@ -959,23 +983,29 @@ def test_sglang_command_args_include_model_and_late_system_flags_as_injected():
     backend._get_speculative_arguments = lambda: []
     backend._get_hicache_arguments = lambda: []
     backend._get_selected_gpu_devices = lambda: [
-        types.SimpleNamespace(vendor="NVIDIA", arch_family=None)
+        types.SimpleNamespace(index=0, vendor="NVIDIA", arch_family=None)
     ]
 
-    _, injected = backend._build_command_args(
+    arguments, injected = backend._build_command_args(
         port=4000,
         is_distributed=False,
         is_distributed_leader=False,
     )
 
-    assert injected == [
+    expected = [
         "--model-path",
         "/models/llm",
+        *served_model_args,
         "--host",
         "192.168.50.10",
         "--port",
         "4000",
     ]
+    if not served_model_args:
+        expected.extend(["--served-model-name", "llm-deployment"])
+
+    assert arguments == expected
+    assert injected == expected
 
 
 @pytest.mark.parametrize("alias", ["tp", "dp"])
