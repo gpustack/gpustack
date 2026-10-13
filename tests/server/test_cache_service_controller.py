@@ -21,6 +21,7 @@ from gpustack.schemas.cache_services import (
     CacheServiceStateEnum,
 )
 from gpustack.schemas.models import ModelInstanceStateEnum
+from gpustack.schemas.workers import WorkerStateEnum
 from gpustack.server import controllers as cache_service_controller
 from gpustack.server.controllers import CacheServiceController
 
@@ -107,13 +108,24 @@ def _instance(**overrides):
     return SimpleNamespace(**fields)
 
 
-def _worker(id, cluster_id=1, deleted_at=None, labels=None, ip=None):
+def _worker(
+    id,
+    cluster_id=1,
+    deleted_at=None,
+    labels=None,
+    ip=None,
+    state=WorkerStateEnum.READY,
+    unreachable=False,
+):
     return SimpleNamespace(
         id=id,
+        name=f"worker-{id}",
         cluster_id=cluster_id,
         deleted_at=deleted_at,
         labels=labels or {},
         ip=ip or f"10.0.0.{id}",
+        state=state,
+        unreachable=unreachable,
     )
 
 
@@ -781,6 +793,88 @@ async def test_replicas_rejects_worker_from_other_cluster(monkeypatch):
 # ---- aggregate transitions ----
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "worker_state, unreachable",
+    [
+        (WorkerStateEnum.NOT_READY, False),
+        (WorkerStateEnum.UNREACHABLE, False),
+        (WorkerStateEnum.READY, True),
+    ],
+)
+@pytest.mark.parametrize("has_online_replica", [False, True])
+async def test_periodic_resync_corrects_offline_cache_without_worker_events(
+    monkeypatch, worker_state, unreachable, has_online_replica
+):
+    service = _service(state=CacheServiceStateEnum.RUNNING, healthy=True)
+    offline = _instance(state=CacheServiceStateEnum.RUNNING, healthy=True)
+    online = _instance(id=22, worker_id=6, state=CacheServiceStateEnum.RUNNING)
+    instances = [offline, online] if has_online_replica else [offline]
+    workers = [
+        _worker(5, state=worker_state, unreachable=unreachable),
+    ]
+    if has_online_replica:
+        workers.append(_worker(6))
+
+    async def update_instance(session, values):
+        for key, value in values.items():
+            setattr(offline, key, value)
+
+    async def update_service(session, values):
+        for key, value in values.items():
+            setattr(service, key, value)
+
+    offline.update = AsyncMock(side_effect=update_instance)
+    online.update = AsyncMock()
+    service.update.side_effect = update_service
+    create = _patch_reconcile(
+        monkeypatch,
+        _provider("per_node"),
+        workers=workers,
+        instance_lists=[instances] * 4,
+    )
+    monkeypatch.setattr(
+        cache_service_controller, "async_session", lambda: _FakeSessionCtx()
+    )
+    monkeypatch.setattr(
+        cache_service_controller.CacheService,
+        "all_by_fields",
+        AsyncMock(return_value=[service]),
+    )
+    monkeypatch.setattr(
+        cache_service_controller.CacheService,
+        "one_by_id",
+        AsyncMock(return_value=service),
+    )
+    controller = CacheServiceController(MagicMock())
+    refresh = AsyncMock()
+    monkeypatch.setattr(controller, "_refresh_attached_snapshots", refresh)
+    with patch(
+        "gpustack.server.controllers.asyncio.sleep",
+        AsyncMock(side_effect=[None, None, asyncio.CancelledError]),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await controller._resync_loop()
+
+    assert offline.state == CacheServiceStateEnum.UNREACHABLE
+    assert offline.healthy is False
+    assert offline.state_message == "Worker is unreachable from the server"
+    assert offline.worker_id == 5
+    offline.update.assert_awaited_once()
+    offline.delete.assert_not_awaited()
+    online.update.assert_not_awaited()
+    online.delete.assert_not_awaited()
+    create.assert_not_awaited()
+    assert service.state == (
+        CacheServiceStateEnum.RUNNING
+        if has_online_replica
+        else CacheServiceStateEnum.ERROR
+    )
+    assert service.healthy is False
+    service.update.assert_awaited_once()
+    assert refresh.await_count == 2
+
+
 def _patch_aggregate_instances(monkeypatch, instances):
     monkeypatch.setattr(
         "gpustack.server.controllers.CacheServiceInstance.all_by_fields",
@@ -811,6 +905,22 @@ def _patch_aggregate_instances(monkeypatch, instances):
             {
                 "state": CacheServiceStateEnum.RUNNING,
                 "state_message": "1/2 instances running",
+                "healthy": False,
+            },
+        ),
+        (
+            [CacheServiceStateEnum.RUNNING, CacheServiceStateEnum.UNREACHABLE],
+            {
+                "state": CacheServiceStateEnum.RUNNING,
+                "state_message": "1/2 instances running",
+                "healthy": False,
+            },
+        ),
+        (
+            [CacheServiceStateEnum.UNREACHABLE],
+            {
+                "state": CacheServiceStateEnum.ERROR,
+                "state_message": "0/1 instances running",
                 "healthy": False,
             },
         ),
