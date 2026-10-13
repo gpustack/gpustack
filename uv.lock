@@ -1255,7 +1255,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0,<0.137.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-higress-plugins", specifier = "==0.4.1.post2" },
-    { name = "gpustack-runner", specifier = "==0.1.31" },
+    { name = "gpustack-runner", specifier = "==0.1.31.post1" },
     { name = "gpustack-runtime", specifier = "==0.2.6" },
     { name = "hf-xet", specifier = ">=1.3.1,<2.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
@@ -1351,7 +1351,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.31"
+version = "0.1.31.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -1359,9 +1359,9 @@ dependencies = [
     { name = "packaging" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/19/cc/58ba6b213bec7c703dfa1b02c4f423056d86d61465950b7aab563176acb2/gpustack_runner-0.1.31.tar.gz", hash = "sha256:87e68cb889410db503657231667f1748055869e10d1a9bffeabc27e13a06001d", size = 13746189, upload-time = "2026-10-12T09:12:28.784Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/99/86/9488693385ec842057b3ba64569e9d7a27d81f848bdde8615e0881333d1d/gpustack_runner-0.1.31.post1.tar.gz", hash = "sha256:44e83a6b40fdd15dc65bec27e5e4a7975dc446b7ca10219163ed681e4ea9d943", size = 13748622, upload-time = "2026-10-13T06:24:06.402Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/21/a4/c66496c6c0a413cc10fb94d2b5efcaa5dc4d2a62aa4378b6a96f29e01ae4/gpustack_runner-0.1.31-py3-none-any.whl", hash = "sha256:f7dc1ec7b42f605ee27d6f4b8a36308c5d6f392f42a5bc27fed604f4a68f314f", size = 32461, upload-time = "2026-10-12T09:12:27.031Z" },
+    { url = "https://files.pythonhosted.org/packages/97/5f/2d4ff7e75693300c55448734779d6395d289322e2c380396778b1ca898a0/gpustack_runner-0.1.31.post1-py3-none-any.whl", hash = "sha256:ebbd035e77d2c61e076988ff717255090cdd120810f2cd28e44283f7484edf10", size = 32650, upload-time = "2026-10-13T06:24:04.983Z" },
 ]
 
 [[package]]
