@@ -315,7 +315,7 @@ def test_packaged_glm53_ascend_spec(arch_family):
     assert spec.quantization == "W8A8"
     assert spec.backend == "vLLM"
     assert spec.backend_version is None
-    assert spec.image_name == "quay.io/ascend/vllm-ascend:v0.30.0rc1"
+    assert spec.image_name is None
     assert "--quantization=ascend" in spec.backend_parameters
     assert "--enable-expert-parallel" in spec.backend_parameters
     assert not any("parallel-size" in arg for arg in spec.backend_parameters)
@@ -369,13 +369,13 @@ def test_packaged_a2_quantized_deployment(name, repo_id, reasoning):
     assert not spec.gpu_filters.vendor_variant
     assert spec.quantization == "W8A8"
 
-    # The deployment payload preserves the image and quantized weight source.
+    # The deployment preserves quantized weights and uses automatic runner selection.
     model = ModelCreate(**{**spec.model_dump(), "name": "a2-model"})
     assert model.source == SourceEnum.MODEL_SCOPE
     assert model.model_scope_model_id == f"Eco-Tech/{repo_id}"
     assert model.backend == "vLLM"
     assert model.backend_version is None
-    assert model.image_name == "quay.io/ascend/vllm-ascend:v0.30.0rc1"
+    assert model.image_name is None
     parameters = model.backend_parameters
     assert "--quantization=ascend" in parameters
     assert "--max-model-len=65536" in parameters
@@ -423,7 +423,7 @@ def test_packaged_qwen38_huggingface_a2_deployment():
     assert spec.source == SourceEnum.HUGGING_FACE
     assert spec.huggingface_repo_id == "Qwen/Qwen3.8-27B"
     assert spec.quantization == "BF16"
-    assert spec.image_name == "quay.io/ascend/vllm-ascend:v0.30.0rc1"
+    assert spec.image_name is None
     assert spec.backend_version is None
     assert "--quantization=ascend" not in spec.backend_parameters
 
