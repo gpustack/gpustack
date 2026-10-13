@@ -672,6 +672,40 @@ def _component_replica_count(
     return count
 
 
+def _is_cache_worker_unreachable(worker: Worker) -> bool:
+    return not worker.state.is_provisioning and (
+        worker.unreachable
+        or worker.state in (WorkerStateEnum.NOT_READY, WorkerStateEnum.UNREACHABLE)
+    )
+
+
+async def _sync_cache_instances_worker_states(
+    session: AsyncSession,
+    instances: List[CacheServiceInstance],
+    workers: List[Worker],
+) -> None:
+    """Invalidate running cache instances until their workers can probe them."""
+    unreachable_workers = {
+        worker.id: worker for worker in workers if _is_cache_worker_unreachable(worker)
+    }
+    for instance in instances:
+        worker = unreachable_workers.get(instance.worker_id)
+        if worker is None or instance.state != CacheServiceStateEnum.RUNNING:
+            continue
+        await instance.update(
+            session,
+            {
+                "state": CacheServiceStateEnum.UNREACHABLE,
+                "healthy": False,
+                "state_message": "Worker is unreachable from the server",
+            },
+        )
+        logger.info(
+            f"Marked cache service instance {instance.name} unreachable "
+            f"since worker {worker.name} is unreachable from the server"
+        )
+
+
 class CacheServiceController:
     """
     Reconciles managed cache services onto their desired CacheServiceInstance
@@ -1000,6 +1034,14 @@ class CacheServiceController:
         instances = await CacheServiceInstance.all_by_fields(
             session, {"cache_service_id": service.id}
         )
+        workers = await Worker.all_by_fields(
+            session,
+            fields={"cluster_id": service.cluster_id},
+            extra_conditions=[Worker.deleted_at.is_(None)],
+        )
+        # Current worker rows let periodic reconciliation repair missed events
+        # before component addresses and service availability use instance state.
+        await _sync_cache_instances_worker_states(session, instances, workers)
         if provider is not None:
             for instance in instances:
                 if (
@@ -1014,7 +1056,9 @@ class CacheServiceController:
                             session, {"computed_resource_claim": claim}
                         )
         desired_by_component, error_message, reconcile = (
-            await self._desired_component_workers(session, service, instances, provider)
+            await self._desired_component_workers(
+                session, service, instances, workers, provider
+            )
         )
         if error_message is not None and not reconcile:
             await self._set_service_state(
@@ -1209,6 +1253,7 @@ class CacheServiceController:
         session: AsyncSession,
         service: CacheService,
         instances: List[CacheServiceInstance],
+        workers: List[Worker],
         provider: Optional[CacheProvider] = None,
     ) -> Tuple[Dict[str, Dict[int, int]], Optional[str], bool]:
         """How many instances each provider component should have on each
@@ -1232,11 +1277,6 @@ class CacheServiceController:
         layouts = provider.component_layouts() if provider else {"": "replicas"}
         multi_component = bool(provider and provider.components)
 
-        workers = await Worker.all_by_fields(
-            session,
-            fields={"cluster_id": service.cluster_id},
-            extra_conditions=[Worker.deleted_at.is_(None)],
-        )
         selector = service.worker_selector
         matching = [
             worker
@@ -4708,7 +4748,7 @@ class WorkerController:
 
     async def _reconcile(self, event: Event):
         """
-        Delete instances base on the worker state and event type.
+        Propagate worker availability and deletion to its instances.
         """
         if event.type not in (EventType.UPDATED, EventType.DELETED):
             return
@@ -4721,13 +4761,18 @@ class WorkerController:
             # There is a dedicated controller to handle provisioning.
             return
 
-        if event.type == EventType.UPDATED:
-            changed_fields = event.changed_fields
-            if not changed_fields or "state" not in changed_fields:
-                # No state change
-                return
-
         async with async_session() as session:
+            # Coalesced updates carry only the latest changed_fields. Cache
+            # availability must follow the worker snapshot even on a label edit.
+            await self._reconcile_cache_instances(session, worker, event.type)
+            if event.type == EventType.UPDATED:
+                changed_fields = event.changed_fields
+                if (
+                    not changed_fields
+                    or not {"state", "unreachable"} & changed_fields.keys()
+                ):
+                    return
+
             all_instances = await ModelInstance.all_by_field(
                 session, "cluster_id", worker.cluster_id
             )
@@ -4767,6 +4812,18 @@ class WorkerController:
                     worker.name,
                 )
                 return
+
+    async def _reconcile_cache_instances(
+        self, session: AsyncSession, worker: Worker, event_type: EventType
+    ) -> None:
+        """Mark running cache instances unreachable until their worker probes them."""
+        if event_type != EventType.UPDATED or not _is_cache_worker_unreachable(worker):
+            return
+
+        instances = await CacheServiceInstance.all_by_field(
+            session, "worker_id", worker.id
+        )
+        await _sync_cache_instances_worker_states(session, instances, [worker])
 
     async def update_impacted_instance_states_to_unreachable(
         self,

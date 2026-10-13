@@ -1859,9 +1859,12 @@ def test_sync_workload_failed_with_restart_on_error_disabled_parks_in_error():
     )
 
 
-def test_sync_workload_missing_restarts_and_tolerates_absent_workload():
+@pytest.mark.parametrize(
+    "state", [CacheServiceStateEnum.RUNNING, CacheServiceStateEnum.UNREACHABLE]
+)
+def test_sync_workload_missing_restarts_and_tolerates_absent_workload(state):
     manager, clientset = _build_manager(worker_id=1)
-    instance = _new_instance(state=CacheServiceStateEnum.RUNNING, port=40001)
+    instance = _new_instance(state=state, port=40001)
     clientset.cache_service_instances.list.return_value = SimpleNamespace(
         items=[instance]
     )
@@ -2033,11 +2036,12 @@ def test_sync_ready_probe_keeps_restart_count_within_stable_window():
     update.assert_not_called()
 
 
-def test_sync_ready_tcp_probe_marks_running_healthy():
+@pytest.mark.parametrize(
+    "state", [CacheServiceStateEnum.STARTING, CacheServiceStateEnum.UNREACHABLE]
+)
+def test_sync_ready_tcp_probe_marks_running_healthy(state):
     manager, clientset = _build_manager(worker_id=1)
-    instance = _new_instance(
-        state=CacheServiceStateEnum.STARTING, ports={"port": 40001}
-    )
+    instance = _new_instance(state=state, ports={"port": 40001})
     clientset.cache_service_instances.list.return_value = SimpleNamespace(
         items=[instance]
     )
