@@ -748,7 +748,9 @@ class SGLangServer(InferenceServer):
 def _supports_ngram_match_window(backend_version: Optional[str]) -> bool:
     """Whether SGLang still has the n-gram match-window flags (removed in 0.5.10).
 
-    Unknown or unparseable versions are treated as unsupported.
+    Unknown or unparseable versions are treated as unsupported. This uses
+    packaging.version rather than compare_versions, which orders 0.5.10rc0 after 0.5.10
+    although that prerelease still has the flags.
     """
     if backend_version is None:
         return False
