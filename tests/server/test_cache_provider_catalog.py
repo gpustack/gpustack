@@ -659,6 +659,7 @@ def test_lmcache_l2_declaration():
     assert set(fs_fields) == {
         "base_path",
         "max_capacity_gb",
+        "auto_cleanup",
         "num_workers",
         "use_odirect",
     }
@@ -668,13 +669,15 @@ def test_lmcache_l2_declaration():
     # the mirrored deployment mounts from the host
     assert fs_fields["base_path"].default == "/var/lib/gpustack/cache/lmcache/l2"
     assert fs_fields["max_capacity_gb"].type == "number"
+    assert fs_fields["auto_cleanup"].type == "boolean"
+    assert fs_fields["auto_cleanup"].default is True
     assert fs_fields["num_workers"].type == "number"
     assert fs_fields["use_odirect"].type == "boolean"
     # the backend description covers the path and the cap; the two knobs
     # whose effect a label cannot carry explain themselves
     assert fs_fields["num_workers"].description
     assert fs_fields["use_odirect"].description
-    # fs_native fields all ride in the adapter JSON.
+    # Filesystem settings do not need environment variables.
     assert all(field.env_name is None for field in fs.fields)
 
     resp = provider.l2_backends["resp"]
@@ -685,11 +688,14 @@ def test_lmcache_l2_declaration():
         "username",
         "password",
         "max_capacity_gb",
+        "auto_cleanup",
     }
     assert resp_fields["host"].required is True
     assert resp_fields["port"].required is True
     assert resp_fields["port"].type == "number"
     assert resp_fields["max_capacity_gb"].type == "number"
+    assert resp_fields["auto_cleanup"].type == "boolean"
+    assert resp_fields["auto_cleanup"].default is True
     # Credentials reach the server via env, keeping them off the command line.
     assert resp_fields["username"].env_name == "LMCACHE_RESP_USERNAME"
     assert resp_fields["password"].type == "password"
@@ -704,17 +710,92 @@ def test_lmcache_l2_declaration():
         "aws_secret_access_key",
         "disable_tls",
         "max_capacity_gb",
+        "auto_cleanup",
     }
     # Virtual-hosted addressing needs both pieces to sign requests.
     assert s3_fields["s3_endpoint"].required is True
     assert s3_fields["s3_region"].required is True
     assert s3_fields["disable_tls"].type == "boolean"
     assert s3_fields["max_capacity_gb"].type == "number"
+    assert s3_fields["auto_cleanup"].type == "boolean"
+    assert s3_fields["auto_cleanup"].default is True
     # Credentials ride in env (resolved via the boto3 default chain),
     # keeping them off the command line like the resp backend's.
     assert s3_fields["aws_access_key_id"].env_name == "AWS_ACCESS_KEY_ID"
     assert s3_fields["aws_secret_access_key"].type == "password"
     assert s3_fields["aws_secret_access_key"].env_name == "AWS_SECRET_ACCESS_KEY"
+
+
+@pytest.mark.parametrize(
+    "cleanup_params, enabled",
+    [({}, True), ({"auto_cleanup": True}, True), ({"auto_cleanup": False}, False)],
+)
+@pytest.mark.parametrize(
+    "capacity_params",
+    [
+        {},
+        {"max_capacity_gb": None},
+        {"max_capacity_gb": ""},
+        {"max_capacity_gb": 0},
+        {"max_capacity_gb": 40},
+    ],
+)
+@pytest.mark.parametrize(
+    "backend, backend_params, credentials, expected_env",
+    [
+        ("fs_native", {"base_path": "/data/l2"}, {}, {}),
+        (
+            "resp",
+            {"host": "cache", "port": 6379},
+            {"username": "test-user", "password": "test-password"},
+            {
+                "LMCACHE_RESP_USERNAME": "test-user",
+                "LMCACHE_RESP_PASSWORD": "test-password",
+            },
+        ),
+        (
+            "s3",
+            {"s3_endpoint": "cache.s3.example.com", "s3_region": "us-east-1"},
+            {"aws_access_key_id": "test-key", "aws_secret_access_key": "test-secret"},
+            {"AWS_ACCESS_KEY_ID": "test-key", "AWS_SECRET_ACCESS_KEY": "test-secret"},
+        ),
+    ],
+)
+def test_lmcache_l2_auto_cleanup(
+    cleanup_params,
+    enabled,
+    capacity_params,
+    backend,
+    backend_params,
+    credentials,
+    expected_env,
+):
+    provider = _asset_provider("LMCache")
+    params = {**backend_params, **credentials, **capacity_params, **cleanup_params}
+
+    args, env = render_l2_adapter(provider, backend, params)
+
+    expected = {"type": backend, **backend_params}
+    if capacity_params.get("max_capacity_gb") not in (None, ""):
+        expected.update(capacity_params)
+    if enabled:
+        # LMCache supplies the L2 watermark and ratio independently of L1.
+        expected["eviction"] = {"eviction_policy": "LRU"}
+    assert args[0] == "--l2-adapter"
+    assert json.loads(args[1]) == expected
+    assert env == expected_env
+
+
+@pytest.mark.parametrize("backend", ["fs_native", "resp", "s3"])
+def test_lmcache_l2_cleanup_is_independent_per_adapter(backend):
+    provider = _asset_provider("LMCache")
+    enabled_args, _ = render_l2_adapter(provider, backend, {"max_capacity_gb": 40})
+    disabled_args, _ = render_l2_adapter(provider, backend, {"auto_cleanup": False})
+    default_args, _ = render_l2_adapter(provider, backend, {})
+
+    assert json.loads(enabled_args[1])["eviction"] == {"eviction_policy": "LRU"}
+    assert "eviction" not in json.loads(disabled_args[1])
+    assert json.loads(default_args[1])["eviction"] == {"eviction_policy": "LRU"}
 
 
 def test_meshfusion_provider_is_a_branded_lmcache_clone():

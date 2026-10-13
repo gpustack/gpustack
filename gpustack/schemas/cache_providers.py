@@ -412,6 +412,21 @@ class CacheProviderL2Field(BaseModel):
     (host:port or URL) for this storage backend, added to the service's
     scrape targets. Never rendered into the adapter JSON or env."""
 
+    enabled_adapter_options: Optional[Dict[str, Any]] = None
+    """For a boolean field, top-level adapter JSON options emitted only
+    when enabled, instead of emitting the field name and boolean value."""
+
+    @model_validator(mode="after")
+    def _validate_enabled_adapter_options(self):
+        if self.enabled_adapter_options is not None and (
+            self.type != "boolean" or self.env_name or self.metrics_target
+        ):
+            raise ValueError(
+                "enabled_adapter_options requires a boolean field without "
+                "env_name or metrics_target"
+            )
+        return self
+
 
 class CacheProviderL2Backend(BaseModel):
     """A storage backend the provider's L2 adapter can spill KV cache to."""
@@ -1542,6 +1557,10 @@ def _render_l2_adapter_fields(
         if value is None or value == "":
             continue
         value = _coerce_l2_field_value(field, value)
+        if field.enabled_adapter_options is not None:
+            if value:
+                adapter.update(field.enabled_adapter_options)
+            continue
         if field.env_name:
             env[field.env_name] = str(value)
             continue
