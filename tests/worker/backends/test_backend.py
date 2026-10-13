@@ -517,8 +517,8 @@ def test_sglang_diffusion_checks_only_known_backend_versions(
 )
 @pytest.mark.parametrize(
     "min_length, max_length",
-    [(2, 4), (2, None), (None, 4), (None, None)],
-    ids=["both-bounds", "min-only", "max-only", "unbounded"],
+    [(2, 4), (2, None), (None, 4), (None, None), (0, 0)],
+    ids=["both-bounds", "min-only", "max-only", "unbounded", "zero-bounds"],
 )
 def test_sglang_ngram_match_length_arguments(
     backend_version, supports_bounds, min_length, max_length
@@ -537,7 +537,7 @@ def test_sglang_ngram_match_length_arguments(
     )
     backend._pretrained_config = types.SimpleNamespace(architectures=[])
 
-    if (min_length is not None or max_length is not None) and not supports_bounds:
+    if (min_length or max_length) and not supports_bounds:
         with pytest.raises(ValueError) as exc:
             backend._get_speculative_arguments()
         message = str(exc.value)
@@ -553,9 +553,9 @@ def test_sglang_ngram_match_length_arguments(
         "--speculative-num-draft-tokens",
         "8",
     ]
-    if max_length is not None:
+    if max_length:
         expected.extend(["--speculative-ngram-max-match-window-size", str(max_length)])
-    if min_length is not None:
+    if min_length:
         expected.extend(["--speculative-ngram-min-match-window-size", str(min_length)])
     expected.extend(["--speculative-num-steps", "5", "--speculative-eagle-topk", "4"])
     assert backend._get_speculative_arguments() == expected
