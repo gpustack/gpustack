@@ -259,6 +259,44 @@ async def test_an_up_to_date_route_is_left_alone(db):
 
 
 @pytest.mark.asyncio
+async def test_plugin_derived_meta_keys_survive_the_sync(db):
+    """The LB plugin's ``lb_mode`` is server-derived state persisted on the
+    route row — model.meta never carries it, so the wholesale meta replace
+    dropped it on every Model event and the next reconcile restored it. The
+    UI read that gap as the Route By field flickering to a stale value."""
+    await db.seed(
+        _model(),
+        _route(
+            meta={"lb": {"health": {"unhealthy_threshold": 3}}, "lb_mode": "weighted"}
+        ),
+        _target(),
+    )
+
+    model = await _as_reconcile_does(db, 1)
+    await sync_categories_and_meta(db, model, _updated(model))
+
+    meta = (await ModelRoute.one_by_id(db, 1)).meta
+    assert meta["lb_mode"] == "weighted"
+    assert meta["lb"] == {"health": {"unhealthy_threshold": 3}}
+
+
+@pytest.mark.asyncio
+async def test_model_meta_cannot_forge_a_derived_key(db):
+    """A plugin-owned key in model.meta is ordinary user data, not plugin
+    state — it must not override the route row's derived value."""
+    await db.seed(
+        _model(meta={"max_model_len": 8192, "lb_mode": "scoring"}),
+        _route(meta={"lb_mode": "weighted"}),
+        _target(),
+    )
+
+    model = await _as_reconcile_does(db, 1)
+    await sync_categories_and_meta(db, model, _updated(model))
+
+    assert (await ModelRoute.one_by_id(db, 1)).meta["lb_mode"] == "weighted"
+
+
+@pytest.mark.asyncio
 async def test_a_deletion_syncs_nothing(db):
     """The model row may already be gone; writing its categories anywhere would
     be writing a tombstone's opinion."""

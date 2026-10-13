@@ -48,6 +48,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    Tuple,
     Type,
 )
 
@@ -165,6 +166,12 @@ class RoutePlugin(ABC):
         decides internally what counts as a real change (the LB
         plugin's "candidates only follow topology" rule lives in its
         implementation, not here)."""
+
+    # Meta keys the plugin owns on the ``ModelRoute.meta`` row beyond its
+    # registered name. A plugin that derives server-side state into the
+    # shared meta column (the LB plugin's ``lb_mode``) lists it here so the
+    # model-metadata sync carries it over instead of clobbering it.
+    route_meta_keys: ClassVar[Tuple[str, ...]] = ()
 
     # ---- CRUD hooks ----
     # ``section`` is the plugin's own slice of the request body — the

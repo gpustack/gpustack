@@ -22,6 +22,7 @@ from gpustack.routes.plugins.registry import (
     enrich_targets,
     get_route_plugin,
     register_route_plugin,
+    route_plugin_meta_keys,
     route_plugins,
 )
 
@@ -38,6 +39,7 @@ __all__ = [
     "enrich_targets",
     "get_route_plugin",
     "register_route_plugin",
+    "route_plugin_meta_keys",
     "route_plugins",
 ]
 

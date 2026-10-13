@@ -17,7 +17,7 @@ running server.
 
 import logging
 from importlib.metadata import entry_points
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
@@ -34,6 +34,19 @@ ENTRY_POINT_GROUP = "gpustack.route_plugins"
 
 _REGISTRY: Dict[str, RoutePlugin] = {}
 _entry_points_loaded = False
+
+
+def route_plugin_meta_keys() -> Set[str]:
+    """Every meta key plugins own on ``ModelRoute.meta`` rows: their
+    registered names plus the derived keys they declare via
+    ``route_meta_keys``. Callers that merge or filter meta against
+    client input or responses use this set, so a plugin declaring a new
+    derived key is protected everywhere at once."""
+    return {
+        key
+        for plugin in route_plugins()
+        for key in (plugin.name, *plugin.route_meta_keys)
+    }
 
 
 def register_route_plugin(plugin: RoutePlugin) -> RoutePlugin:
@@ -306,6 +319,7 @@ __all__ = [
     "enrich_targets",
     "get_route_plugin",
     "register_route_plugin",
+    "route_plugin_meta_keys",
     "route_plugin_sections",
     "route_plugins",
 ]

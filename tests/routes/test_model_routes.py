@@ -1097,15 +1097,20 @@ def test_strip_plugin_meta_keys_hoists_lb_mode_everywhere():
 
 def test_merge_meta_update_preserves_plugin_keys_and_clears():
     # An explicit meta update — even a None "clear everything" — keeps
-    # the plugin-owned keys from the stored row (responses hide them, so
-    # a round-tripped or clearing request cannot delete a policy); the
-    # derived lb_mode never reaches the row.
+    # the plugin-owned keys (policy sections and derived state alike)
+    # from the stored row: responses hide them, so a round-tripped or
+    # clearing request cannot delete a policy, and a forged derived
+    # value never reaches the row.
     existing = {"lb": {"enabled": True}, "note": "old", "lb_mode": "weighted"}
     assert model_routes._merge_meta_update(existing, {"note": "new"}) == {
         "note": "new",
         "lb": {"enabled": True},
+        "lb_mode": "weighted",
     }
-    assert model_routes._merge_meta_update(existing, None) == {"lb": {"enabled": True}}
+    assert model_routes._merge_meta_update(existing, None) == {
+        "lb": {"enabled": True},
+        "lb_mode": "weighted",
+    }
     assert model_routes._merge_meta_update(None, {"lb_mode": "weighted"}) == {}
     assert model_routes._merge_meta_update(None, {"lb_mode": "scoring", "a": 1}) == {
         "a": 1
