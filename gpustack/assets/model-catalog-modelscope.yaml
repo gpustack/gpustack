@@ -503,7 +503,6 @@ model_sets:
       source: model_scope
       model_scope_model_id: Eco-Tech/Qwen3.8-27B-w8a8
       backend: vLLM
-      image_name: quay.io/ascend/vllm-ascend:v0.30.0rc1
       env:
         HCCL_BUFFSIZE: "512"
       backend_parameters:
@@ -1150,7 +1149,6 @@ model_sets:
       source: model_scope
       model_scope_model_id: Eco-Tech/GLM-5.3-Flash-w8a8
       backend: vLLM
-      image_name: quay.io/ascend/vllm-ascend:v0.30.0rc1
       env:
         VLLM_USE_V2_MODEL_RUNNER: "0"
         VLLM_ENGINE_READY_TIMEOUT_S: "3600"
@@ -1162,6 +1160,7 @@ model_sets:
         - --trust-remote-code
         - --quantization=ascend
         - --enable-expert-parallel
+        - --distributed-executor-backend=mp
         - --reasoning-parser=glm45
         - --tool-call-parser=glm47
         - --enable-auto-tool-choice
@@ -1209,7 +1208,6 @@ model_sets:
       source: model_scope
       model_scope_model_id: Eco-Tech/GLM-5.3-w8a8c8
       backend: vLLM
-      image_name: quay.io/ascend/vllm-ascend:v0.30.0rc1
       env:
         VLLM_ENGINE_READY_TIMEOUT_S: "3600"
         VLLM_RPC_TIMEOUT: "360000"
@@ -1756,7 +1754,6 @@ model_sets:
       source: model_scope
       model_scope_model_id: Eco-Tech/DeepSeek-V4.1-Flash-w8a8
       backend: vLLM
-      image_name: quay.io/ascend/vllm-ascend:v0.30.0rc1
       env:
         VLLM_USE_V2_MODEL_RUNNER: "0"
         VLLM_ENGINE_READY_TIMEOUT_S: "3600"
@@ -1765,6 +1762,7 @@ model_sets:
         - --trust-remote-code
         - --quantization=ascend
         - --enable-expert-parallel
+        - --distributed-executor-backend=mp
         - --tokenizer-mode=deepseek_v41
         - --reasoning-parser=deepseek_v41
         - --tool-call-parser=deepseek_v41

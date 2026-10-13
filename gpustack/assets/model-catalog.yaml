@@ -481,7 +481,6 @@ model_sets:
       source: huggingface
       huggingface_repo_id: Qwen/Qwen3.8-27B
       backend: vLLM
-      image_name: quay.io/ascend/vllm-ascend:v0.30.0rc1
       env:
         HCCL_BUFFSIZE: "512"
       backend_parameters:
