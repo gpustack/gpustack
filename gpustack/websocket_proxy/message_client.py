@@ -10,6 +10,7 @@ import uuid
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 from typing import List, Optional
+from gpustack.ssl_context import make_ssl_context
 from .connection_manager import ClientConnectionManager
 from .message import (
     BaseClientInfo,
@@ -79,9 +80,15 @@ class MessageClient:
                     self.server_uri,
                     proxy=None,
                     additional_headers=headers,
+                    ssl=(
+                        make_ssl_context()
+                        if self.server_uri.startswith('wss://')
+                        else None
+                    ),
                 )
                 logger.debug(
-                    f"[Client] Connected to {self.server_uri} with client_id: {self._client_info.client_id}"
+                    f"[Client] Connected to {self.server_uri} "
+                    f"with client_id: {self._client_info.client_id}"
                 )
                 connection_manager = ClientConnectionManager(self._websocket)
                 reconnect_delay = (
