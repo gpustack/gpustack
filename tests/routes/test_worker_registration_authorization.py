@@ -15,13 +15,19 @@ from gpustack.schemas.principals import PrincipalType
 from gpustack.schemas.workers import Worker, WorkerCreate, WorkerStatus
 
 
-def _principal(kind):
+def _principal(kind, worker_row_id=20):
     return SimpleNamespace(
         id=None if kind == "server" else 10,
         name="system/worker/audit",
         kind=PrincipalType.USER if kind in ("admin", "user") else PrincipalType.SYSTEM,
         is_admin=kind == "admin",
-        worker=SimpleNamespace(cluster_id=100) if kind == "worker" else None,
+        # id 20 links the principal to its own worker row (the one the
+        # reregistration fixtures below match by name).
+        worker=(
+            SimpleNamespace(cluster_id=100, id=worker_row_id)
+            if kind == "worker"
+            else None
+        ),
         cluster=SimpleNamespace(id=100) if kind == "cluster" else None,
     )
 
@@ -154,3 +160,31 @@ def test_registration_requires_target_cluster(registration, principal_kind):
 
     assert response.status_code == 403
     registration.open_session.assert_not_called()
+
+
+def test_registration_cannot_reregister_another_workers_record(registration):
+    # Cluster scope alone does not authorize a worker credential to adopt
+    # a record it can name (by uuid, or by name plus the self-reported
+    # existence-check label): the matched record must be its own.
+    registration.app.dependency_overrides[get_current_user] = lambda: _principal(
+        "worker", worker_row_id=999
+    )
+    cluster = Cluster(id=100, name="test-cluster", provider=ClusterProvider.Docker)
+    registration.get_cluster.return_value = cluster
+    worker = Worker.model_validate(
+        {
+            **_payload(100, True),
+            "id": 20,
+            "token": "synthetic-worker-token",
+            "system_principal_id": 30,
+        }
+    )
+    registration.list_workers.return_value = [worker]
+    registration.get_worker.return_value = worker
+    registration.get_principal.return_value = SimpleNamespace(api_keys=[object()])
+
+    with TestClient(registration.app) as client:
+        response = client.post("/v2/workers", json=_payload(100, True))
+
+    assert response.status_code == 403
+    registration.persist.assert_not_awaited()

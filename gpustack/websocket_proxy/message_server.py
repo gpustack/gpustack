@@ -87,21 +87,24 @@ def _valid_socket_claim(path: str) -> bool:
     return path.startswith(UNIX_SOCKET_PREFIXES)
 
 
-def _cidr_covers_authorized_address(cidr: str, authorized_addresses: List[str]) -> bool:
-    """Whether ``cidr`` covers at least one of the client's authorized addresses.
+def _authorized_host_route(cidr: str, authorized_addresses: List[str]) -> bool:
+    """Whether ``cidr`` is the host route of one of the client's authorized addresses.
 
-    A worker registers the routes it serves, and every route it serves is
-    reachable from one of its own addresses, so a claim that covers none of
-    them is an attempt to capture someone else's traffic.
+    Workers only ever register their own address as a /32 (or /128).
+    Restricting authorized claims to exactly that keeps one worker from
+    registering a subnet that overlaps another worker's routes — under
+    longest-prefix match the more specific claim would then receive the
+    overlapped traffic. Subnet claims stay legal in the generic protocol
+    module (no authorized addresses); only the production wiring passes
+    them in.
     """
     try:
         network = ipaddress.ip_network(cidr, strict=False)
-        for address in authorized_addresses:
-            if ipaddress.ip_address(address) in network:
-                return True
     except ValueError:
         return False
-    return False
+    if network.prefixlen != network.max_prefixlen:
+        return False
+    return str(network.network_address) in authorized_addresses
 
 
 def _invalid_client_claims(client_info: 'RegisteredClientInfo') -> List[str]:
@@ -546,9 +549,10 @@ class MessageServerHandler:
 
         ``authorized_addresses`` are the addresses the authenticated client is
         allowed to register routes for (a worker's own ``ip`` /
-        ``advertise_address``). When provided, every claimed CIDR must cover
-        one of them. It is ``None`` for unauthenticated deployments, where
-        only the generic claim policy applies.
+        ``advertise_address``). When provided, every claimed CIDR must be the
+        host route of one of them. It is ``None`` for unauthenticated
+        deployments, where only the generic claim policy (which also permits
+        subnet claims) applies.
         """
         # Accept first — if the handshake fails nothing needs cleanup.
         await websocket.accept()
@@ -560,7 +564,7 @@ class MessageServerHandler:
             invalid += [
                 cidr
                 for cidr in client_info.cidrs
-                if not _cidr_covers_authorized_address(cidr, authorized_addresses)
+                if not _authorized_host_route(cidr, authorized_addresses)
             ]
         if invalid:
             logger.warning(
@@ -727,12 +731,18 @@ def _authenticated_worker_addresses(websocket: WebSocket) -> Optional[List[str]]
     ``BearerTokenAuthenticator`` stores the resolved user on the websocket
     scope; the worker on it is the identity the bearer token was checked
     against, so its own addresses are the only routes it may claim.
+
+    Returns ``None`` only when the connection carries no authenticated
+    worker (standalone deployment). An authenticated worker with no
+    reported addresses gets an empty list instead: falling back to
+    ``None`` would disable the address check entirely and re-open the
+    generic protocol policy (subnet claims) to it.
     """
     user = websocket.scope.get("user")
     worker = getattr(user, "worker", None)
     if worker is None:
         return None
-    addresses = [
+    return [
         address
         for address in (
             getattr(worker, "ip", None),
@@ -740,7 +750,6 @@ def _authenticated_worker_addresses(websocket: WebSocket) -> Optional[List[str]]
         )
         if address
     ]
-    return addresses or None
 
 
 router = APIRouter()

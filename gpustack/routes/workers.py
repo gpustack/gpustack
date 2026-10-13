@@ -337,6 +337,12 @@ def update_worker_data(
                     **worker_in.labels,
                 },
                 "cluster_id": existing.cluster_id,
+                # worker_uuid is server-assigned identity and the route
+                # ownership key in the proxy plane. A re-registration may
+                # look a record up by it, but the reported value must never
+                # be written back: overwriting it would let one worker
+                # adopt another worker's registrations.
+                "worker_uuid": existing.worker_uuid,
                 # Re-sync from cluster in case org ownership changed.
                 "owner_principal_id": (
                     cluster.owner_principal_id
@@ -439,6 +445,30 @@ def get_existing_worker(
             return existing_worker
 
     return None
+
+
+def check_existing_worker_ownership(user: Principal, existing_worker: Optional[Worker]):
+    """A re-registration may only update the caller's own worker record.
+
+    ``get_existing_worker`` matches caller-supplied keys (external_id,
+    worker_uuid, name + the self-reported existence-check label); none of
+    them proves the matched record belongs to the caller, so a worker
+    credential could otherwise adopt -- and overwrite -- any record it can
+    name. Platform admins, server tokens and cluster credentials keep
+    cross-worker authority (their scope was resolved beforehand).
+    """
+    if existing_worker is None:
+        return
+    if user.is_admin or is_server_token_principal(user):
+        return
+    if user.worker is None:
+        # Cluster-scoped credential, allowed for this cluster's workers by
+        # _resolve_create_worker_cluster_id.
+        return
+    if existing_worker.id != user.worker.id:
+        raise ForbiddenException(
+            message="Cannot re-register a worker record other than your own"
+        )
 
 
 def check_worker_name_conflict(
@@ -643,6 +673,7 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
         async with async_session() as session:
             all_workers = await Worker.all_by_fields(session, {"deleted_at": None})
             existing_worker = get_existing_worker(cluster_id, worker_in, all_workers)
+            check_existing_worker_ownership(user, existing_worker)
             check_worker_name_conflict(
                 worker_in.name,
                 all_workers,
@@ -792,7 +823,14 @@ async def create_worker_status(user: CurrentUserDep, input: WorkerStatusStored):
     # in-memory worker holding an untyped dict, which triggers
     # PydanticSerializationUnexpectedValue warnings when it is later serialized for
     # watch events / the API response (issue #5751).
-    input_dict = {key: getattr(input, key) for key in input.model_fields_set}
+    # worker_uuid is identity assigned by the server at registration; the
+    # worker client echoes it back on every status sync. Accept the field
+    # for compatibility but never let a status report rewrite it.
+    input_dict = {
+        key: getattr(input, key)
+        for key in input.model_fields_set
+        if key != "worker_uuid"
+    }
     input_dict["heartbeat_time"] = heartbeat_time
 
     # Add worker status to buffer for batch update

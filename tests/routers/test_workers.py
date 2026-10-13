@@ -5,12 +5,13 @@ import pytest
 
 from gpustack.api.exceptions import ForbiddenException, NotFoundException
 from gpustack.routes.workers import (
+    check_existing_worker_ownership,
     delete_worker,
     get_worker_privatekey,
     update_worker,
     update_worker_data,
 )
-from gpustack.schemas.principals import OrgRole
+from gpustack.schemas.principals import OrgRole, PrincipalType
 from gpustack.schemas.workers import (
     Worker,
     WorkerCreate,
@@ -494,3 +495,119 @@ async def test_worker_list_batches_allocations_for_visible_workers(monkeypatch):
     assert [
         worker.model_dump()["status"]["memory"]["allocated"] for worker in result.items
     ] == [10, 20]
+
+
+def _registration_record(worker_id, worker_uuid):
+    return Worker(
+        id=worker_id,
+        name='worker-%d' % worker_id,
+        cluster_id=1,
+        hostname='host-%d' % worker_id,
+        ip='10.0.0.%d' % worker_id,
+        ifname='eth0',
+        port=8080,
+        worker_uuid=worker_uuid,
+        status=WorkerStatus.get_default_status(),
+    )
+
+
+def _worker_user(worker_id):
+    worker = SimpleNamespace(id=worker_id)
+    return SimpleNamespace(
+        is_admin=False,
+        worker=worker,
+        cluster=None,
+        kind=PrincipalType.SYSTEM,
+        id=1,
+        name='system-worker',
+    )
+
+
+def test_re_registration_cannot_rewrite_worker_uuid():
+    # A re-registration may carry any worker_uuid (legacy lookup echo, or a
+    # forged one): the stored identity must survive the merge untouched.
+    existing = _registration_record(1, 'own-uuid')
+    worker_in = WorkerCreate(
+        name='worker-1',
+        hostname='host-1',
+        ip='10.0.0.5',
+        ifname='eth0',
+        port=8080,
+        worker_uuid='victim-uuid',
+        cluster_id=1,
+        status=WorkerStatus.get_default_status(),
+    )
+
+    merged = update_worker_data(worker_in, existing=existing)
+
+    assert merged.worker_uuid == 'own-uuid'
+
+
+def test_re_registration_heals_dirty_local_uuid():
+    # A worker whose data dir holds a uuid from another server reports it,
+    # no record matches, and the record it does find keeps its own uuid;
+    # the registration response then overwrites the local file.
+    existing = _registration_record(1, 'server-assigned-uuid')
+    worker_in = WorkerCreate(
+        name='worker-1',
+        hostname='host-1',
+        ip='10.0.0.1',
+        ifname='eth0',
+        port=8080,
+        worker_uuid='stale-uuid-from-other-server',
+        cluster_id=1,
+        status=WorkerStatus.get_default_status(),
+    )
+
+    merged = update_worker_data(worker_in, existing=existing)
+
+    assert merged.worker_uuid == 'server-assigned-uuid'
+
+
+def test_re_registration_of_own_record_is_allowed():
+    user = _worker_user(worker_id=1)
+    record = _registration_record(1, 'own-uuid')
+
+    check_existing_worker_ownership(user, record)
+
+
+def test_re_registration_of_another_workers_record_is_forbidden():
+    # get_existing_worker matches caller-supplied keys (uuid, name plus a
+    # self-reported label); none of them proves ownership, so a worker
+    # credential must not be able to adopt a record it can name.
+    user = _worker_user(worker_id=2)
+    record = _registration_record(1, 'victim-uuid')
+
+    with pytest.raises(ForbiddenException):
+        check_existing_worker_ownership(user, record)
+
+
+@pytest.mark.parametrize(
+    'user',
+    [
+        SimpleNamespace(
+            is_admin=True,
+            worker=None,
+            cluster=None,
+            kind=PrincipalType.USER,
+            id=1,
+            name='admin',
+        ),
+        SimpleNamespace(
+            is_admin=False,
+            worker=None,
+            cluster=SimpleNamespace(id=1),
+            kind=PrincipalType.SYSTEM,
+            id=2,
+            name='system-cluster',
+        ),
+    ],
+)
+def test_cross_worker_authority_may_re_register_any_record(user):
+    record = _registration_record(1, 'some-uuid')
+
+    check_existing_worker_ownership(user, record)
+
+
+def test_no_existing_record_is_always_allowed():
+    check_existing_worker_ownership(_worker_user(worker_id=1), None)

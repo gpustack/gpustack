@@ -17,6 +17,7 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+
 import pytest
 
 from gpustack.websocket_proxy import message_server
@@ -193,11 +194,12 @@ class _WorkerAuthenticator:
 
     Mirrors what ``BearerTokenAuthenticator`` does in production: the
     authenticated worker is stored on the websocket scope and is the
-    identity every claim is validated against.
+    identity every claim is validated against. ``ip=None`` models a
+    worker that reported no address.
     """
 
-    def __init__(self, ip: str):
-        self.worker = SimpleNamespace(ip=ip, advertise_address=None)
+    def __init__(self, ip=None):
+        self.worker = SimpleNamespace(ip=ip or "", advertise_address=None)
 
     async def authenticate(self, websocket) -> bool:
         websocket.scope["user"] = SimpleNamespace(worker=self.worker)
@@ -277,6 +279,79 @@ class TestRouteOwnership:
 
         assert handler.client_registry == {}
         attacker_ws.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "cidrs",
+        [
+            ["10.0.0.0/25"],
+            ["10.0.0.0/24"],
+            ["10.0.0.8/31"],
+        ],
+    )
+    async def test_worker_subnet_claim_is_rejected_in_production_wiring(self, cidrs):
+        # Even a subnet that covers the worker's own address is rejected:
+        # a more specific claim inside another worker's subnet would win
+        # longest-prefix match and steal the overlapped traffic. Subnet
+        # claims are only legal in the generic protocol module.
+        handler = _handler()
+        handler._server_info_getter = lambda websocket: None
+
+        worker_id = uuid.uuid4()
+        worker_ws = await _register_through_endpoint(
+            handler,
+            _WorkerAuthenticator(ip="10.0.0.9"),
+            {"x-client-id": str(worker_id), "x-cidrs": ",".join(cidrs)},
+        )
+
+        assert handler.client_registry == {}
+        worker_ws.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_subnet_claim_stays_legal_in_generic_module(self):
+        # The standalone protocol module keeps subnet registration: no
+        # authorized addresses are passed, so only the generic policy
+        # (prefix length / socket allowlist) applies.
+        handler = _handler()
+        client_id = uuid.uuid4()
+        websocket = _websocket({})
+        websocket.receive = AsyncMock(side_effect=[{"type": "websocket.disconnect"}])
+
+        await handler.handle_client_connection(
+            websocket,
+            RegisteredClientInfo(
+                client_id=client_id, cidrs=["10.0.0.0/24"], unix_sockets=[]
+            ),
+        )
+
+        websocket.accept.assert_awaited_once()
+        websocket.close.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "cidrs",
+        [
+            ["10.0.0.0/8"],
+            ["10.0.0.9/32"],
+            ["10.0.0.0/25", "10.0.0.9/32"],
+        ],
+    )
+    async def test_addressless_worker_may_not_claim_any_route(self, cidrs):
+        # An authenticated worker that reported no address must not fall
+        # back to the generic protocol policy (which permits subnets): an
+        # empty authorized list rejects every CIDR claim instead.
+        handler = _handler()
+        handler._server_info_getter = lambda websocket: None
+
+        worker_id = uuid.uuid4()
+        worker_ws = await _register_through_endpoint(
+            handler,
+            _WorkerAuthenticator(ip=None),
+            {"x-client-id": str(worker_id), "x-cidrs": ",".join(cidrs)},
+        )
+
+        assert handler.client_registry == {}
+        worker_ws.close.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_worker_own_address_claim_is_accepted(self):
