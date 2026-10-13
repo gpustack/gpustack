@@ -426,41 +426,36 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                         continue
                     available_vram = allocatable.vram[gpu_index]
                     if self._whole_card_fraction is not None:
-                        # A card that cannot hold its own share is not part of
-                        # this candidate. The sum alone would let a roomy card
-                        # cover a nearly full one, and the distribution below
-                        # then books the full per-card claim against memory the
-                        # ledger says is taken -- admitted here, OOM at startup.
-                        claim = self._vram_claim_on(gpu_device)
-                        if available_vram < claim:
+                        # Each card must have a known total and room for its
+                        # fraction; the weights are shared across the cards.
+                        total = getattr(gpu_device.memory, "total", None)
+                        claim = int((total or 0) * self._whole_card_fraction)
+                        if total is None or available_vram < claim:
                             continue
                         claim_by_index[gpu_index] = claim
                     available_gpus.append((gpu_index, available_vram))
                     total_available_vram += available_vram
 
-                # Per card, not the weights split across them: the fraction is
-                # what each engine rank seizes on the card it runs on, so a
-                # four-way split does not make it a quarter each. Without a
-                # declared fraction there is nothing per-card to claim, and the
-                # weights are split as they always were -- booking the whole
-                # estimate on every card would reserve it N times over.
-                required_vram = (
+                # The combined per-card budgets must cover the weights.
+                # Without a fraction, use the combined allocatable VRAM.
+                total_claim_vram = (
                     sum(claim_by_index.values())
                     if self._whole_card_fraction is not None
-                    else self._vram_claim
+                    else total_available_vram
                 )
 
                 # Check if total VRAM is sufficient
-                if total_available_vram >= required_vram and len(available_gpus) >= 2:
+                if total_claim_vram >= self._vram_claim and len(available_gpus) >= 2:
                     # Check RAM requirement
                     if allocatable.ram >= self._ram_claim:
-                        # Distribute VRAM evenly across GPUs
+                        # Book each card's fraction, or split the weights evenly.
                         gpu_indexes = [gpu[0] for gpu in available_gpus]
                         vram_per_gpu = self._vram_claim // len(gpu_indexes)
-                        vram_distribution = {
-                            idx: max(vram_per_gpu, claim_by_index.get(idx, 0))
-                            for idx in gpu_indexes
-                        }
+                        vram_distribution = (
+                            claim_by_index
+                            if self._whole_card_fraction is not None
+                            else {idx: vram_per_gpu for idx in gpu_indexes}
+                        )
 
                         self._reserved_vram = max(
                             self._reserved_vram, sum(vram_distribution.values())
