@@ -6651,12 +6651,13 @@ async def sync_categories_and_meta(session: AsyncSession, model: Model, event: E
         fields={"created_model_id": model.id, "deleted_at": None},
     )
     # Plugins keep per-route state in meta under their registered names
-    # (the lb base capability). The model-sync wholesale meta replace
-    # would clobber those keys, so they are carried over from the
-    # current row — model metadata owns the rest.
-    from gpustack.routes.plugins import route_plugins
+    # and any extra keys they declare (the lb base capability's derived
+    # ``lb_mode``). The model-sync wholesale meta replace would clobber
+    # those keys, so they are carried over from the current row — model
+    # metadata owns the rest.
+    from gpustack.routes.plugins import route_plugin_meta_keys
 
-    plugin_meta_keys = {p.name for p in route_plugins()}
+    plugin_meta_keys = route_plugin_meta_keys()
     for route in routes:
         merged_meta = {
             # A plugin-named key in model.meta is ordinary user data,
