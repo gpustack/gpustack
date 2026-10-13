@@ -15,6 +15,7 @@ from gpustack.schemas.models import (
     BackendEnum,
     ExtendedKVCacheConfig,
     KVCacheModeEnum,
+    SpeculativeConfig,
 )
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.envs import ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY_ENV as _KNOB
@@ -501,6 +502,63 @@ def test_sglang_diffusion_checks_only_known_backend_versions(
 
     with pytest.raises(expected_error, match=expected_message):
         backend._create_workload(None, None, None, [], {}, "sglang/nightly")
+
+
+@pytest.mark.parametrize(
+    "backend_version, supports_bounds",
+    [
+        ("0.5.9", True),
+        ("0.5.10rc0", True),
+        ("0.5.10", False),
+        ("0.5.21", False),
+        pytest.param(None, False, id="unknown"),
+        pytest.param("custom", False, id="unparseable"),
+    ],
+)
+@pytest.mark.parametrize(
+    "min_length, max_length",
+    [(2, 4), (2, None), (None, 4), (None, None)],
+    ids=["both-bounds", "min-only", "max-only", "unbounded"],
+)
+def test_sglang_ngram_match_length_arguments(
+    backend_version, supports_bounds, min_length, max_length
+):
+    backend = SGLangServer.__new__(SGLangServer)
+    backend._model = types.SimpleNamespace(
+        backend_version=backend_version,
+        backend_parameters=[],
+        speculative_config=SpeculativeConfig(
+            enabled=True,
+            algorithm="ngram",
+            num_draft_tokens=8,
+            ngram_min_match_length=min_length,
+            ngram_max_match_length=max_length,
+        ),
+    )
+    backend._pretrained_config = types.SimpleNamespace(architectures=[])
+
+    if (min_length is not None or max_length is not None) and not supports_bounds:
+        with pytest.raises(ValueError) as exc:
+            backend._get_speculative_arguments()
+        message = str(exc.value)
+        assert message.startswith("SGLang 0.5.10 removed")
+        assert "--speculative-ngram-min-match-window-size" in message
+        assert "--speculative-ngram-max-match-window-size" in message
+        assert f"(backend version: {backend_version or 'unknown'})" in message
+        return
+
+    expected = [
+        "--speculative-algorithm",
+        "NGRAM",
+        "--speculative-num-draft-tokens",
+        "8",
+    ]
+    if max_length is not None:
+        expected.extend(["--speculative-ngram-max-match-window-size", str(max_length)])
+    if min_length is not None:
+        expected.extend(["--speculative-ngram-min-match-window-size", str(min_length)])
+    expected.extend(["--speculative-num-steps", "5", "--speculative-eagle-topk", "4"])
+    assert backend._get_speculative_arguments() == expected
 
 
 CACHE_ENV_BACKENDS = [

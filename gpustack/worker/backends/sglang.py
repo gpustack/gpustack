@@ -3,7 +3,7 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 from gpustack_runtime.detector import ManufacturerEnum
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 from packaging.specifiers import SpecifierSet
 
 from gpustack_runtime.deployer import (
@@ -669,6 +669,18 @@ class SGLangServer(InferenceServer):
                     ]
                 )
 
+            if (
+                speculative_config.ngram_min_match_length
+                or speculative_config.ngram_max_match_length
+            ) and not _supports_ngram_match_window(self._model.backend_version):
+                raise ValueError(
+                    "SGLang 0.5.10 removed --speculative-ngram-min-match-window-size and "
+                    "--speculative-ngram-max-match-window-size, so the n-gram match-length "
+                    f"settings cannot be applied (backend version: "
+                    f"{self._model.backend_version or 'unknown'}). Remove them, or set "
+                    "the backend version of an image older than 0.5.10."
+                )
+
             if speculative_config.ngram_max_match_length:
                 arguments.extend(
                     [
@@ -731,6 +743,19 @@ class SGLangServer(InferenceServer):
         else:
             # The default value for all other models
             return (5, 4)
+
+
+def _supports_ngram_match_window(backend_version: Optional[str]) -> bool:
+    """Whether SGLang still has the n-gram match-window flags (removed in 0.5.10).
+
+    Unknown or unparseable versions are treated as unsupported.
+    """
+    if backend_version is None:
+        return False
+    try:
+        return Version(backend_version) < Version("0.5.10")
+    except InvalidVersion:
+        return False
 
 
 def get_auto_parallelism_arguments(
