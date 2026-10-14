@@ -92,3 +92,28 @@ def test_getsize_counts_file_alias_separately(tmp_path):
 
 def test_getsize_empty_directory(tmp_path):
     assert getsize(str(tmp_path)) == 0
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_getsize_rejects_cycle_with_collapsed_path_components(tmp_path, nested):
+    (tmp_path / "payload").write_bytes(b"weights")
+    first = tmp_path / "first"
+    first.symlink_to("second/../payload")
+    (tmp_path / "second").symlink_to("first")
+
+    if nested:
+        assert getsize(str(tmp_path)) == 7
+    else:
+        with pytest.raises(FileNotFoundError, match="Path does not exist"):
+            getsize(str(first))
+
+
+def test_getsize_valid_relative_link_with_parent_component(tmp_path):
+    (tmp_path / "weights").write_bytes(b"weights")
+    child = tmp_path / "child"
+    child.mkdir()
+    alias = child / "alias"
+    alias.symlink_to("../weights")
+
+    assert getsize(str(alias)) == 7
+    assert getsize(str(tmp_path)) == 14

@@ -178,7 +178,8 @@ def _getsize(path: str, visited: set, cache: dict) -> int:
     real_path = os.path.realpath(path)
 
     if os.path.islink(path):
-        if os.path.islink(real_path):
+        # realpath can collapse unresolved link components into an existing path.
+        if not os.path.exists(path):
             raise FileNotFoundError(f"Path does not exist: {path}")
         return _getsize(real_path, visited, cache)
     elif os.path.isfile(real_path):
