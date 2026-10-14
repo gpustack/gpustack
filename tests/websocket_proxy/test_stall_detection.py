@@ -33,6 +33,11 @@ ERROR_BODY = b'{"error":{"message":"stalled"}}'
 ERROR_SSE = b'data: {"error":{"message":"stalled"}}\n\ndata: [DONE]\n\n'
 
 SSE_HEAD = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+CHUNKED_SSE_HEAD = (
+    b"HTTP/1.1 200 OK\r\n"
+    b"Content-Type: text/event-stream\r\n"
+    b"Transfer-Encoding: chunked\r\n\r\n"
+)
 JSON_HEAD = (
     b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 5\r\n\r\n"
 )
@@ -166,6 +171,55 @@ class TestStallMidStream:
         assert client.body == SSE_HEAD + b"data: one\n\n" + ERROR_SSE
 
     @pytest.mark.asyncio
+    async def test_chunked_stream_stall_is_emitted_with_chunk_framing(self):
+        """A real streaming engine answers with Transfer-Encoding: chunked, so
+        the terminal error event has to arrive as a final data chunk plus the
+        ``0\\r\\n\\r\\n`` terminator -- bare SSE text would be parsed by the
+        client as a malformed chunk size line."""
+        client, _ = await _relay(
+            [
+                (0, CHUNKED_SSE_HEAD),
+                (0, b"b\r\ndata: one\n\n\r\n"),
+                (0, None),
+            ],
+            policy(),
+        )
+
+        framed = b"%x\r\n%s\r\n0\r\n\r\n" % (len(ERROR_SSE), ERROR_SSE)
+        assert client.body == CHUNKED_SSE_HEAD + b"b\r\ndata: one\n\n\r\n" + framed
+
+    @pytest.mark.asyncio
+    async def test_stall_inside_a_partial_chunk_appends_nothing(self):
+        """A chunk whose data was only partly forwarded leaves the client
+        mid-chunk: a size line appended there would become part of that
+        chunk's data, so the stream must simply end."""
+        client, _ = await _relay(
+            [(0, CHUNKED_SSE_HEAD), (0, b"1000\r\ndata: partial"), (0, None)],
+            policy(),
+        )
+
+        assert client.body == CHUNKED_SSE_HEAD + b"1000\r\ndata: partial"
+
+    @pytest.mark.asyncio
+    async def test_completed_chunked_response_is_not_terminated_again(self):
+        """A keep-alive upstream ends the body with the 0-chunk and then goes
+        silent; the relay must stop there instead of waiting out a timeout and
+        appending an error chunk after the response already ended."""
+        client, remote = await _relay(
+            [
+                (0, CHUNKED_SSE_HEAD),
+                (0, b"b\r\ndata: one\n\n\r\n"),
+                (0, b"0\r\n\r\n"),
+                (0, None),
+            ],
+            policy(),
+        )
+
+        assert client.body == (CHUNKED_SSE_HEAD + b"b\r\ndata: one\n\n\r\n0\r\n\r\n")
+        # Returned on the terminator; the trailing stall step is never read.
+        assert len(remote.timeouts) == 3
+
+    @pytest.mark.asyncio
     async def test_inter_chunk_budget_is_in_force(self):
         remote = ScriptedRemote([(0, SSE_HEAD), (0, b"data: one\n\n"), (0, None)])
         client = RecordingClient()
@@ -286,20 +340,29 @@ class TestUnchangedRelayBehavior:
 
 class TestParseResponseHead:
     def test_event_stream_detected_case_insensitively(self):
-        content_length, is_event_stream, status_code = _parse_response_head(
+        content_length, is_event_stream, status_code, is_chunked = _parse_response_head(
             b"HTTP/1.1 200 OK\r\nCONTENT-TYPE: Text/Event-Stream\r\n\r\n"
         )
-        assert (content_length, is_event_stream, status_code) == (None, True, 200)
+        assert (content_length, is_event_stream, status_code, is_chunked) == (
+            None,
+            True,
+            200,
+            False,
+        )
 
     def test_content_length_and_status(self):
-        assert _parse_response_head(JSON_HEAD) == (5, False, 200)
+        assert _parse_response_head(JSON_HEAD) == (5, False, 200, False)
+
+    def test_chunked_transfer_encoding_detected(self):
+        assert _parse_response_head(CHUNKED_SSE_HEAD) == (None, True, 200, True)
+        assert _parse_response_head(LOG_HEAD) == (None, False, 200, True)
 
     def test_malformed_content_length_falls_back_to_streaming(self):
-        content_length, _, status_code = _parse_response_head(
+        content_length, _, status_code, _ = _parse_response_head(
             b"HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\n"
         )
         assert content_length is None
         assert status_code == 200
 
     def test_unparseable_status_line(self):
-        assert _parse_response_head(b"garbage\r\n\r\n") == (None, False, 0)
+        assert _parse_response_head(b"garbage\r\n\r\n") == (None, False, 0, False)
