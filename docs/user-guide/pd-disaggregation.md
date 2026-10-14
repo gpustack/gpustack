@@ -352,5 +352,7 @@ and HMA restrictions.
 - **Prefix-aware routing is used to pick prefill, and not to pick decode.**
   Prefill is where a shared prefix pays off, so the built-in modes route it by
   approximate prefix match; decode holds a request for its whole generation,
-  so it is balanced round-robin to keep the load even. The `vllm-ascend-mooncake`
-  mode keeps the router's own defaults for both.
+  so it is balanced round-robin to distribute requests. All built-in modes,
+  including `vllm-ascend-mooncake`, explicitly set `--prefill-policy cache_aware`
+  and `--decode-policy round_robin`. Override these in the router role's
+  parameters when a different routing policy is needed.

@@ -1060,6 +1060,14 @@ modes:
         - --prometheus-port
         - "{{ports.prometheus}}"
       tunable_args:
+        # Prefix affinity benefits prefill; decode rotates independently
+        # because its prompt KV arrives through the connector.
+        - flag: --prefill-policy
+          default: "cache_aware"
+          options: [random, round_robin, cache_aware, power_of_two, consistent_hash]
+        - flag: --decode-policy
+          default: "round_robin"
+          options: [random, round_robin, cache_aware, power_of_two, consistent_hash]
         # The same two values and the same reasoning as vllm-nixl, including the
         # breaker being inert on this router's PD path. Everything else is left
         # to the router's own defaults, the health check above all.
