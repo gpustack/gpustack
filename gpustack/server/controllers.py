@@ -649,29 +649,6 @@ class ModelInstanceController:
             )
 
 
-def _component_replica_count(
-    spec, provider, config_fields: Optional[Dict[str, Any]]
-) -> int:
-    """The component's replica count: its declared one unless a managed
-    field sizes it (a value below one, or one that is not a number at
-    all, keeps the declaration). The sizing field resolves through its
-    visibility gate, so a count offered only with a feature falls back to
-    the gated default while the feature is off."""
-    count = spec.replicas if spec else 1
-    if spec is None or not spec.replicas_by:
-        return count
-    resolved = resolved_field_values(
-        provider.fields if provider else [], config_fields or {}
-    )
-    configured = resolved.get(spec.replicas_by)
-    try:
-        if configured is not None and int(configured) >= 1:
-            count = int(configured)
-    except (TypeError, ValueError):
-        pass
-    return count
-
-
 def _is_cache_worker_unreachable(worker: Worker) -> bool:
     return not worker.state.is_provisioning and (
         worker.unreachable
@@ -1310,8 +1287,11 @@ class CacheServiceController:
                 desired[component] = {worker_id: 1 for worker_id in matching_ids}
                 continue
 
-            spec = provider.get_component(component) if provider else None
-            count = _component_replica_count(spec, provider, config_fields)
+            count = (
+                provider.component_replica_count(component, config_fields)
+                if provider
+                else 1
+            )
 
             pinned: Set[int] = set()
             if service.worker_id:
@@ -1431,9 +1411,7 @@ class CacheServiceController:
                 for name, requested in (
                     (
                         name,
-                        _component_replica_count(
-                            provider.get_component(name), provider, config_fields
-                        ),
+                        provider.component_replica_count(name, config_fields),
                     )
                     for name in components
                 )
