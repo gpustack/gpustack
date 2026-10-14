@@ -1027,6 +1027,27 @@ class CacheProvider(BaseModel):
             return None
         return self.components.get(name)
 
+    def component_replica_count(
+        self, name: str, config_fields: Optional[Dict[str, Any]]
+    ) -> int:
+        """Resolve replicas through field defaults and visibility gates.
+
+        Missing, nonnumeric, or below-one values keep the component's
+        declared count. An implicit component has one replica.
+        """
+        spec = self.get_component(name)
+        count = spec.replicas if spec else 1
+        if spec is None or not spec.replicas_by:
+            return count
+        resolved = resolved_field_values(self.fields, config_fields or {})
+        configured = resolved.get(spec.replicas_by)
+        try:
+            if configured is not None and int(configured) >= 1:
+                count = int(configured)
+        except (TypeError, ValueError):
+            pass
+        return count
+
     def _port_layout(self, component: Optional[str]) -> CacheProviderComponent:
         """The declaration answering port questions for a component —
         IMPLICIT_COMPONENT for the single process a provider without
