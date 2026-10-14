@@ -88,6 +88,28 @@ def test_the_catalog_router_renders_a_complete_command():
     assert plan.health_path == "/health"
 
 
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "vllm-nixl",
+        "vllm-mooncake",
+        "vllm-ascend-mooncake",
+        "sglang-mooncake",
+        "sglang-nixl",
+    ],
+)
+def test_prefill_reuses_prefixes_and_decode_rotates_workers(mode):
+    """The rendered policies keep prefix affinity on the prefill side."""
+    peers = {
+        "prefill": [PeerAddress("10.0.0.1", 40027, {"bootstrap": 40000})],
+        "decode": [PeerAddress("10.0.0.2", 40028)],
+    }
+    command = render_router(get_pd_mode(mode), VARIABLES, peers).command
+
+    assert command[command.index("--prefill-policy") + 1] == "cache_aware"
+    assert command[command.index("--decode-policy") + 1] == "round_robin"
+
+
 @pytest.mark.parametrize("mode", ["vllm-nixl", "vllm-ascend-mooncake"])
 def test_internal_lb_router_uses_one_http_upstream_per_member(mode):
     plan = render_router(get_pd_mode(mode), VARIABLES, PEERS)
@@ -816,7 +838,8 @@ def test_a_router_env_placeholder_is_rendered_not_passed_through():
     assert plan.env["ADVERTISE"] == "192.168.50.15"
 
 
-def test_the_routers_own_parameters_are_appended_and_the_groups_are_not():
+@pytest.mark.parametrize("mode", ["vllm-nixl", "vllm-ascend-mooncake"])
+def test_the_routers_own_parameters_are_appended_and_the_groups_are_not(mode):
     """Two different things arrive in `backend_parameters` and only one is the
     router's.
 
@@ -829,7 +852,6 @@ def test_the_routers_own_parameters_are_appended_and_the_groups_are_not():
     from gpustack.schemas.models import (
         DisaggregationSpec,
         Model,
-        PDModeEnum,
         RoleSpec,
         SourceEnum,
     )
@@ -841,7 +863,7 @@ def test_the_routers_own_parameters_are_appended_and_the_groups_are_not():
             source=SourceEnum.HUGGING_FACE,
             huggingface_repo_id="org/repo",
             backend_parameters=["--max-model-len=8192"],
-            disaggregation=DisaggregationSpec(mode=PDModeEnum.VLLM_NIXL),
+            disaggregation=DisaggregationSpec(mode=mode),
             roles=[
                 RoleSpec(name="prefill", replicas=1),
                 RoleSpec(name="decode", replicas=1),
