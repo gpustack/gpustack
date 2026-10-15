@@ -128,7 +128,11 @@ from gpustack.envs import (
 )
 from gpustack.server.coordinator import LocalCoordinator
 from gpustack.server.coordinator.cache import preload_cache
-from gpustack.server.coordinator.models import get_model_for_topic
+from gpustack.server.coordinator.models import (
+    external_topics,
+    get_model_for_topic,
+    register_topic,
+)
 from gpustack.server import bus
 from gpustack.server import cache as cache_module
 from alembic import command
@@ -1438,6 +1442,19 @@ class Server:
         self._coordinator = coordinator
         await self._coordinator.start()
 
+        # Register plugin-owned tables for cross-instance event delivery,
+        # before the bus starts. See ``register_topic`` and
+        # ``Plugin.event_topics``.
+        for plugin in getattr(app.state, "extension_plugins", []):
+            try:
+                for topic, model_class in plugin.event_topics().items():
+                    register_topic(topic, model_class)
+            except Exception:
+                logger.exception(
+                    "Failed to register event topics from extension plugin %s",
+                    type(plugin).__name__,
+                )
+
         # Set up bus and cache to use coordinator
         bus.set_coordinator(coordinator)
         await bus.event_bus.start()
@@ -1457,7 +1474,7 @@ class Server:
             "modelroutetarget",
             "workerpool",
             "inferencebackend",
-        ]
+        ] + external_topics()
         async with async_session() as session:
             for topic in topics:
                 model_class = get_model_for_topic(topic)

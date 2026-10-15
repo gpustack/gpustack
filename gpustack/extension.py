@@ -14,7 +14,7 @@ coordinator via the ``coordinator`` attribute.
 
 import logging
 from functools import lru_cache
-from typing import Any, Coroutine, Generator, List, Optional, TYPE_CHECKING, Tuple
+from typing import Any, Coroutine, Generator, List, Optional, TYPE_CHECKING, Tuple, Dict
 
 from fastapi import FastAPI
 
@@ -165,6 +165,23 @@ class Plugin:
         must be a classmethod and must not depend on instance state.
         """
         return []
+
+    @classmethod
+    def event_topics(cls) -> Dict[str, type]:
+        """Register the plugin's own tables for cross-instance events.
+
+        Maps a bus topic (the model's topic name) to its model class.
+        Without a registration, an event published on that topic is
+        delivered to the publishing instance's subscribers only — a
+        controller running on another instance (typically the leader)
+        would never see writes this instance served.
+
+        Collected once at server startup, before the event bus delivers
+        cross-instance events. Registering a topic core already owns is
+        logged and ignored. Still a classmethod, and the model classes
+        must be importable at that point.
+        """
+        return {}
 
     @classmethod
     def cache_provider_assets(cls) -> List[Tuple[str, str]]:
