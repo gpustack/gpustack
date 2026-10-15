@@ -9,6 +9,7 @@ from gpustack.schemas.model_provider import (
     ClaudeConfig,
     ModelProviderCreate,
     ModelProviderTypeEnum,
+    OpenAIConfig,
     ProviderConfigType,
 )
 
@@ -259,6 +260,75 @@ class TestClaudeCustomUrl:
 
         assert clean.ai_proxy_derived_fields()["providerDomain"] == "10.0.0.1:8080"
         assert clean.get_base_url() == "http://10.0.0.1:8080"
+
+
+class TestOpenAICustomUrlBasePath:
+    """A path-prefixed ``openaiCustomUrl`` must prefix every forwarded request.
+
+    ai-proxy's openai provider joins the custom path into its capability map
+    only; anything outside it -- ``/v1/messages/count_tokens``, or
+    ``/v1/messages`` under ``protocol: original`` -- is forwarded on the bare
+    client path and 404s against an endpoint mounted under a prefix. The
+    derived ``providerBasePath`` closes that gap, and never doubles on the
+    mapped paths because the plugin prepends it only when the path does not
+    already start with it.
+    """
+
+    def _openai(self, url: typing.Optional[str] = None) -> OpenAIConfig:
+        return OpenAIConfig(type=ModelProviderTypeEnum.OPENAI, openaiCustomUrl=url)
+
+    def test_unset_or_rooted_urls_derive_nothing(self):
+        # No prefix to prepend: emitting the key anyway would be a no-op in
+        # the plugin and noise in every deployed config's diff.
+        assert self._openai().ai_proxy_derived_fields() == {}
+        assert self._openai("http://10.97.14.52/v1").ai_proxy_derived_fields() == {}
+        assert self._openai("http://10.97.14.52").ai_proxy_derived_fields() == {}
+        # A schemeless URL parses as one long path; the host must not come
+        # back out as the prefix.
+        assert self._openai("10.97.14.52/v1").ai_proxy_derived_fields() == {}
+
+    def test_a_prefix_stripping_the_v1_base_is_derived(self):
+        # The URL is the full API base ending in /v1; the prefix is what
+        # precedes it.
+        config = self._openai("http://10.97.14.52/glm-53/v1")
+
+        assert config.ai_proxy_derived_fields() == {"providerBasePath": "/glm-53"}
+
+    def test_a_trailing_slash_or_deeper_prefix_survives(self):
+        assert self._openai(
+            "http://10.97.14.52/glm-53/v1/"
+        ).ai_proxy_derived_fields() == {"providerBasePath": "/glm-53"}
+        assert self._openai(
+            "http://10.97.14.52/internal/glm-53/v1"
+        ).ai_proxy_derived_fields() == {"providerBasePath": "/internal/glm-53"}
+
+    def test_the_derived_field_reaches_the_ai_proxy_config(self):
+        config = self._openai("http://10.97.14.52/glm-53/v1")
+
+        spec = AIProxyDefaultConfig.model_validate(
+            {
+                "id": "provider-1",
+                "type": config.type,
+                **config.model_dump_with_default_override(),
+            }
+        ).model_dump(exclude_none=True)
+
+        assert spec["providerBasePath"] == "/glm-53"
+        # The plugin reads this field itself; it stays in the config.
+        assert spec["openaiCustomUrl"] == "http://10.97.14.52/glm-53/v1"
+
+    def test_an_explicit_provider_base_path_wins(self):
+        # extra="allow" is the escape hatch for a knob we have not modelled;
+        # a value the operator wrote must not be shadowed by the derived one.
+        config = OpenAIConfig.model_validate(
+            {
+                "type": ModelProviderTypeEnum.OPENAI,
+                "openaiCustomUrl": "http://10.97.14.52/glm-53/v1",
+                "providerBasePath": "/other",
+            }
+        )
+
+        assert config.model_dump_with_default_override()["providerBasePath"] == "/other"
 
 
 class TestProviderConfigDiscrimination:
