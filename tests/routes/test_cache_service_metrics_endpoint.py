@@ -29,6 +29,7 @@ from gpustack.schemas.cache_providers import (
     CacheProviderMetricValue,
 )
 from gpustack.schemas.cache_services import CacheServiceAttachedMetrics
+from gpustack.schemas.models import ExtendedKVCacheConfig, RoleSpec
 from gpustack.schemas.principals import OrgRole, PrincipalType
 from gpustack.server import cache_service_metrics as metrics_module
 from gpustack.server import prometheus_query
@@ -727,7 +728,9 @@ async def test_model_cache_metrics_endpoint_follows_deployment_visibility(monkey
         owner_principal_id=ORG_PRINCIPAL,
         deleted_at=None,
         instances=instances,
-        extended_kv_cache=SimpleNamespace(is_shared=lambda: True),
+        extended_kv_cache=ExtendedKVCacheConfig(
+            enabled=True, mode="shared", cache_service_id=5
+        ),
     )
     collected = AsyncMock(
         return_value=metrics_module.ModelCacheMetricsPublic(available=True)
@@ -837,3 +840,107 @@ async def test_model_cache_metrics_route_says_when_there_is_no_shared_cache(
 
     assert result.available is False
     assert "shared cache" in result.reason
+
+
+def _cache_config(service_id):
+    if service_id is None:
+        return None
+    return ExtendedKVCacheConfig(
+        enabled=service_id != 0, mode="shared", cache_service_id=service_id
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model_cache,prefill_cache,decode_cache,service_roles,model_roles",
+    [
+        (None, 5, None, ["prefill"], ["prefill"]),
+        (0, 5, None, ["prefill"], ["prefill"]),
+        (5, None, 0, ["prefill"], ["prefill"]),
+        (None, 5, 6, ["prefill"], ["decode", "prefill"]),
+        (5, None, None, ["decode", "prefill"], ["decode", "prefill"]),
+        (5, 0, 0, [], []),
+        (5, 6, 6, [], ["decode", "prefill"]),
+    ],
+)
+@pytest.mark.parametrize("workers", [None, "worker-prefill"])
+async def test_cache_metrics_select_instances_by_effective_role(
+    monkeypatch,
+    model_cache,
+    prefill_cache,
+    decode_cache,
+    service_roles,
+    model_roles,
+    workers,
+):
+    model = SimpleNamespace(
+        id=3,
+        name="qwen-pd",
+        cluster_id=1,
+        owner_principal_id=ORG_PRINCIPAL,
+        deleted_at=None,
+        extended_kv_cache=_cache_config(model_cache),
+        roles=[
+            RoleSpec(name="prefill", extended_kv_cache=_cache_config(prefill_cache)),
+            RoleSpec(name="decode", extended_kv_cache=_cache_config(decode_cache)),
+            RoleSpec(name="router"),
+        ],
+        instances=[
+            SimpleNamespace(
+                model_id=3, name=f"qwen-{role}", role=role, worker_name=f"worker-{role}"
+            )
+            for role in ("router", "prefill", "decode", "removed-role")
+        ],
+    )
+    models_query = AsyncMock(return_value=[model])
+    monkeypatch.setattr(cache_services_route.Model, "all_by_fields", models_query)
+    monkeypatch.setattr(
+        cache_services_route.CacheService,
+        "one_by_id",
+        AsyncMock(return_value=_service()),
+    )
+    monkeypatch.setattr(
+        cache_services_route.ModelInstance,
+        "all_by_fields",
+        AsyncMock(return_value=model.instances),
+    )
+    service_collector = AsyncMock()
+    monkeypatch.setattr(
+        cache_services_route, "collect_cache_service_metrics", service_collector
+    )
+    await cache_services_route.get_cache_service_metrics(
+        _request(), MagicMock(), _ctx(OrgRole.OWNER), 5, workers=workers
+    )
+    rows = service_collector.await_args.kwargs["attached"]
+    assert [row.model_instance_name for row in rows] == [
+        f"qwen-{role}"
+        for role in service_roles
+        if workers is None or workers == f"worker-{role}"
+    ]
+    query = models_query.await_args.kwargs
+    assert query["fields"] == {"cluster_id": 1}
+    assert any(
+        "models.owner_principal_id" in str(condition)
+        and ORG_PRINCIPAL in condition.compile().params.values()
+        for condition in query["extra_conditions"]
+    )
+
+    references = await cache_services_route._models_referencing_cache_service(
+        MagicMock(), _service()
+    )
+    assert [item.id for item in references] == ([3] if service_roles else [])
+    assert models_query.await_args.args[1] == {"owner_principal_id": ORG_PRINCIPAL}
+
+    monkeypatch.setattr(models_route.Model, "one_by_id", AsyncMock(return_value=model))
+    model_collector = AsyncMock()
+    monkeypatch.setattr(models_route, "collect_model_cache_metrics", model_collector)
+    result = await models_route.get_model_cache_metrics(
+        _request(), MagicMock(), _ctx(OrgRole.MEMBER), 3
+    )
+    if model_roles:
+        assert [
+            row.model_instance_name for row in model_collector.await_args.args[1]
+        ] == [f"qwen-{role}" for role in model_roles]
+    else:
+        assert result.available is False
+        model_collector.assert_not_awaited()
