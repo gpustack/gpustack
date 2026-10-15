@@ -61,27 +61,25 @@ router = APIRouter()
 async def get_gpu_aggregated_instance_types(
     ctx: TenantContextDep,
     watch: bool = False,
+    cluster_id: Optional[int] = None,
 ):
     # Mirror cluster-list visibility: surface every Kubernetes cluster
     # the caller can see — both the ones they own AND the ones granted
     # via ``cluster_access``. Without the grants path an Org member
     # would see an empty instance-type list even after a platform
     # admin authorised them on a K8s cluster.
-    async with async_session() as session:
-        clusters = await Cluster.all_by_fields(
-            session=session,
-            fields={"provider": ClusterProvider.Kubernetes},
-            extra_conditions=cluster_visibility_conditions(ctx, Cluster),
-        )
-
     # ...then narrow to the ones registered for GPU Service. A Model Service
     # cluster's operator still derives instance types from its nodes, but they
     # describe capacity committed to model deployment, so offering them here
     # would let a caller launch a GPU Instance against a cluster that was never
     # provisioned to host one. Purpose lives inside the ``k8s_options`` JSON
     # column, so it narrows here rather than in the query's ``fields``.
+    # When ``cluster_id`` is given, narrow to that single cluster while still
+    # enforcing visibility and GPU Service purpose.
     # gateway_client list/watch take cluster ids as strings.
-    cluster_ids = [str(c.id) for c in clusters if is_gpu_service_cluster(c)]
+    cluster_ids = [
+        str(cid) for cid in await _visible_cluster_ids(ctx, "gpu_service", cluster_id)
+    ]
 
     if not cluster_ids:
         # No visible GPU Service clusters → return an empty aggregate. The
