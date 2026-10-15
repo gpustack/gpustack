@@ -16,6 +16,28 @@ from gpustack.schemas.models import (
 from tests.utils.model import new_model
 
 
+@pytest.mark.parametrize('status', [401, 403])
+def test_hub_auth_errors_report_restricted_access(monkeypatch, status):
+    from unittest.mock import MagicMock
+    from huggingface_hub import hf_api
+    from huggingface_hub.utils import httpx
+
+    response = httpx.Response(
+        status,
+        request=httpx.Request(
+            'GET', 'https://huggingface.co/api/models/test/model/auth-check'
+        ),
+    )
+    session = MagicMock()
+    session.get.return_value = response
+    monkeypatch.setattr(hf_api, 'get_session', lambda: session)
+
+    with pytest.raises(Exception, match='Access to the model is restricted'):
+        hub.auth_check(
+            Model(source=SourceEnum.HUGGING_FACE, huggingface_repo_id='test/model')
+        )
+
+
 def test_get_hub_model_weight_size():
     model_to_weight_sizes = [
         (
