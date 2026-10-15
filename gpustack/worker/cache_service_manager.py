@@ -15,6 +15,7 @@ from gpustack_runtime.deployer import (
     ContainerExecution,
     ContainerProfileEnum,
     ContainerResources,
+    ContainerRestartPolicyEnum,
     WorkloadPlan,
     WorkloadStatusStateEnum,
     delete_workload,
@@ -385,6 +386,8 @@ class CacheServiceManager:
                 image=image,
                 name="default",
                 profile=ContainerProfileEnum.RUN,
+                # The manager applies restart_on_error, backoff and retry limits.
+                restart_policy=ContainerRestartPolicyEnum.NEVER,
                 execution=ContainerExecution(
                     privileged=False,
                     command=argv if overrides_entrypoint else None,

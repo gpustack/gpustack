@@ -28,7 +28,10 @@ from gpustack.worker.cache_service_manager import (
     MAX_CONSECUTIVE_RESTARTS,
     CacheServiceManager,
 )
-from gpustack_runtime.deployer import WorkloadStatusStateEnum
+from gpustack_runtime.deployer import (
+    ContainerRestartPolicyEnum,
+    WorkloadStatusStateEnum,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -320,6 +323,21 @@ def test_start_instance_attaches_gpu_resources_to_container():
 
     container = create.call_args[0][0].containers[0]
     assert container.resources == {"nvidia.com/devices": "all"}
+
+
+@pytest.mark.parametrize("restart_on_error", [False, True, None])
+def test_start_instance_leaves_container_restarts_to_manager(restart_on_error):
+    manager, clientset = _build_manager(worker_id=1)
+    create, _ = _run_start(
+        manager,
+        clientset,
+        _new_cache_service(restart_on_error=restart_on_error),
+        _new_provider(),
+    )
+
+    create.assert_called_once()
+    container = create.call_args[0][0].containers[0]
+    assert container.restart_policy == ContainerRestartPolicyEnum.NEVER
 
 
 def test_start_instance_creates_workload_and_patches_starting():
