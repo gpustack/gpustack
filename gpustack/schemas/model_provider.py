@@ -548,6 +548,38 @@ class OpenAIConfig(BaseProviderConfig):
         chat_uri = f"{parsed_url.path.rstrip('/')}/chat/completions"
         return self.get_base_url(), chat_uri
 
+    def ai_proxy_derived_fields(self) -> Dict[str, Any]:
+        """The custom URL's path prefix as ai-proxy's generic base-path knob.
+
+        The plugin's openai provider reads ``openaiCustomUrl`` itself -- for
+        the authority and for the APIs in its capability map, whose paths get
+        the custom prefix joined in. That leaves every other request with no
+        prefix at all: paths the plugin does not map (``/v1/messages`` under
+        ``protocol: original``, ``/v1/messages/count_tokens``) are forwarded
+        as the client sent them, only the authority rewritten, and reach the
+        upstream at the bare path -- a 404 from an endpoint mounted under a
+        prefix. ``providerBasePath`` is prepended to exactly those, and never
+        doubles: it is applied after the capability mapping and skipped for a
+        path that already starts with it.
+
+        The field documents the URL as the full API base ending in ``/v1``;
+        the prefix is whatever precedes that, so a URL without it derives
+        nothing. A URL without a scheme parses as one long path -- the host
+        would then come back out as the prefix -- so it derives nothing too.
+        """
+        if not self.openaiCustomUrl:
+            return {}
+        parsed = urlparse(self.openaiCustomUrl)
+        if not parsed.scheme or not parsed.netloc:
+            return {}
+        path = parsed.path.rstrip("/")
+        if not path.endswith("/v1"):
+            return {}
+        base_path = path[: -len("/v1")]
+        if not base_path:
+            return {}
+        return {"providerBasePath": base_path}
+
 
 class OpenrouterConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.OPENROUTER]
