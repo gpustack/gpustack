@@ -110,6 +110,7 @@ from gpustack.gateway.utils import (
     model_route_ingress_prefix,
     model_route_ingress_name,
     fallback_ingress_name,
+    route_rule_ingress_names,
     cleanup_ingresses,
     cleanup_model_mapper,
     cleanup_fallback_filters,
@@ -1213,7 +1214,18 @@ class Server:
         )
         await cleanup_model_mapper(
             namespace=self.config.gateway_namespace,
-            expected_ingresses=expected_ingress_names,
+            # The mapper prune compares against the ingress names as the
+            # match rules store them: Higress qualifies a cross-namespace
+            # ingress with "<namespace>/", exactly as the route reconciler
+            # writes it. The bare names above are the K8s object names the
+            # Ingress/EnvoyFilter cleanups key on; feeding them here would
+            # strip every rewrite rule on each start of a deployment whose
+            # namespace differs from the gateway's.
+            expected_ingresses=route_rule_ingress_names(
+                [model_route.id for model_route in model_routes],
+                resource_namespace=self.config.get_namespace(),
+                gateway_namespace=self.config.gateway_namespace,
+            ),
             config=k8s_config,
         )
         await cleanup_fallback_filters(
