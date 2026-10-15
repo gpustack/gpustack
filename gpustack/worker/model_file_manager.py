@@ -3,7 +3,6 @@ import json
 from concurrent.futures import ProcessPoolExecutor
 import glob
 import hashlib
-from itertools import chain
 import logging
 from pathlib import Path
 import platform
@@ -234,16 +233,21 @@ class ModelFileManager:
     async def _delete_model_file(self, model_file: ModelFile):
         try:
             if model_file.resolved_paths:
-                paths = chain.from_iterable(
-                    glob.glob(p) if '*' in p else [p] for p in model_file.resolved_paths
-                )
-                for path in paths:
-                    delete_path(path)
+                for resolved_path in model_file.resolved_paths:
+                    paths = (
+                        await asyncio.to_thread(glob.glob, resolved_path)
+                        if '*' in resolved_path
+                        else [resolved_path]
+                    )
+                    for path in paths:
+                        await asyncio.to_thread(delete_path, path)
 
             await self._delete_incomplete_model_files(model_file)
 
             # Clean up download log file when deleting model file
-            _cleanup_download_log(self._config.log_dir, model_file.id)
+            await asyncio.to_thread(
+                _cleanup_download_log, self._config.log_dir, model_file.id
+            )
 
             logger.info(
                 f"Deleted model file {model_file.readable_source}(id: {model_file.id}) from disk"
