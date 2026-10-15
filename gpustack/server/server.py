@@ -1397,6 +1397,24 @@ class Server:
                     type(plugin).__name__,
                 )
 
+    def _start_extension_plugin_leader_tasks(self) -> None:
+        """Start ``Plugin.leader_async_tasks`` alongside the server's own
+        leader-only tasks (see ``_start_leader_tasks`` for the lifecycle).
+
+        Uses ``self._app`` rather than taking an argument: unlike
+        ``_start_extension_plugins``, this runs from the leader-election
+        path, which has no app parameter.
+        """
+        for plugin in getattr(self._app.state, "extension_plugins", []):
+            try:
+                for coro in plugin.leader_async_tasks():
+                    self._create_async_task(coro)
+            except Exception:
+                logger.exception(
+                    "Failed to start leader async tasks from extension plugin %s",
+                    type(plugin).__name__,
+                )
+
     async def _init_coordinator(self, app: FastAPI):
         """Pick a coordinator from extension plugins (if any) and start it.
 
@@ -1553,6 +1571,11 @@ class Server:
 
         # Controllers
         self._start_controllers()
+
+        # Extension plugins' leader-only tasks (reconcilers that need a
+        # single writer). Same lifecycle as the tasks above: started on
+        # leadership gain, and a deposed leader exits the process.
+        self._start_extension_plugin_leader_tasks()
 
         # The ai-proxy cleanup is version-semantic (retiring legacy
         # per-route entries wholesale): it must not run on a standby

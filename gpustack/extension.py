@@ -113,6 +113,24 @@ class Plugin:
         tasks."""
         return []
 
+    def leader_async_tasks(self) -> List[Coroutine[Any, Any, Any]]:
+        """Leader-only background coroutines, for reconcilers whose
+        writes must have a single owner.
+
+        Started with the server's own leader-only tasks: on a single-node
+        deployment (``LocalCoordinator``) they start immediately, and in
+        distributed mode they start when this instance acquires
+        leadership. A deposed leader exits the process (see
+        ``Server._leader_election_loop``), so tasks never outlive their
+        leadership — plugins do not need cancellation handling.
+
+        This is the place for controllers that reconcile external state
+        (gateway CRs, and anything else where two writers racing can
+        revert each other's writes), rather than gating every write on
+        ``coordinator.is_leader()`` from ``async_tasks``. Default: no
+        tasks."""
+        return []
+
     @classmethod
     def setup_start_cmd(cls, parser) -> None:
         """Contribute arguments to the ``gpustack start`` argparse parser.
