@@ -21,7 +21,11 @@ from gpustack.schemas.cache_services import (
 )
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.clusters import Cluster
-from gpustack.schemas.models import CategoryEnum, Model
+from gpustack.schemas.models import (
+    CategoryEnum,
+    Model,
+    shared_cache_service_ids_by_role,
+)
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.cache_provider_catalog import get_cache_providers
 from gpustack.server.db import async_session
@@ -342,17 +346,15 @@ class MetricExporter(Collector):
                         },
                     )
 
-                kv_cache = model.extended_kv_cache
-                if (
-                    kv_cache
-                    and kv_cache.is_shared()
-                    and kv_cache.cache_service_id in cache_service_names
+                cache_services_by_role = shared_cache_service_ids_by_role(model)
+                for service_id in sorted(
+                    set(cache_services_by_role.values()) & cache_service_names.keys()
                 ):
                     cache_service_attached_model.add_metric(
                         cluster_label_values
                         + [
-                            str(kv_cache.cache_service_id),
-                            cache_service_names[kv_cache.cache_service_id],
+                            str(service_id),
+                            cache_service_names[service_id],
                             str(model.id),
                             model.name,
                         ],
@@ -387,7 +389,7 @@ class MetricExporter(Collector):
                             else 0
                         ),
                     )
-                    if kv_cache and kv_cache.is_shared():
+                    if getattr(mi, "role", None) in cache_services_by_role:
                         cache_config = getattr(mi, "cache_config", None)
                         attached = bool(
                             cache_config

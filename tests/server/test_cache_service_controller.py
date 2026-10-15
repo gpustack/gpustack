@@ -20,7 +20,11 @@ from gpustack.schemas.cache_services import (
     CacheServiceConfig,
     CacheServiceStateEnum,
 )
-from gpustack.schemas.models import ModelInstanceStateEnum
+from gpustack.schemas.models import (
+    ExtendedKVCacheConfig,
+    ModelInstanceStateEnum,
+    RoleSpec,
+)
 from gpustack.schemas.workers import WorkerStateEnum
 from gpustack.server import controllers as cache_service_controller
 from gpustack.server.controllers import CacheServiceController
@@ -1269,10 +1273,10 @@ async def test_instance_delete_event_reconciles_parent_service(monkeypatch):
     aggregate.assert_not_called()
 
 
-def _attached_model(model_id=3, service_id=9):
-    from gpustack.schemas.models import ExtendedKVCacheConfig, KVCacheModeEnum
+def _attached_model(model_id=3, service_id=9, role=None):
+    from gpustack.schemas.models import KVCacheModeEnum
 
-    return SimpleNamespace(
+    model = SimpleNamespace(
         id=model_id,
         deleted_at=None,
         extended_kv_cache=ExtendedKVCacheConfig(
@@ -1281,6 +1285,10 @@ def _attached_model(model_id=3, service_id=9):
             cache_service_id=service_id,
         ),
     )
+    if role:
+        model.roles = [RoleSpec(name=role, extended_kv_cache=model.extended_kv_cache)]
+        model.extended_kv_cache = None
+    return model
 
 
 def _model_instance(state, injected=False, reason="not ready", worker_id=5):
@@ -1302,6 +1310,7 @@ def _model_instance(state, injected=False, reason="not ready", worker_id=5):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("role", [None, "prefill"])
 @pytest.mark.parametrize(
     "state",
     [
@@ -1312,19 +1321,20 @@ def _model_instance(state, injected=False, reason="not ready", worker_id=5):
         ModelInstanceStateEnum.DOWNLOADING,
     ],
 )
-async def test_refresh_rewrites_snapshot_before_engine_start(state):
+async def test_refresh_rewrites_snapshot_before_engine_start(state, role):
     """A cache instance turning RUNNING re-resolves degraded snapshots of
     instances whose engine has not started yet — closing the
     create-service-then-model window."""
     from gpustack.schemas.models import CacheConfigSnapshot
 
     mi = _model_instance(state)
+    mi.role = role
     fresh = CacheConfigSnapshot(cache_service_id=9, injected=True)
     update_mock = AsyncMock()
     with (
         patch(
             "gpustack.server.controllers.Model.all_by_fields",
-            AsyncMock(return_value=[_attached_model()]),
+            AsyncMock(return_value=[_attached_model(role=role)]),
         ),
         patch(
             "gpustack.server.controllers.ModelInstance.all_by_fields",
@@ -1339,7 +1349,7 @@ async def test_refresh_rewrites_snapshot_before_engine_start(state):
         patch(
             "gpustack.server.controllers.resolve_instance_cache_config_safe",
             AsyncMock(return_value=fresh),
-        ),
+        ) as resolve_mock,
         patch(
             "gpustack.server.controllers.ModelInstanceService",
             lambda session: SimpleNamespace(update=update_mock),
@@ -1349,23 +1359,26 @@ async def test_refresh_rewrites_snapshot_before_engine_start(state):
         await controller._refresh_attached_snapshots(MagicMock(), _service())
 
     assert mi.cache_config is fresh
+    assert resolve_mock.await_args.kwargs["role"] == role
     update_mock.assert_awaited_once_with(mi)
 
 
 @pytest.mark.asyncio
-async def test_refresh_hints_running_degraded_instance_without_touching_config():
+@pytest.mark.parametrize("role", [None, "prefill"])
+async def test_refresh_hints_running_degraded_instance_without_touching_config(role):
     """A RUNNING engine's snapshot records what it actually started with:
     the refresher must not flip injected, only add a restart hint when a
     fresh resolve would now attach."""
     from gpustack.schemas.models import CacheConfigSnapshot
 
     mi = _model_instance(ModelInstanceStateEnum.RUNNING, reason="was not ready")
+    mi.role = role
     fresh = CacheConfigSnapshot(cache_service_id=9, injected=True)
     update_mock = AsyncMock()
     with (
         patch(
             "gpustack.server.controllers.Model.all_by_fields",
-            AsyncMock(return_value=[_attached_model()]),
+            AsyncMock(return_value=[_attached_model(role=role)]),
         ),
         patch(
             "gpustack.server.controllers.ModelInstance.all_by_fields",
@@ -1443,7 +1456,8 @@ async def test_refresh_skips_takeover_and_starting_instances():
 
 
 @pytest.mark.asyncio
-async def test_refresh_tracks_endpoint_liveness_on_running_instance():
+@pytest.mark.parametrize("role", [None, "prefill"])
+async def test_refresh_tracks_endpoint_liveness_on_running_instance(role):
     """An engine that started attached keeps its snapshot (the record of
     its startup config), but endpoint_live tracks the present: off when
     the recorded endpoint stops being what a fresh resolve yields (cache
@@ -1461,7 +1475,7 @@ async def test_refresh_tracks_endpoint_liveness_on_running_instance():
         worker_id=5,
         state=ModelInstanceStateEnum.RUNNING,
         spans_workers=False,
-        role=None,
+        role=role,
         cache_config=CacheConfigSnapshot(
             cache_service_id=9,
             injected=True,
@@ -1476,7 +1490,7 @@ async def test_refresh_tracks_endpoint_liveness_on_running_instance():
         with (
             patch(
                 "gpustack.server.controllers.Model.all_by_fields",
-                AsyncMock(return_value=[_attached_model()]),
+                AsyncMock(return_value=[_attached_model(role=role)]),
             ),
             patch(
                 "gpustack.server.controllers.ModelInstance.all_by_fields",
@@ -1528,6 +1542,83 @@ async def test_refresh_tracks_endpoint_liveness_on_running_instance():
     await run_pass()
     assert mi.cache_config.endpoint_live is True
     assert update_mock.await_count == 2  # unchanged states write nothing
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("inherit", [False, True])
+@pytest.mark.parametrize(
+    "decode_cache",
+    [
+        None,
+        ExtendedKVCacheConfig(enabled=False),
+        ExtendedKVCacheConfig(enabled=True, mode="local"),
+        ExtendedKVCacheConfig(enabled=True, mode="shared", cache_service_id=10),
+    ],
+)
+async def test_refresh_only_resolves_members_referencing_the_service(
+    monkeypatch, inherit, decode_cache
+):
+    from gpustack.schemas.cache_services import CacheConfigSnapshot
+
+    model = _attached_model(role=None if inherit else "prefill")
+    if inherit:
+        model.roles = [RoleSpec(name="prefill")]
+    model.roles.extend(
+        [
+            RoleSpec(name="decode", extended_kv_cache=decode_cache),
+            RoleSpec(name="router"),
+        ]
+    )
+    instances = []
+    for role in ("prefill", "decode", "router", "removed-role"):
+        instance = _model_instance(ModelInstanceStateEnum.DOWNLOADING)
+        instance.role = role
+        instances.append(instance)
+    waiting = _model_instance(ModelInstanceStateEnum.SCHEDULED, worker_id=None)
+    waiting.role = "prefill"
+    instances.append(waiting)
+    original = [instance.cache_config for instance in instances]
+    fresh = CacheConfigSnapshot(cache_service_id=9, injected=True)
+    resolve = AsyncMock(return_value=fresh)
+    update = AsyncMock()
+    monkeypatch.setattr(
+        cache_service_controller.Model, "all_by_fields", AsyncMock(return_value=[model])
+    )
+    monkeypatch.setattr(
+        cache_service_controller.ModelInstance,
+        "all_by_fields",
+        AsyncMock(return_value=instances),
+    )
+    monkeypatch.setattr(
+        cache_service_controller.Worker,
+        "all_by_fields",
+        AsyncMock(return_value=[_worker(5)]),
+    )
+    monkeypatch.setattr(
+        cache_service_controller, "resolve_instance_cache_config_safe", resolve
+    )
+    monkeypatch.setattr(
+        cache_service_controller,
+        "ModelInstanceService",
+        lambda session: SimpleNamespace(update=update),
+    )
+
+    await CacheServiceController(MagicMock())._refresh_attached_snapshots(
+        MagicMock(), _service()
+    )
+
+    expected_roles = (
+        ["prefill", "decode"] if inherit and decode_cache is None else ["prefill"]
+    )
+    assert [call.kwargs["role"] for call in resolve.await_args_list] == expected_roles
+    assert [call.args[0].role for call in update.await_args_list] == expected_roles
+    for instance, snapshot in zip(instances, original):
+        expected = (
+            fresh
+            if instance.worker_id and instance.role in expected_roles
+            else snapshot
+        )
+        assert instance.cache_config is expected
 
 
 @pytest.mark.asyncio

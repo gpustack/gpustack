@@ -44,7 +44,7 @@ from gpustack.schemas.cache_services import (
 )
 from gpustack.worker.logs import LogOptions
 
-from gpustack.schemas.models import ExtendedKVCacheConfig, KVCacheModeEnum
+from gpustack.schemas.models import ExtendedKVCacheConfig, KVCacheModeEnum, RoleSpec
 from gpustack.schemas.principals import PrincipalType
 
 ORG_PRINCIPAL = 42
@@ -1712,15 +1712,20 @@ def _model(name, cache_service_id, enabled=True, mode=KVCacheModeEnum.SHARED):
 
 
 @pytest.mark.asyncio
-async def test_delete_blocked_while_models_reference_service(monkeypatch):
+@pytest.mark.parametrize("role", [None, "prefill"])
+async def test_delete_blocked_while_models_reference_service(monkeypatch, role):
     service = _existing_service()
+    model = _model("llama3", cache_service_id=9)
+    if role:
+        model.roles = [RoleSpec(name=role, extended_kv_cache=model.extended_kv_cache)]
+        model.extended_kv_cache = ExtendedKVCacheConfig(enabled=False)
     monkeypatch.setattr(
         cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=service)
     )
     monkeypatch.setattr(
         cache_services_route.Model,
         "all_by_fields",
-        AsyncMock(return_value=[_model("llama3", cache_service_id=9)]),
+        AsyncMock(return_value=[model]),
     )
 
     with pytest.raises(BadRequestException) as exc_info:
@@ -1779,12 +1784,18 @@ def _referencing_model(id, name, cache_service_id, **overrides):
 
 
 @pytest.mark.asyncio
-async def test_models_lists_referencing_deployments_only(monkeypatch):
+@pytest.mark.parametrize("role", [None, "prefill"])
+async def test_models_lists_referencing_deployments_only(monkeypatch, role):
     service = _existing_service()
     monkeypatch.setattr(
         cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=service)
     )
     referencing = _referencing_model(1, "llama3", cache_service_id=9)
+    if role:
+        referencing.roles = [
+            RoleSpec(name=role, extended_kv_cache=referencing.extended_kv_cache)
+        ]
+        referencing.extended_kv_cache = None
     other_service = _referencing_model(2, "qwen3", cache_service_id=8)
     local = _referencing_model(
         3,

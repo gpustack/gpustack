@@ -31,6 +31,7 @@ from gpustack.schemas.models import (
     ModelInstancesPublic,
     BackendEnum,
     ModelListParams,
+    shared_cache_service_ids_by_role,
 )
 from gpustack.schemas.cache_services import (
     CacheService,
@@ -366,7 +367,8 @@ async def get_model_cache_metrics(
         window_seconds = parse_metrics_window(window)
     except ValueError as e:
         raise BadRequestException(message=str(e))
-    if not (model.extended_kv_cache and model.extended_kv_cache.is_shared()):
+    cache_services_by_role = shared_cache_service_ids_by_role(model)
+    if not cache_services_by_role:
         return ModelCacheMetricsPublic(
             available=False,
             reason="The deployment does not use a shared cache service",
@@ -379,6 +381,7 @@ async def get_model_cache_metrics(
             worker_name=instance.worker_name,
         )
         for instance in model.instances
+        if getattr(instance, "role", None) in cache_services_by_role
     ]
     attached.sort(key=lambda row: row.model_instance_name or "")
     return await collect_model_cache_metrics(
@@ -985,7 +988,9 @@ class _CacheDeclaration(NamedTuple):
         return f" on role '{self.role}'" if self.role else ""
 
 
-def _cache_declarations(model_in) -> List[_CacheDeclaration]:
+def _cache_declarations(
+    model_in, *, include_model_defaults: bool = False
+) -> List[_CacheDeclaration]:
     """Every distinct cache configuration `model_in` would deploy.
 
     The inherit-when-None merge is spelled out rather than taken from
@@ -997,19 +1002,24 @@ def _cache_declarations(model_in) -> List[_CacheDeclaration]:
     PD declarations retain their role because Store connector settings
     differ between prefill and decode. Other deployments
     deduplicate identical cache/backend configurations.
+
+    With roles, the model-level cache is only a default inherited by roles
+    that leave their cache unset. Include unused model defaults only when
+    normalizing submitted fields, not when validating runtime references.
     """
     model_ext = getattr(model_in, "extended_kv_cache", None)
     model_backend = getattr(model_in, "backend", None)
     model_version = getattr(model_in, "backend_version", None)
+    roles = getattr(model_in, "roles", None) or []
 
     declarations = [
         (
             _CacheDeclaration(None, model_ext, model_backend, model_version)
-            if model_ext
+            if model_ext and (not roles or include_model_defaults)
             else None
         )
     ]
-    for role in getattr(model_in, "roles", None) or []:
+    for role in roles:
         if role.name == "router" and role.extended_kv_cache is None:
             # Routers forward requests and do not inherit engine KV caches.
             continue
@@ -1107,7 +1117,7 @@ async def validate_shared_kv_cache(
     effective_cluster_id: Optional[int],
     stored: Optional[Model] = None,
 ) -> None:
-    """Validate every extended-KV-cache configuration this deployment declares.
+    """Validate the effective extended-KV-cache configuration of each role.
 
     "shared" mode attaches the model's inference engine to a CacheService
     row, so the service must exist, belong to the model's Org (a
@@ -1118,9 +1128,10 @@ async def validate_shared_kv_cache(
     stray cache_service_id is rejected as a mis-configuration rather than
     silently ignored.
 
-    **Every rule below applies to the role-level value as well as the
-    Model's**, because `extended_kv_cache` is a per-role override: checking
-    only the Model's would accept the identical configuration under
+    Each role's override, or its inherited Model default, receives the same
+    checks. A role-less deployment uses the Model's configuration directly.
+    Unused Model defaults are not runtime references and need no service
+    lookup. Checking only the Model's value would accept a configuration under
     `roles[].extended_kv_cache` in every case this function exists to refuse —
     a service id that names nothing, 'local' carrying a service id, 'shared'
     carrying none, a service in another cluster, another tenant's service, a
@@ -1145,7 +1156,9 @@ async def validate_shared_kv_cache(
             effective_cluster_id,
             getattr(effective, "disaggregation", None),
         )
-    _drop_local_only_cache_knobs(_cache_declarations(model_in))
+    _drop_local_only_cache_knobs(
+        _cache_declarations(model_in, include_model_defaults=True)
+    )
 
 
 def _drop_local_only_cache_knobs(declarations: List[_CacheDeclaration]) -> None:

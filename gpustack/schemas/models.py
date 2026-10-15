@@ -1394,6 +1394,27 @@ def find_role(model, role_name: Optional[str]) -> Optional[RoleSpec]:
     return None
 
 
+def shared_cache_service_ids_by_role(model: ModelSpecBase) -> Dict[Optional[str], int]:
+    """Map engine roles to shared cache IDs, using None for a role-less model.
+
+    A role's unset cache inherits the model configuration; an explicit disabled
+    or local configuration overrides it. Routers do not run engine KV caches.
+    """
+    references = {}
+    for role in getattr(model, "roles", None) or [None]:
+        role_name = role.name if role else None
+        if role_name == RoleNameEnum.ROUTER.value:
+            continue
+        cache = (
+            role.extended_kv_cache
+            if role and role.extended_kv_cache is not None
+            else model.extended_kv_cache
+        )
+        if cache and cache.is_shared() and cache.cache_service_id is not None:
+            references[role_name] = cache.cache_service_id
+    return references
+
+
 def servable_instances(model, instances):
     """The members that can answer a whole request for `model`.
 

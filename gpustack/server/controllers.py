@@ -79,6 +79,7 @@ from gpustack.schemas.models import (
     get_backend,
     member_worker_ids,
     role_effective_model,
+    shared_cache_service_ids_by_role,
 )
 from gpustack.schemas.gpu_instance_types import GPUInstanceType
 from gpustack.server.workqueue import WorkEvent, WorkEventType, WorkQueue
@@ -866,12 +867,13 @@ class CacheServiceController:
             fields={"cluster_id": service.cluster_id},
             extra_conditions=[Model.deleted_at.is_(None)],
         )
+        cache_services_by_model = {
+            model.id: shared_cache_service_ids_by_role(model) for model in models
+        }
         attached = [
             model
             for model in models
-            if model.extended_kv_cache
-            and model.extended_kv_cache.is_shared()
-            and model.extended_kv_cache.cache_service_id == service.id
+            if service.id in cache_services_by_model[model.id].values()
         ]
         if not attached:
             return
@@ -888,7 +890,11 @@ class CacheServiceController:
                 session, {"model_id": model.id}
             )
             for mi in instances:
-                if mi.worker_id is None:
+                if (
+                    mi.worker_id is None
+                    or cache_services_by_model[model.id].get(mi.role) != service.id
+                ):
+                    # Refresh only scheduled members referencing this service.
                     # Pre-scheduling instances resolve at placement.
                     continue
                 refreshable = mi.state in self._PRE_START_STATES

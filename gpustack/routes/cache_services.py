@@ -50,7 +50,12 @@ from gpustack.schemas.cache_services import (
 from gpustack.schemas.common import Pagination
 from gpustack.config.config import get_global_config
 from gpustack.schemas.clusters import Cluster
-from gpustack.schemas.models import Model, ModelInstance, get_backend
+from gpustack.schemas.models import (
+    Model,
+    ModelInstance,
+    get_backend,
+    shared_cache_service_ids_by_role,
+)
 from gpustack.schemas.principals import PrincipalType, platform_principal_id
 from gpustack.schemas.workers import SystemReserved, Worker
 from gpustack.server.cache_provider_catalog import (
@@ -658,20 +663,28 @@ async def get_cache_service_metrics(
     models = await Model.all_by_fields(
         session,
         fields={"cluster_id": cache_service.cluster_id},
-        extra_conditions=[Model.deleted_at.is_(None)],
+        extra_conditions=[
+            Model.deleted_at.is_(None),
+            *tenant_list_conditions(ctx, Model),
+        ],
     )
-    attached_models = {
-        model.id: model
+    attached_roles = {
+        model.id: {
+            role
+            for role, service_id in shared_cache_service_ids_by_role(model).items()
+            if service_id == cache_service.id
+        }
         for model in models
-        if model.extended_kv_cache
-        and model.extended_kv_cache.is_shared()
-        and model.extended_kv_cache.cache_service_id == cache_service.id
     }
+    attached_models = {model.id: model for model in models if attached_roles[model.id]}
     attached = []
     if attached_models:
         instances = await ModelInstance.all_by_fields(
             session,
-            extra_conditions=[ModelInstance.model_id.in_(attached_models.keys())],
+            extra_conditions=[
+                ModelInstance.model_id.in_(attached_models.keys()),
+                ModelInstance.deleted_at.is_(None),
+            ],
         )
         attached = [
             CacheServiceAttachedMetrics(
@@ -681,6 +694,7 @@ async def get_cache_service_metrics(
                 worker_name=instance.worker_name,
             )
             for instance in instances
+            if instance.role in attached_roles[instance.model_id]
         ]
         # a stable row order regardless of how the batched query returns
         attached.sort(
@@ -1536,9 +1550,7 @@ async def _models_referencing_cache_service(
         model
         for model in models
         if model.deleted_at is None
-        and model.extended_kv_cache is not None
-        and model.extended_kv_cache.is_shared()
-        and model.extended_kv_cache.cache_service_id == cache_service.id
+        and cache_service.id in shared_cache_service_ids_by_role(model).values()
     ]
 
 
