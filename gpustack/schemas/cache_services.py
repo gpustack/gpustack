@@ -21,14 +21,6 @@ from gpustack.schemas.principals import _platform_principal_id
 CACHE_SERVICE_WORKLOAD_TYPE = "cache-service"
 
 
-def cache_service_instance_workload_name(
-    cache_service_id: int, instance_id: int
-) -> str:
-    """Name of the workload a managed cache service instance runs as on
-    its worker."""
-    return f"cache-svc-{cache_service_id}-i{instance_id}"
-
-
 class CacheServiceStateEnum(str, Enum):
     r"""
     Enum for Cache Service / Cache Service Instance State
@@ -246,7 +238,7 @@ class CacheServiceInstanceBase(SQLModel):
     process's config)."""
 
     name: str = Field(index=True)
-    """Display identity: the parent service's name (as of instance
+    """Display and workload identity: the parent service's name (as of instance
     creation) plus a short random suffix, mirroring model instance
     naming."""
 
@@ -303,7 +295,7 @@ class CacheServiceInstanceBase(SQLModel):
 
     def get_deployment_metadata(self) -> CacheServiceDeploymentMetadata:
         return CacheServiceDeploymentMetadata(
-            name=cache_service_instance_workload_name(self.cache_service_id, self.id),
+            name=self.name,
             labels={
                 "type": CACHE_SERVICE_WORKLOAD_TYPE,
                 "cache-service-id": str(self.cache_service_id),
