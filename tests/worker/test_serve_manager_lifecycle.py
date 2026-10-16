@@ -1,6 +1,8 @@
 from types import SimpleNamespace
+import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,6 +10,7 @@ from httpx import ReadTimeout
 
 from gpustack.api.exceptions import NotFoundException
 from gpustack.schemas.models import (
+    BackendEnum,
     DistributedServerCoordinateModeEnum,
     DistributedServers,
     ModelInstanceStateEnum,
@@ -16,9 +19,16 @@ from gpustack.schemas.models import (
     SourceEnum,
 )
 from gpustack.server.bus import Event, EventType
+from gpustack.utils import network
 from gpustack.worker.serve_manager import ServeManager
 from gpustack_runtime.deployer import WorkloadStatusStateEnum
 from tests.utils.model import new_model, new_model_instance
+from tests.worker.test_port_reservations import _cache_instance
+from tests.worker.test_serve_manager_ports import (
+    _instance as _pd_instance,
+    _pd_model,
+    _wide_band_mode,
+)
 
 
 def _instance(instance_id=1):
@@ -322,6 +332,163 @@ def test_successful_launch_cancels_pending_failure_recovery(manager):
     assert instance.id in serve._provisioning_processes
     assert instance.id not in serve._error_model_instances
     assert instance.id not in serve._pending_model_instance_errors
+
+
+def test_releasing_an_old_claim_preserves_a_new_claim(manager):
+    serve, _ = manager
+    old, new = uuid4(), uuid4()
+    serve._distributed_port_claims[1] = old
+    coordinator = MagicMock()
+    serve._distributed_port_client = coordinator
+
+    def new_claim(instance_id, token):
+        assert token == old
+        serve._distributed_port_claims[instance_id] = new
+
+    coordinator.release.side_effect = new_claim
+    serve._release_distributed_ports(1)
+    assert serve._distributed_port_claims[1] == new
+
+
+def test_remote_release_failure_does_not_block_local_cleanup(manager):
+    serve, _ = manager
+    instance = _instance()
+    token = uuid4()
+    serve._distributed_port_claims[instance.id] = token
+    serve._assigned_ports[instance.id] = {40000, 40001}
+    serve._model_instance_by_instance_id[instance.id] = instance
+    coordinator = MagicMock()
+    coordinator.release.side_effect = RuntimeError("coordinator unavailable")
+    serve._distributed_port_client = coordinator
+    with patch("gpustack.worker.serve_manager.delete_workload"):
+        serve._stop_model_instance(instance)
+    assert instance.id not in serve._assigned_ports
+    assert instance.id not in serve._model_instance_by_instance_id
+    assert (instance.id, token) in serve._pending_distributed_port_releases
+    coordinator.release.side_effect = None
+    serve._retry_distributed_port_releases()
+    assert not serve._pending_distributed_port_releases
+
+
+def _prepare_local_pd_allocation(manager):
+    serve, clientset = manager
+    serve._config.service_port_range = "40000-40004"
+    instance = _pd_instance(7)
+    instance.worker_id = serve._worker_id
+    model = _pd_model()
+    clientset.model_instances.get.return_value = instance
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[instance])
+    serve._get_model.return_value = model
+    return instance, model
+
+
+@pytest.mark.parametrize("source", ["model", "cache"])
+def test_local_pd_allocation_waits_for_deleted_owner_cleanup(manager, source):
+    serve, _ = manager
+    instance, model = _prepare_local_pd_allocation(manager)
+    if source == "model":
+        serve._port_reservations.model_ports[99] = {40002}
+    else:
+        serve._port_reservations.cache_ports[99] = (40002,)
+
+    def finish_cleanup(delay):
+        assert delay == 2
+        assert instance.port is None
+        assert instance.id not in serve._assigned_ports
+        with serve._port_reservations.allocation(
+            serve._clientset, serve._worker_id, model_instance_id=instance.id
+        ) as taken:
+            assert 40002 in taken
+        if source == "model":
+            serve._port_reservations.release_model(99)
+        else:
+            serve._port_reservations.release_cache(99)
+
+    with (
+        patch(
+            "gpustack.worker.pd_injection.get_pd_mode", return_value=_wide_band_mode(4)
+        ),
+        patch(
+            "gpustack.worker.serve_manager.time.sleep", side_effect=finish_cleanup
+        ) as sleep,
+    ):
+        serve._assign_ports(instance, model, BackendEnum.VLLM)
+
+    sleep.assert_called_once_with(2)
+    assert instance.named_ports["kv_port"].count == 4
+    assert len(serve._assigned_ports[instance.id]) == 5
+
+
+def test_local_pd_exhaustion_without_cleanup_does_not_wait(manager):
+    serve, clientset = manager
+    instance, model = _prepare_local_pd_allocation(manager)
+    cache = _cache_instance(99, serve._worker_id, port=40002)
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[cache])
+    with (
+        patch(
+            "gpustack.worker.pd_injection.get_pd_mode", return_value=_wide_band_mode(4)
+        ),
+        patch("gpustack.worker.serve_manager.time.sleep") as sleep,
+    ):
+        with pytest.raises(network.PortRangeExhaustedError, match="No band of 4"):
+            serve._assign_ports(instance, model, BackendEnum.VLLM)
+
+    sleep.assert_not_called()
+    assert instance.port is None
+    assert instance.id not in serve._assigned_ports
+
+
+def test_instance_deleted_during_port_cleanup_wait_cannot_start(manager):
+    serve, clientset = manager
+    instance, _ = _prepare_local_pd_allocation(manager)
+    serve._port_reservations.cache_ports[99] = (40002,)
+
+    def delete_instance(delay):
+        assert delay == 2
+        serve._port_reservations.release_cache(99)
+        clientset.model_instances.get.side_effect = NotFoundException(
+            "instance deleted"
+        )
+
+    with (
+        patch(
+            "gpustack.worker.pd_injection.get_pd_mode", return_value=_wide_band_mode(4)
+        ),
+        patch(
+            "gpustack.worker.serve_manager.time.sleep", side_effect=delete_instance
+        ) as sleep,
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+    ):
+        serve._start_model_instance(instance)
+
+    sleep.assert_called_once_with(2)
+    process.assert_not_called()
+    assert instance.port is None
+    assert not instance.ports
+    assert instance.id not in serve._assigned_ports
+    assert instance.id not in serve._starting_model_instances
+
+
+@pytest.mark.asyncio
+async def test_launch_callback_keeps_worker_api_event_loop_available(manager):
+    serve, _ = manager
+    loop = asyncio.get_running_loop()
+    calls = []
+
+    async def worker_api():
+        calls.append("worker API responded")
+
+    def launch(event):
+        asyncio.run_coroutine_threadsafe(worker_api(), loop).result(timeout=2)
+
+    with patch.object(serve, "_handle_model_instance_event", side_effect=launch):
+        await asyncio.wait_for(
+            serve._handle_model_instance_event_async(
+                Event(type=EventType.CREATED, data=_instance())
+            ),
+            timeout=3,
+        )
+    assert calls == ["worker API responded"]
 
 
 def test_failed_launch_releases_ports_before_provisioning(manager):
@@ -660,3 +827,54 @@ def test_deleted_model_cancels_queued_recovery(manager):
 
     serve._update_model_instance.assert_not_called()
     assert instance.id not in serve._error_model_instances
+
+
+@pytest.mark.asyncio
+async def test_watch_waits_for_launch_callback_before_dispatching_next_event(manager):
+    import json
+
+    import httpx
+
+    from gpustack.client.generated_model_instance_client import ModelInstanceClient
+
+    serve, _ = manager
+    instance = _instance()
+    events = [EventType.CREATED, EventType.UPDATED]
+    body = "\n".join(
+        json.dumps({"type": kind.value, "data": instance.model_dump(mode="json")})
+        for kind in events
+    )
+    started, release = asyncio.Event(), threading.Event()
+    observed = []
+    loop = asyncio.get_running_loop()
+
+    def handle(event):
+        observed.append(event.type)
+        if event.type == EventType.CREATED:
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(timeout=2)
+
+    with patch.object(serve, "_handle_model_instance_event", side_effect=handle):
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, text=body)
+            ),
+            base_url="http://server",
+        ) as http:
+            client = ModelInstanceClient(
+                SimpleNamespace(get_async_httpx_client=lambda: http), enable_cache=False
+            )
+            task = asyncio.create_task(
+                client.awatch(
+                    callback=serve._handle_model_instance_event_async,
+                    stop_condition=lambda event: event.type == EventType.UPDATED,
+                )
+            )
+            try:
+                await asyncio.wait_for(started.wait(), timeout=1)
+                await asyncio.sleep(0)
+                assert observed == [EventType.CREATED]
+            finally:
+                release.set()
+                await asyncio.wait_for(task, timeout=3)
+    assert observed == events

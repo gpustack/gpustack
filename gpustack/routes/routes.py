@@ -23,6 +23,7 @@ from gpustack.routes import (
     model_evaluations,
     model_files,
     model_instances,
+    model_instance_ports,
     model_revisions,
     model_sets,
     organization_members,
@@ -264,6 +265,11 @@ model_routers = [
 ]
 # worker client have full access to model and model instances
 worker_client_router = APIRouter()
+worker_client_router.include_router(
+    model_instance_ports.router,
+    prefix="/model-instances",
+    include_in_schema=False,
+)
 for model_router in model_routers:
     worker_client_router.include_router(**model_router)
 # ready only access to workers
