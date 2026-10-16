@@ -8,6 +8,7 @@ import pytest
 
 from gpustack.schemas.cache_services import CacheServiceInstance, CacheServiceStateEnum
 from gpustack.schemas.models import BackendEnum
+from gpustack.utils import network
 from gpustack.worker.cache_service_manager import CacheServiceManager
 from gpustack.worker.port_reservations import WorkerPortReservations
 from gpustack.worker.serve_manager import ServeManager
@@ -35,7 +36,6 @@ def managers(tmp_path, monkeypatch):
         MagicMock(),
         reservations,
     )
-    monkeypatch.setattr("gpustack.utils.network.get_free_port", _pick_port)
     monkeypatch.setattr("gpustack.utils.network.is_port_available", lambda *args: True)
     return serve, cache, clientset
 
@@ -57,6 +57,66 @@ def _allocate_router(manager, instance):
     model = new_model(1, "model", huggingface_repo_id="test/model")
     manager._assign_ports(instance, model, BackendEnum.CUSTOM)
     return set(instance.ports)
+
+
+@pytest.mark.parametrize("first_owner", ["model", "cache"])
+def test_new_services_pack_low_ports_and_leave_a_contiguous_band(
+    managers, monkeypatch, first_owner
+):
+    serve, cache, _ = managers
+    monkeypatch.setattr(
+        network.random, "randint", MagicMock(side_effect=[40039, 40047, 40055, 40063])
+    )
+    allocations = []
+    for index in range(4):
+        owner = (
+            first_owner
+            if index % 2 == 0
+            else ("cache" if first_owner == "model" else "model")
+        )
+        if owner == "model":
+            ports = _allocate_router(serve, _router(index + 20))
+        else:
+            instance = _cache_instance()
+            instance.id = index + 20
+            ports = set(cache._allocate_ports(instance, ["port"]).values())
+        allocations.extend(ports)
+
+    assert allocations == [40032, 40033, 40034, 40035]
+    with serve._port_reservations.allocation(serve._clientset, 1) as taken:
+        assert (
+            network.get_free_band("40032-40063", count=10, unavailable_ports=taken)
+            == 40036
+        )
+
+
+@pytest.mark.parametrize("owner", ["model", "cache"])
+def test_lowest_port_selection_skips_reservations_and_busy_sockets(
+    managers, monkeypatch, owner
+):
+    serve, cache, _ = managers
+    serve._port_reservations.model_ports[99] = {40032}
+    monkeypatch.setattr(network.random, "randint", lambda *args: 40060)
+    monkeypatch.setattr(network, "is_port_available", lambda port, *args: port != 40033)
+
+    if owner == "model":
+        ports = _allocate_router(serve, _router())
+    else:
+        ports = set(cache._allocate_ports(_cache_instance(), ["port"]).values())
+
+    assert ports == {40034}
+
+
+def test_new_cache_port_cannot_take_an_existing_declared_port(managers, monkeypatch):
+    _, cache, _ = managers
+    instance = _cache_instance(ports={"port": 40032, "metrics": 40033})
+    monkeypatch.setattr(
+        network.random, "randint", MagicMock(side_effect=[40032, 40034])
+    )
+
+    ports = cache._allocate_ports(instance, ["p2p", "port", "metrics"])
+
+    assert ports == {"p2p": 40034, "port": 40032, "metrics": 40033}
 
 
 @pytest.mark.parametrize("persisted", [False, True])
@@ -133,6 +193,39 @@ def test_existing_model_port_conflict_is_reported_before_launch(managers):
     assert router.id not in serve._assigned_ports
 
 
+@pytest.mark.parametrize("persisted", [False, True])
+@pytest.mark.parametrize("owner", ["model", "cache"])
+def test_port_conflict_log_identifies_reservation_owner(
+    managers, caplog, persisted, owner
+):
+    serve, _, clientset = managers
+    owner_id = 12 if owner == "model" else 11
+    if persisted:
+        if owner == "model":
+            instance = _router(owner_id)
+            instance.port = 40032
+            instance.ports = [40032]
+            clientset.model_instances.list.return_value.items = [instance]
+        else:
+            clientset.cache_service_instances.list.return_value.items = [
+                _cache_instance(ports={"metrics": 40032})
+            ]
+    else:
+        getattr(serve._port_reservations, f"{owner}_ports")[owner_id] = {40032}
+    router = _router()
+    router.port = 40032
+    router.ports = [40032]
+
+    with pytest.raises(RuntimeError, match="40032.*reserved by another instance"):
+        _allocate_router(serve, router)
+
+    assert "worker 1" in caplog.text
+    assert "model instance 11" in caplog.text
+    assert f"{owner} instance {owner_id}" in caplog.text
+    assert "40032" in caplog.text
+    assert ("persisted" if persisted else "local") in caplog.text
+
+
 class _ObservedLock:
     def __init__(self):
         self.lock = threading.Lock()
@@ -164,7 +257,7 @@ def test_concurrent_starts_reserve_before_the_other_allocator_selects(
             assert finish.wait(5)
         return port
 
-    monkeypatch.setattr("gpustack.utils.network.get_free_port", pick)
+    monkeypatch.setattr("gpustack.utils.network.get_free_band", pick)
     allocations = {
         "model": lambda: _allocate_router(serve, _router()),
         "cache": lambda: set(
