@@ -258,6 +258,8 @@ _CROSS_ENCODER_MODELS = [
     "XLMRobertaForTokenClassification",
     "ModernBertForSequenceClassification",
     "ModernBertForTokenClassification",
+    "Qwen3ForSequenceClassification",
+    "Qwen3VLForSequenceClassification",
     "JinaVLForRanking",
     "LlamaBidirectionalForSequenceClassification",
     "LlamaNemotronVLForSequenceClassification",
