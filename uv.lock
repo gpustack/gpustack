@@ -1255,7 +1255,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0,<0.137.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-higress-plugins", specifier = "==0.5.0" },
-    { name = "gpustack-runner", specifier = "==0.1.31.post2" },
+    { name = "gpustack-runner", specifier = "==0.1.31.post3" },
     { name = "gpustack-runtime", specifier = "==0.2.6" },
     { name = "hf-xet", specifier = ">=1.6.0,<2.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
@@ -1351,7 +1351,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.31.post2"
+version = "0.1.31.post3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -1359,9 +1359,9 @@ dependencies = [
     { name = "packaging" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1f/e6/8bfe11fdafd523171843d8c1c643794a1075610ed472bf1acdab2c4cf39b/gpustack_runner-0.1.31.post2.tar.gz", hash = "sha256:0e33a9d3e93a280822a71d1e6942f85df25aca07e95f557c6d93ada63c2729fe", size = 13748852, upload-time = "2026-10-14T04:35:58.557Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/64/61/5d801feaff097f2ffbbfd119bda132330067c1c91c86dbba257f4785fd4f/gpustack_runner-0.1.31.post3.tar.gz", hash = "sha256:1d00df32ee5dfc94226da87de36c3214ac64d50fdf54a4e1b2c905bb609b1197", size = 13758730, upload-time = "2026-10-16T10:43:27.951Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cc/d6/5d7734eaa6323b4529c91e4d0edb874e14aeb67e244e1c6c21a62d6c7c85/gpustack_runner-0.1.31.post2-py3-none-any.whl", hash = "sha256:afe78c72caf4f38afe6a6fb3a214784f02e3356abc4cb403c3919b1f46779f2c", size = 32747, upload-time = "2026-10-14T04:35:56.757Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/1e/d67c9f79af18e0a7d9ccc8a14bdbac1218f5f103451a8132c5982dcf3d4e/gpustack_runner-0.1.31.post3-py3-none-any.whl", hash = "sha256:7db7849ec9179b49b0e5f056a14e8e444a69ff22f4dc44c802727ba807a1e1d6", size = 32774, upload-time = "2026-10-16T10:43:25.943Z" },
 ]
 
 [[package]]
