@@ -4,9 +4,10 @@ a guard placed at the top level of `_helper.tpl` is never executed, because Helm
 parses that file for its `define` blocks without rendering it.
 
 Guards that reject a configuration which installs today belong in a deliberate
-separate change, not here: two such guards currently sit dead at the top of
-`_helper.tpl` (TLS cert/key pairing, and `server.replicas > 1` requiring
-`server.externalDatabaseURL`).
+separate change, not folded into an unrelated one. The unsupported-vendor guard
+at the bottom of this file is the first such change to land here; two more,
+still unmigrated, sit dead at the top of `_helper.tpl` (TLS cert/key pairing,
+and `server.replicas > 1` requiring `server.externalDatabaseURL`).
 */}}
 {{- if not (or .Values.server.enabled .Values.worker.enabled) }}
 {{- fail "Nothing to deploy: set server.enabled and/or worker.enabled to true." }}
@@ -21,8 +22,8 @@ worker to the cluster at all.
 Counted over the *sorted* vendors, which is the list worker-daemonset.yaml
 iterates: it renders nothing for a name outside the canonical set, so a typo
 would otherwise satisfy a guard reading the raw list and land in exactly the
-state this rejects. A name it drops while the CPU DaemonSet is on still installs
-today — that is a separate guard, and this file is not where one of those goes.
+state this rejects. A name it drops while the CPU DaemonSet is on is caught
+upstream by the unsupported-vendor guard below.
 */}}
 {{- if and .Values.worker.enabled (not (include "gpustack.workerCPUEnabled" .)) }}
 {{- if not (include "gpustack.sortedVendors" . | fromJsonArray) }}
@@ -40,4 +41,36 @@ supplying a username and password asks for.
 {{- $credentials := $pullSecret.credentials | default dict }}
 {{- if and (not $pullSecret.create) $credentials.username $credentials.password }}
 {{- fail "imagePullSecret.credentials are set but imagePullSecret.create is false: the credentials would be discarded. Drop them, or set create=true to have this release own the Secret." }}
+{{- end }}
+
+{{/*
+A vendor name the DaemonSet template will not render.
+
+worker-daemonset.yaml iterates the *canonical* vendor list, so a name outside it
+produces no DaemonSet at all. With the CPU DaemonSet on that used to install
+successfully: the release reported success while a whole class of GPU nodes
+never gained a worker. A typo in a multi-vendor list is the worst case, because
+the recognised vendors still render — the release looks half-healthy and the
+missing DaemonSet is easy to attribute anywhere but a values typo.
+
+Refused rather than warned about because Helm templates have no way to warn
+without failing. Naming both the offending entries and the accepted vendors
+makes the fix a one-line values edit, which is cheaper than the debugging a
+silently absent DaemonSet costs.
+
+Read off the *raw* (deduplicated) vendor list via `gpustack.workerVendors`, not
+`gpustack.sortedVendors`: the sorted list has already dropped exactly the names
+this guard needs to see.
+*/}}
+{{- if .Values.worker.enabled }}
+{{- $canonical := include "gpustack.canonicalVendorOrder" . | fromJsonArray }}
+{{- $unsupported := list }}
+{{- range (include "gpustack.workerVendors" . | fromJsonArray) }}
+{{- if not (has . $canonical) }}
+{{- $unsupported = append $unsupported . }}
+{{- end }}
+{{- end }}
+{{- if $unsupported }}
+{{- fail (printf "worker.gpuVendors names unsupported GPU vendor(s): %s. Supported vendors are: %s. No DaemonSet is rendered for an unsupported name, so the release would install without a worker for those nodes — fix the spelling or remove the entry." (join ", " $unsupported) (include "gpustack.canonicalVendorOrder" . | fromJsonArray | join ", ")) }}
+{{- end }}
 {{- end }}
