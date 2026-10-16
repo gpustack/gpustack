@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 from datetime import datetime, timezone
+from functools import wraps
 import json
 import multiprocessing
 import shutil
@@ -13,6 +14,7 @@ import os
 from typing import Dict, Optional, Set, List, Callable
 from pathlib import Path
 import logging
+from weakref import WeakValueDictionary
 
 from gpustack_runtime.deployer import (
     get_workload,
@@ -311,6 +313,21 @@ def _describe_workload_failure(workload) -> str:
     return f"{message or _WORKLOAD_FAILED_MESSAGE} ({codes})"
 
 
+def _model_lifecycle(method):
+    @wraps(method)
+    def serialized(self, *args, **kwargs):
+        instance = args[0] if args else kwargs["mi"]
+        with self._model_instance_start_lock:
+            lock = self._model_lifecycle_locks.get(instance.id)
+            if lock is None:
+                lock = threading.RLock()
+                self._model_lifecycle_locks[instance.id] = lock
+        with lock:
+            return method(self, *args, **kwargs)
+
+    return serialized
+
+
 class ServeManager(ContainerLogPersister):
     @property
     def _worker_id(self) -> int:
@@ -387,8 +404,12 @@ class ServeManager(ContainerLogPersister):
         self._log_persistence = {}
         self._log_persistence_lock = threading.Lock()
         self._error_model_instances = {}
+        self._pending_model_instance_errors: Dict[int, dict] = {}
         self._model_cache_by_instance = {}
         self._model_instance_by_instance_id = {}
+        self._starting_model_instances: Set[int] = set()
+        self._model_instance_start_lock = threading.Lock()
+        self._model_lifecycle_locks = WeakValueDictionary()
 
         self._port_reservations = port_reservations or WorkerPortReservations()
         self._assigned_ports = self._port_reservations.model_ports
@@ -551,7 +572,9 @@ class ServeManager(ContainerLogPersister):
         # local_assigned_ids - ∅ correctly reaps everything still tracked.
         for stale_id in reap_ids:
             stale = self._model_instance_by_instance_id.get(stale_id)
-            if stale is None:
+            if stale is None or stale_id in self._starting_model_instances:
+                # A start can still create a process or container. Keep its
+                # reservations until the next pass can stop the finished start.
                 continue
             logger.info(
                 f"Reaping stale model instance {stale.name} (id={stale_id}); "
@@ -646,6 +669,26 @@ class ServeManager(ContainerLogPersister):
                 WorkloadStatusStateEnum.PENDING,
                 WorkloadStatusStateEnum.INITIALIZING,
             ]:
+                if is_main_worker:
+                    subordinate_state = self._get_main_worker_distributed_state(
+                        model_instance
+                    )
+                    if (
+                        subordinate_state
+                        and subordinate_state.get("state")
+                        == ModelInstanceStateEnum.ERROR
+                        and not self._auto_restart_enabled(model_instance)
+                    ):
+                        # The main engine may wait for a follower indefinitely.
+                        # Surface a terminal follower failure instead of waiting
+                        # for an HTTP listener that cannot finish initializing.
+                        if subordinate_state["should_update"]:
+                            self._update_model_instance(
+                                model_instance.id,
+                                state=subordinate_state["state"],
+                                state_message=subordinate_state["state_message"],
+                            )
+                        continue
                 # "Still launching" is also what a crash loop looks like. A
                 # container that binds, fails and is restarted never reaches
                 # FAILED, so the branch below never runs and the instance sits
@@ -1148,7 +1191,8 @@ class ServeManager(ContainerLogPersister):
         model_instances = [
             mi
             for mi in self._model_instance_by_instance_id.values()
-            if mi.state == ModelInstanceStateEnum.RUNNING
+            if mi.worker_id == self._worker_id
+            and mi.state == ModelInstanceStateEnum.RUNNING
         ]
         if not model_instances:
             return
@@ -1291,6 +1335,9 @@ class ServeManager(ContainerLogPersister):
             )
             if not joined:
                 return
+            # Track local followers even while they wait to start. Reaping
+            # needs their workload metadata after the server deletes the row.
+            self._model_instance_by_instance_id[mi.id] = mi
             # Return if the main worker isn't initialized.
             if (
                 mi.distributed_servers.mode
@@ -1335,14 +1382,10 @@ class ServeManager(ContainerLogPersister):
             return
 
         if event.type == EventType.UPDATED:
-            # Caching matched ERROR instances for restart handling.
+            # Keep errors retryable even if the live recovery policy is unavailable.
+            # The background restart handler checks that policy before restarting.
             if mi.state == ModelInstanceStateEnum.ERROR:
-                model = self._get_model(mi)
-                if model.restart_on_error:
-                    self._error_model_instances[mi.id] = mi
-                    logger.trace(
-                        f"UPDATED event: cached error model instance {mi.name} for restart."
-                    )
+                self._error_model_instances[mi.id] = mi
                 return
 
             # Restart if scheduled and this is the assigned worker.
@@ -1354,27 +1397,7 @@ class ServeManager(ContainerLogPersister):
 
             # Start on subordinate worker if not started yet, or restart if failed.
             if not is_main_worker:
-                deployment_metadata = mi.get_deployment_metadata(self._worker_id)
-                workload_name = (
-                    deployment_metadata.name if deployment_metadata else mi.name
-                )
-                workload = get_workload(workload_name)
-                if not workload:
-                    self._start_model_instance(mi)
-                    logger.trace(
-                        f"UPDATED event: started model instance {mi.name} on subordinate worker."
-                    )
-                elif workload.state in [
-                    WorkloadStatusStateEnum.UNKNOWN,
-                    WorkloadStatusStateEnum.UNHEALTHY,
-                    WorkloadStatusStateEnum.INACTIVE,
-                    WorkloadStatusStateEnum.FAILED,
-                ]:
-                    self._stop_model_instance(mi, clear_restart_backoff=False)
-                    self._start_model_instance(mi)
-                    logger.trace(
-                        f"UPDATED event: restarted failed model instance {mi.name} on subordinate worker."
-                    )
+                self._start_or_restart_subordinate(mi)
 
             return
 
@@ -1389,6 +1412,47 @@ class ServeManager(ContainerLogPersister):
                 return
             self._start_model_instance(mi)
             logger.trace(f"CREATED event: started created model instance {mi.name}.")
+
+    def _start_or_restart_subordinate(self, mi: ModelInstance) -> None:
+        """Start a follower, respecting the deployment's recovery policy."""
+        deployment_metadata = mi.get_deployment_metadata(self._worker_id)
+        workload_name = deployment_metadata.name if deployment_metadata else mi.name
+        workload = get_workload(workload_name)
+        if workload and workload.state not in (
+            WorkloadStatusStateEnum.UNKNOWN,
+            WorkloadStatusStateEnum.UNHEALTHY,
+            WorkloadStatusStateEnum.INACTIVE,
+            WorkloadStatusStateEnum.FAILED,
+        ):
+            return
+
+        subordinate = next(
+            worker
+            for worker in mi.distributed_servers.subordinate_workers
+            if worker.worker_id == self._worker_id
+        )
+        initial_start = not workload and subordinate.state in (
+            ModelInstanceStateEnum.PENDING,
+            ModelInstanceStateEnum.SCHEDULED,
+            ModelInstanceStateEnum.DOWNLOADING,
+        )
+        # The parent can still be STARTING after this follower fails. Its
+        # local state distinguishes first launch from recovery on later events.
+        if not initial_start and not self._auto_restart_enabled(mi):
+            logger.debug(
+                "Skipping recovery of model instance %s on worker %s: "
+                "automatic restart is disabled.",
+                mi.name,
+                self._worker_id,
+            )
+            return
+
+        if workload:
+            self._stop_model_instance(mi, clear_restart_backoff=False)
+        self._start_model_instance(mi)
+        logger.trace(
+            f"UPDATED event: started model instance {mi.name} on subordinate worker."
+        )
 
     def _get_numbered_log_path(self, mi: ModelInstance) -> str:
         """Get log file path with restart count.
@@ -1793,7 +1857,36 @@ class ServeManager(ContainerLogPersister):
             except OSError as e:
                 logger.warning(f"Failed to delete serve log file {path}: {e}")
 
-    def _start_model_instance(self, mi: ModelInstance):  # noqa: C901
+    def _start_model_instance(self, mi: ModelInstance):
+        """Start once, deferring periodic reaping until process creation finishes."""
+        with self._model_instance_start_lock:
+            if mi.id in self._starting_model_instances:
+                return
+            self._starting_model_instances.add(mi.id)
+        try:
+            self._start_assigned_model_instance(mi)
+        finally:
+            with self._model_instance_start_lock:
+                self._starting_model_instances.discard(mi.id)
+
+    @_model_lifecycle
+    def _start_assigned_model_instance(self, mi: ModelInstance) -> None:
+        # A watch event may arrive after the instance has been deleted.
+        # Bypass the event cache before allocating ports or creating work.
+        try:
+            self._clientset.model_instances.get(id=mi.id, use_cache=False)
+        except NotFoundException:
+            logger.debug(
+                "Skipping start of deleted model instance %s (id=%s).", mi.name, mi.id
+            )
+            self._stop_model_instance(mi, delete_logs=True)
+            return
+        except Exception as e:
+            self._handle_model_instance_launch_failure(mi, e)
+            return
+        self._launch_model_instance(mi)
+
+    def _launch_model_instance(self, mi: ModelInstance):  # noqa: C901
         """
         Start model instance through a subprocess.
 
@@ -1804,6 +1897,10 @@ class ServeManager(ContainerLogPersister):
         if self._is_provisioning(mi):
             logger.warning(f"Model instance {mi.name} is provisioning. Skipping start.")
             return
+
+        # Restart teardown removes the local entry. Restore it before taking
+        # ports so failed starts and missed delete events can still be reaped.
+        self._model_instance_by_instance_id[mi.id] = mi
 
         # Follow a rename before anything writes under the new name, or the
         # instance's logs end up split across two directories.
@@ -1827,11 +1924,13 @@ class ServeManager(ContainerLogPersister):
             )
             sw = mi.distributed_servers.subordinate_workers[sw_pos]
 
+        ports_assigned = False
         try:
             model = self._get_model(mi)
             backend = get_backend(model)
 
             self._assign_ports(mi, model, backend)
+            ports_assigned = True
 
             logger.debug(
                 f"Starting model instance {mi.name}"
@@ -1896,32 +1995,54 @@ class ServeManager(ContainerLogPersister):
                 }
 
             self._update_model_instance(mi.id, **patch_dict)
+            self._error_model_instances.pop(mi.id, None)
+            self._pending_model_instance_errors.pop(mi.id, None)
             logger.info(
                 f"Started model instance {mi.name}"
                 f"{'' if not is_main_worker else f' on ports {mi.ports if mi.ports else [mi.port]}'}"
             )
 
         except Exception as e:
-            # Clean up provisioning process if started.
-            if mi.id in self._provisioning_processes:
-                self._stop_model_instance(mi)
+            # Reservations can exist before process creation succeeds. Delete
+            # any workload before releasing them, even if no PID was recorded.
+            if ports_assigned or mi.id in self._provisioning_processes:
+                try:
+                    self._stop_model_instance(mi)
+                except Exception as cleanup_error:
+                    logger.warning(
+                        "Failed to clean up model instance %s after launch failure: %s",
+                        mi.name,
+                        cleanup_error,
+                    )
 
-            # Get patch dict for main worker.
-            if is_main_worker:
-                patch_dict = {
-                    "state": ModelInstanceStateEnum.ERROR,
-                    "state_message": f"Failed to start model instance: {e}",
-                }
-            # Get patch dict for subordinate worker.
-            else:
-                sw.state = ModelInstanceStateEnum.ERROR
-                sw.state_message = f"Failed to start model instance: {e}"
-                patch_dict = {
-                    f"distributed_servers.subordinate_workers.{sw_pos}": sw,
-                }
+            self._handle_model_instance_launch_failure(mi, e)
 
-            self._update_model_instance(mi.id, **patch_dict)
-            logger.error(f"Failed to start model instance {mi.name}: {e}")
+    def _handle_model_instance_launch_failure(
+        self, mi: ModelInstance, error: Exception
+    ) -> None:
+        """Retain launch failures until error reporting and policy reads succeed."""
+        message = f"Failed to start model instance: {error}"
+        if mi.worker_id == self._worker_id:
+            patch_dict = {
+                "state": ModelInstanceStateEnum.ERROR,
+                "state_message": message,
+            }
+        else:
+            sw_pos, sw = next(
+                (i, sw)
+                for i, sw in enumerate(mi.distributed_servers.subordinate_workers)
+                if sw.worker_id == self._worker_id
+            )
+            sw.state = ModelInstanceStateEnum.ERROR
+            sw.state_message = message
+            patch_dict = {f"distributed_servers.subordinate_workers.{sw_pos}": sw}
+
+        self._model_instance_by_instance_id[mi.id] = mi
+        self._error_model_instances[mi.id] = mi
+        self._pending_model_instance_errors[mi.id] = patch_dict
+        logger.error(f"Failed to start model instance {mi.name}: {error}")
+        self._update_model_instance(mi.id, **patch_dict)
+        self._pending_model_instance_errors.pop(mi.id, None)
 
     def _assign_ports(
         self,
@@ -2333,6 +2454,7 @@ class ServeManager(ContainerLogPersister):
                 f"Model instance with ID {id} not found when trying to update."
             )
 
+    @_model_lifecycle
     def _stop_model_instance(
         self,
         mi: ModelInstance,
@@ -2371,6 +2493,7 @@ class ServeManager(ContainerLogPersister):
         self._provisioning_processes.pop(mi.id, None)
         self._port_reservations.release_model(mi.id)
         self._error_model_instances.pop(mi.id, None)
+        self._pending_model_instance_errors.pop(mi.id, None)
         self._model_cache_by_instance.pop(mi.id, None)
         self._model_instance_by_instance_id.pop(mi.id, None)
         if clear_restart_backoff:
@@ -2396,8 +2519,16 @@ class ServeManager(ContainerLogPersister):
         Args:
             mi: The model instance to restart.
         """
+        if patch_dict := self._pending_model_instance_errors.get(mi.id):
+            self._update_model_instance(mi.id, **patch_dict)
+            self._pending_model_instance_errors.pop(mi.id, None)
+
         if self._is_provisioning(mi):
             logger.debug(f"Model instance {mi.name} is provisioning. Skipping restart.")
+            return
+
+        if not self._auto_restart_enabled(mi):
+            self._error_model_instances.pop(mi.id, None)
             return
 
         restart_count = mi.restart_count or 0
@@ -2432,6 +2563,14 @@ class ServeManager(ContainerLogPersister):
         # Pop from error model instances,
         # if failed to restart next time, it will be added again in watch_model_instance_events().
         self._error_model_instances.pop(mi.id, None)
+
+    def _auto_restart_enabled(self, mi: ModelInstance) -> bool:
+        """Read the live recovery policy rather than the launch-time model cache."""
+        try:
+            model = self._clientset.models.get(mi.model_id)
+        except NotFoundException:
+            return False
+        return bool(model.restart_on_error)
 
     def _get_model(self, mi: ModelInstance) -> Model:
         """
@@ -2529,7 +2668,10 @@ class ServeManager(ContainerLogPersister):
         )  # Ensure the model instance is cached.
         return (
             instance.ports[0]
-            if instance and instance.state == ModelInstanceStateEnum.RUNNING
+            if instance
+            and instance.ports
+            and instance.worker_id == self._worker_id
+            and instance.state == ModelInstanceStateEnum.RUNNING
             else None
         )
 
