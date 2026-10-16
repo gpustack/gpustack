@@ -1,17 +1,19 @@
 import threading
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gpustack.schemas.cache_services import CacheServiceInstance
 from gpustack.worker.cache_service_logs import CacheServiceLogManager
 
 
 def instance():
-    return SimpleNamespace(
+    return CacheServiceInstance(
         id=11,
         name="cache-test",
-        get_deployment_metadata=lambda: SimpleNamespace(name="cache-svc-5-i11"),
+        cache_service_id=5,
+        worker_id=1,
+        cluster_id=1,
     )
 
 
@@ -54,6 +56,7 @@ def test_reattaching_writer_resumes_and_is_not_duplicated(tmp_path):
     entered = threading.Event()
 
     def persist(_name, _path, stop, resume):
+        assert _name == instance().name
         assert resume
         entered.set()
         stop.wait(2)
@@ -80,6 +83,7 @@ def test_archive_drains_exit_output_and_resumes_without_duplicates(
     ]
 
     def runtime_logs(**kwargs):
+        assert kwargs["name"] == instance().name
         assert kwargs["follow"] is False
         if output_type == "stream":
             return iter(lines)

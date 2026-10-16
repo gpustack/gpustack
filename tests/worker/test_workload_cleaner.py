@@ -37,7 +37,7 @@ def test_cleanup_keeps_workloads_of_this_workers_instances():
     )
 
     workloads = [
-        _cache_workload("cache-svc-5-i11"),
+        _cache_workload(instance.name),
         _cache_workload("cache-svc-5-i99"),
     ]
     with (

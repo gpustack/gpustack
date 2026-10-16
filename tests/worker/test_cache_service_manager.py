@@ -122,7 +122,7 @@ def _new_instance(**overrides) -> CacheServiceInstance:
     return CacheServiceInstance(**fields)
 
 
-INSTANCE_WORKLOAD_NAME = "cache-svc-5-i11"
+INSTANCE_WORKLOAD_NAME = "mooncake-svc-a1b2c"
 
 
 def _new_provider(**overrides) -> CacheProvider:
