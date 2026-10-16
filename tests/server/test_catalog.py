@@ -12,6 +12,8 @@ from gpustack.schemas.catalog_source import (
 from gpustack.schemas.model_sets import ModelSet
 from gpustack.schemas.gpu_devices import GPUDevice
 from gpustack.schemas.models import CategoryEnum, ModelCreate, SourceEnum
+from gpustack.scheduler.model_registry import detect_model_type
+from gpustack.scheduler.scheduler import get_vllm_override_architectures
 from gpustack.server.catalog import read_builtin_catalog_text
 from gpustack.schemas.source import SourceContent, SourceTypeEnum
 from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
@@ -44,6 +46,21 @@ def _packaged_model_set_specs(catalog_file=None):
         name: model_set.specs
         for name, model_set in _packaged_model_sets(catalog_file).items()
     }
+
+
+@pytest.mark.parametrize(
+    "catalog_file", ["model-catalog.yaml", "model-catalog-modelscope.yaml"]
+)
+def test_packaged_catalog_architecture_overrides(catalog_file):
+    catalog_path = pkg_resources.files("gpustack.assets").joinpath(catalog_file)
+    for model_set in _packaged_model_sets(str(catalog_path)).values():
+        for spec in model_set.specs:
+            architectures = get_vllm_override_architectures(spec)
+            if architectures:
+                categories = spec.categories or model_set.categories
+                assert (
+                    detect_model_type(architectures) in categories
+                ), f"{model_set.name}: {architectures} must match {categories}"
 
 
 @pytest.mark.parametrize(

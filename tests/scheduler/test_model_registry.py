@@ -20,6 +20,8 @@ from gpustack.schemas.models import CategoryEnum
         ("BertForMaskedLM", CategoryEnum.EMBEDDING),
         ("RobertaForTokenClassification", CategoryEnum.RERANKER),
         ("XLMRobertaForTokenClassification", CategoryEnum.RERANKER),
+        ("Qwen3ForSequenceClassification", CategoryEnum.RERANKER),
+        ("Qwen3VLForSequenceClassification", CategoryEnum.RERANKER),
         ("VibeVoiceAsrForConditionalGeneration", CategoryEnum.SPEECH_TO_TEXT),
     ],
 )
@@ -64,6 +66,14 @@ def test_vllm_031_model_categories(architecture, category, multimodal):
         ("Glm5NextForCausalLM", False),
         ("Glm5NextForConditionalGeneration", True),
         ("Qwen3_5ForConditionalGeneration", True),
+        ("KimiK3ForConditionalGeneration", True),
+        ("MuseGlimmerForConditionalGeneration", True),
+        ("MiMoV2ForCausalLM", False),
+        ("HYV3ForCausalLM", False),
+        ("GlmMoeDsaForCausalLM", False),
+        ("MiniMaxM3SparseForConditionalGeneration", True),
+        ("KimiK25ForConditionalGeneration", True),
+        ("DiffusionGemmaForBlockDiffusion", True),
     ],
 )
 def test_catalog_model_classification(architecture, multimodal):

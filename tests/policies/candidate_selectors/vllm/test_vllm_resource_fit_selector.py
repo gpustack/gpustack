@@ -69,6 +69,52 @@ def expected_candidate(
 
 
 @pytest.mark.parametrize(
+    "architecture,expected_gmu",
+    [
+        ("Qwen3ForSequenceClassification", 0.9),
+        ("Qwen3VLForConditionalGeneration", 0.9),
+        ("Qwen3VLForSequenceClassification", 0.9),
+        ("BertForSequenceClassification", 0),
+    ],
+)
+@pytest.mark.asyncio
+async def test_reranker_candidate_vram_reservation(config, architecture, expected_gmu):
+    worker = linux_nvidia_1_4090_24gx1()
+    model = new_model(
+        1,
+        "reranker",
+        huggingface_repo_id="test/reranker",
+        backend=BackendEnum.VLLM,
+        categories=[CategoryEnum.RERANKER],
+    )
+    selector = VLLMResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    pretrained = SimpleNamespace(
+        architectures=[architecture],
+        num_attention_heads=8,
+        max_position_embeddings=32768,
+    )
+    weight_vram = 2 * 1024**3
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=pretrained),
+        ),
+        patch(
+            "gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram",
+            new=AsyncMock(return_value=weight_vram),
+        ),
+    ):
+        candidates = await selector.select_candidates([worker])
+
+    assert len(candidates) == 1
+    card_vram = worker.status.gpu_devices[0].memory.total
+    expected_vram = int(card_vram * expected_gmu) if expected_gmu else weight_vram
+    assert candidates[0].computed_resource_claim.vram == {0: expected_vram}
+
+
+@pytest.mark.parametrize(
     "case_name, m, workers, expected_candidates, final_candidate_index",
     [
         # Manually select two GPUs from 2 worker.
