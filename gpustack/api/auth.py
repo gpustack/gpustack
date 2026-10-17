@@ -8,10 +8,10 @@ import aiohttp
 from aiocache import cached
 from fastapi import Depends, Request, WebSocket
 from starlette.datastructures import Headers
-from gpustack.config.config import Config
+from gpustack.config.config import Config, get_global_config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.server.db import async_session
-from typing import Annotated, Optional, Set, Tuple, List, Dict
+from typing import Annotated, Any, Optional, Set, Tuple, List, Dict
 from fastapi.security import (
     APIKeyCookie,
     APIKeyHeader,
@@ -53,6 +53,61 @@ SESSION_COOKIE_NAME = "gpustack_session"
 OIDC_ID_TOKEN_COOKIE_NAME = "gpustack_oidc_id_token"
 OIDC_STATE_COOKIE_NAME = "gpustack_oidc_state"
 SSO_LOGIN_COOKIE_NAME = "gpustack_sso_login"
+
+
+def auth_cookie_attrs(request: Request, max_age: int) -> Dict[str, Any]:
+    """Security attributes shared by every cookie this server sets.
+
+    One source for them, because they are set from a dozen places and a site
+    that spells them out by hand is a site that can fall behind. What makes that
+    hard to notice is that Starlette's own default ``samesite`` is ``"lax"``, the
+    same value we want: a site can omit it and behave identically, right up until
+    that stops being the default. ``path`` was the same story and is no longer,
+    because under a mount prefix the value we want is not ``"/"``.
+
+    ``secure`` has no such cover: it defaults to ``False``, so omitting it
+    downgrades the cookie outright.
+
+    It is decided per request from the scheme, which reads ``http`` whenever TLS
+    terminates at a proxy — uvicorn only honours ``X-Forwarded-Proto`` from
+    ``forwarded_allow_ips``, which defaults to loopback and is not configured.
+    So this returns the right answer only for a direct HTTPS listener until that
+    is addressed; it is still set here so there is one place to fix rather than
+    a dozen.
+
+    ``samesite="lax"`` is load-bearing rather than cosmetic: it keeps the session
+    cookie out of a cross-site ``<iframe>``, and since the server sends no
+    ``X-Frame-Options`` or CSP ``frame-ancestors``, it is the only thing standing
+    between a logged-in admin and a clickjacking page. Stated explicitly here so
+    that protection does not rest on a framework default.
+    """
+    return {
+        "httponly": True,
+        # Max-Age is authoritative in every browser that matters; Expires is
+        # sent alongside for ancient clients that only understand that one.
+        "max_age": max_age,
+        "expires": max_age,
+        "samesite": "lax",
+        "secure": request.url.scheme == "https",
+        "path": auth_cookie_path(),
+    }
+
+
+def auth_cookie_path() -> str:
+    """``Path`` for the cookies this server sets and deletes.
+
+    Its own function because deletion needs it without the rest: a
+    ``delete_cookie`` that omits ``path`` addresses a *different* cookie than the
+    one that was set, so logout would appear to work and change nothing.
+
+    Reads the global config rather than ``request.app.state`` so that both the
+    routes and the renewal middleware can call it, and so it degrades to the root
+    before a config is installed instead of raising.
+    """
+    cfg = get_global_config()
+    return cfg.get_cookie_path() if cfg else "/"
+
+
 SYSTEM_USER_PREFIX = "system/"
 SYSTEM_WORKER_USER_PREFIX = "system/worker/"
 GATEWAY_AUTH_TOKEN_HEADER = "X-GPUStack-Auth-Token"
