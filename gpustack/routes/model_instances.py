@@ -2,6 +2,7 @@ import asyncio
 import json
 import sys
 from contextlib import aclosing, suppress
+from datetime import datetime, timezone
 from typing import AsyncIterator, List, Optional, Tuple
 import aiohttp
 from fastapi import APIRouter, Request, status, HTTPException
@@ -939,3 +940,68 @@ async def delete_model_instance(session: SessionDep, ctx: TenantContextDep, id: 
         raise InternalServerErrorException(
             message=f"Failed to delete model instance: {e}"
         )
+
+
+@router.post("/{id}/isolate", response_model=ModelInstancePublic)
+async def isolate_model_instance(session: SessionDep, ctx: TenantContextDep, id: int):
+    """Take an unhealthy member out of rotation without stopping its container.
+
+    The member's state flips to ISOLATED, it is dropped from the router's
+    member list, and the timestamp + reason are persisted. The engine keeps
+    running so an operator can log into it and inspect the failure before
+    deciding whether to restart, fix, or discard it.
+    """
+    model_instance = await ModelInstance.one_by_id(session, id, for_update=True)
+    assert_resource_visible(
+        ctx,
+        model_instance,
+        not_found_message="Model instance not found",
+    )
+
+    if model_instance.state == ModelInstanceStateEnum.ISOLATED:
+        return model_instance
+
+    patch = {
+        "state": ModelInstanceStateEnum.ISOLATED,
+        "isolated_since": datetime.now(timezone.utc),
+        "isolation_reason": "Manual isolation via API.",
+    }
+    try:
+        await ModelInstanceService(session).update(model_instance, patch)
+    except Exception as e:
+        raise InternalServerErrorException(
+            message=f"Failed to isolate model instance: {e}"
+        )
+    return model_instance
+
+
+@router.post("/{id}/unisolate", response_model=ModelInstancePublic)
+async def unisolate_model_instance(session: SessionDep, ctx: TenantContextDep, id: int):
+    """Put an isolated member back into rotation.
+
+    Clears the isolation timestamp and reason, flips the state back to
+    RUNNING, and the next membership reconcile re-registers it with the
+    router.
+    """
+    model_instance = await ModelInstance.one_by_id(session, id, for_update=True)
+    assert_resource_visible(
+        ctx,
+        model_instance,
+        not_found_message="Model instance not found",
+    )
+
+    if model_instance.state != ModelInstanceStateEnum.ISOLATED:
+        return model_instance
+
+    patch = {
+        "state": ModelInstanceStateEnum.RUNNING,
+        "isolated_since": None,
+        "isolation_reason": None,
+    }
+    try:
+        await ModelInstanceService(session).update(model_instance, patch)
+    except Exception as e:
+        raise InternalServerErrorException(
+            message=f"Failed to unisolate model instance: {e}"
+        )
+    return model_instance

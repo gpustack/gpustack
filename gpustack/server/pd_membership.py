@@ -164,6 +164,11 @@ def desired_members(model: Model, instances: Sequence[ModelInstance]) -> Dict[st
             continue
         if getattr(instance, "draining_since", None) is not None:
             continue
+        if (
+            instance.state == ModelInstanceStateEnum.ISOLATED
+            or getattr(instance, "isolated_since", None) is not None
+        ):
+            continue
         url = member_url(instance)
         if url:
             members[url] = instance.role
