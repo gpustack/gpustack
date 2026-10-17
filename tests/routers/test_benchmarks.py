@@ -156,6 +156,49 @@ class TestValidateLoadConfig:
     def test_a_valid_range_passes(self):
         _validate_load_config(_create(auto_tune=True, lower_bound=4, upper_bound=1024))
 
+    @pytest.mark.parametrize("rate", [0.001, 0.1, 0.5, 1.5])
+    def test_fractional_request_rates_are_preserved(self, rate):
+        benchmark = _create(
+            load_type="fixed_rate",
+            auto_tune=True,
+            lower_bound=rate,
+            upper_bound=rate * 2,
+        )
+        _validate_load_config(benchmark)
+        assert benchmark.lower_bound == rate
+        assert benchmark.upper_bound == rate * 2
+
+        benchmark = _create(
+            load_type="fixed_rate", stages=[{"rate": rate, "max_requests": 10}]
+        )
+        _validate_load_config(benchmark)
+        assert benchmark.stages[0]["rate"] == rate
+
+    @pytest.mark.parametrize("field", ["lower_bound", "upper_bound", "stages"])
+    @pytest.mark.parametrize("rate", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_loads_are_refused(self, field, rate):
+        fields = {field: [{"rate": rate}] if field == "stages" else rate}
+        with pytest.raises(BadRequestException):
+            _validate_load_config(_create(load_type="fixed_rate", **fields))
+
+    @pytest.mark.parametrize("field", ["lower_bound", "upper_bound", "stages"])
+    @pytest.mark.parametrize("rate", [0.1, 0.5, 1.5])
+    def test_concurrency_requires_whole_streams(self, field, rate):
+        fields = {field: [{"rate": rate}] if field == "stages" else rate}
+        with pytest.raises(BadRequestException) as exc:
+            _validate_load_config(_create(load_type="concurrency", **fields))
+        assert "integer" in exc.value.message
+
+    def test_integer_valued_concurrency_floats_are_allowed(self):
+        _validate_load_config(
+            _create(load_type="concurrency", lower_bound=1.0, upper_bound=2.0)
+        )
+        _validate_load_config(_create(load_type="concurrency", stages=[{"rate": 1.0}]))
+
+    def test_a_stage_rate_outside_float_range_is_refused(self):
+        with pytest.raises(BadRequestException):
+            _validate_load_config(_create(stages=[{"rate": 10**400}]))
+
     @pytest.mark.parametrize(
         "field", ["max_points", "max_total_seconds", "max_seconds", "turns"]
     )
