@@ -1,3 +1,4 @@
+import json
 import time
 from collections import deque
 from types import SimpleNamespace
@@ -388,6 +389,15 @@ class TestBuildCommandArgs:
         )
         assert args[args.index("--axis") + 1] == "concurrency"
 
+    @pytest.mark.parametrize("rate", [0.001, 0.1, 0.5])
+    def test_manual_stages_preserve_fractional_request_rates(self, rate):
+        stages = [{"rate": rate, "max_requests": 10}]
+        args = BenchmarkRunner._build_command_args(
+            self._runner(stages=stages, load_type="fixed_rate")
+        )
+        assert args[args.index("--axis") + 1] == "rate"
+        assert json.loads(args[args.index("--stages") + 1]) == stages
+
     def test_non_stage_run_gets_the_global_max_requests(self):
         args = BenchmarkRunner._build_command_args(
             self._runner(load_type="fixed_rate", total_requests=500)
@@ -433,6 +443,8 @@ class TestBuildCommandArgs:
         "load_type,lower_bound,upper_bound,max_points,axis",
         [
             ("fixed_rate", 1, 4, 12, "rate"),
+            ("fixed_rate", 0.1, 0.5, 12, "rate"),
+            ("fixed_rate", 0.001, 0.1, 12, "rate"),
             ("concurrency", 4, 138, 3, "concurrency"),
         ],
     )

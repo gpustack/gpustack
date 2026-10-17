@@ -1,4 +1,5 @@
 from sqlmodel import col
+import math
 import re
 import yaml
 from datetime import datetime, timedelta, timezone
@@ -538,8 +539,7 @@ def _validate_stages(benchmark_in: BenchmarkCreate) -> None:
             raise BadRequestException(
                 message=f"Stage {i} must specify a numeric 'rate'"
             )
-        if rate <= 0:
-            raise BadRequestException(message=f"Stage {i} 'rate' must be > 0")
+        _validate_load_axis_value(rate, f"Stage {i} 'rate'", benchmark_in.load_type)
         # The per-stage constraints ride into `--stages` as JSON verbatim, so an
         # unusable one is not caught until the container acts on it — the same
         # reason the top-level budgets are checked in _validate_positive_knobs.
@@ -555,10 +555,9 @@ def _validate_stages(benchmark_in: BenchmarkCreate) -> None:
 
 def _validate_search_range(benchmark_in: BenchmarkCreate) -> None:
     lower, upper = benchmark_in.lower_bound, benchmark_in.upper_bound
-    if lower is not None and lower <= 0:
-        raise BadRequestException(message="Field lower_bound must be > 0")
-    if upper is not None and upper <= 0:
-        raise BadRequestException(message="Field upper_bound must be > 0")
+    for name, value in (("lower_bound", lower), ("upper_bound", upper)):
+        if value is not None:
+            _validate_load_axis_value(value, f"Field {name}", benchmark_in.load_type)
     if lower is not None and upper is not None and lower >= upper:
         raise BadRequestException(
             message=(
@@ -566,6 +565,20 @@ def _validate_search_range(benchmark_in: BenchmarkCreate) -> None:
                 f"({upper}); the search range would otherwise be empty."
             )
         )
+
+
+def _validate_load_axis_value(
+    value: float, label: str, load_type: Optional[BenchmarkLoadTypeEnum]
+) -> None:
+    """Request rates are continuous; concurrency counts whole in-flight streams."""
+    try:
+        finite = math.isfinite(value)
+    except OverflowError:
+        finite = False
+    if not finite or value <= 0:
+        raise BadRequestException(message=f"{label} must be > 0 and finite")
+    if load_type == BenchmarkLoadTypeEnum.CONCURRENCY and value % 1 != 0:
+        raise BadRequestException(message=f"{label} must be an integer for concurrency")
 
 
 def _validate_positive_knobs(benchmark_in: BenchmarkCreate) -> None:
