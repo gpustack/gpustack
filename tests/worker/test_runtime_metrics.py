@@ -118,7 +118,7 @@ vllm:prompt_tokens_created{model_name="m",engine="0"} 1700000000.0
 """
 
 
-def _aggregate(metrics, aggregator=None):
+def _aggregate(metrics, aggregator=None, runtime="vLLM", runtime_version="0.11.0"):
     aggregator = aggregator or RuntimeMetricsAggregator(
         cache={}, worker_id_getter=lambda: 1
     )
@@ -126,13 +126,51 @@ def _aggregate(metrics, aggregator=None):
     aggregator._process_endpoint_metrics(
         metrics,
         {"worker_id": "1", "model_name": "m", "model_instance_id": "1"},
-        "vLLM",
-        "0.11.0",
+        runtime,
+        runtime_version,
         unified,
         raw,
         aggregator._get_metrics_config(),
     )
     return unified, raw
+
+
+@pytest.mark.parametrize(
+    "runtime,runtime_version,counter",
+    [
+        ("SGLang", "0.5.21", "sglang:num_retracted_requests"),
+        ("vLLM", "0.11.0", "vllm:num_preemptions"),
+    ],
+)
+def test_preemptions_export_the_cumulative_count(runtime, runtime_version, counter):
+    text = (
+        "# TYPE sglang:num_retracted_reqs gauge\n"
+        "sglang:num_retracted_reqs 0\n"
+        f"# TYPE {counter}_total counter\n"
+        f"{counter}_total 12\n"
+    )
+    unified, _ = _aggregate(
+        _families(text, PROMETHEUS_CONTENT_TYPE),
+        runtime=runtime,
+        runtime_version=runtime_version,
+    )
+    family = unified["gpustack:request_preemptions"]
+    assert family.type == "counter"
+    assert [(s.name, s.value) for s in family.samples] == [
+        ("gpustack:request_preemptions_total", 12.0)
+    ]
+
+
+def test_sglang_draft_size_gauge_is_not_exported_as_a_cumulative_counter():
+    text = "# TYPE sglang:spec_num_draft_tokens gauge\nsglang:spec_num_draft_tokens 4\n"
+    unified, raw = _aggregate(
+        _families(text, PROMETHEUS_CONTENT_TYPE),
+        runtime="SGLang",
+        runtime_version="0.5.21",
+    )
+    assert "gpustack:spec_decode_draft_tokens" not in unified
+    assert raw["sglang:spec_num_draft_tokens"].type == "gauge"
+    assert [s.value for s in raw["sglang:spec_num_draft_tokens"].samples] == [4.0]
 
 
 @pytest.mark.parametrize(

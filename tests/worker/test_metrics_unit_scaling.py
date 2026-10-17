@@ -9,6 +9,7 @@ The case that forces this: SGLang reports KV transfer volume in MEGABYTES and
 duration in MILLISECONDS where vLLM reports bytes and seconds.
 """
 
+import pytest
 from prometheus_client.parser import text_string_to_metric_families
 
 from gpustack.utils.metrics import get_builtin_metrics_config
@@ -239,18 +240,21 @@ def test_both_sglang_router_wheels_reach_the_same_unified_names():
         assert got == (unified, 1.0), raw
 
 
-def test_the_current_preemption_gauge_is_the_one_read_on_current_engines():
-    """SGLang carries both `num_retracted_reqs` and `num_retracted_requests`
-    on current builds. Only the first is mapped at `"*"`; the second stays
-    behind a version floor, so the two never merge into one family.
-    """
+@pytest.mark.parametrize(
+    "engine_version",
+    [None, "0.4.4", "0.5.12.post1", "0.5.13", "0.5.15.post1", "0.5.21"],
+)
+def test_preemptions_map_the_cumulative_counter_not_the_resettable_gauge(
+    engine_version,
+):
+    """The retraction gauge resets each report tick; only the counter is cumulative."""
     config = get_builtin_metrics_config()
     assert get_unified_metric_family_name(
-        config, "sglang:num_retracted_reqs", "SGLang", "0.5.15.post1"
+        config, "sglang:num_retracted_requests", "SGLang", engine_version
     ) == ("gpustack:request_preemptions", 1.0)
     assert (
         get_unified_metric_family_name(
-            config, "sglang:num_retracted_requests", "SGLang", "0.5.15.post1"
+            config, "sglang:num_retracted_reqs", "SGLang", engine_version
         )
         is None
     )
