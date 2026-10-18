@@ -1714,8 +1714,8 @@ model_sets:
         - --reasoning-parser=deepseek_v4
         - --tool-call-parser=deepseek_v4
         - --enable-auto-tool-choice
-- name: DeepSeek-V4.1-Flash
-  description: DeepSeek-V4.1-Flash is a vision-language MoE model with a 552B-parameter backbone and 196B of Engram memory, activating 8B parameters per prompt token and 16B per output token. It supports a 1M-token context window and tool calling.
+- name: DeepSeek-V4.1-Flash-1017
+  description: DeepSeek-V4.1-Flash-1017 is a vision-language MoE model with a 552B-parameter backbone and 196B of Engram memory, activating 8B parameters per prompt token and 16B per output token. It supports a 1M-token context window and tool calling.
   home: https://www.deepseek.com
   icon: /static/catalog_icons/deepseek.png
   size: 552
@@ -1728,7 +1728,7 @@ model_sets:
     - tools
   licenses:
     - mit
-  release_date: "2026-09-10"
+  release_date: "2026-10-17"
   specs:
     - mode: standard
       quantization: MXFP4
@@ -1736,7 +1736,7 @@ model_sets:
         vendor: nvidia
         compute_capability: ">=9.0" # Hopper or later
       source: model_scope
-      model_scope_model_id: deepseek-ai/DeepSeek-V4.1-Flash
+      model_scope_model_id: deepseek-ai/DeepSeek-V4.1-Flash-1017
       backend: vLLM
       backend_parameters:
         - --max-model-len=65536
@@ -1752,7 +1752,7 @@ model_sets:
       gpu_filters:
         vendor: ascend
       source: model_scope
-      model_scope_model_id: Eco-Tech/DeepSeek-V4.1-Flash-w8a8
+      model_scope_model_id: Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8
       backend: vLLM
       env:
         VLLM_USE_V2_MODEL_RUNNER: "0"
