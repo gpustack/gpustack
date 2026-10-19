@@ -7,11 +7,12 @@ site_description: >-
   It lets you run models efficiently on your own GPU hardware by choosing the best inference engines,
   scheduling GPU resources, analyzing model architectures, and automatically configuring deployment parameters.
 
-# Repository
+# Hooks
 hooks:
   - hack/mkdocs_i18n.py
   - hack/mkdocs_multilingual.py
 
+# Repository
 repo_name: gpustack/gpustack
 repo_url: https://github.com/gpustack/gpustack
 

@@ -100,7 +100,7 @@ Docker から `docker: Error response from daemon: unknown or invalid runtime na
 +  --volume ${your-data-dir}:${your-data-dir}
 ...
 +   gpustack/gpustack:latest \
-+   --data-dir :${your-data-dir}
++   --data-dir ${your-data-dir}
 ```
 
 #### 外部データベースの移行 { #external-database-migration }
