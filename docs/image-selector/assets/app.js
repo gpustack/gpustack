@@ -632,10 +632,15 @@ function resolveLanguage(language) {
     return Object.hasOwn(CONFIG.i18n, language) ? language : 'en';
 }
 
+function escapeHTML(value) {
+    const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+    return String(value).replace(/[&<>"']/g, character => entities[character]);
+}
+
 // Global State - Default to English
 let state = {
     currentLang: resolveLanguage(document.documentElement.dataset.docsLanguage || localStorage.getItem('lang') || 'en'),
-    images: [], runnerImages: [], supportMatrix: {},
+    images: [], runnerImages: [], supportMatrix: { frameworks: {} },
     selectedComponent: 'all', selectedArch: 'amd64', selectedRegistry: 'docker-hub',
     selectedCard: null, selectedFrameworkVersion: null, selectedChipType: null,
     selectedBackends: [], availableVersions: [], selectedGpuStackVersion: null,
@@ -705,19 +710,36 @@ function persistSelection() {
 // Initialization
 async function init() {
     const saved = readSelection();
-    Object.assign(state, saved);
     initElements();
     bindEvents();
     updateLanguage();
     if (state.currentLang === 'zh' && !saved.selectedRegistry) state.selectedRegistry = 'china';
-    await loadData();
+    await loadData(saved.selectedGpuStackVersion);
+    // Resolve URL candidates through the loaded options before they become live state.
+    const card = Array.from(elements.cardSelector.querySelectorAll('.option-button'))
+        .find(button => button.dataset.value === saved.selectedCard && !button.disabled);
+    if (card) selectCard(card.dataset.value);
+    const framework = Array.from(elements.frameworkVersionSelect.querySelectorAll('option:not([value=""])'))
+        .find(option => option.value === saved.selectedFrameworkVersion
+            && (option.dataset.chipType || null) === (saved.selectedChipType || null));
+    if (framework) {
+        framework.selected = true;
+        selectFrameworkVersion(framework.value);
+    }
+    if (saved.selectedBackends) {
+        elements.backendSelector.querySelectorAll('input').forEach(input => {
+            input.checked = saved.selectedBackends.includes(input.value);
+        });
+        updateSelectedBackends();
+    }
     if (saved.selectedArch) selectArch(saved.selectedArch);
-    selectRegistry(state.selectedRegistry);
-    selectComponent(state.selectedComponent);
+    selectRegistry(saved.selectedRegistry || state.selectedRegistry);
+    selectComponent(saved.selectedComponent || state.selectedComponent);
+    if (saved.optionalImages) state.optionalImages = saved.optionalImages;
     Object.keys(elements.optionalImages).forEach(key => {
         elements.optionalImages[key].checked = state.optionalImages[key];
     });
-    switchGuideTab(state.selectedGuide);
+    switchGuideTab(saved.selectedGuide || state.selectedGuide);
     initializing = false;
     generateImageList();
     // Show content after initialization
@@ -880,17 +902,19 @@ function updateLanguage() {
         return `docker tag ${img} $PrivateRegistry/${destImg}\ndocker push $PrivateRegistry/${destImg}`;
     }).join('\n');
 
+    // The templates contain trusted HTML; dynamic image and version values are text.
+    const substitutions = {
+        version: escapeHTML(version),
+        server_images: serverImgs ? escapeHTML(serverImgs) : data.server_image_placeholder,
+        worker_images: workerImgs ? escapeHTML(workerImgs) : data.worker_image_placeholder,
+        tag_push_commands: escapeHTML(tagPushCmds || data.configuration_placeholder),
+        registry: escapeHTML(CONFIG.registries[state.selectedRegistry].registry)
+    };
     document.querySelectorAll('[data-i18n]').forEach(el => {
         const key = el.dataset.i18n;
         if (data[key]) {
-            let content = data[key];
-            // Dynamically replace placeholders
-            content = content.replace(/{{version}}/g, version);
-            content = content.replace(/{{server_images}}/g, serverImgs || data.server_image_placeholder);
-            content = content.replace(/{{worker_images}}/g, workerImgs || data.worker_image_placeholder);
-            content = content.replace(/{{tag_push_commands}}/g, tagPushCmds || data.configuration_placeholder);
-            content = content.replace(/{{registry}}/g, CONFIG.registries[state.selectedRegistry].registry);
-            el.innerHTML = content;
+            el.innerHTML = data[key].replace(/{{(version|server_images|worker_images|tag_push_commands|registry)}}/g,
+                (_, name) => substitutions[name]);
         }
     });
     const copyImagesEl = document.getElementById('copy-images-command');
@@ -901,14 +925,17 @@ function updateLanguage() {
 }
 
 // Load versions and initial data
-async function loadData() {
+async function loadData(requestedVersion = state.selectedGpuStackVersion) {
     try {
         const response = await fetch(CONFIG.versionsUrl);
         const data = await response.json();
-        state.availableVersions = data.versions || data;
-        if (!state.availableVersions.includes(state.selectedGpuStackVersion)) {
-            state.selectedGpuStackVersion = state.availableVersions[0];
+        const versions = Array.isArray(data) ? data : data?.versions;
+        if (!Array.isArray(versions) || !versions.length || versions.some(version => typeof version !== 'string' || !version)) {
+            throw new Error('Invalid version manifest');
         }
+        state.availableVersions = versions;
+        state.selectedGpuStackVersion = state.availableVersions.includes(requestedVersion)
+            ? requestedVersion : state.availableVersions[0];
         renderVersionSelector();
         await loadVersionData(state.selectedGpuStackVersion);
     } catch (error) {
@@ -922,6 +949,9 @@ async function loadVersionData(version) {
     const response = await fetch(`${CONFIG.versionsBaseUrl}${version}.json`);
     const data = await response.json();
     if (version !== state.selectedGpuStackVersion) return;
+    if (!Array.isArray(data) || data.some(image => typeof image !== 'string')) {
+        throw new Error('Invalid image manifest');
+    }
     state.images = data;
     state.runnerImages = data.filter(img => img.startsWith('gpustack/runner:'));
     parseSupportMatrix();
@@ -942,6 +972,7 @@ function renderVersionSelector() {
 
 // Handle version change
 async function selectGpuStackVersion(v) {
+    if (!state.availableVersions.includes(v)) return;
     state.selectedGpuStackVersion = v;
     await loadVersionData(v);
     generateImageList();
@@ -1107,7 +1138,7 @@ function renderBackends(fw, v, chip) {
     // Sort versions in reverse order
     Array.from(options.entries()).sort((a,b) => b[0].localeCompare(a[0])).forEach(([k, name]) => {
         const lbl = document.createElement('label'); lbl.className = 'checkbox-item';
-        lbl.innerHTML = `<input type="checkbox" value="${k}"><span>${name}</span>`;
+        lbl.innerHTML = `<input type="checkbox" value="${escapeHTML(k)}"><span>${escapeHTML(name)}</span>`;
         elements.backendSelector.appendChild(lbl);
     });
 }
