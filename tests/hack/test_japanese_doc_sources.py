@@ -10,7 +10,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 ENGLISH = ROOT / "docs"
-JAPANESE = ROOT / "docs-ja"
+JAPANESE = ROOT / "docs-i18n/ja"
 PAGES = sorted(path.relative_to(ENGLISH) for path in ENGLISH.rglob("*.md"))
 
 

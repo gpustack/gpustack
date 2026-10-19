@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from hack.mkdocs_i18n import LANGUAGES
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -17,6 +19,7 @@ def build_source(tmp_path):
     root = tmp_path / "source"
     (root / "hack").mkdir(parents=True)
     shutil.copy2(ROOT / "hack/build-docs.sh", root / "hack/build-docs.sh")
+    shutil.copy2(ROOT / "hack/serve-docs.sh", root / "hack/serve-docs.sh")
     binary = tmp_path / "bin"
     binary.mkdir()
     uv = binary / "uv"
@@ -61,10 +64,12 @@ def test_prepared_single_language_build_needs_no_bilingual_helpers(build_source)
 
 
 @pytest.mark.parametrize("mode", ["--offline", "offline"])
-@pytest.mark.parametrize("language", ["zh", "ja", "ru", "tr"])
+@pytest.mark.parametrize(
+    "language", [code for code in LANGUAGES if code != "en"] + ["fr"]
+)
 def test_complete_source_dispatches_all_languages(build_source, mode, language):
     root, env, log = build_source
-    (root / f"docs-{language}").mkdir()
+    (root / f"docs-i18n/{language}").mkdir(parents=True)
 
     result = invoke(root, env, mode)
 
@@ -78,7 +83,7 @@ def test_complete_source_dispatches_all_languages(build_source, mode, language):
 
 def test_unidentified_offline_build_stops_before_invoking_builder(build_source):
     root, env, log = build_source
-    (root / "docs-zh").mkdir()
+    (root / "docs-i18n/zh").mkdir(parents=True)
     env["DOCS_COMMIT"] = "unknown"
 
     result = invoke(root, env, "--offline")
@@ -86,3 +91,35 @@ def test_unidentified_offline_build_stops_before_invoking_builder(build_source):
     assert result.returncode != 0
     assert "cannot determine the commit" in result.stderr
     assert not log.exists()
+
+
+@pytest.mark.parametrize("multilingual", [False, True])
+def test_preview_dispatches_nested_translations_and_prepared_sources(
+    build_source, multilingual
+):
+    root, env, log = build_source
+    if multilingual:
+        (root / "docs-i18n/fr").mkdir(parents=True)
+
+    result = subprocess.run(
+        ["bash", str(root / "hack/serve-docs.sh")],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = json.loads(log.read_text())
+    assert args == (
+        [
+            "run",
+            "--group",
+            "docs",
+            "python",
+            str(root / "hack/build_docs.py"),
+            "--serve",
+        ]
+        if multilingual
+        else ["run", "mkdocs", "serve", "--livereload"]
+    )

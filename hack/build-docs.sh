@@ -90,7 +90,7 @@ EOF
 
 # A prepared single-language source can use this script without the optional
 # translation tree or the bilingual builder.
-if [[ -d "${ROOT_DIR}/docs-zh" || -d "${ROOT_DIR}/docs-ja" || -d "${ROOT_DIR}/docs-ru" || -d "${ROOT_DIR}/docs-tr" ]]; then
+if [[ -d "${ROOT_DIR}/docs-i18n" ]]; then
   args=("$@")
   if [[ "${1:-}" == "offline" ]]; then
     args[0]=--offline

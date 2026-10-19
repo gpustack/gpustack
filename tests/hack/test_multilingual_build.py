@@ -25,9 +25,9 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.fixture
 def multilingual_source(tmp_path):
     root = tmp_path / "documentation"
-    (root / "mkdocs").mkdir(parents=True)
+    (root / "docs-i18n/mkdocs").mkdir(parents=True)
     for language in i18n.LANGUAGES:
-        source = root / ("docs" if language == "en" else f"docs-{language}")
+        source = root / ("docs" if language == "en" else f"docs-i18n/{language}")
         (source / "user-guide").mkdir(parents=True)
         titles = {
             "en": "Cluster management",
@@ -48,7 +48,7 @@ def multilingual_source(tmp_path):
         )
         (source / "index.md").write_text(f"# {titles[language]}\n", encoding="utf-8")
         if language != "en":
-            (root / f"mkdocs/{language}.yml").write_text(
+            (root / f"docs-i18n/mkdocs/{language}.yml").write_text(
                 yaml.safe_dump({"nav_translations": {"Guide": titles[language]}}),
                 encoding="utf-8",
             )
@@ -533,7 +533,7 @@ def test_native_failure_preserves_published_output(multilingual_source):
     output = multilingual_source / "site"
     output.mkdir()
     (output / "previous.html").write_text("Previously published languages")
-    (multilingual_source / "mkdocs/ja.yml").unlink()
+    (multilingual_source / "docs-i18n/mkdocs/ja.yml").unlink()
 
     with pytest.raises(FileNotFoundError):
         builder.build_language(multilingual_source / "mkdocs.yml", output)
@@ -548,7 +548,7 @@ def test_native_strict_translation_warning_preserves_published_output(
     output = multilingual_source / "site"
     output.mkdir()
     (output / "previous.html").write_text("Previously published languages")
-    japanese = multilingual_source / "docs-ja/user-guide/guide.md"
+    japanese = multilingual_source / "docs-i18n/ja/user-guide/guide.md"
     japanese.write_text(japanese.read_text() + "\n[Missing](missing.md)\n")
 
     result = subprocess.run(
@@ -567,15 +567,34 @@ def test_native_strict_translation_warning_preserves_published_output(
 
 @pytest.mark.parametrize(
     "destination",
-    [".", "docs", "docs-ja/nested", "mkdocs", "mkdocs/nested", "hack", ".git"],
+    [
+        ".",
+        "docs",
+        "docs-i18n",
+        "docs-i18n/ja/nested",
+        "docs-i18n/mkdocs",
+        "docs-i18n/mkdocs/nested",
+        "docs-i18n/future",
+        "hack",
+        ".git",
+    ],
 )
 def test_builder_refuses_output_inside_sources(multilingual_source, destination):
+    originals = {
+        path.relative_to(multilingual_source): path.read_bytes()
+        for path in multilingual_source.rglob("*")
+        if path.is_file()
+    }
     with pytest.raises(ValueError, match="outside source trees"):
         builder.build_docs(
             multilingual_source,
             destination=multilingual_source / destination,
         )
-    assert (multilingual_source / "docs/user-guide/guide.md").is_file()
+    assert {
+        path.relative_to(multilingual_source): path.read_bytes()
+        for path in multilingual_source.rglob("*")
+        if path.is_file()
+    } == originals
 
 
 def test_version_navigation_refuses_unsupported_material_bundle(tmp_path):
