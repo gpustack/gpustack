@@ -135,7 +135,9 @@ roleRef:
 # persistent volumes, ...) and manage the per-principal namespaces those
 # resources live in. It also reads APIService objects: the operator's
 # worker-gateway readiness check ("check api services ready") queries the
-# aggregated API's Available condition with this SA. Callers are authorized on
+# aggregated API's Available condition with this SA. It reads and patches the
+# operator's Setting objects (gpustack.ai/settings) the same way: the server
+# reconciles the settings it manages through this proxy. Callers are authorized on
 # the GPUStack server side before anything reaches the worker, so this grant
 # is broad on purpose — script/Docker installs already proxy with the host's
 # admin kubeconfig.
@@ -152,6 +154,15 @@ rules:
       - "*"
     verbs:
       - "*"
+  - apiGroups:
+      - "gpustack.ai"
+    resources:
+      - "settings"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+      - "patch"
   - apiGroups:
       - ""
     resources:

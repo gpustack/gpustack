@@ -660,3 +660,32 @@ class TestGatewayTLSVersions:
             assert "is not a TLS version Higress accepts" in error
             # The operator has to recognize what they typed in the message.
             assert f'"{value}"' in error
+
+
+class TestWorkerOperatorSettingsAccess:
+    """The worker SA carries the server's operator-settings calls through the
+    cluster proxy, so it must be able to read and patch ``gpustack.ai``
+    Settings."""
+
+    def test_worker_can_read_and_patch_settings(self):
+        docs = render("--set", "worker.enabled=true")
+        roles = [
+            d
+            for d in docs
+            if d["kind"] == "ClusterRole"
+            and any(
+                "settings" in r.get("resources", [])
+                and "gpustack.ai" in r.get("apiGroups", [])
+                for r in d["rules"]
+            )
+        ]
+        assert len(roles) == 1
+        rule = next(r for r in roles[0]["rules"] if "settings" in r["resources"])
+        assert {"get", "patch"} <= set(rule["verbs"])
+        binding = next(
+            d
+            for d in docs
+            if d["kind"] == "ClusterRoleBinding"
+            and d["roleRef"]["name"] == roles[0]["metadata"]["name"]
+        )
+        assert binding["subjects"][0]["name"] == "gpustack-worker"
