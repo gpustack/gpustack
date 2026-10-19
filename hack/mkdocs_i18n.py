@@ -321,7 +321,7 @@ def replace_html_references(site: Path, replacements: Dict[str, str]) -> None:
 
 
 def prepare_version_navigation(site: Path, language: str) -> None:
-    """Keep Material's mike selector inside the same language across versions."""
+    """Prefer the same language across versions, falling back to English."""
     prefix = language_prefix(language)
     if not prefix:
         return
@@ -335,13 +335,51 @@ def prepare_version_navigation(site: Path, language: str) -> None:
         raise ValueError(
             "cannot find Material's JavaScript bundle for version navigation"
         )
+    # Resolve menu URLs before rendering so modified clicks and copied links use
+    # the same available language as Material's ordinary sitemap navigation.
     helpers = (
+        "const __docsVersionLanguagesCache=new Map();"
         "function __docsVersionRoot(config){return new URL('../',config.base).href;}"
-        "function __docsVersionTarget(config,version){return new URL('../'+version+"
+        "function __docsVersionLocalized(config,version){return new URL('../'+version+"
         f"'/{prefix}',__docsVersionRoot(config));}}"
+        "function __docsVersionTarget(config,version){"
+        "const target=__docsVersionLocalized(config,version);"
+        "const entry=__docsVersionLanguagesCache.get(target.href);"
+        "return entry&&!entry.available?new URL('../',target):target;}"
+        "function __docsVersionLanguages(config,versions,load){"
+        "return Promise.all(versions.map(version=>{"
+        "const target=__docsVersionLocalized(config,version.version);"
+        "let entry=__docsVersionLanguagesCache.get(target.href);"
+        "if(!entry){entry={available:false};"
+        "__docsVersionLanguagesCache.set(target.href,entry);"
+        "entry.ready=new Promise(resolve=>load(target).subscribe({"
+        "next:sitemap=>{entry.available=sitemap.size>0;resolve();},"
+        "error:()=>resolve(),complete:()=>resolve()}));}"
+        "return entry.ready;})).then(()=>versions);}"
     )
     for bundle in bundles:
         content = bundle.read_text(encoding="utf-8")
+        sitemap_pattern = (
+            r"(?P<switch>[\w$]+)\((?P<target>[\w$]+)=>"
+            r"(?P<load>[\w$]+)\((?P=target)\)\.pipe\("
+            r"[\w$]+\([\w$]+=>\{(?=[^}]*selectedVersionSitemap:)"
+        )
+        sitemap_matches = list(re.finditer(sitemap_pattern, content))
+        if len(sitemap_matches) != 1:
+            raise ValueError("unsupported Material mike version-navigation JavaScript")
+        sitemap = sitemap_matches[0]
+        versions_pattern = (
+            r'([\w$]+)\(new URL\("\.\./versions\.json",([\w$]+)\.base\)\)\.pipe\('
+        )
+        content, versions_count = re.subn(
+            versions_pattern,
+            lambda entry, sitemap=sitemap: (
+                f'{entry[1]}(new URL("../versions.json",{entry[2]}.base)).pipe('
+                f"{sitemap['switch']}(versions=>"
+                f"__docsVersionLanguages({entry[2]},versions,{sitemap['load']})),"
+            ),
+            content,
+        )
         fetch_pattern = r'new URL\("\.\./versions\.json",([\w$]+)\.base\)'
         match = re.search(fetch_pattern, content)
         if not match:
@@ -363,7 +401,7 @@ def prepare_version_navigation(site: Path, language: str) -> None:
         content = content.replace(
             current, f"__docsVersionRoot({variable}).match(/([^/]+)\\/?$/)"
         )
-        if (fetch_count, target_count, current_count) != (1, 2, 1):
+        if (versions_count, fetch_count, target_count, current_count) != (1, 1, 2, 1):
             raise ValueError("unsupported Material mike version-navigation JavaScript")
         content = "(() => {'use strict';" + helpers + content + "})();"
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]

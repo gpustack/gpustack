@@ -18,6 +18,11 @@ def test_docs_language_links_preserve_version_page_and_search_state():
     _run_node(DOCS_LANGUAGE_CHECK)
 
 
+def test_selector_restores_configuration_after_language_navigation():
+    fixture = REPOSITORY_ROOT / "tests/fixtures/image_selector_state.cjs"
+    _run_node(fixture.read_text())
+
+
 def _run_node(script):
     node = shutil.which("node")
     if node is None:
@@ -72,10 +77,8 @@ function app(docsLanguage, storedLanguage) {
         links.push(node);
     }
     const description = {content: ''};
-    const location = {
-        search: '?arch=arm64', hash: '#offline', assigned: null,
-        assign(url) { this.assigned = url; }
-    };
+    const location = new URL('https://docs.example/ja/image-selector/?arch=arm64#offline');
+    location.assign = function (url) { this.assigned = url; };
     const storage = {
         lang: storedLanguage,
         getItem(key) { return this[key]; },
@@ -102,7 +105,7 @@ function app(docsLanguage, storedLanguage) {
         createElement() { return new Node(); }
     };
     const context = {
-        document, localStorage: storage, window: {location},
+        document, localStorage: storage, window: {location}, URL, URLSearchParams,
         console: {error() {}}, setTimeout() {},
         fetch: async () => { throw Error('offline'); }
     };
@@ -172,25 +175,27 @@ const saveGuide = page.translations.find(
 assert.ok(saveGuide.innerHTML.includes('&lt;Server イメージ一覧&gt;'));
 page.bindEvents();
 page.links[2].events.click({preventDefault() {}});
-assert.equal(
-    page.location.assigned,
-    'https://docs.example/ja/image-selector/?arch=arm64#offline',
-    'integrated language navigation preserves query and fragment'
-);
+const languageTarget = new URL(page.location.assigned);
+assert.equal(languageTarget.pathname, '/ja/image-selector/');
+assert.equal(languageTarget.searchParams.get('arch'), 'arm64');
+assert.equal(languageTarget.hash, '#offline');
+assert.equal(JSON.parse(languageTarget.searchParams.get('selector')).selectedArch, 'amd64');
 for (const language of ['ru', 'tr']) {
     page.links.find(link => link.dataset.lang === language).events.click({
         preventDefault() {}
     });
-    assert.equal(page.location.assigned,
-        `https://docs.example/${language}/image-selector/?arch=arm64#offline`);
+    const destination = new URL(page.location.assigned);
+    assert.equal(destination.pathname, `/${language}/image-selector/`);
+    assert.equal(destination.searchParams.get('arch'), 'arm64');
+    assert.equal(destination.hash, '#offline');
 }
 
 const standalone = app(null, 'zh');
 standalone.state.selectedRegistry = 'china';
 standalone.setLanguage('ja');
 assert.equal(standalone.state.currentLang, 'ja');
-assert.equal(standalone.state.selectedRegistry, 'docker-hub');
-assert.equal(standalone.nodes['registry-china'].style.display, 'none');
+assert.equal(standalone.state.selectedRegistry, 'china');
+assert.equal(standalone.nodes['registry-china'].style.display, 'block');
 standalone.setLanguage('zh');
 assert.equal(standalone.state.selectedRegistry, 'china');
 assert.equal(standalone.nodes['registry-china'].style.display, 'block');
@@ -201,7 +206,7 @@ for (const language of ['ru', 'tr']) {
     assert.equal(standalone.nodes['current-lang'].textContent, labels.language_name);
     assert.equal(standalone.document.title, labels.title);
     assert.equal(standalone.description.content, labels.description);
-    assert.equal(standalone.nodes['registry-china'].style.display, 'none');
+    assert.equal(standalone.nodes['registry-china'].style.display, 'block');
     assert.ok(standalone.translations.every(node => node.innerHTML));
 }
 standalone.setLanguage('ja');

@@ -1,6 +1,7 @@
 // Run Material's own version menu and sitemap navigation against local mike output.
 const fs = require("fs"), path = require("path"), vm = require("vm");
-const [published, language] = process.argv.slice(2);
+const [published, language, targetVersion = "2.2", scenario = "{}"] = process.argv.slice(2);
+const options = JSON.parse(scenario);
 const prefix = language === "en" ? "" : `${language}/`;
 const current = `/docs/latest/${prefix}user-guide/guide/`;
 const location = { href: `https://docs.example.test${current}?q=language#cluster-management` };
@@ -52,9 +53,16 @@ class XMLHttpRequest {
   abort() {}
   send() {
     requests.push(this.url);
-    const filename = path.join(published, new URL(this.url).pathname.replace("/docs/", ""));
-    this.status = fs.existsSync(filename) ? 200 : 404;
-    this.response = { text: async () => fs.readFileSync(filename, "utf8") };
+    const relative = new URL(this.url).pathname.replace("/docs/", "");
+    const filename = path.join(published, relative);
+    this.status = (options.failedRequests || []).includes(relative) ? 503 : fs.existsSync(filename) ? 200 : 404;
+    this.response = { text: async () => {
+      let text = fs.readFileSync(filename, "utf8");
+      if ((options.omitCurrentPageFrom || []).includes(relative)) {
+        text = text.replace(/<url>\s*<loc>[^<]*\/user-guide\/guide\/<\/loc>[\s\S]*?<\/url>/g, "");
+      }
+      return text;
+    } };
     queueMicrotask(() => this.listeners.load());
   }
 }
@@ -85,12 +93,13 @@ const descendants = element => [element, ...element.children.flatMap(descendants
   const menu = topic.children.find(element => element.attributes.class === "md-version");
   if (!menu) throw new Error(`No version menu; requests: ${requests.join(", ")}`);
   const links = descendants(menu).filter(element => element.tagName === "a");
-  const target = links.find(element => element.href.includes("/2.2/"));
+  const target = links.find(element => new URL(element.href).pathname.startsWith(`/docs/${targetVersion}/`));
   if (!target) throw new Error("The older version is absent from Material's menu");
   const targetHref = target.href;
-  const event = { target, metaKey: false, ctrlKey: false, preventDefault() {} };
+  let prevented = false;
+  const event = { target, metaKey: options.modifier === "meta", ctrlKey: options.modifier === "ctrl", preventDefault() { prevented = true; } };
   for (const handler of body.listeners.click || []) handler(event);
   await settle();
-  process.stdout.write(JSON.stringify({ requests, targets: links.map(element => element.href), targetHref, navigated: location.href,
+  process.stdout.write(JSON.stringify({ requests, targets: links.map(element => element.href), targetHref, navigated: location.href, prevented,
     selected: descendants(menu).find(element => element.attributes.class === "md-version__current").innerHTML }));
 })();
