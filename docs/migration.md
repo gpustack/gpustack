@@ -96,7 +96,7 @@ Customizing the data directory via `--data-dir` or `GPUSTACK_DATA_DIR` is also s
 +  --volume ${your-data-dir}:${your-data-dir}
 ...
 +   gpustack/gpustack:latest \
-+   --data-dir :${your-data-dir}
++   --data-dir ${your-data-dir}
 ```
 
 #### External Database Migration

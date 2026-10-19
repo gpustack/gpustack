@@ -100,7 +100,7 @@ Veri dizininin `--data-dir` veya `GPUSTACK_DATA_DIR` aracılığıyla özelleşt
 +  --volume ${your-data-dir}:${your-data-dir}
 ...
 +   gpustack/gpustack:latest \
-+   --data-dir :${your-data-dir}
++   --data-dir ${your-data-dir}
 ```
 
 #### Harici Veritabanı Taşıma { #external-database-migration }

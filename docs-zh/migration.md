@@ -95,7 +95,7 @@ sudo docker run -d --name gpustack \
 +  --volume ${your-data-dir}:${your-data-dir}
 ...
 +   gpustack/gpustack:latest \
-+   --data-dir :${your-data-dir}
++   --data-dir ${your-data-dir}
 ```
 
 #### 外部数据库迁移 { #external-database-migration }
