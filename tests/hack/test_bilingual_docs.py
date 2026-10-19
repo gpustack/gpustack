@@ -25,14 +25,14 @@ def source_tree(tmp_path):
         "docs/user-guide/missing.md": "# Missing\n\nEnglish fallback.\n",
         "docs/user-guide/pending.md": "# Pending\n\nPublished English.\n",
         "docs/assets/chart.svg": '<svg xmlns="http://www.w3.org/2000/svg"/>',
-        "docs-zh/overview.md": "# 概览\n\n中文概览。\n",
-        "docs-zh/user-guide/guide.md": "# 指南\n\n中文指南。\n",
-        "docs-zh/user-guide/pending.md": (
+        "docs-i18n/zh/overview.md": "# 概览\n\n中文概览。\n",
+        "docs-i18n/zh/user-guide/guide.md": "# 指南\n\n中文指南。\n",
+        "docs-i18n/zh/user-guide/pending.md": (
             "---\ntranslation_status: pending\n---\n\nDraft translation.\n"
         ),
-        "docs-ja/overview.md": "# 概要\n\n日本語の概要。\n",
-        "docs-ja/user-guide/guide.md": "# ガイド\n\n日本語のガイド。\n",
-        "docs-ja/user-guide/pending.md": (
+        "docs-i18n/ja/overview.md": "# 概要\n\n日本語の概要。\n",
+        "docs-i18n/ja/user-guide/guide.md": "# ガイド\n\n日本語のガイド。\n",
+        "docs-i18n/ja/user-guide/pending.md": (
             "---\ntranslation_status: pending\n---\n\nDraft translation.\n"
         ),
         "hack/existing_hook.py": "# Shared documentation hook.\n",
@@ -42,9 +42,9 @@ def source_tree(tmp_path):
         ("ru", "Обзор", "Русское руководство."),
         ("tr", "Genel bakış", "Türkçe kılavuz."),
     ]:
-        files[f"docs-{code}/overview.md"] = f"# {title}\n"
-        files[f"docs-{code}/user-guide/guide.md"] = f"# {title}\n\n{guide}\n"
-        files[f"docs-{code}/user-guide/pending.md"] = (
+        files[f"docs-i18n/{code}/overview.md"] = f"# {title}\n"
+        files[f"docs-i18n/{code}/user-guide/guide.md"] = f"# {title}\n\n{guide}\n"
+        files[f"docs-i18n/{code}/user-guide/pending.md"] = (
             "---\ntranslation_status: pending\n---\n\nDraft translation.\n"
         )
     for relative, content in files.items():
@@ -74,7 +74,7 @@ def source_tree(tmp_path):
             "hooks": ["hack/existing_hook.py"],
             "extra": {"version": {"provider": "mike"}},
         },
-        "mkdocs/zh.yml": {
+        "docs-i18n/mkdocs/zh.yml": {
             "site_description": "中文文档",
             "nav_translations": {
                 "Overview": "概览",
@@ -83,7 +83,7 @@ def source_tree(tmp_path):
             },
             "theme_translations": {"Switch to dark mode": "切换到深色模式"},
         },
-        "mkdocs/ja.yml": {
+        "docs-i18n/mkdocs/ja.yml": {
             "site_description": "日本語ドキュメント",
             "nav_translations": {
                 "Overview": "概要",
@@ -103,7 +103,7 @@ def source_tree(tmp_path):
         },
     }
     for code, title in [("ru", "Обзор"), ("tr", "Genel bakış")]:
-        configs[f"mkdocs/{code}.yml"] = {
+        configs[f"docs-i18n/mkdocs/{code}.yml"] = {
             "nav_translations": {"Overview": title, "Guide": title}
         }
     for filename, config in configs.items():
@@ -247,14 +247,18 @@ def test_completed_translation_has_no_fallback_notice(source_tree, tmp_path, lan
     "language, translated, metadata, has_edit_url, expected_directory",
     [
         ("en", True, {}, True, "docs"),
-        ("zh", True, {}, True, "docs-zh"),
+        ("zh", True, {}, True, "docs-i18n/zh"),
         ("zh", False, {}, True, "docs"),
         ("zh", True, {"translation_status": "pending"}, True, "docs"),
         ("zh", True, {}, False, None),
-        ("ja", True, {}, True, "docs-ja"),
+        ("ja", True, {}, True, "docs-i18n/ja"),
         ("ja", False, {}, True, "docs"),
         ("ja", True, {"translation_status": "pending"}, True, "docs"),
         ("ja", True, {}, False, None),
+        ("ru", True, {}, True, "docs-i18n/ru"),
+        ("ru", False, {}, True, "docs"),
+        ("tr", True, {}, True, "docs-i18n/tr"),
+        ("tr", True, {"translation_status": "pending"}, True, "docs"),
     ],
 )
 def test_source_action_follows_the_displayed_translation(
@@ -408,7 +412,9 @@ def test_material_edit_and_view_actions_point_to_the_displayed_source(
         page = output / f"user-guide/{page_name}/index.html"
         parser.feed(page.read_text(encoding="utf-8"))
         directory = (
-            f"docs-{language}" if language != "en" and page_name == "guide" else "docs"
+            f"docs-i18n/{language}"
+            if language != "en" and page_name == "guide"
+            else "docs"
         )
         assert parser.links == {
             f"{repository}/edit/main/{directory}/user-guide/{page_name}.md",
@@ -542,11 +548,7 @@ def test_preview_build_and_live_reload_use_the_local_server_root(
     assert (servers[0].host, servers[0].port) == ("127.0.0.1", 8123)
     assert set(servers[0].watched) == {
         "docs",
-        "docs-zh",
-        "docs-ja",
-        "docs-ru",
-        "docs-tr",
-        "mkdocs",
+        "docs-i18n",
         "mkdocs.yml",
         "mkdocs.offline.yml",
         "hack",

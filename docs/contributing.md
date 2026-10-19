@@ -25,9 +25,9 @@ If you're fixing a small issue, you can simply submit a PR. However, if you're p
 
 If you have any updates to our documentation, feel free to file an issue with the `documentation` label or make a pull request.
 
-English documentation in `docs/` is the source of truth. Maintain Simplified Chinese, Japanese, Russian, and Turkish translations at matching paths under `docs-zh/`, `docs-ja/`, `docs-ru/`, and `docs-tr/`. Images and other shared assets are inherited from `docs/`. Preserve the English heading IDs in translated headings (for example, `## 安装 { #installation }`) so links and language switching remain consistent.
+English documentation in `docs/` is the source of truth. Maintain Simplified Chinese, Japanese, Russian, and Turkish translations at matching paths under `docs-i18n/zh/`, `docs-i18n/ja/`, `docs-i18n/ru/`, and `docs-i18n/tr/`. Images and other shared assets are inherited from `docs/`. Preserve the English heading IDs in translated headings (for example, `## 安装 { #installation }`) so links and language switching remain consistent.
 
-Translate navigation and theme labels in the corresponding `mkdocs/zh.yml`, `mkdocs/ja.yml`, `mkdocs/ru.yml`, and `mkdocs/tr.yml` files. Preserve commands, configuration keys, code examples, links, and model names when translating from English. Pages without a translation, or with `translation_status: pending` in their front matter, display the English source with a notice.
+Translate navigation and theme labels in the corresponding `docs-i18n/mkdocs/zh.yml`, `docs-i18n/mkdocs/ja.yml`, `docs-i18n/mkdocs/ru.yml`, and `docs-i18n/mkdocs/tr.yml` files. Preserve commands, configuration keys, code examples, links, and model names when translating from English. Pages without a translation, or with `translation_status: pending` in their front matter, display the English source with a notice.
 
 Run `make build-docs` to build all five languages, or `make serve-docs` to preview them with live reload. English is served at `/`; translated sites use `/zh/`, `/ja/`, `/ru/`, and `/tr/`.
 `bash hack/build-docs.sh --offline` builds the bundled site at `gpustack/help/`, served by GPUStack at `/help/` and the corresponding `/help/<language>/` paths. Each language has its own local search index. Japanese search uses the tokenizer bundled with the documentation theme and works offline.

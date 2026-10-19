@@ -239,7 +239,7 @@ def on_page_context(context, *, page, config, nav):
         and is_translated_page(page, settings)
     ):
         page.edit_url = page.edit_url.replace(
-            "/docs/", f"/docs-{settings['language']}/", 1
+            "/docs/", f"/docs-i18n/{settings['language']}/", 1
         )
     return context
 

@@ -37,8 +37,8 @@ def heading_ids(source):
 @pytest.mark.parametrize("language", ["ru", "tr"])
 def test_complete_source_inventory(language):
     assert set(PAGES) == {
-        path.relative_to(ROOT / f"docs-{language}")
-        for path in (ROOT / f"docs-{language}").rglob("*.md")
+        path.relative_to(ROOT / f"docs-i18n/{language}")
+        for path in (ROOT / f"docs-i18n/{language}").rglob("*.md")
     }
 
 
@@ -46,7 +46,7 @@ def test_complete_source_inventory(language):
 @pytest.mark.parametrize("relative", PAGES, ids=str)
 def test_translated_document_contract(language, relative):
     english = (ROOT / "docs" / relative).read_text()
-    translated = (ROOT / f"docs-{language}" / relative).read_text()
+    translated = (ROOT / f"docs-i18n/{language}" / relative).read_text()
     if relative.as_posix() == "index.md":
         assert translated == english
         return
@@ -83,7 +83,7 @@ def test_translated_document_contract(language, relative):
 
 @pytest.mark.parametrize("language", ["en", "zh", "ja", "ru", "tr"])
 def test_auto_appended_abbreviations_render_without_metadata(language):
-    source = ROOT / ("docs" if language == "en" else f"docs-{language}")
+    source = ROOT / ("docs" if language == "en" else f"docs-i18n/{language}")
     snippet = source / "includes/abbreviations.md"
     renderer = markdown.Markdown(
         extensions=["abbr", "toc", "pymdownx.snippets"],

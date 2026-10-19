@@ -154,7 +154,7 @@ def prepare_language(
         raise ValueError(f"unsupported documentation language: {language}")
     root, stage = root.resolve(), stage.resolve()
     validate_destination(root, stage)
-    translation_dir = root / f"docs-{language}"
+    translation_dir = root / "docs-i18n" / language
     sources = [root / "docs"]
     if language != "en":
         sources.append(translation_dir)
@@ -217,7 +217,7 @@ def prepare_language(
         child["strict"] = strict
     if language != "en":
         translation = yaml.safe_load(
-            (root / "mkdocs" / f"{language}.yml").read_text(encoding="utf-8")
+            (root / "docs-i18n/mkdocs" / f"{language}.yml").read_text(encoding="utf-8")
         )
         configure_translation(child, config_text, translation)
     config_path = stage / "mkdocs.language.yml"
@@ -309,10 +309,7 @@ def publish_site(source: Path, destination: Path, backup: Path) -> None:
 
 def validate_destination(root: Path, destination: Path) -> None:
     """Reject output paths that could replace documentation or builder sources."""
-    protected = [root / "docs", root / "mkdocs", root / "hack", root / ".git"]
-    protected.extend(
-        root / f"docs-{language}" for language in LANGUAGES if language != "en"
-    )
+    protected = [root / name for name in ("docs", "docs-i18n", "hack", ".git")]
     for source in protected:
         if (
             destination == source
@@ -376,10 +373,7 @@ def serve_docs(root: Path, address: str) -> None:
         server.error_handler = lambda code: (
             (preview / "404.html").read_bytes() if code == 404 else None
         )
-        watched = ["docs", "mkdocs", "mkdocs.yml", "mkdocs.offline.yml", "hack"]
-        for language in LANGUAGES:
-            if language != "en":
-                watched.append(f"docs-{language}")
+        watched = ["docs", "docs-i18n", "mkdocs.yml", "mkdocs.offline.yml", "hack"]
         for name in watched:
             server.watch(str(root / name))
         for language, name in LANGUAGES.items():
