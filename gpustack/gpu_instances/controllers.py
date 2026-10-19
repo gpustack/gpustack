@@ -1119,8 +1119,10 @@ class GPUInstanceController:
             if key is None:
                 # A deleted key must not block the instance's remaining keys.
                 logger.warning(
-                    f"GPU instance SSH public key '{ref.name}' referenced by "
-                    f"{instance.name} not found, skipping it"
+                    "GPU instance SSH public key '%s' referenced by %s "
+                    "not found, skipping it",
+                    ref.name,
+                    instance.name,
                 )
                 continue
             parts.append(key.spec.data)
