@@ -24,3 +24,16 @@ If you're fixing a small issue, you can simply submit a PR. However, if you're p
 ## Updating Documentation
 
 If you have any updates to our documentation, feel free to file an issue with the `documentation` label or make a pull request.
+
+English documentation lives in `docs/`. Add Simplified Chinese translations at the
+same relative paths under `docs-zh/`; images and other shared assets are inherited
+from `docs/`. Preserve the English heading IDs in translated headings (for example,
+`## 安装 { #installation }`) so links and language switching remain consistent.
+Navigation labels and theme labels are translated in `mkdocs.zh.yml`. Pages without
+a translation, or with `translation_status: pending` in their front matter, display
+the English source with a notice.
+
+Run `make build-docs` to build both languages, or `make serve-docs` to preview them
+with live reload. English is served at `/` and Chinese at `/zh/` in the preview.
+`bash hack/build-docs.sh --offline` builds the bundled site at `gpustack/help/`,
+served by GPUStack at `/help/` and `/help/zh/`. Each language has its own search index.
