@@ -112,6 +112,7 @@ _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE = "Inference health check failed."
 
 # Last-resort message for a workload that stopped serving without saying why.
 _WORKLOAD_FAILED_MESSAGE = "Inference server exited or unhealthy."
+_SUBORDINATE_ERROR_PREFIX = "Distributed serving error in subordinate worker "
 
 # vLLM excludes a ten-port window starting at VLLM_DP_MASTER_PORT from its
 # other automatic port selections. Protect that window for MP topologies
@@ -764,6 +765,12 @@ class ServeManager(ContainerLogPersister):
                                 sw_pos
                             ]
                             sw.state = ModelInstanceStateEnum.ERROR
+                            # Keep workload failures identifiable after the runtime
+                            # clears its diagnosis, without losing the details.
+                            if not failure_message.startswith(_WORKLOAD_FAILED_MESSAGE):
+                                failure_message = (
+                                    f"{_WORKLOAD_FAILED_MESSAGE} {failure_message}"
+                                )
                             sw.state_message = failure_message
                             patch_dict = {
                                 f"distributed_servers.subordinate_workers.{sw_pos}": sw,
@@ -818,13 +825,28 @@ class ServeManager(ContainerLogPersister):
                     if subordinate_state is None:
                         if model_instance.state == ModelInstanceStateEnum.RUNNING:
                             self._restart_backoff_counts.pop(model_instance.id, None)
+                            self._error_model_instances.pop(model_instance.id, None)
+                            self._pending_model_instance_errors.pop(
+                                model_instance.id, None
+                            )
                             continue
 
+                        # A recovered follower can clear its propagated failure;
+                        # independent leader failures still require recovery.
                         if (
                             model_instance.state == ModelInstanceStateEnum.ERROR
-                            or not is_ready(
-                                backend, model_instance, health_check_path, model
+                            and not (
+                                model_instance.distributed_servers
+                                and model_instance.distributed_servers.mode
+                                == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                                and (model_instance.state_message or "").startswith(
+                                    _SUBORDINATE_ERROR_PREFIX
+                                )
                             )
+                        ):
+                            continue
+                        if not is_ready(
+                            backend, model_instance, health_check_path, model
                         ):
                             continue
 
@@ -868,15 +890,22 @@ class ServeManager(ContainerLogPersister):
                     )
                     sw = model_instance.distributed_servers.subordinate_workers[sw_pos]
                     if sw.state == ModelInstanceStateEnum.RUNNING:
+                        self._error_model_instances.pop(model_instance.id, None)
+                        self._pending_model_instance_errors.pop(model_instance.id, None)
                         continue
                     if (
                         model_instance.distributed_servers.mode
                         == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
                     ):
-                        # Startup sets RUNNING directly in this mode. Only repair
-                        # an unreachable subordinate with a surviving workload;
-                        # the main worker still owns the engine readiness check.
-                        if sw.state != ModelInstanceStateEnum.UNREACHABLE:
+                        # Reconcile surviving workloads without starting work.
+                        # The leader owns engine readiness; explicit backend and
+                        # inference failures remain terminal.
+                        if workload.state != WorkloadStatusStateEnum.RUNNING or (
+                            sw.state == ModelInstanceStateEnum.ERROR
+                            and not (sw.state_message or "").startswith(
+                                _WORKLOAD_FAILED_MESSAGE
+                            )
+                        ):
                             continue
                         if recovery_worker is None:
                             recovery_worker = self._clientset.workers.get(
@@ -900,6 +929,12 @@ class ServeManager(ContainerLogPersister):
                     }
                 # Update model instance.
                 self._update_model_instance(model_instance.id, **patch_dict)
+                if (
+                    patch_dict.get("state") == ModelInstanceStateEnum.RUNNING
+                    or not is_main_worker
+                ):
+                    self._error_model_instances.pop(model_instance.id, None)
+                    self._pending_model_instance_errors.pop(model_instance.id, None)
 
     @staticmethod
     def _get_main_worker_distributed_state(
@@ -937,7 +972,7 @@ class ServeManager(ContainerLogPersister):
                 "should_update": model_instance.state != ModelInstanceStateEnum.ERROR,
                 "state": ModelInstanceStateEnum.ERROR,
                 "state_message": (
-                    f"Distributed serving error in subordinate worker "
+                    f"{_SUBORDINATE_ERROR_PREFIX}"
                     f"{error_sw.worker_ip}: {error_sw.state_message}."
                 ),
             }
@@ -1409,6 +1444,10 @@ class ServeManager(ContainerLogPersister):
             if mi.state == ModelInstanceStateEnum.ERROR:
                 self._error_model_instances[mi.id] = mi
                 return
+
+            if mi.state == ModelInstanceStateEnum.RUNNING:
+                self._error_model_instances.pop(mi.id, None)
+                self._pending_model_instance_errors.pop(mi.id, None)
 
             # Restart if scheduled and this is the assigned worker.
             if is_main_worker and mi.state == ModelInstanceStateEnum.SCHEDULED:
@@ -2767,6 +2806,24 @@ class ServeManager(ContainerLogPersister):
 
         if self._is_provisioning(mi):
             logger.debug(f"Model instance {mi.name} is provisioning. Skipping restart.")
+            return
+
+        # Watch events and the restart loop's queue snapshot can lag recovery.
+        # Bypass the watch cache to check whether an error still exists.
+        try:
+            mi = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+        except NotFoundException:
+            self._error_model_instances.pop(mi.id, None)
+            self._pending_model_instance_errors.pop(mi.id, None)
+            return
+
+        subordinate_error = mi.distributed_servers and any(
+            sw.worker_id == self._worker_id and sw.state == ModelInstanceStateEnum.ERROR
+            for sw in mi.distributed_servers.subordinate_workers or []
+        )
+        if mi.state != ModelInstanceStateEnum.ERROR and not subordinate_error:
+            self._error_model_instances.pop(mi.id, None)
+            self._pending_model_instance_errors.pop(mi.id, None)
             return
 
         if not self._auto_restart_enabled(mi):

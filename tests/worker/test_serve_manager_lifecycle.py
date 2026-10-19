@@ -299,6 +299,14 @@ def test_failed_existence_lookup_reports_error_and_retains_recovery(
     serve._update_model_instance.side_effect = None
     serve._update_model_instance.reset_mock()
     clientset.model_instances.get.side_effect = None
+    live_instance = instance.model_copy(deep=True)
+    if serve._worker_id == instance.worker_id:
+        live_instance.state = ModelInstanceStateEnum.ERROR
+    else:
+        live_instance.distributed_servers.subordinate_workers[0] = update[
+            "distributed_servers.subordinate_workers.0"
+        ]
+    clientset.model_instances.get.return_value = live_instance
     serve._restart_error_model_instance(serve._error_model_instances[instance.id])
     updates = [call.kwargs for call in serve._update_model_instance.call_args_list]
     assert len(updates) == int(report_fails) + int(restart_on_error)
@@ -725,6 +733,7 @@ def test_policy_read_failure_keeps_error_instance_until_policy_is_known(
     serve, clientset = manager
     instance = _instance()
     instance.state = ModelInstanceStateEnum.ERROR
+    clientset.model_instances.get.return_value = instance
     clientset.models.get.side_effect = ReadTimeout("policy unavailable")
     serve._handle_model_instance_event(Event(type=EventType.UPDATED, data=instance))
     assert instance.id in serve._error_model_instances
@@ -748,6 +757,7 @@ def test_disabling_auto_restart_cancels_queued_recovery(manager):
     serve, clientset = manager
     instance = _instance()
     instance.state = ModelInstanceStateEnum.ERROR
+    clientset.model_instances.get.return_value = instance
     serve._error_model_instances[instance.id] = instance
     clientset.models.get.return_value = serve._get_model.return_value.model_copy(
         update={"restart_on_error": False}
@@ -820,6 +830,7 @@ def test_deleted_model_cancels_queued_recovery(manager):
     serve, clientset = manager
     instance = _instance()
     instance.state = ModelInstanceStateEnum.ERROR
+    clientset.model_instances.get.return_value = instance
     serve._error_model_instances[instance.id] = instance
     clientset.models.get.side_effect = NotFoundException("Model deleted")
 

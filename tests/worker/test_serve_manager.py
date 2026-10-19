@@ -236,7 +236,7 @@ def test_sync_model_instances_state_marks_main_unreachable_when_subordinate_unre
 
 
 def test_restart_error_model_instance_uses_transient_backoff_count():
-    manager, _ = _build_serve_manager()
+    manager, clientset = _build_serve_manager()
     model_instance = new_model_instance(
         1,
         "restarted-instance",
@@ -246,6 +246,7 @@ def test_restart_error_model_instance_uses_transient_backoff_count():
     )
     model_instance.restart_count = 20
     model_instance.last_restart_time = datetime.now(timezone.utc)
+    clientset.model_instances.get.return_value = model_instance
 
     with (
         patch.object(manager, "_is_provisioning", return_value=False),
