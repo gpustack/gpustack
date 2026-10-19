@@ -1,5 +1,6 @@
 """Preserve commands and deep links when switching documentation languages."""
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -30,15 +31,39 @@ def test_selector_url_configuration_cannot_inject_html():
     _run_selector_fixture("checkSelectorStateSafety")
 
 
-def _run_selector_fixture(check):
+@pytest.mark.parametrize("check", ["checkStateRestoration", "checkSelectorStateSafety"])
+def test_selector_accepts_a_new_latest_release(tmp_path, check):
+    selector = tmp_path / "docs/image-selector"
+    shutil.copytree(REPOSITORY_ROOT / "docs/image-selector", selector)
+    fixture = tmp_path / "tests/fixtures/image_selector_state.cjs"
+    fixture.parent.mkdir(parents=True)
+    shutil.copyfile(
+        REPOSITORY_ROOT / "tests/fixtures/image_selector_state.cjs", fixture
+    )
+
+    index_path = selector / "versions/index.json"
+    index = json.loads(index_path.read_text())
+    latest_version = "v999.0.0"
+    shutil.copyfile(
+        selector / "versions" / f"{index['versions'][0]}.json",
+        selector / "versions" / f"{latest_version}.json",
+    )
+    index["versions"].insert(0, latest_version)
+    index_path.write_text(json.dumps(index))
+
+    _run_selector_fixture(check, tmp_path)
+
+
+def _run_selector_fixture(check, repository_root=REPOSITORY_ROOT):
     _run_node(
         'require("./tests/fixtures/image_selector_state.cjs").'
         + check
-        + '().catch(error => { console.error(error); process.exitCode = 1; });'
+        + '().catch(error => { console.error(error); process.exitCode = 1; });',
+        repository_root,
     )
 
 
-def _run_node(script):
+def _run_node(script, repository_root=REPOSITORY_ROOT):
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is required to execute the image selector")
@@ -46,7 +71,7 @@ def _run_node(script):
     result = subprocess.run(
         [node],
         input=script,
-        cwd=REPOSITORY_ROOT,
+        cwd=repository_root,
         text=True,
         capture_output=True,
         timeout=15,
