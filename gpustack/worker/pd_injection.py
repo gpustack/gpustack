@@ -280,8 +280,9 @@ class PDInjection(BaseModel):
     engine starts (Mooncake's transfer-engine config is read only from a file
     the engine is pointed at, so nothing else can carry it)."""
     host_mounts: List[str] = []
-    """Host paths to bind read-only at the same path inside the container.
-    See `PDModeRole.host_mounts` for why this cannot be a `files` entry."""
+    """Host directories to bind read-only at the same path inside the container."""
+    host_files: List[str] = []
+    """Host files to bind read-only without copying or generating their contents."""
 
 
 def render_pd_injection(
@@ -404,7 +405,20 @@ def render_pd_injection(
         )
     )
 
-    injection = PDInjection(env=env, args=args, files=files, host_mounts=host_mounts)
+    host_files = list(
+        dict.fromkeys(
+            render(path, context, context=f"{where} host file")
+            for path in (role.host_files or [])
+        )
+    )
+
+    injection = PDInjection(
+        env=env,
+        args=args,
+        files=files,
+        host_mounts=host_mounts,
+        host_files=host_files,
+    )
     _refuse_unrendered(injection, where)
     logger.info(
         "PD injection for role '%s' of mode '%s': %d env, %d args, %d files.",
@@ -451,7 +465,7 @@ def _refuse_unrendered(injection: "PDInjection", where: str) -> None:
     for token in injection.args:
         for match in _ANY_PLACEHOLDER.finditer(str(token)):
             unrendered.append(match.group(0))
-    for path in injection.host_mounts:
+    for path in [*injection.host_mounts, *injection.host_files]:
         # An unrendered mount path is the same class of failure as an
         # unrendered env: the bind either fails or creates an empty directory
         # where the transport expects a file, and neither says why.

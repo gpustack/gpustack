@@ -13,6 +13,7 @@ from transformers import PretrainedConfig
 
 from gpustack_runner.runner import BackendVersionedRunner
 from gpustack_runtime.deployer import (
+    ContainerFile,
     ContainerResources,
     ContainerMount,
     ContainerMountModeEnum,
@@ -1200,12 +1201,8 @@ class InferenceServer(ABC):
                 ),
             )
 
-        # The PD recipe's host mounts, unlike the model directory, apply under
-        # mirrored deployment too: mirroring copies what the *worker* container
-        # happens to have, and a transport's host file is a property of the
-        # recipe rather than of how the worker was launched. The runtime merges
-        # explicit mounts with mirrored ones and keeps the explicit entry, so
-        # naming a path the worker already carries is harmless.
+        # Recipe directories are required even when the worker's own mounts
+        # are mirrored. Explicit mounts take precedence over mirrored mounts.
         pd_injection = self._pd_injection()
         if pd_injection and pd_injection.host_mounts:
             declared = {m.path for m in mounts}
@@ -1219,6 +1216,18 @@ class InferenceServer(ABC):
                     ),
                 )
         return mounts
+
+    def _get_configured_files(self) -> List[ContainerFile]:
+        """Bind the PD role's host files read-only, including in mirrored deployments.
+
+        Returns:
+            Host file bindings without generated or copied contents.
+        """
+        injection = self._pd_injection()
+        return [
+            ContainerFile(path=path, mode=0o444)
+            for path in (injection.host_files if injection else [])
+        ]
 
     def _get_configured_ports(self) -> List[ContainerPort]:
         """

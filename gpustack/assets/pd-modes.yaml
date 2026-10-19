@@ -979,7 +979,7 @@ modes:
         # cross-host transfers fail on every rank with ret -1 while same-host
         # ones succeed, and the connector answers 200 with garbage rather than
         # failing.
-        host_mounts: ["/etc/hccn.conf"]
+        host_files: ["/etc/hccn.conf"]
         connector:
           kv_connector: "{{pd_connector}}"
           kv_role: kv_producer
@@ -1015,7 +1015,7 @@ modes:
           - { name: kv_port, count: "{{accelerator_count}}", inject_to: args }
         # Same requirement, and it has to be on both sides: decode is the one
         # that pulls, prefill is the one whose card addresses get resolved.
-        host_mounts: ["/etc/hccn.conf"]
+        host_files: ["/etc/hccn.conf"]
         connector:
           kv_connector: "{{pd_connector}}"
           kv_role: kv_consumer
