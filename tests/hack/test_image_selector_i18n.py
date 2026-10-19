@@ -19,8 +19,19 @@ def test_docs_language_links_preserve_version_page_and_search_state():
 
 
 def test_selector_restores_configuration_after_language_navigation():
-    fixture = REPOSITORY_ROOT / "tests/fixtures/image_selector_state.cjs"
-    _run_node(fixture.read_text())
+    _run_selector_fixture("checkStateRestoration")
+
+
+def test_selector_url_configuration_cannot_inject_html():
+    _run_selector_fixture("checkSelectorStateSafety")
+
+
+def _run_selector_fixture(check):
+    _run_node(
+        'require("./tests/fixtures/image_selector_state.cjs").'
+        + check
+        + '().catch(error => { console.error(error); process.exitCode = 1; });'
+    )
 
 
 def _run_node(script):

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync('docs/image-selector/assets/app.js', 'utf8');
+const html = fs.readFileSync('docs/image-selector/index.html', 'utf8');
 
 class Element {
     constructor(tagName = 'div', dataset = {}) {
@@ -14,8 +15,10 @@ class Element {
         this.textContent = '';
         this.checked = false;
         this.disabled = false;
+        this.htmlWrites = [];
     }
     set innerHTML(html) {
+        this.htmlWrites.push(html);
         this.children = [];
         for (const match of html.matchAll(/<(option|input)\b([^>]*)>/g)) {
             const element = new Element(match[1]);
@@ -57,6 +60,9 @@ class Element {
 
 function app(language, href, options = {}) {
     const nodes = {};
+    const created = [];
+    const translations = Array.from(html.matchAll(/<[^>]+data-i18n="([^"]+)"[^>]*>/g),
+        match => new Element('div', {i18n: match[1]}));
     const links = ['en', 'zh', 'ja', 'ru', 'tr'].map(lang => {
         const link = new Element('a', {lang});
         link.href = `https://docs.example/help/${lang === 'en' ? '' : `${lang}/`}image-selector/`;
@@ -82,14 +88,19 @@ function app(language, href, options = {}) {
         querySelector() { return null; },
         querySelectorAll(selector) {
             if (selector === '.dropdown-content a') return links;
+            if (selector === '[data-i18n]') return translations;
             return [];
         },
-        createElement(tag) { return new Element(tag); }
+        createElement(tag) {
+            const element = new Element(tag);
+            created.push(element);
+            return element;
+        }
     };
     const context = {
         document, URL, URLSearchParams, window: {location, history},
         localStorage: {getItem() { return 'zh'; }, setItem() {}},
-        console, setTimeout() {},
+        console: options.console || console, setTimeout() {},
         fetch: options.fetch || (async url => ({
             json: async () => JSON.parse(fs.readFileSync(`docs/image-selector/${url.replace(/^\.\//, '')}`, 'utf8'))
         }))
@@ -102,7 +113,9 @@ function app(language, href, options = {}) {
             switchGuideTab, setLanguage
         };
     `, context);
-    return {...context.API, nodes, links, location, history};
+    const htmlWrites = () => [...Object.values(nodes), ...created, ...translations]
+        .flatMap(element => element.htmlWrites);
+    return {...context.API, nodes, links, location, history, htmlWrites, translations};
 }
 
 const selection = state => JSON.parse(JSON.stringify({
@@ -119,7 +132,7 @@ const selection = state => JSON.parse(JSON.stringify({
 }));
 const commands = page => page.nodes['image-list'].textContent.split('\n').filter(line => line.startsWith('docker '));
 
-(async () => {
+async function checkStateRestoration() {
     const saved = {
         selectedGpuStackVersion: 'v2.2.2', selectedComponent: 'worker',
         selectedCard: 'ascend', selectedFrameworkVersion: '8.2', selectedChipType: '910b',
@@ -226,4 +239,114 @@ const commands = page => page.nodes['image-list'].textContent.split('\n').filter
     assert.deepEqual(Array.from(fallback.state.selectedBackends), []);
     assert.ok(commands(fallback).some(line => line.includes('runner:cann')));
     assert.ok(page.history.replaced.length, 'configuration updates replace the current history entry');
-})().catch(error => { console.error(error); process.exitCode = 1; });
+}
+
+async function checkSelectorStateSafety() {
+    const marker = '<span data-selector-marker="url"></span>';
+    const poisoned = {
+        selectedGpuStackVersion: marker,
+        selectedComponent: marker, selectedCard: marker,
+        selectedFrameworkVersion: marker, selectedChipType: marker,
+        selectedArch: marker, selectedRegistry: marker,
+        selectedBackends: [marker], optionalImages: {postgres: marker, monitoring: marker},
+        selectedGuide: marker, images: [marker], unknown: marker
+    };
+    const url = language => `https://docs.example/help/${language}/image-selector/?selector=${encodeURIComponent(JSON.stringify(poisoned))}`;
+    const safeHTML = page => {
+        assert.ok(page.htmlWrites().length, 'real translated guides are rendered');
+        assert.ok(page.htmlWrites().every(value => !value.includes(marker)),
+            'untrusted markup never reaches any innerHTML assignment');
+    };
+
+    for (const language of ['en', 'zh', 'ja', 'ru', 'tr']) {
+        for (const phase of ['versions', 'images']) {
+            for (const fails of [false, true]) {
+                let resolveManifest;
+                let rejectManifest;
+                let requested;
+                const waiting = new Promise(resolve => { requested = resolve; });
+                const pendingManifest = new Promise((resolve, reject) => {
+                    resolveManifest = resolve;
+                    rejectManifest = reject;
+                });
+                const requests = [];
+                const page = app(language, url(language), {
+                    console: {error() {}},
+                    fetch: async path => {
+                        requests.push(path);
+                        if ((path === './versions/index.json') === (phase === 'versions')) {
+                            requested();
+                            return pendingManifest;
+                        }
+                        return {json: async () => JSON.parse(fs.readFileSync(`docs/image-selector/${path.replace(/^\.\//, '')}`, 'utf8'))};
+                    }
+                });
+                const initialized = page.init();
+                await waiting;
+                safeHTML(page);
+                assert.equal(page.state.selectedGpuStackVersion, phase === 'versions' ? null : 'v2.2.3',
+                    'URL version is not live before actual version-list validation');
+                page.setLanguage(language === 'ja' ? 'ru' : 'ja');
+                safeHTML(page);
+                if (fails) rejectManifest(Error('manifest unavailable'));
+                else resolveManifest({json: async () => phase === 'versions'
+                    ? {versions: ['v2.2.3', 'v2.2.2']}
+                    : JSON.parse(fs.readFileSync('docs/image-selector/versions/v2.2.3.json', 'utf8'))});
+                await initialized;
+                safeHTML(page);
+                assert.ok(requests.every(path => !path.includes(marker)));
+                assert.equal(page.state.selectedGpuStackVersion, fails && phase === 'versions' ? null : 'v2.2.3');
+                assert.ok(!JSON.stringify(selection(page.state)).includes(marker),
+                    'failed or completed initialization cannot retain unvalidated URL fields');
+            }
+        }
+    }
+
+    for (const manifest of [null, {}, [], {versions: marker}, {versions: [null]}, {versions: []}]) {
+        const page = app('en', url('en'), {
+            console: {error() {}},
+            fetch: async () => ({json: async () => manifest})
+        });
+        await page.init();
+        safeHTML(page);
+        assert.equal(page.state.selectedGpuStackVersion, null, 'malformed version lists cannot validate URL candidates');
+        assert.deepEqual(Array.from(page.state.images), []);
+    }
+
+    const badImages = app('en', url('en'), {
+        console: {error() {}},
+        fetch: async path => ({json: async () => path.endsWith('index.json')
+            ? {versions: ['v2.2.3']} : [null, {image: marker}]})
+    });
+    await badImages.init();
+    safeHTML(badImages);
+    assert.deepEqual(Array.from(badImages.state.images), [], 'malformed images cannot become live state');
+
+    const tokens = "$&|$$|$`|$'|{{registry}}";
+    const manifestMarker = '<span data-selector-marker="manifest"></span>';
+    const images = [
+        'gpustack/runner:cuda13.0-vllm0.25.1',
+        `gpustack/runtime:pause-${manifestMarker}-${tokens}`
+    ];
+    const version = `v2.2.3-${manifestMarker}-${tokens}`;
+    for (const language of ['en', 'zh', 'ja', 'ru', 'tr']) {
+        const page = app(language, 'https://docs.example/help/image-selector/', {
+            fetch: async path => ({json: async () => path.endsWith('index.json') ? {versions: [version]} : images})
+        });
+        await page.init();
+        const rendered = page.htmlWrites().join('\n');
+        assert.ok(!rendered.includes(manifestMarker), 'dynamic manifest text is HTML encoded');
+        assert.ok(rendered.includes('&lt;span data-selector-marker=&quot;manifest&quot;&gt;&lt;/span&gt;'));
+        assert.ok(rendered.includes('$&amp;|$$|$`|$&#39;|{{registry}}'),
+            'replacement tokens and nested-looking placeholders remain literal text');
+        assert.ok(commands(page).some(command => command.includes(manifestMarker)),
+            'image commands remain plain text rather than executable markup');
+        assert.ok(!rendered.includes('&amp;lt;Server'), 'static placeholder entities are not escaped twice');
+    }
+}
+
+module.exports = {checkStateRestoration, checkSelectorStateSafety};
+if (require.main === module) {
+    Promise.resolve().then(checkStateRestoration).then(checkSelectorStateSafety)
+        .catch(error => { console.error(error); process.exitCode = 1; });
+}
