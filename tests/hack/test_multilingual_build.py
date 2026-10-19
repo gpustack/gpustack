@@ -127,7 +127,8 @@ def test_ordinary_mkdocs_build_publishes_every_language_and_native_search(
     assert not list(multilingual_source.glob(".docs-build-*"))
 
 
-def test_mike_publishes_version_and_latest_with_every_language(multilingual_source):
+@pytest.fixture
+def mike_publication(multilingual_source):
     environment = {
         **os.environ,
         "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
@@ -153,6 +154,19 @@ def test_mike_publishes_version_and_latest_with_every_language(multilingual_sour
     command(
         "git", "-c", "commit.gpgsign=false", "commit", "-qm", "documentation fixture"
     )
+    legacy = yaml.safe_load((multilingual_source / "mkdocs.yml").read_text())
+    legacy["hooks"] = []
+    legacy_config = multilingual_source / "mkdocs.legacy.yml"
+    legacy_config.write_text(yaml.safe_dump(legacy), encoding="utf-8")
+    command(
+        str(Path(sys.executable).parent / "mike"),
+        "deploy",
+        "2.0",
+        "--config-file",
+        str(legacy_config),
+        "--ignore-remote-status",
+    )
+    legacy_config.unlink()
     command(
         str(Path(sys.executable).parent / "mike"),
         "deploy",
@@ -168,6 +182,13 @@ def test_mike_publishes_version_and_latest_with_every_language(multilingual_sour
         "copy",
         "--ignore-remote-status",
     )
+    published = multilingual_source.parent / "published"
+    command("git", "worktree", "add", "--detach", str(published), "gh-pages")
+    return command, published
+
+
+def test_mike_publishes_version_and_latest_with_every_language(mike_publication):
+    command, published = mike_publication
 
     versions = json.loads(command("git", "show", "gh-pages:versions.json"))
     assert versions[0]["version"] == "2.3"
@@ -188,8 +209,6 @@ def test_mike_publishes_version_and_latest_with_every_language(multilingual_sour
                     + "user-guide/guide/"
                 )
     assert command("git", "remote") == ""
-    published = multilingual_source.parent / "published"
-    command("git", "worktree", "add", "--detach", str(published), "gh-pages")
     node = shutil.which("node")
     if node:
         for language in i18n.LANGUAGES:
@@ -214,6 +233,85 @@ def test_mike_publishes_version_and_latest_with_every_language(multilingual_sour
                 == target + "user-guide/guide/?q=language#cluster-management"
             )
             assert result["requests"][-1] == target + "sitemap.xml"
+
+
+def test_version_menu_falls_back_to_real_english_only_versions(mike_publication):
+    command, published = mike_publication
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to exercise Material's version menu")
+
+    def navigate(language, version, options=None):
+        return json.loads(
+            command(
+                node,
+                str(ROOT / "tests/fixtures/docs_version_menu.cjs"),
+                str(published),
+                language,
+                version,
+                json.dumps(options or {}),
+            )
+        )
+
+    english = "https://docs.example.test/docs/2.0/"
+    for language in i18n.LANGUAGES:
+        if language == "en":
+            continue
+        assert not (published / "2.0" / language).exists()
+        result = navigate(language, "2.0")
+        assert result["targetHref"] == english
+        assert result["navigated"] == (
+            english + "user-guide/guide/?q=language#cluster-management"
+        )
+        assert (
+            result["requests"].count(
+                f"https://docs.example.test/docs/2.0/{language}/sitemap.xml"
+            )
+            == 1
+        )
+        assert result["requests"][-1] == english + "sitemap.xml"
+        assert result["prevented"]
+        for modifier in ("ctrl", "meta"):
+            result = navigate(language, "2.0", {"modifier": modifier})
+            assert result["targetHref"] == english
+            assert not result["prevented"]
+            assert result["navigated"].startswith(
+                f"https://docs.example.test/docs/latest/{language}/"
+            )
+
+        localized = f"https://docs.example.test/docs/2.2/{language}/"
+        result = navigate(
+            language,
+            "2.2",
+            {"omitCurrentPageFrom": [f"2.2/{language}/sitemap.xml"]},
+        )
+        assert result["targetHref"] == localized
+        assert result["navigated"] == localized
+        result = navigate(
+            language,
+            "2.0",
+            {"omitCurrentPageFrom": ["2.0/sitemap.xml"]},
+        )
+        assert result["targetHref"] == english
+        assert result["navigated"] == english
+
+        english_newer = "https://docs.example.test/docs/2.2/"
+        result = navigate(
+            language,
+            "2.2",
+            {"failedRequests": [f"2.2/{language}/sitemap.xml"]},
+        )
+        assert result["targetHref"] == english_newer
+        assert result["navigated"] == (
+            english_newer + "user-guide/guide/?q=language#cluster-management"
+        )
+        result = navigate(
+            language,
+            "2.2",
+            {"failedRequests": [f"2.2/{language}/sitemap.xml", "2.2/sitemap.xml"]},
+        )
+        assert result["targetHref"] == english_newer
+        assert result["navigated"] == english_newer
 
 
 def test_real_japanese_worker_finds_mixed_script_queries(multilingual_source):

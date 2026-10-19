@@ -639,19 +639,87 @@ let state = {
     selectedComponent: 'all', selectedArch: 'amd64', selectedRegistry: 'docker-hub',
     selectedCard: null, selectedFrameworkVersion: null, selectedChipType: null,
     selectedBackends: [], availableVersions: [], selectedGpuStackVersion: null,
-    optionalImages: { 'postgres': false, 'monitoring': false }
+    optionalImages: { 'postgres': false, 'monitoring': false }, selectedGuide: 'save-load'
 };
 
 // DOM Elements
 const elements = {};
+let initializing = true;
+
+// Only user choices belong in the URL; manifests and available options are loaded afresh.
+function getSelection() {
+    const { selectedGpuStackVersion, selectedComponent, selectedCard,
+        selectedFrameworkVersion, selectedChipType, selectedArch, selectedRegistry,
+        selectedBackends, optionalImages, selectedGuide } = state;
+    return { selectedGpuStackVersion, selectedComponent, selectedCard,
+        selectedFrameworkVersion, selectedChipType, selectedArch, selectedRegistry,
+        selectedBackends, optionalImages, selectedGuide };
+}
+
+function readSelection() {
+    try {
+        const saved = JSON.parse(new URLSearchParams(window.location.search).get('selector'));
+        if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
+        const selection = {};
+        const options = {
+            selectedComponent: ['all', 'server', 'worker'],
+            selectedArch: ['amd64', 'arm64', 'auto'],
+            selectedRegistry: Object.keys(CONFIG.registries),
+            selectedCard: Object.keys(CONFIG.cardFrameworkMap),
+            selectedGuide: ['save-load', 'tag-push', 'copy-images']
+        };
+        Object.entries(options).forEach(([key, values]) => {
+            if (values.includes(saved[key])) selection[key] = saved[key];
+        });
+        // Version, framework, chip and backend choices are checked against the selected manifest.
+        ['selectedGpuStackVersion', 'selectedFrameworkVersion', 'selectedChipType'].forEach(key => {
+            if (typeof saved[key] === 'string') selection[key] = saved[key];
+        });
+        if (Array.isArray(saved.selectedBackends)) {
+            selection.selectedBackends = saved.selectedBackends.filter(value => typeof value === 'string');
+        }
+        if (saved.optionalImages && typeof saved.optionalImages === 'object') {
+            selection.optionalImages = {
+                postgres: saved.optionalImages.postgres === true,
+                monitoring: saved.optionalImages.monitoring === true
+            };
+        }
+        return selection;
+    } catch {
+        return {};
+    }
+}
+
+function selectionUrl(href) {
+    const url = new URL(href, window.location.href);
+    url.searchParams.set('selector', JSON.stringify(getSelection()));
+    return url;
+}
+
+function persistSelection() {
+    if (initializing || !window.history?.replaceState) return;
+    const url = selectionUrl(window.location.href);
+    window.history.replaceState(window.history.state, '', url.href);
+}
 
 // Initialization
 async function init() {
+    const saved = readSelection();
+    Object.assign(state, saved);
     initElements();
     bindEvents();
     updateLanguage();
-    if (state.currentLang === 'zh') selectRegistry('china');
+    if (state.currentLang === 'zh' && !saved.selectedRegistry) state.selectedRegistry = 'china';
     await loadData();
+    if (saved.selectedArch) selectArch(saved.selectedArch);
+    selectRegistry(state.selectedRegistry);
+    selectComponent(state.selectedComponent);
+    Object.keys(elements.optionalImages).forEach(key => {
+        elements.optionalImages[key].checked = state.optionalImages[key];
+    });
+    switchGuideTab(state.selectedGuide);
+    initializing = false;
+    generateImageList();
     // Show content after initialization
     document.body.classList.add('i18n-ready');
 }
@@ -706,11 +774,16 @@ function bindEvents() {
     });
     elements.dropdownLinks.forEach(link => {
         link.addEventListener('click', (e) => {
-            e.preventDefault();
             if (document.documentElement.dataset.docsLanguage) {
-                window.location.assign(link.href + window.location.search + window.location.hash);
+                const target = new URL(link.href, window.location.href);
+                if (target.origin !== window.location.origin || !/\/image-selector\/(?:index\.html)?$/.test(target.pathname)) return;
+                e.preventDefault();
+                target.search = window.location.search;
+                target.hash = window.location.hash;
+                window.location.assign(selectionUrl(target.href).href);
                 return;
             }
+            e.preventDefault();
             setLanguage(link.dataset.lang);
         });
     });
@@ -723,12 +796,6 @@ function setLanguage(lang) {
     state.currentLang = lang;
     localStorage.setItem('lang', lang);
     updateLanguage();
-    // Auto-switch registry when language changes
-    if (state.currentLang !== 'zh' && state.selectedRegistry === 'china') {
-        selectRegistry('docker-hub');
-    } else if (state.currentLang === 'zh') {
-        selectRegistry('china');
-    }
     renderCardSelector();
     generateImageList();
 }
@@ -829,8 +896,8 @@ function updateLanguage() {
     const copyImagesEl = document.getElementById('copy-images-command');
     if (copyImagesEl) copyImagesEl.textContent = data.copy_images_cmd;
 
-    // Offer the regional mirror in its target language.
-    elements.registryChina.style.display = (lang === 'zh') ? 'block' : 'none';
+    // Keep a configured mirror visible when the document language changes.
+    elements.registryChina.style.display = (lang === 'zh' || state.selectedRegistry === 'china') ? 'block' : 'none';
 }
 
 // Load versions and initial data
@@ -839,7 +906,9 @@ async function loadData() {
         const response = await fetch(CONFIG.versionsUrl);
         const data = await response.json();
         state.availableVersions = data.versions || data;
-        state.selectedGpuStackVersion = state.availableVersions[0];
+        if (!state.availableVersions.includes(state.selectedGpuStackVersion)) {
+            state.selectedGpuStackVersion = state.availableVersions[0];
+        }
         renderVersionSelector();
         await loadVersionData(state.selectedGpuStackVersion);
     } catch (error) {
@@ -852,6 +921,7 @@ async function loadData() {
 async function loadVersionData(version) {
     const response = await fetch(`${CONFIG.versionsBaseUrl}${version}.json`);
     const data = await response.json();
+    if (version !== state.selectedGpuStackVersion) return;
     state.images = data;
     state.runnerImages = data.filter(img => img.startsWith('gpustack/runner:'));
     parseSupportMatrix();
@@ -939,20 +1009,31 @@ function renderCardSelector() {
         if (!hasData) btn.title = CONFIG.i18n[state.currentLang].no_available_images;
         elements.cardSelector.appendChild(btn);
     });
-    const activeBtn = elements.cardSelector.querySelector(`[data-value="${state.selectedCard}"]`) || elements.cardSelector.querySelector('[data-value="nvidia"]');
-    if (activeBtn && !activeBtn.disabled) selectCard(activeBtn.dataset.value);
+    const buttons = Array.from(elements.cardSelector.querySelectorAll('.option-button'));
+    const activeBtn = buttons.find(button => button.dataset.value === state.selectedCard && !button.disabled)
+        || buttons.find(button => !button.disabled);
+    if (activeBtn) selectCard(activeBtn.dataset.value, activeBtn.dataset.value === state.selectedCard);
 }
 
 // Handle GPU Type selection
-function selectCard(cardId) {
+function selectCard(cardId, preserveSelection = false) {
+    const saved = preserveSelection ? getSelection() : null;
     state.selectedCard = cardId;
     elements.cardSelector.querySelectorAll('.option-button').forEach(b => b.classList.toggle('active', b.dataset.value === cardId));
     const fw = CONFIG.cardFrameworkMap[cardId].toLowerCase();
     renderFrameworkVersions(fw, cardId);
-    const first = elements.frameworkVersionSelect.querySelector('option:not([value=""])');
-    if (first) { first.selected = true; selectFrameworkVersion(first.value); }
-    const targetArch = cardId === 'ascend' ? 'arm64' : 'amd64';
+    const options = Array.from(elements.frameworkVersionSelect.querySelectorAll('option:not([value=""])'));
+    const selected = options.find(option => saved && option.value === saved.selectedFrameworkVersion
+        && (option.dataset.chipType || null) === saved.selectedChipType) || options[0];
+    if (selected) { selected.selected = true; selectFrameworkVersion(selected.value); }
+    if (saved) {
+        const inputs = Array.from(elements.backendSelector.querySelectorAll('input'));
+        inputs.forEach(input => { input.checked = saved.selectedBackends.includes(input.value); });
+        state.selectedBackends = inputs.filter(input => input.checked).map(input => input.value);
+    }
+    const targetArch = saved ? saved.selectedArch : cardId === 'ascend' ? 'arm64' : 'amd64';
     if (state.selectedArch !== targetArch) selectArch(targetArch);
+    generateImageList();
 }
 
 // Render Framework Version dropdown
@@ -1049,6 +1130,7 @@ function getFullImageName(baseName, tag, registryKey) {
 
 // Main logic to generate the list of docker pull commands
 function generateImageList() {
+    persistSelection();
     const plat = state.selectedArch === 'auto' ? '' : ` --platform linux/${state.selectedArch}`;
     const cmds = [];
     const isServer = state.selectedComponent === 'server' || state.selectedComponent === 'all';
@@ -1172,7 +1254,7 @@ function renderImageList(cmds) {
 function selectArch(v) { state.selectedArch = v; elements.archSelector.querySelectorAll('.option-button').forEach(b => b.classList.toggle('active', b.dataset.value === v)); generateImageList(); }
 function selectRegistry(v) { state.selectedRegistry = v; elements.registrySelector.querySelectorAll('.option-button').forEach(b => b.classList.toggle('active', b.dataset.value === v)); generateImageList(); }
 function selectComponent(v) { state.selectedComponent = v; elements.imageTabs.forEach(t => t.classList.toggle('active', t.dataset.component === v)); generateImageList(); }
-function switchGuideTab(id) { elements.guideTabs.forEach(t => t.classList.toggle('active', t.dataset.guide === id)); document.querySelectorAll('.guide-content').forEach(c => c.classList.toggle('active', c.id === `guide-${id}`)); }
+function switchGuideTab(id) { state.selectedGuide = id; elements.guideTabs.forEach(t => t.classList.toggle('active', t.dataset.guide === id)); document.querySelectorAll('.guide-content').forEach(c => c.classList.toggle('active', c.id === `guide-${id}`)); persistSelection(); }
 
 // Utility to copy text to clipboard
 async function copyToClipboard(text) {
