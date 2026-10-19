@@ -214,7 +214,7 @@ const CONFIG = {
 
 // Global State - Default to English
 let state = {
-    currentLang: localStorage.getItem('lang') || 'en',
+    currentLang: document.documentElement.dataset.docsLanguage || localStorage.getItem('lang') || 'en',
     images: [], runnerImages: [], supportMatrix: {},
     selectedComponent: 'all', selectedArch: 'amd64', selectedRegistry: 'docker-hub',
     selectedCard: null, selectedFrameworkVersion: null, selectedChipType: null,
@@ -287,6 +287,10 @@ function bindEvents() {
     elements.dropdownLinks.forEach(link => {
         link.addEventListener('click', (e) => {
             e.preventDefault();
+            if (document.documentElement.dataset.docsLanguage) {
+                window.location.assign(link.href + window.location.search + window.location.hash);
+                return;
+            }
             setLanguage(link.dataset.lang);
         });
     });

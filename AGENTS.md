@@ -114,8 +114,12 @@ Rules:
 
 ## Documentation
 
-- `docs/` is the MkDocs source and is **English-only**. A new page must also be added to
-  the `nav:` tree in `mkdocs.yml`, or it will not be published.
+- `docs/` is the English MkDocs source. Chinese translations live in `docs-zh/`
+  at matching relative paths and inherit shared assets from `docs/`. Preserve English
+  heading IDs in translations so existing deep links continue to work. A new page
+  must also be added to the `nav:` tree in `mkdocs.yml`, or it will not be published.
+  Translate navigation labels in `mkdocs.zh.yml`; missing or pending translations
+  fall back to English with a notice.
 - `README.md` is canonical; `README_CN.md` and `README_JP.md` are translations — if you
   change one meaningfully, note in the PR that the others need updating.
 
