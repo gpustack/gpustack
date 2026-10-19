@@ -117,6 +117,123 @@ const CONFIG = {
                 'maca': '沐曦', 't-head': '平头哥 PPU'
             }
         },
+        'ja': {
+            "title": "コンテナイメージセレクター",
+            "subtitle": "コンテナイメージセレクター",
+            "back_to_docs": "ドキュメント",
+            "version": "バージョン",
+            "loading": "読み込み中...",
+            "select_config": "構成",
+            "gpu_type": "GPU の種類",
+            "framework_version": "計算フレームワークのバージョン",
+            "select_gpu_first": "まず GPU の種類を選択してください",
+            "inference_backend": "推論バックエンド",
+            "inference_backend_tooltip": "必要な組み込み推論バックエンドやバージョンが見つからない場合は、計算フレームワークのバージョンを下げてみてください。通常、新しいドライバーは古いバージョンの計算フレームワークと互換性があります。",
+            "optional_images": "オプションのイメージ",
+            "optional_postgres_images_tooltip": "外部データベースの使用：<a href=\"../installation/installation/#using-an-external-database\" target=\"_blank\">構成ガイドを参照</a>",
+            "optional_monitoring_images_tooltip": "外部の可観測性基盤の構成：<a href=\"../user-guide/observability/#external-observability-optional\" target=\"_blank\">構成ガイドを参照</a>",
+            "postgres": "PostgreSQL",
+            "monitoring": "監視スイート（Prometheus + Grafana）",
+            "required_images": "必要なイメージ",
+            "architecture": "アーキテクチャ",
+            "registry": "レジストリ",
+            "china_registry": "中国向けミラー",
+            "tab_all": "すべて",
+            "tab_server": "Server ノード",
+            "tab_worker": "Worker ノード",
+            "placeholder_select": "左側で構成を選択すると、イメージ一覧が生成されます",
+            "offline_guide_title": "オフラインでインストールしますか？",
+            "guide_tab_save": "イメージファイルのインポート（Save & Load）",
+            "guide_tab_tag": "プライベートレジストリへのプッシュ（Tag & Push）",
+            "guide_tab_auto": "イメージの自動同期",
+            "view_full_docs": "オフラインインストールのドキュメントを開く &rarr;",
+            "copied": "クリップボードにコピーしました",
+            "no_images": "# 条件に一致するイメージがありません",
+            "comments": {
+                "main": "GPUStack イメージ — GPUStack のコアサービス。Server と Worker の両ノードに必要です",
+                "runner": "推論バックエンドのイメージ",
+                "pause": "Pause イメージ — モデルインスタンスのコンテナに共有ネットワークと IPC 環境を提供します。Docker 環境でのみ必要です",
+                "benchmark": "Benchmark イメージ — モデルの性能ベンチマークを実行します",
+                "postgres": "PostgreSQL — 外部データベースを独立してデプロイするためのオプションコンポーネントです",
+                "monitoring": "監視スイート — Prometheus と Grafana を含むオプションコンポーネントです",
+                "gateway": "ゲートウェイイメージ — Kubernetes でのデプロイにのみ必要です",
+                "k8s": "GPU サービスのイメージ — Kubernetes でのデプロイにのみ必要です"
+            },
+            "cards": {
+                "nvidia": "NVIDIA",
+                "amd": "AMD",
+                "ascend": "Ascend",
+                "hygon": "Hygon",
+                "mthreads": "MThreads",
+                "iluvatar": "Iluvatar",
+                "cambricon": "Cambricon",
+                "maca": "MetaX",
+                "t-head": "T-Head PPU"
+            },
+            "guide_save_content": `
+                <p>完全に隔離された環境向けに、ファイルを使ってイメージをインポートします。</p>
+                <ol>
+                    <li>インターネットに接続できるマシンでイメージを取得します（上のコマンドを参照）。</li>
+                    <li>イメージを tar ファイルにエクスポートします：
+                        <pre><code>docker save -o gpustack-server-images.tar {{server_images}}
+
+docker save -o gpustack-worker-images.tar {{worker_images}}</code></pre>
+                    </li>
+                    <li>ファイルをオフラインのマシンにコピーします。</li>
+                    <li>ノードの役割に応じてイメージをインポートします：
+                        <div style="margin-top:10px"><strong>Server ノード：</strong></div>
+                        <pre><code>docker load -i gpustack-server-images.tar</code></pre>
+                        <div style="margin-top:10px"><strong>Worker ノード：</strong></div>
+                        <pre><code>docker load -i gpustack-worker-images.tar</code></pre>
+                        <div style="margin-top:10px"><strong>Server + Worker ノード：</strong></div>
+                        <pre><code>docker load -i gpustack-server-images.tar
+docker load -i gpustack-worker-images.tar</code></pre>
+                    </li>
+                    <li>
+                        GPUStack Server と Worker のコンテナを実行する際は、 <code class="inline-code">--system-default-container-registry</code> パラメーターでコンテナレジストリを指定します：
+                        <pre><code>sudo docker run -d --name gpustack \\
+    --restart unless-stopped \\
+    -p 80:80 \\
+    -p 10161:10161 \\
+    --volume gpustack-data:/var/lib/gpustack \\
+    {{registry}}/gpustack/gpustack:{{version}} \\
+    --system-default-container-registry {{registry}}</code></pre>
+                    </li>
+                </ol>
+            `,
+            "guide_tag_content": `
+                <p>Harbor や Nexus などのプライベートレジストリがある環境に適しています。</p>
+                <ol>
+                    <li>インターネットに接続できるマシンでイメージを取得します（上のコマンドを参照）。</li>
+                    <li>タグを付け直してプライベートレジストリにプッシュします：
+                        <pre><code>export PrivateRegistry=&lt;your-private-registry&gt;
+{{tag_push_commands}}</code></pre>
+                    </li>
+                    <li>コンテナの実行時に、起動パラメーターでイメージレジストリを指定します：
+                        <pre><code>sudo docker run -d --name gpustack \\
+    --restart unless-stopped \\
+    -p 80:80 \\
+    -p 10161:10161 \\
+    --volume gpustack-data:/var/lib/gpustack \\
+    $PrivateRegistry/gpustack/gpustack:{{version}} \\
+    --system-default-container-registry $PrivateRegistry</code></pre>
+                    </li>
+                </ol>
+            `,
+            "guide_auto_content": `
+                <p>同期をさらに自動化するために、GPUStack はイメージ管理コマンドを提供しています：</p>
+                <ul style="list-style:none; padding-left:0">
+                    <li style="margin-bottom:8px"><code>gpustack copy-images</code>: 転送元レジストリから転送先レジストリにイメージを同期</li>
+                    <li style="margin-bottom:8px"><code>gpustack save-images</code>: イメージをダウンロードしてローカルパスに保存</li>
+                    <li style="margin-bottom:8px"><code>gpustack load-images</code>: ローカルのイメージパッケージをインポート</li>
+                    <li style="margin-bottom:8px"><code>gpustack list-images</code>: 現在のバージョンのイメージマニフェストを一覧表示</li>
+                </ul>
+                <div style="margin-top:15px; font-size:13px; color:var(--text-color)">
+                    すべてのコマンドでフィルターとカスタム構成を利用できます。詳細は次を参照してください：
+                    <a href="../installation/air-gapped/#container-images" target="_blank" style="color:var(--primary-color); font-weight:600">コンテナイメージの準備 &rarr;</a>
+                </div>
+            `
+        },
         'en': {
             'title': 'Container Image Selector',
             'subtitle': 'Container Image Selector',
@@ -212,9 +329,54 @@ const CONFIG = {
     }
 };
 
+// Labels shared by standalone and documentation-integrated selectors.
+Object.assign(CONFIG.i18n.en, {
+    "language_name": "English",
+    "description": "Container Image Selector - Generate Docker pull commands based on your hardware configuration.",
+    "auto_arch": "Auto",
+    "copy_all": "Copy all commands",
+    "server_image_placeholder": "&lt;Server Image List&gt;",
+    "worker_image_placeholder": "&lt;Worker Image List&gt;",
+    "configuration_placeholder": "# Please select configuration to generate commands",
+    "load_failed": "Failed to load data",
+    "cambricon_hint": "Please contact Cambricon vendor for inference backend images",
+    "no_available_images": "No images available",
+    "select_version": "Please select version"
+});
+Object.assign(CONFIG.i18n.zh, {
+    "language_name": "简体中文",
+    "description": "容器镜像选择器：根据硬件配置生成 Docker 镜像拉取命令。",
+    "auto_arch": "自动",
+    "copy_all": "复制所有命令",
+    "server_image_placeholder": "&lt;Server 镜像列表&gt;",
+    "worker_image_placeholder": "&lt;Worker 镜像列表&gt;",
+    "configuration_placeholder": "# 请选择配置以生成命令",
+    "load_failed": "加载数据失败",
+    "cambricon_hint": "请联系寒武纪厂商获取推理后端镜像",
+    "no_available_images": "暂无可用镜像",
+    "select_version": "请选择版本"
+});
+Object.assign(CONFIG.i18n.ja, {
+    "language_name": "日本語",
+    "description": "コンテナイメージセレクター：ハードウェア構成に応じた Docker イメージ取得コマンドを生成します。",
+    "auto_arch": "自動",
+    "copy_all": "すべてのコマンドをコピー",
+    "server_image_placeholder": "&lt;Server イメージ一覧&gt;",
+    "worker_image_placeholder": "&lt;Worker イメージ一覧&gt;",
+    "configuration_placeholder": "# 構成を選択するとコマンドが生成されます",
+    "load_failed": "データを読み込めませんでした",
+    "cambricon_hint": "推論バックエンドのイメージについては Cambricon にお問い合わせください",
+    "no_available_images": "利用可能なイメージがありません",
+    "select_version": "バージョンを選択してください"
+});
+
+function resolveLanguage(language) {
+    return Object.hasOwn(CONFIG.i18n, language) ? language : 'en';
+}
+
 // Global State - Default to English
 let state = {
-    currentLang: document.documentElement.dataset.docsLanguage || localStorage.getItem('lang') || 'en',
+    currentLang: resolveLanguage(document.documentElement.dataset.docsLanguage || localStorage.getItem('lang') || 'en'),
     images: [], runnerImages: [], supportMatrix: {},
     selectedComponent: 'all', selectedArch: 'amd64', selectedRegistry: 'docker-hub',
     selectedCard: null, selectedFrameworkVersion: null, selectedChipType: null,
@@ -298,12 +460,13 @@ function bindEvents() {
 
 // Set application language
 function setLanguage(lang) {
+    lang = resolveLanguage(lang);
     if (state.currentLang === lang) return;
     state.currentLang = lang;
     localStorage.setItem('lang', lang);
     updateLanguage();
     // Auto-switch registry when language changes
-    if (state.currentLang === 'en' && state.selectedRegistry === 'china') {
+    if (state.currentLang !== 'zh' && state.selectedRegistry === 'china') {
         selectRegistry('docker-hub');
     } else if (state.currentLang === 'zh') {
         selectRegistry('china');
@@ -369,7 +532,13 @@ function updateLanguage() {
     // Translate page title
     document.title = data.title;
 
-    elements.currentLangBtn.textContent = lang === 'zh' ? '简体中文' : 'English';
+    elements.currentLangBtn.textContent = data.language_name;
+    document.documentElement.lang = lang;
+    const description = document.querySelector('meta[name="description"]');
+    if (description) description.content = data.description;
+    document.querySelectorAll('[data-i18n-title]').forEach(el => {
+        el.title = data[el.dataset.i18nTitle];
+    });
 
     // Get current image lists for dynamic placeholders
     const allImgs = getCurrentImages('all');
@@ -392,9 +561,9 @@ function updateLanguage() {
             let content = data[key];
             // Dynamically replace placeholders
             content = content.replace(/{{version}}/g, version);
-            content = content.replace(/{{server_images}}/g, serverImgs || '&lt;Server Image List&gt;');
-            content = content.replace(/{{worker_images}}/g, workerImgs || '&lt;Worker Image List&gt;');
-            content = content.replace(/{{tag_push_commands}}/g, tagPushCmds || '# Please select configuration to generate commands');
+            content = content.replace(/{{server_images}}/g, serverImgs || data.server_image_placeholder);
+            content = content.replace(/{{worker_images}}/g, workerImgs || data.worker_image_placeholder);
+            content = content.replace(/{{tag_push_commands}}/g, tagPushCmds || data.configuration_placeholder);
             content = content.replace(/{{registry}}/g, CONFIG.registries[state.selectedRegistry].registry);
             el.innerHTML = content;
         }
@@ -402,8 +571,8 @@ function updateLanguage() {
     const copyImagesEl = document.getElementById('copy-images-command');
     if (copyImagesEl) copyImagesEl.textContent = data.copy_images_cmd;
 
-    // Hide China Mirror in English mode
-    elements.registryChina.style.display = (lang === 'en') ? 'none' : 'block';
+    // Offer the regional mirror in its target language.
+    elements.registryChina.style.display = (lang === 'zh') ? 'block' : 'none';
 }
 
 // Load versions and initial data
@@ -417,7 +586,7 @@ async function loadData() {
         await loadVersionData(state.selectedGpuStackVersion);
     } catch (error) {
         console.error('Failed to load data:', error);
-        showToast(state.currentLang === 'zh' ? '加载数据失败' : 'Failed to load data');
+        showToast(CONFIG.i18n[state.currentLang].load_failed);
     }
 }
 
@@ -505,11 +674,11 @@ function renderCardSelector() {
         btn.dataset.value = card.id;
         btn.innerHTML = `<span>${card.name}</span>`;
         if (card.id === 'cambricon') {
-            const tip = state.currentLang === 'zh' ? '请联系寒武纪厂商获取推理后端镜像' : 'Please contact Cambricon vendor for inference backend images';
+            const tip = CONFIG.i18n[state.currentLang].cambricon_hint;
             btn.innerHTML += `<span class="tooltip-icon">i <span class="tooltip-content">${tip}</span></span>`;
         }
         btn.disabled = !hasData;
-        if (!hasData) btn.title = state.currentLang === 'zh' ? '暂无可用镜像' : 'No images available';
+        if (!hasData) btn.title = CONFIG.i18n[state.currentLang].no_available_images;
         elements.cardSelector.appendChild(btn);
     });
     const activeBtn = elements.cardSelector.querySelector(`[data-value="${state.selectedCard}"]`) || elements.cardSelector.querySelector('[data-value="nvidia"]');
@@ -531,7 +700,7 @@ function selectCard(cardId) {
 // Render Framework Version dropdown
 function renderFrameworkVersions(fw, cardId) {
     const select = elements.frameworkVersionSelect;
-    const placeholder = state.currentLang === 'zh' ? '请选择版本' : 'Please select version';
+    const placeholder = CONFIG.i18n[state.currentLang].select_version;
     select.innerHTML = `<option value="">${placeholder}</option>`;
     const versions = state.supportMatrix.frameworks[fw]?.versions || [];
     const fwName = CONFIG.cardFrameworkMap[cardId];

@@ -1,4 +1,4 @@
-"""Keep complete bilingual checkouts and prepared single-language builds usable."""
+"""Keep complete multilingual checkouts and prepared single-language builds usable."""
 
 import json
 import os
@@ -61,9 +61,10 @@ def test_prepared_single_language_build_needs_no_bilingual_helpers(build_source)
 
 
 @pytest.mark.parametrize("mode", ["--offline", "offline"])
-def test_complete_source_dispatches_both_languages(build_source, mode):
+@pytest.mark.parametrize("language", ["zh", "ja"])
+def test_complete_source_dispatches_all_languages(build_source, mode, language):
     root, env, log = build_source
-    (root / "docs-zh").mkdir()
+    (root / f"docs-{language}").mkdir()
 
     result = invoke(root, env, mode)
 

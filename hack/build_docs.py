@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and preview English and Chinese documentation from shared sources."""
+"""Build and preview documentation languages from shared English sources."""
 
 import argparse
 import gzip
@@ -19,9 +19,19 @@ import yaml
 from yaml.nodes import MappingNode
 
 try:
-    from .mkdocs_i18n import is_translated_source, language_links
+    from .mkdocs_i18n import (
+        LANGUAGES,
+        is_translated_source,
+        language_links,
+        language_prefix,
+    )
 except ImportError:
-    from mkdocs_i18n import is_translated_source, language_links
+    from mkdocs_i18n import (
+        LANGUAGES,
+        is_translated_source,
+        language_links,
+        language_prefix,
+    )
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +61,7 @@ def translate_nav(nav, translations: Dict[str, str]):
 
 
 def overlay_tree(source: Path, destination: Path, translations: bool = False) -> None:
-    """Copy shared resources, skipping Chinese pages marked as pending."""
+    """Copy shared resources, skipping translations marked as pending."""
     for path in sorted(source.rglob("*")):
         relative = path.relative_to(source)
         target = destination / relative
@@ -104,19 +114,19 @@ def configure_image_selector(docs: Path, language: str) -> None:
     page.write_text(text, encoding="utf-8")
 
 
-def configure_chinese(child: dict, config_text: str, chinese: dict) -> None:
+def configure_translation(child: dict, config_text: str, translation: dict) -> None:
     """Localize navigation and theme text while inheriting all other settings."""
     for field in ("site_name", "site_description"):
-        if field in chinese:
-            child[field] = chinese[field]
+        if field in translation:
+            child[field] = translation[field]
     child["nav"] = translate_nav(
-        config_field(config_text, "nav"), chinese.get("nav_translations", {})
+        config_field(config_text, "nav"), translation.get("nav_translations", {})
     )
     theme = config_field(config_text, "theme") or {}
     for palette in theme.get("palette", []):
         if "toggle" in palette:
             toggle = palette["toggle"]
-            toggle["name"] = chinese.get("theme_translations", {}).get(
+            toggle["name"] = translation.get("theme_translations", {}).get(
                 toggle["name"], toggle["name"]
             )
     if "palette" in theme:
@@ -127,7 +137,7 @@ def language_site_url(base: str, language: str, offline: bool) -> str:
     """Keep offline URLs relative and public canonical URLs in their version root."""
     if offline or not base:
         return ""
-    return base.rstrip("/") + ("/zh/" if language == "zh" else "/")
+    return base.rstrip("/") + "/" + language_prefix(language)
 
 
 def prepare_language(
@@ -137,16 +147,20 @@ def prepare_language(
     offline: bool = False,
     stamp: Optional[str] = None,
     site_url: Optional[str] = None,
+    strict: Optional[bool] = None,
 ) -> Path:
     """Assemble one language without editing source files or shared configuration."""
-    if language not in ("en", "zh"):
+    if language not in LANGUAGES:
         raise ValueError(f"unsupported documentation language: {language}")
     root, stage = root.resolve(), stage.resolve()
-    for source in (root / "docs", root / "docs-zh"):
+    validate_destination(root, stage)
+    translation_dir = root / f"docs-{language}"
+    sources = [root / "docs"]
+    if language != "en":
+        sources.append(translation_dir)
+    for source in sources:
         if not source.is_dir():
             raise FileNotFoundError(f"documentation source not found: {source}")
-        if stage == source or stage in source.parents or source in stage.parents:
-            raise ValueError("documentation staging must be outside the source trees")
     stage.mkdir(parents=True, exist_ok=True)
     docs = stage / "docs"
     if docs.is_symlink():
@@ -155,12 +169,12 @@ def prepare_language(
         shutil.rmtree(docs)
     overlay_tree(root / "docs", docs)
     translated = sorted(
-        path.relative_to(root / "docs-zh").as_posix()
-        for path in (root / "docs-zh").rglob("*.md")
+        path.relative_to(translation_dir).as_posix()
+        for path in translation_dir.rglob("*.md")
         if is_translated_source(path)
     )
-    if language == "zh":
-        overlay_tree(root / "docs-zh", docs, translations=True)
+    if language != "en":
+        overlay_tree(translation_dir, docs, translations=True)
     configure_image_selector(docs, language)
 
     config_text = (root / "mkdocs.yml").read_text(encoding="utf-8")
@@ -181,6 +195,7 @@ def prepare_language(
         "language": language,
         "offline": offline,
         "translated_sources": translated,
+        "prepared": True,
     }
     child = {
         "INHERIT": "mkdocs.offline.yml" if offline else "mkdocs.yml",
@@ -198,9 +213,13 @@ def prepare_language(
     }
     if offline and stamp:
         child["extra"]["docs_stamp"] = stamp
-    if language == "zh":
-        chinese = yaml.safe_load((root / "mkdocs.zh.yml").read_text(encoding="utf-8"))
-        configure_chinese(child, config_text, chinese)
+    if strict is not None:
+        child["strict"] = strict
+    if language != "en":
+        translation = yaml.safe_load(
+            (root / f"mkdocs.{language}.yml").read_text(encoding="utf-8")
+        )
+        configure_translation(child, config_text, translation)
     config_path = stage / "mkdocs.language.yml"
     config_path.write_text(
         yaml.safe_dump(child, sort_keys=False, allow_unicode=True), encoding="utf-8"
@@ -258,7 +277,7 @@ def documentation_stamp(root: Path) -> str:
 
 
 def check_offline_site(root: Path, output: Path) -> None:
-    """Reuse the offline asset gate for each language before publishing either."""
+    """Reuse the offline asset gate for each language before publishing the site."""
     index = output / "search/search_index.json"
     with (
         index.open("rb") as source,
@@ -288,38 +307,59 @@ def publish_site(source: Path, destination: Path, backup: Path) -> None:
         raise
 
 
+def validate_destination(root: Path, destination: Path) -> None:
+    """Reject output paths that could replace documentation or builder sources."""
+    protected = [root / "docs", root / "hack", root / ".git"]
+    protected.extend(
+        root / f"docs-{language}" for language in LANGUAGES if language != "en"
+    )
+    for source in protected:
+        if (
+            destination == source
+            or destination in source.parents
+            or source in destination.parents
+        ):
+            raise ValueError(
+                f"documentation output must be outside source trees: {destination}"
+            )
+
+
 def build_docs(
     root: Path,
     offline: bool = False,
     stamp: Optional[str] = None,
     destination: Optional[Path] = None,
     site_url: Optional[str] = None,
+    strict: Optional[bool] = None,
 ) -> Path:
-    """Publish the combined site only after both languages pass their builds."""
+    """Publish the combined site only after every language passes its build."""
     root = root.resolve()
     destination = destination or root / ("gpustack/help" if offline else "site")
     destination = destination.resolve()
+    validate_destination(root, destination)
     if offline and not stamp:
         stamp = documentation_stamp(root)
     with TemporaryDirectory(prefix=".docs-build-", dir=root) as temporary:
         workspace = Path(temporary)
         combined = workspace / "combined"
         combined.mkdir()
-        for language in ("en", "zh"):
+        for language in LANGUAGES:
             stage = workspace / language
-            config = prepare_language(root, stage, language, offline, stamp, site_url)
+            config = prepare_language(
+                root, stage, language, offline, stamp, site_url, strict
+            )
             output = stage / "output"
             build_language(config, output)
             if offline:
                 check_offline_site(root, output)
-            target = combined if language == "en" else combined / "zh"
+            target = combined / language_prefix(language)
             shutil.copytree(output, target, dirs_exist_ok=True)
         publish_site(combined, destination, workspace / "previous")
     return destination
 
 
 def serve_docs(root: Path, address: str) -> None:
-    """Rebuild and live reload both languages when sources or configuration change."""
+    """Rebuild and live reload all languages when sources or configuration change."""
     from mkdocs.livereload import LiveReloadServer
 
     host, port = address.rsplit(":", 1)
@@ -336,17 +376,14 @@ def serve_docs(root: Path, address: str) -> None:
         server.error_handler = lambda code: (
             (preview / "404.html").read_bytes() if code == 404 else None
         )
-        for name in (
-            "docs",
-            "docs-zh",
-            "mkdocs.yml",
-            "mkdocs.zh.yml",
-            "mkdocs.offline.yml",
-            "hack",
-        ):
+        watched = ["docs", "mkdocs.yml", "mkdocs.offline.yml", "hack"]
+        for language in LANGUAGES:
+            if language != "en":
+                watched.extend((f"docs-{language}", f"mkdocs.{language}.yml"))
+        for name in watched:
             server.watch(str(root / name))
-        print(f"English: http://{address}/", flush=True)
-        print(f"中文: http://{address}/zh/", flush=True)
+        for language, name in LANGUAGES.items():
+            print(f"{name}: http://{address}/{language_prefix(language)}", flush=True)
         try:
             server.serve()
         except KeyboardInterrupt:
@@ -356,7 +393,7 @@ def serve_docs(root: Path, address: str) -> None:
 
 
 def main() -> None:
-    """Select a public build, offline build, or bilingual development preview."""
+    """Select a public build, offline build, or multilingual development preview."""
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--offline", action="store_true")
@@ -367,7 +404,7 @@ def main() -> None:
         serve_docs(ROOT, os.environ.get("DOCS_DEV_ADDR", "127.0.0.1:8000"))
     else:
         output = build_docs(ROOT, args.offline, args.stamp)
-        print(f"Bilingual documentation built to {output}")
+        print(f"Multilingual documentation built to {output}")
 
 
 if __name__ == "__main__":

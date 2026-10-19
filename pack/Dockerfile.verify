@@ -61,7 +61,7 @@ app = FastAPI()
 ui.register(app)
 client = TestClient(app)
 
-for root in ("/help/", "/help/zh/"):
+for root in ("/help/", "/help/zh/", "/help/ja/"):
     for suffix in ("", "installation/air-gapped/", "search/search_index.json"):
         path = root + suffix
         status = client.get(path).status_code
@@ -85,10 +85,12 @@ class PageAssets(HTMLParser):
         if tag == "link" and attributes.get("rel") in ("stylesheet", "icon"):
             self.urls.append(attributes["href"])
 
-for path in (
-    "/help/overview/", "/help/installation/air-gapped/", "/help/missing/deep/page/",
-    "/help/zh/overview/", "/help/zh/installation/air-gapped/", "/help/zh/missing/deep/page/",
-):
+paths = (
+    root + suffix
+    for root in ("/help/", "/help/zh/", "/help/ja/")
+    for suffix in ("overview/", "installation/air-gapped/", "missing/deep/page/")
+)
+for path in paths:
     parser = PageAssets()
     parser.feed(client.get(path).text)
     assert parser.urls, f"No assets found in {path}"
