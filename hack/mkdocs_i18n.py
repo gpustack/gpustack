@@ -337,6 +337,8 @@ def prepare_version_navigation(site: Path, language: str) -> None:
         )
     # Resolve menu URLs before rendering so modified clicks and copied links use
     # the same available language as Material's ordinary sitemap navigation.
+    # Bound probes and ordinary clicks alike; an unresponsive historical version
+    # must not hide the menu or leave a prevented click waiting indefinitely.
     helpers = (
         "const __docsVersionLanguagesCache=new Map();"
         "function __docsVersionRoot(config){return new URL('../',config.base).href;}"
@@ -346,15 +348,22 @@ def prepare_version_navigation(site: Path, language: str) -> None:
         "const target=__docsVersionLocalized(config,version);"
         "const entry=__docsVersionLanguagesCache.get(target.href);"
         "return entry&&!entry.available?new URL('../',target):target;}"
+        "function __docsVersionSitemap(target,load){return new Promise(resolve=>{"
+        "let settled=false,subscription;"
+        "const finish=sitemap=>{if(settled)return;settled=true;clearTimeout(timer);"
+        "if(subscription)subscription.unsubscribe();resolve(sitemap||new Map());};"
+        "const timer=setTimeout(()=>finish(),3000);"
+        "try{subscription=load(target).subscribe({next:finish,error:()=>finish(),"
+        "complete:()=>finish()});if(settled)subscription.unsubscribe();}"
+        "catch(error){finish();}});}"
         "function __docsVersionLanguages(config,versions,load){"
         "return Promise.all(versions.map(version=>{"
         "const target=__docsVersionLocalized(config,version.version);"
         "let entry=__docsVersionLanguagesCache.get(target.href);"
         "if(!entry){entry={available:false};"
         "__docsVersionLanguagesCache.set(target.href,entry);"
-        "entry.ready=new Promise(resolve=>load(target).subscribe({"
-        "next:sitemap=>{entry.available=sitemap.size>0;resolve();},"
-        "error:()=>resolve(),complete:()=>resolve()}));}"
+        "entry.ready=__docsVersionSitemap(target,load).then(sitemap=>{"
+        "entry.available=sitemap.size>0;});}"
         "return entry.ready;})).then(()=>versions);}"
     )
     for bundle in bundles:
@@ -362,12 +371,43 @@ def prepare_version_navigation(site: Path, language: str) -> None:
         sitemap_pattern = (
             r"(?P<switch>[\w$]+)\((?P<target>[\w$]+)=>"
             r"(?P<load>[\w$]+)\((?P=target)\)\.pipe\("
-            r"[\w$]+\([\w$]+=>\{(?=[^}]*selectedVersionSitemap:)"
+            r"[\w$]+\((?P<sitemap>[\w$]+)=>(?P<callback>"
+            r"\{[^{}]*\{[^{}]*selectedVersionSitemap:[^{}]*\}[^{}]*\})\)\)\)"
         )
         sitemap_matches = list(re.finditer(sitemap_pattern, content))
         if len(sitemap_matches) != 1:
             raise ValueError("unsupported Material mike version-navigation JavaScript")
         sitemap = sitemap_matches[0]
+        content = (
+            content[: sitemap.start()]
+            + f"{sitemap['switch']}({sitemap['target']}=>"
+            + f"__docsVersionSitemap({sitemap['target']},{sitemap['load']}).then("
+            + f"{sitemap['sitemap']}=>{sitemap['callback']}))"
+            + content[sitemap.end() :]
+        )
+        # Material's replayed XML request must release its XHR when the bounded
+        # sitemap subscriber times out, while retaining completed cached results.
+        xml_pattern = (
+            rf"function {re.escape(sitemap['load'])}\((?P<target>[\w$]+)\)"
+            r'\{return (?P<xml>[\w$]+)\(new URL\("sitemap.xml",(?P=target)\)\)'
+            r"\.pipe\("
+        )
+        xml_matches = list(re.finditer(xml_pattern, content))
+        if len(xml_matches) != 1:
+            raise ValueError("unsupported Material mike version-navigation JavaScript")
+        replay_pattern = (
+            rf"(function {re.escape(xml_matches[0]['xml'])}\([\w$]+,[\w$]+\)"
+            r'\{[^{}]*"text/xml"\)\),)([\w$]+)\(1\)(\)\})'
+        )
+        content, replay_count = re.subn(
+            replay_pattern,
+            lambda entry: (
+                f"{entry[1]}{entry[2]}({{bufferSize:1,refCount:true}}){entry[3]}"
+            ),
+            content,
+        )
+        if replay_count != 1:
+            raise ValueError("unsupported Material mike version-navigation JavaScript")
         versions_pattern = (
             r'([\w$]+)\(new URL\("\.\./versions\.json",([\w$]+)\.base\)\)\.pipe\('
         )

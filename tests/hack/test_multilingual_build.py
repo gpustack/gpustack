@@ -314,6 +314,87 @@ def test_version_menu_falls_back_to_real_english_only_versions(mike_publication)
         assert result["navigated"] == english_newer
 
 
+def test_version_menu_bounds_sitemap_waits_and_ignores_late_responses(mike_publication):
+    command, published = mike_publication
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to exercise Material's version menu")
+
+    def navigate(language, version, options):
+        return json.loads(
+            command(
+                node,
+                str(ROOT / "tests/fixtures/docs_version_menu.cjs"),
+                str(published),
+                language,
+                version,
+                json.dumps({"timerScale": 0.003, "waitMs": 40, **options}),
+            )
+        )
+
+    base = "https://docs.example.test/docs/"
+    english = navigate("en", "2.0", {"hangRequests": ["2.2/sitemap.xml"]})
+    assert english["targetHref"] == base + "2.0/"
+    assert english["navigated"] == (
+        base + "2.0/user-guide/guide/?q=language#cluster-management"
+    )
+    assert base + "2.2/sitemap.xml" not in english["requests"]
+    assert english["expiredTimers"] == 0
+
+    for language in i18n.LANGUAGES:
+        if language == "en":
+            continue
+        probe = f"2.2/{language}/sitemap.xml"
+        result = navigate(language, "2.0", {"hangRequests": [probe]})
+        assert result["targetHref"] == base + "2.0/"
+        assert base + "2.2/" in result["targets"]
+        assert result["navigated"] == (
+            base + "2.0/user-guide/guide/?q=language#cluster-management"
+        )
+        assert result["abortedRequests"] == [base + probe]
+        assert result["activeRequests"] == []
+        assert result["activeTimers"] == 0
+        assert result["expiredTimers"] == 1
+        assert result["clearedTimers"] >= 1
+
+        result = navigate(language, "2.2", {"hangRequests": [probe, "2.2/sitemap.xml"]})
+        assert result["targetHref"] == base + "2.2/"
+        assert result["navigated"] == base + "2.2/"
+        assert result["abortedRequests"] == [base + probe, base + "2.2/sitemap.xml"]
+        assert result["activeRequests"] == []
+        assert result["activeTimers"] == 0
+        assert result["expiredTimers"] == 2
+        assert result["clearedTimers"] >= 1
+
+        for modifier in (None, "ctrl", "meta"):
+            result = navigate(
+                language,
+                "2.2",
+                {
+                    "delayedRequests": {probe: 100},
+                    "waitAfterMenu": 120,
+                    "modifier": modifier,
+                },
+            )
+            assert result["targetHref"] == base + "2.2/"
+            assert base + "2.2/" in result["targets"]
+            assert base + f"2.2/{language}/" not in result["targets"]
+            assert result["lateLoads"] == [base + probe]
+            assert result["abortedRequests"] == [base + probe]
+            assert result["activeRequests"] == []
+            assert result["activeTimers"] == 0
+            assert result["expiredTimers"] == 1
+            assert result["clearedTimers"] >= 1
+            if modifier:
+                assert not result["prevented"]
+                assert result["navigated"].startswith(base + f"latest/{language}/")
+            else:
+                assert result["prevented"]
+                assert result["navigated"] == (
+                    base + "2.2/user-guide/guide/?q=language#cluster-management"
+                )
+
+
 def test_real_japanese_worker_finds_mixed_script_queries(multilingual_source):
     node = shutil.which("node")
     if node is None:

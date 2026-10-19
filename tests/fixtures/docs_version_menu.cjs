@@ -45,14 +45,21 @@ const document = {
   querySelector: selector => selector === "#__config" ? { textContent: JSON.stringify(configuration) } : selector === ".md-header__topic" ? topic : new Element("input"),
   querySelectorAll: () => []
 };
-const requests = [];
+const requests = [], abortedRequests = [], lateLoads = [], activeRequests = new Set(), activeTimers = new Set();
+let expiredTimers = 0, clearedTimers = 0;
 class XMLHttpRequest {
   constructor() { this.listeners = {}; }
   open(method, url) { this.url = url; }
   addEventListener(type, listener) { this.listeners[type] = listener; }
-  abort() {}
+  abort() {
+    if (!activeRequests.delete(this)) return;
+    this.aborted = true;
+    abortedRequests.push(this.url);
+    this.listeners.abort();
+  }
   send() {
     requests.push(this.url);
+    activeRequests.add(this);
     const relative = new URL(this.url).pathname.replace("/docs/", "");
     const filename = path.join(published, relative);
     this.status = (options.failedRequests || []).includes(relative) ? 503 : fs.existsSync(filename) ? 200 : 404;
@@ -63,7 +70,15 @@ class XMLHttpRequest {
       }
       return text;
     } };
-    queueMicrotask(() => this.listeners.load());
+    if ((options.hangRequests || []).includes(relative)) return;
+    const deliver = () => {
+      activeRequests.delete(this);
+      if (this.aborted) lateLoads.push(this.url);
+      this.listeners.load();
+    };
+    const delay = (options.delayedRequests || {})[relative];
+    if (delay) setTimeout(deliver, delay);
+    else queueMicrotask(deliver);
   }
 }
 class DOMParser {
@@ -76,7 +91,13 @@ class DOMParser {
   }
 }
 const context = vm.createContext({
-  URL, console, setTimeout, clearTimeout, setInterval, clearInterval,
+  URL, console, setInterval, clearInterval,
+  setTimeout(callback, delay, ...args) {
+    const timer = setTimeout(() => { activeTimers.delete(timer); expiredTimers++; callback(...args); }, delay * (options.timerScale || 1));
+    activeTimers.add(timer);
+    return timer;
+  },
+  clearTimeout(timer) { if (activeTimers.delete(timer)) clearedTimers++; clearTimeout(timer); },
   location, document, Element, Node: Element, XMLHttpRequest, DOMParser,
   navigator: { userAgent: "Documentation regression" },
   CustomEvent: class {}, dispatchEvent() {}, addEventListener() {}, removeEventListener() {},
@@ -85,7 +106,7 @@ const context = vm.createContext({
 context.window = context;
 try { vm.runInContext(bundle, context); }
 catch (error) { throw new Error(error.message); }
-const settle = () => new Promise(resolve => setTimeout(resolve, 20));
+const settle = (delay = options.waitMs || 20) => new Promise(resolve => setTimeout(resolve, delay));
 const descendants = element => [element, ...element.children.flatMap(descendants)];
 (async () => {
   context.initializeVersionMenu({ document$: { pipe: () => ({ subscribe() {} }) } });
@@ -96,10 +117,13 @@ const descendants = element => [element, ...element.children.flatMap(descendants
   const target = links.find(element => new URL(element.href).pathname.startsWith(`/docs/${targetVersion}/`));
   if (!target) throw new Error("The older version is absent from Material's menu");
   const targetHref = target.href;
+  if (options.waitAfterMenu) await settle(options.waitAfterMenu);
   let prevented = false;
   const event = { target, metaKey: options.modifier === "meta", ctrlKey: options.modifier === "ctrl", preventDefault() { prevented = true; } };
   for (const handler of body.listeners.click || []) handler(event);
   await settle();
-  process.stdout.write(JSON.stringify({ requests, targets: links.map(element => element.href), targetHref, navigated: location.href, prevented,
+  process.stdout.write(JSON.stringify({ requests, abortedRequests, lateLoads, expiredTimers, clearedTimers, activeTimers: activeTimers.size,
+    activeRequests: [...activeRequests].map(request => request.url),
+    targets: links.map(element => element.href), targetHref, navigated: location.href, prevented,
     selected: descendants(menu).find(element => element.attributes.class === "md-version__current").innerHTML }));
 })();
