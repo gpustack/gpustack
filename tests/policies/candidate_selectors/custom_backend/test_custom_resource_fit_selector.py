@@ -300,9 +300,19 @@ def test_a_card_that_cannot_hold_its_own_fraction_is_left_out(config):
         ("gpu-memory-utilization", 0.9, [24, 24, 24], [24, 20, 24], [0, 2]),
         ("gpu-memory-utilization", 0.9, [24, 48], [24, 48], [0, 1]),
         ("gpu-memory-utilization", 0.9, [24, 24, None], [24, 24, 24], [0, 1]),
+        ("gpu-memory-utilization", 0.9, [24, 24, 0], [24, 24, 24], [0, 1]),
         ("gpu-memory-utilization", 0.9, [24, 24], [24, 20], None),
     ],
-    ids=["vllm", "sglang", "insufficient", "occupied", "unequal", "unknown", "one"],
+    ids=[
+        "vllm",
+        "sglang",
+        "insufficient",
+        "occupied",
+        "unequal",
+        "unknown",
+        "zero-total",
+        "one",
+    ],
 )
 def test_multi_gpu_fraction_budgets_cover_weights(
     config, flag, fraction, totals, free, expected_indexes

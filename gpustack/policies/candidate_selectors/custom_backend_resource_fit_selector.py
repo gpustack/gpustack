@@ -426,11 +426,14 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                         continue
                     available_vram = allocatable.vram[gpu_index]
                     if self._whole_card_fraction is not None:
-                        # Each card must have a known total and room for its
-                        # fraction; the weights are shared across the cards.
-                        total = getattr(gpu_device.memory, "total", None)
-                        claim = int((total or 0) * self._whole_card_fraction)
-                        if total is None or available_vram < claim:
+                        # Each card must have a known total (detectors report an
+                        # unknown size as 0) and room for its fraction; the
+                        # weights are shared across the cards.
+                        memory = gpu_device.memory
+                        if memory is None or not memory.total:
+                            continue
+                        claim = int(memory.total * self._whole_card_fraction)
+                        if available_vram < claim:
                             continue
                         claim_by_index[gpu_index] = claim
                     available_gpus.append((gpu_index, available_vram))
