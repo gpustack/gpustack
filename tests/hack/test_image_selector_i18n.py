@@ -66,7 +66,7 @@ function app(docsLanguage, storedLanguage) {
     for (const tag of html.matchAll(translatedTags)) {
         translations.push(new Node({i18n: tag[1]}));
     }
-    for (const lang of ['en', 'zh', 'ja']) {
+    for (const lang of ['en', 'zh', 'ja', 'ru', 'tr']) {
         const node = new Node({lang});
         node.href = `https://docs.example/${lang}/image-selector/`;
         links.push(node);
@@ -128,8 +128,13 @@ const page = app('ja', 'zh');
 assert.equal(page.state.currentLang, 'ja', 'page language overrides preference');
 assert.equal(app(null, 'ja').state.currentLang, 'ja', 'standalone JA preference');
 assert.equal(app(null, 'unknown').state.currentLang, 'en', 'unsupported locale');
+for (const language of ['ru', 'tr']) {
+    assert.equal(app(language, 'en').state.currentLang, language);
+    assert.equal(app(null, language).state.currentLang, language);
+    assert.ok(html.includes(`data-lang="${language}"`));
+}
 const keys = object => Object.keys(object).sort();
-for (const language of ['ja', 'zh']) {
+for (const language of ['ja', 'zh', 'ru', 'tr']) {
     const localized = page.CONFIG.i18n[language];
     const english = page.CONFIG.i18n.en;
     assert.deepEqual(keys(localized), keys(english), `complete ${language} labels`);
@@ -143,10 +148,14 @@ for (const key of ['guide_save_content', 'guide_tag_content', 'guide_auto_conten
     const links = text => Array.from(
         text.matchAll(/href="([^"]+)"/g), item => item[1]
     );
-    const japanese = page.CONFIG.i18n.ja[key];
     const english = page.CONFIG.i18n.en[key];
-    assert.deepEqual(commands(japanese), commands(english), `commands: ${key}`);
-    assert.deepEqual(links(japanese), links(english), `guide links: ${key}`);
+    for (const language of ['ja', 'ru', 'tr']) {
+        const localized = page.CONFIG.i18n[language][key];
+        assert.deepEqual(commands(localized), commands(english),
+            `${language} commands: ${key}`);
+        assert.deepEqual(links(localized), links(english),
+            `${language} guide links: ${key}`);
+    }
 }
 
 page.updateLanguage();
@@ -168,6 +177,13 @@ assert.equal(
     'https://docs.example/ja/image-selector/?arch=arm64#offline',
     'integrated language navigation preserves query and fragment'
 );
+for (const language of ['ru', 'tr']) {
+    page.links.find(link => link.dataset.lang === language).events.click({
+        preventDefault() {}
+    });
+    assert.equal(page.location.assigned,
+        `https://docs.example/${language}/image-selector/?arch=arm64#offline`);
+}
 
 const standalone = app(null, 'zh');
 standalone.state.selectedRegistry = 'china';
@@ -178,6 +194,16 @@ assert.equal(standalone.nodes['registry-china'].style.display, 'none');
 standalone.setLanguage('zh');
 assert.equal(standalone.state.selectedRegistry, 'china');
 assert.equal(standalone.nodes['registry-china'].style.display, 'block');
+for (const language of ['ru', 'tr']) {
+    standalone.setLanguage(language);
+    const labels = standalone.CONFIG.i18n[language];
+    assert.equal(standalone.document.documentElement.lang, language);
+    assert.equal(standalone.nodes['current-lang'].textContent, labels.language_name);
+    assert.equal(standalone.document.title, labels.title);
+    assert.equal(standalone.description.content, labels.description);
+    assert.equal(standalone.nodes['registry-china'].style.display, 'none');
+    assert.ok(standalone.translations.every(node => node.innerHTML));
+}
 standalone.setLanguage('ja');
 standalone.renderFrameworkVersions('cuda', 'nvidia');
 assert.ok(
@@ -211,7 +237,7 @@ for (const component of ['all', 'server', 'worker']) {
                 selectedRegistry: registry
             });
             const commands = [];
-            for (const language of ['en', 'zh', 'ja']) {
+            for (const language of ['en', 'zh', 'ja', 'ru', 'tr']) {
                 page.state.currentLang = language;
                 page.generateImageList();
                 commands.push(
@@ -220,8 +246,9 @@ for (const component of ['all', 'server', 'worker']) {
                     )
                 );
             }
-            assert.deepEqual(commands[0], commands[1]);
-            assert.deepEqual(commands[0], commands[2]);
+            for (const translated of commands.slice(1)) {
+                assert.deepEqual(commands[0], translated);
+            }
         }
     }
 }
@@ -267,7 +294,7 @@ const document = {
 vm.runInNewContext(source, {document, window: {location}, URL, Element});
 events.DOMContentLoaded();
 
-for (const language of ['en', 'zh', 'ja']) {
+for (const language of ['en', 'zh', 'ja', 'ru', 'tr']) {
     const languagePath = language === 'en' ? '' : `${language}/`;
     const path = `/v2.3.0/${languagePath}user-guide/usage/`;
     const link = new Element(`https://docs.example${path}?old=1#old`);

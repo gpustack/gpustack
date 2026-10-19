@@ -6,7 +6,7 @@ translation_status: translated
 
 ## 結論 { #conclusion }
 
-![Latency Optimization Result](../../assets/performance-lab/qwen3.5-35b-a3b-h200-latency.png)
+![レイテンシ最適化の結果](../../assets/performance-lab/qwen3.5-35b-a3b-h200-latency.png)
 
 NVIDIA H200 上で Qwen/Qwen3.5-35B-A3B-FP8 のレイテンシーを最適化するための推奨設定：
 
@@ -252,7 +252,7 @@ guidellm benchmark \
 
 ### CUDA graph && 量子化 { #cuda-graph-quantization }
 
-#### Size 256 { #size-256 }
+#### サイズ 256 { #size-256 }
 
 - プロファイル： `ShareGPT 8RPS`
 - バックエンドパラメーター:
@@ -298,7 +298,7 @@ guidellm benchmark \
     ==================================================
     ```
 
-#### Size 512 { #size-512 }
+#### サイズ 512 { #size-512 }
 
 - プロファイル： `ShareGPT 8RPS`
 - バックエンドパラメーター:

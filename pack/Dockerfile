@@ -321,8 +321,10 @@ ARG GIT_COMMIT
 COPY docs/ /workspace/docs/
 COPY docs-zh/ /workspace/docs-zh/
 COPY docs-ja/ /workspace/docs-ja/
+COPY docs-ru/ /workspace/docs-ru/
+COPY docs-tr/ /workspace/docs-tr/
 COPY hack/build-docs.sh hack/build_docs.py hack/mkdocs_i18n.py hack/mkdocs_multilingual.py hack/mkdocs_offline.py hack/check_offline_docs.py /workspace/hack/
-COPY mkdocs.yml mkdocs.zh.yml mkdocs.ja.yml mkdocs.offline.yml pyproject.toml uv.lock /workspace/
+COPY mkdocs.yml mkdocs.zh.yml mkdocs.ja.yml mkdocs.ru.yml mkdocs.tr.yml mkdocs.offline.yml pyproject.toml uv.lock /workspace/
 
 WORKDIR /workspace
 

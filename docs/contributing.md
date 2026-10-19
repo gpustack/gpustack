@@ -25,23 +25,12 @@ If you're fixing a small issue, you can simply submit a PR. However, if you're p
 
 If you have any updates to our documentation, feel free to file an issue with the `documentation` label or make a pull request.
 
-English documentation in `docs/` is the source of truth. Add Simplified Chinese and
-Japanese translations at the same relative paths under `docs-zh/` and `docs-ja/`;
-images and other shared assets are inherited
-from `docs/`. Preserve the English heading IDs in translated headings (for example,
-`## 安装 { #installation }`) so links and language switching remain consistent.
-Navigation labels and theme labels are translated in `mkdocs.zh.yml` and
-`mkdocs.ja.yml`. Preserve commands, configuration keys, code examples, links, and
-model names when translating from English. Pages without
-a translation, or with `translation_status: pending` in their front matter, display
-the English source with a notice.
+English documentation in `docs/` is the source of truth. Maintain Simplified Chinese, Japanese, Russian, and Turkish translations at matching paths under `docs-zh/`, `docs-ja/`, `docs-ru/`, and `docs-tr/`. Images and other shared assets are inherited from `docs/`. Preserve the English heading IDs in translated headings (for example, `## 安装 { #installation }`) so links and language switching remain consistent.
 
-Run `make build-docs` to build all three languages, or `make serve-docs` to preview them
-with live reload. English is served at `/`, Chinese at `/zh/`, and Japanese at `/ja/`.
-`bash hack/build-docs.sh --offline` builds the bundled site at `gpustack/help/`,
-served by GPUStack at `/help/`, `/help/zh/`, and `/help/ja/`. Each language has its own
-search index. Japanese search uses the tokenizer bundled with the documentation
-theme and works offline.
+Translate navigation and theme labels in the corresponding `mkdocs.zh.yml`, `mkdocs.ja.yml`, `mkdocs.ru.yml`, and `mkdocs.tr.yml` files. Preserve commands, configuration keys, code examples, links, and model names when translating from English. Pages without a translation, or with `translation_status: pending` in their front matter, display the English source with a notice.
+
+Run `make build-docs` to build all five languages, or `make serve-docs` to preview them with live reload. English is served at `/`; translated sites use `/zh/`, `/ja/`, `/ru/`, and `/tr/`.
+`bash hack/build-docs.sh --offline` builds the bundled site at `gpustack/help/`, served by GPUStack at `/help/` and the corresponding `/help/<language>/` paths. Each language has its own local search index. Japanese search uses the tokenizer bundled with the documentation theme and works offline.
 
 Ordinary `mkdocs build` and `mike deploy` also build all languages through the
 configured documentation hooks. Versioned deployments keep translations inside

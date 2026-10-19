@@ -61,7 +61,7 @@ app = FastAPI()
 ui.register(app)
 client = TestClient(app)
 
-for root in ("/help/", "/help/zh/", "/help/ja/"):
+for root in ("/help/", "/help/zh/", "/help/ja/", "/help/ru/", "/help/tr/"):
     for suffix in ("", "installation/air-gapped/", "search/search_index.json"):
         path = root + suffix
         status = client.get(path).status_code
@@ -87,7 +87,7 @@ class PageAssets(HTMLParser):
 
 paths = (
     root + suffix
-    for root in ("/help/", "/help/zh/", "/help/ja/")
+    for root in ("/help/", "/help/zh/", "/help/ja/", "/help/ru/", "/help/tr/")
     for suffix in ("overview/", "installation/air-gapped/", "missing/deep/page/")
 )
 for path in paths:

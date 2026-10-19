@@ -28,11 +28,19 @@ def multilingual_source(tmp_path):
     for language in i18n.LANGUAGES:
         source = root / ("docs" if language == "en" else f"docs-{language}")
         (source / "user-guide").mkdir(parents=True)
-        titles = {"en": "Cluster management", "zh": "集群管理", "ja": "クラスター管理"}
+        titles = {
+            "en": "Cluster management",
+            "zh": "集群管理",
+            "ja": "クラスター管理",
+            "ru": "Управление кластерами",
+            "tr": "Küme yönetimi",
+        }
         bodies = {
             "en": "Deploy language models safely with GPUStack.",
             "zh": "使用集群管理功能安全部署语言模型。",
             "ja": "GPUStackは言語モデルを安全にデプロイします。クラスター管理を試します。",
+            "ru": "Управление кластерами: безопасное развертывание языковых моделей GPUStack.",
+            "tr": "Küme yönetimi ile GPUStack dil modellerini güvenle dağıtın.",
         }
         (source / "user-guide/guide.md").write_text(
             f"# {titles[language]}\n\n{bodies[language]}\n", encoding="utf-8"
@@ -94,7 +102,9 @@ def test_ordinary_mkdocs_build_publishes_every_language_and_native_search(
         language_site = output / i18n.language_prefix(language)
         assert (language_site / "user-guide/guide/index.html").is_file()
         index = json.loads((language_site / "search/search_index.json").read_text())
-        assert index["config"]["lang"] == (["ja"] if language == "ja" else ["en"])
+        assert index["config"]["lang"] == (
+            [language] if language in ("ja", "ru", "tr") else ["en"]
+        )
         if language == "ja":
             assert all("\u200b" not in entry["text"] for entry in index["docs"])
             assert any("言語モデル" in entry["text"] for entry in index["docs"])
@@ -394,3 +404,36 @@ def test_version_navigation_refuses_unsupported_material_bundle(tmp_path):
         i18n.prepare_version_navigation(tmp_path, "ja")
 
     assert not list(assets.glob("bundle.docs-*.min.js"))
+
+
+@pytest.mark.parametrize(
+    "language,queries",
+    [
+        ("ru", ["управление", "кластерами", "языковых", "GPUStack"]),
+        ("tr", ["küme", "yönetimi", "modellerini", "GPUStack"]),
+    ],
+)
+def test_new_language_workers_find_native_queries(
+    multilingual_source, language, queries
+):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to exercise the bundled browser worker")
+    output = multilingual_source / "site"
+    builder.build_language(multilingual_source / "mkdocs.yml", output)
+    site = output / language
+    worker = next((site / "assets/javascripts/workers").glob("search.*.min.js"))
+    index = json.loads((site / "search/search_index.json").read_text())
+    assert index["config"]["lang"] == [language]
+    assert (site / f"assets/javascripts/lunr/min/lunr.{language}.min.js").is_file()
+    script = (ROOT / "tests/fixtures/docs_search_worker.cjs").read_text()
+    result = subprocess.run(
+        [node, "-e", script, str(site), str(worker), json.dumps(queries)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for query, matches in json.loads(result.stdout).items():
+        assert any(
+            location.startswith("user-guide/guide/") for location in matches
+        ), query
