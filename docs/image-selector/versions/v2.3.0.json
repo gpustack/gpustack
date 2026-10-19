@@ -194,7 +194,7 @@
   "gpustack/mirrored-higress-higress:2.1.9",
   "gpustack/mirrored-higress-pilot:2.1.9",
   "gpustack/mirrored-higress-gateway:2.1.9",
-  "gpustack/gpustack-operator:v0.9.0",
+  "gpustack/gpustack-operator:v0.9.1",
   "gpustack/ssh-server:v1.3.0",
   "gpustack/mirrored-kueue:v0.18.10",
   "gpustack/mirrored-node-feature-discovery:v0.19.0-gpustack1",
@@ -207,8 +207,8 @@
   "gpustack/mirrored-csi-node-driver-registrar:v2.17.0",
   "gpustack/mirrored-nvidia-topograph:v1.0.0",
   "gpustack/mirrored-mooncake:0.3.13.post1-cpu",
-  "gpustack/llm-router:v0.2.0",
+  "gpustack/llm-router:v0.3.1",
   "gpustack/mirrored-envoy:distroless-v1.33.2",
-  "gpustack/mirrored-llm-d-router-disagg-sidecar:v0.10.0",
+  "gpustack/mirrored-llm-d-router-disagg-sidecar:v0.11.0",
   "gpustack/mirrored-python:3.12-alpine"
 ]
