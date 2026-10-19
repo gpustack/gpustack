@@ -669,23 +669,23 @@ class TestWorkerOperatorSettingsAccess:
 
     def test_worker_can_read_and_patch_settings(self):
         docs = render("--set", "worker.enabled=true")
-        roles = [
+        role = next(
             d
             for d in docs
             if d["kind"] == "ClusterRole"
-            and any(
-                "settings" in r.get("resources", [])
-                and "gpustack.ai" in r.get("apiGroups", [])
-                for r in d["rules"]
-            )
-        ]
-        assert len(roles) == 1
-        rule = next(r for r in roles[0]["rules"] if "settings" in r["resources"])
+            and d["metadata"]["name"] == "gpustack-worker-workload-api"
+        )
+        rule = next(
+            r
+            for r in role["rules"]
+            if "settings" in r.get("resources", [])
+            and "gpustack.ai" in r.get("apiGroups", [])
+        )
         assert {"get", "patch"} <= set(rule["verbs"])
         binding = next(
             d
             for d in docs
             if d["kind"] == "ClusterRoleBinding"
-            and d["roleRef"]["name"] == roles[0]["metadata"]["name"]
+            and d["roleRef"]["name"] == role["metadata"]["name"]
         )
         assert binding["subjects"][0]["name"] == "gpustack-worker"
