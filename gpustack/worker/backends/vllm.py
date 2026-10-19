@@ -274,6 +274,7 @@ class VLLMServer(InferenceServer):
             ],
             resources=resources,
             mounts=mounts,
+            files=self._get_configured_files(),
             ports=ports,
         )
 
@@ -352,6 +353,7 @@ class VLLMServer(InferenceServer):
                 envs=sidecar_envs,
                 resources=run_container.resources,
                 mounts=run_container.mounts,
+                files=run_container.files,
                 ports=ray_ports,
             )
 

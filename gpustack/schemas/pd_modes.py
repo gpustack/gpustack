@@ -392,10 +392,11 @@ class PDModeRole(BaseModel):
     args: List[str] = []
     files: Dict[str, str] = {}
     host_mounts: List[str] = []
-    """Host paths the engine container needs read-only, same path inside.
+    """Host directories mounted read-only at the same path inside the container."""
+    host_files: List[str] = []
+    """Host files the engine container needs read-only, same path inside.
 
-    A fifth injection channel, and the one the other four cannot stand in
-    for: a transport that reads a host file the accelerator runtime does not
+    A transport that reads a host file the accelerator runtime does not
     inject needs that file *present*, and `files` writes contents GPUStack
     composes rather than passing through something only the host knows.
 
