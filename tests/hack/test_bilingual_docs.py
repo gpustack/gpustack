@@ -74,7 +74,7 @@ def source_tree(tmp_path):
             "hooks": ["hack/existing_hook.py"],
             "extra": {"version": {"provider": "mike"}},
         },
-        "mkdocs.zh.yml": {
+        "mkdocs/zh.yml": {
             "site_description": "中文文档",
             "nav_translations": {
                 "Overview": "概览",
@@ -83,7 +83,7 @@ def source_tree(tmp_path):
             },
             "theme_translations": {"Switch to dark mode": "切换到深色模式"},
         },
-        "mkdocs.ja.yml": {
+        "mkdocs/ja.yml": {
             "site_description": "日本語ドキュメント",
             "nav_translations": {
                 "Overview": "概要",
@@ -103,11 +103,13 @@ def source_tree(tmp_path):
         },
     }
     for code, title in [("ru", "Обзор"), ("tr", "Genel bakış")]:
-        configs[f"mkdocs.{code}.yml"] = {
+        configs[f"mkdocs/{code}.yml"] = {
             "nav_translations": {"Overview": title, "Guide": title}
         }
     for filename, config in configs.items():
-        (root / filename).write_text(
+        config_path = root / filename
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
             yaml.safe_dump(config, allow_unicode=True), encoding="utf-8"
         )
     return root
@@ -510,10 +512,11 @@ def test_preview_build_and_live_reload_use_the_local_server_root(
             self.host = host
             self.port = port
             self.stopped = False
+            self.watched = []
             servers.append(self)
 
         def watch(self, path):
-            pass
+            self.watched.append(Path(path).relative_to(source_tree).as_posix())
 
         def serve(self):
             self.builder()
@@ -537,6 +540,17 @@ def test_preview_build_and_live_reload_use_the_local_server_root(
     )
     assert len(servers) == 1
     assert (servers[0].host, servers[0].port) == ("127.0.0.1", 8123)
+    assert set(servers[0].watched) == {
+        "docs",
+        "docs-zh",
+        "docs-ja",
+        "docs-ru",
+        "docs-tr",
+        "mkdocs",
+        "mkdocs.yml",
+        "mkdocs.offline.yml",
+        "hack",
+    }
     assert servers[0].stopped
     assert file_contents(source_tree) == original_sources
 
