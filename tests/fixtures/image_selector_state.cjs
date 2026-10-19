@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync('docs/image-selector/assets/app.js', 'utf8');
 const html = fs.readFileSync('docs/image-selector/index.html', 'utf8');
+const defaultVersion = JSON.parse(fs.readFileSync('docs/image-selector/versions/index.json', 'utf8')).versions[0];
 
 class Element {
     constructor(tagName = 'div', dataset = {}) {
@@ -225,7 +226,7 @@ async function checkStateRestoration() {
     })]) {
         const bad = app('en', `https://docs.example/help/image-selector/?selector=${encodeURIComponent(raw)}`);
         await bad.init();
-        assert.equal(bad.state.selectedGpuStackVersion, 'v2.2.3');
+        assert.equal(bad.state.selectedGpuStackVersion, defaultVersion);
         assert.equal(bad.state.selectedCard, 'nvidia');
         assert.equal(bad.state.selectedArch, 'amd64');
         assert.equal(bad.state.selectedRegistry, 'docker-hub');
@@ -284,18 +285,18 @@ async function checkSelectorStateSafety() {
                 const initialized = page.init();
                 await waiting;
                 safeHTML(page);
-                assert.equal(page.state.selectedGpuStackVersion, phase === 'versions' ? null : 'v2.2.3',
+                assert.equal(page.state.selectedGpuStackVersion, phase === 'versions' ? null : defaultVersion,
                     'URL version is not live before actual version-list validation');
                 page.setLanguage(language === 'ja' ? 'ru' : 'ja');
                 safeHTML(page);
                 if (fails) rejectManifest(Error('manifest unavailable'));
                 else resolveManifest({json: async () => phase === 'versions'
-                    ? {versions: ['v2.2.3', 'v2.2.2']}
-                    : JSON.parse(fs.readFileSync('docs/image-selector/versions/v2.2.3.json', 'utf8'))});
+                    ? {versions: [defaultVersion, 'v2.2.2']}
+                    : JSON.parse(fs.readFileSync(`docs/image-selector/versions/${defaultVersion}.json`, 'utf8'))});
                 await initialized;
                 safeHTML(page);
                 assert.ok(requests.every(path => !path.includes(marker)));
-                assert.equal(page.state.selectedGpuStackVersion, fails && phase === 'versions' ? null : 'v2.2.3');
+                assert.equal(page.state.selectedGpuStackVersion, fails && phase === 'versions' ? null : defaultVersion);
                 assert.ok(!JSON.stringify(selection(page.state)).includes(marker),
                     'failed or completed initialization cannot retain unvalidated URL fields');
             }
