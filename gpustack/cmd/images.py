@@ -30,9 +30,9 @@ csi_livenessprobe_version = "v2.19.0"
 csi_node_driver_registrar_version = "v2.17.0"
 topograph_version = "v1.0.0"
 mooncake_version = "0.3.13.post1-cpu"
-llm_router_version = "v0.2.0"
+llm_router_version = "v0.3.1"
 envoy_version = "distroless-v1.33.2"
-llm_d_router_disagg_sidecar_version = "v0.10.0"
+llm_d_router_disagg_sidecar_version = "v0.11.0"
 python_version = "3.12-alpine"
 
 # Append images used by GPUStack here. The GPUStack image itself is appended
