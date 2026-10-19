@@ -4,7 +4,10 @@ import importlib.util
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Callable
 
+from mkdocs.config.defaults import MkDocsConfig
+from mkdocs.livereload import LiveReloadServer
 from mkdocs.plugins import event_priority
 
 
@@ -16,6 +19,16 @@ def is_prepared(config):
     return extra.get("docs_i18n_prepared") or (extra.get("docs_i18n") or {}).get(
         "prepared"
     )
+
+
+def on_serve(
+    server: LiveReloadServer, *, config: MkDocsConfig, builder: Callable
+) -> LiveReloadServer:
+    """Watch translated pages and labels with MkDocs' existing rebuild callback."""
+    if not is_prepared(config):
+        root = Path(__file__).resolve().parents[1]
+        server.watch(str(root / "docs-i18n"))
+    return server
 
 
 def on_pre_build(config):

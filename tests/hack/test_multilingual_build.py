@@ -78,6 +78,207 @@ def multilingual_source(tmp_path):
     return root
 
 
+@pytest.fixture
+def native_preview(monkeypatch):
+    import mkdocs.commands.build
+    import mkdocs.commands.serve
+
+    builds = []
+    real_build = mkdocs.commands.build.build
+
+    def build(config, **kwargs):
+        settings = config["extra"].get("docs_i18n") or {}
+        if settings.get("prepared"):
+            builds.append(settings["language"])
+        return real_build(config, **kwargs)
+
+    monkeypatch.setattr(mkdocs.commands.build, "build", build)
+    monkeypatch.setattr(mkdocs.commands.serve, "build", build)
+
+    def preview(config, exercise):
+        servers = []
+
+        class Server:
+            def __init__(self, *, builder, root, **kwargs):
+                self.builder = builder
+                self.root = Path(root)
+                self.watched = []
+                self.stopped = False
+                self.builds = builds
+                servers.append(self)
+
+            def watch(self, path, func=None, *, recursive=True):
+                assert func is None or func is self.builder
+                self.watched.append((Path(path).resolve(), recursive))
+
+            def watches(self, path):
+                path = path.resolve()
+                return any(
+                    path == source or (recursive and source in path.parents)
+                    for source, recursive in self.watched
+                )
+
+            def changed(self, path):
+                assert self.watches(path), f"Not watched: {path}"
+                self.builds.clear()
+                self.builder()
+
+            def serve(self, **kwargs):
+                exercise(self)
+
+            def shutdown(self):
+                self.stopped = True
+
+        monkeypatch.setattr(mkdocs.commands.serve, "LiveReloadServer", Server)
+        with builder.working_directory(config.parent):
+            mkdocs.commands.serve.serve(config_file=str(config))
+        assert len(servers) == 1
+        assert servers[0].stopped
+
+    return preview
+
+
+def test_native_preview_watches_all_translations_and_language_configs(
+    multilingual_source, native_preview
+):
+    def exercise(server):
+        translations = multilingual_source / "docs-i18n"
+        assert server.watched.count((translations, True)) == 1
+        assert server.watches(multilingual_source / "docs/index.md")
+        assert server.watches(multilingual_source / "mkdocs.yml")
+        for language in i18n.LANGUAGES:
+            if language != "en":
+                assert server.watches(translations / language / "user-guide/guide.md")
+                assert server.watches(translations / "mkdocs" / f"{language}.yml")
+        assert server.watches(translations / "future/assets/new.svg")
+        assert server.builds == list(i18n.LANGUAGES)
+
+    native_preview(multilingual_source / "mkdocs.yml", exercise)
+
+
+def test_native_preview_rebuilds_after_translation_and_label_changes(
+    multilingual_source, native_preview
+):
+    translations = multilingual_source / "docs-i18n"
+    languages = [language for language in i18n.LANGUAGES if language != "en"]
+    guides = {
+        language: translations / language / "user-guide/guide.md"
+        for language in languages
+    }
+    original = {language: source.read_text() for language, source in guides.items()}
+    additions = {
+        language: translations / language / "user-guide/added.md"
+        for language in languages
+    }
+    (multilingual_source / "docs/user-guide/added.md").write_text(
+        "# Additional guide\n\nEnglish content awaiting translation.\n"
+    )
+    configuration = multilingual_source / "mkdocs.yml"
+    settings = yaml.safe_load(configuration.read_text())
+    settings["nav"].append({"Additional guide": "user-guide/added.md"})
+    configuration.write_text(yaml.safe_dump(settings))
+
+    def exercise(server):
+        initial_english = {
+            server.root
+            / f"user-guide/{page}/index.html": (
+                server.root / f"user-guide/{page}/index.html"
+            ).read_bytes()
+            for page in ("guide", "added")
+        }
+
+        def rebuild(path):
+            server.changed(path)
+            assert server.builds == list(i18n.LANGUAGES)
+            assert all(
+                page.read_bytes() == content
+                for page, content in initial_english.items()
+            )
+            assert all(
+                (server.root / i18n.language_prefix(language) / "index.html").is_file()
+                for language in i18n.LANGUAGES
+            )
+
+        for language, source in guides.items():
+            source.write_text(f"# Updated translation {language}\n")
+        rebuild(guides["zh"])
+        for language in languages:
+            assert (
+                f"Updated translation {language}"
+                in (server.root / language / "user-guide/guide/index.html").read_text()
+            )
+
+        for language, source in additions.items():
+            source.write_text(f"# Added translation {language}\n")
+        rebuild(additions["zh"])
+        for language in languages:
+            assert (
+                f"Added translation {language}"
+                in (server.root / language / "user-guide/added/index.html").read_text()
+            )
+
+        for source in additions.values():
+            source.unlink()
+        rebuild(additions["zh"])
+        for language in languages:
+            assert (
+                "English content awaiting translation."
+                in (server.root / language / "user-guide/added/index.html").read_text()
+            )
+
+        for language, source in guides.items():
+            source.unlink()
+        rebuild(guides["zh"])
+        for language in languages:
+            assert (
+                "Deploy language models safely with GPUStack."
+                in (server.root / language / "user-guide/guide/index.html").read_text()
+            )
+
+        for language, source in guides.items():
+            source.write_text(original[language])
+        rebuild(guides["zh"])
+        for language in languages:
+            title = original[language].splitlines()[0].removeprefix("# ")
+            assert (
+                title
+                in (server.root / language / "user-guide/guide/index.html").read_text()
+            )
+
+        for language in languages:
+            (translations / "mkdocs" / f"{language}.yml").write_text(
+                yaml.safe_dump(
+                    {"nav_translations": {"Guide": f"Live label {language}"}}
+                )
+            )
+        rebuild(translations / "mkdocs/zh.yml")
+        for language in languages:
+            assert (
+                f"Live label {language}"
+                in (server.root / language / "user-guide/guide/index.html").read_text()
+            )
+
+    native_preview(multilingual_source / "mkdocs.yml", exercise)
+
+
+@pytest.mark.parametrize("flag", ["docs_i18n", "docs_i18n_prepared"])
+def test_native_prepared_preview_does_not_watch_source_i18n_trees(
+    multilingual_source, tmp_path, native_preview, flag
+):
+    config = builder.prepare_language(multilingual_source, tmp_path / "prepared", "en")
+    if flag == "docs_i18n_prepared":
+        child = yaml.safe_load(config.read_text())
+        child["extra"].pop("docs_i18n")
+        child["extra"]["docs_i18n_prepared"] = True
+        config.write_text(yaml.safe_dump(child))
+
+    def exercise(server):
+        assert server.watched == [(config.parent / "docs", True), (config, True)]
+        assert server.builds == (["en"] if flag == "docs_i18n" else [])
+
+    native_preview(config, exercise)
+
+
 class HeadLinks(HTMLParser):
     def __init__(self):
         super().__init__()
