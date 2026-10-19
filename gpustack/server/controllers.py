@@ -481,23 +481,19 @@ class ModelController:
             return
         try:
             async with async_session() as session:
+                # Delayed events are hints: a user may have stopped, edited or
+                # deleted the deployment since this pass was scheduled.
+                attached = await Model.one_by_id(session, model.id)
+                if attached is not None:
+                    model = attached
+                elif event.type != EventType.DELETED:
+                    return
                 drain_due = await sync_replicas(session, model)
-                if drain_due is not None:
-                    # The only self-scheduled pass this controller books, and it
-                    # exists because nothing else would arrive: a drained member
-                    # publishes no further Model event and a settled deployment
-                    # publishes none either, so `_reap_drained` would wait on a
-                    # reconcile that never comes. `add_after` is
-                    # last-schedule-wins per key, so re-booking on every pass
-                    # keeps one timer rather than accumulating them.
-                    self._queue.add_after(
-                        WorkEvent(
-                            keys=(model.id,),
-                            type=WorkEventType.MODIFIED,
-                            object=event,
-                        ),
-                        drain_due,
-                    )
+                drain_deadline = (
+                    asyncio.get_running_loop().time() + drain_due
+                    if drain_due is not None
+                    else None
+                )
                 # The status owner has to run on the spec side too, not only on
                 # instance events. `role_status.desired` is read straight off
                 # `roles[].replicas`, so a spec edit changes it with no instance
@@ -507,16 +503,29 @@ class ModelController:
                 # show. Safe to call from both sides: the change gate inside
                 # means a pass that finds nothing new writes nothing, so the
                 # update this may publish converges after one round.
-                #
-                # Load a session-attached row rather than writing through
-                # `event.data`: what arrives on the bus is a detached copy whose
-                # identity may already have been collected, and assigning to it
-                # raises "parent object of type <Model> has been garbage
-                # collected". `notify_model_route_target` below re-fetches for
-                # the same reason.
-                attached = await Model.one_by_id(session, model.id)
                 if attached is not None:
                     await sync_model_status(session, attached)
+                membership_due = (
+                    pd_membership.reconcile_after(model)
+                    if attached is not None
+                    else None
+                )
+                delays = [membership_due] if membership_due is not None else []
+                if drain_deadline is not None:
+                    delays.append(
+                        max(0.0, drain_deadline - asyncio.get_running_loop().time())
+                    )
+                if delays:
+                    # One timer per model must preserve both the drain deadline
+                    # and membership checks, even without another bus event.
+                    self._queue.add_after(
+                        WorkEvent(
+                            keys=(model.id,),
+                            type=WorkEventType.MODIFIED,
+                            object=Event(type=EventType.UPDATED, data=model),
+                        ),
+                        min(delays),
+                    )
                 await notify_model_route_target(
                     session=session, model=model, event=event
                 )
@@ -525,6 +534,7 @@ class ModelController:
                 await self._sync_model_ai_proxy(session, model)
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
+            raise
 
     async def _sync_model_ai_proxy(self, session: AsyncSession, model: Model):
         """The Model controller owns the ai-proxy CR: the entry's content
