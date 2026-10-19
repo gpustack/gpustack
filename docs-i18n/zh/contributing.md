@@ -33,7 +33,7 @@ translation_status: translated
 
 导航与主题标签在相应的 `docs-i18n/mkdocs/zh.yml`、`docs-i18n/mkdocs/ja.yml`、`docs-i18n/mkdocs/ru.yml` 和 `docs-i18n/mkdocs/tr.yml` 中翻译。翻译时保留命令、配置键、代码示例、链接和模型名称。没有译文，或元数据标记为 `translation_status: pending` 的页面，会显示英文原文并附上相应语言的提示。
 
-运行 `make build-docs` 构建全部五种语言，或运行 `make serve-docs` 实时预览。预览中的英文路径为 `/`，其他语言为 `/zh/`、`/ja/`、`/ru/` 和 `/tr/`。
+运行 `make build-docs` 构建全部五种语言。使用 `mkdocs serve` 或 `make serve-docs` 实时预览全部五种语言；修改 `docs-i18n/` 下的译文或语言配置会自动重建预览。预览中的英文路径为 `/`，其他语言为 `/zh/`、`/ja/`、`/ru/` 和 `/tr/`。
 `bash hack/build-docs.sh --offline` 将内置文档构建到 `gpustack/help/`，GPUStack 通过 `/help/` 和对应的 `/help/<language>/` 路径提供访问。每种语言拥有独立的本地搜索索引，日语搜索使用主题自带的分词器，可离线使用。
 
 普通 `mkdocs build` 和 `mike deploy` 也会通过已配置的文档钩子构建全部语言。

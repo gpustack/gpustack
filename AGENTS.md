@@ -121,8 +121,10 @@ Rules:
   must also be added to the `nav:` tree in `mkdocs.yml`, or it will not be published.
   Translate navigation labels in `docs-i18n/mkdocs/<language>.yml`; missing or
   pending translations fall back to English with a notice.
-  Build all languages with `make build-docs`; `make serve-docs` previews them with
-  live reload. Ordinary MkDocs and mike builds use the same multilingual pipeline.
+  Build all languages with `make build-docs`. Both `mkdocs serve` and
+  `make serve-docs` preview all five languages with live reload, including changes
+  to translations and language configuration under `docs-i18n/`.
+  Ordinary MkDocs and mike builds use the same multilingual pipeline.
 - `README.md` is canonical; `README_CN.md` and `README_JP.md` are translations — if you
   change one meaningfully, note in the PR that the others need updating.
 

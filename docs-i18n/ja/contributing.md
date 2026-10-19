@@ -33,7 +33,7 @@ GPUStack への貢献に時間を割いていただき、ありがとうござ�
 
 ナビゲーションとテーマのラベルは、対応する `docs-i18n/mkdocs/zh.yml`、`docs-i18n/mkdocs/ja.yml`、`docs-i18n/mkdocs/ru.yml`、`docs-i18n/mkdocs/tr.yml` で翻訳します。英語から翻訳する際は、コマンド、設定キー、コード例、リンク、モデル名を保持してください。翻訳がないページ、またはフロントマターに `translation_status: pending` があるページは、通知とともに英語の原文を表示します。
 
-`make build-docs` で全5言語をビルドし、`make serve-docs` でライブリロード付きプレビューを起動します。英語は `/`、翻訳は `/zh/`、`/ja/`、`/ru/`、`/tr/` です。
+`make build-docs` で全5言語をビルドします。`mkdocs serve` または `make serve-docs` で全5言語のライブリロード付きプレビューを起動できます。`docs-i18n/` 内の翻訳や言語設定を変更すると、プレビューが自動的に再ビルドされます。英語は `/`、翻訳は `/zh/`、`/ja/`、`/ru/`、`/tr/` です。
 `bash hack/build-docs.sh --offline` は内蔵サイトを `gpustack/help/` に構築します。GPUStack は `/help/` と各 `/help/<language>/` で配信します。各言語に独立したローカル検索インデックスがあります。日本語検索はテーマに同梱されたトークナイザーを使用し、オフラインで動作します。
 
 通常の `mkdocs build` と `mike deploy` も、設定されたドキュメントフックで

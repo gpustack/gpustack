@@ -29,7 +29,7 @@ English documentation in `docs/` is the source of truth. Maintain Simplified Chi
 
 Translate navigation and theme labels in the corresponding `docs-i18n/mkdocs/zh.yml`, `docs-i18n/mkdocs/ja.yml`, `docs-i18n/mkdocs/ru.yml`, and `docs-i18n/mkdocs/tr.yml` files. Preserve commands, configuration keys, code examples, links, and model names when translating from English. Pages without a translation, or with `translation_status: pending` in their front matter, display the English source with a notice.
 
-Run `make build-docs` to build all five languages, or `make serve-docs` to preview them with live reload. English is served at `/`; translated sites use `/zh/`, `/ja/`, `/ru/`, and `/tr/`.
+Run `make build-docs` to build all five languages. Preview them with live reload using `mkdocs serve` or `make serve-docs`; changes to translations and language configuration under `docs-i18n/` rebuild the preview. English is served at `/`; translated sites use `/zh/`, `/ja/`, `/ru/`, and `/tr/`.
 `bash hack/build-docs.sh --offline` builds the bundled site at `gpustack/help/`, served by GPUStack at `/help/` and the corresponding `/help/<language>/` paths. Each language has its own local search index. Japanese search uses the tokenizer bundled with the documentation theme and works offline.
 
 Ordinary `mkdocs build` and `mike deploy` also build all languages through the
