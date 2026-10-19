@@ -6,7 +6,7 @@ translation_status: translated
 
 ## 結論 { #conclusion }
 
-![Qwen3-8B H100 Latency Optimization](../../assets/performance-lab/qwen3-8b-h100-latency.png)
+![Qwen3-8B H100 レイテンシの最適化](../../assets/performance-lab/qwen3-8b-h100-latency.png)
 
 H100 GPU 上で Qwen3-8B のレイテンシーを最適化するための推奨設定：
 

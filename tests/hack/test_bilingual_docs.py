@@ -38,6 +38,15 @@ def source_tree(tmp_path):
         "hack/existing_hook.py": "# Shared documentation hook.\n",
         "hack/offline_hook.py": "# Offline documentation hook.\n",
     }
+    for code, title, guide in [
+        ("ru", "Обзор", "Русское руководство."),
+        ("tr", "Genel bakış", "Türkçe kılavuz."),
+    ]:
+        files[f"docs-{code}/overview.md"] = f"# {title}\n"
+        files[f"docs-{code}/user-guide/guide.md"] = f"# {title}\n\n{guide}\n"
+        files[f"docs-{code}/user-guide/pending.md"] = (
+            "---\ntranslation_status: pending\n---\n\nDraft translation.\n"
+        )
     for relative, content in files.items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +102,10 @@ def source_tree(tmp_path):
             "extra": {"offline": True, "version": None},
         },
     }
+    for code, title in [("ru", "Обзор"), ("tr", "Genel bakış")]:
+        configs[f"mkdocs.{code}.yml"] = {
+            "nav_translations": {"Overview": title, "Guide": title}
+        }
     for filename, config in configs.items():
         (root / filename).write_text(
             yaml.safe_dump(config, allow_unicode=True), encoding="utf-8"
@@ -138,9 +151,13 @@ def test_language_overlay_preserves_shared_assets_and_english_sources(
     config = read_config(builder.prepare_language(source_tree, stage, language))
 
     assert file_contents(source_tree) == original_sources
-    expected = {"en": "English guide.", "zh": "中文指南。", "ja": "日本語のガイド。"}[
-        language
-    ]
+    expected = {
+        "en": "English guide.",
+        "zh": "中文指南。",
+        "ja": "日本語のガイド。",
+        "ru": "Русское руководство.",
+        "tr": "Türkçe kılavuz.",
+    }[language]
     assert expected in (stage / "docs/user-guide/guide.md").read_text()
     assert (stage / "docs/assets/chart.svg").read_bytes() == (
         source_tree / "docs/assets/chart.svg"
@@ -431,6 +448,8 @@ def test_offline_configuration_and_error_links_stay_under_help(
         "en": "/help/",
         "zh": "/help/zh/",
         "ja": "/help/ja/",
+        "ru": "/help/ru/",
+        "tr": "/help/tr/",
     }
     for missing_page in ("/help/missing/nested/page/", "/help/zh/missing/page/"):
         for link in links:
@@ -456,6 +475,8 @@ def test_public_error_language_links_ignore_unknown_request_depth(language, pref
         "en": prefix,
         "zh": prefix + "zh/",
         "ja": prefix + "ja/",
+        "ru": prefix + "ru/",
+        "tr": prefix + "tr/",
     }
     for missing_url in (
         "https://docs.example.test" + prefix + "missing/nested/page/",

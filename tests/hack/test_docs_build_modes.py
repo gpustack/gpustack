@@ -61,7 +61,7 @@ def test_prepared_single_language_build_needs_no_bilingual_helpers(build_source)
 
 
 @pytest.mark.parametrize("mode", ["--offline", "offline"])
-@pytest.mark.parametrize("language", ["zh", "ja"])
+@pytest.mark.parametrize("language", ["zh", "ja", "ru", "tr"])
 def test_complete_source_dispatches_all_languages(build_source, mode, language):
     root, env, log = build_source
     (root / f"docs-{language}").mkdir()

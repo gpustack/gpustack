@@ -13,7 +13,13 @@ from jinja2 import ChoiceLoader, DictLoader, TemplateNotFound
 from mkdocs.plugins import event_priority
 
 
-LANGUAGES = {"en": "English", "zh": "简体中文", "ja": "日本語"}
+LANGUAGES = {
+    "en": "English",
+    "zh": "简体中文",
+    "ja": "日本語",
+    "ru": "Русский",
+    "tr": "Türkçe",
+}
 FALLBACK_NOTICES = {
     "zh": (
         "此页面暂未提供中文翻译",
@@ -25,7 +31,106 @@ FALLBACK_NOTICES = {
         "英語の内容を表示しています。このまま読むか、",
         "英語版に切り替えてください",
     ),
+    "ru": (
+        "Перевод этой страницы на русский язык пока недоступен",
+        "Отображается английский текст. Вы можете продолжить чтение или ",
+        "перейти к английской версии",
+    ),
+    "tr": (
+        "Bu sayfanın Türkçe çevirisi henüz mevcut değil",
+        "İngilizce içerik gösteriliyor. Okumaya devam edebilir veya ",
+        "İngilizce sürüme geçebilirsiniz",
+    ),
 }
+
+ADMONITION_TITLES = {
+    "zh": {
+        "note": "说明",
+        "tip": "提示",
+        "warning": "警告",
+        "important": "重要",
+        "info": "信息",
+        "danger": "危险",
+    },
+    "ja": {
+        "note": "注記",
+        "tip": "ヒント",
+        "warning": "警告",
+        "important": "重要",
+        "info": "情報",
+        "danger": "危険",
+    },
+    "ru": {
+        "note": "Примечание",
+        "tip": "Совет",
+        "warning": "Предупреждение",
+        "important": "Важно",
+        "info": "Информация",
+        "danger": "Опасность",
+    },
+    "tr": {
+        "note": "Not",
+        "tip": "İpucu",
+        "warning": "Uyarı",
+        "important": "Önemli",
+        "info": "Bilgi",
+        "danger": "Tehlike",
+    },
+}
+REDIRECT_MESSAGES = {
+    "zh": ("正在跳转…", "您将跳转至", "新页面"),
+    "ja": ("リダイレクトしています…", "次のページに移動します：", "移動先"),
+    "ru": ("Перенаправление…", "Вы будете перенаправлены на ", "новую страницу"),
+    "tr": ("Yönlendiriliyor…", "Şu sayfaya yönlendiriliyorsunuz: ", "yeni sayfa"),
+}
+
+
+def localize_admonitions(markdown: str, language: str) -> str:
+    """Translate implicit callout titles without changing executable examples."""
+    titles = ADMONITION_TITLES.get(language, {})
+    fence = None
+    lines = []
+    for line in markdown.splitlines(keepends=True):
+        marker = re.match(r"^[ \t]*(`{3,}|~{3,})([^\r\n]*)", line)
+        if marker:
+            token = marker[1]
+            if fence is None:
+                fence = token
+            elif (
+                token[0] == fence[0]
+                and len(token) >= len(fence)
+                and not marker[2].strip()
+            ):
+                fence = None
+        if fence is None and not marker:
+            match = re.fullmatch(
+                r"([ \t]*(?:!!!|\?\?\?\+?)[ \t]+)(\w+)([ \t]*)(\r?\n)?", line
+            )
+            if match and match[2].lower() in titles:
+                title = titles[match[2].lower()]
+                line = f'{match[1]}{match[2]} "{title}"{match[3]}{match[4] or ""}'
+        lines.append(line)
+    return "".join(lines)
+
+
+def localize_redirects(site: Path, language: str) -> None:
+    """Translate generated legacy redirects while preserving every destination."""
+    messages = REDIRECT_MESSAGES.get(language)
+    if messages is None:
+        return
+    title, description, label = messages
+    for page in site.rglob("*.html"):
+        content = page.read_text(encoding="utf-8")
+        if "<title>Redirecting...</title>" not in content:
+            continue
+        content = content.replace('<html lang="en">', f'<html lang="{language}">')
+        content = content.replace(
+            "<title>Redirecting...</title>", f"<title>{title}</title>"
+        )
+        content = content.replace("You're being redirected to a ", description)
+        content = content.replace(">new destination</a>", f">{label}</a>")
+        page.write_text(content, encoding="utf-8")
+
 
 # Material indexes Japanese with TinySegmenter, but its query preprocessor only
 # splits Han runs. Use the same tokenizer for plain mixed-script queries; leave
@@ -175,6 +280,8 @@ def is_translated_page(page, settings: dict) -> bool:
 def on_page_markdown(markdown, *, page, config, files):
     """Explain English fallback pages in the selected language."""
     settings = config["extra"].get("docs_i18n")
+    if settings:
+        markdown = localize_admonitions(markdown, settings["language"])
     if (
         not settings
         or settings["language"] == "en"
@@ -185,7 +292,7 @@ def on_page_markdown(markdown, *, page, config, files):
     english = language_links(page.url, settings["language"])[0]["link"]
     return (
         f'!!! info "{title}"\n\n'
-        f"    {description}[{label}]({english})。\n\n" + markdown
+        f"    {description}[{label}]({english})\n\n" + markdown
     )
 
 
@@ -195,6 +302,7 @@ def on_post_build(config):
     settings = config["extra"].get("docs_i18n") or {}
     language = settings.get("language", "en")
     site = Path(config["site_dir"])
+    localize_redirects(site, language)
     if language == "ja":
         prepare_japanese_search(site)
     version = config["extra"].get("version") or {}

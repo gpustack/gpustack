@@ -23,6 +23,18 @@ OVERRIDES = Path(__file__).resolve().parents[2] / "docs/overrides"
             "最新バージョンのドキュメントではありません。",
             "404 - ページが見つかりません",
         ),
+        (
+            "ru",
+            "ru/",
+            "Вы просматриваете не последнюю версию документации.",
+            "404 — Страница не найдена",
+        ),
+        (
+            "tr",
+            "tr/",
+            "Belgelerin en son sürümünü görüntülemiyorsunuz.",
+            "404 — Sayfa bulunamadı",
+        ),
     ],
 )
 def test_localized_error_and_latest_link(language, prefix, banner, error):

@@ -6,7 +6,7 @@ translation_status: translated
 
 ## 結論 { #conclusion }
 
-![Latency Optimization Result](../../assets/performance-lab/qwen3.5-9b-h100-latency.png)
+![レイテンシ最適化の結果](../../assets/performance-lab/qwen3.5-9b-h100-latency.png)
 
 NVIDIA H100 80GB HBM3 上で Qwen/Qwen3.5-9B のレイテンシーを最適化するための推奨設定：
 
@@ -596,7 +596,7 @@ guidellm benchmark \
 | ShareGPT 8RPS (r=8) | 最大シーケンス数 | 2.64s | 2.62s | <span style="background-color:#ffd6d6;">(1.01x 低速)</span> |
 | ShareGPT 8RPS (r=8) | 投機的デコーディング | 2.39s | 2.62s | <span style="background-color:lightgreen;">(1.09x 高速)</span> |
 | ShareGPT 8RPS (r=8) | 投機的デコーディング && パフォーマンスモード | 2.38s | 2.62s | <span style="background-color:lightgreen;">(1.10x 高速)</span> |
-| ShareGPT 8RPS (r=8) | 投機的デコーディング && パフォーマンスモード && Language Model | 2.32s | 2.62s | <span style="background-color:lightgreen;">(1.13x 高速)</span> |
+| ShareGPT 8RPS (r=8) | 投機的デコーディング && パフォーマンスモード && 言語モデル | 2.32s | 2.62s | <span style="background-color:lightgreen;">(1.13x 高速)</span> |
 
 ### その他のベンチマークケース { #other-benchmark-cases }
 

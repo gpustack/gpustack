@@ -508,6 +508,50 @@ def test_help_directory_url_serves_the_nested_index(help_client):
     assert response.content == HELP_PAGE
 
 
+@pytest.mark.parametrize("language", ["zh", "ja", "ru", "tr"])
+def test_unknown_translated_help_url_uses_localized_error(help_client, language):
+    help_dir = Path(ui_routes.PACKAGE_DIR) / "help"
+    translated = help_dir / language
+    translated.mkdir(exist_ok=True)
+    expected = f'<html lang="{language}"><h1>Localized error</h1></html>'.encode()
+    (translated / "404.html").write_bytes(expected)
+
+    response = help_client.get(f"/help/{language}/no-such-page/deep/")
+
+    assert response.status_code == 404
+    assert response.content == expected
+    assert response.headers["cache-control"] == CACHE_REVALIDATE
+
+
+@pytest.mark.parametrize("language", ["en", "zh", "ja", "ru", "tr"])
+@pytest.mark.parametrize("accept_encoding", ["gzip", "identity"])
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_help_error_pages_revalidate_missing_hashed_assets(
+    help_client, language, accept_encoding, method
+):
+    help_dir = Path(ui_routes.PACKAGE_DIR) / "help"
+    (help_dir / "404.html").write_text("<html>English error</html>")
+    prefix = "" if language == "en" else f"{language}/"
+    error_dir = help_dir / prefix
+    error_dir.mkdir(exist_ok=True)
+    expected = f'<html lang="{language}">Missing asset</html>'.encode()
+    (error_dir / "404.html").write_bytes(expected)
+
+    response = help_client.request(
+        method,
+        f"/help/{prefix}assets/nonexistent.deadbeef.js",
+        headers={"accept-encoding": accept_encoding},
+    )
+
+    assert response.status_code == 404
+    assert response.headers["cache-control"] == CACHE_REVALIDATE
+    assert response.headers["content-type"].startswith("text/html")
+    assert {"accept-encoding", "origin"} <= {
+        key.strip().lower() for key in response.headers["vary"].split(",")
+    }
+    assert response.content == (expected if method == "GET" else b"")
+
+
 @pytest.mark.parametrize(
     "path,expected",
     [

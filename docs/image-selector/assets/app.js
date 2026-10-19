@@ -370,6 +370,264 @@ Object.assign(CONFIG.i18n.ja, {
     "select_version": "バージョンを選択してください"
 });
 
+CONFIG.i18n.ru = {
+    "title": "Выбор образов контейнеров",
+    "subtitle": "Выбор образов контейнеров",
+    "back_to_docs": "Документация",
+    "version": "Версия",
+    "loading": "Загрузка...",
+    "select_config": "Конфигурация",
+    "gpu_type": "Тип GPU",
+    "framework_version": "Версия вычислительной платформы",
+    "select_gpu_first": "Сначала выберите тип GPU",
+    "inference_backend": "Бэкенд инференса",
+    "inference_backend_tooltip": "Если нужный встроенный бэкенд инференса или его версия отсутствуют, попробуйте выбрать более раннюю версию вычислительной платформы. Новые драйверы обычно совместимы с более ранними версиями платформы.",
+    "optional_images": "Дополнительные образы",
+    "optional_postgres_images_tooltip": "Внешняя база данных: <a href=\"../installation/installation/#using-an-external-database\" target=\"_blank\">инструкция по настройке</a>",
+    "optional_monitoring_images_tooltip": "Внешние средства наблюдаемости: <a href=\"../user-guide/observability/#external-observability-optional\" target=\"_blank\">инструкция по настройке</a>",
+    "postgres": "PostgreSQL",
+    "monitoring": "Мониторинг (Prometheus + Grafana)",
+    "required_images": "Необходимые образы",
+    "architecture": "Архитектура",
+    "registry": "Реестр",
+    "china_registry": "Зеркало для Китая",
+    "tab_all": "Все",
+    "tab_server": "Узел Server",
+    "tab_worker": "Узел Worker",
+    "placeholder_select": "Выберите конфигурацию слева, чтобы сформировать список образов",
+    "offline_guide_title": "Нужна установка без доступа к сети?",
+    "guide_tab_save": "Импорт файлов образов (Save & Load)",
+    "guide_tab_tag": "Отправка в частный реестр (Tag & Push)",
+    "guide_tab_auto": "Автоматическая синхронизация образов",
+    "guide_save_content": `
+                <p>Для полностью изолированных сред: перенос образов с помощью файлов.</p>
+                <ol>
+                    <li>Загрузите образы на машине с доступом к интернету (см. команды выше).</li>
+                    <li>Сохраните образы в tar-файлы:
+                        <pre><code>docker save -o gpustack-server-images.tar {{server_images}}
+
+docker save -o gpustack-worker-images.tar {{worker_images}}</code></pre>
+                    </li>
+                    <li>Скопируйте файлы на автономную машину.</li>
+                    <li>Импортируйте образы в соответствии с ролью узла:
+                        <div style="margin-top:10px"><strong>Узел Server:</strong></div>
+                        <pre><code>docker load -i gpustack-server-images.tar</code></pre>
+                        <div style="margin-top:10px"><strong>Узел Worker:</strong></div>
+                        <pre><code>docker load -i gpustack-worker-images.tar</code></pre>
+                        <div style="margin-top:10px"><strong>Server + Узел Worker:</strong></div>
+                        <pre><code>docker load -i gpustack-server-images.tar
+docker load -i gpustack-worker-images.tar</code></pre>
+                    </li>
+                    <li>
+                        При запуске контейнеров GPUStack Server и Worker укажите реестр контейнеров с помощью параметра <code class="inline-code">--system-default-container-registry</code>:
+                        <pre><code>sudo docker run -d --name gpustack \\
+    --restart unless-stopped \\
+    -p 80:80 \\
+    -p 10161:10161 \\
+    --volume gpustack-data:/var/lib/gpustack \\
+    {{registry}}/gpustack/gpustack:{{version}} \\
+    --system-default-container-registry {{registry}}</code></pre>
+                    </li>
+                </ol>
+    `,
+    "guide_tag_content": `
+                <p>Для сред с частным реестром, например Harbor или Nexus.</p>
+                <ol>
+                    <li>Загрузите образы на машине с доступом к интернету (см. команды выше).</li>
+                    <li>Присвойте новые теги и отправьте образы в частный реестр:
+                        <pre><code>export PrivateRegistry=&lt;your-private-registry&gt;
+{{tag_push_commands}}</code></pre>
+                    </li>
+                    <li>При запуске контейнеров укажите реестр образов в параметрах запуска:
+                        <pre><code>sudo docker run -d --name gpustack \\
+    --restart unless-stopped \\
+    -p 80:80 \\
+    -p 10161:10161 \\
+    --volume gpustack-data:/var/lib/gpustack \\
+    $PrivateRegistry/gpustack/gpustack:{{version}} \\
+    --system-default-container-registry $PrivateRegistry</code></pre>
+                    </li>
+                </ol>
+    `,
+    "guide_auto_content": `
+                <p>Для автоматизации синхронизации GPUStack предоставляет команды управления образами:</p>
+                <ul style="list-style:none; padding-left:0">
+                    <li style="margin-bottom:8px"><code>gpustack copy-images</code>: синхронизировать образы из исходного реестра в целевой</li>
+                    <li style="margin-bottom:8px"><code>gpustack save-images</code>: загрузить и сохранить образы по локальному пути</li>
+                    <li style="margin-bottom:8px"><code>gpustack load-images</code>: импортировать образы из локальных архивов</li>
+                    <li style="margin-bottom:8px"><code>gpustack list-images</code>: вывести список образов текущей версии</li>
+                </ul>
+                <div style="margin-top:15px; font-size:13px; color:var(--text-color)">
+                    Все команды поддерживают фильтрацию и собственную конфигурацию. Подробности:
+                    <a href="../installation/air-gapped/#container-images" target="_blank" style="color:var(--primary-color); font-weight:600">Подготовка образов контейнеров &rarr;</a>
+                </div>
+    `,
+    "view_full_docs": "Полная инструкция по автономной установке &rarr;",
+    "copied": "Скопировано в буфер обмена",
+    "no_images": "# Подходящие образы не найдены",
+    "comments": {
+        "main": "Образ GPUStack — основные службы GPUStack; необходим на узлах Server и Worker",
+        "runner": "Образы бэкендов инференса",
+        "pause": "Образ Pause — общая сеть и IPC для контейнеров экземпляров моделей; нужен только в Docker",
+        "benchmark": "Образ Benchmark — тестирование производительности моделей",
+        "postgres": "PostgreSQL — дополнительный компонент для отдельного развертывания внешней базы данных",
+        "monitoring": "Мониторинг — дополнительные компоненты Prometheus и Grafana",
+        "gateway": "Образы шлюза — нужны только при развертывании в Kubernetes",
+        "k8s": "Образы GPU Service — нужны только при развертывании в Kubernetes"
+    },
+    "cards": {
+        "nvidia": "NVIDIA",
+        "amd": "AMD",
+        "ascend": "Ascend",
+        "hygon": "Hygon",
+        "mthreads": "MThreads",
+        "iluvatar": "Iluvatar",
+        "cambricon": "Cambricon",
+        "maca": "MetaX",
+        "t-head": "T-Head PPU"
+    },
+    "language_name": "Русский",
+    "description": "Выбор образов контейнеров: команды загрузки Docker для вашей конфигурации оборудования.",
+    "auto_arch": "Авто",
+    "copy_all": "Скопировать все команды",
+    "server_image_placeholder": "&lt;Список образов Server&gt;",
+    "worker_image_placeholder": "&lt;Список образов Worker&gt;",
+    "configuration_placeholder": "# Выберите конфигурацию для формирования команд",
+    "load_failed": "Не удалось загрузить данные",
+    "cambricon_hint": "Обратитесь к поставщику Cambricon за образами бэкенда инференса",
+    "no_available_images": "Нет доступных образов",
+    "select_version": "Выберите версию"
+};
+
+CONFIG.i18n.tr = {
+    "title": "Konteyner İmajı Seçici",
+    "subtitle": "Konteyner İmajı Seçici",
+    "back_to_docs": "Belgeler",
+    "version": "Sürüm",
+    "loading": "Yükleniyor...",
+    "select_config": "Yapılandırma",
+    "gpu_type": "GPU türü",
+    "framework_version": "Hesaplama altyapısı sürümü",
+    "select_gpu_first": "Önce GPU türünü seçin",
+    "inference_backend": "Çıkarım arka ucu",
+    "inference_backend_tooltip": "İstediğiniz yerleşik çıkarım arka ucunu veya sürümünü bulamazsanız daha eski bir hesaplama altyapısı sürümü seçmeyi deneyin. Yeni sürücüler genellikle eski altyapı sürümleriyle uyumludur.",
+    "optional_images": "İsteğe bağlı imajlar",
+    "optional_postgres_images_tooltip": "Harici veritabanı kullanımı: <a href=\"../installation/installation/#using-an-external-database\" target=\"_blank\">yapılandırma kılavuzu</a>",
+    "optional_monitoring_images_tooltip": "Harici gözlemlenebilirlik yapılandırması: <a href=\"../user-guide/observability/#external-observability-optional\" target=\"_blank\">yapılandırma kılavuzu</a>",
+    "postgres": "PostgreSQL",
+    "monitoring": "İzleme paketi (Prometheus + Grafana)",
+    "required_images": "Gerekli imajlar",
+    "architecture": "Mimari",
+    "registry": "İmaj kayıt deposu",
+    "china_registry": "Çin için ayna",
+    "tab_all": "Tümü",
+    "tab_server": "Server düğümü",
+    "tab_worker": "Worker düğümü",
+    "placeholder_select": "İmaj listesini oluşturmak için soldan yapılandırmayı seçin",
+    "offline_guide_title": "Çevrimdışı kurulum mu gerekiyor?",
+    "guide_tab_save": "İmaj dosyalarını içe aktarma (Save & Load)",
+    "guide_tab_tag": "Özel kayıt deposuna gönderme (Tag & Push)",
+    "guide_tab_auto": "Otomatik imaj eşitleme",
+    "guide_save_content": `
+                <p>Tamamen yalıtılmış ortamlarda imajları dosyalar aracılığıyla içe aktarmak için uygundur.</p>
+                <ol>
+                    <li>İnternete bağlı bir makinede imajları indirin (yukarıdaki komutlara bakın).</li>
+                    <li>İmajları tar dosyalarına aktarın:
+                        <pre><code>docker save -o gpustack-server-images.tar {{server_images}}
+
+docker save -o gpustack-worker-images.tar {{worker_images}}</code></pre>
+                    </li>
+                    <li>Dosyaları çevrimdışı makineye kopyalayın.</li>
+                    <li>İmajları düğümün rolüne göre içe aktarın:
+                        <div style="margin-top:10px"><strong>Server düğümü:</strong></div>
+                        <pre><code>docker load -i gpustack-server-images.tar</code></pre>
+                        <div style="margin-top:10px"><strong>Worker düğümü:</strong></div>
+                        <pre><code>docker load -i gpustack-worker-images.tar</code></pre>
+                        <div style="margin-top:10px"><strong>Server + Worker düğümü:</strong></div>
+                        <pre><code>docker load -i gpustack-server-images.tar
+docker load -i gpustack-worker-images.tar</code></pre>
+                    </li>
+                    <li>
+                        GPUStack Server ve Worker konteynerlerini çalıştırırken imaj kayıt deposunu şu parametreyle belirtin: <code class="inline-code">--system-default-container-registry</code>:
+                        <pre><code>sudo docker run -d --name gpustack \\
+    --restart unless-stopped \\
+    -p 80:80 \\
+    -p 10161:10161 \\
+    --volume gpustack-data:/var/lib/gpustack \\
+    {{registry}}/gpustack/gpustack:{{version}} \\
+    --system-default-container-registry {{registry}}</code></pre>
+                    </li>
+                </ol>
+    `,
+    "guide_tag_content": `
+                <p>Harbor veya Nexus gibi özel bir kayıt deposunun bulunduğu ortamlar için uygundur.</p>
+                <ol>
+                    <li>İnternete bağlı bir makinede imajları indirin (yukarıdaki komutlara bakın).</li>
+                    <li>İmajları yeniden etiketleyip özel kayıt deposuna gönderin:
+                        <pre><code>export PrivateRegistry=&lt;your-private-registry&gt;
+{{tag_push_commands}}</code></pre>
+                    </li>
+                    <li>Konteynerleri çalıştırırken başlangıç parametreleriyle imaj kayıt deposunu belirtin:
+                        <pre><code>sudo docker run -d --name gpustack \\
+    --restart unless-stopped \\
+    -p 80:80 \\
+    -p 10161:10161 \\
+    --volume gpustack-data:/var/lib/gpustack \\
+    $PrivateRegistry/gpustack/gpustack:{{version}} \\
+    --system-default-container-registry $PrivateRegistry</code></pre>
+                    </li>
+                </ol>
+    `,
+    "guide_auto_content": `
+                <p>Eşitlemeyi otomatikleştirmek için GPUStack şu imaj yönetimi komutlarını sunar:</p>
+                <ul style="list-style:none; padding-left:0">
+                    <li style="margin-bottom:8px"><code>gpustack copy-images</code>: imajları kaynak kayıt deposundan hedef kayıt deposuna eşitler</li>
+                    <li style="margin-bottom:8px"><code>gpustack save-images</code>: imajları indirip yerel bir yola kaydeder</li>
+                    <li style="margin-bottom:8px"><code>gpustack load-images</code>: imajları yerel paketlerden içe aktarır</li>
+                    <li style="margin-bottom:8px"><code>gpustack list-images</code>: geçerli sürümün imaj listesini gösterir</li>
+                </ul>
+                <div style="margin-top:15px; font-size:13px; color:var(--text-color)">
+                    Tüm komutlar filtrelemeyi ve özel yapılandırmayı destekler. Ayrıntılar:
+                    <a href="../installation/air-gapped/#container-images" target="_blank" style="color:var(--primary-color); font-weight:600">Konteyner imajlarını hazırlama &rarr;</a>
+                </div>
+    `,
+    "view_full_docs": "Çevrimdışı kurulum belgelerinin tamamını görüntüle &rarr;",
+    "copied": "Panoya kopyalandı",
+    "no_images": "# Eşleşen imaj bulunamadı",
+    "comments": {
+        "main": "GPUStack imajı — GPUStack temel hizmetleri; Server ve Worker düğümlerinde gereklidir",
+        "runner": "Çıkarım arka ucu imajları",
+        "pause": "Pause imajı — model örneği konteynerleri için ortak ağ ve IPC ortamı; yalnızca Docker için gereklidir",
+        "benchmark": "Benchmark imajı — model performans testlerini çalıştırır",
+        "postgres": "PostgreSQL — harici veritabanını ayrı dağıtmak için isteğe bağlı bileşen",
+        "monitoring": "İzleme paketi — isteğe bağlı Prometheus ve Grafana bileşenleri",
+        "gateway": "Ağ geçidi imajları — yalnızca Kubernetes dağıtımları için gereklidir",
+        "k8s": "GPU Service imajları — yalnızca Kubernetes dağıtımları için gereklidir"
+    },
+    "cards": {
+        "nvidia": "NVIDIA",
+        "amd": "AMD",
+        "ascend": "Ascend",
+        "hygon": "Hygon",
+        "mthreads": "MThreads",
+        "iluvatar": "Iluvatar",
+        "cambricon": "Cambricon",
+        "maca": "MetaX",
+        "t-head": "T-Head PPU"
+    },
+    "language_name": "Türkçe",
+    "description": "Konteyner İmajı Seçici: donanım yapılandırmanıza göre Docker imajı indirme komutları oluşturun.",
+    "auto_arch": "Otomatik",
+    "copy_all": "Tüm komutları kopyala",
+    "server_image_placeholder": "&lt;Server imaj listesi&gt;",
+    "worker_image_placeholder": "&lt;Worker imaj listesi&gt;",
+    "configuration_placeholder": "# Komut oluşturmak için yapılandırmayı seçin",
+    "load_failed": "Veriler yüklenemedi",
+    "cambricon_hint": "Çıkarım arka ucu imajları için Cambricon sağlayıcısıyla iletişime geçin",
+    "no_available_images": "Kullanılabilir imaj yok",
+    "select_version": "Sürüm seçin"
+};
+
 function resolveLanguage(language) {
     return Object.hasOwn(CONFIG.i18n, language) ? language : 'en';
 }
