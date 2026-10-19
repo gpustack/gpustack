@@ -807,6 +807,7 @@ _settled: Dict[int, Tuple[str, float]] = {}
 # reads bound that outage while keeping settled groups to one check per minute.
 RESETTLE_AFTER_SECONDS = 60.0
 _RETRY_AFTER_SECONDS = 5.0
+_MAX_RETRY_AFTER_SECONDS = 60.0
 
 
 def membership_fingerprint(
@@ -873,7 +874,10 @@ def reconcile_after(model: Model) -> Optional[float]:
         return None
     outcome = outcome_for(model.id)
     if outcome is None or not outcome.ok:
-        return _RETRY_AFTER_SECONDS
+        return min(
+            _RETRY_AFTER_SECONDS * max(1, consecutive_failures(model.id)),
+            _MAX_RETRY_AFTER_SECONDS,
+        )
     remembered = _settled.get(model.id)
     if remembered is None:
         return RESETTLE_AFTER_SECONDS
@@ -902,6 +906,7 @@ def record(model_id: int, outcome: MembershipOutcome) -> None:
         count = _failures.get(model_id, 0) + 1
         _failures[model_id] = count
         if count >= PERSISTENT_FAILURE_PASSES and outcome.reason:
+            # Stable diagnostics keep status events from bypassing the retry timer.
             outcome = MembershipOutcome(
                 ok=False,
                 # Carried, not defaulted. Escalating the wording does not
@@ -911,7 +916,8 @@ def record(model_id: int, outcome: MembershipOutcome) -> None:
                 # the reader has no way to notice it.
                 unreadable=outcome.unreadable,
                 reason=(
-                    f"{outcome.reason} (unchanged for {count} passes, so the "
+                    f"{outcome.reason} (failed for at least "
+                    f"{PERSISTENT_FAILURE_PASSES} passes, so the "
                     "member management API is failing consistently rather "
                     "than transiently. Read the router's own member list — "
                     "`GET /workers` on the router's address — and the "

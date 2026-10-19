@@ -16,6 +16,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.server import controllers, pd_membership, workqueue
 from gpustack.server.bus import Event, EventType
+from gpustack.server.controllers import sync_model_status
 
 
 class RegistryResponse:
@@ -261,3 +262,84 @@ async def test_temporary_model_read_failure_keeps_a_retry(recovery, monkeypatch)
 
     assert len(state.registry) == 2
     assert state.controller._queue.failures(event.keys) == 0
+
+
+@pytest.mark.parametrize(
+    "failures, delay", [(1, 5.0), (2, 10.0), (12, 60.0), (30, 60.0)]
+)
+def test_membership_failure_retries_back_off_with_a_cap(recovery, failures, delay):
+    for _ in range(failures):
+        pd_membership.record(
+            recovery.model.id,
+            pd_membership.MembershipOutcome(ok=False, reason="offline"),
+        )
+
+    assert pd_membership.reconcile_after(recovery.model) == delay
+
+
+def test_successful_membership_resets_failure_backoff(recovery):
+    for _ in range(12):
+        pd_membership.record(
+            recovery.model.id, pd_membership.MembershipOutcome(ok=False)
+        )
+    pd_membership.record(recovery.model.id, pd_membership.MembershipOutcome(ok=True))
+    pd_membership.record(recovery.model.id, pd_membership.MembershipOutcome(ok=False))
+
+    assert pd_membership.reconcile_after(recovery.model) == 5.0
+
+
+@pytest.mark.asyncio
+async def test_persistent_membership_failure_does_not_self_trigger_a_loop(
+    recovery, monkeypatch
+):
+    state = recovery
+    state.admit = False
+    for instance in state.instances:
+        instance.draining_since = None
+        instance.cache_config = None
+    for _ in range(pd_membership.PERSISTENT_FAILURE_PASSES - 1):
+        pd_membership.record(state.model.id, pd_membership.MembershipOutcome(ok=False))
+
+    async def degradation_reasons(*args, **kwargs):
+        return [], kwargs["state_message"]
+
+    async def publish_status(current):
+        state.controller._queue.add(
+            workqueue.WorkEvent(
+                keys=(current.id,),
+                type=workqueue.WorkEventType.MODIFIED,
+                object=Event(
+                    type=EventType.UPDATED, data=current.model_copy(deep=True)
+                ),
+            )
+        )
+
+    update = AsyncMock(side_effect=publish_status)
+    monkeypatch.setattr(controllers, "sync_model_status", sync_model_status)
+    monkeypatch.setattr(
+        controllers.ModelInstance,
+        "all_by_field",
+        AsyncMock(return_value=state.instances),
+    )
+    monkeypatch.setattr(
+        controllers, "ModelService", lambda session: SimpleNamespace(update=update)
+    )
+    monkeypatch.setattr(controllers, "_degradation_reasons", degradation_reasons)
+    monkeypatch.setattr(controllers, "_stale_members", AsyncMock(return_value=False))
+    monkeypatch.setattr(controllers, "reconcile_route_target_states", AsyncMock())
+
+    await state.controller._reconcile(Event(type=EventType.UPDATED, data=state.model))
+    event = await asyncio.wait_for(state.controller._queue.get(), timeout=0.1)
+    await state.controller._process(event)
+
+    assert not controllers.upstream_registration_ready(state.model)
+    assert update.call_count == 1
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(state.controller._queue.get(), timeout=0.01)
+
+    state.now += pd_membership.reconcile_after(state.model)
+    retry = await asyncio.wait_for(state.controller._queue.get(), timeout=0.1)
+    await state.controller._process(retry)
+
+    assert pd_membership.consecutive_failures(state.model.id) == 7
+    assert update.call_count == 1
