@@ -1,12 +1,15 @@
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.responses import StreamingResponse
 
 from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    ConflictException,
     InternalServerErrorException,
     NotFoundException,
 )
@@ -26,6 +29,7 @@ from gpustack.schemas import (
     GPUInstanceSSHPublicKeysPublic,
     GPUInstanceSSHPublicKeyCreate,
 )
+from gpustack.schemas.gpu_instances import GPUInstance, GPUInstancePhase
 from gpustack.schemas.principals import platform_principal_id
 from gpustack.routes.gpu_instances_helper import (
     display_name_label,
@@ -178,12 +182,50 @@ async def delete_gpu_instance_ssh_public_key(
         ctx,
     )
 
+    await _ensure_delete_not_blocked(session, ret)
+
     async with handle_error(
         message="Failed to delete GPU instance SSH public key",
     ):
         await ret.delete(
             session=session,
         )
+
+
+_CONFLICT_HOLDERS_NAMED = 3
+
+
+async def _ensure_delete_not_blocked(
+    session: AsyncSession, key: GPUInstanceSSHPublicKey
+) -> None:
+    """Reject the delete while a GPU instance of the same owner still references
+    the key. An instance in ``Deleting`` does not block: its teardown releases
+    the reference."""
+    instances = (
+        await session.exec(
+            select(GPUInstance).where(
+                GPUInstance.owner_principal_id == key.owner_principal_id
+            )
+        )
+    ).all()
+    holders: List[str] = [
+        i.name
+        for i in instances
+        if not (i.status is not None and i.status.phase == GPUInstancePhase.DELETING)
+        and any(ref.name == key.name for ref in i.spec.ssh_public_keys or [])
+    ]
+    if not holders:
+        return
+    described = holders[:_CONFLICT_HOLDERS_NAMED]
+    if len(holders) > _CONFLICT_HOLDERS_NAMED:
+        described.append("and others")
+    raise ConflictException(
+        message=(
+            "The SSH public key is still used by GPU instance(s): "
+            f"{', '.join(described)}. "
+            "Remove it from the instance(s) before deleting it."
+        )
+    )
 
 
 def ensure_visible(obj, ctx: TenantContext):
