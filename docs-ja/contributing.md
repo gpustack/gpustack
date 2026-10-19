@@ -31,7 +31,7 @@ GPUStack への貢献に時間を割いていただき、ありがとうござ�
 
 正本となる英語ドキュメントは `docs/` にあります。簡体字中国語、日本語、ロシア語、トルコ語の翻訳は、`docs-zh/`、`docs-ja/`、`docs-ru/`、`docs-tr/` の同じ相対パスに追加します。画像などの共有アセットは `docs/` から継承します。翻訳した見出しには英語の見出し ID を保持し（例：`## インストール { #installation }`）、リンクや言語切り替えの整合性を保ちます。
 
-ナビゲーションとテーマのラベルは、対応する `mkdocs.zh.yml`、`mkdocs.ja.yml`、`mkdocs.ru.yml`、`mkdocs.tr.yml` で翻訳します。英語から翻訳する際は、コマンド、設定キー、コード例、リンク、モデル名を保持してください。翻訳がないページ、またはフロントマターに `translation_status: pending` があるページは、通知とともに英語の原文を表示します。
+ナビゲーションとテーマのラベルは、対応する `mkdocs/zh.yml`、`mkdocs/ja.yml`、`mkdocs/ru.yml`、`mkdocs/tr.yml` で翻訳します。英語から翻訳する際は、コマンド、設定キー、コード例、リンク、モデル名を保持してください。翻訳がないページ、またはフロントマターに `translation_status: pending` があるページは、通知とともに英語の原文を表示します。
 
 `make build-docs` で全5言語をビルドし、`make serve-docs` でライブリロード付きプレビューを起動します。英語は `/`、翻訳は `/zh/`、`/ja/`、`/ru/`、`/tr/` です。
 `bash hack/build-docs.sh --offline` は内蔵サイトを `gpustack/help/` に構築します。GPUStack は `/help/` と各 `/help/<language>/` で配信します。各言語に独立したローカル検索インデックスがあります。日本語検索はテーマに同梱されたトークナイザーを使用し、オフラインで動作します。

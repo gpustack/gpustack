@@ -217,7 +217,7 @@ def prepare_language(
         child["strict"] = strict
     if language != "en":
         translation = yaml.safe_load(
-            (root / f"mkdocs.{language}.yml").read_text(encoding="utf-8")
+            (root / "mkdocs" / f"{language}.yml").read_text(encoding="utf-8")
         )
         configure_translation(child, config_text, translation)
     config_path = stage / "mkdocs.language.yml"
@@ -309,7 +309,7 @@ def publish_site(source: Path, destination: Path, backup: Path) -> None:
 
 def validate_destination(root: Path, destination: Path) -> None:
     """Reject output paths that could replace documentation or builder sources."""
-    protected = [root / "docs", root / "hack", root / ".git"]
+    protected = [root / "docs", root / "mkdocs", root / "hack", root / ".git"]
     protected.extend(
         root / f"docs-{language}" for language in LANGUAGES if language != "en"
     )
@@ -376,10 +376,10 @@ def serve_docs(root: Path, address: str) -> None:
         server.error_handler = lambda code: (
             (preview / "404.html").read_bytes() if code == 404 else None
         )
-        watched = ["docs", "mkdocs.yml", "mkdocs.offline.yml", "hack"]
+        watched = ["docs", "mkdocs", "mkdocs.yml", "mkdocs.offline.yml", "hack"]
         for language in LANGUAGES:
             if language != "en":
-                watched.extend((f"docs-{language}", f"mkdocs.{language}.yml"))
+                watched.append(f"docs-{language}")
         for name in watched:
             server.watch(str(root / name))
         for language, name in LANGUAGES.items():

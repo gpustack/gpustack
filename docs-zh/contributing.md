@@ -31,7 +31,7 @@ translation_status: translated
 
 英文文档 `docs/` 是内容标准。简体中文、日语、俄语和土耳其语译文分别放在 `docs-zh/`、`docs-ja/`、`docs-ru/` 和 `docs-tr/` 下的相同相对路径中；图片等公共资源继承自 `docs/`。翻译标题时保留英文标题 ID（例如 `## 安装 { #installation }`），以保持深链和语言切换一致。
 
-导航与主题标签在相应的 `mkdocs.zh.yml`、`mkdocs.ja.yml`、`mkdocs.ru.yml` 和 `mkdocs.tr.yml` 中翻译。翻译时保留命令、配置键、代码示例、链接和模型名称。没有译文，或元数据标记为 `translation_status: pending` 的页面，会显示英文原文并附上相应语言的提示。
+导航与主题标签在相应的 `mkdocs/zh.yml`、`mkdocs/ja.yml`、`mkdocs/ru.yml` 和 `mkdocs/tr.yml` 中翻译。翻译时保留命令、配置键、代码示例、链接和模型名称。没有译文，或元数据标记为 `translation_status: pending` 的页面，会显示英文原文并附上相应语言的提示。
 
 运行 `make build-docs` 构建全部五种语言，或运行 `make serve-docs` 实时预览。预览中的英文路径为 `/`，其他语言为 `/zh/`、`/ja/`、`/ru/` 和 `/tr/`。
 `bash hack/build-docs.sh --offline` 将内置文档构建到 `gpustack/help/`，GPUStack 通过 `/help/` 和对应的 `/help/<language>/` 路径提供访问。每种语言拥有独立的本地搜索索引，日语搜索使用主题自带的分词器，可离线使用。

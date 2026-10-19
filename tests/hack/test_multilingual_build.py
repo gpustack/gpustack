@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.fixture
 def multilingual_source(tmp_path):
     root = tmp_path / "documentation"
+    (root / "mkdocs").mkdir(parents=True)
     for language in i18n.LANGUAGES:
         source = root / ("docs" if language == "en" else f"docs-{language}")
         (source / "user-guide").mkdir(parents=True)
@@ -47,7 +48,7 @@ def multilingual_source(tmp_path):
         )
         (source / "index.md").write_text(f"# {titles[language]}\n", encoding="utf-8")
         if language != "en":
-            (root / f"mkdocs.{language}.yml").write_text(
+            (root / f"mkdocs/{language}.yml").write_text(
                 yaml.safe_dump({"nav_translations": {"Guide": titles[language]}}),
                 encoding="utf-8",
             )
@@ -532,7 +533,7 @@ def test_native_failure_preserves_published_output(multilingual_source):
     output = multilingual_source / "site"
     output.mkdir()
     (output / "previous.html").write_text("Previously published languages")
-    (multilingual_source / "mkdocs.ja.yml").unlink()
+    (multilingual_source / "mkdocs/ja.yml").unlink()
 
     with pytest.raises(FileNotFoundError):
         builder.build_language(multilingual_source / "mkdocs.yml", output)
@@ -564,7 +565,10 @@ def test_native_strict_translation_warning_preserves_published_output(
     assert not list(multilingual_source.glob(".docs-build-*"))
 
 
-@pytest.mark.parametrize("destination", [".", "docs", "docs-ja/nested", "hack", ".git"])
+@pytest.mark.parametrize(
+    "destination",
+    [".", "docs", "docs-ja/nested", "mkdocs", "mkdocs/nested", "hack", ".git"],
+)
 def test_builder_refuses_output_inside_sources(multilingual_source, destination):
     with pytest.raises(ValueError, match="outside source trees"):
         builder.build_docs(
