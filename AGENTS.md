@@ -114,17 +114,12 @@ Rules:
 
 ## Documentation
 
-- `docs/` is the English source of truth. Chinese, Japanese, Russian, and Turkish
-  translations live under `docs-i18n/<language>/`
-  at matching relative paths and inherit shared assets from `docs/`. Preserve English
-  heading IDs in translations so existing deep links continue to work. A new page
-  must also be added to the `nav:` tree in `mkdocs.yml`, or it will not be published.
-  Translate navigation labels in `docs-i18n/mkdocs/<language>.yml`; missing or
-  pending translations fall back to English with a notice.
-  Build all languages with `make build-docs`. Both `mkdocs serve` and
-  `make serve-docs` preview all five languages with live reload, including changes
-  to translations and language configuration under `docs-i18n/`.
-  Ordinary MkDocs and mike builds use the same multilingual pipeline.
+- `docs/` is the English source of truth; translations use matching paths under
+  `docs-i18n/<language>/`. Preserve technical literals and English heading IDs.
+- Add published pages to `mkdocs.yml` navigation; translate labels in
+  `docs-i18n/mkdocs/<language>.yml`.
+- See [Updating Documentation](docs/contributing.md#updating-documentation) for
+  translation status, multilingual builds, deployment and live preview.
 - `README.md` is canonical; `README_CN.md` and `README_JP.md` are translations — if you
   change one meaningfully, note in the PR that the others need updating.
 
