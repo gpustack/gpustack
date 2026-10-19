@@ -22,6 +22,10 @@ def test_selector_restores_configuration_after_language_navigation():
     _run_selector_fixture("checkStateRestoration")
 
 
+def test_selector_retries_saved_configuration_after_manifest_failure():
+    _run_selector_fixture("checkManifestFailureRecovery")
+
+
 def test_selector_url_configuration_cannot_inject_html():
     _run_selector_fixture("checkSelectorStateSafety")
 

@@ -99,7 +99,7 @@ function app(language, href, options = {}) {
     };
     const context = {
         document, URL, URLSearchParams, window: {location, history},
-        localStorage: {getItem() { return 'zh'; }, setItem() {}},
+        localStorage: {getItem() { return options.storedLanguage || 'zh'; }, setItem() {}},
         console: options.console || console, setTimeout() {},
         fetch: options.fetch || (async url => ({
             json: async () => JSON.parse(fs.readFileSync(`docs/image-selector/${url.replace(/^\.\//, '')}`, 'utf8'))
@@ -345,8 +345,124 @@ async function checkSelectorStateSafety() {
     }
 }
 
-module.exports = {checkStateRestoration, checkSelectorStateSafety};
+async function checkManifestFailureRecovery() {
+    const saved = {
+        selectedGpuStackVersion: 'v2.2.2', selectedComponent: 'worker',
+        selectedCard: 'ascend', selectedFrameworkVersion: '8.2', selectedChipType: '910b',
+        selectedArch: 'arm64', selectedRegistry: 'quay',
+        selectedBackends: ['vllm-0.10.2'],
+        optionalImages: {postgres: true, monitoring: true}, selectedGuide: 'tag-push'
+    };
+    const languages = ['en', 'zh', 'ja', 'ru', 'tr'];
+    const readManifest = async path => ({
+        json: async () => JSON.parse(fs.readFileSync(`docs/image-selector/${path.replace(/^\.\//, '')}`, 'utf8'))
+    });
+    const urlSelection = page => JSON.parse(new URL(page.location.href).searchParams.get('selector'));
+    for (const docsNavigation of [false, true]) {
+        for (const [index, language] of languages.entries()) {
+            for (const phase of ['versions', 'images']) {
+                const href = new URL(`https://docs.example/help/${language}/image-selector/?keep=one#offline`);
+                href.searchParams.set('selector', JSON.stringify(saved));
+                let unavailable = true;
+                const page = app(docsNavigation ? language : '', href.href, {
+                    storedLanguage: language,
+                    console: {error() {}},
+                    fetch: async path => {
+                        if (unavailable && (path.endsWith('index.json') === (phase === 'versions'))) {
+                            throw Error('manifest unavailable');
+                        }
+                        return readManifest(path);
+                    }
+                });
+                await page.init();
+                assert.equal(page.state.selectedCard, null, 'failed manifests cannot validate the saved GPU');
+                assert.equal(page.state.selectedFrameworkVersion, null);
+                assert.equal(page.state.selectedChipType, null);
+                assert.deepEqual(Array.from(page.state.selectedBackends), []);
+                assert.ok(page.htmlWrites().every(value => !value.includes('cann8.2-910b-vllm0.10.2')),
+                    'pending hardware candidates cannot generate guide commands before validation');
+                assert.deepEqual(urlSelection(page), saved, 'temporary failures retain the configuration for a reload');
+
+                page.selectArch('auto');
+                page.selectRegistry('china');
+                page.selectComponent('server');
+                page.nodes.postgres.checked = false;
+                page.nodes.postgres.events.change();
+                page.switchGuideTab('copy-images');
+                const changed = {...saved, selectedArch: 'auto', selectedRegistry: 'china',
+                    selectedComponent: 'server', optionalImages: {postgres: false, monitoring: true},
+                    selectedGuide: 'copy-images'};
+                assert.deepEqual(urlSelection(page), changed,
+                    'validated controls remain saveable without discarding pending hardware choices');
+                const targetLanguage = languages[(index + 1) % languages.length];
+                const link = page.links.find(link => link.dataset.lang === targetLanguage);
+                link.events.click({preventDefault() {}});
+                const destination = docsNavigation ? page.location.assigned : page.location.href;
+                const destinationUrl = new URL(destination);
+                assert.equal(destinationUrl.searchParams.get('keep'), 'one');
+                assert.equal(destinationUrl.hash, '#offline');
+                assert.deepEqual(JSON.parse(destinationUrl.searchParams.get('selector')), changed,
+                    'both documentation navigation and built-in language changes retain pending choices');
+                const refreshed = app(docsNavigation ? targetLanguage : '', destination, {
+                    storedLanguage: targetLanguage
+                });
+                await refreshed.init();
+                assert.deepEqual(selection(refreshed.state), changed,
+                    `${language} ${phase} failure recovers every choice after a successful reload`);
+                assert.equal(refreshed.state.currentLang, targetLanguage);
+                refreshed.selectComponent('worker');
+                assert.ok(commands(refreshed).some(line => line.includes('cann8.2-910b-vllm0.10.2')));
+                assert.ok(!commands(refreshed).some(line => line.includes('cuda')));
+
+                if (phase === 'images') {
+                    await page.selectGpuStackVersion('v2.2.1');
+                    assert.deepEqual(urlSelection(page), {...changed, selectedGpuStackVersion: 'v2.2.1'},
+                        'an unsuccessful explicit version retry replaces only the pending version');
+                    assert.equal(page.state.selectedCard, null);
+                    unavailable = false;
+                    await page.selectGpuStackVersion('v2.2.1');
+                    assert.deepEqual(selection(page.state), {...changed, selectedGpuStackVersion: 'v2.2.1'},
+                        'a successful version retry restores pending hardware and keeps new fixed choices');
+                    page.selectArch('amd64');
+                    assert.equal(urlSelection(page).selectedArch, 'amd64', 'normal saving continues after a retry');
+                    page.selectCard('amd');
+                    assert.equal(urlSelection(page).selectedCard, 'amd',
+                        'a new hardware choice replaces the successfully recovered configuration');
+                    assert.equal(urlSelection(page).selectedChipType, null);
+                }
+
+                let requested;
+                let release;
+                const waiting = new Promise(resolve => { requested = resolve; });
+                const manifest = new Promise(resolve => { release = resolve; });
+                const delayed = app(docsNavigation ? language : '', href.href, {
+                    storedLanguage: language,
+                    fetch: async path => {
+                        if (path.endsWith('index.json') === (phase === 'versions')) {
+                            requested();
+                            return manifest;
+                        }
+                        return readManifest(path);
+                    }
+                });
+                const initialized = delayed.init();
+                await waiting;
+                delayed.links.find(link => link.dataset.lang === targetLanguage)
+                    .events.click({preventDefault() {}});
+                const delayedDestination = docsNavigation ? delayed.location.assigned : delayed.location.href;
+                assert.deepEqual(JSON.parse(new URL(delayedDestination).searchParams.get('selector')), saved,
+                    'language changes during manifest loading retain fixed and pending choices');
+                release(await readManifest(phase === 'versions'
+                    ? './versions/index.json' : './versions/v2.2.2.json'));
+                await initialized;
+                assert.deepEqual(selection(delayed.state), saved, 'delayed manifests restore the full configuration');
+            }
+        }
+    }
+}
+
+module.exports = {checkStateRestoration, checkSelectorStateSafety, checkManifestFailureRecovery};
 if (require.main === module) {
-    Promise.resolve().then(checkStateRestoration).then(checkSelectorStateSafety)
+    Promise.resolve().then(checkStateRestoration).then(checkSelectorStateSafety).then(checkManifestFailureRecovery)
         .catch(error => { console.error(error); process.exitCode = 1; });
 }

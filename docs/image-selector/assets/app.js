@@ -650,6 +650,9 @@ let state = {
 // DOM Elements
 const elements = {};
 let initializing = true;
+let pendingSelection = null;
+const manifestSelectionKeys = ['selectedGpuStackVersion', 'selectedCard',
+    'selectedFrameworkVersion', 'selectedChipType', 'selectedBackends'];
 
 // Only user choices belong in the URL; manifests and available options are loaded afresh.
 function getSelection() {
@@ -697,7 +700,8 @@ function readSelection() {
 
 function selectionUrl(href) {
     const url = new URL(href, window.location.href);
-    url.searchParams.set('selector', JSON.stringify(getSelection()));
+    // Unverified candidates stay in the URL until their manifests can be loaded.
+    url.searchParams.set('selector', JSON.stringify({...getSelection(), ...pendingSelection}));
     return url;
 }
 
@@ -710,11 +714,33 @@ function persistSelection() {
 // Initialization
 async function init() {
     const saved = readSelection();
+    pendingSelection = Object.fromEntries(manifestSelectionKeys
+        .filter(key => Object.hasOwn(saved, key)).map(key => [key, saved[key]]));
     initElements();
     bindEvents();
     updateLanguage();
     if (state.currentLang === 'zh' && !saved.selectedRegistry) state.selectedRegistry = 'china';
-    await loadData(saved.selectedGpuStackVersion);
+    if (saved.selectedArch) selectArch(saved.selectedArch);
+    selectRegistry(saved.selectedRegistry || state.selectedRegistry);
+    selectComponent(saved.selectedComponent || state.selectedComponent);
+    if (saved.optionalImages) state.optionalImages = saved.optionalImages;
+    Object.keys(elements.optionalImages).forEach(key => {
+        elements.optionalImages[key].checked = state.optionalImages[key];
+    });
+    switchGuideTab(saved.selectedGuide || state.selectedGuide);
+    if (await loadData(saved.selectedGpuStackVersion)) {
+        restoreManifestSelection(Boolean(saved.selectedArch));
+    }
+    initializing = false;
+    generateImageList();
+    // Show content after initialization
+    document.body.classList.add('i18n-ready');
+}
+
+function restoreManifestSelection(preserveArch = false) {
+    const saved = pendingSelection;
+    if (!saved) return;
+    const arch = state.selectedArch;
     // Resolve URL candidates through the loaded options before they become live state.
     const card = Array.from(elements.cardSelector.querySelectorAll('.option-button'))
         .find(button => button.dataset.value === saved.selectedCard && !button.disabled);
@@ -732,18 +758,12 @@ async function init() {
         });
         updateSelectedBackends();
     }
-    if (saved.selectedArch) selectArch(saved.selectedArch);
-    selectRegistry(saved.selectedRegistry || state.selectedRegistry);
-    selectComponent(saved.selectedComponent || state.selectedComponent);
-    if (saved.optionalImages) state.optionalImages = saved.optionalImages;
-    Object.keys(elements.optionalImages).forEach(key => {
-        elements.optionalImages[key].checked = state.optionalImages[key];
-    });
-    switchGuideTab(saved.selectedGuide || state.selectedGuide);
-    initializing = false;
-    generateImageList();
-    // Show content after initialization
-    document.body.classList.add('i18n-ready');
+    if (preserveArch) selectArch(arch);
+    pendingSelection = null;
+}
+
+function discardPendingSelection(...keys) {
+    if (pendingSelection) keys.forEach(key => { delete pendingSelection[key]; });
 }
 
 // Initialize DOM elements
@@ -777,10 +797,19 @@ function bindEvents() {
     });
     elements.cardSelector.addEventListener('click', (e) => {
         const btn = e.target.closest('.option-button');
-        if (btn) selectCard(btn.dataset.value);
+        if (btn && !btn.disabled) {
+            discardPendingSelection('selectedCard', 'selectedFrameworkVersion', 'selectedChipType', 'selectedBackends');
+            selectCard(btn.dataset.value);
+        }
     });
-    elements.frameworkVersionSelect.addEventListener('change', (e) => selectFrameworkVersion(e.target.value));
-    elements.backendSelector.addEventListener('change', () => updateSelectedBackends());
+    elements.frameworkVersionSelect.addEventListener('change', (e) => {
+        discardPendingSelection('selectedFrameworkVersion', 'selectedChipType', 'selectedBackends');
+        selectFrameworkVersion(e.target.value);
+    });
+    elements.backendSelector.addEventListener('change', () => {
+        discardPendingSelection('selectedBackends');
+        updateSelectedBackends();
+    });
     Object.keys(elements.optionalImages).forEach(key => {
         elements.optionalImages[key].addEventListener('change', () => {
             state.optionalImages[key] = elements.optionalImages[key].checked;
@@ -936,11 +965,13 @@ async function loadData(requestedVersion = state.selectedGpuStackVersion) {
         state.availableVersions = versions;
         state.selectedGpuStackVersion = state.availableVersions.includes(requestedVersion)
             ? requestedVersion : state.availableVersions[0];
+        if (pendingSelection) pendingSelection.selectedGpuStackVersion = state.selectedGpuStackVersion;
         renderVersionSelector();
-        await loadVersionData(state.selectedGpuStackVersion);
+        return await loadVersionData(state.selectedGpuStackVersion);
     } catch (error) {
         console.error('Failed to load data:', error);
         showToast(CONFIG.i18n[state.currentLang].load_failed);
+        return false;
     }
 }
 
@@ -948,15 +979,18 @@ async function loadData(requestedVersion = state.selectedGpuStackVersion) {
 async function loadVersionData(version) {
     const response = await fetch(`${CONFIG.versionsBaseUrl}${version}.json`);
     const data = await response.json();
-    if (version !== state.selectedGpuStackVersion) return;
+    if (version !== state.selectedGpuStackVersion) return false;
     if (!Array.isArray(data) || data.some(image => typeof image !== 'string')) {
         throw new Error('Invalid image manifest');
     }
     state.images = data;
     state.runnerImages = data.filter(img => img.startsWith('gpustack/runner:'));
     parseSupportMatrix();
+    const arch = state.selectedArch;
     renderCardSelector();
+    if (pendingSelection) selectArch(arch);
     updateLanguage(); // Refresh offline guide version number
+    return true;
 }
 
 // Render version dropdown
@@ -974,8 +1008,18 @@ function renderVersionSelector() {
 async function selectGpuStackVersion(v) {
     if (!state.availableVersions.includes(v)) return;
     state.selectedGpuStackVersion = v;
-    await loadVersionData(v);
-    generateImageList();
+    if (pendingSelection) {
+        pendingSelection.selectedGpuStackVersion = v;
+        persistSelection();
+    }
+    try {
+        if (!await loadVersionData(v)) return;
+        restoreManifestSelection(true);
+        generateImageList();
+    } catch (error) {
+        console.error('Failed to load data:', error);
+        showToast(CONFIG.i18n[state.currentLang].load_failed);
+    }
 }
 
 // Parse supported hardware and backends from images
