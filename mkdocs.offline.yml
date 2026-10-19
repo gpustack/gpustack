@@ -21,6 +21,8 @@ exclude_docs: |
 
 hooks:
   - hack/mkdocs_offline.py
+  - hack/mkdocs_i18n.py
+  - hack/mkdocs_multilingual.py
 
 theme:
   # Material otherwise emits a fonts.googleapis.com stylesheet and a

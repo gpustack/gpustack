@@ -1,4 +1,4 @@
-"""Build both documentation languages without changing sources or published sites."""
+"""Build documentation languages without changing sources or published sites."""
 
 import shutil
 from html.parser import HTMLParser
@@ -28,6 +28,11 @@ def source_tree(tmp_path):
         "docs-zh/overview.md": "# 概览\n\n中文概览。\n",
         "docs-zh/user-guide/guide.md": "# 指南\n\n中文指南。\n",
         "docs-zh/user-guide/pending.md": (
+            "---\ntranslation_status: pending\n---\n\nDraft translation.\n"
+        ),
+        "docs-ja/overview.md": "# 概要\n\n日本語の概要。\n",
+        "docs-ja/user-guide/guide.md": "# ガイド\n\n日本語のガイド。\n",
+        "docs-ja/user-guide/pending.md": (
             "---\ntranslation_status: pending\n---\n\nDraft translation.\n"
         ),
         "hack/existing_hook.py": "# Shared documentation hook.\n",
@@ -68,6 +73,15 @@ def source_tree(tmp_path):
                 "Guide": "指南",
             },
             "theme_translations": {"Switch to dark mode": "切换到深色模式"},
+        },
+        "mkdocs.ja.yml": {
+            "site_description": "日本語ドキュメント",
+            "nav_translations": {
+                "Overview": "概要",
+                "User Guide": "ユーザーガイド",
+                "Guide": "ガイド",
+            },
+            "theme_translations": {"Switch to dark mode": "ダークモードに切り替え"},
         },
         "mkdocs.offline.yml": {
             "INHERIT": "mkdocs.yml",
@@ -115,7 +129,7 @@ def rendered_language_links(path):
     return parser.links
 
 
-@pytest.mark.parametrize("language", ["en", "zh"])
+@pytest.mark.parametrize("language", list(i18n.LANGUAGES))
 def test_language_overlay_preserves_shared_assets_and_english_sources(
     source_tree, tmp_path, language
 ):
@@ -124,7 +138,9 @@ def test_language_overlay_preserves_shared_assets_and_english_sources(
     config = read_config(builder.prepare_language(source_tree, stage, language))
 
     assert file_contents(source_tree) == original_sources
-    expected = "中文指南。" if language == "zh" else "English guide."
+    expected = {"en": "English guide.", "zh": "中文指南。", "ja": "日本語のガイド。"}[
+        language
+    ]
     assert expected in (stage / "docs/user-guide/guide.md").read_text()
     assert (stage / "docs/assets/chart.svg").read_bytes() == (
         source_tree / "docs/assets/chart.svg"
@@ -136,10 +152,14 @@ def test_language_overlay_preserves_shared_assets_and_english_sources(
     )
     settings = config["extra"]["docs_i18n"]
     assert settings["language"] == language
-    assert set(settings["translated_sources"]) == {
-        "overview.md",
-        "user-guide/guide.md",
-    }
+    assert set(settings["translated_sources"]) == (
+        {
+            "overview.md",
+            "user-guide/guide.md",
+        }
+        if language != "en"
+        else set()
+    )
     assert "hack/existing_hook.py" in config["hooks"]
     assert (stage / "hack/mkdocs_i18n.py").is_file()
     if language == "zh":
@@ -149,14 +169,24 @@ def test_language_overlay_preserves_shared_assets_and_english_sources(
         ]
         assert config["theme"]["palette"][0]["toggle"]["name"] == "切换到深色模式"
         assert config["site_url"] == "https://docs.example.test/latest/zh/"
+    elif language == "ja":
+        assert config["nav"] == [
+            {"概要": "overview.md"},
+            {"ユーザーガイド": [{"ガイド": "user-guide/guide.md"}]},
+        ]
+        assert (
+            config["theme"]["palette"][0]["toggle"]["name"] == "ダークモードに切り替え"
+        )
+        assert config["site_url"] == "https://docs.example.test/latest/ja/"
 
 
 @pytest.mark.parametrize("page_name", ["missing", "pending"])
+@pytest.mark.parametrize("language", ["zh", "ja"])
 def test_missing_or_pending_translation_shows_english_with_local_fallback_link(
-    source_tree, tmp_path, page_name
+    source_tree, tmp_path, page_name, language
 ):
     stage = tmp_path / "chinese"
-    config = read_config(builder.prepare_language(source_tree, stage, "zh"))
+    config = read_config(builder.prepare_language(source_tree, stage, language))
     source = f"user-guide/{page_name}.md"
     page = SimpleNamespace(
         file=SimpleNamespace(src_uri=source),
@@ -168,18 +198,19 @@ def test_missing_or_pending_translation_shows_english_with_local_fallback_link(
     output = i18n.on_page_markdown(markdown, page=page, config=config, files=None)
 
     assert output.endswith(markdown)
-    assert "此页面暂未提供中文翻译" in output
-    assert "[切换到英文版]" in output
-    link = i18n.language_links(page.url, "zh")[0]["link"]
+    assert i18n.FALLBACK_NOTICES[language][0] in output
+    assert f"[{i18n.FALLBACK_NOTICES[language][2]}]" in output
+    link = i18n.language_links(page.url, language)[0]["link"]
     assert f"]({link})" in output
-    assert urljoin(f"https://docs.example.test/2.3/zh/{page.url}", link) == (
+    assert urljoin(f"https://docs.example.test/2.3/{language}/{page.url}", link) == (
         f"https://docs.example.test/2.3/{page.url}"
     )
 
 
-def test_completed_translation_has_no_fallback_notice(source_tree, tmp_path):
+@pytest.mark.parametrize("language", ["zh", "ja"])
+def test_completed_translation_has_no_fallback_notice(source_tree, tmp_path, language):
     stage = tmp_path / "chinese"
-    config = read_config(builder.prepare_language(source_tree, stage, "zh"))
+    config = read_config(builder.prepare_language(source_tree, stage, language))
     page = SimpleNamespace(
         file=SimpleNamespace(src_uri="user-guide/guide.md"),
         url="user-guide/guide/",
@@ -201,6 +232,10 @@ def test_completed_translation_has_no_fallback_notice(source_tree, tmp_path):
         ("zh", False, {}, True, "docs"),
         ("zh", True, {"translation_status": "pending"}, True, "docs"),
         ("zh", True, {}, False, None),
+        ("ja", True, {}, True, "docs-ja"),
+        ("ja", False, {}, True, "docs"),
+        ("ja", True, {"translation_status": "pending"}, True, "docs"),
+        ("ja", True, {}, False, None),
     ],
 )
 def test_source_action_follows_the_displayed_translation(
@@ -256,23 +291,23 @@ def test_translation_readiness(tmp_path, metadata, expected):
 
 @pytest.mark.parametrize("prefix", ["/", "/latest/", "/docs/2.3/"])
 @pytest.mark.parametrize("page_url", ["", "overview/", "user-guide/deep/guide/"])
-@pytest.mark.parametrize("language", ["en", "zh"])
+@pytest.mark.parametrize("language", list(i18n.LANGUAGES))
 def test_public_language_links_preserve_page_and_deployment_prefix(
     prefix, page_url, language
 ):
-    current = prefix + ("zh/" if language == "zh" else "") + page_url
+    current = prefix + i18n.language_prefix(language) + page_url
     links = i18n.language_links(page_url, language)
 
-    assert {link["lang"] for link in links} == {"en", "zh"}
+    assert {link["lang"] for link in links} == set(i18n.LANGUAGES)
     for link in links:
         assert not link["link"].startswith(("/", "http:", "https:"))
-        expected = prefix + ("zh/" if link["lang"] == "zh" else "") + page_url
+        expected = prefix + i18n.language_prefix(link["lang"]) + page_url
         assert urljoin("https://docs.example.test" + current, link["link"]) == (
             "https://docs.example.test" + expected
         )
 
 
-@pytest.mark.parametrize("language", ["en", "zh"])
+@pytest.mark.parametrize("language", list(i18n.LANGUAGES))
 @pytest.mark.parametrize("offline", [False, True])
 def test_material_renders_page_relative_language_links_without_normalizing_again(
     source_tree, tmp_path, language, offline
@@ -294,27 +329,27 @@ def test_material_renders_page_relative_language_links_without_normalizing_again
     page_url = "user-guide/guide/"
     base = "https://docs.example.test" + ("/help/" if offline else "/latest/")
     current = base
-    current += ("zh/" if language == "zh" else "") + page_url
+    current += i18n.language_prefix(language) + page_url
     for tag in ("a", "link"):
-        assert set(links[tag]) == {"en", "zh"}
+        assert set(links[tag]) == set(i18n.LANGUAGES)
         for target_language, link in links[tag].items():
             expected = base
-            expected += ("zh/" if target_language == "zh" else "") + page_url
+            expected += i18n.language_prefix(target_language) + page_url
             assert urljoin(current, link) == expected
 
     error_links = rendered_language_links(output / "404.html")
     for tag in ("a", "link"):
-        assert set(error_links[tag]) == {"en", "zh"}
+        assert set(error_links[tag]) == set(i18n.LANGUAGES)
         for target_language, link in error_links[tag].items():
             for missing_url in (
                 base + "missing/deep/page/",
                 base + "zh/missing/deep/page/",
             ):
-                expected = base + ("zh/" if target_language == "zh" else "")
+                expected = base + i18n.language_prefix(target_language)
                 assert urljoin(missing_url, link) == expected
 
 
-@pytest.mark.parametrize("language", ["en", "zh"])
+@pytest.mark.parametrize("language", list(i18n.LANGUAGES))
 def test_material_edit_and_view_actions_point_to_the_displayed_source(
     source_tree, tmp_path, language
 ):
@@ -353,14 +388,16 @@ def test_material_edit_and_view_actions_point_to_the_displayed_source(
         parser = SourceActions()
         page = output / f"user-guide/{page_name}/index.html"
         parser.feed(page.read_text(encoding="utf-8"))
-        directory = "docs-zh" if language == "zh" and page_name == "guide" else "docs"
+        directory = (
+            f"docs-{language}" if language != "en" and page_name == "guide" else "docs"
+        )
         assert parser.links == {
             f"{repository}/edit/main/{directory}/user-guide/{page_name}.md",
             f"{repository}/raw/main/{directory}/user-guide/{page_name}.md",
         }
 
 
-@pytest.mark.parametrize("language", ["en", "zh"])
+@pytest.mark.parametrize("language", list(i18n.LANGUAGES))
 def test_offline_configuration_and_error_links_stay_under_help(
     source_tree, tmp_path, language
 ):
@@ -393,20 +430,21 @@ def test_offline_configuration_and_error_links_stay_under_help(
     assert {entry["lang"]: entry["link"] for entry in links} == {
         "en": "/help/",
         "zh": "/help/zh/",
+        "ja": "/help/ja/",
     }
     for missing_page in ("/help/missing/nested/page/", "/help/zh/missing/page/"):
         for link in links:
             assert urljoin(missing_page, link["link"]) == link["link"]
 
 
-@pytest.mark.parametrize("language", ["en", "zh"])
+@pytest.mark.parametrize("language", list(i18n.LANGUAGES))
 @pytest.mark.parametrize("prefix", ["/", "/latest/", "/docs/2.3/"])
 def test_public_error_language_links_ignore_unknown_request_depth(language, prefix):
     config = {
         "site_url": (
             "https://docs.example.test/"
             + prefix.lstrip("/")
-            + ("zh/" if language == "zh" else "")
+            + i18n.language_prefix(language)
         ),
         "extra": {"docs_i18n": {"language": language, "offline": False}},
     }
@@ -417,6 +455,7 @@ def test_public_error_language_links_ignore_unknown_request_depth(language, pref
     assert {entry["lang"]: entry["link"] for entry in links} == {
         "en": prefix,
         "zh": prefix + "zh/",
+        "ja": prefix + "ja/",
     }
     for missing_url in (
         "https://docs.example.test" + prefix + "missing/nested/page/",
@@ -424,7 +463,7 @@ def test_public_error_language_links_ignore_unknown_request_depth(language, pref
     ):
         for entry in links:
             expected = "https://docs.example.test" + prefix
-            expected += "zh/" if entry["lang"] == "zh" else ""
+            expected += i18n.language_prefix(entry["lang"])
             assert urljoin(missing_url, entry["link"]) == expected
 
 
@@ -467,7 +506,14 @@ def test_preview_build_and_live_reload_use_the_local_server_root(
 
     builder.serve_docs(source_tree, "127.0.0.1:8123")
 
-    assert site_urls == ["http://127.0.0.1:8123/", "http://127.0.0.1:8123/zh/"] * 2
+    assert (
+        site_urls
+        == [
+            f"http://127.0.0.1:8123/{i18n.language_prefix(language)}"
+            for language in i18n.LANGUAGES
+        ]
+        * 2
+    )
     assert len(servers) == 1
     assert (servers[0].host, servers[0].port) == ("127.0.0.1", 8123)
     assert servers[0].stopped
@@ -475,7 +521,7 @@ def test_preview_build_and_live_reload_use_the_local_server_root(
 
 
 @pytest.mark.parametrize("offline", [False, True])
-def test_publish_replaces_old_site_after_both_languages_pass(
+def test_publish_replaces_old_site_after_all_languages_pass(
     source_tree, tmp_path, monkeypatch, offline
 ):
     destination = tmp_path / "published"
@@ -510,14 +556,21 @@ def test_publish_replaces_old_site_after_both_languages_pass(
     assert result == destination
     assert (destination / "index.html").read_text() == "new en documentation"
     assert (destination / "zh/index.html").read_text() == "new zh documentation"
+    assert (destination / "ja/index.html").read_text() == "new ja documentation"
     assert not (destination / "obsolete.html").exists()
-    expected = [("build", "en"), ("build", "zh")]
+    expected = [("build", language) for language in i18n.LANGUAGES]
     if offline:
-        expected = [("build", "en"), ("check", "en"), ("build", "zh"), ("check", "zh")]
+        expected = [
+            (event, language)
+            for language in i18n.LANGUAGES
+            for event in ("build", "check")
+        ]
     assert events == expected
 
 
-@pytest.mark.parametrize("failure", ["en-build", "zh-build", "zh-check"])
+@pytest.mark.parametrize(
+    "failure", ["en-build", "zh-build", "zh-check", "ja-build", "ja-check"]
+)
 def test_build_or_validation_failure_preserves_previous_bilingual_site(
     source_tree, tmp_path, monkeypatch, failure
 ):

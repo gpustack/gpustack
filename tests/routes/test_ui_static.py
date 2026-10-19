@@ -30,6 +30,8 @@ HELP_INDEX = b"<html>documentation home</html>"
 HELP_PAGE = b"<html>air-gapped installation</html>"
 HELP_ZH_INDEX = "<html>中文文档</html>".encode()
 HELP_ZH_PAGE = "<html>离线安装</html>".encode()
+HELP_JA_INDEX = "<html>日本語ドキュメント</html>".encode()
+HELP_JA_PAGE = "<html>オフラインインストール</html>".encode()
 # MkDocs emits this for the search plugin, with a .gz beside it in the offline
 # build: a plain file whose URL has no directory form.
 SEARCH_INDEX = b'{"docs": []}\n' * 500
@@ -451,16 +453,22 @@ def _write_package_tree(root: Path, with_help: bool) -> None:
     assets_dir.mkdir(parents=True)
     (assets_dir / "bundle.bd41221c.min.js").write_bytes(BUNDLE_JS)
 
-    chinese_dir = help_dir / "zh"
-    chinese_dir.mkdir()
-    (chinese_dir / "index.html").write_bytes(HELP_ZH_INDEX)
-    chinese_page = chinese_dir / "installation" / "air-gapped"
-    chinese_page.mkdir(parents=True)
-    (chinese_page / "index.html").write_bytes(HELP_ZH_PAGE)
-    chinese_search = chinese_dir / "search"
-    chinese_search.mkdir()
-    (chinese_search / "search_index.json").write_bytes(SEARCH_INDEX)
-    (chinese_search / "search_index.json.gz").write_bytes(gzip.compress(SEARCH_INDEX))
+    for language, index, page in (
+        ("zh", HELP_ZH_INDEX, HELP_ZH_PAGE),
+        ("ja", HELP_JA_INDEX, HELP_JA_PAGE),
+    ):
+        translated_dir = help_dir / language
+        translated_dir.mkdir()
+        (translated_dir / "index.html").write_bytes(index)
+        translated_page = translated_dir / "installation" / "air-gapped"
+        translated_page.mkdir(parents=True)
+        (translated_page / "index.html").write_bytes(page)
+        translated_search = translated_dir / "search"
+        translated_search.mkdir()
+        (translated_search / "search_index.json").write_bytes(SEARCH_INDEX)
+        (translated_search / "search_index.json.gz").write_bytes(
+            gzip.compress(SEARCH_INDEX)
+        )
 
 
 @pytest.fixture
@@ -506,18 +514,23 @@ def test_help_directory_url_serves_the_nested_index(help_client):
         ("/help/zh", HELP_ZH_INDEX),
         ("/help/zh/", HELP_ZH_INDEX),
         ("/help/zh/installation/air-gapped/", HELP_ZH_PAGE),
+        ("/help/ja", HELP_JA_INDEX),
+        ("/help/ja/", HELP_JA_INDEX),
+        ("/help/ja/installation/air-gapped/", HELP_JA_PAGE),
     ],
 )
-def test_chinese_help_pages_are_public(help_client, path, expected):
+def test_translated_help_pages_are_public(help_client, path, expected):
     response = help_client.get(path)
 
     assert response.status_code == 200
     assert response.content == expected
 
 
-def test_chinese_help_search_is_precompressed(help_client):
+@pytest.mark.parametrize("language", ["zh", "ja"])
+def test_translated_help_search_is_precompressed(help_client, language):
     response = help_client.get(
-        "/help/zh/search/search_index.json", headers={"accept-encoding": "gzip"}
+        f"/help/{language}/search/search_index.json",
+        headers={"accept-encoding": "gzip"},
     )
 
     assert response.status_code == 200
@@ -590,6 +603,8 @@ def test_missing_documentation_is_not_mounted(no_help_app):
         ("/help/troubleshooting/?q=worker", "troubleshooting/?q=worker"),
         ("/help/zh/", "zh/"),
         ("/help/zh/troubleshooting/?q=worker", "zh/troubleshooting/?q=worker"),
+        ("/help/ja/", "ja/"),
+        ("/help/ja/troubleshooting/?q=worker", "ja/troubleshooting/?q=worker"),
     ],
 )
 def test_missing_documentation_redirects_to_online_docs(no_help_app, path, suffix):

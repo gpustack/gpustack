@@ -8,6 +8,10 @@ site_description: >-
   scheduling GPU resources, analyzing model architectures, and automatically configuring deployment parameters.
 
 # Repository
+hooks:
+  - hack/mkdocs_i18n.py
+  - hack/mkdocs_multilingual.py
+
 repo_name: gpustack/gpustack
 repo_url: https://github.com/gpustack/gpustack
 
