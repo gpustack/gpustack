@@ -669,19 +669,22 @@ class SGLangServer(InferenceServer):
                     ]
                 )
 
+            supports_bounds = _supports_ngram_match_window(self._model.backend_version)
             if (
                 speculative_config.ngram_min_match_length
                 or speculative_config.ngram_max_match_length
-            ) and not _supports_ngram_match_window(self._model.backend_version):
-                raise ValueError(
-                    "SGLang 0.5.10 removed --speculative-ngram-min-match-window-size and "
-                    "--speculative-ngram-max-match-window-size, so the n-gram match-length "
-                    f"settings cannot be applied (backend version: "
-                    f"{self._model.backend_version or 'unknown'}). Remove them, or set "
-                    "the backend version of an image older than 0.5.10."
+            ) and not supports_bounds:
+                logger.warning(
+                    "Ignoring ngram_min_match_length=%s and ngram_max_match_length=%s "
+                    "(backend version: %s): --speculative-ngram-min-match-window-size "
+                    "and --speculative-ngram-max-match-window-size were removed in "
+                    "SGLang 0.5.10; using SGLang's own n-gram defaults.",
+                    speculative_config.ngram_min_match_length,
+                    speculative_config.ngram_max_match_length,
+                    self._model.backend_version or 'unknown',
                 )
 
-            if speculative_config.ngram_max_match_length:
+            if supports_bounds and speculative_config.ngram_max_match_length:
                 arguments.extend(
                     [
                         "--speculative-ngram-max-match-window-size",
@@ -689,7 +692,7 @@ class SGLangServer(InferenceServer):
                     ]
                 )
 
-            if speculative_config.ngram_min_match_length:
+            if supports_bounds and speculative_config.ngram_min_match_length:
                 arguments.extend(
                     [
                         "--speculative-ngram-min-match-window-size",

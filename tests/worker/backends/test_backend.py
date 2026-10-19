@@ -517,11 +517,18 @@ def test_sglang_diffusion_checks_only_known_backend_versions(
 )
 @pytest.mark.parametrize(
     "min_length, max_length",
-    [(2, 4), (2, None), (None, 4), (None, None), (0, 0)],
-    ids=["both-bounds", "min-only", "max-only", "unbounded", "zero-bounds"],
+    [(1, 10), (2, 4), (2, None), (None, 4), (None, None), (0, 0)],
+    ids=[
+        "ui-defaults",
+        "both-bounds",
+        "min-only",
+        "max-only",
+        "unbounded",
+        "zero-bounds",
+    ],
 )
 def test_sglang_ngram_match_length_arguments(
-    backend_version, supports_bounds, min_length, max_length
+    backend_version, supports_bounds, min_length, max_length, caplog
 ):
     backend = SGLangServer.__new__(SGLangServer)
     backend._model = types.SimpleNamespace(
@@ -537,28 +544,33 @@ def test_sglang_ngram_match_length_arguments(
     )
     backend._pretrained_config = types.SimpleNamespace(architectures=[])
 
-    if (min_length or max_length) and not supports_bounds:
-        with pytest.raises(ValueError) as exc:
-            backend._get_speculative_arguments()
-        message = str(exc.value)
-        assert message.startswith("SGLang 0.5.10 removed")
-        assert "--speculative-ngram-min-match-window-size" in message
-        assert "--speculative-ngram-max-match-window-size" in message
-        assert f"(backend version: {backend_version or 'unknown'})" in message
-        return
-
     expected = [
         "--speculative-algorithm",
         "NGRAM",
         "--speculative-num-draft-tokens",
         "8",
     ]
-    if max_length:
+    if supports_bounds and max_length:
         expected.extend(["--speculative-ngram-max-match-window-size", str(max_length)])
-    if min_length:
+    if supports_bounds and min_length:
         expected.extend(["--speculative-ngram-min-match-window-size", str(min_length)])
     expected.extend(["--speculative-num-steps", "5", "--speculative-eagle-topk", "4"])
-    assert backend._get_speculative_arguments() == expected
+    with caplog.at_level(logging.WARNING, logger="gpustack.worker.backends.sglang"):
+        assert backend._get_speculative_arguments() == expected
+
+    if (min_length or max_length) and not supports_bounds:
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert record.levelno == logging.WARNING
+        message = record.getMessage()
+        assert f"ngram_min_match_length={min_length}" in message
+        assert f"ngram_max_match_length={max_length}" in message
+        assert "--speculative-ngram-min-match-window-size" in message
+        assert "--speculative-ngram-max-match-window-size" in message
+        assert f"backend version: {backend_version or 'unknown'}" in message
+        assert "SGLang's own n-gram defaults" in message
+    else:
+        assert not caplog.records
 
 
 CACHE_ENV_BACKENDS = [
