@@ -32,6 +32,7 @@ from gpustack.schemas.users import User
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.security import (
     JWTManager,
+    is_valid_format,
     new_secret_key_digest,
     parse_hyphen_uuid,
     secret_key_digest_usable,
@@ -552,13 +553,21 @@ async def get_user_from_api_token(
         await session.rollback()
 
         # A row under an empty access key predates the parser's split and its
-        # hash may cover either form: the legacy cluster token row hashes the
-        # whole presented string, pre-2.0 worker rows hash the secret portion.
-        # Both are legitimate presentations of the caller's credential, so
-        # both are tried. Rows with a real access key hashed the secret alone.
+        # hash may cover either form: pre-2.0 worker rows hash the secret
+        # portion and arrive UUID-wrapped, the legacy cluster token row hashes
+        # the whole deployment string. The wrapped form tries both plaintexts.
+        # A token in the standard shape is only ever the latter -- no
+        # empty-key row has ever held just its secret portion -- so it tries
+        # the whole string alone, keeping a brute-forced standard-format
+        # guess at a single argon2 verify, the cost a custom-key guess already
+        # pays. Rows with a real access key always hashed the secret alone.
         plaintexts = [secret_key]
-        if not api_key.access_key and token != secret_key:
-            plaintexts.append(token)
+        if not api_key.access_key:
+            valid, parsed_access, _ = is_valid_format(token)
+            if valid and parse_hyphen_uuid(parsed_access) is None:
+                plaintexts = [token]
+            elif token != secret_key:
+                plaintexts.append(token)
 
         if await _verify_secret_against_key(api_key, plaintexts):
             user: Optional[User] = await UserService(session).get_by_id(
