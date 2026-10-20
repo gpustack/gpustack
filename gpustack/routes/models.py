@@ -100,7 +100,7 @@ from gpustack.server.services import (
     WorkerService,
     revoke_model_access_cache,
 )
-from gpustack.server.controllers import model_spec_digest
+from gpustack.server.controllers import model_members_stale, model_spec_digest
 from gpustack.server.model_revisions import (
     append_revision,
     deployment_spec,
@@ -262,6 +262,11 @@ async def get_model(
     model = await Model.one_by_id(session, id, options=[selectinload(Model.instances)])
     assert_resource_visible(ctx, model, not_found_message="Model not found")
     public = ModelPublic.model_validate(model)
+    # Recovery reads this before starting a member. Controller-maintained
+    # status can lag a saved edit or a deployment stop/start cycle.
+    public.stale = await model_members_stale(
+        session, model, [i for i in model.instances if i.deleted_at is None]
+    )
     public.has_stale_lora_instances = is_lora_list_stale(model)
     return public
 

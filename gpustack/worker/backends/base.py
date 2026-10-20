@@ -76,6 +76,11 @@ from gpustack.worker.pd_injection import PDInjection, render_pd_injection
 
 logger = logging.getLogger(__name__)
 
+PD_CONFIGURATION_CHANGED_MESSAGE = (
+    "Configuration changed; stop the deployment, wait for all instances to be "
+    "removed, then start it to rebuild the whole group."
+)
+
 # Distinguishes "the caller said nothing" from "the caller said None". A
 # managed router legitimately has no backend row of its own, and passing None
 # has to mean that rather than falling back to this server's.
@@ -301,7 +306,14 @@ class InferenceServer(ABC):
         pass
 
     def get_model(self):
-        model = self._clientset.models.get(id=self._model_instance.model_id)
+        model = self._clientset.models.get(
+            id=self._model_instance.model_id,
+            use_cache=not bool(self._model_instance.group_id),
+        )
+        # The subprocess reads configuration independently of the manager;
+        # an edit after its launch decision must not reach the container.
+        if self._model_instance.group_id and model.stale is True:
+            raise RuntimeError(PD_CONFIGURATION_CHANGED_MESSAGE)
         # Keep the model as the server holds it, for the one path that writes
         # back: a projection must never be persisted, and a PUT built from one
         # would push a role's overrides up to the Model-level spec.

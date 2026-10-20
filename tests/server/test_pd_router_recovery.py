@@ -325,7 +325,9 @@ async def test_persistent_membership_failure_does_not_self_trigger_a_loop(
         controllers, "ModelService", lambda session: SimpleNamespace(update=update)
     )
     monkeypatch.setattr(controllers, "_degradation_reasons", degradation_reasons)
-    monkeypatch.setattr(controllers, "_stale_members", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        controllers, "model_members_stale", AsyncMock(return_value=False)
+    )
     monkeypatch.setattr(controllers, "reconcile_route_target_states", AsyncMock())
 
     await state.controller._reconcile(Event(type=EventType.UPDATED, data=state.model))

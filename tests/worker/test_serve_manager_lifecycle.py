@@ -1,9 +1,10 @@
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ReadTimeout
@@ -16,11 +17,14 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
     PortBand,
+    RoleSpec,
     SourceEnum,
 )
 from gpustack.server.bus import Event, EventType
+from gpustack.server.controllers import model_members_stale, model_spec_digest
 from gpustack.utils import network
 from gpustack.worker.serve_manager import ServeManager
+from gpustack.worker.backends.base import InferenceServer
 from gpustack_runtime.deployer import WorkloadStatusStateEnum
 from tests.utils.model import new_model, new_model_instance
 from tests.worker.test_port_reservations import _cache_instance
@@ -769,6 +773,233 @@ def test_disabling_auto_restart_cancels_queued_recovery(manager):
     assert instance.id not in serve._error_model_instances
 
 
+def test_missing_parent_model_is_reported_as_launch_failure(manager):
+    serve, clientset = manager
+    instance = _instance()
+    instance.group_id = "1-old"
+    clientset.model_instances.get.return_value = instance
+    clientset.models.get.side_effect = NotFoundException("Parent model not found")
+
+    with (
+        patch.object(serve, "_stop_model_instance") as stop,
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+    ):
+        serve._start_model_instance(instance)
+
+    stop.assert_not_called()
+    process.assert_not_called()
+    assert instance.id in serve._error_model_instances
+    assert serve._update_model_instance.call_count == 1
+
+
+@pytest.mark.parametrize("role", ["prefill", "decode", "router"])
+def test_pending_configuration_blocks_member_recovery(manager, role):
+    serve, clientset = manager
+    instance = _instance()
+    instance.role = role
+    instance.group_id = "1-old"
+    instance.spec_digest = "old"
+    instance.state = ModelInstanceStateEnum.ERROR
+    clientset.model_instances.get.return_value = instance
+    clientset.models.get.return_value = serve._get_model.return_value.model_copy(
+        update={"stale": True, "restart_on_error": True}
+    )
+    serve._dispatch_model_instance_event(Event(type=EventType.UPDATED, data=instance))
+
+    serve._restart_error_model_instance(serve._error_model_instances[instance.id])
+
+    serve._update_model_instance.assert_not_called()
+    clientset.model_instances.update.assert_not_called()
+    assert instance.id not in serve._restart_backoff_counts
+    clientset.models.get.assert_called_with(instance.model_id, use_cache=False)
+
+
+@pytest.mark.parametrize("manager", [2], indirect=True)
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+def test_pending_configuration_blocks_follower_recovery(manager, role):
+    serve, clientset = manager
+    instance = _instance()
+    instance.role = role
+    instance.group_id = "1-old"
+    instance.distributed_servers.subordinate_workers[0].state = (
+        ModelInstanceStateEnum.ERROR
+    )
+    clientset.model_instances.get.return_value = instance
+    clientset.models.get.return_value.stale = True
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+        patch.object(serve, "_start_model_instance") as start,
+    ):
+        serve._start_or_restart_subordinate(instance)
+
+    start.assert_not_called()
+
+
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+def test_edit_during_backoff_cancels_recovery(manager, role):
+    serve, clientset = manager
+    instance = _instance()
+    instance.role = role
+    instance.group_id = "1-old"
+    instance.state = ModelInstanceStateEnum.ERROR
+    instance.last_restart_time = datetime.now(timezone.utc)
+    clientset.model_instances.get.return_value = instance
+    serve._restart_backoff_counts[instance.id] = 1
+    serve._error_model_instances[instance.id] = instance
+
+    serve._restart_error_model_instance(instance)
+    serve._update_model_instance.assert_not_called()
+    assert instance.id in serve._error_model_instances
+
+    clientset.models.get.return_value.stale = True
+    instance.last_restart_time -= timedelta(minutes=1)
+    serve._restart_error_model_instance(instance)
+
+    serve._update_model_instance.assert_not_called()
+    clientset.model_instances.update.assert_not_called()
+    assert serve._restart_backoff_counts[instance.id] == 1
+
+
+@pytest.mark.parametrize("group_id", [None, "1-old"])
+@pytest.mark.parametrize("backoff_count", [1, 6])
+def test_backoff_does_not_read_recovery_policy(manager, group_id, backoff_count):
+    serve, clientset = manager
+    instance = _instance()
+    instance.group_id = group_id
+    instance.state = ModelInstanceStateEnum.ERROR
+    instance.last_restart_time = datetime.now(timezone.utc)
+    clientset.model_instances.get.return_value = instance
+    serve._restart_backoff_counts[instance.id] = backoff_count
+    serve._error_model_instances[instance.id] = instance
+
+    for _ in range(3):
+        serve._restart_error_model_instance(instance)
+
+    clientset.models.get.assert_not_called()
+    clientset.model_instances.get.assert_not_called()
+    serve._update_model_instance.assert_not_called()
+    assert instance.id in serve._error_model_instances
+
+
+def test_due_pd_recovery_checks_server_even_when_cached_config_is_current(manager):
+    serve, clientset = manager
+    instance = _instance()
+    instance.group_id = "1-old"
+    instance.state = ModelInstanceStateEnum.ERROR
+    clientset.model_instances.get.return_value = instance
+    cached = clientset.models.get.return_value.model_copy(update={"stale": False})
+    current = cached.model_copy(update={"stale": True})
+    clientset.models.get.side_effect = lambda id, use_cache=True: (
+        cached if use_cache else current
+    )
+
+    serve._restart_error_model_instance(instance)
+
+    clientset.models.get.assert_called_once_with(instance.model_id, use_cache=False)
+    serve._update_model_instance.assert_not_called()
+    clientset.model_instances.update.assert_not_called()
+
+
+@pytest.mark.parametrize("role", ["prefill", "decode", "router"])
+def test_edit_after_recovery_decision_blocks_actual_launch(manager, role):
+    serve, clientset = manager
+    instance = _instance()
+    instance.role = role
+    instance.group_id = "1-old"
+    instance.state = ModelInstanceStateEnum.ERROR
+    assert serve._auto_restart_enabled(instance)
+    instance.state = ModelInstanceStateEnum.SCHEDULED
+    clientset.models.get.return_value = serve._get_model.return_value.model_copy(
+        update={"stale": True}
+    )
+
+    with (
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+        patch.object(serve, "_assign_ports") as assign,
+    ):
+        serve._start_model_instance(instance)
+
+    process.assert_not_called()
+    assign.assert_not_called()
+    update = serve._update_model_instance.call_args.kwargs
+    if serve._worker_id == instance.worker_id:
+        assert update["state"] == ModelInstanceStateEnum.ERROR
+    else:
+        subordinate = update["distributed_servers.subordinate_workers.0"]
+        assert subordinate.state == ModelInstanceStateEnum.ERROR
+    clientset.models.get.assert_called_with(instance.model_id, use_cache=False)
+
+
+def test_group_launch_waits_when_current_configuration_is_unknown(manager):
+    serve, clientset = manager
+    instance = _instance()
+    instance.group_id = "1-old"
+    clientset.models.get.side_effect = ReadTimeout("configuration unavailable")
+
+    with patch("gpustack.worker.serve_manager.multiprocessing.Process") as process:
+        serve._start_model_instance(instance)
+
+    process.assert_not_called()
+    assert instance.id in serve._error_model_instances
+
+
+def test_rebuilt_group_launch_uses_fresh_staleness(manager):
+    serve, clientset = manager
+    instance = _instance()
+    instance.role = "prefill"
+    instance.group_id = "1-current"
+    instance.state = ModelInstanceStateEnum.SCHEDULED
+    serve._get_model.return_value.stale = True
+    clientset.models.get.return_value = serve._get_model.return_value.model_copy(
+        update={"stale": False}
+    )
+
+    with patch("gpustack.worker.serve_manager.multiprocessing.Process") as process:
+        serve._start_model_instance(instance)
+
+    process.return_value.start.assert_called_once()
+    clientset.models.get.assert_called_with(instance.model_id, use_cache=False)
+
+
+def test_pending_configuration_keeps_healthy_members_running(manager):
+    serve, clientset = manager
+    instance = _instance()
+    instance.role = "prefill"
+    instance.group_id = "1-old"
+    clientset.models.get.return_value.stale = True
+
+    with patch.object(serve, "_stop_model_instance") as stop:
+        serve._dispatch_model_instance_event(
+            Event(type=EventType.UPDATED, data=instance)
+        )
+
+    stop.assert_not_called()
+    serve._update_model_instance.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "group_id, stale", [(None, True), ("1-current", False), ("1-legacy", None)]
+)
+def test_plain_and_current_members_still_recover(manager, group_id, stale):
+    serve, clientset = manager
+    instance = _instance()
+    instance.role = "prefill" if group_id else None
+    instance.group_id = group_id
+    instance.state = ModelInstanceStateEnum.ERROR
+    clientset.model_instances.get.return_value = instance
+    clientset.models.get.return_value.stale = stale
+    serve._error_model_instances[instance.id] = instance
+
+    serve._restart_error_model_instance(instance)
+
+    assert serve._update_model_instance.call_args.kwargs["state"] == (
+        ModelInstanceStateEnum.SCHEDULED
+    )
+    clientset.models.get.assert_called_with(
+        instance.model_id, use_cache=group_id is None
+    )
+
+
 @pytest.mark.parametrize("manager", [2], indirect=True)
 def test_follower_recovery_uses_current_restart_policy(manager):
     serve, clientset = manager
@@ -817,6 +1048,8 @@ def test_starting_main_observes_follower_recovery_policy(
         return_value=SimpleNamespace(state=WorkloadStatusStateEnum.INITIALIZING),
     ):
         serve.sync_model_instances_state()
+    if local_state == ModelInstanceStateEnum.ERROR:
+        clientset.models.get.assert_called_with(instance.model_id, use_cache=True)
     if not should_update:
         serve._update_model_instance.assert_not_called()
         return
@@ -889,3 +1122,166 @@ async def test_watch_waits_for_launch_callback_before_dispatching_next_event(man
                 release.set()
                 await asyncio.wait_for(task, timeout=3)
     assert observed == events
+
+
+@pytest.mark.parametrize("edit_stage", [None, "manager", "backend"])
+def test_staggered_group_startup_allows_version_writeback_but_blocks_edits(
+    manager, monkeypatch, edit_stage
+):
+    serve, clientset = manager
+    model = serve._get_model.return_value
+    model.backend_version = None
+    model.roles = [RoleSpec(name="prefill"), RoleSpec(name="decode")]
+    monkeypatch.setattr(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    )
+    session = MagicMock()
+    session.info = {}
+    digest = asyncio.run(model_spec_digest(session, model))
+    waiting = _instance()
+    waiting.group_id = "1-group"
+    waiting.spec_digest = digest
+    waiting.role = "decode"
+    waiting.state = ModelInstanceStateEnum.SCHEDULED
+    first = waiting.model_copy(
+        update={
+            "id": 2,
+            "role": "prefill",
+            "state": ModelInstanceStateEnum.RUNNING,
+            "backend_version": "0.31.0",
+        }
+    )
+    model.backend_version = "0.31.0"
+    clientset.model_instances.get.return_value = waiting
+
+    def read_model(*args, **kwargs):
+        session.info.clear()
+        model.stale = asyncio.run(model_members_stale(session, model, [first, waiting]))
+        return model.model_copy(deep=True)
+
+    clientset.models.get.side_effect = read_model
+    if edit_stage == "manager":
+        model.roles[0].backend_parameters = ["--max-model-len=8192"]
+
+    with patch("gpustack.worker.serve_manager.multiprocessing.Process") as process:
+        serve._start_model_instance(waiting)
+        assert process.return_value.start.call_count == int(edit_stage != "manager")
+
+    if edit_stage == "backend":
+        model.roles[0].backend_parameters = ["--max-model-len=8192"]
+    server = SimpleNamespace(
+        _clientset=clientset,
+        _model_instance=waiting,
+        _config=SimpleNamespace(data_dir="/tmp"),
+    )
+    if edit_stage is None:
+        InferenceServer.get_model(server)
+        assert server._model.backend_version == "0.31.0"
+        assert waiting.backend_version is None
+    else:
+        with pytest.raises(RuntimeError):
+            InferenceServer.get_model(server)
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+@pytest.mark.parametrize(
+    "waiting_state",
+    [
+        ModelInstanceStateEnum.SCHEDULED,
+        ModelInstanceStateEnum.ERROR,
+    ],
+)
+def test_group_can_launch_and_recover_between_actual_version_writeback_requests(
+    manager, monkeypatch, waiting_state
+):
+    serve, clientset = manager
+    model = serve._get_model.return_value
+    model.backend_version = None
+    model.restart_on_error = True
+    model.roles = [RoleSpec(name="prefill"), RoleSpec(name="decode")]
+    monkeypatch.setattr(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    )
+    session = MagicMock()
+    session.info = {}
+    digest = asyncio.run(model_spec_digest(session, model))
+    waiting = _instance()
+    waiting.group_id = "1-group"
+    waiting.spec_digest = digest
+    waiting.role = "decode"
+    waiting.state = waiting_state
+    first = waiting.model_copy(
+        deep=True,
+        update={"id": 2, "role": "prefill", "state": ModelInstanceStateEnum.STARTING},
+    )
+    instances = {first.id: first, waiting.id: waiting}
+    clientset.model_instances.get.side_effect = lambda id, **kwargs: instances[
+        id
+    ].model_copy(deep=True)
+
+    def read_model(*args, **kwargs):
+        session.info.clear()
+        model.stale = asyncio.run(model_members_stale(session, model, [first, waiting]))
+        return model.model_copy(deep=True)
+
+    clientset.models.get.side_effect = read_model
+    observations = []
+    writes = []
+
+    def persist_instance(*, id, model_update):
+        writes.append(("instance", id))
+        target = instances[id]
+        for field in model_update.model_fields_set:
+            setattr(target, field, getattr(model_update, field))
+
+    clientset.model_instances.update.side_effect = persist_instance
+
+    def persist_manager_update(id, **fields):
+        for field, value in fields.items():
+            setattr(instances[id], field, value)
+
+    serve._update_model_instance.side_effect = persist_manager_update
+    backend = SimpleNamespace(
+        _clientset=clientset,
+        _model_instance=waiting,
+        _config=SimpleNamespace(data_dir="/tmp"),
+    )
+
+    def persist_model(id, model_update):
+        writes.append(("model", id))
+        model.backend_version = model_update.backend_version
+        observations.append((first.backend_version, read_model().stale))
+        if waiting_state == ModelInstanceStateEnum.ERROR:
+            serve._error_model_instances[waiting.id] = waiting.model_copy(deep=True)
+            serve._restart_error_model_instance(waiting.model_copy(deep=True))
+        serve._start_model_instance(waiting.model_copy(deep=True))
+        try:
+            InferenceServer.get_model(backend)
+            observations.append("backend-started")
+        except RuntimeError:
+            observations.append("backend-blocked")
+
+    clientset.models.update.side_effect = persist_model
+    writer = SimpleNamespace(
+        _clientset=clientset,
+        _model=model.model_copy(deep=True),
+        _model_spec=model.model_copy(deep=True),
+        _model_instance=first.model_copy(deep=True),
+    )
+    writer._update_model_instance = lambda id, **fields: (
+        InferenceServer._update_model_instance(writer, id, **fields)
+    )
+    with patch.object(serve, "_launch_model_instance") as launch:
+        InferenceServer._update_model_backend_service_version(writer, "0.31.0")
+
+    assert writes == [("model", model.id), ("instance", first.id)]
+    assert observations == [(None, False), "backend-started"]
+    assert first.backend_version == "0.31.0"
+    assert read_model().stale is False
+    launch.assert_called_once()
+    if waiting_state == ModelInstanceStateEnum.ERROR:
+        assert waiting.state == ModelInstanceStateEnum.SCHEDULED
+        assert waiting.restart_count == 1
+        assert waiting.id not in serve._error_model_instances

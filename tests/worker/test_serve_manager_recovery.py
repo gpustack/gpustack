@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import httpx
@@ -509,6 +510,33 @@ def test_restart_requires_successful_live_instance_read(
     assert queued_error.id not in manager._restart_backoff_counts
 
 
+@pytest.mark.parametrize("membership", ["absent", "unknown", "empty", "other-worker"])
+def test_removed_follower_discards_queued_recovery(recovery, membership):
+    follower = recovery.managers[1]
+    client = recovery.clients[1]
+    recovery.instance.state = ModelInstanceStateEnum.ERROR
+    recovery.instance.group_id = "1-old"
+    queued = recovery.instance.model_copy(deep=True)
+    follower._error_model_instances[queued.id] = queued
+    client.models.get.return_value.restart_on_error = True
+    if membership == "absent":
+        recovery.instance.distributed_servers = None
+    elif membership == "unknown":
+        recovery.instance.distributed_servers.subordinate_workers = None
+    elif membership == "empty":
+        recovery.instance.distributed_servers.subordinate_workers = []
+    else:
+        recovery.instance.distributed_servers.subordinate_workers[0].worker_id = 3
+
+    follower._restart_error_model_instance(queued)
+
+    assert queued.id not in follower._error_model_instances
+    assert queued.id not in follower._pending_model_instance_errors
+    assert queued.id not in follower._restart_backoff_counts
+    client.models.get.assert_not_called()
+    client.model_instances.update.assert_not_called()
+
+
 @pytest.mark.parametrize("worker_index", [0, 1])
 def test_restart_uses_live_error_and_restart_count(recovery, worker_index):
     manager = recovery.managers[worker_index]
@@ -530,6 +558,75 @@ def test_restart_uses_live_error_and_restart_count(recovery, worker_index):
     assert recovery.instance.state == ModelInstanceStateEnum.SCHEDULED
     assert recovery.instance.restart_count == 4
     assert queued_error.id not in manager._error_model_instances
+
+
+@pytest.mark.parametrize("worker_index", [0, 1])
+def test_restart_rechecks_backoff_against_live_instance(recovery, worker_index):
+    manager = recovery.managers[worker_index]
+    client = recovery.clients[worker_index]
+    recovery.instance.state = ModelInstanceStateEnum.ERROR
+    queued_error = recovery.instance.model_copy(deep=True)
+    queued_error.last_restart_time = datetime.now(timezone.utc) - timedelta(minutes=6)
+    manager._error_model_instances[queued_error.id] = queued_error
+    manager._restart_backoff_counts[queued_error.id] = 6
+    recovery.instance.last_restart_time = datetime.now(timezone.utc)
+
+    manager._restart_error_model_instance(queued_error)
+
+    client.model_instances.get.assert_called_once_with(
+        id=queued_error.id, use_cache=False
+    )
+    client.models.get.assert_not_called()
+    client.model_instances.update.assert_not_called()
+    assert manager._restart_backoff_counts[queued_error.id] == 6
+    assert queued_error.id in manager._error_model_instances
+
+
+@pytest.mark.parametrize("worker_index", [0, 1])
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+def test_pd_blocked_recovery_preserves_error_without_status_write(
+    recovery, worker_index, role
+):
+    manager = recovery.managers[worker_index]
+    client = recovery.clients[worker_index]
+    recovery.instance.state = ModelInstanceStateEnum.ERROR
+    recovery.instance.role = role
+    recovery.instance.group_id = "1-old"
+    local = (
+        recovery.instance
+        if worker_index == 0
+        else recovery.instance.distributed_servers.subordinate_workers[0]
+    )
+    local.state = ModelInstanceStateEnum.ERROR
+    local.state_message = "Inference server exited or unhealthy. Exit code 137."
+    client.models.get.return_value.stale = True
+    client.models.get.return_value.restart_on_error = True
+    queued = recovery.instance.model_copy(deep=True)
+    manager._error_model_instances[queued.id] = queued
+    original = recovery.instance.model_dump()
+
+    manager._restart_error_model_instance(queued)
+
+    assert recovery.instance.model_dump() == original
+    assert queued.id not in manager._error_model_instances
+    assert queued.id not in manager._restart_backoff_counts
+    client.model_instances.get.assert_called_once_with(id=queued.id, use_cache=False)
+    client.model_instances.update.assert_not_called()
+
+
+@pytest.mark.parametrize("worker_index", [0, 1])
+def test_pd_recovery_polling_uses_watch_cache(recovery, worker_index):
+    manager = recovery.managers[worker_index]
+    client = recovery.clients[worker_index]
+    recovery.instance.group_id = "1-old"
+    client.models.get.return_value.stale = True
+    client.models.get.return_value.restart_on_error = True
+
+    assert not manager._auto_restart_enabled(recovery.instance)
+
+    client.models.get.assert_called_with(recovery.instance.model_id, use_cache=True)
+    client.model_instances.get.assert_not_called()
+    client.model_instances.update.assert_not_called()
 
 
 @pytest.mark.parametrize("deleted", [False, True])
