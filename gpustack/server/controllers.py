@@ -1740,7 +1740,7 @@ _DIGEST_EXCLUDED_SPEC_FIELDS = frozenset(
 # (`scheduler.py` sets each once it has worked the value out). In the digest
 # they made a group go stale with nobody having edited anything, and the
 # restart that clears the warning only confirms the value the platform had
-# already chosen -- the shape `_stale_members` warns about, where a false
+# already chosen -- the shape `model_members_stale` warns about, where a false
 # reading is indistinguishable from a true one because acting on it appears
 # to work. `backend_version` has an explicit exemption for exactly this; these
 # had none.
@@ -1821,14 +1821,14 @@ async def model_spec_digest(
 
     `backend_version` substitutes for the model's own, and exists for one
     caller: asking whether a *particular member* is out of date with the spec.
-    See `_stale_members`.
+    See `model_members_stale`.
 
     **One answer per reconcile pass, and that is a correctness property
     rather than a saving.** A Model event runs `sync_replicas` and
     `sync_model_status` inside one session, so the digest is computed twice
     against a catalog a *different* task may retire-and-insert into between
     them: `_sync_replicas_per_role` stamps a new member with what it computed,
-    `_stale_members` then compares against what it computed, and a member
+    `model_members_stale` then compares against what it computed, and a member
     created moments earlier reads as out of date with the spec it was built
     from. Memoising on the session makes the two the same value by
     construction, because the session is exactly one pass.
@@ -1876,12 +1876,12 @@ async def model_spec_digest(
     return digest
 
 
-async def _stale_members(
+async def model_members_stale(
     session: AsyncSession,
     model: Model,
     instances: Sequence[ModelInstance],
 ) -> Optional[bool]:
-    """Whether any running member predates the config it is shown with.
+    """Whether any member's recorded spec predates the model configuration.
 
     None where nothing can be said: a member created before `spec_digest`
     existed carries None, and reading that as "differs" would mark every
@@ -1890,8 +1890,8 @@ async def _stale_members(
     One exemption, and it is not a loophole -- it is the difference between
     a config change and a record of what is already running.
 
-    The case it exists for is a model deployed with no version pinned. Once a
-    member starts, the worker reads the engine's version off it and writes it
+    The case it exists for is a model deployed with no version pinned. During
+    startup, the worker resolves the engine image's version and writes it
     back to the Model. That write is deliberate: without it a later replica
     resolves its own, newer build and the group goes heterogeneous. But
     `backend_version` is in the digest -- also correctly, since a different
@@ -1907,14 +1907,25 @@ async def _stale_members(
     - its stamp matches the spec with `backend_version` unset. Not a guess at
       the old value -- the write-back only fires when the field was falsy, so
       unset is precisely what the member was stamped against.
-    - the version now recorded is the one the member is actually running.
-      Without this, pinning 0.5.14 onto a group running 0.5.15 would also be
-      excused, and that edit genuinely needs a restart. A member that cannot
-      say what it runs stays stale, which is the conservative direction.
+    - the version now recorded is the one the member is actually running,
+      or the member belongs to a group and is starting or retrying without
+      a recorded version. Image resolution happens after STARTING, so these
+      members can still adopt the pinned version. Pinning 0.5.14 onto a group
+      running 0.5.15 still needs a restart. Running or unreachable members with
+      unknown versions stay stale because their active build is unverified.
 
     The stamps are deliberately *not* rewritten to match. `group_id` is derived
     from the digest and is what the router matches its peers on, so re-stamping
     would rename a running group's generation underneath it.
+
+    Args:
+        session: The current read or reconciliation session.
+        model: The deployment's current configuration.
+        instances: The deployment's current instance records to compare.
+
+    Returns:
+        True if a stamped member differs from the current configuration, False
+        if all stamped members match, or None if no member has a stamp.
     """
     digested = [i for i in instances if i.spec_digest]
     if not digested:
@@ -1930,10 +1941,21 @@ async def _stale_members(
     def is_current(instance: ModelInstance) -> bool:
         if instance.spec_digest == current:
             return True
-        return (
-            instance.spec_digest == unpinned
-            and recorded is not None
-            and instance.backend_version == recorded
+        if instance.spec_digest != unpinned or recorded is None:
+            return False
+        if instance.backend_version is not None:
+            return instance.backend_version == recorded
+        # Image resolution can still be pending in STARTING or after a failed
+        # attempt. The unpinned digest proves that every other configuration
+        # field matches, so these members can start or retry the pinned build.
+        return bool(instance.group_id) and instance.state in (
+            ModelInstanceStateEnum.PENDING,
+            ModelInstanceStateEnum.ANALYZING,
+            ModelInstanceStateEnum.SCHEDULED,
+            ModelInstanceStateEnum.INITIALIZING,
+            ModelInstanceStateEnum.DOWNLOADING,
+            ModelInstanceStateEnum.STARTING,
+            ModelInstanceStateEnum.ERROR,
         )
 
     return not all(is_current(i) for i in digested)
@@ -2244,7 +2266,7 @@ async def _sync_replicas_per_role(
     # predate the edit is a cross-generation pairing like any other.
     # Use the same version write-back exemption as the model's stale marker:
     # recording the build the members already run does not change their spec.
-    spec_moved = bool(await _stale_members(session, model, generation))
+    spec_moved = bool(await model_members_stale(session, model, generation))
 
     for role in model.roles:
         have = [i for i in generation if i.role == role.name]
@@ -2255,7 +2277,8 @@ async def _sync_replicas_per_role(
                     f"{role.name} member(s) of model {model.name}: the spec has "
                     f"changed since group {group_id} was formed, and a new "
                     f"member would run the edited spec beside peers that do "
-                    f"not. Restart the model to rebuild the whole group."
+                    f"not. Stop the deployment, wait for all instances to be "
+                    f"removed, then start it to rebuild the whole group."
                 )
                 continue
             if not _dependencies_ready(model, role, generation):
@@ -4026,8 +4049,11 @@ async def _record_static_router_membership(session, model, instances):
                 continue
             ok = False
             reason = MEMBERSHIP_REFRESH_REASON
-            if await _stale_members(session, model, instances):
-                reason = "router membership changed; restart the deployment to apply configuration"
+            if await model_members_stale(session, model, instances):
+                reason = (
+                    "router membership changed; stop the deployment, wait for "
+                    "all instances to be removed, then start it to apply configuration"
+                )
             break
     pd_membership.record(
         model.id,
@@ -4169,8 +4195,8 @@ def _explain_unreadable(
             "the router's member list could not be read. Recreating the "
             "router is what usually repairs this, and the platform did NOT "
             "do it because this deployment has «restart on error» off — so "
-            "the group stays as it is. Restart it manually once you have "
-            "looked, or turn the switch on to let the platform try."
+            "the group stays as it is. After inspecting it, stop the deployment, "
+            "wait for all instances to be removed, then start it."
         )
     else:
         return outcome
@@ -4367,7 +4393,7 @@ async def sync_model_status(session: AsyncSession, model: Model) -> bool:  # noq
     # Only members that carry a digest count. A row created before this column
     # existed has None, and reading that as "differs" would mark every
     # pre-upgrade model stale on the first pass after an upgrade.
-    stale = await _stale_members(session, model, instances)
+    stale = await model_members_stale(session, model, instances)
 
     # Release the restart guard when the rebuilt deployment is serving or its
     # deployment switch is off. A stopped deployment has no replacements to

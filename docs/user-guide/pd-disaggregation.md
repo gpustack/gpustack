@@ -94,16 +94,16 @@ that is the normal path rather than a fault.
 | `Partially ready` | Members are up and the group still cannot serve — a role with no ready member, or the router's endpoint not yet registered. |
 | `Running` | Every role has at least one ready member and the endpoint is registered. |
 | `Ratio 2:1 (currently 1:1)` | The group serves, but not at the ratio you asked for. Shown beside the state, not instead of it. |
-| Clock icon / `Config changed` | The running members predate the configuration shown, and until you restart, a role cannot be scaled up. See [Applying a configuration change](#applying-a-configuration-change). |
+| Clock icon / `Config changed` | The running members predate the configuration shown. Stop the deployment and then start it to apply the configuration before scaling a role up. See [Applying a configuration change](#applying-a-configuration-change). |
 
 Being short of the requested ratio is a degradation, not a state: a 3P1D group
 running 2P1D still serves, just not at the throughput you sized for.
 
 ## Applying a configuration change
 
-Editing a disaggregated deployment does **not** restart it. The change is saved,
-the group is marked as running an older configuration, and nothing moves until
-you restart it.
+Editing a disaggregated deployment saves the change without recreating its
+instances. The group is marked as running an older configuration. Apply the saved
+configuration by stopping the deployment and then starting it.
 
 This is deliberate. Restarting members one at a time would, for a while, pair a
 prefill running the new configuration with a decode running the old one — and
@@ -113,10 +113,17 @@ correctly; only a prompt longer than the decode side's window fails, after the
 prefill work has already been paid for. A wrong answer is worse than a
 restart, so the whole group stops before any of it starts again.
 
-Use `Restart` on the deployment to apply the change. It retires the whole group
-and lets it re-form on the current configuration. Restarting only some roles is
-not offered, because that is exactly the request that produces the mixed pairing
-above.
+Use **Stop** on the deployment and wait for all its instances to be removed,
+then use **Start**. Stopping retires the whole group; starting forms a new group
+from the saved configuration. Apply the change to the whole deployment so that
+Prefill and Decode cannot run configurations from different generations.
+
+While configuration changes are pending, failed group members are not
+automatically restarted, even with **Restart on error** enabled. Healthy members
+keep running, but the deployment becomes unavailable if a required role has no
+ready members. The configuration-change notice explains that automatic recovery
+is paused. A deployment with a scaling schedule resumes that schedule when
+started; it may wait for an active scheduling window before creating instances.
 
 Scaling changes each role's instance count without restarting the whole group,
 provided no configuration changes are pending. Router behavior depends on
@@ -138,10 +145,11 @@ address and named ports. A replacement or restart at the same address therefore
 still refreshes Mooncake bootstrap metadata. Existing routers without a snapshot
 are replaced once when their peers are ready.
 
-**With a saved change still waiting for its restart, a role cannot be scaled
+**With a saved change still waiting for a stop/start cycle, a role cannot be scaled
 up.** A new member would be built from the edited configuration and would then
 run beside members that were not, which is the mixed pairing above. The scale
-takes effect when you restart, along with the change itself.
+takes effect when you stop the deployment and then start it, along with the
+configuration change itself.
 
 Scaling **down** still applies immediately, edit pending or not: losing a
 member cannot produce a mismatched pair.

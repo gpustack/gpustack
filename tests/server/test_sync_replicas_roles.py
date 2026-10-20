@@ -287,6 +287,58 @@ async def test_replicas_zero_parks_the_whole_group():
     assert not recorder.created
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_role", ["prefill", "decode"])
+async def test_stop_then_start_rebuilds_stale_group_with_saved_configuration(
+    failed_role,
+):
+    model = _model(roles=_pd_roles())
+    old_digest = await model_spec_digest(_pass(), model)
+    members = [
+        _instance(
+            index,
+            role=role.name,
+            group_id="1-old",
+            spec_digest=old_digest,
+            state=(
+                ModelInstanceStateEnum.ERROR
+                if role.name == failed_role
+                else ModelInstanceStateEnum.RUNNING
+            ),
+        )
+        for index, role in enumerate(model.roles, start=1)
+    ]
+    for role in model.roles[:2]:
+        role.backend_parameters = ["--max-model-len=8192"]
+
+    model.replicas = 0
+    stopped = await _run(model, members)
+    assert stopped.deleted == members
+    assert not stopped.created
+
+    model.replicas = 1
+    started = await _run(model, [])
+    current = await model_spec_digest(_pass(), model)
+    assert current != old_digest
+    assert _by_role(started.created) == {"prefill": 1, "decode": 1}
+    assert all(member.spec_digest == current for member in started.created)
+    assert all(member.group_id != "1-old" for member in started.created)
+
+    running = [
+        _instance(
+            index,
+            role=member.role,
+            group_id=member.group_id,
+            spec_digest=member.spec_digest,
+        )
+        for index, member in enumerate(started.created, start=10)
+    ]
+    routed = await _run(model, running)
+    assert _by_role(routed.created) == {"router": 1}
+    assert routed.created[0].spec_digest == current
+    assert routed.created[0].group_id == running[0].group_id
+
+
 # --- the router's dependency gate ------------------------------------------ #
 
 
@@ -617,7 +669,7 @@ async def test_a_gap_is_not_filled_across_a_spec_edit():
         members,
     )
 
-    assert recorder.created == [], "the gap waits for the restart"
+    assert recorder.created == [], "the gap waits for a stop/start cycle"
     assert not recorder.deleted, "and the members that are serving keep serving"
 
 
@@ -846,7 +898,7 @@ async def test_one_pass_reads_one_catalog():
     digest is computed twice while another task may retire-and-insert the
     type behind a `gpu_type_selector`. Were the two reads independent,
     `_sync_replicas_per_role` would stamp a member with one answer and
-    `_stale_members` would judge it against another.
+    `model_members_stale` would judge it against another.
     """
     model = _model(
         roles=[
@@ -875,7 +927,7 @@ async def test_one_pass_reads_one_catalog():
 
 @pytest.mark.asyncio
 async def test_the_substitute_version_is_still_its_own_answer():
-    """`_stale_members` asks twice in one pass, with and without the model's
+    """`model_members_stale` asks twice in one pass, with and without the model's
     own `backend_version`, and the two are different questions."""
     model = _model(roles=_pd_roles(), backend_version="v1")
     session = _pass()

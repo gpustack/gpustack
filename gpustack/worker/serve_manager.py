@@ -42,6 +42,7 @@ from gpustack.utils.convert import safe_int
 from gpustack.utils.attrs import set_attr
 from gpustack.utils.command import find_int_parameter
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
+from gpustack.worker.backends.base import PD_CONFIGURATION_CHANGED_MESSAGE
 from gpustack.worker.backends.ascend_mindie import AscendMindIEServer
 from gpustack.worker.backends.sglang import SGLangServer
 from gpustack.utils.command import resolve_executor_backend
@@ -1499,10 +1500,12 @@ class ServeManager(ContainerLogPersister):
         )
         # The parent can still be STARTING after this follower fails. Its
         # local state distinguishes first launch from recovery on later events.
-        if not initial_start and not self._auto_restart_enabled(mi):
+        if not initial_start and not self._auto_restart_enabled(
+            mi, use_cache=not bool(mi.group_id)
+        ):
             logger.debug(
                 "Skipping recovery of model instance %s on worker %s: "
-                "automatic restart is disabled.",
+                "automatic recovery is not allowed.",
                 mi.name,
                 self._worker_id,
             )
@@ -1942,6 +1945,14 @@ class ServeManager(ContainerLogPersister):
             )
             self._stop_model_instance(mi, delete_logs=True)
             return
+        except Exception as e:
+            self._handle_model_instance_launch_failure(mi, e)
+            return
+        try:
+            if mi.group_id:
+                model = self._clientset.models.get(mi.model_id, use_cache=False)
+                if model.stale is True:
+                    raise RuntimeError(PD_CONFIGURATION_CHANGED_MESSAGE)
         except Exception as e:
             self._handle_model_instance_launch_failure(mi, e)
             return
@@ -2808,11 +2819,22 @@ class ServeManager(ContainerLogPersister):
             logger.debug(f"Model instance {mi.name} is provisioning. Skipping restart.")
             return
 
+        backoff_count = self._restart_backoff_counts.get(mi.id, 0)
+        current_time = datetime.now(timezone.utc)
+        delay = min(10 * (2 ** (backoff_count - 1)), 300) if backoff_count > 0 else 0
+        if self._restart_backoff_pending(mi, delay, current_time):
+            return
+
         # Watch events and the restart loop's queue snapshot can lag recovery.
         # Bypass the watch cache to check whether an error still exists.
         try:
             mi = self._clientset.model_instances.get(id=mi.id, use_cache=False)
         except NotFoundException:
+            self._error_model_instances.pop(mi.id, None)
+            self._pending_model_instance_errors.pop(mi.id, None)
+            return
+
+        if self._worker_id not in member_worker_ids(mi):
             self._error_model_instances.pop(mi.id, None)
             self._pending_model_instance_errors.pop(mi.id, None)
             return
@@ -2826,23 +2848,14 @@ class ServeManager(ContainerLogPersister):
             self._pending_model_instance_errors.pop(mi.id, None)
             return
 
-        if not self._auto_restart_enabled(mi):
-            self._error_model_instances.pop(mi.id, None)
+        # Another worker may have restarted the instance since it was queued.
+        if self._restart_backoff_pending(mi, delay, current_time):
             return
 
-        restart_count = mi.restart_count or 0
-        backoff_count = self._restart_backoff_counts.get(mi.id, 0)
-        last_restart_time = mi.last_restart_time or mi.updated_at
-
-        current_time = datetime.now(timezone.utc)
-        delay = min(10 * (2 ** (backoff_count - 1)), 300) if backoff_count > 0 else 0
-        if backoff_count > 0 and last_restart_time:
-            elapsed_time = (current_time - last_restart_time).total_seconds()
-            if elapsed_time < delay:
-                logger.trace(
-                    f"Delaying restart of {mi.name} for {delay - elapsed_time:.2f} seconds."
-                )
-                return
+        # Only a PD recovery that is due needs current model configuration.
+        if not self._auto_restart_enabled(mi, use_cache=not bool(mi.group_id)):
+            self._error_model_instances.pop(mi.id, None)
+            return
 
         logger.info(
             f"Restarting model instance {mi.name} "
@@ -2853,7 +2866,7 @@ class ServeManager(ContainerLogPersister):
             self._restart_backoff_counts[mi.id] = backoff_count + 1
             self._update_model_instance(
                 mi.id,
-                restart_count=restart_count + 1,
+                restart_count=(mi.restart_count or 0) + 1,
                 last_restart_time=current_time,
                 state=ModelInstanceStateEnum.SCHEDULED,
                 state_message="",
@@ -2863,13 +2876,28 @@ class ServeManager(ContainerLogPersister):
         # if failed to restart next time, it will be added again in watch_model_instance_events().
         self._error_model_instances.pop(mi.id, None)
 
-    def _auto_restart_enabled(self, mi: ModelInstance) -> bool:
-        """Read the live recovery policy rather than the launch-time model cache."""
+    def _restart_backoff_pending(
+        self, mi: ModelInstance, delay: float, current_time: datetime
+    ) -> bool:
+        """Check retry timing locally before reading instance or model state."""
+        last_restart_time = mi.last_restart_time or mi.updated_at
+        if not delay or not last_restart_time:
+            return False
+        remaining = delay - (current_time - last_restart_time).total_seconds()
+        if remaining <= 0:
+            return False
+        logger.trace(f"Delaying restart of {mi.name} for {remaining:.2f} seconds.")
+        return True
+
+    def _auto_restart_enabled(self, mi: ModelInstance, use_cache: bool = True) -> bool:
+        """Use the watch cache for polling and refresh before PD recovery."""
         try:
-            model = self._clientset.models.get(mi.model_id)
+            model = self._clientset.models.get(mi.model_id, use_cache=use_cache)
         except NotFoundException:
             return False
-        return bool(model.restart_on_error)
+        return bool(model.restart_on_error) and not (
+            mi.group_id and model.stale is True
+        )
 
     def _get_model(self, mi: ModelInstance) -> Model:
         """
