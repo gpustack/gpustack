@@ -10,13 +10,14 @@ from sqlalchemy import true
 
 from gpustack.api.exceptions import InvalidException
 from gpustack.api.tenant import TenantContext
-from gpustack.routes import model_routes
+from gpustack.routes import model_routes, models
 from gpustack.routes.model_common import (
     ModelStateFilterEnum,
     categories_filter,
     state_stream_filter,
 )
 from gpustack.schemas.common import Pagination
+from gpustack.schemas.model_files import ModelFile
 from gpustack.schemas.model_routes import (
     AccessPolicyEnum,
     ModelRoute,
@@ -769,7 +770,9 @@ async def test_list_adapters_slow_remote_degrades_to_local(monkeypatch):
     session = _adapters_session([_local_lora("org/my-lora")])
 
     start = time.monotonic()
-    result = await discovery.list_adapters_for_base(session, "Qwen/Qwen3-8B", q="lora")
+    result = await discovery.list_adapters_for_base(
+        session, "Qwen/Qwen3-8B", ctx=_ctx(1, 10), q="lora"
+    )
     elapsed = time.monotonic() - start
 
     assert elapsed < 2.0
@@ -787,7 +790,9 @@ async def test_list_adapters_remote_exception_degrades_to_local(monkeypatch):
 
     session = _adapters_session([_local_lora("org/my-lora")])
 
-    result = await discovery.list_adapters_for_base(session, "Qwen/Qwen3-8B", q="lora")
+    result = await discovery.list_adapters_for_base(
+        session, "Qwen/Qwen3-8B", ctx=_ctx(1, 10), q="lora"
+    )
 
     names = [item["lora_repo_name"] for item in result["lora_list"]]
     assert names == ["org/my-lora"]
@@ -812,7 +817,9 @@ async def test_list_adapters_merges_remote_with_local(monkeypatch):
 
     session = _adapters_session([_local_lora("org/my-lora")])
 
-    result = await discovery.list_adapters_for_base(session, "Qwen/Qwen3-8B", q="lora")
+    result = await discovery.list_adapters_for_base(
+        session, "Qwen/Qwen3-8B", ctx=_ctx(1, 10), q="lora"
+    )
 
     names = [item["lora_repo_name"] for item in result["lora_list"]]
     # Local first, then remote.
@@ -837,7 +844,9 @@ async def test_list_adapters_no_query_skips_remote(monkeypatch):
 
     session = _adapters_session([_local_lora("org/my-lora")])
 
-    result = await discovery.list_adapters_for_base(session, "Qwen/Qwen3-8B")
+    result = await discovery.list_adapters_for_base(
+        session, "Qwen/Qwen3-8B", ctx=_ctx(1, 10)
+    )
 
     names = [item["lora_repo_name"] for item in result["lora_list"]]
     assert names == ["org/my-lora"]
@@ -851,10 +860,133 @@ async def test_list_local_loras_filters_by_q():
         [_local_lora("org/chat-lora"), _local_lora("org/math-lora")]
     )
 
-    result = await discovery.list_local_loras(session, "Qwen/Qwen3-8B", q="CHAT")
+    result = await discovery.list_local_loras(session, _ctx(1, 10), q="CHAT")
 
     names = [item["lora_repo_name"] for item in result]
     assert names == ["org/chat-lora"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "base", ["Qwen/Qwen3-8B", "other/model", "/training/models/base", None, ""]
+)
+@pytest.mark.parametrize(
+    "source,field,name",
+    [
+        (SourceEnum.HUGGING_FACE, "huggingface_repo_id", "org/adapter"),
+        (SourceEnum.MODEL_SCOPE, "model_scope_model_id", "org/adapter"),
+        (SourceEnum.LOCAL_PATH, "local_path", "/models/adapter"),
+    ],
+)
+async def test_local_loras_ignore_base_metadata(base, source, field, name):
+    model_file = ModelFile(
+        source=source, is_lora=True, base_model=base, **{field: name}
+    )
+    session = _adapters_session([model_file, model_file])
+
+    result = await discovery.list_local_loras(session, _ctx(1, 10))
+
+    assert result == [
+        {"lora_repo_name": name, "source": source.value, "is_local": True}
+    ]
+    assert _compile(session.exec.call_args.args[0].whereclause) == (
+        "model_files.is_lora IS true AND model_files.owner_principal_id = 10"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "principal_id,admin,system,cluster_id,condition",
+    [
+        (10, False, False, None, "model_files.owner_principal_id = 10"),
+        (20, False, False, None, "model_files.owner_principal_id = 20"),
+        (10, True, False, None, "model_files.owner_principal_id = 10"),
+        (None, True, False, None, None),
+        (
+            10,
+            False,
+            True,
+            7,
+            "(model_files.cluster_id = 7 OR model_files.cluster_id IS NULL)",
+        ),
+    ],
+)
+async def test_local_loras_follow_model_file_visibility(
+    principal_id, admin, system, cluster_id, condition
+):
+    ctx = _ctx(1, principal_id, admin)
+    if system:
+        ctx.user.kind = PrincipalType.SYSTEM
+    ctx.scoped_cluster_id = cluster_id
+    session = _adapters_session([])
+
+    assert await discovery.list_local_loras(session, ctx) == []
+
+    expected = "model_files.is_lora IS true"
+    if condition:
+        expected += f" AND {condition}"
+    assert _compile(session.exec.call_args.args[0].whereclause) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("base", ["", "  ", "/models/base"])
+async def test_local_adapters_do_not_require_a_remote_base(monkeypatch, base):
+    hf = AsyncMock()
+    ms = AsyncMock()
+    monkeypatch.setattr(discovery, "_cached_hf_adapters", hf)
+    monkeypatch.setattr(discovery, "_cached_ms_adapters", ms)
+    session = _adapters_session(
+        [
+            ModelFile(
+                source=SourceEnum.LOCAL_PATH, local_path="/models/lora", is_lora=True
+            )
+        ]
+    )
+
+    result = await discovery.list_adapters_for_base(
+        session, base, ctx=_ctx(1, 10), q="lora"
+    )
+
+    assert result["lora_list"] == [
+        {
+            "lora_repo_name": "/models/lora",
+            "source": SourceEnum.LOCAL_PATH.value,
+            "is_local": True,
+        }
+    ]
+    hf.assert_not_awaited()
+    ms.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_remote_adapters_keep_base_recommendations(monkeypatch):
+    hf = AsyncMock(return_value=[])
+    ms = AsyncMock(return_value=[])
+    monkeypatch.setattr(discovery, "_cached_hf_adapters", hf)
+    monkeypatch.setattr(discovery, "_cached_ms_adapters", ms)
+
+    assert await discovery.list_adapters_for_base(
+        _adapters_session([]), "Qwen/Qwen3-8B", ctx=_ctx(1, 10), q="chat", limit=12
+    ) == {"lora_list": []}
+
+    hf.assert_awaited_once_with("Qwen/Qwen3-8B", "chat", 12)
+    ms.assert_awaited_once_with("Qwen/Qwen3-8B", "chat", 12)
+
+
+@pytest.mark.asyncio
+async def test_model_adapters_passes_tenant_context(monkeypatch):
+    discover = AsyncMock(return_value={"lora_list": []})
+    monkeypatch.setattr(models, "list_adapters_for_base", discover)
+    ctx = _ctx(1, 10)
+    session = _adapters_session([])
+
+    assert await models.get_model_adapters(
+        session=session, ctx=ctx, base="Qwen/Qwen3-8B", q="chat", limit=12
+    ) == {"lora_list": []}
+
+    discover.assert_awaited_once_with(
+        session, "Qwen/Qwen3-8B", ctx=ctx, q="chat", limit=12
+    )
 
 
 def _capture_target_updates(monkeypatch):

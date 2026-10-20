@@ -561,27 +561,6 @@ class ModelFileDownloadTask:
             raise ValueError("adapter_config.json is not a JSON object")
         return data
 
-    def _validate_lora_base_model(self, cfg: dict) -> Optional[str]:
-        """Return error if the adapter's base model mismatches the expected base_model."""
-        base = cfg.get("base_model_name_or_path") or cfg.get("base_model_name")
-        expected = (getattr(self._model_file, "base_model", None) or "").strip()
-        if expected and base:
-            nb = str(base).strip().strip("/").lower()
-            ne = expected.strip("/").lower()
-            if nb == ne:
-                return None
-            # Fall back to basename when exactly one side is a local-path style
-            # (no "/"): a repo id "org/Qwen3-4B" should still match a local
-            # directory ".../Qwen3-4B". Two repo ids must match in full to
-            # avoid OrgA/Qwen3-4B silently mounting on OrgB/Qwen3-4B.
-            if ("/" in nb) != ("/" in ne):
-                if nb.rsplit("/", 1)[-1] == ne.rsplit("/", 1)[-1]:
-                    return None
-            return (
-                f"adapter_config base_model mismatch: {base!r} vs expected {expected!r}"
-            )
-        return None
-
     def _fail_lora_resolution(self, message: str) -> None:
         """Mark the model file ERROR for a LoRA problem and signal the caller to abort."""
         self._update_model_file(
@@ -618,17 +597,13 @@ class ModelFileDownloadTask:
             return {}
 
         if detected_lora:
-            # Detected by adapter_config.json: validate strictly, backfill base_model.
-            err = self._validate_lora_base_model(cfg)
-            if err:
-                return self._fail_lora_resolution(err)
             if not self._model_file.base_model:
                 self._model_file.base_model = cfg.get(
                     "base_model_name_or_path"
                 ) or cfg.get("base_model_name")
         else:
             # User override with no adapter_config.json at the probe path: trust the
-            # user (likely a detection false-negative), skip path-based validation.
+            # user hint when artifact detection cannot identify the adapter.
             logger.info(
                 f"is_lora forced by user input for {self._model_file.readable_source}; "
                 "adapter_config.json not detected at resolved path."

@@ -69,7 +69,6 @@ from gpustack.api.tenant import (
 )
 from gpustack.server.db import async_session
 from gpustack.server.deps import (
-    CurrentUserDep,
     ListParamsDep,
     SessionDep,
     TenantContextDep,
@@ -230,12 +229,12 @@ async def get_models(
 @router.get("/adapters", response_model=Dict[str, Any])
 async def get_model_adapters(
     session: SessionDep,
-    user: CurrentUserDep,
+    ctx: TenantContextDep,
     base: str = Query(
         ...,
         description=(
-            "Base model repo id (e.g. Qwen/Qwen3-8B) for HF/ModelScope adapter discovery; "
-            "also used to match local cached LoRAs."
+            "Base model repo id (e.g. Qwen/Qwen3-8B) for remote HF/ModelScope "
+            "adapter discovery only."
         ),
     ),
     q: Optional[str] = Query(
@@ -249,8 +248,7 @@ async def get_model_adapters(
         description="Max adapter entries per remote source (HF and ModelScope).",
     ),
 ):
-    _ = user
-    return await list_adapters_for_base(session, base, q=q, limit=limit)
+    return await list_adapters_for_base(session, base, ctx=ctx, q=q, limit=limit)
 
 
 @router.get("/{id}", response_model=ModelPublic)
