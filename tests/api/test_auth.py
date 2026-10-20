@@ -399,6 +399,97 @@ async def test_existing_standard_row_skips_the_empty_key_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_standard_format_guess_pays_a_single_verify(monkeypatch):
+    """An invalid standard-format token that reaches the empty-key row is
+    verified against the whole string alone: no empty-key row ever held just
+    the secret portion of a standard-format token, and trying it would double
+    the argon2 cost a brute-force guess can impose on every request."""
+    from gpustack.api.auth import get_user_from_api_token
+    from gpustack.security import generate_access_key, generate_secret_key
+
+    token = f"gpustack_{generate_access_key()}_{generate_secret_key()}"
+    row = _api_token_double(access_key="", hashed_secret_key="stored-hash")
+
+    async def fake_get_by_access_key(self, candidate):
+        return row if candidate == "" else None
+
+    verified_plaintexts = []
+
+    def fake_verify(hashed, secret):
+        verified_plaintexts.append(secret)
+        return False
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.verify_hashed_secret", fake_verify)
+
+    user, api_key = await get_user_from_api_token(_RollbackRecordingSession([]), token)
+
+    assert user is None and api_key is None
+    assert verified_plaintexts == [token]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["standard", "uuid-wrapped", "opaque"])
+async def test_migrated_row_authenticates_the_presentation_workers_send(
+    monkeypatch, shape
+):
+    """Reader/writer agreement: the row ``_migrate_legacy_token`` builds
+    (security.migrated_token_key_pair) authenticates the presentation the
+    worker client actually sends for that token shape."""
+    from gpustack.api.auth import get_user_from_api_token
+    from gpustack.security import (
+        generate_access_key,
+        generate_secret_key,
+        get_secret_hash,
+        migrated_token_key_pair,
+        new_secret_key_digest,
+    )
+
+    uuid_form = "3192253c-c11c-75ed-6334-ea9505da4ad9"
+    if shape == "standard":
+        config_token = f"gpustack_{generate_access_key()}_{generate_secret_key()}"
+        presented = config_token
+    elif shape == "uuid-wrapped":
+        config_token = f"gpustack_{uuid_form}_{generate_secret_key()}"
+        presented = config_token
+    else:
+        config_token = "deployment-supplied-secret"
+        # The worker client wraps an unprefixed token before sending it
+        # (config.registration.registration_client).
+        presented = f"gpustack_{uuid_form}_{config_token}"
+
+    stored_access, stored_secret = migrated_token_key_pair(config_token)
+    row = _api_token_double(
+        access_key=stored_access,
+        hashed_secret_key=get_secret_hash(stored_secret),
+        secret_key_digest=new_secret_key_digest(
+            secret_key=stored_secret, is_custom=False, access_key=stored_access
+        ),
+    )
+    expected_user = type("User", (), {"is_active": True, "id": 7})()
+
+    async def fake_get_by_access_key(self, candidate):
+        return row if candidate == stored_access else None
+
+    async def fake_get_by_id(self, user_id):
+        return expected_user
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.UserService.get_by_id", fake_get_by_id)
+
+    user, api_key = await get_user_from_api_token(
+        _RollbackRecordingSession([]), presented
+    )
+
+    assert user is expected_user
+    assert api_key is row
+
+
+@pytest.mark.asyncio
 async def test_digest_mismatch_is_rejected_without_falling_back_to_argon2(monkeypatch):
     """Both columns derive from the same plaintext, so a digest mismatch means the
     secret is simply wrong — falling back to argon2 would only pay 30 ms to reach
