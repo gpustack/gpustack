@@ -41,6 +41,7 @@ from gpustack.security import (
     generate_secret_key,
     generate_secure_password,
     get_secret_hash,
+    migrated_token_key_pair,
     new_secret_key_digest,
     API_KEY_PREFIX,
 )
@@ -1026,16 +1027,20 @@ class Server:
                     "Default cluster user already has API keys, cannot migrate legacy token."
                 )
 
+            # Store the deployment token under the pair authentication
+            # resolves it to: its own access key when it is in the standard
+            # shape, the empty access key otherwise.
+            access_key, secret_key = migrated_token_key_pair(self._config.token)
             new_key = ApiKey(
                 name="Legacy Cluster Token",
-                access_key="",
-                hashed_secret_key=get_secret_hash(self._config.token),
-                # Always None here, and deliberately routed through the same
-                # guard rather than simply omitted: the deployment supplies
-                # ``config.token``, so its entropy is not ours to assume and it
-                # must keep verifying through argon2.
+                access_key=access_key,
+                hashed_secret_key=get_secret_hash(secret_key),
+                # Routed through the guard for both shapes rather than assumed
+                # either way: an opaque deployment token never qualifies (its
+                # entropy is not ours to assume), while a standard-shaped one
+                # is a generated secret this database can vouch for.
                 secret_key_digest=new_secret_key_digest(
-                    secret_key=self._config.token, is_custom=False, access_key=""
+                    secret_key=secret_key, is_custom=False, access_key=access_key
                 ),
                 user_id=default_cluster_principal.id,
                 user=default_cluster_principal,
