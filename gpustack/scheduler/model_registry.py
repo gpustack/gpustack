@@ -1,4 +1,4 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.31.0/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.32.0/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 # NOTE: entries are only added/renamed here, never removed, so that older vLLM
 # versions and other backends (SGLang, Ascend MindIE) keep recognizing them.
@@ -233,6 +233,7 @@ _EMBEDDING_MODELS = [
     # "Phi3VForCausalLM",
     # "Qwen2VLForConditionalGeneration", # Registered in _TEXT_GENERATION_MODELS
     "CLIPModel",
+    "EmbeddingGemma2Model",
     "ColModernVBertForRetrieval",
     "ColQwen3",
     "OpsColQwen3Model",
@@ -251,6 +252,7 @@ _EMBEDDING_MODELS = [
 _CROSS_ENCODER_MODELS = [
     "BertForSequenceClassification",
     "BertForTokenClassification",
+    "ClefOmniForJointSchema",
     "GteNewForSequenceClassification",
     "RobertaForSequenceClassification",
     "RobertaForTokenClassification",
@@ -392,6 +394,7 @@ _MULTIMODAL_MODELS = [
     "InternS2PreviewForConditionalGeneration",
     "MiMoV2OmniForCausalLM",
     "MiniCPMV4_6ForConditionalGeneration",
+    "MiniCPMV4_7ForConditionalGeneration",
     "MoonshotKimiaForCausalLM",
     "MossTranscribeDiarizeForConditionalGeneration",
     "NemotronH_Nano_Omni_Reasoning_V3",
