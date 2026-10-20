@@ -44,6 +44,7 @@ from gpustack.schemas.workers import (
     WorkerListParams,
     WorkerPublic,
     WorkerUpdate,
+    WorkerLabelsUpdate,
     WorkersPublic,
     Worker,
     WorkerRegistrationPublic,
@@ -245,6 +246,40 @@ async def get_workers(
             for worker in worker_list.items
         ]
         return WorkersPublic(items=public_list, pagination=worker_list.pagination)
+
+
+@router.post("/labels", status_code=204)
+async def update_worker_labels(
+    ctx: TenantContextDep,
+    session: SessionDep,
+    body: WorkerLabelsUpdate,
+) -> Response:
+    """Add or overwrite label keys on all targets in one transaction."""
+    worker_ids = sorted(set(body.worker_ids))
+    service = WorkerService(session)
+    workers = await service.get_workers_for_update(
+        worker_ids, extra_conditions=tenant_list_conditions(ctx, Worker)
+    )
+    by_id = {worker.id: worker for worker in workers}
+    for worker_id in worker_ids:
+        worker = by_id.get(worker_id)
+        assert_resource_visible(ctx, worker, not_found_message="worker not found")
+        assert_org_owned_writable(ctx, worker, resource_label="worker")
+
+    changed = []
+    for worker in workers:
+        labels = {**(worker.labels or {}), **body.labels}
+        if labels != (worker.labels or {}):
+            worker.labels = labels
+            changed.append(worker)
+    if changed:
+        try:
+            await service.batch_update(changed)
+        except Exception as e:
+            raise InternalServerErrorException(
+                message="Failed to update worker labels"
+            ) from e
+    return Response(status_code=204)
 
 
 @router.get("/{id}", response_model=WorkerPublic)

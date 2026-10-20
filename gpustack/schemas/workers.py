@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import ClassVar, Dict, Optional, Any, TYPE_CHECKING
 from typing_extensions import Annotated, deprecated
-from pydantic import ConfigDict, BaseModel, field_validator
+from pydantic import ConfigDict, BaseModel, PositiveInt, field_validator
 from urllib.parse import urlparse
 from sqlmodel import (
     Field,
@@ -364,6 +364,16 @@ class WorkerStatusStored(BaseModel):
 
 class WorkerStatusPublic(WorkerStatusStored):
     gateway_endpoint: Optional[str] = None
+
+
+class WorkerLabelsUpdate(BaseModel):
+    """Labels to add or overwrite on every selected worker.
+
+    Unspecified keys are preserved. An empty labels dictionary makes no changes.
+    """
+
+    worker_ids: List[PositiveInt] = Field(min_length=1)
+    labels: Dict[str, str]
 
 
 class WorkerUpdate(SQLModel):
