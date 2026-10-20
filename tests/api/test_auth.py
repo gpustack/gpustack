@@ -277,6 +277,128 @@ async def test_get_user_from_api_token_prefers_the_digest(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_standard_format_token_falls_back_to_the_legacy_cluster_row(monkeypatch):
+    """The legacy cluster token row (empty access key, hash of the whole
+    deployment-supplied string) must stay reachable when the token parses in
+    the standard shape: a migrated v2.x registration token looks exactly like
+    a key this database issued, and no row exists under its parsed access
+    key."""
+    from gpustack.api.auth import get_user_from_api_token
+    from gpustack.security import generate_access_key, generate_secret_key
+
+    access_key = generate_access_key()
+    secret_key = generate_secret_key()
+    token = f"gpustack_{access_key}_{secret_key}"
+    legacy_row = _api_token_double(access_key="", hashed_secret_key="stored-hash")
+    expected_user = type("User", (), {"is_active": True, "id": 7})()
+
+    lookups = []
+
+    async def fake_get_by_access_key(self, candidate):
+        lookups.append(candidate)
+        return legacy_row if candidate == "" else None
+
+    async def fake_get_by_id(self, user_id):
+        return expected_user
+
+    def fake_verify(hashed, secret):
+        # The row was built from the whole token; only that plaintext matches.
+        return secret == token
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.UserService.get_by_id", fake_get_by_id)
+    monkeypatch.setattr("gpustack.api.auth.verify_hashed_secret", fake_verify)
+
+    user, api_key = await get_user_from_api_token(_RollbackRecordingSession([]), token)
+
+    assert user is expected_user
+    assert api_key is legacy_row
+    # The parsed access key is tried first; the empty-key row is the fallback.
+    assert lookups == [access_key, ""]
+
+
+@pytest.mark.asyncio
+async def test_legacy_row_still_accepts_the_secret_portion(monkeypatch):
+    """The same empty-access-key row can hold the hash of only the secret
+    portion (the pre-2.0 worker shape); the UUID-wrapped presentation must
+    keep verifying against it."""
+    from gpustack.api.auth import get_user_from_api_token
+
+    wrapped = "gpustack_3192253c-c11c-75ed-6334-ea9505da4ad9_raw-secret"
+    row = _api_token_double(access_key="", hashed_secret_key="stored-hash")
+    expected_user = type("User", (), {"is_active": True, "id": 7})()
+
+    async def fake_get_by_access_key(self, candidate):
+        assert candidate == ""  # the UUID is remapped before the lookup
+        return row
+
+    async def fake_get_by_id(self, user_id):
+        return expected_user
+
+    verified_plaintexts = []
+
+    def fake_verify(hashed, secret):
+        verified_plaintexts.append(secret)
+        return secret == "raw-secret"
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.UserService.get_by_id", fake_get_by_id)
+    monkeypatch.setattr("gpustack.api.auth.verify_hashed_secret", fake_verify)
+
+    user, api_key = await get_user_from_api_token(
+        _RollbackRecordingSession([]), wrapped
+    )
+
+    assert user is expected_user
+    assert api_key is row
+    # The secret portion matched first; the whole token was never needed.
+    assert verified_plaintexts == ["raw-secret"]
+
+
+@pytest.mark.asyncio
+async def test_existing_standard_row_skips_the_empty_key_fallback(monkeypatch):
+    """A token whose parsed access key resolves pays no extra lookup: the
+    fallback exists for misses only."""
+    from gpustack.api.auth import get_user_from_api_token
+    from gpustack.security import generate_access_key, generate_secret_key
+
+    access_key = generate_access_key()
+    secret_key = generate_secret_key()
+    row = _api_token_double(access_key=access_key, hashed_secret_key="stored-hash")
+    expected_user = type("User", (), {"is_active": True, "id": 7})()
+
+    lookups = []
+
+    async def fake_get_by_access_key(self, candidate):
+        lookups.append(candidate)
+        return row
+
+    async def fake_get_by_id(self, user_id):
+        return expected_user
+
+    def fake_verify(hashed, secret):
+        return secret == secret_key
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.APIKeyService.get_by_access_key", fake_get_by_access_key
+    )
+    monkeypatch.setattr("gpustack.api.auth.UserService.get_by_id", fake_get_by_id)
+    monkeypatch.setattr("gpustack.api.auth.verify_hashed_secret", fake_verify)
+
+    user, api_key = await get_user_from_api_token(
+        _RollbackRecordingSession([]), f"gpustack_{access_key}_{secret_key}"
+    )
+
+    assert user is expected_user
+    assert api_key is row
+    assert lookups == [access_key]
+
+
+@pytest.mark.asyncio
 async def test_digest_mismatch_is_rejected_without_falling_back_to_argon2(monkeypatch):
     """Both columns derive from the same plaintext, so a digest mismatch means the
     secret is simply wrong — falling back to argon2 would only pay 30 ms to reach

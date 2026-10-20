@@ -1,6 +1,4 @@
 import asyncio
-import re
-import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
@@ -35,6 +33,7 @@ from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.security import (
     JWTManager,
     new_secret_key_digest,
+    parse_hyphen_uuid,
     secret_key_digest_usable,
     verify_hashed_secret,
     verify_secret_key_digest,
@@ -362,18 +361,6 @@ async def get_user_from_jwt_token(
     return user
 
 
-def parse_hyphen_uuid(value: str) -> Optional[str]:
-    if not re.match(
-        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", value, re.I
-    ):
-        return None
-    try:
-        uuid.UUID(value)
-        return value
-    except ValueError:
-        return None
-
-
 _backfill_tasks: Set[asyncio.Task] = set()
 _backfill_in_flight: Set[int] = set()
 # Keys whose stored digest this build cannot parse. Warned about once per key per
@@ -482,6 +469,46 @@ async def _backfill_secret_key_digest(
         _backfill_in_flight.discard(api_key_id)
 
 
+async def _verify_secret_against_key(api_key: ApiKey, plaintexts: List[str]) -> bool:
+    """Check the credential's presentations against the row's verifiers.
+
+    The digest goes first when the row carries a usable one: it covers the
+    same plaintext as the argon2 hash and costs microseconds. argon2 is the
+    permanent fallback, so a missing or unparsable value costs the request
+    the slow path instead of locking a valid key out.
+    """
+    if secret_key_digest_usable(api_key.secret_key_digest):
+        # A few microseconds, and cheap enough to stay on the event loop.
+        # Only secrets this server generated ever get a digest, so a fast
+        # hash here is not a downgrade -- see security.new_secret_key_digest.
+        return any(
+            verify_secret_key_digest(api_key.secret_key_digest, plaintext)
+            for plaintext in plaintexts
+        )
+
+    if api_key.secret_key_digest and api_key.id not in _warned_unusable_digest:
+        _warned_unusable_digest.add(api_key.id)
+        logger.warning(
+            f"API key {api_key.id} has an unusable secret_key_digest; "
+            "verifying via argon2 and replacing the value. The column held "
+            "something this version cannot parse."
+        )
+    # argon2 verification is synchronous and CPU-bound; run it off the
+    # event loop so concurrent requests keep flowing instead of
+    # serializing behind each hash.
+    for plaintext in plaintexts:
+        verified = await asyncio.to_thread(
+            verify_hashed_secret, api_key.hashed_secret_key, plaintext
+        )
+        if verified:
+            # The plaintext is in hand exactly here, and only here, for a key
+            # that predates the digest column. Fill it in so the next request
+            # takes the fast path.
+            _schedule_secret_key_digest_backfill(api_key, plaintext)
+            return True
+    return False
+
+
 async def get_user_from_api_token(
     session: AsyncSession, token: str
 ) -> Tuple[Optional[Principal], Optional[ApiKey]]:
@@ -502,6 +529,13 @@ async def get_user_from_api_token(
             if api_key:
                 logger.trace(f"Found API key for access key: {candidate}")
                 break
+        if api_key is None and "" not in access_keys:
+            # A token in the standard shape can still be the legacy cluster
+            # token: that row lives under an empty access key with a hash of
+            # the whole deployment-provided string, and nothing in the string
+            # itself says which database issued it. One extra indexed lookup,
+            # paid only on a miss.
+            api_key = await APIKeyService(session).get_by_access_key("")
         if api_key is None:
             return None, None
         if api_key.expires_at is not None and api_key.expires_at <= datetime.now(
@@ -517,34 +551,16 @@ async def get_user_from_api_token(
         # rollback() is safe -- this lookup is read-only.
         await session.rollback()
 
-        if secret_key_digest_usable(api_key.secret_key_digest):
-            # A few microseconds, and cheap enough to stay on the event loop.
-            # Only secrets this server generated ever get a digest, so a fast
-            # hash here is not a downgrade -- see security.new_secret_key_digest.
-            verified = verify_secret_key_digest(api_key.secret_key_digest, secret_key)
-        else:
-            # No digest, or one this build cannot check. argon2 is the permanent
-            # fallback verifier, so a malformed or unknown-algorithm value costs
-            # this request the slow path instead of locking a valid key out.
-            if api_key.secret_key_digest and api_key.id not in _warned_unusable_digest:
-                _warned_unusable_digest.add(api_key.id)
-                logger.warning(
-                    f"API key {api_key.id} has an unusable secret_key_digest; "
-                    "verifying via argon2 and replacing the value. The column held "
-                    "something this version cannot parse."
-                )
-            # argon2 verification is synchronous and CPU-bound; run it off the
-            # event loop so concurrent requests keep flowing instead of
-            # serializing behind each hash.
-            verified = await asyncio.to_thread(
-                verify_hashed_secret, api_key.hashed_secret_key, secret_key
-            )
-            if verified:
-                # The plaintext is in hand exactly here, and only here, for a key
-                # that predates the digest column. Fill it in so the next request
-                # takes the fast path.
-                _schedule_secret_key_digest_backfill(api_key, secret_key)
-        if verified:
+        # A row under an empty access key predates the parser's split and its
+        # hash may cover either form: the legacy cluster token row hashes the
+        # whole presented string, pre-2.0 worker rows hash the secret portion.
+        # Both are legitimate presentations of the caller's credential, so
+        # both are tried. Rows with a real access key hashed the secret alone.
+        plaintexts = [secret_key]
+        if not api_key.access_key and token != secret_key:
+            plaintexts.append(token)
+
+        if await _verify_secret_against_key(api_key, plaintexts):
             user: Optional[User] = await UserService(session).get_by_id(
                 user_id=api_key.user_id,
             )
