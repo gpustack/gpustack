@@ -162,8 +162,8 @@ v1_base_router.include_router(
 v1_base_router.include_router(
     worker_pools.router, prefix="/worker-pools", tags=["Worker Pools"]
 )
-# Workers are visible to anyone who can see their cluster; mutations gated
-# by an explicit is_admin check inside each handler.
+# Worker reads are tenant-scoped. Mutations, including batch labels, enforce
+# visibility and organization ownership inside their handlers.
 v1_base_router.include_router(workers.router, prefix="/workers", tags=["Workers"])
 
 cluster_client_router = APIRouter()

@@ -552,6 +552,34 @@ class WorkerService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    async def get_workers_for_update(
+        self,
+        worker_ids: List[int],
+        extra_conditions: Optional[List] = None,
+    ) -> List[Worker]:
+        """Read live workers under row locks for a label read-modify-write.
+
+        Args:
+            worker_ids: Workers to lock.
+            extra_conditions: Caller-provided tenant or cluster scope.
+
+        Returns:
+            Matching workers in ID order, refreshed from the database.
+        """
+        statement = (
+            select(Worker)
+            .where(
+                Worker.id.in_(worker_ids),
+                Worker.deleted_at.is_(None),
+                *(extra_conditions or []),
+            )
+            .order_by(Worker.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        result = await self.session.exec(statement)
+        return list(result.all())
+
     @locked_cached()
     async def get_by_id(self, worker_id: int) -> Optional[Worker]:
         result = await Worker.one_by_id(self.session, worker_id)
