@@ -1133,16 +1133,16 @@ class _PersistentVolumeFinalizeController:
     """Shared machinery for the PV / PVT soft-delete finalizers.
 
     A PV / PVT ``DELETE`` is a soft delete (``status.phase = Deleting``); these
-    leader-only controllers finalize such rows: they enumerate every cluster,
-    probe the downstream CR, delete it where present, record the clusters still
-    holding it in ``status.finalizing``, and hard-delete the row once none
-    remain. Steady polling is an in-memory ``add_after`` requeue with no DB
-    write, and ``status.finalizing`` is persisted only when it changes, so the
-    finalizer adds no write-to-self churn.
+    leader-only controllers finalize such rows: they enumerate every Kubernetes
+    cluster, probe the downstream CR, delete it where present, record the
+    clusters still holding it in ``status.finalizing``, and hard-delete the row
+    once none remain. Steady polling is an in-memory ``add_after`` requeue with
+    no DB write, and ``status.finalizing`` is persisted only when it changes, so
+    the finalizer adds no write-to-self churn.
 
     Subclasses bind the model + the downstream probe/delete + the "still
     referenced?" gate; the base owns the queue, the Deleting-only enqueue, the
-    all-cluster finalize loop, the change-only ``status`` write, and the
+    Kubernetes cluster finalize loop, the change-only ``status`` write, and the
     hard-delete.
     """
 
@@ -1287,7 +1287,11 @@ class _PersistentVolumeFinalizeController:
         whose probe errored is kept so the next round retries it)."""
         finalizing: List[int] = []
         clusters = await Cluster.all_by_fields(
-            session, fields={"provider": ClusterProvider.Kubernetes}
+            session,
+            fields={
+                "provider": ClusterProvider.Kubernetes,
+                "deleted_at": None,
+            },
         )
         for cluster in clusters:
             try:
