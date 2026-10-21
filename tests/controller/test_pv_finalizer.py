@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.gpu_instances.controllers import GPUInstancePersistentVolumeController
-from gpustack.schemas.clusters import Cluster
+from gpustack.schemas.clusters import Cluster, ClusterProvider
 from gpustack.schemas.gpu_instances import GPUInstance
 from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolume,
@@ -120,7 +120,7 @@ async def _get_pv(engine):
 
 def _mock_clusters(monkeypatch, controller, ops_by_cluster):
     clusters = [SimpleNamespace(id=cid) for cid in ops_by_cluster]
-    monkeypatch.setattr(Cluster, "all", AsyncMock(return_value=clusters))
+    monkeypatch.setattr(Cluster, "all_by_fields", AsyncMock(return_value=clusters))
     monkeypatch.setattr(
         controller, "_build_ops", lambda cluster, owner: ops_by_cluster[cluster.id]
     )
@@ -222,7 +222,8 @@ async def test_finalizing_order_normalized_skips_db_write(
     engine, controller, monkeypatch
 ):
     # finalizing is compared order-insensitively: clusters probed in a different
-    # order than stored (Cluster.all has no ORDER BY) must not trip a DB write.
+    # order than stored (Cluster.all_by_fields has no ORDER BY) must not trip a
+    # DB write.
     await _seed(engine, finalizing=[10, 20])
     # _mock_clusters preserves dict order, so these probe as [20, 10] — the
     # reverse of the stored [10, 20].
@@ -274,7 +275,7 @@ async def test_missing_principal_hard_deletes_row(engine, controller, monkeypatc
         )
         await s.commit()
     clusters = AsyncMock(return_value=[])
-    monkeypatch.setattr(Cluster, "all", clusters)
+    monkeypatch.setattr(Cluster, "all_by_fields", clusters)
 
     await controller._finalize(1)
 
@@ -301,3 +302,35 @@ async def test_blocked_reason_says_when_it_listed_only_some_holders(
     message = (await _get_pv(engine)).status.phase_message
     assert message.count("gi-") == 3
     assert "and others" in message
+
+
+@pytest.mark.asyncio
+async def test_non_kubernetes_clusters_are_not_probed(engine, controller, monkeypatch):
+    """Downstream CRDs only exist on Kubernetes clusters, and non-Kubernetes
+    clusters cannot serve the apiserver proxy. Verify that cluster enumeration
+    only probes Kubernetes clusters, preventing unsupported proxy failures from
+    holding the row in Deleting."""
+    await _seed(engine)
+    k8s_ops = {20: FakeOps(present=False)}
+
+    docker_cluster = SimpleNamespace(id=1, provider=ClusterProvider.Docker)
+    k8s_cluster = SimpleNamespace(id=20, provider=ClusterProvider.Kubernetes)
+
+    async def fake_all_by_fields(session, fields=None, **kwargs):
+        if fields and fields.get("provider") == ClusterProvider.Kubernetes:
+            return [k8s_cluster]
+        return [docker_cluster, k8s_cluster]
+
+    monkeypatch.setattr(Cluster, "all_by_fields", fake_all_by_fields)
+
+    def build_ops(cluster, owner):
+        if cluster.id == 1:
+            raise RuntimeError("Docker cluster cannot be probed via ClusterOps proxy")
+        return k8s_ops[cluster.id]
+
+    monkeypatch.setattr(controller, "_build_ops", build_ops)
+
+    await controller._finalize(1)
+
+    assert await _get_pv(engine) is None
+    k8s_ops[20].delete_persistent_volume.assert_awaited_once_with("pv-1")

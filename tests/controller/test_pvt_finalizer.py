@@ -20,7 +20,7 @@ from gpustack.gpu_instances.cluster_apis_util import get_persistent_volume_type_
 from gpustack.gpu_instances.controllers import (
     GPUInstancePersistentVolumeTypeController,
 )
-from gpustack.schemas.clusters import Cluster
+from gpustack.schemas.clusters import Cluster, ClusterProvider
 from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolume,
     GPUInstancePersistentVolumeSpec,
@@ -113,7 +113,7 @@ async def _get_pvt(engine):
 
 def _mock_clusters(monkeypatch, controller, ops_by_cluster):
     clusters = [SimpleNamespace(id=cid) for cid in ops_by_cluster]
-    monkeypatch.setattr(Cluster, "all", AsyncMock(return_value=clusters))
+    monkeypatch.setattr(Cluster, "all_by_fields", AsyncMock(return_value=clusters))
     monkeypatch.setattr(
         controller, "_build_ops", lambda cluster, owner: ops_by_cluster[cluster.id]
     )
@@ -165,3 +165,35 @@ async def test_referencing_pv_blocks_finalize(engine, controller, monkeypatch):
     assert pvt.status.phase == "Deleting"
     assert pvt.status.phase_message is not None
     assert len(controller._queue._delayed) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_kubernetes_clusters_are_not_probed(engine, controller, monkeypatch):
+    """Downstream CRDs only exist on Kubernetes clusters, and non-Kubernetes
+    clusters cannot serve the apiserver proxy. Verify that cluster enumeration
+    only probes Kubernetes clusters, preventing unsupported proxy failures from
+    holding the row in Deleting."""
+    await _seed(engine)
+    k8s_ops = {20: FakeOps(present=False)}
+
+    docker_cluster = SimpleNamespace(id=1, provider=ClusterProvider.Docker)
+    k8s_cluster = SimpleNamespace(id=20, provider=ClusterProvider.Kubernetes)
+
+    async def fake_all_by_fields(session, fields=None, **kwargs):
+        if fields and fields.get("provider") == ClusterProvider.Kubernetes:
+            return [k8s_cluster]
+        return [docker_cluster, k8s_cluster]
+
+    monkeypatch.setattr(Cluster, "all_by_fields", fake_all_by_fields)
+
+    def build_ops(cluster, owner):
+        if cluster.id == 1:
+            raise RuntimeError("Docker cluster cannot be probed via ClusterOps proxy")
+        return k8s_ops[cluster.id]
+
+    monkeypatch.setattr(controller, "_build_ops", build_ops)
+
+    await controller._finalize(1)
+
+    assert await _get_pvt(engine) is None
+    k8s_ops[20].delete_persistent_volume_type.assert_awaited_once_with(CLUSTER_NAME)
