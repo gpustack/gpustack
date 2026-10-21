@@ -1074,6 +1074,27 @@ def pick_highest_score_candidate(candidates: List[ModelInstanceScheduleCandidate
     return candidate
 
 
+# The single categories this module's derived ladder writes (see
+# ``evaluate_gguf_model``). The parser's ``decision`` flag is
+# presence-based truth of the artifact, so it outranks a single one of
+# these guesses — including one hand-written to the same value: a GGUF
+# carrying the decision metadata key IS a decision deployment by
+# construction. Multi-category rows and categories the ladder never
+# writes are declarations and stay untouched.
+_LADDER_DERIVED_CATEGORIES = frozenset(
+    {
+        CategoryEnum.LLM,
+        CategoryEnum.EMBEDDING,
+        CategoryEnum.IMAGE,
+        CategoryEnum.RERANKER,
+    }
+)
+
+
+def _is_ladder_guess(categories: List[str]) -> bool:
+    return len(categories) == 1 and categories[0] in _LADDER_DERIVED_CATEGORIES
+
+
 async def evaluate_gguf_model(
     model: Model,
     workers: Optional[List[Worker]] = None,
@@ -1091,6 +1112,22 @@ async def evaluate_gguf_model(
         )
 
     should_update = False
+    if task_output.resource_claim_estimate.decision and (
+        not model.categories or _is_ladder_guess(model.categories)
+    ):
+        # Decision GGUFs ride generic backbones (qwen35, modern-bert, llama)
+        # that the parser files under reranker/embedding. The parser's
+        # ``decision`` flag is the only signal that outranks those guesses,
+        # so it runs before them; an absent flag falls through to the
+        # derived-category ladder unchanged. The ladder-guess clause
+        # reclassifies a row the pre-0.27.0 parser had filed under one of
+        # the guesses: without it the ``not model.categories`` gates below
+        # keep the stale category forever, the deployment misses the
+        # decision probe skip, and its /v1/chat/completions health check
+        # marks it unavailable.
+        should_update = True
+        model.categories = [CategoryEnum.DECISION]
+
     if task_output.resource_claim_estimate.reranking and not model.categories:
         should_update = True
         model.categories = [CategoryEnum.RERANKER]

@@ -88,6 +88,7 @@ class Estimate:
     imageOnly: bool = False
     distributable: bool = False
     reranking: bool = False
+    decision: bool = False
     contextSize: Optional[int] = None
 
 

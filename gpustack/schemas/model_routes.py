@@ -346,6 +346,7 @@ class ModelRouteUpdateBase(SQLModel):
                 "reranker",
                 "speech_to_text",
                 "text_to_speech",
+                "decision",
                 "unknown",
             ]:
                 raise ValueError(f"Invalid category: {category}")

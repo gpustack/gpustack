@@ -223,6 +223,13 @@ openai_model_prefixes: List[RoutePrefix] = [
     # also means neither the multipart body nor the binary response is
     # ever buffered by the gateway).
     RoutePrefix(["/videos/sync"]),
+    # The Jev/System One decision API (decision-category deployments:
+    # vLLM's /v1/systemone or any Jev-compatible server). Same dispatch
+    # shape as the video route: the body carries ``model`` (the route
+    # name -- GPUStack makes it required where the Jev contract has it
+    # optional), so model-name resolution applies, and ai-proxy passes
+    # the body and the typed-answers response through untouched.
+    RoutePrefix(["/systemone"]),
 ]
 
 anthropic_model_exact: List[RoutePrefix] = [
@@ -1680,7 +1687,11 @@ def ai_proxy_model_provider_config(
     capability set of any provider and never rejects an API it has no capability
     for, where the ``vllm`` provider would trade ~20 of those defaults for two
     and turn every unlisted API into a gateway error. A top-up on ``openai`` is
-    strictly additive; a type swap is not.
+    strictly additive; a type swap is not. Decision deployments ride the same
+    entry: ``/v1/systemone`` is a path the plugin does not recognize, and an
+    unrecognized path passes through untouched (headers included) — the model
+    name mapping upstream of ai-proxy already settled the route-name to
+    served-name translation.
     """
     return ai_proxy_types.AIProxyDefaultConfig(
         type=ModelProviderTypeEnum.OPENAI,
