@@ -3894,3 +3894,14 @@ def test_sglang_diffusion_explicit_path_precedes_version_handling(backend_versio
         assert is_ready(BackendEnum.SGLANG, mi, "/ready", model) is False
 
     get.assert_called_once_with("http://10.0.0.1:8000/ready", timeout=1)
+
+
+def test_decision_models_skip_the_inference_probe():
+    # A decision deployment answers the Jev /v1/systemone contract; the
+    # inference probe imitates the OpenAI generation/embedding/rerank
+    # endpoints, so probing it would mark a healthy deployment down.
+    from gpustack.schemas.models import Model
+    from gpustack.worker.serve_manager import _get_inference_endpoint_and_payload
+
+    model = Model(id=1, name="laya", categories=["decision"])
+    assert _get_inference_endpoint_and_payload(model) is None

@@ -3099,6 +3099,10 @@ def _get_inference_endpoint_and_payload(model: Model) -> tuple[str, dict] | None
         CategoryEnum.SPEECH_TO_TEXT,
         CategoryEnum.TEXT_TO_SPEECH,
         CategoryEnum.UNKNOWN,
+        # A decision deployment answers the Jev /v1/systemone contract,
+        # not the generation/embedding/rerank endpoints this probe imitates;
+        # probing /v1/chat/completions would mark it unavailable.
+        CategoryEnum.DECISION,
     }
     if not skip_categories.isdisjoint(model.categories):
         return None
