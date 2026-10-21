@@ -306,26 +306,36 @@ async def test_blocked_reason_says_when_it_listed_only_some_holders(
 
 @pytest.mark.asyncio
 async def test_non_kubernetes_clusters_are_not_probed(engine, controller, monkeypatch):
-    """Downstream CRDs only exist on Kubernetes clusters, and non-Kubernetes
-    clusters cannot serve the apiserver proxy. Verify that cluster enumeration
-    only probes Kubernetes clusters, preventing unsupported proxy failures from
-    holding the row in Deleting."""
+    """Downstream CRDs only exist on active Kubernetes clusters, and
+    non-Kubernetes or soft-deleted clusters cannot serve the apiserver proxy.
+    Verify that cluster enumeration only probes active Kubernetes clusters,
+    preventing unsupported proxy failures from holding the row in Deleting."""
     await _seed(engine)
     k8s_ops = {20: FakeOps(present=False)}
 
-    docker_cluster = SimpleNamespace(id=1, provider=ClusterProvider.Docker)
-    k8s_cluster = SimpleNamespace(id=20, provider=ClusterProvider.Kubernetes)
+    all_clusters = [
+        SimpleNamespace(id=1, provider=ClusterProvider.Docker, deleted_at=None),
+        SimpleNamespace(id=20, provider=ClusterProvider.Kubernetes, deleted_at=None),
+        SimpleNamespace(
+            id=30, provider=ClusterProvider.Kubernetes, deleted_at="2026-10-21"
+        ),
+    ]
 
     async def fake_all_by_fields(session, fields=None, **kwargs):
-        if fields and fields.get("provider") == ClusterProvider.Kubernetes:
-            return [k8s_cluster]
-        return [docker_cluster, k8s_cluster]
+        return [
+            c
+            for c in all_clusters
+            if (
+                fields is None
+                or all(getattr(c, k, None) == v for k, v in fields.items())
+            )
+        ]
 
     monkeypatch.setattr(Cluster, "all_by_fields", fake_all_by_fields)
 
     def build_ops(cluster, owner):
-        if cluster.id == 1:
-            raise RuntimeError("Docker cluster cannot be probed via ClusterOps proxy")
+        if cluster.id in (1, 30):
+            raise RuntimeError("Inactive or non-Kubernetes cluster cannot be probed")
         return k8s_ops[cluster.id]
 
     monkeypatch.setattr(controller, "_build_ops", build_ops)
