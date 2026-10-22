@@ -323,6 +323,20 @@ GPU_INSTANCE_UNREADABLE_CR_TOLERANCE = int(
     os.getenv("GPUSTACK_GPU_INSTANCE_UNREADABLE_CR_TOLERANCE", 1800)
 )  # in seconds
 
+# How long the persistent volume finalizer waits for a cluster it cannot
+# reach before it releases the row anyway. A cluster whose workers are all
+# unreachable may still hold the downstream volume, so the deletion waits for
+# the connection to come back -- but a cluster that stays down must not hold
+# the row forever.
+#
+# NOTE the zero, because the knob above it means the opposite: here 0 is "wait
+# no time at all" -- give up on the cluster and release the row at once, while
+# GPU_INSTANCE_UNREADABLE_CR_TOLERANCE's 0 disables its bound and the hold
+# becomes unbounded. The two sit ten lines apart; do not read one as the other.
+GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE = int(
+    os.getenv("GPUSTACK_GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE", 1800)
+)  # in seconds
+
 # Model instance configuration
 MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD = int(
     os.getenv("GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD", 300)
