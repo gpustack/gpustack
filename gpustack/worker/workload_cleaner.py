@@ -1,6 +1,7 @@
 import logging
-from typing import Callable
+from typing import Callable, List
 from gpustack_runtime.deployer import (
+    WorkloadStatus,
     list_workloads,
     delete_workload,
 )
@@ -44,7 +45,13 @@ class WorkloadCleaner:
         self._worker_id_getter = worker_id_getter
         self._clientset_getter = clientset_getter
 
-    def _current_model_instance_names(self) -> set:
+    def _current_model_instance_names(self, workloads: List[WorkloadStatus]) -> set:
+        if not any(
+            not is_benchmark_workload(w) and not is_cache_service_workload(w)
+            for w in workloads
+        ):
+            return set()
+
         names = set()
         model_instances_page = self._clientset.model_instances.list()
         for model_instance in model_instances_page.items or []:
@@ -55,7 +62,7 @@ class WorkloadCleaner:
                 names.add(deployment_metadata.name)
         return names
 
-    def _live_benchmark_names(self) -> set:
+    def _live_benchmark_names(self, workloads: List[WorkloadStatus]) -> set:
         """Names of benchmarks whose row is still non-terminal.
 
         Deliberately *not* "every benchmark name": a workload whose row already
@@ -66,6 +73,9 @@ class WorkloadCleaner:
         `page=-1` for the same reason `_current_cache_service_instance_names`
         uses it: a truncated page would make live runs look orphaned.
         """
+        if not any(is_benchmark_workload(w) for w in workloads):
+            return set()
+
         names = set()
         benchmarks_page = self._clientset.benchmarks.list(params={"page": -1})
         for benchmark in benchmarks_page.items or []:
@@ -76,7 +86,12 @@ class WorkloadCleaner:
                 names.add(deployment_metadata.name)
         return names
 
-    def _current_cache_service_instance_names(self) -> set:
+    def _current_cache_service_instance_names(
+        self, workloads: List[WorkloadStatus]
+    ) -> set:
+        if not any(is_cache_service_workload(w) for w in workloads):
+            return set()
+
         names = set()
         instances_page = self._clientset.cache_service_instances.list(
             # page=-1 disables pagination: a truncated page would make the
@@ -91,8 +106,14 @@ class WorkloadCleaner:
         return names
 
     def cleanup_orphan_workloads(self):
-        current_instance_names = self._current_model_instance_names()
-        current_cache_service_names = self._current_cache_service_instance_names()
+        workloads = list_workloads()
+        if not workloads:
+            return
+
+        current_instance_names = self._current_model_instance_names(workloads)
+        current_cache_service_names = self._current_cache_service_instance_names(
+            workloads
+        )
 
         # Fail closed on the benchmark list. A worker can reach the server over
         # a lossy link, and a failed read must not surface as "no benchmarks
@@ -101,7 +122,7 @@ class WorkloadCleaner:
         # stage and wedges the worker's benchmark queue, because the deletion
         # bypasses the manager's teardown.
         try:
-            live_benchmark_names = self._live_benchmark_names()
+            live_benchmark_names = self._live_benchmark_names(workloads)
         except Exception as e:
             logger.warning(
                 f"Skipping benchmark orphan cleanup this round; "
@@ -109,7 +130,6 @@ class WorkloadCleaner:
             )
             live_benchmark_names = None
 
-        workloads = list_workloads()
         for w in workloads:
             create_at = parse_iso8601_to_utc(w.created_at)
             should_clean_orphan = False

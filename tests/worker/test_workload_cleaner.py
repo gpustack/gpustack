@@ -1,5 +1,9 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
+
+import pytest
+
+from gpustack.schemas.benchmark import BenchmarkStateEnum
 
 from gpustack.schemas.cache_services import CacheServiceInstance
 from gpustack.worker.workload_cleaner import WorkloadCleaner
@@ -75,4 +79,71 @@ def test_cleanup_spares_recent_cache_service_workloads():
     ):
         cleaner.cleanup_orphan_workloads()
 
+    delete.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kinds",
+    [
+        [],
+        ["model"],
+        ["benchmark"],
+        ["cache-service"],
+        ["model", "benchmark", "cache-service"],
+    ],
+)
+def test_cleanup_only_lists_resources_for_local_workload_types(kinds):
+    cleaner, clientset = _build_cleaner()
+    workloads = []
+    for kind in kinds:
+        workload = _cache_workload(kind)
+        workload.labels = {"type": kind}
+        workloads.append(workload)
+    with (
+        patch(
+            "gpustack.worker.workload_cleaner.list_workloads", return_value=workloads
+        ),
+        patch("gpustack.worker.workload_cleaner.delete_workload") as delete,
+    ):
+        cleaner.cleanup_orphan_workloads()
+
+    for kind, resource in (
+        ("model", "model_instances"),
+        ("benchmark", "benchmarks"),
+        ("cache-service", "cache_service_instances"),
+    ):
+        listing = getattr(clientset, resource).list
+        assert listing.call_count == int(kind in kinds)
+    assert delete.call_args_list == [call(kind) for kind in kinds]
+    if "benchmark" in kinds:
+        clientset.benchmarks.list.assert_called_once_with(params={"page": -1})
+    if "cache-service" in kinds:
+        clientset.cache_service_instances.list.assert_called_once_with(
+            params={"worker_id": 1, "page": -1}
+        )
+
+
+@pytest.mark.parametrize("fail_read", [False, True])
+def test_cleanup_preserves_live_benchmarks_and_failed_reads(fail_read):
+    cleaner, clientset = _build_cleaner()
+    workload = _cache_workload("live-benchmark")
+    workload.labels = {"type": "benchmark"}
+    if fail_read:
+        clientset.benchmarks.list.side_effect = RuntimeError("unavailable")
+    else:
+        clientset.benchmarks.list.return_value = SimpleNamespace(
+            items=[
+                SimpleNamespace(
+                    state=BenchmarkStateEnum.RUNNING,
+                    get_deployment_metadata=lambda: SimpleNamespace(name=workload.name),
+                )
+            ]
+        )
+    with (
+        patch(
+            "gpustack.worker.workload_cleaner.list_workloads", return_value=[workload]
+        ),
+        patch("gpustack.worker.workload_cleaner.delete_workload") as delete,
+    ):
+        cleaner.cleanup_orphan_workloads()
     delete.assert_not_called()
