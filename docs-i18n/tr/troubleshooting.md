@@ -30,6 +30,8 @@ GPUStack'in hata ayıklama modunu çalışma zamanında **sunucu kapsayıcısı*
 gpustack reload-config --set debug=true
 ```
 
+`--debug`, Python bellek ayırma izlemeyi başlatmadan ayrıntılı günlük kaydını etkinleştirir. Bellek profillemesini etkinleştirmek için GPUStack başlamadan önce `GPUSTACK_DEBUG_ENABLE_TRACEMALLOC=true` ayarlayın. Varsayılan değer `false` olur; bu ayar `--debug` seçeneğinden bağımsızdır ve yeniden başlatma gerektirir. İzleme CPU ve bellek yükünü artırdığından, bellek kullanımını araştırırken etkinleştirin.
+
 ## Günlük Düzeyini Yapılandır { #configure-log-level }
 
 Günlük düzeyindeki uç noktalar kimlik doğrulama gerektirir.

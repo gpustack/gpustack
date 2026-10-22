@@ -27,6 +27,8 @@ sudo docker run -d --name gpustack \
 gpustack reload-config --set debug=true
 ```
 
+`--debug` 启用详细日志，不会启动 Python 内存分配追踪。如需分析内存，请在启动 GPUStack 前设置 `GPUSTACK_DEBUG_ENABLE_TRACEMALLOC=true`。该设置默认为 `false`，独立于 `--debug`，修改后需要重启。内存追踪会增加 CPU 和内存开销，建议在排查内存问题时启用。
+
 ## 配置日志级别 { #configure-log-level }
 
 日志级别端点要求身份认证。

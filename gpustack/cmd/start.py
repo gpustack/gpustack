@@ -788,7 +788,7 @@ def run(args: argparse.Namespace):
         setup_logging(cfg.debug)
         debug_env_info()
         set_third_party_env(cfg=cfg)
-        start_tracemalloc_if_debug(cfg)
+        start_tracemalloc_if_enabled()
         initialize_gateway(cfg)
         multiprocessing.set_start_method('spawn')
 
@@ -821,6 +821,8 @@ def run_server(cfg: Config):
 
 
 def run_worker(cfg: Config):
+    # Spawned workers initialize process-local tracing before allocating state.
+    start_tracemalloc_if_enabled()
     set_global_config(cfg)
     worker = Worker(cfg)
     worker.start()
@@ -992,12 +994,13 @@ def debug_env_info():
         logger.debug(f"Using HF_ENDPOINT: {hf_endpoint}")
 
 
-def start_tracemalloc_if_debug(cfg: Config):
-    if cfg.debug:
+def start_tracemalloc_if_enabled() -> None:
+    if envs.DEBUG_ENABLE_TRACEMALLOC:
         import tracemalloc
 
-        tracemalloc.start()
-        logger.debug("tracemalloc started for memory profiling")
+        if not tracemalloc.is_tracing():
+            tracemalloc.start()
+            logger.info("tracemalloc started for memory profiling")
 
 
 def set_third_party_env(cfg: Config):

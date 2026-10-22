@@ -46,6 +46,12 @@ GPUStack は、設定用のさまざまな環境変数をサポートします�
 | `HF_ENDPOINT`                           | Hugging Face Hub のエンドポイント。例：`https://hf-mirror.com` | （空） | サーバーとワーカー |
 | `HF_TOKEN`                              | Hugging Face Hub のアクセストークン。 | （空） | サーバーとワーカー |
 
+### デバッグ { #debugging }
+
+| 変数 | 説明 | 既定値 | 適用対象 |
+| --- | --- | --- | --- |
+| `GPUSTACK_DEBUG_ENABLE_TRACEMALLOC` | 起動時に Python のメモリ割り当て追跡を有効にします。`--debug` とは独立しています。追跡には CPU とメモリの追加負荷がかかります。変更後は GPUStack の再起動が必要です。 | `false` | Server と Worker |
+
 ### データベース設定 { #database-configuration }
 
 | 変数 | 説明 | デフォルト | 適用先 |

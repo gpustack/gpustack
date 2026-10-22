@@ -42,6 +42,12 @@ The **Applies to** column indicates where the environment variable should be set
 | `HF_ENDPOINT`                           | Hugging Face Hub endpoint. e.g., `https://hf-mirror.com` | (empty) | Server & Worker |
 | `HF_TOKEN`                              | Hugging Face Hub access token.                           | (empty) | Server & Worker |
 
+### Debugging
+
+| Variable | Description | Default | Applies to |
+| --- | --- | --- | --- |
+| `GPUSTACK_DEBUG_ENABLE_TRACEMALLOC` | Enable Python memory allocation tracing at startup. Independent of `--debug`; tracing adds CPU and memory overhead. Restart GPUStack after changing this setting. | `false` | Server & Worker |
+
 ### Database Configuration
 
 | Variable                   | Description                                  | Default | Applies to |
