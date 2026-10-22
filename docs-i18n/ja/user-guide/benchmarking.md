@@ -6,6 +6,18 @@ GPUStack は、実行中のモデルインスタンスを対象にベンチマ�
 
 - モデルインスタンスが実行中で、正常に動作していること。
 
+### ルートベンチマークのゲートウェイアドレス { #route-benchmark-gateway-address }
+
+ルートベンチマークでは、実行する Worker から到達可能な Higress のベース URL（`/v1` を含まない）を次の順序で解決します。
+
+1. 実行する Worker が所属するクラスターの `server_url`。
+2. Server の `server_external_url`。
+3. 作成リクエストのオリジン。ただし、Server の `trusted_hosts` で明示的に許可されている必要があります。
+
+リクエストのオリジンへのフォールバックでは、ワイルドカードは使用できません。ホスト名のみの指定では標準の HTTP/HTTPS ポートだけが許可されます。カスタムポートは `gateway.example:8443` のように明示してください。URL にパスプレフィックスがある場合、前段のプロキシで Higress への転送前に取り除く必要があります。
+
+ターゲットはベンチマークの作成時に固定されます。変更した URL を使用するには、ベンチマークを再作成してください。進捗報告には引き続き Worker の管理アドレスを使用します。
+
 ## ベンチマークの作成 { #create-benchmark }
 
 1. `Benchmarks` ページに移動します。
@@ -47,6 +59,8 @@ GPUStack は、実行中のモデルインスタンスを対象にベンチマ�
 
 ## プライベート CA を使用する HTTPS Server でのベンチマーク { #benchmarks-on-an-https-server-with-a-private-ca }
 
-ベンチマークコンテナは、Server URL を通じて GPUStack Server に進捗を報告するため、HTTPS デプロイでは Server の証明書を検証する必要があります。ベンチマークは別のイメージで実行され、CA を自身でインポートしないため、Worker が信頼する CA 証明書バンドルを渡します。これには `/usr/local/share/ca-certificates/` にマウントしたプライベート CA も含まれます（[追加の信頼する CA](../installation/installation.md#additional-trusted-cas)を参照）。Worker でその CA を利用できれば、追加の構成は必要ありません。
+進捗報告とルート推論は Worker の TLS ポリシーに従います。Worker で `GPUSTACK_INSECURE_TLS` または `insecure_tls` 構成オプション（`--insecure-tls`）が有効でない限り、証明書検証は有効です。ベンチマーク専用の TLS 設定はありません。
 
-検証に失敗しても、モデルインスタンスへの負荷は平文 HTTP で生成するため、ベンチマーク自体には影響しません。ただし、実行完了まで進捗が 0% のままになり、Worker のログに原因が記録されます。解決するには、Server の CA を Worker にインポートしてください。
+いずれかの入口が HTTPS を使用し、検証が有効な場合、Worker は信頼する CA バンドルをファイル内容としてベンチマークコンテナに注入します。Worker にインポートしたプライベート CA も含まれます（[追加の信頼する CA](../installation/installation.md#additional-trusted-cas)を参照）。進捗クライアントは `--progress-ca-cert` を使用し、HTTPS 推論は `SSL_CERT_FILE` を通じて注入されたバンドルを使用してバックエンドの検証を有効にします。管理アドレスが HTTP でも、HTTPS ゲートウェイ用の CA は注入されます。
+
+Worker が明示的に検証をスキップする場合、ベンチマークは両方の通信で検証をスキップし、CA バンドルを注入しません。検証が必要な HTTPS 推論でバンドルを読み取れない場合、別の信頼ストアを使用せず、起動を拒否します。進捗報告のみの場合は引き続きベストエフォートで動作し、報告の失敗をログに記録しても測定結果は破棄しません。

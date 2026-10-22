@@ -525,11 +525,10 @@ async def mark_internal_inference(request: Request):
     request.state.internal_inference = True
 
 
-# The deployment's own entrance, for a benchmark run in `route` mode: the same
-# route resolution and the same load balancer as `/v1`, so a plain model's
-# replicas are all measured rather than one of them, and a group is measured
-# through its router. Worker-authenticated, because the caller is a container
-# this server asked a worker to start.
+# Compatibility endpoint for benchmark containers still running during a
+# rolling upgrade. Their target is fixed in their command line until they
+# finish. Keep worker authentication while those containers drain; new route
+# benchmarks use the gateway entrance recorded in their snapshot.
 benchmark_proxy_router = APIRouter(
     dependencies=[Depends(get_worker_principal), Depends(mark_internal_inference)]
 )

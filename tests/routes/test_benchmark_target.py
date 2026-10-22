@@ -10,10 +10,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from starlette.requests import Request
 
-from gpustack.api.exceptions import BadRequestException
+from gpustack.api.exceptions import BadRequestException, NotFoundException
+from gpustack.api.tenant import TenantContext
 from gpustack.routes import benchmarks as route
-from gpustack.schemas.benchmark import BenchmarkCreate, BenchmarkTargetModeEnum
+from gpustack.routes import clusters as cluster_routes
+from gpustack.schemas.benchmark import (
+    BenchmarkCreate,
+    BenchmarkSnapshot,
+    BenchmarkTargetModeEnum,
+)
 from gpustack.schemas.model_routes import TargetStateEnum
 from gpustack.schemas.models import (
     DisaggregationSpec,
@@ -88,6 +95,300 @@ def _group_members():
 
 def _with_members(members):
     return patch.object(ModelInstance, "all_by_field", AsyncMock(return_value=members))
+
+
+class TestClusterGatewaySnapshot:
+    @pytest.fixture
+    def setup(self, monkeypatch):
+        model = _plain_model(owner_principal_id=10)
+        endpoint = _member("router", worker_id=13, cluster_id=1, owner_principal_id=10)
+        placement = _member("decode", worker_id=12, cluster_id=1)
+        worker = SimpleNamespace(id=12, cluster_id=7)
+        cluster = SimpleNamespace(
+            id=7,
+            owner_principal_id=10,
+            deleted_at=None,
+            server_url="https://cluster-gateway.example:8443/prefix/",
+        )
+        for name, value in (
+            ("_resolve_target_model", model),
+            ("_resolve_target_endpoint", endpoint),
+            ("_resolve_placement", placement),
+            ("_resolve_route_name", "qwen"),
+            ("get_benchmark_snapshot", BenchmarkSnapshot(route_name="qwen")),
+        ):
+            monkeypatch.setattr(route, name, AsyncMock(return_value=value))
+        worker_lookup = AsyncMock(return_value=worker)
+        cluster_lookup = AsyncMock(return_value=cluster)
+        monkeypatch.setattr(
+            route,
+            "WorkerService",
+            lambda _: SimpleNamespace(get_by_id=worker_lookup),
+        )
+        monkeypatch.setattr(route.Cluster, "one_by_id", cluster_lookup)
+        monkeypatch.setattr(
+            route.Benchmark, "one_by_field", AsyncMock(return_value=None)
+        )
+        save = AsyncMock(side_effect=lambda session, value: value)
+        monkeypatch.setattr(route.Benchmark, "create", save)
+        config = SimpleNamespace(
+            server_external_url="https://public-gateway.example/",
+            trusted_hosts=["request-gateway.example:8443"],
+        )
+        monkeypatch.setattr(cluster_routes, "get_global_config", lambda: config)
+        monkeypatch.setattr(route, "get_global_config", lambda: config)
+        return SimpleNamespace(
+            model=model,
+            worker=worker,
+            cluster=cluster,
+            worker_lookup=worker_lookup,
+            cluster_lookup=cluster_lookup,
+            save=save,
+            config=config,
+            request=Request(
+                {
+                    "type": "http",
+                    "scheme": "https",
+                    "path": "/v2/benchmarks",
+                    "query_string": b"",
+                    "headers": [(b"host", b"request-gateway.example:8443")],
+                }
+            ),
+            ctx=TenantContext(
+                user=None,
+                is_platform_admin=False,
+                current_principal_id=10,
+                org_role=None,
+            ),
+        )
+
+    async def _create(self, setup, mode=BenchmarkTargetModeEnum.ROUTE):
+        return await route.create_benchmark(
+            None,
+            setup.ctx,
+            BenchmarkCreate(
+                name="bm",
+                model_id=1,
+                cluster_id=999,
+                target_mode=mode,
+                dataset_name="Random",
+                dataset_input_tokens=128,
+                dataset_output_tokens=64,
+            ),
+            request=setup.request,
+        )
+
+    @pytest.mark.asyncio
+    async def test_creation_freezes_the_placement_workers_cluster_url(self, setup):
+        benchmark = await self._create(setup)
+
+        assert (
+            getattr(benchmark.snapshot, "gateway_url", None)
+            == "https://cluster-gateway.example:8443/prefix"
+        )
+        setup.worker_lookup.assert_awaited_once_with(12)
+        setup.cluster_lookup.assert_awaited_once_with(None, 7)
+        assert benchmark.worker_id == 12
+        assert benchmark.cluster_id == 1
+        transferred = BenchmarkSnapshot.model_validate_json(
+            benchmark.snapshot.model_dump_json()
+        )
+        assert transferred.gateway_url == benchmark.snapshot.gateway_url
+        setup.cluster.server_url = "https://changed.example"
+        assert (
+            benchmark.snapshot.gateway_url
+            == "https://cluster-gateway.example:8443/prefix"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("url", [None, "", "   "])
+    async def test_missing_cluster_url_uses_server_external_url(self, setup, url):
+        setup.cluster.server_url = url
+        setup.config.server_external_url = "https://public-gateway.example:443/prefix/"
+        benchmark = await self._create(setup)
+        assert (
+            benchmark.snapshot.gateway_url
+            == "https://public-gateway.example:443/prefix"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("external_url", [None, ""])
+    async def test_missing_configured_urls_use_request_entrance(
+        self, setup, external_url
+    ):
+        setup.cluster.server_url = None
+        setup.config.server_external_url = external_url
+        benchmark = await self._create(setup)
+        assert benchmark.snapshot.gateway_url == "https://request-gateway.example:8443"
+
+    @pytest.mark.asyncio
+    async def test_request_entrance_preserves_ipv6_and_port(self, setup):
+        setup.cluster.server_url = None
+        setup.config.server_external_url = None
+        setup.config.trusted_hosts = ["[2001:db8::1]:8080"]
+        setup.request = Request(
+            {
+                "type": "http",
+                "scheme": "http",
+                "path": "/v2/benchmarks",
+                "query_string": b"",
+                "headers": [(b"host", b"[2001:db8::1]:8080")],
+            }
+        )
+        benchmark = await self._create(setup)
+        assert benchmark.snapshot.gateway_url == "http://[2001:db8::1]:8080"
+
+    @pytest.mark.asyncio
+    async def test_request_fallback_does_not_trust_raw_forwarding_headers(self, setup):
+        setup.cluster.server_url = None
+        setup.config.server_external_url = None
+        setup.request.scope["headers"].append(
+            (b"x-forwarded-host", b"untrusted.example")
+        )
+        benchmark = await self._create(setup)
+        assert benchmark.snapshot.gateway_url == "https://request-gateway.example:8443"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "trusted_hosts",
+        [
+            None,
+            [],
+            ["*"],
+            ["gateway.example"],
+            ["*.example"],
+            ["request-gateway.example"],
+            ["request-gateway.example:443"],
+        ],
+    )
+    async def test_request_target_must_match_explicit_host_and_port(
+        self, setup, trusted_hosts
+    ):
+        setup.cluster.server_url = None
+        setup.config.server_external_url = None
+        setup.config.trusted_hosts = trusted_hosts
+        with pytest.raises(BadRequestException) as excinfo:
+            await self._create(setup)
+        assert "trusted_hosts" in excinfo.value.message
+        setup.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_shared_cluster_owner_cannot_send_worker_token_to_arbitrary_host(
+        self, setup
+    ):
+        setup.cluster.owner_principal_id = 20
+        setup.ctx.accessible_cluster_ids = {7}
+        setup.cluster.server_url = None
+        setup.config.server_external_url = None
+        setup.config.trusted_hosts = ["gateway.example"]
+        setup.request.scope["headers"] = [(b"host", b"attacker.example")]
+        with pytest.raises(BadRequestException):
+            await self._create(setup)
+        setup.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cluster_override", [False, True])
+    async def test_configured_entrance_ignores_untrusted_request_host(
+        self, setup, cluster_override
+    ):
+        setup.config.trusted_hosts = None
+        setup.request.scope["headers"] = [(b"host", b"attacker.example")]
+        if not cluster_override:
+            setup.cluster.server_url = None
+        benchmark = await self._create(setup)
+        expected = (
+            setup.cluster.server_url
+            if cluster_override
+            else setup.config.server_external_url
+        )
+        assert benchmark.snapshot.gateway_url == expected.rstrip("/")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "scheme,host", [("http", "gateway.example"), ("https", "gateway.example:443")]
+    )
+    async def test_exact_trusted_host_allows_standard_port(self, setup, scheme, host):
+        setup.cluster.server_url = None
+        setup.config.server_external_url = None
+        setup.config.trusted_hosts = ["GATEWAY.EXAMPLE"]
+        setup.request = Request(
+            {
+                "type": "http",
+                "scheme": scheme,
+                "path": "/v2/benchmarks",
+                "query_string": b"",
+                "headers": [(b"host", host.encode())],
+            }
+        )
+        benchmark = await self._create(setup)
+        assert benchmark.snapshot.gateway_url == f"{scheme}://{host}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "host",
+        ["gateway.example:bad", "gateway.example:65536", "user@gateway.example:8443"],
+    )
+    async def test_malformed_request_authority_is_refused(self, setup, host):
+        setup.cluster.server_url = None
+        setup.config.server_external_url = None
+        setup.config.trusted_hosts = ["gateway.example:8443"]
+        setup.request.scope["headers"] = [(b"host", host.encode())]
+        with pytest.raises(BadRequestException):
+            await self._create(setup)
+        setup.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_other_tenants_model_is_refused_before_looking_up_gateway(
+        self, setup
+    ):
+        setup.model.owner_principal_id = 20
+        with pytest.raises(NotFoundException):
+            await self._create(setup)
+        setup.cluster_lookup.assert_not_awaited()
+        setup.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_placement_worker_refuses_creation(self, setup):
+        setup.worker_lookup.return_value = None
+        with pytest.raises(BadRequestException) as excinfo:
+            await self._create(setup)
+        assert "placement worker" in excinfo.value.message
+        setup.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("deleted", [False, True])
+    async def test_missing_or_deleted_cluster_refuses_creation(self, setup, deleted):
+        if deleted:
+            setup.cluster.deleted_at = "2026-01-01"
+        else:
+            setup.cluster_lookup.return_value = None
+        with pytest.raises(NotFoundException):
+            await self._create(setup)
+        setup.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_other_tenants_cluster_is_not_exposed(self, setup):
+        setup.cluster.owner_principal_id = 20
+        with pytest.raises(NotFoundException):
+            await self._create(setup)
+        setup.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_shared_cluster_is_visible(self, setup):
+        setup.cluster.owner_principal_id = 20
+        setup.ctx.accessible_cluster_ids = {7}
+        benchmark = await self._create(setup)
+        assert (
+            getattr(benchmark.snapshot, "gateway_url", None)
+            == "https://cluster-gateway.example:8443/prefix"
+        )
+
+    @pytest.mark.asyncio
+    async def test_instance_mode_does_not_require_a_gateway(self, setup):
+        setup.cluster.server_url = None
+        benchmark = await self._create(setup, BenchmarkTargetModeEnum.INSTANCE)
+        assert getattr(benchmark.snapshot, "gateway_url", None) is None
+        setup.cluster_lookup.assert_not_awaited()
 
 
 class TestEndpoint:

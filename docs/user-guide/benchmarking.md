@@ -6,6 +6,23 @@ GPUStack can run benchmarks against running model instances. Benchmarks are exec
 
 - A model instance is running and healthy.
 
+### Route benchmark gateway address
+
+Route benchmarks use a worker-reachable Higress base URL (without `/v1`),
+resolved in this order:
+
+1. The execution worker's cluster `server_url`.
+2. The server's `server_external_url`.
+3. The creation request's origin, explicitly allowed by the server's `trusted_hosts`.
+
+For request-origin fallback, wildcards are not accepted. Bare hostnames allow
+only standard HTTP/HTTPS ports; list custom ports explicitly, such as
+`gateway.example:8443`. If the URL includes a path prefix, the front proxy must
+strip it before forwarding to Higress.
+
+The target is fixed when the benchmark is created. Recreate the benchmark to
+use a changed URL. Progress reporting keeps the worker's management address.
+
 ## Create Benchmark
 
 1. Go to the `Benchmarks` page.
@@ -52,6 +69,8 @@ no prompts, the run fails before sending benchmark requests.
 
 ## Benchmarks on an HTTPS Server with a Private CA
 
-The benchmark container reports its progress back to the GPUStack server over the server URL, so on an HTTPS deployment it has to verify the server's certificate. The benchmark runs in a separate image and does not import CAs on its own, so the worker hands it the CA bundle the worker itself trusts — including any private CA mounted under `/usr/local/share/ca-certificates/` (see [Additional Trusted CAs](../installation/installation.md#additional-trusted-cas)). No extra configuration is needed as long as that CA is available on the worker.
+Progress reporting and route inference follow the worker's TLS policy. Certificate verification is enabled unless the worker has `GPUSTACK_INSECURE_TLS` or the `insecure_tls` configuration option (`--insecure-tls`) enabled. There is no separate benchmark TLS setting.
 
-If verification still fails, the benchmark itself is unaffected — the load is generated against the model instance over plain HTTP — but progress stays at 0% until the run completes, and the worker log records why. Import the server's CA on the worker to resolve it.
+When either entrance uses HTTPS and verification is enabled, the worker injects its trusted CA bundle as file content into the benchmark container. This includes private CAs imported on the worker (see [Additional Trusted CAs](../installation/installation.md#additional-trusted-cas)). The progress client uses `--progress-ca-cert`; HTTPS inference uses the injected bundle through `SSL_CERT_FILE` with backend verification enabled. An HTTP management address does not prevent CA injection for an HTTPS gateway.
+
+If the worker explicitly skips verification, the benchmark skips it for both channels and does not inject a CA bundle. If the bundle cannot be read while verified HTTPS inference is required, the benchmark refuses to start instead of using a different trust store. Progress-only reporting remains best effort: reporting failures are logged without discarding the benchmark measurement.
