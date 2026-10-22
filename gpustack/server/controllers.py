@@ -183,6 +183,7 @@ from gpustack.utils.model_source import get_draft_model_source
 from gpustack import envs
 from gpustack.server.db import async_session
 from gpustack.server.services import (
+    CacheServiceInstanceService,
     ModelFileService,
     ModelInstanceService,
     ModelService,
@@ -680,8 +681,8 @@ async def _sync_cache_instances_worker_states(
         worker = unreachable_workers.get(instance.worker_id)
         if worker is None or instance.state != CacheServiceStateEnum.RUNNING:
             continue
-        await instance.update(
-            session,
+        await CacheServiceInstanceService(session).update(
+            instance,
             {
                 "state": CacheServiceStateEnum.UNREACHABLE,
                 "healthy": False,
@@ -1045,8 +1046,8 @@ class CacheServiceController:
                         service, provider, instance.component
                     )
                     if claim is not None:
-                        await instance.update(
-                            session, {"computed_resource_claim": claim}
+                        await CacheServiceInstanceService(session).update(
+                            instance, {"computed_resource_claim": claim}
                         )
         desired_by_component, error_message, reconcile = (
             await self._desired_component_workers(
@@ -1107,7 +1108,7 @@ class CacheServiceController:
             key = (component, instance.worker_id)
             surplus = room.get(key, 0) <= 0
             if surplus or stale_address:
-                await instance.delete(session)
+                await CacheServiceInstanceService(session).delete(instance)
                 reason = (
                     "its dependency's address changed"
                     if stale_address
@@ -1156,8 +1157,7 @@ class CacheServiceController:
                     random.choices(string.ascii_lowercase + string.digits, k=5)
                 )
                 name_role = f"-{component}" if component else ""
-                await CacheServiceInstance.create(
-                    session,
+                await CacheServiceInstanceService(session).create(
                     CacheServiceInstanceCreate(
                         name=f"{service.name}{name_role}-{name_suffix}",
                         cache_service_id=service.id,

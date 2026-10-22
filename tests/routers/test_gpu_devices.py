@@ -1,7 +1,6 @@
 import pytest
 from unittest.mock import patch
 
-from gpustack.policies.base import Allocated
 from gpustack.routes.gpu_devices import (
     _inject_allocated_into_event,
     to_gpu_device_public,
@@ -77,12 +76,12 @@ def test_convert_to_public_class():
 
 
 def _patched_allocated(vram):
-    async def fake_get_worker_allocated(worker_id):
-        return Allocated(ram=0, vram=vram)
+    async def fake_get_worker_vram_allocated(worker_id):
+        return vram
 
     return patch(
-        "gpustack.routes.gpu_devices.get_worker_allocated",
-        fake_get_worker_allocated,
+        "gpustack.routes.gpu_devices.get_worker_vram_allocated",
+        fake_get_worker_vram_allocated,
     )
 
 
