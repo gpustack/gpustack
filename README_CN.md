@@ -65,7 +65,7 @@ GPUStack 支持多种 AI 推理加速器：
 
 - **NVIDIA GPU**
 - **AMD GPU**
-- **Ascend NPU**
+- **Huawei Ascend NPU**
 - **Hygon DCU**
 - **MThreads GPU**
 - **Iluvatar GPU**
