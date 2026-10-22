@@ -28,6 +28,7 @@ from gpustack.schemas.cache_services import (
 from gpustack.schemas.principals import PrincipalType
 from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
+from gpustack.server.services import CacheServiceInstanceService
 
 router = APIRouter()
 
@@ -169,7 +170,9 @@ async def update_cache_service_instance(
         raise NotFoundException(message="Cache service instance not found")
 
     try:
-        await instance.update(session, instance_in.model_dump(exclude_unset=True))
+        await CacheServiceInstanceService(session).update(
+            instance, instance_in.model_dump(exclude_unset=True)
+        )
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update cache service instance: {e}"

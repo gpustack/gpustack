@@ -10,6 +10,11 @@ from sqlalchemy.orm import selectinload
 from gpustack.api.exceptions import InternalServerErrorException
 
 from gpustack.schemas.api_keys import ApiKey
+from gpustack.schemas.cache_services import (
+    CacheService,
+    CacheServiceInstance,
+    CacheServiceInstanceCreate,
+)
 from gpustack.schemas.links import ModelRoutePrincipalLink
 from gpustack.schemas.model_files import ModelFile
 from gpustack.schemas.models import (
@@ -41,7 +46,11 @@ from gpustack.server.cache import (
     locked_cached,
 )
 from gpustack.server.cache_services import resolve_instance_cache_config_safe
-from gpustack.server.worker_allocated_cache import invalidate_workers_allocated
+from gpustack.server.cache_service_resources import cache_ram_by_worker
+from gpustack.server.worker_allocated_cache import (
+    invalidate_cache_workers_ram,
+    invalidate_workers_allocated,
+)
 from gpustack.utils.usage_snapshots import propagate_user_rename
 
 logger = logging.getLogger(__name__)
@@ -974,6 +983,45 @@ class ModelService:
             )
 
         return result
+
+
+class CacheServiceService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def delete(self, cache_service: CacheService) -> None:
+        # The parent commits all instance deletions in one transaction.
+        await cache_service.delete(self.session)
+        await invalidate_cache_workers_ram()
+
+
+class CacheServiceInstanceService:
+    """Mutate cache instances and invalidate reservations after commit."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(
+        self, instance: Union[CacheServiceInstance, CacheServiceInstanceCreate]
+    ) -> CacheServiceInstance:
+        result = await CacheServiceInstance.create(self.session, instance)
+        await invalidate_cache_workers_ram()
+        return result
+
+    async def update(
+        self,
+        instance: CacheServiceInstance,
+        source: Union[dict, SQLModel, None] = None,
+    ) -> None:
+        reservations = cache_ram_by_worker([instance])
+        await instance.update(self.session, source)
+        # With no patch, the caller may have mutated the instance before entry.
+        if source is None or reservations != cache_ram_by_worker([instance]):
+            await invalidate_cache_workers_ram()
+
+    async def delete(self, instance: CacheServiceInstance) -> None:
+        await instance.delete(self.session)
+        await invalidate_cache_workers_ram()
 
 
 class ModelInstanceService:
