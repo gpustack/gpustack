@@ -1702,13 +1702,17 @@ class TestCacheProviderSourceConfig:
     replacing a catalog that is process state rather than a table."""
 
     @pytest_asyncio.fixture
-    async def session(self):
+    async def session(self, monkeypatch):
         # RunnerOverrideEntry is here because a cache-provider write reads it:
         # a provider deriving its release line from the runner catalog reads the
         # admin's additions to that catalog too.
         async with _make_source_session(
             CacheProviderSource, CacheProviderEntry, CacheService, RunnerOverrideEntry
         ) as session:
+            monkeypatch.setattr(
+                "gpustack.server.cache_provider_catalog.async_session",
+                lambda: AsyncSession(session.bind, expire_on_commit=False),
+            )
             yield session
 
     @pytest.mark.asyncio
