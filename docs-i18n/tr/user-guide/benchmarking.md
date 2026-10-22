@@ -10,6 +10,18 @@ GPUStack, çalışan model örnekleri üzerinde benchmark çalıştırabilir. Be
 
 - Bir model örneği çalışıyor ve sağlıklı durumda.
 
+### Rota benchmark'ı için ağ geçidi adresi { #route-benchmark-gateway-address }
+
+Rota benchmark'ları, çalışanın erişebildiği Higress temel URL'sini (`/v1` olmadan) aşağıdaki sırayla belirler:
+
+1. Benchmark'ı yürüten çalışanın ait olduğu kümenin `server_url` değeri.
+2. Sunucunun `server_external_url` değeri.
+3. Sunucunun `trusted_hosts` yapılandırmasında açıkça izin verilen oluşturma isteğinin origin adresi.
+
+İstek origin adresine geri dönüldüğünde joker karakterler kabul edilmez. Yalnızca ana makine adı standart HTTP/HTTPS portlarına izin verir; özel portları `gateway.example:8443` gibi açıkça belirtin. URL bir yol öneki içeriyorsa öndeki proxy, isteği Higress'e iletmeden önce bu öneki kaldırmalıdır.
+
+Hedef, benchmark oluşturulurken sabitlenir. Değiştirilen URL'yi kullanmak için benchmark'ı yeniden oluşturun. İlerleme bildirimi çalışanın yönetim adresini kullanmaya devam eder.
+
 ## Karşılaştırma Oluştur { #create-benchmark }
 
 1. `Benchmarks` sayfasına gidin.
@@ -51,6 +63,8 @@ Yerleşik ShareGPT veri kümesinde giriş token uzunluğu için isteğe bağlı 
 
 ## Özel CA'lı HTTPS Sunucusunda Karşılaştırmalar { #benchmarks-on-an-https-server-with-a-private-ca }
 
-Benchmark konteyneri ilerlemesini sunucu URL'si üzerinden GPUStack sunucusuna bildirir; bu nedenle HTTPS dağıtımında sunucu sertifikasını doğrulamalıdır. Benchmark ayrı bir imajda çalışır ve CA'ları kendisi içe aktarmaz. Çalışan, `/usr/local/share/ca-certificates/` altına bağlanan özel CA'lar dahil kendi güvendiği CA paketini ona aktarır (bkz. [Ek Güvenilir CA'lar](../installation/installation.md#additional-trusted-cas)). CA çalışanda mevcutsa ek yapılandırma gerekmez.
+İlerleme bildirimi ve rota çıkarımı çalışanın TLS politikasını izler. Çalışanda `GPUSTACK_INSECURE_TLS` veya `insecure_tls` yapılandırma seçeneği (`--insecure-tls`) etkin olmadıkça sertifika doğrulaması açıktır. Benchmark için ayrı bir TLS ayarı yoktur.
 
-Doğrulama yine başarısız olursa benchmark'ın kendisi etkilenmez; yük model örneğine düz HTTP üzerinden gönderilir. Ancak çalışma tamamlanana kadar ilerleme 0% olarak kalır ve neden çalışanın günlüğüne yazılır. Düzeltmek için sunucunun CA'sını çalışana aktarın.
+Girişlerden biri HTTPS kullanıyor ve doğrulama etkinse çalışan, güvendiği CA paketini dosya içeriği olarak benchmark konteynerine aktarır. Buna çalışana içe aktarılan özel CA'lar da dahildir (bkz. [Ek Güvenilir CA'lar](../installation/installation.md#additional-trusted-cas)). İlerleme istemcisi `--progress-ca-cert` kullanır; HTTPS çıkarımı, arka uç doğrulaması açıkken aktarılan paketi `SSL_CERT_FILE` üzerinden kullanır. Yönetim adresinin HTTP olması, HTTPS ağ geçidi için CA aktarılmasını engellemez.
+
+Çalışan doğrulamayı açıkça atlıyorsa benchmark her iki kanalda da doğrulamayı atlar ve CA paketi aktarmaz. Doğrulama gerektiren HTTPS çıkarımı için paket okunamıyorsa benchmark farklı bir güven deposu kullanmak yerine başlatılmayı reddeder. Yalnızca ilerleme bildirimi için en iyi çaba yaklaşımı sürer: bildirim hataları günlüğe yazılır, ancak benchmark ölçümleri atılmaz.

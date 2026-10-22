@@ -1,4 +1,4 @@
-"""TLS trust for the benchmark container's progress reporting.
+"""Worker TLS policy and trust passed to the benchmark container.
 
 The benchmark container is a separate ``gpustack/benchmark-runner`` image whose
 entrypoint is the runner CLI, so it never runs ``gpustack-prerun.sh`` and never
@@ -11,14 +11,23 @@ runner is pointed at it with ``--progress-ca-cert``. Both halves matter:
 * As *content*, the runtime writes it into the container itself. Nothing is
   written to a directory the container can reach beforehand, so there is no
   destination for it to hijack, and nothing outlives the run.
-* As a *progress-scoped option* rather than ``SSL_CERT_FILE``, it leaves the
-  rest of the container's TLS alone -- a bundle holding only a private CA would
-  otherwise strip the public roots the runner needs elsewhere.
+* The progress client uses ``--progress-ca-cert``. HTTPS route inference also
+  receives the same injected bundle through ``SSL_CERT_FILE``; that path is
+  covered by the runner target tests.
 """
 
+import re
+import ssl
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
+import certifi
+import httpx
+import pytest
+
+import gpustack.config.config as config_module
+from gpustack import envs
 import gpustack.worker.benchmark.runner as bm_runner
 from gpustack.worker.benchmark.runner import BenchmarkRunner
 
@@ -155,6 +164,37 @@ class TestWorkerCAEnvIsDropped:
         assert env["SSL_CERT_DIR"] == "/etc/ssl/certs"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trust_env", [True, False])
+async def test_httpx_loads_injected_ca_bundle_when_verification_is_enabled(
+    tmp_path, monkeypatch, trust_env
+):
+    """Verify the HTTPX contract used by GuideLLM without making network requests."""
+    roots = Path(certifi.where()).read_text()
+    certificate = re.search(
+        r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", roots, re.S
+    ).group()
+    bundle = tmp_path / "injected-ca.pem"
+    bundle.write_text(certificate + "\n")
+    monkeypatch.setenv("SSL_CERT_FILE", str(bundle))
+
+    # GuideLLM leaves trust_env at HTTPX's default. The negative control shows
+    # that selecting the injected bundle depends on environment trust.
+    options = {} if trust_env else {"trust_env": False}
+    async with httpx.AsyncClient(verify=True, **options) as client:
+        context = client._transport._pool._ssl_context
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname
+        trusted = context.get_ca_certs(binary_form=True)
+
+    injected = ssl.PEM_cert_to_DER_cert(certificate)
+    if trust_env:
+        assert trusted == [injected]
+    else:
+        assert injected in trusted
+        assert len(trusted) > 1
+
+
 class TestInsecureFlagForwarding:
     """Whether the runner is told to skip verification.
 
@@ -274,7 +314,7 @@ class TestInsecureFlagForwarding:
                 )
             )
 
-        assert "GPUSTACK_INSECURE_TLS is set" in caplog.text
+        assert "Worker insecure TLS is enabled" in caplog.text
         assert "--progress-insecure-skip-tls-verify" in caplog.text
 
     def test_the_worker_token_is_passed_to_the_container(self):
@@ -288,18 +328,31 @@ class TestInsecureFlagForwarding:
 
 
 class TestResolveProgressInsecureTLS:
-    """What puts the progress channel into insecure mode.
-
-    Only GPUSTACK_INSECURE_TLS, the worker-wide switch. There is deliberately no
-    benchmark-only one: it would let benchmarks skip verification while the
-    worker's own connection to the same server could not. The variable cannot
-    reach the benchmark container on its own -- filter_env_vars strips
-    GPUSTACK_* -- so it is resolved here and forwarded as a runner flag.
-    """
+    """Progress and inference resolve the same environment/config policy as the worker."""
 
     def test_off_by_default(self):
         assert bm_runner.resolve_progress_insecure_tls() is False
 
     def test_the_worker_wide_switch_enables_it(self, monkeypatch):
-        monkeypatch.setattr(bm_runner.envs, "INSECURE_TLS", True)
+        monkeypatch.setattr(envs, "INSECURE_TLS", True)
         assert bm_runner.resolve_progress_insecure_tls() is True
+
+    @pytest.mark.parametrize(
+        "env_insecure,config_insecure,expected",
+        [
+            (False, False, False),
+            (False, True, True),
+            (True, False, True),
+            (True, True, True),
+        ],
+    )
+    def test_environment_and_config_use_the_worker_policy(
+        self, monkeypatch, env_insecure, config_insecure, expected
+    ):
+        monkeypatch.setattr(envs, "INSECURE_TLS", env_insecure)
+        monkeypatch.setattr(
+            config_module,
+            "get_global_config",
+            lambda: SimpleNamespace(insecure_tls=config_insecure),
+        )
+        assert bm_runner.resolve_progress_insecure_tls() is expected

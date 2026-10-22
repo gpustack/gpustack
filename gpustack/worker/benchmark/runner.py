@@ -8,10 +8,9 @@ from urllib.parse import urlparse
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
 from gpustack.config.registration import read_worker_token
-from gpustack import envs
 from gpustack.envs import BENCHMARK_DATASET_SHAREGPT_PATH, BENCHMARK_REQUEST_TIMEOUT
 from gpustack.logging import setup_logging
-from gpustack.ssl_context import resolve_ca_bundle
+from gpustack.ssl_context import insecure_tls_requested, resolve_ca_bundle
 from gpustack.schemas.benchmark import (
     BenchmarkTargetModeEnum,
     DATASET_RANDOM,
@@ -56,21 +55,13 @@ PROGRESS_CA_BUNDLE_PATH = "/etc/gpustack/progress-ca-bundle.crt"
 
 
 def resolve_progress_insecure_tls() -> bool:
-    """Whether the benchmark container should skip TLS verification on progress.
+    """Resolve the worker TLS policy for progress and gateway requests.
 
-    Driven by ``GPUSTACK_INSECURE_TLS`` alone. It means "this worker cannot
-    verify the server's certificate", and progress reporting is exactly the
-    worker talking to the server, so it already covers this case -- a
-    benchmark-only switch would let benchmarks skip verification while the
-    worker's own connection to the same server could not, which is not a
-    distinction worth configuring.
-
-    It has to be resolved here because the variable cannot propagate on its own:
-    ``filter_env_vars`` strips ``GPUSTACK_*`` before the container env is built,
-    so this process (a spawn child, which does inherit it) is the last place
-    that can turn it into a runner flag.
+    Use the same environment/config predicate as make_ssl_context(). The
+    benchmark container needs explicit options because GPUSTACK_* variables
+    and the worker's config file do not propagate to its HTTP clients.
     """
-    return envs.INSECURE_TLS
+    return insecure_tls_requested()
 
 
 def _local_model_snapshot(
@@ -253,9 +244,16 @@ class BenchmarkRunner:
             env = filter_env_vars(os.environ)
             self._drop_worker_ca_env(env)
 
-        # Resolved before the args so the two agree: --progress-ca-cert is only
-        # forwarded when the file it names is actually going to be there.
-        ca_file = self._progress_ca_file()
+        inference_https = (
+            getattr(self._benchmark, "target_mode", None)
+            == BenchmarkTargetModeEnum.ROUTE
+            and urlparse(self._route_target()).scheme == "https"
+        )
+        # HTTPX uses SSL_CERT_FILE with verify=True. Inject file content rather
+        # than inheriting a path that only exists on the worker.
+        ca_file = self._progress_ca_file(inference_https=inference_https)
+        if inference_https and ca_file is not None:
+            env["SSL_CERT_FILE"] = ca_file.path
         command_args = self._build_command_args(with_ca_cert=ca_file is not None)
         self._create_workload(
             deployment_metadata=deployment_metadata,
@@ -292,33 +290,26 @@ class BenchmarkRunner:
         for stale in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
             env.pop(stale, None)
 
-    def _progress_ca_file(self) -> Optional[ContainerFile]:
-        """The CA bundle to hand the container, injected as file content.
+    def _progress_ca_file(
+        self, inference_https: bool = False
+    ) -> Optional[ContainerFile]:
+        """Inject the worker's trust bundle for HTTPS progress or inference.
 
-        The progress endpoint is the server's own URL, so on an HTTPS deployment
-        fronted by a private CA the container has to verify a certificate the
-        worker already trusts -- and it cannot. The benchmark image is a separate
-        ``gpustack/benchmark-runner`` image whose entrypoint is the runner CLI, so
-        it never runs ``gpustack-prerun.sh`` and never sees the CAs an operator
-        dropped into ``/usr/local/share/ca-certificates/``. Every progress PATCH
-        then dies with CERTIFICATE_VERIFY_FAILED.
+        The container does not import the worker's private CAs on startup, so
+        pass the same bundle that make_ssl_context() selects as file content.
 
-        So hand it the bundle the worker itself verifies against -- private CAs
-        already merged in by ``update-ca-certificates``. It travels as container
-        file content rather than through a shared directory: the runtime writes
-        it into the container itself (a tar upload before start on Docker, a
-        ConfigMap on Kubernetes), so nothing is written anywhere the container
-        can reach beforehand, nothing outlives the run, and the path inside the
-        container is ours to choose rather than one that has to exist identically
-        on the host.
+        Args:
+            inference_https: Whether the route inference target uses HTTPS.
 
-        Returns None when there is nothing to verify (plain HTTP), when
-        verification is switched off, or when the bundle cannot be read -- the
-        last of which warns rather than raising, since the measurement only needs
-        the model endpoint and a run must not be lost over progress telemetry.
+        Returns:
+            The bundle file, or None when verification is unnecessary or only
+            progress reporting needs an unreadable bundle.
+
+        Raises:
+            ValueError: The HTTPS inference target needs a bundle that cannot
+                be read. Refuse to substitute a different trust store.
         """
-        if not self._progress_is_https:
-            # Progress goes out over plain HTTP; no trust store is consulted.
+        if not (self._progress_is_https or inference_https):
             return None
 
         if self._progress_insecure_skip_tls_verify:
@@ -332,6 +323,10 @@ class BenchmarkRunner:
             with open(source, "r", encoding="utf-8") as bundle:
                 content = bundle.read()
         except OSError as e:
+            if inference_https:
+                raise ValueError(
+                    "Cannot read the worker CA bundle for HTTPS benchmark inference"
+                ) from e
             logger.warning(
                 f"Failed to read the CA bundle for benchmark progress reporting: "
                 f"{e}. Progress updates to {self._api_url} may fail TLS "
@@ -415,11 +410,8 @@ class BenchmarkRunner:
         self, with_ca_cert: bool = False
     ) -> List[str]:
         b = self._benchmark
-        # Where the load goes, and what it asks for by name. In `route` mode
-        # both change together: the target is the server's benchmark proxy
-        # (which resolves the route and load-balances exactly as `/v1` does)
-        # and the name is the route's, not the model's -- a route is what the
-        # proxy matches on.
+        # Route benchmarks enter through the gateway, using the route's name
+        # so routing, load balancing and streaming follow production traffic.
         route_mode = getattr(b, "target_mode", None) == BenchmarkTargetModeEnum.ROUTE
         if route_mode and not self._route_name:
             # Refused rather than fallen back on, the way the resolved path is
@@ -432,7 +424,7 @@ class BenchmarkRunner:
                 "snapshot carries no route name; refusing to measure one "
                 "member and report it as the deployment"
             )
-        target = self._route_proxy_target() if route_mode else self._model_endpoint
+        target = self._route_target() if route_mode else self._model_endpoint
         served_name = self._route_name if route_mode else b.model_name
 
         # guidellm 0.7.1 registers request handlers on OpenAIRequestHandlerFactory
@@ -449,13 +441,15 @@ class BenchmarkRunner:
             },
         }
         if route_mode:
-            # The proxy is the server, and the server authenticates. The worker
-            # token is the credential this process already holds and already
-            # uses (progress reporting posts with it), so route mode needs no
-            # new secret and nothing of the user's is stored on the run.
+            # Gateway auth accepts the worker's system principal through
+            # /token-auth; the gateway selects the inference upstream.
             backend_kwargs["api_key"] = self._api_key
-            if self._progress_insecure_skip_tls_verify:
-                backend_kwargs["verify"] = False
+            # /healthz checks entrance reachability only. It is public; the
+            # gateway validates the credential on the inference requests.
+            backend_kwargs["api_routes"] = {"/health": "healthz"}
+            # Explicitly apply the worker policy; the backend's own default
+            # must not decide whether the gateway certificate is verified.
+            backend_kwargs["verify"] = not self._progress_insecure_skip_tls_verify
 
         # Load selection — one of three mutually-exclusive shapes, named by
         # benchmark_load_mode so the precedence lives in one place (the result
@@ -556,12 +550,9 @@ class BenchmarkRunner:
             else "--no-seed-increment"
         )
 
-        # Points the runner at the bundle the caller is injecting as file content.
-        # Scoped to the progress channel on purpose: SSL_CERT_FILE would replace
-        # the trust store for every TLS call the container makes, so a bundle
-        # holding only a private CA would leave the runner unable to verify
-        # anything else.
-        if with_ca_cert:
+        # Progress takes an explicit CA path; start() also sets SSL_CERT_FILE
+        # when HTTPS inference needs the same worker trust bundle.
+        if with_ca_cert and self._progress_is_https:
             command_args.extend(["--progress-ca-cert", PROGRESS_CA_BUNDLE_PATH])
 
         # Only forwarded for an HTTPS progress endpoint: on plain HTTP the flag is
@@ -575,7 +566,8 @@ class BenchmarkRunner:
         # otherwise get no log line pointing at its cause.
         if self._progress_insecure_skip_tls_verify and self._progress_is_https:
             logger.warning(
-                "GPUSTACK_INSECURE_TLS is set: TLS verification is disabled for "
+                "Worker insecure TLS is enabled (GPUSTACK_INSECURE_TLS or "
+                "insecure_tls): TLS verification is disabled for "
                 f"benchmark progress reporting to {self._api_url}. Prefer "
                 "importing the server's CA into /usr/local/share/ca-certificates/ "
                 "on this worker. Note the benchmark image must support "
@@ -706,19 +698,16 @@ class BenchmarkRunner:
         )
         resp.raise_for_status()
 
-    def _route_proxy_target(self) -> str:
-        """The server's benchmark proxy, which fronts the deployment's route.
-
-        Not `/v1` directly: that door authenticates a USER, and this process
-        holds a worker token rather than anyone's credentials. The proxy is the
-        same resolution and the same load balancer behind a worker-authenticated
-        prefix, so `route` mode needs no key of the user's and stores no secret
-        on the run.
-
-        The path stops before `/v1`, which the load generator appends itself.
-        """
-        base = self._api_url.split("/v2/benchmarks/")[0]
-        return f"{base}/v2/benchmark-proxy"
+    def _route_target(self) -> str:
+        """Return the Higress entrance recorded by the server at creation."""
+        snapshot = getattr(self._benchmark, "snapshot", None)
+        gateway_url = getattr(snapshot, "gateway_url", None)
+        if not gateway_url:
+            raise ValueError(
+                "Route benchmark snapshot has no gateway URL. Recreate the "
+                "benchmark to resolve the Higress entrance."
+            )
+        return gateway_url.rstrip("/")
 
     def _get_configured_mounts(self) -> List[ContainerMount]:
         """

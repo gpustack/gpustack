@@ -529,6 +529,9 @@ class BenchmarkSnapshot(BaseModel):
     # else entirely — so "which route, under what name" is part of what the
     # numbers mean.
     route_name: Optional[str] = None
+    # Higress entrance resolved from the cluster override, server external URL,
+    # or creation request. Keeping it here fixes the target for this run.
+    gateway_url: Optional[str] = None
 
 
 class BenchmarkMetricsLite(SQLModel):
