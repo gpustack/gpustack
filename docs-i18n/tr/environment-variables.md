@@ -46,6 +46,12 @@ Bu ortam değişkenleri genellikle üçüncü taraf hizmet entegrasyonları içi
 | `HF_ENDPOINT`                           | Hugging Face Hub bitiş noktası. örneğin, `https://hf-mirror.com` | (boş) | Sunucu ve Çalışan |
 | `HF_TOKEN`                              | Hugging Face Hub erişim jetonu. | (boş) | Sunucu ve Çalışan |
 
+### Hata Ayıklama { #debugging }
+
+| Değişken | Açıklama | Varsayılan | Geçerli olduğu yer |
+| --- | --- | --- | --- |
+| `GPUSTACK_DEBUG_ENABLE_TRACEMALLOC` | Başlangıçta Python bellek ayırma izlemeyi etkinleştirir. `--debug` seçeneğinden bağımsızdır; izleme CPU ve bellek yükünü artırır. Değişiklikten sonra GPUStack yeniden başlatılmalıdır. | `false` | Server ve Worker |
+
 ### Veritabanı Yapılandırması { #database-configuration }
 
 | Değişken | Açıklama | Varsayılan | Şunlar için geçerlidir: |

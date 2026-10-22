@@ -51,3 +51,14 @@ def envs_with(monkeypatch):
 )
 def test_insecure_tls(envs_with, value, enabled):
     assert envs_with(GPUSTACK_INSECURE_TLS=value).INSECURE_TLS is enabled
+
+
+@pytest.mark.parametrize(
+    "value, enabled",
+    [(None, False), ("false", False), ("true", True), ("TRUE", True)],
+)
+def test_debug_enable_tracemalloc(envs_with, value, enabled):
+    assert (
+        envs_with(GPUSTACK_DEBUG_ENABLE_TRACEMALLOC=value).DEBUG_ENABLE_TRACEMALLOC
+        is enabled
+    )

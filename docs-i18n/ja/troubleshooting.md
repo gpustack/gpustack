@@ -30,6 +30,8 @@ sudo docker run -d --name gpustack \
 gpustack reload-config --set debug=true
 ```
 
+`--debug` は詳細ログを有効にしますが、Python のメモリ割り当て追跡は開始しません。メモリプロファイリングを有効にするには、GPUStack の起動前に `GPUSTACK_DEBUG_ENABLE_TRACEMALLOC=true` を設定してください。既定値は `false` で、`--debug` とは独立しており、変更後は再起動が必要です。追跡には CPU とメモリの追加負荷がかかるため、メモリ使用量を調査するときに有効にしてください。
+
 ## ログレベルの設定 { #configure-log-level }
 
 ログレベルのエンドポイントには認証が必要です。

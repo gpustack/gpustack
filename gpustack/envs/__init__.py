@@ -4,6 +4,12 @@ import logging
 import os
 from typing import List, Optional, Set
 
+# Memory profiling is independent of the log level because tracing allocations
+# adds overhead to normal debug sessions.
+DEBUG_ENABLE_TRACEMALLOC = (
+    os.getenv("GPUSTACK_DEBUG_ENABLE_TRACEMALLOC", "false").lower() == "true"
+)
+
 # Database configuration
 DB_ECHO = os.getenv("GPUSTACK_DB_ECHO", "false").lower() == "true"
 # Diagnostic: when non-empty, every executed SQL whose text contains this

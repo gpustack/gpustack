@@ -46,6 +46,12 @@ GPUStack 支持通过多种环境变量进行配置。
 | `HF_ENDPOINT`                           | Hugging Face Hub 端点，例如 `https://hf-mirror.com`。 | (empty) | Server & Worker |
 | `HF_TOKEN`                              | Hugging Face Hub 访问 Token。                           | (empty) | Server & Worker |
 
+### 调试 { #debugging }
+
+| 变量 | 说明 | 默认值 | 适用范围 |
+| --- | --- | --- | --- |
+| `GPUSTACK_DEBUG_ENABLE_TRACEMALLOC` | 启动时启用 Python 内存分配追踪。独立于 `--debug`；追踪会增加 CPU 和内存开销。修改后需要重启 GPUStack。 | `false` | Server 和 Worker |
+
 ### 数据库配置 { #database-configuration }
 
 | 变量                   | 说明                                  | 默认值 | 适用对象 |
