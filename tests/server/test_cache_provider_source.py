@@ -90,8 +90,12 @@ async def _entries_session():
 
 
 @pytest_asyncio.fixture
-async def session():
+async def session(monkeypatch):
     async with _entries_session() as opened:
+        monkeypatch.setattr(
+            "gpustack.server.cache_provider_catalog.async_session",
+            lambda: AsyncSession(opened.bind, expire_on_commit=False),
+        )
         yield opened
 
 
