@@ -1,5 +1,6 @@
+from datetime import datetime
 from enum import Enum
-from typing import Optional, ClassVar, List
+from typing import Optional, ClassVar, Dict, List
 
 from pydantic import ConfigDict, BaseModel
 from sqlalchemy import UniqueConstraint, Column, Integer, ForeignKey
@@ -75,6 +76,14 @@ class GPUInstancePersistentVolumeStatus(BaseModel):
     """
     Cluster ids whose downstream object is not yet cleaned up; the row is
     hard-deleted once this is empty.
+    """
+
+    unreachable_since: Optional[Dict[int, datetime]] = None
+    """
+    When each unreachable cluster was first seen unreachable — the per-cluster
+    wait clock. A field of the hold itself, so an unrelated write to the row
+    cannot reset it, and per cluster, so an outage never inherits another
+    cluster's clock. A cluster's clock is kept until it recovers.
     """
 
 

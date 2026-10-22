@@ -3,7 +3,7 @@ import logging
 import asyncio
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, NamedTuple, Tuple, Optional
 from cachetools import TTLCache
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
@@ -54,6 +54,10 @@ from gpustack.schemas.principals import (
 from gpustack.schemas.clusters import (
     Cluster,
     ClusterProvider,
+)
+from gpustack.schemas.workers import (
+    Worker,
+    WorkerStateEnum,
 )
 
 from gpustack.server.bus import Event, EventType, event_field, resolve_event_id
@@ -1129,16 +1133,45 @@ class GPUInstanceController:
         return "\n".join(parts)
 
 
+class _ClusterProbe(NamedTuple):
+    """The outcome of one finalize round's sweep over the live clusters."""
+
+    finalizing: List[int]
+    """Clusters that were reachable and still hold the downstream object."""
+
+    unreachable: List[int]
+    """Clusters that may still hold it but cannot be reached right now."""
+
+
 class _PersistentVolumeFinalizeController:
     """Shared machinery for the PV / PVT soft-delete finalizers.
 
     A PV / PVT ``DELETE`` is a soft delete (``status.phase = Deleting``); these
-    leader-only controllers finalize such rows: they enumerate every Kubernetes
-    cluster, probe the downstream CR, delete it where present, record the
-    clusters still holding it in ``status.finalizing``, and hard-delete the row
-    once none remain. Steady polling is an in-memory ``add_after`` requeue with
-    no DB write, and ``status.finalizing`` is persisted only when it changes, so
-    the finalizer adds no write-to-self churn.
+    leader-only controllers finalize such rows: they enumerate every live
+    Kubernetes cluster, probe the downstream CR, delete it where present, record
+    the clusters still holding it in ``status.finalizing``, and hard-delete the
+    row once none remain. Steady polling is an in-memory ``add_after`` requeue
+    with no DB write, and ``status.finalizing`` is persisted only when it
+    changes, so the finalizer adds no write-to-self churn.
+
+    A cluster is judged by its workers, because a worker is what the apiserver
+    proxy routes the request through:
+
+    - no worker at all, and the row never recorded the cluster — the cluster
+      never held a downstream object (the server creates it through that same
+      proxy), so it is skipped;
+    - workers, but none ``READY`` — the cluster may still hold the object, so
+      the row waits for the connection to come back, for at most
+      ``GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE`` seconds, and is
+      released anyway after that;
+    - a ``READY`` worker — the cluster is probed, its downstream object deleted,
+      and the row waits until the deletion is confirmed.
+
+    A cluster the row already records in ``status.finalizing`` is one a probe
+    found holding the object, so it is never skipped on the strength of an
+    empty worker table: a worker row can disappear entirely (a worker without
+    an ``external_id`` is deleted rather than soft-deleted), and the row's own
+    record is the stronger evidence.
 
     Subclasses bind the model + the downstream probe/delete + the "still
     referenced?" gate; the base owns the queue, the Deleting-only enqueue, the
@@ -1167,6 +1200,11 @@ class _PersistentVolumeFinalizeController:
         # ``add_after`` into a busy loop.
         self._finalize_interval: float = max(
             1, envs.GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL
+        )
+        # How long a cluster that cannot be reached is waited for before the
+        # row is released anyway. 0 gives up at once.
+        self._unreachable_tolerance: float = max(
+            0, envs.GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE
         )
 
     async def start(self):
@@ -1265,35 +1303,133 @@ class _PersistentVolumeFinalizeController:
                 return
             owner_identifier = principal_namespace_identifier(principal)
 
+            clusters = await self._live_clusters(session)
+
             blocked = await self._blocked_reason(session, row)
             if blocked is not None:
-                await self._write_status(session, row, phase_message=blocked)
+                await self._write_status(
+                    session,
+                    row,
+                    finalizing=self._prune_finalizing(row, clusters),
+                    phase_message=blocked,
+                    # This path does not probe the clusters, so it cannot tell
+                    # whether an unreachable-cluster hold is still running.
+                    # Carrying an unverifiable stamp across it would let a stamp
+                    # from an earlier hold expire a fresh one — the row would be
+                    # released with no wait at all, which is the one thing the
+                    # window exists to prevent. The wait restarts when the row
+                    # is unblocked and the clusters are observed again.
+                    unreachable_since=None,
+                )
                 self._requeue_after(row, self._finalize_interval)
                 return
 
-            finalizing = await self._probe_clusters(session, row, owner_identifier)
+            probe = await self._probe_clusters(session, row, owner_identifier, clusters)
+            finalizing, phase_message, unreachable_since = self._verdict(row, probe)
             if not finalizing:
                 await self._hard_delete(session, row)
                 return
 
-            await self._write_status(session, row, finalizing=finalizing)
+            await self._write_status(
+                session,
+                row,
+                finalizing=finalizing,
+                phase_message=phase_message,
+                unreachable_since=unreachable_since,
+            )
             self._requeue_after(row, self._finalize_interval)
 
-    async def _probe_clusters(
-        self, session: AsyncSession, row, owner_identifier: str
-    ) -> List[int]:
-        """Probe every Kubernetes cluster; delete the downstream CR where
-        present. Returns the cluster ids that still hold the object (a cluster
-        whose probe errored is kept so the next round retries it)."""
-        finalizing: List[int] = []
-        clusters = await Cluster.all_by_fields(
+    async def _live_clusters(self, session: AsyncSession) -> List[Cluster]:
+        """The live Kubernetes clusters — the ones that can hold a downstream object.
+
+        A soft-deleted cluster is gone as far as the downstream CR is concerned:
+        the apiserver proxy refuses it, so nothing can be deleted there and
+        nothing has to be waited for either.
+        """
+        return await Cluster.all_by_fields(
             session,
             fields={
                 "provider": ClusterProvider.Kubernetes,
                 "deleted_at": None,
             },
         )
+
+    @staticmethod
+    def _prune_finalizing(row, clusters: List[Cluster]) -> List[int]:
+        """Drop the clusters that are no longer live from ``status.finalizing``.
+
+        A cluster that was removed from the database cannot hold the downstream
+        object, so keeping it in the list would strand the row in ``Deleting``
+        forever — the very symptom this controller exists to prevent.
+        """
+        status = row.status
+        listed = (
+            list(status.finalizing) if status is not None and status.finalizing else []
+        )
+        if not listed:
+            return []
+        live = {cluster.id for cluster in clusters}
+        return sorted(cid for cid in listed if cid in live)
+
+    async def _probe_clusters(
+        self,
+        session: AsyncSession,
+        row,
+        owner_identifier: str,
+        clusters: List[Cluster],
+    ) -> _ClusterProbe:
+        """Probe every live cluster; delete the downstream CR where present.
+
+        Returns the clusters that still hold the object, split into the ones
+        that could be reached and the ones that could not (a cluster whose
+        workers are all down). A cluster whose probe errored is kept so the
+        next round retries it.
+        """
+        finalizing: List[int] = []
+        unreachable: List[int] = []
+        # The clusters a previous probe found holding the object. A worker row
+        # can disappear entirely (a worker without an ``external_id`` is deleted
+        # rather than soft-deleted), and an empty worker table must not make the
+        # finalizer forget that the row already recorded the cluster as a holder:
+        # that record is the stronger evidence.
+        status = row.status
+        listed = status.finalizing if status is not None else None
+        recorded = set(listed or [])
         for cluster in clusters:
+            try:
+                if not await self._has_ready_worker(session, cluster):
+                    if (
+                        not await self._has_worker(session, cluster)
+                        and cluster.id not in recorded
+                    ):
+                        # The cluster never had a worker and the row never
+                        # recorded it, so it never held the downstream object:
+                        # the server creates it through the apiserver proxy,
+                        # which needs a READY worker.
+                        logger.info(
+                            "Skipping cluster %s for %s %s: it has no worker",
+                            cluster.id,
+                            self.SOURCE,
+                            row.name,
+                        )
+                        continue
+                    # The cluster has workers but none of them is READY, or its
+                    # worker rows are gone even though the row recorded it as a
+                    # holder. Either way the apiserver proxy cannot reach it, so
+                    # the remote delete cannot run now; wait for the connection
+                    # to come back.
+                    unreachable.append(cluster.id)
+                    continue
+            except Exception:
+                logger.exception(
+                    "Failed checking the workers of cluster %s for %s %s",
+                    cluster.id,
+                    self.SOURCE,
+                    row.name,
+                )
+                finalizing.append(cluster.id)
+                continue
+
             try:
                 ops = self._build_ops(cluster, owner_identifier)
                 async with ops:
@@ -1311,7 +1447,140 @@ class _PersistentVolumeFinalizeController:
         # same set of ids in a different row order must not trip the
         # change-gated status write (a spurious DB write + bus event every
         # finalize round).
-        return sorted(finalizing)
+        return _ClusterProbe(
+            finalizing=sorted(finalizing),
+            unreachable=sorted(unreachable),
+        )
+
+    @staticmethod
+    async def _has_ready_worker(session: AsyncSession, cluster: Cluster) -> bool:
+        """Whether the cluster has a READY worker.
+
+        The same gate the apiserver proxy applies: it serves the downstream API
+        through a READY worker and answers 503 without one. Mirroring it here
+        means the finalizer never issues a remote call the proxy would refuse.
+        """
+        return await Worker.exist_by_fields(
+            session,
+            fields={"cluster_id": cluster.id, "state": WorkerStateEnum.READY},
+        )
+
+    @staticmethod
+    async def _has_worker(session: AsyncSession, cluster: Cluster) -> bool:
+        """Whether the cluster has any worker at all.
+
+        A cluster that never had a worker never held the downstream object, so
+        it must not keep the row in ``Deleting``. A worker that was removed
+        keeps its (soft-deleted) row, so a cluster that lost its workers is
+        "has workers" — it may still hold the object, and the row waits for it.
+
+        A worker without an ``external_id`` is deleted rather than
+        soft-deleted, so it leaves no row behind and the cluster looks like it
+        never had one. The caller decides what to make of that.
+        """
+        return await Worker.exist_by_fields(session, fields={"cluster_id": cluster.id})
+
+    def _verdict(
+        self, row, probe: _ClusterProbe
+    ) -> Tuple[List[int], Optional[str], Optional[Dict[int, datetime]]]:
+        """What the row keeps waiting for after a probe round.
+
+        Returns the clusters the row still waits for, the message to show, and
+        the wait clock of the clusters that cannot be reached.
+        """
+        if not probe.unreachable:
+            return probe.finalizing, None, None
+
+        clocks = self._unreachable_clocks(row, probe.unreachable)
+        expired = [
+            cid for cid, since in clocks.items() if self._unreachable_expired(since)
+        ]
+        waiting = [cid for cid in clocks if cid not in expired]
+        message = self._unreachable_message(waiting, expired)
+
+        if expired:
+            # The clusters stayed unreachable for the whole window: release them
+            # rather than hold the row forever. The downstream objects may
+            # survive in those clusters, but a row that can never finalize is
+            # worse than a leftover object an operator can clean up.
+            #
+            # Their clocks are KEPT, which is what makes the give-up stick: a
+            # cleared clock would be re-stamped on the next round, the clusters
+            # would go back into ``finalizing``, and the row would wait — and
+            # be released — over and over instead of once. A clock is dropped
+            # when its cluster recovers, which is when the hold for it ends.
+            status = row.status
+            previous = status.phase_message if status is not None else None
+            if previous != message:
+                # On the transition only. The row is re-probed on every
+                # requeue, and an unconditional warning would repeat it every
+                # few seconds for as long as the row lives.
+                logger.warning(
+                    "%s %s gives up on unreachable cluster(s) %s after %ss; "
+                    "the custom resource may still exist in those clusters",
+                    self.SOURCE,
+                    row.name,
+                    ", ".join(str(cid) for cid in expired),
+                    self._unreachable_tolerance,
+                )
+
+        return sorted(probe.finalizing + waiting), message, clocks
+
+    def _unreachable_clocks(self, row, unreachable: List[int]) -> Dict[int, datetime]:
+        """The wait clock of each cluster that cannot be reached.
+
+        A cluster's clock starts when it is first seen unreachable and is kept
+        until it recovers. It is per cluster on purpose: a row-level clock
+        would let a fresh outage inherit an expired clock from another
+        cluster's outage, and the row would then be released with no wait at
+        all — the one thing the window exists to prevent.
+        """
+        now = datetime.now(timezone.utc)
+        status = row.status
+        stored = status.unreachable_since if status is not None else None
+        stored = stored or {}
+        clocks: Dict[int, datetime] = {}
+        for cluster_id in unreachable:
+            since = stored.get(cluster_id)
+            if since is None:
+                clocks[cluster_id] = now
+            elif since.tzinfo is None:
+                clocks[cluster_id] = since.replace(tzinfo=timezone.utc)
+            else:
+                clocks[cluster_id] = since
+        return clocks
+
+    def _unreachable_expired(self, since: datetime) -> bool:
+        """Whether a cluster has been unreachable for longer than the window."""
+        held = (datetime.now(timezone.utc) - since).total_seconds()
+        return held >= self._unreachable_tolerance
+
+    def _unreachable_message(self, waiting: List[int], expired: List[int]) -> str:
+        """The message shown while the row waits for unreachable clusters.
+
+        It has to say why the row is waiting, that the wait is bounded, and what
+        is left behind if the bound passes — a user watching a row that will not
+        move has no other way to learn any of them.
+        """
+        clauses = []
+        if waiting:
+            clauses.append(
+                "Waiting for cluster(s) "
+                + ", ".join(str(cid) for cid in waiting)
+                + " to become reachable again (no ready worker) to finish the "
+                "deletion"
+            )
+        if expired:
+            clauses.append(
+                "gave up on unreachable cluster(s) "
+                + ", ".join(str(cid) for cid in expired)
+                + ", whose custom resource may still exist"
+            )
+        if waiting:
+            clauses.append(
+                f"the row is released after {self._unreachable_tolerance}s anyway"
+            )
+        return "; ".join(clauses)
 
     def _build_ops(self, cluster: Cluster, owner_identifier: str) -> ClusterOps:
         return ClusterOps(
@@ -1328,17 +1597,25 @@ class _PersistentVolumeFinalizeController:
         *,
         finalizing: Optional[List[int]] = None,
         phase_message: Optional[str] = None,
+        unreachable_since: Optional[Dict[int, datetime]] = None,
     ):
-        """Persist ``finalizing`` / ``phase_message`` onto status — but only on a
-        real change, so a steady wait re-queues without a DB write."""
+        """Persist ``finalizing`` / ``phase_message`` / ``unreachable_since`` onto
+        status — but only on a real change, so a steady wait re-queues without a
+        DB write."""
         base = row.status or self.STATUS_CLS()
         target_finalizing = finalizing if finalizing is not None else base.finalizing
-        if base.phase_message == phase_message and (base.finalizing or []) == (
-            target_finalizing or []
+        if (
+            base.phase_message == phase_message
+            and (base.finalizing or []) == (target_finalizing or [])
+            and base.unreachable_since == unreachable_since
         ):
             return
         updated = base.model_copy(
-            update={"finalizing": target_finalizing, "phase_message": phase_message}
+            update={
+                "finalizing": target_finalizing,
+                "phase_message": phase_message,
+                "unreachable_since": unreachable_since,
+            }
         )
         await row.update(session, source={"status": updated})
 

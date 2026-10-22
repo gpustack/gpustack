@@ -8,11 +8,13 @@ waits. The cluster enumeration + downstream ops are mocked; the DB is a real
 in-memory sqlite so the ORM queries / delete run for real.
 """
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+from kubernetes_asyncio import client
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -25,6 +27,7 @@ from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolumeStatus,
 )
 from gpustack.schemas.principals import Principal, PrincipalType
+from gpustack.schemas.workers import Worker, WorkerStateEnum
 
 NAMESPACE = "gpustack-acme"
 
@@ -54,6 +57,7 @@ async def engine():
             Principal.__table__,
             GPUInstancePersistentVolume.__table__,
             GPUInstance.__table__,
+            Worker.__table__,
         ):
             await conn.run_sync(table.create)
     yield e
@@ -79,11 +83,38 @@ async def _seed(
     instance_ref=False,
     instance_phase=None,
     instance_count=1,
+    workers=((10, WorkerStateEnum.READY), (20, WorkerStateEnum.READY)),
+    unreachable_since=None,
 ):
     async with AsyncSession(engine, expire_on_commit=False) as s:
         s.add(Principal(id=1, kind=PrincipalType.ORG, name="acme"))
+        for index, worker in enumerate(workers, start=1):
+            cluster_id, state = worker[0], worker[1]
+            # A removed worker keeps its row: the delete route stamps DELETING
+            # and soft-deletes it. That is what tells "never had a worker" apart
+            # from "had a worker that is gone".
+            removed = len(worker) > 2 and worker[2]
+            s.add(
+                Worker(
+                    id=index,
+                    name=f"w-{index}",
+                    hostname=f"h-{index}",
+                    ip=f"10.0.0.{index}",
+                    ifname="eth0",
+                    port=80,
+                    status={},
+                    worker_uuid=f"uuid-{index}",
+                    cluster_id=cluster_id,
+                    state=state,
+                    deleted_at=datetime(2026, 10, 22) if removed else None,
+                )
+            )
         status = (
-            GPUInstancePersistentVolumeStatus(phase=phase, finalizing=finalizing)
+            GPUInstancePersistentVolumeStatus(
+                phase=phase,
+                finalizing=finalizing,
+                unreachable_since=unreachable_since,
+            )
             if phase
             else None
         )
@@ -118,9 +149,51 @@ async def _get_pv(engine):
         return await GPUInstancePersistentVolume.one_by_id(s, 1)
 
 
-def _mock_clusters(monkeypatch, controller, ops_by_cluster):
-    clusters = [SimpleNamespace(id=cid) for cid in ops_by_cluster]
-    monkeypatch.setattr(Cluster, "all_by_fields", AsyncMock(return_value=clusters))
+async def _release_instance(engine):
+    """Drop the instance reference that blocks the row."""
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        instance = await GPUInstance.one_by_id(s, 1)
+        if instance is not None:
+            instance.persistent_volume_id = None
+            await s.commit()
+
+
+async def _set_worker_state(engine, cluster_id, state):
+    """Flip the state of the cluster's worker."""
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        worker = await Worker.one_by_fields(s, fields={"cluster_id": cluster_id})
+        worker.state = state
+        await s.commit()
+
+
+def _mock_clusters(monkeypatch, controller, ops_by_cluster, deleted=()):
+    """Mock the live-cluster enumeration.
+
+    The mock honours the ``fields`` argument the way the real query does, so a
+    regression in the provider / deleted_at filter shows up in every test that
+    uses it — not only in the one that spells the filter out.
+
+    ``deleted`` names the clusters that are soft-deleted: they are still in the
+    database, but they cannot hold a downstream object any more.
+    """
+    clusters = [
+        SimpleNamespace(
+            id=cid,
+            provider=ClusterProvider.Kubernetes,
+            deleted_at=datetime(2026, 10, 21) if cid in deleted else None,
+        )
+        for cid in ops_by_cluster
+    ]
+
+    async def fake_all_by_fields(session, fields=None, **kwargs):
+        return [
+            c
+            for c in clusters
+            if fields is None
+            or all(getattr(c, k, None) == v for k, v in fields.items())
+        ]
+
+    monkeypatch.setattr(Cluster, "all_by_fields", fake_all_by_fields)
     monkeypatch.setattr(
         controller, "_build_ops", lambda cluster, owner: ops_by_cluster[cluster.id]
     )
@@ -344,3 +417,380 @@ async def test_non_kubernetes_clusters_are_not_probed(engine, controller, monkey
 
     assert await _get_pv(engine) is None
     k8s_ops[20].delete_persistent_volume.assert_awaited_once_with("pv-1")
+
+
+@pytest.mark.asyncio
+async def test_cluster_without_any_worker_is_skipped(engine, controller, monkeypatch):
+    """A cluster that never had a worker never held the downstream object: the
+    server creates it through the same proxy, and the proxy needs a worker. It
+    must not keep the row in Deleting."""
+    await _seed(engine, workers=())
+    ops = {20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    await controller._finalize(1)
+
+    ops[20].delete_persistent_volume.assert_not_called()
+    assert await _get_pv(engine) is None
+
+
+@pytest.mark.asyncio
+async def test_a_cluster_the_row_recorded_is_not_skipped_when_its_worker_row_is_gone(
+    engine, controller, monkeypatch
+):
+    """A cluster a probe found holding the object is not skipped just because
+    its worker row is gone now.
+
+    A worker without an ``external_id`` is deleted rather than soft-deleted, so
+    the cluster looks like it never had one. The row's own record says
+    otherwise, and it is the stronger evidence: the row waits for the
+    connection to come back instead of being released silently.
+    """
+    await _seed(engine, finalizing=[20], workers=())
+    ops = {20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    await controller._finalize(1)
+
+    ops[20].delete_persistent_volume.assert_not_called()
+    pv = await _get_pv(engine)
+    assert pv is not None
+    assert pv.status.finalizing == [20]
+    assert pv.status.unreachable_since is not None  # the wait is clocked
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_cluster_is_given_up_on_after_the_window(
+    engine, controller, monkeypatch, caplog
+):
+    """The wait on a recorded cluster is bounded like any other: after the
+    window the row is released, and the release says the custom resource may
+    still be there."""
+    await _seed(
+        engine,
+        finalizing=[20],
+        workers=(),
+        unreachable_since={20: datetime(2020, 1, 1)},
+    )
+    ops = {20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    with caplog.at_level("WARNING"):
+        await controller._finalize(1)
+
+    ops[20].delete_persistent_volume.assert_not_called()
+    assert "gives up on unreachable cluster(s) 20" in caplog.text
+    assert await _get_pv(engine) is None  # released
+
+
+@pytest.mark.asyncio
+async def test_cluster_with_unready_workers_waits_for_the_connection(
+    engine, controller, monkeypatch
+):
+    """The cluster had workers, so it may still hold the downstream object. The
+    deletion waits for the connection to come back, and the remote API is not
+    called while it is down."""
+    await _seed(engine, workers=((20, WorkerStateEnum.NOT_READY),))
+    ops = {20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    await controller._finalize(1)
+
+    ops[20].delete_persistent_volume.assert_not_called()
+    pv = await _get_pv(engine)
+    assert pv is not None
+    assert pv.status.phase == "Deleting"
+    assert pv.status.finalizing == [20]
+    assert "20" in pv.status.phase_message
+    assert pv.status.unreachable_since is not None  # the wait is clocked
+
+
+@pytest.mark.asyncio
+async def test_the_wait_clock_is_not_restarted_by_the_next_round(
+    engine, controller, monkeypatch
+):
+    """The stamp is the clock of the hold itself, so the next round has to reuse
+    it. A clock that restarted every round would wait forever — the very
+    symptom this fix removes."""
+    await _seed(engine, workers=((20, WorkerStateEnum.NOT_READY),))
+    ops = {20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    await controller._finalize(1)
+    first = (await _get_pv(engine)).status.unreachable_since
+    assert first is not None
+
+    await controller._finalize(1)
+    second = (await _get_pv(engine)).status.unreachable_since
+    assert second == first
+
+
+@pytest.mark.asyncio
+async def test_cluster_with_unready_workers_is_given_up_on_after_the_window(
+    engine, controller, monkeypatch
+):
+    """The wait is bounded: a cluster that stays unreachable must not hold the
+    row forever. Once the window has passed the row is released, and the skip
+    is reported."""
+    await _seed(
+        engine,
+        workers=((20, WorkerStateEnum.NOT_READY),),
+        unreachable_since={20: datetime(2020, 1, 1)},
+    )
+    ops = {20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    await controller._finalize(1)
+
+    ops[20].delete_persistent_volume.assert_not_called()
+    assert await _get_pv(engine) is None
+
+
+@pytest.mark.asyncio
+async def test_zero_tolerance_gives_up_on_an_unreachable_cluster_at_once(
+    engine, controller, monkeypatch
+):
+    await _seed(engine, workers=((20, WorkerStateEnum.NOT_READY),))
+    ops = {20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+    controller._unreachable_tolerance = 0
+
+    await controller._finalize(1)
+
+    assert await _get_pv(engine) is None
+
+
+@pytest.mark.asyncio
+async def test_removed_cluster_is_dropped_from_finalizing_while_blocked(
+    engine, controller, monkeypatch
+):
+    """A cluster that is no longer in the database cannot hold the downstream
+    object, so it must not keep the row in Deleting — not even on the path
+    where the status write keeps the existing list."""
+    await _seed(
+        engine,
+        finalizing=[20],
+        instance_ref=True,
+        workers=(),
+    )
+    _mock_clusters(monkeypatch, controller, {})
+
+    await controller._finalize(1)
+
+    pv = await _get_pv(engine)
+    assert pv is not None
+    assert pv.status.finalizing == []
+
+
+@pytest.mark.asyncio
+async def test_soft_deleted_cluster_is_dropped_from_finalizing_while_blocked(
+    engine, controller, monkeypatch
+):
+    """A cluster that was soft-deleted cannot hold the downstream object any
+    more, so it must not keep the row in Deleting — not even on the path where
+    the status write keeps the existing list."""
+    await _seed(
+        engine,
+        finalizing=[20],
+        instance_ref=True,
+        workers=(),
+    )
+    _mock_clusters(monkeypatch, controller, {20: FakeOps(present=True)}, deleted={20})
+
+    await controller._finalize(1)
+
+    pv = await _get_pv(engine)
+    assert pv is not None
+    assert pv.status.finalizing == []
+
+
+@pytest.mark.asyncio
+async def test_the_give_up_is_reported_when_the_row_outlives_the_wait(
+    engine, controller, monkeypatch
+):
+    """The give-up drops the cluster from ``finalizing``, so the row no longer
+    names it — but the downstream custom resource may still be there, and the
+    user has to be able to see that."""
+    await _seed(
+        engine,
+        workers=((10, WorkerStateEnum.READY), (20, WorkerStateEnum.NOT_READY)),
+        unreachable_since={20: datetime(2020, 1, 1)},
+    )
+    ops = {10: FakeOps(present=True), 20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    await controller._finalize(1)
+
+    pv = await _get_pv(engine)
+    assert pv is not None
+    assert pv.status.finalizing == [10]  # 20 was given up on
+    assert "20" in pv.status.phase_message
+    # The clock is kept, so the give-up sticks (see the stickiness test below).
+    assert pv.status.unreachable_since is not None
+
+
+@pytest.mark.asyncio
+async def test_the_give_up_is_logged_once_and_not_on_every_reprobe(
+    engine, controller, monkeypatch, caplog
+):
+    """The row is re-probed on every requeue, so an unconditional warning would
+    repeat it every few seconds for as long as the row lives — the log flooding
+    the proxy gate exists to avoid."""
+    await _seed(
+        engine,
+        workers=((10, WorkerStateEnum.READY), (20, WorkerStateEnum.NOT_READY)),
+        unreachable_since={20: datetime(2020, 1, 1)},
+    )
+    ops = {10: FakeOps(present=True), 20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    with caplog.at_level("WARNING"):
+        await controller._finalize(1)
+        await controller._finalize(1)
+        await controller._finalize(1)
+
+    assert caplog.text.count("gives up on unreachable cluster(s) 20") == 1
+
+
+@pytest.mark.asyncio
+async def test_the_give_up_is_sticky_across_rounds(engine, controller, monkeypatch):
+    """The give-up has to stick.
+
+    A cleared clock would be re-stamped on the next round, the cluster would go
+    back into ``finalizing``, and the row would wait — and be released — over
+    and over instead of once. The release is the whole point of the window.
+    """
+    await _seed(
+        engine,
+        workers=((10, WorkerStateEnum.READY), (20, WorkerStateEnum.NOT_READY)),
+        unreachable_since={20: datetime(2020, 1, 1)},
+    )
+    ops = {10: FakeOps(present=True), 20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    await controller._finalize(1)
+    pv = await _get_pv(engine)
+    assert pv.status.finalizing == [10]
+    stamp = pv.status.unreachable_since
+
+    await controller._finalize(1)
+    pv = await _get_pv(engine)
+    assert pv.status.finalizing == [10]  # 20 does not come back
+    assert pv.status.unreachable_since == stamp
+
+
+@pytest.mark.asyncio
+async def test_a_new_outage_does_not_inherit_another_cluster_s_clock(
+    engine, controller, monkeypatch
+):
+    """The wait clock is per cluster.
+
+    A row-level clock would let a fresh outage inherit an expired clock from
+    another cluster's outage: cluster 10 recovers and cluster 20 goes down in
+    the same round, and cluster 20 — unreachable for zero seconds — would be
+    given up on at once. The row would then be released while cluster 20 still
+    holds the downstream object, which is the one thing the window exists to
+    prevent.
+    """
+    await _seed(
+        engine,
+        workers=((10, WorkerStateEnum.NOT_READY), (20, WorkerStateEnum.READY)),
+        unreachable_since={10: datetime(2020, 1, 1)},
+    )
+    ops = {10: FakeOps(present=True), 20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    await _set_worker_state(engine, 10, WorkerStateEnum.READY)
+    await _set_worker_state(engine, 20, WorkerStateEnum.NOT_READY)
+
+    await controller._finalize(1)
+
+    pv = await _get_pv(engine)
+    assert pv is not None
+    assert pv.status.finalizing == [10, 20]  # the row waits for cluster 20
+    assert set(pv.status.unreachable_since) == {20}
+    assert pv.status.unreachable_since[20] > datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_a_stamp_carried_through_a_block_does_not_expire_a_fresh_hold(
+    engine, controller, monkeypatch
+):
+    """The blocked path does not probe the clusters, so it cannot tell whether an
+    unreachable-cluster hold is still running. Carrying an unverifiable stamp
+    across it would let a stamp from an earlier hold expire a fresh one: the row
+    would be released with no wait at all, which is the one thing the window
+    exists to prevent."""
+    await _seed(
+        engine,
+        workers=((10, WorkerStateEnum.READY), (20, WorkerStateEnum.NOT_READY)),
+        unreachable_since={20: datetime(2020, 1, 1)},
+        instance_ref=True,
+    )
+    ops = {10: FakeOps(present=True), 20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    # Blocked: the row waits for the referencing instance, and the stamp of the
+    # hold it cannot verify is dropped.
+    await controller._finalize(1)
+    pv = await _get_pv(engine)
+    assert pv is not None
+    assert pv.status.unreachable_since is None
+
+    # The instance is released and the cluster is still down, so the row has to
+    # wait for the window instead of being released at once.
+    await _release_instance(engine)
+    await controller._finalize(1)
+    pv = await _get_pv(engine)
+    assert pv is not None
+    assert pv.status.finalizing == [10, 20]
+    assert pv.status.unreachable_since is not None
+
+
+@pytest.mark.asyncio
+async def test_a_removed_worker_makes_the_cluster_unreachable_not_skipped(
+    engine, controller, monkeypatch
+):
+    """A worker that was removed keeps its (soft-deleted) row, so the cluster
+    still counts as one that HAD a worker: it may still hold the downstream
+    object, so the row waits for it instead of skipping it. Only a cluster that
+    never had a worker is skipped."""
+    await _seed(engine, workers=((20, WorkerStateEnum.DELETING, True),))
+    ops = {20: FakeOps(present=True)}
+    _mock_clusters(monkeypatch, controller, ops)
+
+    await controller._finalize(1)
+
+    ops[20].delete_persistent_volume.assert_not_called()
+    pv = await _get_pv(engine)
+    assert pv is not None
+    assert pv.status.finalizing == [20]
+    assert "20" in pv.status.phase_message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionError("connection reset"),
+        client.exceptions.ApiException(status=503, reason="Service Unavailable"),
+    ],
+    ids=["connection-reset", "apiserver-503"],
+)
+async def test_a_failed_probe_still_keeps_the_cluster_in_finalizing(
+    engine, controller, monkeypatch, error
+):
+    """The worker pre-check must not swallow a real failure. A cluster that
+    answered but whose call failed still holds the object, so the row stays and
+    the next round retries it — a transient error and an apiserver 503 alike."""
+    await _seed(engine)
+    ops = {10: FakeOps(present=True)}
+    ops[10].delete_persistent_volume.side_effect = error
+    _mock_clusters(monkeypatch, controller, ops)
+
+    await controller._finalize(1)
+
+    pv = await _get_pv(engine)
+    assert pv is not None
+    assert pv.status.phase == "Deleting"
+    assert pv.status.finalizing == [10]
