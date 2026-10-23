@@ -4266,24 +4266,33 @@ async def sync_model_status(session: AsyncSession, model: Model) -> bool:  # noq
     ready_replicas: int = 0
     ready_by_role: Dict[str, int] = {}
     draining_by_role: Dict[str, int] = {}
+    isolated_by_role: Dict[str, int] = {}
     error_count: int = 0
     cache_not_injected: bool = False
     cache_reason: Optional[str] = None
     for instance in instances:
         draining = instance.draining_since is not None
+        isolated = (
+            instance.state == ModelInstanceStateEnum.ISOLATED
+            or getattr(instance, "isolated_since", None) is not None
+        )
         if instance.role and draining:
             draining_by_role[instance.role] = draining_by_role.get(instance.role, 0) + 1
+        if instance.role and isolated:
+            isolated_by_role[instance.role] = isolated_by_role.get(instance.role, 0) + 1
         if instance.state == ModelInstanceStateEnum.RUNNING:
             # The model-level count keeps its pre-PD meaning — a plain count of
             # RUNNING instances, router and draining members included — because
             # `model_running_instances` publishes it and `derive_model_state`
-            # reads it for role-less models.
+            # reads it for role-less models. Isolated members are excluded
+            # from this count too, because their state flips to ISOLATED.
             ready_replicas += 1
             # The per-role one does not: a draining member left the router's
             # member list when its window opened, so it is running without
             # being reachable. Counting it as ready is what made a role scaled
-            # from 3 to 2 report `3 / 2` until the window closed.
-            if instance.role and not draining:
+            # from 3 to 2 report `3 / 2` until the window closed. An isolated
+            # member is likewise unreachable — it is excluded the same way.
+            if instance.role and not draining and not isolated:
                 ready_by_role[instance.role] = ready_by_role.get(instance.role, 0) + 1
         elif instance.state == ModelInstanceStateEnum.ERROR:
             error_count += 1
