@@ -3,7 +3,9 @@ import logging
 import asyncio
 import re
 from datetime import datetime, timezone
+from http import HTTPStatus
 from typing import Any, Dict, List, NamedTuple, Tuple, Optional
+import aiohttp
 from cachetools import TTLCache
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
@@ -86,6 +88,27 @@ _UNREADABLE_CR_MESSAGE = "Not found in cluster"
 _BLOCKED_REASON_HOLDERS = 3
 
 
+# The failures that mean "the call never got an answer": the transport gave
+# up, not the server. The Kubernetes client speaks aiohttp, so these are what
+# a broken link to the cluster looks like — a refused, reset or dropped
+# connection, a timeout, a response body that stopped short. ``OSError``
+# covers the socket-level failures underneath them.
+#
+# ``asyncio.TimeoutError`` is the timeout a client raises when the far side
+# stops answering. It is the builtin ``TimeoutError`` — and so an
+# ``OSError`` — from Python 3.11 on, but a class of its own on 3.10, which
+# the project still supports. There, a hung cluster is neither an
+# ``OSError`` nor a connection error, and reading it as a fault of this
+# server would retry it forever as "an internal error" instead of letting it
+# wait out the unreachable tolerance.
+_TRANSPORT_ERRORS = (
+    aiohttp.ClientConnectionError,
+    aiohttp.ClientPayloadError,
+    OSError,
+    asyncio.TimeoutError,
+)
+
+
 def _describe_holder(name: Optional[str], status: Optional[GPUInstanceStatus]) -> str:
     """``<name> (<phase>)`` for an instance blocking a volume reclaim.
 
@@ -97,6 +120,31 @@ def _describe_holder(name: Optional[str], status: Optional[GPUInstanceStatus]) -
     """
     phase = status.phase if status is not None else None
     return f"{name} ({phase})" if phase else f"{name}"
+
+
+async def _cluster_has_ready_worker(session: AsyncSession, cluster: Cluster) -> bool:
+    """Whether the cluster has a READY worker.
+
+    The same gate the apiserver proxy applies: it serves the downstream API
+    through a READY worker and answers 503 without one. Mirroring it here means
+    a controller never issues a remote call the proxy would refuse.
+    """
+    return await Worker.exist_by_fields(
+        session,
+        fields={"cluster_id": cluster.id, "state": WorkerStateEnum.READY},
+    )
+
+
+async def _cluster_has_worker(session: AsyncSession, cluster: Cluster) -> bool:
+    """Whether the cluster has any worker at all.
+
+    A worker that was removed keeps its (soft-deleted) row, so a cluster that
+    lost its workers still counts as "has workers" — it may still hold the
+    downstream object. A worker without an ``external_id`` is deleted rather
+    than soft-deleted, so it leaves no row behind and the cluster looks like it
+    never had one. The caller decides what to make of that.
+    """
+    return await Worker.exist_by_fields(session, fields={"cluster_id": cluster.id})
 
 
 # Ceiling for the per-cluster instance-type watch backoff. A cluster with no
@@ -127,6 +175,19 @@ class _InstanceAssetsError(Exception):
         super().__init__(message)
         self.phase = phase
         self.message = message
+
+
+class _InstanceOps(NamedTuple):
+    """The resolved cluster and the client that reaches it."""
+
+    cluster: Cluster
+    """The cluster the instance lives in — its row, soft-deleted or not."""
+
+    ops: ClusterOps
+    """The client that talks to the cluster's apiserver through the proxy."""
+
+    principal_identifier: str
+    """The owner's namespace identifier, as the downstream API expects it."""
 
 
 class GPUInstanceController:
@@ -208,6 +269,13 @@ class GPUInstanceController:
         # hold has to be bounded (see ``_unreadable_cr_expired``). 0 disables.
         self._unreadable_cr_tolerance: int = max(
             0, envs.GPU_INSTANCE_UNREADABLE_CR_TOLERANCE
+        )
+        # How long a deletion may wait for a cluster it cannot reach before it
+        # releases the row anyway. A row that stays in Deleting keeps the
+        # instance's name reserved and tells the user nothing, so the wait has
+        # to be bounded. 0 gives up at once.
+        self._deleting_unreachable_tolerance: int = max(
+            0, envs.GPU_INSTANCE_FINALIZING_UNREACHABLE_TOLERANCE
         )
 
     async def start(self):
@@ -647,8 +715,15 @@ class GPUInstanceController:
 
             built = await self._build_ops(session, fresh)
             if built is None:
+                if fresh.is_deleting():
+                    # The cluster or the owner is gone, so the server can never
+                    # reach the downstream custom resource again. The row would
+                    # wait in Deleting forever, keeping the instance's name
+                    # reserved and telling the user nothing.
+                    await self._release_unfinalizable_row(session, fresh)
                 return
-            ops, principal_identifier = built
+            ops = built.ops
+            principal_identifier = built.principal_identifier
             async with ops:
                 # Update referenced SSH public keys if needed.
                 if "spec" in changed_fields:
@@ -689,6 +764,7 @@ class GPUInstanceController:
                         session,
                         fresh,
                         ops,
+                        built.cluster,
                     )
                 elif not (fresh.is_stopped() or fresh.is_failed()):
                     # Ready / NotReady / Unknown: observe the worker side.
@@ -824,16 +900,81 @@ class GPUInstanceController:
         self._requeue_after(fresh, self._transitioning_interval)
 
     async def _reconcile_deleting(
-        self, session: AsyncSession, fresh: GPUInstance, ops: ClusterOps
+        self,
+        session: AsyncSession,
+        fresh: GPUInstance,
+        ops: ClusterOps,
+        cluster: Cluster,
     ):
-        """Tear the worker side down; delete the row once the CR is gone."""
-        read = await ops.read_instance(fresh.name)
+        """Tear the worker side down; delete the row once the CR is gone.
+
+        The cluster may be out of reach. The server reaches it through its own
+        apiserver proxy, which serves the downstream API through a READY worker
+        and answers 503 without one; a broken network to the cluster fails the
+        same way. Neither is a fault of the row, and neither may strand it: a
+        row that stays in Deleting keeps the instance's name reserved and tells
+        the user nothing.
+
+        So the row waits for the cluster to come back instead of failing. What
+        this method owns is telling the two apart: "the custom resource is
+        gone" ends the deletion, while "the cluster did not answer" only
+        pauses it.
+        """
+        reason = await self._cluster_unreachable_reason(session, cluster)
+        if reason is not None:
+            await self._hold_deleting_unreachable(session, fresh, cluster, reason)
+            return
+
+        try:
+            read = await ops.read_instance(fresh.name)
+        except Exception as e:
+            if self._read_failed_locally(e):
+                # Our failure, not the cluster's: the call may never have
+                # reached it, and the custom resource may still be sitting
+                # there. Releasing the row would leave that resource behind
+                # with nobody to clean it up, so the row stays and the
+                # failure is retried like any other fault.
+                logger.exception(
+                    "Failed to read GPU instance %s (id=%s) from cluster '%s' "
+                    "(id %s) because of an internal error",
+                    fresh.name,
+                    fresh.id,
+                    cluster.name,
+                    cluster.id,
+                )
+                await self._write_phase_message(
+                    session,
+                    fresh,
+                    f"Failed to read the instance from cluster '{cluster.name}' "
+                    f"(id {cluster.id}): an internal error in the server, will "
+                    "retry",
+                )
+                raise
+            # Not the "the custom resource is gone" answer: the proxy could not
+            # serve the call, so the cluster is out of reach for now. The row
+            # waits instead of failing — an unreachable cluster is an expected
+            # wait, not a fault.
+            await self._hold_deleting_unreachable(
+                session,
+                fresh,
+                cluster,
+                self._read_failed_reason(e),
+            )
+            return
         if read is None:
             # CR gone — release a template PV opted into release_with_instance,
-            # then hard-delete the row.
-            await self._release_template_persistent_volume(session, fresh)
-            await fresh.delete(session)
+            # then hard-delete the row. The release says so: the other two paths
+            # that release a row both warn, and the release that can leave a
+            # custom resource behind must not be the silent one.
+            logger.info(
+                "GPU instance %s (id=%s): its custom resource is gone, releasing "
+                "the row",
+                fresh.name,
+                fresh.id,
+            )
+            await self._release_row(session, fresh)
             return
+
         try:
             await self._ops_delete_instance_and_assets(ops, fresh.name)
         except Exception:
@@ -844,8 +985,284 @@ class GPUInstanceController:
                 "Failed to delete worker-side instance, will retry",
             )
             raise
+        # The cluster answered and the delete landed, so the hold — if there was
+        # one — is over, and its message with it. Ending the hold here and not
+        # after the read keeps the window honest for a cluster that comes back
+        # but cannot delete: a hold that every answer could end would restart
+        # with the next outage, and the row would wait for a cluster that keeps
+        # coming back.
+        await self._clear_deleting_unreachable_hold(session, fresh)
         # Still deleting — re-observe until the CR is gone.
         self._requeue_after(fresh, self._transitioning_interval)
+
+    async def _cluster_unreachable_reason(
+        self, session: AsyncSession, cluster: Cluster
+    ) -> Optional[str]:
+        """Why the cluster cannot serve the instance right now, or None.
+
+        The proxy serves the downstream API through a READY worker and answers
+        503 without one, so a cluster without one cannot be reached at all.
+        Checking that here means the controller never issues a call the proxy
+        would refuse — and a refused call would look like a fault rather than
+        the wait it is.
+
+        The cluster is the instance's own: the instance was created through
+        this cluster's proxy, so it may well still hold the custom resource
+        even when no worker row is left to prove it. That is why an empty
+        worker table is no reason to assume the cluster holds nothing.
+        """
+        if cluster.deleted_at is not None:
+            # The proxy refuses a soft-deleted cluster and answers 404, which
+            # the read would take for "the custom resource is gone" — a
+            # deletion that never happened. The cluster row is still there, so
+            # the row waits for it instead of claiming a deletion.
+            return "the cluster was deleted"
+        if await _cluster_has_ready_worker(session, cluster):
+            return None
+        if await _cluster_has_worker(session, cluster):
+            return "the server cannot reach the cluster (no ready worker)"
+        return "the server cannot reach the cluster (no worker)"
+
+    @staticmethod
+    def _read_failed_locally(exc: Exception) -> bool:
+        """Whether the read failed on our side rather than the cluster's.
+
+        Two things can go wrong with a read, and they must not be confused:
+        the cluster did not answer (a broken link, a refused connection), or
+        the answer could not be made sense of (a response the client cannot
+        parse, a bug in this server). Only the first says anything about the
+        cluster being unreachable.
+
+        The difference matters because the unreachable case ends the row: past
+        the tolerance the row is released, and the custom resource may still
+        be sitting on the cluster. A local failure is no evidence of that —
+        the cluster may well be fine, with its custom resource right there — so
+        a local failure keeps the row and is retried like any other fault.
+
+        An error carrying an HTTP status is the far side answering: the
+        cluster said no, and the row waits for it as before. The Kubernetes
+        client also raises with a status of 0 for failures of its own (a
+        response body it cannot parse, a body it cannot send), and those are
+        local — a status of 0 is not an answer from the cluster.
+        """
+        status = getattr(exc, "status", None)
+        if isinstance(status, int) and status > 0:
+            return False
+        return not isinstance(exc, _TRANSPORT_ERRORS)
+
+    @staticmethod
+    def _read_failed_reason(exc: Exception) -> str:
+        """Why the read did not come back with an answer, in one clause.
+
+        A refusal and a silence are different faults, and the message must not
+        blame the network for a refusal: the cluster answered, and said no.
+        The status code is what tells them apart — an error carrying one came
+        back from the far side, while anything else never got an answer at all.
+
+        The clause names the cluster, because it goes into two places that read
+        differently: the user's message and the operator's log.
+        """
+        status = getattr(exc, "status", None)
+        if not isinstance(status, int):
+            return "the server cannot reach the cluster (no answer came back)"
+        if status in (
+            HTTPStatus.BAD_GATEWAY,
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            HTTPStatus.GATEWAY_TIMEOUT,
+        ):
+            # The proxy answers these for a cluster it cannot serve, so the
+            # cluster is the unreachable one — the same fault as a cluster
+            # whose worker stopped being ready.
+            return "the server cannot reach the cluster (no answer came back)"
+        return f"the server reached the cluster, but the request failed (HTTP {status})"
+
+    async def _hold_deleting_unreachable(
+        self,
+        session: AsyncSession,
+        fresh: GPUInstance,
+        cluster: Cluster,
+        reason: str,
+    ):
+        """Keep the row in Deleting while its cluster cannot be reached.
+
+        The hold is clocked on the row itself, so the wait is bounded and an
+        unrelated write to the row cannot restart it. Past the bound the row is
+        released — see ``_give_up_deleting_unreachable``.
+
+        What this guarantees is that the row waits instead of failing: an
+        unreachable cluster is an expected wait, and retrying it as a fault
+        leaves the row in Deleting forever.
+        """
+        base = fresh.status or GPUInstanceStatus()
+        now = datetime.now(timezone.utc)
+        started = base.deleting_unreachable_since is None
+        since = base.deleting_unreachable_since or now
+        if self._deleting_unreachable_expired(since, now):
+            await self._give_up_deleting_unreachable(
+                session,
+                fresh,
+                cluster,
+                reason,
+                waited_seconds=self._waited_seconds(since, now),
+            )
+            return
+        await self._write_status(
+            session,
+            fresh,
+            base.model_copy(
+                update={
+                    "phase": GPUInstancePhase.DELETING,
+                    "phase_message": self._deleting_unreachable_message(
+                        cluster, reason
+                    ),
+                    "deleting_unreachable_since": since,
+                }
+            ),
+        )
+        if started:
+            # Log the wait once, on the transition. The row is re-observed
+            # every few seconds, and a line per pass would drown the log. The
+            # reason goes in as it is: a refused cluster is not an unreachable
+            # one, and an operator must not read one as the other.
+            logger.warning(
+                "GPU instance %s (id=%s) is holding the deletion: %s; cluster '%s' "
+                "(id %s)",
+                fresh.name,
+                fresh.id,
+                reason,
+                cluster.name,
+                cluster.id,
+            )
+        self._requeue_after(fresh, self._transitioning_interval)
+
+    async def _release_unfinalizable_row(
+        self, session: AsyncSession, fresh: GPUInstance
+    ):
+        """Release a row that can never finalize: its cluster or its owner is gone.
+
+        The server can never reach the downstream custom resource again, so the
+        row would wait in Deleting forever, keeping the instance's name
+        reserved and telling the user nothing. A row that can never finalize is
+        worse than a leftover object an operator can clean up — the same
+        trade the persistent volume finalizer makes for a missing principal.
+        """
+        logger.warning(
+            "Releasing GPU instance %s (id=%s): its cluster or owner is gone, so "
+            "its downstream custom resource can never be reached",
+            fresh.name,
+            fresh.id,
+        )
+        await self._release_row(session, fresh)
+
+    async def _release_row(self, session: AsyncSession, fresh: GPUInstance):
+        """Release the row: the template PV it opted into, then the row itself.
+
+        Every release ends the same way — the instance's template PV is
+        released with it, and the row goes — so they share the teardown.
+        """
+        await self._release_template_persistent_volume(session, fresh)
+        await fresh.delete(session)
+
+    async def _clear_deleting_unreachable_hold(
+        self, session: AsyncSession, fresh: GPUInstance
+    ):
+        """Drop the hold clock and its message once the delete lands.
+
+        The clock lives exactly as long as the hold: a cluster that recovers
+        ends the hold, and the next outage starts its own window. The give-up
+        does not need the clock to stick — it releases the row.
+
+        The message goes with the clock. It explains the wait, so once the wait
+        is over it is stale — and a row that still says the cluster cannot be
+        reached misleads the user about their own instance.
+        """
+        base = fresh.status or GPUInstanceStatus()
+        if base.deleting_unreachable_since is None and base.phase_message is None:
+            return
+        await self._write_status(
+            session,
+            fresh,
+            base.model_copy(
+                update={
+                    "phase": GPUInstancePhase.DELETING,
+                    "phase_message": None,
+                    "deleting_unreachable_since": None,
+                }
+            ),
+        )
+
+    def _deleting_unreachable_message(self, cluster: Cluster, reason: str) -> str:
+        """What the user sees while the row waits for its cluster.
+
+        It names the cluster, says why it cannot be reached, says that the wait
+        is bounded, and says what happens at the bound. A row that stays in
+        Deleting without an explanation is what this whole change is about.
+        """
+        return (
+            f"Waiting for cluster '{cluster.name}' (id {cluster.id}) to finish the "
+            f"deletion: {reason}; the row is released after "
+            f"{self._deleting_unreachable_tolerance}s anyway"
+        )
+
+    @staticmethod
+    def _waited_seconds(since: datetime, now: datetime) -> float:
+        """How long the row has been waiting, in seconds.
+
+        The clock comes back from the JSON column as an aware datetime, but a
+        naive one must not turn the comparison into a TypeError.
+        """
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        return (now - since).total_seconds()
+
+    def _deleting_unreachable_expired(self, since: datetime, now: datetime) -> bool:
+        """Whether the hold has waited past its tolerance.
+
+        A tolerance of 0 gives up at once: the cluster is not reachable, so the
+        row waits no time at all.
+        """
+        if self._deleting_unreachable_tolerance <= 0:
+            return True
+        return self._waited_seconds(since, now) >= self._deleting_unreachable_tolerance
+
+    async def _give_up_deleting_unreachable(
+        self,
+        session: AsyncSession,
+        fresh: GPUInstance,
+        cluster: Cluster,
+        reason: str,
+        *,
+        waited_seconds: float = 0.0,
+    ):
+        """Release the row: the cluster is out of reach and the wait ran out.
+
+        The downstream custom resource may still exist — the cluster may come
+        back with the workload still on it — but the row must not stay in
+        Deleting forever: it keeps the instance's name reserved and gives the
+        user nothing. The operator gets the warning instead, which names the
+        cluster that has to be cleaned up by hand.
+
+        The warning says how long the row waited, because the wait is what ended
+        it: the cluster may well be reachable again by now, and a warning that
+        only said "could not be reached" would send the operator after the
+        network instead of after the wait. It carries the reason for the same
+        reason: a refused cluster was reached, and only refused.
+        """
+        logger.warning(
+            "Giving up on deleting GPU instance %s (id=%s) after waiting %ds: %s; "
+            "the instance's custom resource may still exist on cluster '%s' (id %s)",
+            fresh.name,
+            fresh.id,
+            int(waited_seconds),
+            reason,
+            cluster.name,
+            cluster.id,
+        )
+        # NOTE: the custom resource may still exist on the cluster — it may come
+        # back with the workload still on it. Releasing the row leaves that
+        # object behind for an operator to clean up by hand; the warning above
+        # names the cluster to clean it up in.
+        await self._release_row(session, fresh)
 
     async def _reconcile_observe(
         self, session: AsyncSession, fresh: GPUInstance, ops: ClusterOps
@@ -1072,11 +1489,13 @@ class GPUInstanceController:
         self,
         session: AsyncSession,
         instance: GPUInstance,
-    ) -> Optional[Tuple[ClusterOps, str]]:
+    ) -> Optional[_InstanceOps]:
         """Resolve the cluster + principal and construct a ``ClusterOps``.
 
-        Returns ``(ops, principal_identifier)`` or ``None`` when either
-        the cluster or the owning principal has gone away.
+        Returns ``None`` when either the cluster or the owning principal has
+        gone away. The cluster row comes along with the client because the
+        delete path has to know whether the cluster can be reached at all, and
+        the row is the only place that says.
         """
 
         cluster = await Cluster.one_by_id(session, instance.cluster_id)
@@ -1104,7 +1523,11 @@ class GPUInstanceController:
             cluster_registration_token=cluster.registration_token,
             cluster_owner_principal_identifier=owner_identifier,
         )
-        return ops, owner_identifier
+        return _InstanceOps(
+            cluster=cluster,
+            ops=ops,
+            principal_identifier=owner_identifier,
+        )
 
     @staticmethod
     async def _aggregate_ssh_public_key_data(
@@ -1397,9 +1820,9 @@ class _PersistentVolumeFinalizeController:
         recorded = set(listed or [])
         for cluster in clusters:
             try:
-                if not await self._has_ready_worker(session, cluster):
+                if not await _cluster_has_ready_worker(session, cluster):
                     if (
-                        not await self._has_worker(session, cluster)
+                        not await _cluster_has_worker(session, cluster)
                         and cluster.id not in recorded
                     ):
                         # The cluster never had a worker and the row never
@@ -1451,34 +1874,6 @@ class _PersistentVolumeFinalizeController:
             finalizing=sorted(finalizing),
             unreachable=sorted(unreachable),
         )
-
-    @staticmethod
-    async def _has_ready_worker(session: AsyncSession, cluster: Cluster) -> bool:
-        """Whether the cluster has a READY worker.
-
-        The same gate the apiserver proxy applies: it serves the downstream API
-        through a READY worker and answers 503 without one. Mirroring it here
-        means the finalizer never issues a remote call the proxy would refuse.
-        """
-        return await Worker.exist_by_fields(
-            session,
-            fields={"cluster_id": cluster.id, "state": WorkerStateEnum.READY},
-        )
-
-    @staticmethod
-    async def _has_worker(session: AsyncSession, cluster: Cluster) -> bool:
-        """Whether the cluster has any worker at all.
-
-        A cluster that never had a worker never held the downstream object, so
-        it must not keep the row in ``Deleting``. A worker that was removed
-        keeps its (soft-deleted) row, so a cluster that lost its workers is
-        "has workers" — it may still hold the object, and the row waits for it.
-
-        A worker without an ``external_id`` is deleted rather than
-        soft-deleted, so it leaves no row behind and the cluster looks like it
-        never had one. The caller decides what to make of that.
-        """
-        return await Worker.exist_by_fields(session, fields={"cluster_id": cluster.id})
 
     def _verdict(
         self, row, probe: _ClusterProbe
