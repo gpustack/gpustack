@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import queue
-from typing import Dict, List, Sequence, Tuple, Optional
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 from weakref import WeakValueDictionary
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -103,6 +103,10 @@ from gpustack.server.services import (
     ModelInstanceService,
     ModelService,
     ModelFileService,
+)
+from gpustack.server.worker_allocated_cache import (
+    bound_worker_ids,
+    invalidate_worker_ids,
 )
 from gpustack.utils.command import find_last_parameter, find_parameter
 from gpustack.utils.gpu import group_gpu_ids_by_worker
@@ -524,23 +528,29 @@ class Scheduler:
 
             if candidate is None:
                 # update model instance.
+                released_workers: Set[int] = set()
                 if model_instance.state in (
                     ModelInstanceStateEnum.SCHEDULED,
                     ModelInstanceStateEnum.ANALYZING,
                 ):
+                    released_workers = bound_worker_ids(model_instance)
                     model_instance.state = ModelInstanceStateEnum.PENDING
                     model_instance.state_message = (
                         "No suitable workers.\nDetails:\n" + "".join(messages)
                     )
                     # Back in the queue means holding nothing. The exclusion a
                     # few lines down only drops the claim of the instance being
-                    # placed; a sibling that came back here keeps its own, and
-                    # every later attempt is measured against it.
-                    model_instance.computed_resource_claim = None
+                    # placed; a sibling that came back here would keep its own
+                    # claims and worker, which `compute_worker_allocated` still
+                    # counts and which keep it out of the pending retry.
+                    clear_instance_placement(model_instance)
                 if state_message != "":
                     model_instance.state_message = state_message
 
                 await ModelInstanceService(session).update(model_instance)
+                # The update only invalidates the workers still on the row,
+                # so release the ones it just left.
+                await invalidate_worker_ids(released_workers)
                 logger.debug(
                     f"No suitable workers for model instance {model_instance.name}, state: {model_instance.state}"
                 )
@@ -613,6 +623,23 @@ async def apply_candidate_to_instance(
 
     if commit:
         await ModelInstanceService(session).update(model_instance)
+
+
+def clear_instance_placement(model_instance: ModelInstance) -> None:
+    """Inverse of `apply_candidate_to_instance`: reset each field it writes, so
+    a queued instance holds no worker, GPUs or claims (subordinates' included)
+    and is eligible for the pending retry. Keep the two in sync.
+    """
+    model_instance.worker_id = None
+    model_instance.worker_name = None
+    model_instance.worker_ip = None
+    model_instance.worker_advertise_address = None
+    model_instance.worker_ifname = None
+    model_instance.computed_resource_claim = None
+    model_instance.gpu_type = None
+    model_instance.gpu_indexes = []
+    model_instance.gpu_addresses = []
+    model_instance.distributed_servers = None
 
 
 def _cards_per_member(model: Model) -> int:
