@@ -197,6 +197,7 @@ TLS バージョンの設定は `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` で
 | `GPUSTACK_GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL`      | まだ状態遷移中（未確定）の GPU インスタンスを、コントローラーがメモリー内の再キューで再確認する間隔（秒）。PV / PVT の終了コントローラーも、終了処理中のインスタンスの再確認に使用します。Ready 行のずれは下流の watch が検出します。最小 `1` 秒に制限されます。 | `15`    | サーバー |
 | `GPUSTACK_GPU_INSTANCE_READY_SWEEP_INTERVAL`                | 確定済みの Ready GPU インスタンスを再確認する、任意の低頻度スイープの間隔（秒）。再接続の空白期間に下流 watch が見逃すワーカー側のずれへの補完です。デフォルトの `0` は無効です。そのような検出漏れが観測された場合のみ低頻度で設定します。 | `0`     | サーバー |
 | `GPUSTACK_GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE` | 永続ボリューム (PV / PVT) のファイナライザーが、すべての Worker が停止している Kubernetes クラスタを待機する秒数です。この期間を超えると、そのクラスタを諦めて該当の行を解放します。Worker がまったくないクラスタは直ちにスキップされます（そのボリュームを保持したことはありません）。到達できないままのクラスタは待機された後解放され、そのボリュームはクラスタ内に残る場合があります。`0` は直ちに諦めることを意味します。`GPUSTACK_GPU_INSTANCE_UNREADABLE_CR_TOLERANCE` の `0` とは逆の意味（上限なし）です。 | `1800` | サーバー |
+| `GPUSTACK_GPU_INSTANCE_FINALIZING_UNREACHABLE_TOLERANCE` | GPU インスタンスの削除が、到達できないクラスタ（すべての Worker が停止している、ネットワークが切断されている、またはクラスタが削除済み）を捨てる前に待機する秒数です。待機中はクラスタ名を含むメッセージが記録され、その後で行は解放されます。インスタンスのカスタムリソースがそのクラスタに残る可能性があります。`0` は直ちに諦めることを意味します（`GPUSTACK_GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE` と同じ意味。`GPUSTACK_GPU_INSTANCE_UNREADABLE_CR_TOLERANCE` の `0` とは逆の意味（上限なし）です）。 | `1800` | サーバー |
 
 ### ワーカーとモデルの設定 { #worker-and-model-configuration }
 

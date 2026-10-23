@@ -569,6 +569,21 @@ class GPUInstanceStatus(BaseModel):
     ``_unreadable_cr_expired``.
     """
 
+    deleting_unreachable_since: Optional[datetime] = None
+    """
+    When this row entered the "cluster unreachable" hold on the delete path, in UTC.
+
+    The second field here the worker does NOT report — the server stamps it when
+    it first cannot reach the cluster, and ``merge_from_kuberes`` drops it
+    whenever a real CR is read, so it exists exactly as long as the hold does.
+
+    It is what bounds the delete-path wait, so it cannot be inferred from
+    ``updated_at``: that timestamp is row-level, and an unrelated edit to the row
+    would silently restart the window and keep the row in Deleting forever —
+    the exact failure this field exists to prevent. See
+    ``_deleting_unreachable_expired``.
+    """
+
 
 class GPUInstanceBase(SQLModel):
     """
