@@ -46,6 +46,7 @@ from gpustack.security import (
     API_KEY_PREFIX,
 )
 from gpustack.server.app import create_app
+from gpustack.extension import plugin_needs_instantiation
 from gpustack.server.passwords import set_password
 from gpustack.server.services import provision_bootstrap_admin_orgs
 from gpustack.config.config import Config
@@ -129,7 +130,11 @@ from gpustack.envs import (
 )
 from gpustack.server.coordinator import LocalCoordinator
 from gpustack.server.coordinator.cache import preload_cache
-from gpustack.server.coordinator.models import get_model_for_topic
+from gpustack.server.coordinator.models import (
+    external_topics,
+    get_model_for_topic,
+    register_topic,
+)
 from gpustack.server import bus
 from gpustack.server import cache as cache_module
 from alembic import command
@@ -267,7 +272,9 @@ class Server:
         return self._before_healthy_sub_processes + self._after_healthy_sub_processes
 
     def _create_async_task(self, coro):
-        self._async_tasks.append(asyncio.create_task(coro))
+        task = asyncio.create_task(coro)
+        self._async_tasks.append(task)
+        return task
 
     @property
     def config(self):
@@ -1392,6 +1399,27 @@ class Server:
         self._create_async_task(_proxy_server.start())
 
     def _start_extension_plugins(self, app: FastAPI) -> None:
+        # Static plugins: tasks come from the classmethod hook with
+        # the plugin's context (coordinator already injected —
+        # ``_init_coordinator`` runs before this).
+        #
+        # A collection failure refuses startup, matching the rest of
+        # the static hook family: these tasks join the main gather, so
+        # a task that dies while running aborts the server — a
+        # collection failure must be no less fatal.
+        for name, ctx in getattr(app.state, "plugin_contexts", {}).items():
+            if ctx.plugin_cls is None or plugin_needs_instantiation(ctx.plugin_cls):
+                continue
+            try:
+                for coro in ctx.plugin_cls.async_tasks(ctx):
+                    self._create_async_task(coro)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to start async tasks from extension plugin "
+                    f"'{name}': {e}"
+                ) from e
+
+        # Legacy instance plugins: unchanged.
         for plugin in getattr(app.state, "extension_plugins", []):
             try:
                 for coro in plugin.async_tasks():
@@ -1402,20 +1430,107 @@ class Server:
                     type(plugin).__name__,
                 )
 
+    def _start_extension_plugin_leader_tasks(self) -> None:
+        """Start ``Plugin.leader_async_tasks`` alongside the server's own
+        leader-only tasks (see ``_start_leader_tasks`` for the lifecycle).
+
+        Static plugins only: leader-only tasks are a new capability
+        and new capabilities land on the static shape — the legacy
+        instance shape is frozen, so a legacy plugin's same-named
+        instance method is not dispatched to.
+
+        A collection failure hard-exits the process: this runs from the
+        leader-election loop, whose broad ``except`` (there to tolerate
+        transient coordinator RPC errors) would swallow a re-raise —
+        leaving the leader serving without the plugin's single-writer
+        reconciler, its external state drifting with no re-attempt.
+        Exiting mirrors the lost-leadership fencing: the container
+        restarts and collection is retried. A task that dies while
+        running gets the same fencing through ``_leader_task_died``.
+
+        Uses ``self._app`` rather than taking an argument: unlike
+        ``_start_extension_plugins``, this runs from the leader-election
+        path, which has no app parameter.
+        """
+        for name, ctx in getattr(self._app.state, "plugin_contexts", {}).items():
+            if ctx.plugin_cls is None or plugin_needs_instantiation(ctx.plugin_cls):
+                continue
+            try:
+                for coro in ctx.plugin_cls.leader_async_tasks(ctx):
+                    task = self._create_async_task(coro)
+                    task.add_done_callback(self._leader_task_died)
+            except Exception:
+                logger.critical(
+                    "Failed to start leader async tasks from extension plugin "
+                    "%s, exiting for restart — the leader must run every "
+                    "plugin's single-writer reconcilers",
+                    name,
+                )
+                os._exit(1)
+
+    @staticmethod
+    def _leader_task_died(task: asyncio.Task) -> None:
+        """Fence a dead plugin leader task.
+
+        In distributed mode these tasks start on leadership acquisition —
+        after ``start()`` has already called ``asyncio.gather`` on its
+        snapshot of ``_async_tasks`` — so an unhandled exception in one
+        would otherwise die unobserved while the process keeps serving
+        and renewing leadership, blocking standby takeover. Exit for
+        restart instead: the leader must run every plugin's
+        single-writer reconciler.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.critical(
+                "Extension plugin leader task died: %r; exiting for restart — "
+                "the leader must run every plugin's single-writer reconcilers",
+                exc,
+            )
+            os._exit(1)
+
     async def _init_coordinator(self, app: FastAPI):
         """Pick a coordinator from extension plugins (if any) and start it.
 
-        Plugins attach a ``Coordinator`` to ``self.coordinator`` inside
-        their ``__init__(app, cfg)``. We scan ``app.state.extension_plugins``
-        after ``create_app`` has run and take the first non-None one. If
-        no plugin supplies one, we fall back to ``LocalCoordinator``.
+        Static plugins offer one through ``build_coordinator(ctx)``;
+        legacy instance plugins attach a ``Coordinator`` to
+        ``self.coordinator`` inside their ``__init__(app, cfg)``. Both
+        shapes are dispatched in one entry-point-ordered pass over the
+        plugin contexts, so the first non-None candidate wins regardless
+        of shape and the server owns its lifecycle. If no plugin
+        supplies one, we fall back to ``LocalCoordinator``.
+
+        A failing ``build_coordinator`` refuses startup: silently
+        falling through to another plugin or ``LocalCoordinator`` could
+        leave a multi-instance deployment without leader election and
+        cross-instance delivery while the servers still come up.
+
+        The chosen coordinator is injected into every plugin's context
+        before any task collection runs, so ``async_tasks`` /
+        ``leader_async_tasks`` hooks see ``ctx.coordinator`` populated.
         """
         coordinator = None
-        for plugin in getattr(app.state, "extension_plugins", []):
-            candidate = getattr(plugin, "coordinator", None)
+        for name, ctx in getattr(app.state, "plugin_contexts", {}).items():
+            if ctx.plugin_cls is not None and not plugin_needs_instantiation(
+                ctx.plugin_cls
+            ):
+                try:
+                    candidate = ctx.plugin_cls.build_coordinator(ctx)
+                except Exception as e:
+                    raise RuntimeError(
+                        "Failed to build coordinator from extension plugin "
+                        f"'{name}': {e}"
+                    ) from e
+            else:
+                # Legacy shape (or a hand-built context): the instance,
+                # if any, carries its coordinator as an attribute set in
+                # its constructor.
+                candidate = getattr(ctx.instance, "coordinator", None)
             if candidate is not None:
                 coordinator = candidate
-                logger.info(f"Coordinator provided by plugin: {type(plugin).__name__}")
+                logger.info(f"Coordinator provided by plugin: {name}")
                 break
 
         if coordinator is None:
@@ -1424,6 +1539,29 @@ class Server:
 
         self._coordinator = coordinator
         await self._coordinator.start()
+
+        for ctx in getattr(app.state, "plugin_contexts", {}).values():
+            ctx.coordinator = coordinator
+
+        # Register plugin-owned tables for cross-instance event delivery,
+        # before the bus starts. See ``register_topic`` and
+        # ``Plugin.event_topics``. Static plugins only, per the
+        # one-shape-per-plugin contract. A failure refuses startup: the
+        # plugin would otherwise run without cross-instance enrichment,
+        # and writes served by another instance would be dropped by the
+        # event bus.
+        for ctx in getattr(app.state, "plugin_contexts", {}).values():
+            if ctx.plugin_cls is None or plugin_needs_instantiation(ctx.plugin_cls):
+                continue
+            try:
+                topics = ctx.plugin_cls.event_topics()
+            except Exception as e:
+                raise RuntimeError(
+                    "Failed to register event topics from extension plugin "
+                    f"'{ctx.name}': {e}"
+                ) from e
+            for topic, model_class in topics.items():
+                register_topic(topic, model_class)
 
         # Set up bus and cache to use coordinator
         bus.set_coordinator(coordinator)
@@ -1444,7 +1582,7 @@ class Server:
             "modelroutetarget",
             "workerpool",
             "inferencebackend",
-        ]
+        ] + external_topics()
         async with async_session() as session:
             for topic in topics:
                 model_class = get_model_for_topic(topic)
@@ -1558,6 +1696,11 @@ class Server:
 
         # Controllers
         self._start_controllers()
+
+        # Extension plugins' leader-only tasks (reconcilers that need a
+        # single writer). Same lifecycle as the tasks above: started on
+        # leadership gain, and a deposed leader exits the process.
+        self._start_extension_plugin_leader_tasks()
 
         # The ai-proxy cleanup is version-semantic (retiring legacy
         # per-route entries wholesale): it must not run on a standby
