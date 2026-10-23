@@ -12,15 +12,15 @@ GPUStack, çalışan model örnekleri üzerinde benchmark çalıştırabilir. Be
 
 ### Rota benchmark'ı için ağ geçidi adresi { #route-benchmark-gateway-address }
 
-Rota benchmark'ları, çalışanın erişebildiği Higress temel URL'sini (`/v1` olmadan) aşağıdaki sırayla belirler:
+Sunucu önce benchmark'ı yürüten çalışanın kümesindeki `server_url`, ardından sunucunun `server_external_url` değerini kullanır (temel URL'ler `/v1` içermez). Aksi durumda, sunucunun `gateway_mode` değeri çalışanda adres çözümleme politikasını belirler:
 
-1. Benchmark'ı yürüten çalışanın ait olduğu kümenin `server_url` değeri.
-2. Sunucunun `server_external_url` değeri.
-3. Sunucunun `trusted_hosts` yapılandırmasında açıkça izin verilen oluşturma isteğinin origin adresi.
+- `embedded`: yerleşik çalışan, yerel yönetim bağlantısının ana makinesini ve Higress portunu kullanır. Bağımsız bir çalışan için yedek adres olarak açıkça yapılandırılmış `advertise_address` veya güvenilir bir istek giriş adresi gerekir.
+- `disabled`: çalışanın sunucu bağlantı URL'si yerel API yönlendirmesi için yeniden kullanılır; ölçümler sunucu proxy'sinin ek yükünü içerir.
+- `external` / `incluster`: oluşturma isteğinin origin adresi yalnızca sunucunun `trusted_hosts` yapılandırmasında açıkça izin verilmişse kullanılır.
 
-İstek origin adresine geri dönüldüğünde joker karakterler kabul edilmez. Yalnızca ana makine adı standart HTTP/HTTPS portlarına izin verir; özel portları `gateway.example:8443` gibi açıkça belirtin. URL bir yol öneki içeriyorsa öndeki proxy, isteği Higress'e iletmeden önce bu öneki kaldırmalıdır.
+İstek origin adresine geri dönüşte joker karakterler kabul edilmez. Yalnızca ana makine adı standart HTTP/HTTPS portlarına izin verir; özel portları `gateway.example:8443` gibi açıkça belirtin. Öndeki proxy, URL yol önekini Higress'e iletmeden önce kaldırmalıdır.
 
-Hedef, benchmark oluşturulurken sabitlenir. Değiştirilen URL'yi kullanmak için benchmark'ı yeniden oluşturun. İlerleme bildirimi çalışanın yönetim adresini kullanmaya devam eder.
+Çalışan açık giriş adresini kullanır veya politikadan ve yerel yapılandırmasından adresi çözümler. Benchmark başlamadan önce son URL'yi bildirir ve bu adres anlık görüntüde sabitlenir. Adresi değiştirmek için benchmark'ı yeniden oluşturun. İlerleme bildirimi çalışanın yönetim adresini kullanmaya devam eder.
 
 ## Karşılaştırma Oluştur { #create-benchmark }
 

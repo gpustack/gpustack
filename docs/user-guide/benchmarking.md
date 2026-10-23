@@ -8,20 +8,26 @@ GPUStack can run benchmarks against running model instances. Benchmarks are exec
 
 ### Route benchmark gateway address
 
-Route benchmarks use a worker-reachable Higress base URL (without `/v1`),
-resolved in this order:
+The server prefers the execution worker's cluster `server_url`, then the
+server's `server_external_url` (base URLs without `/v1`). Otherwise, the
+server's `gateway_mode` selects a worker-side resolution policy:
 
-1. The execution worker's cluster `server_url`.
-2. The server's `server_external_url`.
-3. The creation request's origin, explicitly allowed by the server's `trusted_hosts`.
+- `embedded`: a built-in worker uses its local management host with the Higress
+  port. An independent worker needs an explicitly configured `advertise_address`
+  or a trusted request entrance as a fallback.
+- `disabled`: reuse the worker's server connection URL for native API routing;
+  measurements include server proxy overhead.
+- `external` / `incluster`: use the creation request's origin only when explicitly
+  allowed by the server's `trusted_hosts`.
 
-For request-origin fallback, wildcards are not accepted. Bare hostnames allow
-only standard HTTP/HTTPS ports; list custom ports explicitly, such as
-`gateway.example:8443`. If the URL includes a path prefix, the front proxy must
-strip it before forwarding to Higress.
+Request-origin fallback rejects wildcards. Bare hostnames permit standard
+HTTP/HTTPS ports only; specify custom ports, such as `gateway.example:8443`.
+A front proxy must strip any URL path prefix before forwarding to Higress.
 
-The target is fixed when the benchmark is created. Recreate the benchmark to
-use a changed URL. Progress reporting keeps the worker's management address.
+The worker uses the explicit entrance or resolves it from the policy and its
+local configuration. Before starting the benchmark, it reports the final URL,
+which is fixed in the snapshot. Recreate the benchmark to change it. Progress
+reporting keeps the worker's management address.
 
 ## Create Benchmark
 
