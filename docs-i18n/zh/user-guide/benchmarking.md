@@ -12,15 +12,15 @@ GPUStack 可以对运行中的模型实例执行基准测试。基准测试由 W
 
 ### 路由基准测试的网关地址 { #route-benchmark-gateway-address }
 
-路由基准测试使用基准测试 Worker 可访问的 Higress 基础 URL（不含 `/v1`），按以下顺序取值：
+Server 优先使用执行 Worker 所属集群的 `server_url`，其次使用 Server 的 `server_external_url`（基础 URL 不含 `/v1`）。否则，由 Server 的 `gateway_mode` 选择在 Worker 端解析地址的策略：
 
-1. 执行 Worker 所属集群的 `server_url`。
-2. Server 的 `server_external_url`。
-3. 创建请求的源地址，且必须由 Server 的 `trusted_hosts` 显式允许。
+- `embedded`：内置 Worker 使用本机管理连接的主机地址和 Higress 端口。独立 Worker 需要显式配置的 `advertise_address` 或可信的请求入口作为回退地址。
+- `disabled`：复用 Worker 连接 Server 的 URL，访问原生 API 路由；测量结果包含 Server 代理开销。
+- `external` / `incluster`：仅当 Server 的 `trusted_hosts` 显式允许时，才使用创建请求的源地址。
 
-使用请求源地址回退时不接受通配符。仅填写主机名只允许标准 HTTP/HTTPS 端口；自定义端口必须显式填写，例如 `gateway.example:8443`。如果 URL 包含路径前缀，前置代理必须在转发到 Higress 前剥离该前缀。
+请求源地址回退不接受通配符。仅填写主机名只允许标准 HTTP/HTTPS 端口；自定义端口必须显式填写，例如 `gateway.example:8443`。前置代理必须在转发到 Higress 前剥离 URL 中的路径前缀。
 
-目标地址在创建基准测试时固定。修改 URL 后需重新创建基准测试。进度上报继续使用 Worker 的管理地址。
+Worker 使用显式入口，或根据策略和本地配置解析地址。启动基准测试前，Worker 会回传最终 URL，并将其固定到 snapshot 中。修改地址后需重新创建基准测试。进度上报继续使用 Worker 的管理地址。
 
 ## 创建基准测试 { #create-benchmark }
 

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import httpx
 
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
@@ -163,6 +164,7 @@ class TestRouteModeAimsAtTheDeployment:
         runner._benchmark = SimpleNamespace(
             id=1,
             name="bm",
+            worker_id=12,
             model_name="qwen3",
             target_mode=mode,
             snapshot=SimpleNamespace(gateway_url="https://cluster-gateway.example"),
@@ -226,6 +228,245 @@ class TestRouteModeAimsAtTheDeployment:
         args = runner._build_command_args()
 
         assert args[args.index("--target") + 1] == url.rstrip("/")
+
+    @pytest.mark.parametrize("port", [80, 8080])
+    def test_embedded_worker_uses_management_host_and_server_gateway_port(self, port):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._config = Config.model_construct(
+            server_url=None, enable_worker=True, api_port=30080
+        )
+        runner._benchmark.snapshot = SimpleNamespace(
+            gateway_url=None,
+            gateway_target=SimpleNamespace(
+                mode=GatewayModeEnum.embedded,
+                port=port,
+                fallback_url="https://remote.example",
+            ),
+        )
+        assert runner._route_target() == f"http://127.0.0.1:{port}"
+
+    @pytest.mark.parametrize("url", ["", "http://", "not-a-url", "http://[invalid"])
+    def test_embedded_worker_rejects_an_invalid_management_hostname(
+        self, monkeypatch, url
+    ):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._config = Config.model_construct(server_url=None, enable_worker=True)
+        runner._benchmark.snapshot = SimpleNamespace(
+            gateway_url=None,
+            gateway_target=SimpleNamespace(
+                mode=GatewayModeEnum.embedded,
+                port=80,
+                fallback_url="https://remote.example",
+            ),
+        )
+        monkeypatch.setattr(Config, "get_server_url", lambda _: url)
+        with pytest.raises(ValueError, match="management URL.*hostname"):
+            runner._route_target()
+
+    def test_embedded_worker_preserves_ipv6_management_hostname(self, monkeypatch):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._config = Config.model_construct(server_url=None, enable_worker=True)
+        runner._benchmark.snapshot = SimpleNamespace(
+            gateway_url=None,
+            gateway_target=SimpleNamespace(
+                mode=GatewayModeEnum.embedded, port=8080, fallback_url=None
+            ),
+        )
+        monkeypatch.setattr(Config, "get_server_url", lambda _: "http://[::1]:30080")
+        assert runner._route_target() == "http://[::1]:8080"
+
+    @pytest.mark.parametrize(
+        "url", ["http://management.example:30080", "https://server.example/prefix/"]
+    )
+    def test_disabled_server_uses_workers_existing_connection_url(self, url):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._config.server_url = url
+        runner._benchmark.snapshot = SimpleNamespace(
+            gateway_url=None,
+            gateway_target=SimpleNamespace(mode=GatewayModeEnum.disabled),
+        )
+        assert runner._route_target() == url.rstrip("/")
+
+    def test_remote_worker_uses_trusted_embedded_fallback(self):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._benchmark.snapshot = SimpleNamespace(
+            gateway_url=None,
+            gateway_target=SimpleNamespace(
+                mode=GatewayModeEnum.embedded,
+                port=80,
+                fallback_url="https://gateway.example/prefix/",
+            ),
+        )
+        assert runner._route_target() == "https://gateway.example/prefix"
+
+    @pytest.mark.parametrize(
+        "mode",
+        [GatewayModeEnum.embedded, GatewayModeEnum.external, GatewayModeEnum.incluster],
+    )
+    def test_worker_does_not_guess_gateway_from_remote_management_url(self, mode):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._benchmark.snapshot = SimpleNamespace(
+            gateway_url=None,
+            gateway_target=SimpleNamespace(mode=mode, port=80, fallback_url=None),
+        )
+        message = (
+            "advertise_address"
+            if mode == GatewayModeEnum.embedded
+            else "gateway entrance"
+        )
+        with pytest.raises(ValueError, match=message):
+            runner._route_target()
+
+    def test_worker_reports_resolved_url_before_creating_workload(self, monkeypatch):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._benchmark.snapshot = SimpleNamespace(
+            gateway_url=None,
+            gateway_target=SimpleNamespace(mode=GatewayModeEnum.disabled),
+        )
+        runner._benchmark.get_deployment_metadata = lambda: SimpleNamespace(name="bm")
+        runner._update_benchmark_state = Mock()
+        runner._create_workload = Mock()
+        runner.start()
+        runner._update_benchmark_state.assert_called_once_with(
+            1, gateway_url="http://10.0.0.9:9091"
+        )
+        assert runner._benchmark.snapshot.gateway_url == "http://10.0.0.9:9091"
+        args = runner._create_workload.call_args.kwargs["command_args"]
+        assert args[args.index("--target") + 1] == "http://10.0.0.9:9091"
+
+    def test_failed_target_report_prevents_workload_start(self):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._benchmark.snapshot = SimpleNamespace(
+            gateway_url=None,
+            gateway_target=SimpleNamespace(mode=GatewayModeEnum.disabled),
+        )
+        runner._benchmark.get_deployment_metadata = lambda: SimpleNamespace(name="bm")
+        runner._update_benchmark_state = Mock(
+            side_effect=[RuntimeError("report failed"), None]
+        )
+        runner._create_workload = Mock()
+        with pytest.raises(RuntimeError, match="report failed"):
+            runner.start()
+        assert runner._benchmark.snapshot.gateway_url is None
+        runner._create_workload.assert_not_called()
+        error_patch = runner._update_benchmark_state.call_args.kwargs
+        assert error_patch["state"] == runner_module.BenchmarkStateEnum.ERROR
+        assert "report failed" in error_patch["state_message"]
+
+    def test_conflicting_report_reloads_and_uses_frozen_target(self):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._benchmark.snapshot = SimpleNamespace(
+            gateway_url=None,
+            gateway_target=SimpleNamespace(mode=GatewayModeEnum.disabled),
+        )
+        runner._benchmark.get_deployment_metadata = lambda: SimpleNamespace(name="bm")
+        request = httpx.Request("PATCH", runner._api_url)
+        error = httpx.HTTPStatusError(
+            "already fixed",
+            request=request,
+            response=httpx.Response(400, request=request),
+        )
+        runner._update_benchmark_state = Mock(side_effect=error)
+        current = SimpleNamespace(
+            id=1,
+            worker_id=12,
+            state=runner_module.BenchmarkStateEnum.RUNNING,
+            snapshot=SimpleNamespace(gateway_url="https://frozen.example"),
+        )
+        reload = Mock(return_value=current)
+        runner._clientset = SimpleNamespace(benchmarks=SimpleNamespace(get=reload))
+        runner._progress_ca_file = Mock(return_value=None)
+        runner._create_workload = Mock()
+
+        runner.start()
+
+        reload.assert_called_once_with(1, use_cache=False)
+        assert runner._benchmark.snapshot.gateway_url == "https://frozen.example"
+        args = runner._create_workload.call_args.kwargs["command_args"]
+        assert args[args.index("--target") + 1] == "https://frozen.example"
+
+    def test_forbidden_report_marks_error_without_reloading_target(self):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._benchmark.snapshot = SimpleNamespace(
+            gateway_url=None,
+            gateway_target=SimpleNamespace(mode=GatewayModeEnum.disabled),
+        )
+        runner._benchmark.get_deployment_metadata = lambda: SimpleNamespace(name="bm")
+        request = httpx.Request("PATCH", runner._api_url)
+        error = httpx.HTTPStatusError(
+            "forbidden", request=request, response=httpx.Response(403, request=request)
+        )
+        runner._update_benchmark_state = Mock(side_effect=[error, None])
+        reload = Mock()
+        runner._clientset = SimpleNamespace(benchmarks=SimpleNamespace(get=reload))
+        runner._create_workload = Mock()
+        with pytest.raises(httpx.HTTPStatusError):
+            runner.start()
+        reload.assert_not_called()
+        runner._create_workload.assert_not_called()
+        assert (
+            runner._update_benchmark_state.call_args.kwargs["state"]
+            == runner_module.BenchmarkStateEnum.ERROR
+        )
+
+    @pytest.mark.parametrize(
+        "worker_id,url", [(13, "https://frozen.example"), (12, None)]
+    )
+    def test_conflict_cannot_reuse_unbound_or_unresolved_target(self, worker_id, url):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._benchmark.snapshot = SimpleNamespace(
+            gateway_url=None,
+            gateway_target=SimpleNamespace(mode=GatewayModeEnum.disabled),
+        )
+        runner._benchmark.get_deployment_metadata = lambda: SimpleNamespace(name="bm")
+        request = httpx.Request("PATCH", runner._api_url)
+        error = httpx.HTTPStatusError(
+            "bad request",
+            request=request,
+            response=httpx.Response(400, request=request),
+        )
+        runner._update_benchmark_state = Mock(side_effect=[error, None])
+        current = SimpleNamespace(
+            id=1,
+            worker_id=worker_id,
+            state=runner_module.BenchmarkStateEnum.RUNNING,
+            snapshot=SimpleNamespace(gateway_url=url),
+        )
+        runner._clientset = SimpleNamespace(
+            benchmarks=SimpleNamespace(get=Mock(return_value=current))
+        )
+        runner._create_workload = Mock()
+        with pytest.raises(httpx.HTTPStatusError):
+            runner.start()
+        runner._create_workload.assert_not_called()
+
+    def test_conflict_does_not_restart_or_overwrite_a_stopped_benchmark(self):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._benchmark.snapshot = SimpleNamespace(
+            gateway_url=None,
+            gateway_target=SimpleNamespace(mode=GatewayModeEnum.disabled),
+        )
+        runner._benchmark.get_deployment_metadata = lambda: SimpleNamespace(name="bm")
+        request = httpx.Request("PATCH", runner._api_url)
+        error = httpx.HTTPStatusError(
+            "bad request",
+            request=request,
+            response=httpx.Response(400, request=request),
+        )
+        runner._update_benchmark_state = Mock(side_effect=error)
+        current = SimpleNamespace(
+            id=1,
+            worker_id=12,
+            state=runner_module.BenchmarkStateEnum.STOPPED,
+            snapshot=SimpleNamespace(gateway_url=None),
+        )
+        runner._clientset = SimpleNamespace(
+            benchmarks=SimpleNamespace(get=Mock(return_value=current))
+        )
+        runner._create_workload = Mock()
+        runner.start()
+        runner._create_workload.assert_not_called()
+        assert runner._update_benchmark_state.call_count == 1
 
     def test_health_probe_uses_gpustack_healthz(self):
         args = self._args(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")

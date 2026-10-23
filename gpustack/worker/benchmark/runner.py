@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import sys
+import httpx
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -26,6 +27,7 @@ from gpustack.schemas.benchmark import (
     benchmark_load_mode,
     generate_dataset_seed,
 )
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.utils.command import find_bool_parameter, sanitize_args
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars, sanitize_env
@@ -239,6 +241,24 @@ class BenchmarkRunner:
     def start(self):
         deployment_metadata = self._benchmark.get_deployment_metadata()
 
+        if self._benchmark.target_mode == BenchmarkTargetModeEnum.ROUTE:
+            try:
+                if not self._freeze_route_target():
+                    return
+            except Exception as error:
+                try:
+                    self._update_benchmark_state(
+                        self._benchmark.id,
+                        state=BenchmarkStateEnum.ERROR,
+                        state_message=f"Failed to resolve benchmark route target: {error}",
+                    )
+                except Exception as update_error:
+                    logger.error(
+                        "Failed to report benchmark route initialization error: %s",
+                        update_error,
+                    )
+                raise
+
         env = {}
         if not runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT:
             env = filter_env_vars(os.environ)
@@ -410,8 +430,8 @@ class BenchmarkRunner:
         self, with_ca_cert: bool = False
     ) -> List[str]:
         b = self._benchmark
-        # Route benchmarks enter through the gateway, using the route's name
-        # so routing, load balancing and streaming follow production traffic.
+        # Route benchmarks use the deployment's entrance and route name so
+        # routing, load balancing and streaming follow production traffic.
         route_mode = getattr(b, "target_mode", None) == BenchmarkTargetModeEnum.ROUTE
         if route_mode and not self._route_name:
             # Refused rather than fallen back on, the way the resolved path is
@@ -698,16 +718,81 @@ class BenchmarkRunner:
         )
         resp.raise_for_status()
 
+    def _freeze_route_target(self) -> bool:
+        """Freeze the target; return False if a conflict reveals a terminal run."""
+        target = self._route_target()
+        if self._benchmark.snapshot.gateway_url:
+            return True
+        try:
+            self._update_benchmark_state(self._benchmark.id, gateway_url=target)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 400:
+                raise
+            current = self._clientset.benchmarks.get(
+                self._benchmark.id, use_cache=False
+            )
+            if (
+                current.id != self._benchmark.id
+                or current.worker_id != self._benchmark.worker_id
+            ):
+                raise
+            if current.state not in (
+                BenchmarkStateEnum.PENDING,
+                BenchmarkStateEnum.QUEUED,
+                BenchmarkStateEnum.RUNNING,
+            ):
+                logger.info(
+                    "Benchmark %s(id=%s) is no longer active; skipping provisioning",
+                    self._benchmark.name,
+                    self._benchmark.id,
+                )
+                return False
+            if current.snapshot is None or not current.snapshot.gateway_url:
+                raise
+            target = current.snapshot.gateway_url.rstrip("/")
+        self._benchmark.snapshot.gateway_url = target
+        return True
+
     def _route_target(self) -> str:
-        """Return the Higress entrance recorded by the server at creation."""
+        """Resolve the entrance using only server policy and local worker config."""
         snapshot = getattr(self._benchmark, "snapshot", None)
         gateway_url = getattr(snapshot, "gateway_url", None)
-        if not gateway_url:
+        if gateway_url:
+            return gateway_url.rstrip("/")
+        policy = getattr(snapshot, "gateway_target", None)
+        if policy is not None:
+            if policy.mode == GatewayModeEnum.disabled:
+                return self._config.get_server_url().rstrip("/")
+            if policy.mode == GatewayModeEnum.embedded:
+                if self._config.server_role() == Config.ServerRole.BOTH and policy.port:
+                    try:
+                        host = urlparse(self._config.get_server_url()).hostname
+                        if not host:
+                            raise ValueError("Missing hostname")
+                    except ValueError as error:
+                        raise ValueError(
+                            "Worker management URL must have a valid hostname "
+                            "to resolve the embedded gateway"
+                        ) from error
+                    if ":" in host:
+                        host = f"[{host}]"
+                    return f"http://{host}:{policy.port}"
+                if policy.fallback_url:
+                    return policy.fallback_url.rstrip("/")
+                raise ValueError(
+                    "Cannot resolve the embedded gateway entrance on this remote "
+                    "worker. Configure advertise_address on the server, the cluster "
+                    "server_url or server_external_url with its gateway URL, or "
+                    "trust the request entrance through exact trusted_hosts."
+                )
             raise ValueError(
-                "Route benchmark snapshot has no gateway URL. Recreate the "
-                "benchmark to resolve the Higress entrance."
+                "Cannot resolve the gateway entrance on this worker. Configure "
+                "the cluster server_url or server_external_url with its gateway URL."
             )
-        return gateway_url.rstrip("/")
+        raise ValueError(
+            "Route benchmark snapshot has no gateway URL. Recreate the "
+            "benchmark to resolve the deployment entrance."
+        )
 
     def _get_configured_mounts(self) -> List[ContainerMount]:
         """

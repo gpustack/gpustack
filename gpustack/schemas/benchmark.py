@@ -13,6 +13,7 @@ from gpustack.schemas.common import (
     PaginatedList,
     pydantic_column_type,
 )
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.models import (
     ComputedResourceClaim,
@@ -78,9 +79,9 @@ class BenchmarkTargetModeEnum(str, Enum):
     2P2D group against a four-replica deployment is only meaningful when both
     sides are driven as deployments.
 
-    ``route`` puts the server's proxy in the path, and at high rates the
-    proxy can be the bottleneck rather than the deployment. That is the reason
-    ``instance`` stays the default and stays available for groups.
+    ``route`` follows the gateway when enabled, or the server's native proxy
+    when the gateway is disabled. Its measurements include that entrance's
+    overhead; ``instance`` remains available to isolate engine performance.
     """
 
     INSTANCE = "model_instance"
@@ -515,6 +516,14 @@ WorkerSnapshots = Dict[str, WorkerSnapshot]
 GPUSnapshots = Dict[str, GPUSnapshot]
 
 
+class BenchmarkGatewayTarget(BaseModel):
+    """Server-selected policy for resolving an entrance on the execution worker."""
+
+    mode: GatewayModeEnum
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
+    fallback_url: Optional[str] = None
+
+
 class BenchmarkSnapshot(BaseModel):
     instances: Optional[ModelInstanceSnapshots] = None
     workers: Optional[WorkerSnapshots] = None
@@ -529,9 +538,9 @@ class BenchmarkSnapshot(BaseModel):
     # else entirely — so "which route, under what name" is part of what the
     # numbers mean.
     route_name: Optional[str] = None
-    # Higress entrance resolved from the cluster override, server external URL,
-    # or creation request. Keeping it here fixes the target for this run.
+    # Explicit entrance, or the actual URL reported by the assigned worker.
     gateway_url: Optional[str] = None
+    gateway_target: Optional[BenchmarkGatewayTarget] = None
 
 
 class BenchmarkMetricsLite(SQLModel):
@@ -884,6 +893,8 @@ class BenchmarkStateUpdate(SQLModel):
     slo_met_rate: Optional[float] = None
     recommended_rate: Optional[float] = None
     validity: Optional[Dict[str, Any]] = None
+    # Accepted only from the assigned worker and persisted in the snapshot.
+    gateway_url: Optional[str] = None
 
 
 class BenchmarkFullPublic(
