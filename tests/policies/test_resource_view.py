@@ -80,6 +80,28 @@ def test_retry_excludes_main_and_subordinate_claims_but_retains_other_workloads(
     assert view.allocated(2) == Allocated(ram=0, vram={1: 30})
 
 
+def test_subordinate_claim_with_no_gpu_type_counts_against_every_gpu_type():
+    # GGUF never sets gpu_type on its instances or their subordinate workers,
+    # since llama-box places by raw VRAM rather than by a named GPU type. A
+    # rpc-server's claim must still be visible when some other backend (which
+    # does pass a concrete gpu_type, e.g. "cuda") asks what's free on that
+    # worker — otherwise it schedules on top of memory the rpc-server holds.
+    gguf = _instance(1)
+    gguf.gpu_type = None
+    gguf.distributed_servers = SimpleNamespace(
+        subordinate_workers=[
+            SimpleNamespace(
+                worker_id=2,
+                gpu_type=None,
+                computed_resource_claim=ComputedResourceClaim(ram=0, vram={0: 30}),
+            ),
+        ]
+    )
+    view = ResourceView([gguf])
+
+    assert view.allocated(2, "cuda") == Allocated(ram=0, vram={0: 30})
+
+
 def test_simulated_bindings_share_reservations_without_mutating_the_base_view():
     models = [_instance(1)]
     reservations = {1: Allocated(ram=40, vram={})}
