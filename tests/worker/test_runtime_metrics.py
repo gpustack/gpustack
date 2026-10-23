@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from prometheus_client.core import GaugeMetricFamily
+from prometheus_client.core import GaugeMetricFamily, Metric
 
 from gpustack.utils.metrics import get_builtin_metrics_config
 from gpustack.worker.exporter import MetricExporter
@@ -11,7 +11,10 @@ from gpustack.worker.runtime_metrics_aggregator import (
     RuntimeMetricsAggregator,
     create_prom_metric_family,
 )
-from gpustack.worker.runtime_metrics_client import parse_metrics_text
+from gpustack.worker.runtime_metrics_client import (
+    _fold_total_suffixed_families,
+    parse_metrics_text,
+)
 
 # vLLM serving OpenMetrics (the Rust frontend) declares a counter by its base
 # name and suffixes the samples with _total.
@@ -389,3 +392,85 @@ def test_aggregate_clears_cache_when_the_last_instance_is_removed():
     assert cache["unified"] == {}
     assert cache["raw"] == {}
     assert list(MetricExporter.collect_runtime_metrics(_ExporterProbe(cache))) == []
+
+
+# A runtime whose TYPE line names the counter by its base name while the samples
+# carry the _total suffix, in the Prometheus text format.
+PROMETHEUS_BASE_TYPE_COUNTER = """\
+# HELP vllm:prefix_cache_hits Prefix cache hits.
+# TYPE vllm:prefix_cache_hits counter
+vllm:prefix_cache_hits_total{model_name="m",engine="0"} 5.0
+vllm:prefix_cache_hits_created{model_name="m",engine="0"} 1700000000.0
+"""
+
+
+def test_total_suffixed_samples_fold_into_their_counter_family():
+    """Samples suffixed _total must land on the counter family named by its base
+    name, which is the key the metric mapping resolves against."""
+    families = _families(PROMETHEUS_BASE_TYPE_COUNTER, PROMETHEUS_CONTENT_TYPE)
+
+    assert "vllm:prefix_cache_hits_total" not in families
+    counter = families["vllm:prefix_cache_hits"]
+    assert counter.type == "counter"
+    assert [(s.name, s.value) for s in counter.samples] == [
+        ("vllm:prefix_cache_hits_total", 5.0)
+    ]
+
+
+def test_total_suffixed_samples_reach_the_unified_counter():
+    unified, raw = _aggregate(
+        _families(PROMETHEUS_BASE_TYPE_COUNTER, PROMETHEUS_CONTENT_TYPE)
+    )
+
+    assert [
+        (s.name, s.value) for s in unified["gpustack:prefix_cache_hits"].samples
+    ] == [("gpustack:prefix_cache_hits_total", 5.0)]
+    assert [(s.name, s.value) for s in raw["vllm:prefix_cache_hits"].samples] == [
+        ("vllm:prefix_cache_hits_total", 5.0)
+    ]
+
+
+@pytest.mark.parametrize("untyped", ["unknown", "untyped"])
+def test_untyped_total_family_folds_into_an_empty_counter(untyped):
+    base = Metric("vllm:thing", "d", "counter")
+    stray = Metric("vllm:thing_total", "d", untyped)
+    stray.add_sample("vllm:thing_total", {"model_name": "m"}, 2.0)
+
+    folded = _fold_total_suffixed_families([base, stray])
+
+    assert folded == [base]
+    assert [s.value for s in base.samples] == [2.0]
+
+
+@pytest.mark.parametrize("untyped", ["unknown", "untyped"])
+def test_untyped_total_family_without_a_base_becomes_a_counter(untyped):
+    stray = Metric("vllm:thing_total", "d", untyped)
+    stray.add_sample("vllm:thing_total", {"model_name": "m"}, 2.0)
+
+    [counter] = _fold_total_suffixed_families([stray])
+
+    assert (counter.name, counter.type) == ("vllm:thing", "counter")
+    assert [s.value for s in counter.samples] == [2.0]
+
+
+def test_total_suffixed_family_without_a_base_becomes_a_counter():
+    text = (
+        "# TYPE vllm:prompt_tokens_total counter\n"
+        'vllm:prompt_tokens_total{model_name="m"} 9.0\n'
+    )
+    families = _families(text, PROMETHEUS_CONTENT_TYPE)
+
+    assert "vllm:prompt_tokens_total" not in families
+    assert families["vllm:prompt_tokens"].type == "counter"
+
+
+def test_total_suffixed_family_is_left_alone_when_base_already_has_samples():
+    base = Metric("vllm:thing", "d", "counter")
+    base.add_sample("vllm:thing_total", {"model_name": "m"}, 1.0)
+    stray = Metric("vllm:thing_total", "d", "unknown")
+    stray.add_sample("vllm:thing_total", {"model_name": "m"}, 2.0)
+
+    folded = _fold_total_suffixed_families([base, stray])
+
+    assert folded == [base, stray]
+    assert [s.value for s in base.samples] == [1.0]

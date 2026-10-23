@@ -1,6 +1,7 @@
 import logging
 from typing import Optional
 import requests
+from prometheus_client.core import Metric
 from prometheus_client.parser import text_string_to_metric_families
 from prometheus_client.openmetrics.parser import (
     text_string_to_metric_families as openmetrics_text_string_to_metric_families,
@@ -14,11 +15,48 @@ logger = logging.getLogger(__name__)
 
 OPENMETRICS_CONTENT_TYPE = "application/openmetrics-text"
 
+# Spellings of a family whose samples have no usable TYPE declaration.
+UNTYPED_FAMILY_TYPES = ("unknown", "untyped")
+
 BackendVersionAPI = {
     BackendEnum.VLLM.value: ["version"],
     BackendEnum.SGLANG.value: ["server_info", "get_server_info"],
     BackendEnum.ASCEND_MINDIE.value: ["info"],
 }
+
+
+def _fold_total_suffixed_families(families):
+    """
+    Move counter samples that arrive as untyped `<name>_total` families back onto
+    their counter family `<name>`.
+
+    The Prometheus text parser reports a sample whose `_total` suffix has no
+    matching TYPE line as an untyped family named `<name>_total`. The metric
+    mapping is keyed by the counter's base name, so such a family would never
+    resolve. Samples are only moved when the base family is absent or is still
+    empty, so a family that already carries samples is never overwritten.
+    """
+    by_name = {family.name: family for family in families}
+    folded = []
+    for family in families:
+        is_untyped_total = family.type in UNTYPED_FAMILY_TYPES and family.name.endswith(
+            "_total"
+        )
+        if not is_untyped_total:
+            folded.append(family)
+            continue
+
+        base_name = family.name[: -len("_total")]
+        base = by_name.get(base_name)
+        if base is None:
+            counter = Metric(base_name, family.documentation, "counter")
+            counter.samples = family.samples
+            folded.append(counter)
+        elif base.type == "counter" and not base.samples:
+            base.samples = family.samples
+        else:
+            folded.append(family)
+    return folded
 
 
 def parse_metrics_text(text: str, content_type: Optional[str] = None):
@@ -43,7 +81,7 @@ def parse_metrics_text(text: str, content_type: Optional[str] = None):
                 f"are expected to be missing until this parses: {e}"
             )
     try:
-        return list(text_string_to_metric_families(text))
+        return _fold_total_suffixed_families(list(text_string_to_metric_families(text)))
     except Exception as e:
         # Materialized here on purpose: left lazy, a malformed payload would
         # raise while the caller iterates and be retried as if it were a
