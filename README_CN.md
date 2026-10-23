@@ -204,10 +204,6 @@ curl http://your_gpustack_server_url/v1/chat/completions \
 1.  安装 [Docker](https://docs.docker.com/engine/install/)。
 2.  运行 `make package`。
 
-## 贡献
-
-如果您有兴趣为 GPUStack 做贡献，请阅读 [贡献指南](./docs/contributing.md)。
-
 ## 加入社区
 
 扫码加入社区群：
@@ -215,6 +211,16 @@ curl http://your_gpustack_server_url/v1/chat/completions \
 <p align="left">
     <img alt="Wechat-group" src="./docs/assets/wechat-group-qrcode.jpg" width="300px"/>
 </p>
+
+## 贡献
+
+如果您有兴趣为 GPUStack 做贡献，请阅读 [贡献指南](./docs/contributing.md)。
+
+感谢所有为 GPUStack 做出贡献的开发者！
+
+<a href="https://github.com/gpustack/gpustack/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=gpustack/gpustack" alt="GPUStack 贡献者" />
+</a>
 
 ## 许可证
 

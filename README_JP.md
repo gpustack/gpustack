@@ -207,13 +207,19 @@ curl http://your_gpustack_server_url/v1/chat/completions \
 
 2. `make package` を実行します。
 
+## コミュニティに参加
+
+問題がある場合、または提案がある場合は、お気軽に私たちの[コミュニティ](https://discord.gg/VXYJzuaqwD)に参加してサポートを受けてください。
+
 ## 貢献
 
 GPUStackへの貢献に興味がある場合は、[貢献ガイド](./docs/contributing.md)をお読みください。
 
-## コミュニティに参加
+GPUStack に貢献してくださったすべての皆様に感謝します！
 
-問題がある場合、または提案がある場合は、お気軽に私たちの[コミュニティ](https://discord.gg/VXYJzuaqwD)に参加してサポートを受けてください。
+<a href="https://github.com/gpustack/gpustack/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=gpustack/gpustack" alt="GPUStack の貢献者" />
+</a>
 
 ## ライセンス
 

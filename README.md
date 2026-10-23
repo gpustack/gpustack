@@ -214,13 +214,19 @@ Please see the [official docs site](https://docs.gpustack.ai) for complete docum
 
 2. Run `make package`.
 
+## Join Community
+
+Any issues or have suggestions, feel free to join our [Community](https://discord.gg/VXYJzuaqwD) for support.
+
 ## Contributing
 
 Please read the [Contributing Guide](./docs/contributing.md) if you're interested in contributing to GPUStack.
 
-## Join Community
+Thanks to all of our contributors!
 
-Any issues or have suggestions, feel free to join our [Community](https://discord.gg/VXYJzuaqwD) for support.
+<a href="https://github.com/gpustack/gpustack/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=gpustack/gpustack" alt="GPUStack contributors" />
+</a>
 
 ## License
 
