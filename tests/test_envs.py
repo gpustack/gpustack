@@ -62,3 +62,27 @@ def test_debug_enable_tracemalloc(envs_with, value, enabled):
         envs_with(GPUSTACK_DEBUG_ENABLE_TRACEMALLOC=value).DEBUG_ENABLE_TRACEMALLOC
         is enabled
     )
+
+
+def test_gpu_instance_finalizing_unreachable_tolerance(envs_with):
+    """The finalizing tolerance defaults to 30 minutes and reads the environment."""
+    assert (
+        envs_with(
+            GPUSTACK_GPU_INSTANCE_FINALIZING_UNREACHABLE_TOLERANCE=None
+        ).GPU_INSTANCE_FINALIZING_UNREACHABLE_TOLERANCE
+        == 1800
+    )
+    assert (
+        envs_with(
+            GPUSTACK_GPU_INSTANCE_FINALIZING_UNREACHABLE_TOLERANCE="60"
+        ).GPU_INSTANCE_FINALIZING_UNREACHABLE_TOLERANCE
+        == 60
+    )
+    # 0 means "give up at once" -- the same polarity as the PV finalizer knob,
+    # and the opposite of GPU_INSTANCE_UNREADABLE_CR_TOLERANCE's 0.
+    assert (
+        envs_with(
+            GPUSTACK_GPU_INSTANCE_FINALIZING_UNREACHABLE_TOLERANCE="0"
+        ).GPU_INSTANCE_FINALIZING_UNREACHABLE_TOLERANCE
+        == 0
+    )
