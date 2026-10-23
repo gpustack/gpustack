@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 from unittest.mock import MagicMock
 
@@ -7,6 +8,90 @@ import pytest
 from gpustack.schemas.model_files import ModelFile, ModelFileStateEnum
 from gpustack.schemas.models import SourceEnum
 from gpustack.worker import model_file_manager
+
+
+@pytest.fixture
+def lora_task():
+    task = object.__new__(model_file_manager.ModelFileDownloadTask)
+    task._model_file = ModelFile(
+        id=1,
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/adapter",
+        base_model="Qwen/Qwen3-8B",
+    )
+    task._update_model_file = MagicMock()
+    task._write_to_instance_download_logs = MagicMock()
+    return task
+
+
+@pytest.mark.parametrize(
+    "adapter_config",
+    [
+        {"base_model_name_or_path": "/training/models/base"},
+        {"base_model_name": "other/model"},
+        {"base_model_name_or_path": None, "base_model_name": "other/model"},
+        {"base_model_name_or_path": None},
+        {},
+    ],
+)
+def test_lora_resolution_accepts_base_metadata(lora_task, tmp_path, adapter_config):
+    (tmp_path / "adapter_config.json").write_text(json.dumps(adapter_config))
+
+    assert lora_task._resolve_lora_state([str(tmp_path)]) == {
+        "is_lora": True,
+        "base_model": "Qwen/Qwen3-8B",
+    }
+    assert lora_task._model_file.is_lora is True
+    lora_task._update_model_file.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "adapter_config,expected",
+    [
+        ({"base_model_name_or_path": "org/base"}, "org/base"),
+        ({"base_model_name_or_path": None, "base_model_name": "org/base"}, "org/base"),
+        ({"base_model_name_or_path": "", "base_model_name": "org/base"}, "org/base"),
+        ({"base_model_name_or_path": None}, None),
+    ],
+)
+def test_lora_resolution_backfills_empty_base(
+    lora_task, tmp_path, adapter_config, expected
+):
+    lora_task._model_file.base_model = None
+    (tmp_path / "adapter_config.json").write_text(json.dumps(adapter_config))
+
+    assert lora_task._resolve_lora_state([str(tmp_path)]) == {
+        "is_lora": True,
+        "base_model": expected,
+    }
+    assert lora_task._model_file.base_model == expected
+    lora_task._update_model_file.assert_not_called()
+
+
+@pytest.mark.parametrize("contents", ["{", "[]"])
+def test_lora_resolution_rejects_invalid_config(lora_task, tmp_path, contents):
+    (tmp_path / "adapter_config.json").write_text(contents)
+
+    assert lora_task._resolve_lora_state([str(tmp_path)]) is None
+
+    lora_task._update_model_file.assert_called_once()
+    update = lora_task._update_model_file.call_args
+    assert update.args == (1,)
+    assert update.kwargs["state"] == ModelFileStateEnum.ERROR
+    assert "adapter_config.json" in update.kwargs["state_message"]
+
+
+@pytest.mark.parametrize("user_hint", [False, True])
+def test_lora_resolution_without_adapter_config(lora_task, tmp_path, user_hint):
+    lora_task._model_file.is_lora = user_hint
+
+    result = lora_task._resolve_lora_state([str(tmp_path)])
+
+    assert result == (
+        {"is_lora": True, "base_model": "Qwen/Qwen3-8B"} if user_hint else {}
+    )
+    assert lora_task._model_file.is_lora is user_hint
+    lora_task._update_model_file.assert_not_called()
 
 
 @pytest.mark.asyncio
