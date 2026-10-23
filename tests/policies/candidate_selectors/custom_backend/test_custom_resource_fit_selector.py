@@ -289,3 +289,67 @@ def test_a_card_that_cannot_hold_its_own_fraction_is_left_out(config):
     assert 3 not in vram, vram
     assert len(set(vram.values())) == 1, vram
     assert all(v > 4 * 1024**3 for v in vram.values()), vram
+
+
+@pytest.mark.parametrize(
+    "flag, fraction, totals, free, expected_indexes",
+    [
+        ("gpu-memory-utilization", 0.9, [24, 24], [24, 24], [0, 1]),
+        ("mem-fraction-static", 0.9, [24, 24], [24, 24], [0, 1]),
+        ("gpu-memory-utilization", 0.5, [24, 24], [24, 24], None),
+        ("gpu-memory-utilization", 0.9, [24, 24, 24], [24, 20, 24], [0, 2]),
+        ("gpu-memory-utilization", 0.9, [24, 48], [24, 48], [0, 1]),
+        ("gpu-memory-utilization", 0.9, [24, 24, None], [24, 24, 24], [0, 1]),
+        ("gpu-memory-utilization", 0.9, [24, 24, 0], [24, 24, 24], [0, 1]),
+        ("gpu-memory-utilization", 0.9, [24, 24], [24, 20], None),
+    ],
+    ids=[
+        "vllm",
+        "sglang",
+        "insufficient",
+        "occupied",
+        "unequal",
+        "unknown",
+        "zero-total",
+        "one",
+    ],
+)
+def test_multi_gpu_fraction_budgets_cover_weights(
+    config, flag, fraction, totals, free, expected_indexes
+):
+    from types import SimpleNamespace
+
+    selector = _selector(config, [f"--{flag}={fraction}"])
+    selector._vram_claim = 40 * 1024**3
+    worker = linux_nvidia_4_4080_16gx4()
+    worker.status.gpu_devices = worker.status.gpu_devices[: len(totals)]
+    for gpu, total in zip(worker.status.gpu_devices, totals):
+        gpu.memory.total = total * 1024**3 if total is not None else None
+    allocatable = SimpleNamespace(
+        vram={i: value * 1024**3 for i, value in enumerate(free)}, ram=64 * 1024**3
+    )
+
+    with patch.object(selector._resource_view, "allocatable", return_value=allocatable):
+        candidates = selector.find_single_worker_multi_gpu_candidates([worker])
+
+    if expected_indexes is None:
+        assert candidates == []
+        return
+    assert len(candidates) == 1
+    assert candidates[0].gpu_indexes == expected_indexes
+    expected_vram = {i: int(totals[i] * 1024**3 * fraction) for i in expected_indexes}
+    assert candidates[0].computed_resource_claim.vram == expected_vram
+    assert selector._reserved_vram == sum(expected_vram.values())
+
+
+def test_single_gpu_fraction_books_the_card_budget(config):
+    selector = _selector(config, ["--gpu-memory-utilization=0.9"])
+    selector._vram_claim = 40 * 1024**3
+    worker = linux_nvidia_0_4090_24gx1()
+    worker.status.gpu_devices[0].memory.total = 48 * 1024**3
+
+    candidates = selector.find_single_worker_single_gpu_candidates([worker])
+
+    assert len(candidates) == 1
+    assert candidates[0].gpu_indexes == [0]
+    assert candidates[0].computed_resource_claim.vram == {0: int(48 * 1024**3 * 0.9)}
