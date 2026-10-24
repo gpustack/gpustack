@@ -40,9 +40,17 @@ def get_stream_idle_timeout() -> float:
     from gpustack import envs
 
     cfg = get_global_config()
-    if cfg is not None:
-        return cfg.proxy_stream_idle_timeout
-    return envs.PROXY_STREAM_IDLE_TIMEOUT
+    value = (
+        cfg.proxy_stream_idle_timeout
+        if cfg is not None
+        else envs.PROXY_STREAM_IDLE_TIMEOUT
+    )
+    # Startup-provided non-positive values would either trip every stream
+    # immediately or, on some code paths, behave as "no timeout". A bad value
+    # at startup should not wedge the proxy; hold the documented default.
+    if not isinstance(value, (int, float)) or value <= 0:
+        return 60
+    return value
 
 
 def _unwrap_optional(tp):
