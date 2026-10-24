@@ -23,6 +23,7 @@ from gpustack.api.exceptions import (
     ErrorResponse,
 )
 from gpustack import envs
+from gpustack.utils.config import get_stream_idle_timeout
 from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.utils.stall import stall_error_sse
 from gpustack.gateway.utils import get_instance_id_from_header, router_header_key
@@ -350,7 +351,7 @@ async def proxy(path: str, request: Request):  # noqa: C901
             _stream_body(
                 body_iter,
                 first_chunk,
-                envs.PROXY_STREAM_IDLE_TIMEOUT if streaming else None,
+                get_stream_idle_timeout() if streaming else None,
             ),
             status_code=resp.status,
             background=BackgroundTask(resp.close),

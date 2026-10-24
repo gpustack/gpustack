@@ -9,6 +9,7 @@ from gpustack.config.config import Config
 WHITELIST_CONFIG_FIELDS = {
     "debug",
     "system_default_container_registry",
+    "proxy_stream_idle_timeout",
 }
 
 READ_ONLY_CONFIG_FIELDS = WHITELIST_CONFIG_FIELDS.union(
@@ -23,6 +24,34 @@ READ_ONLY_CONFIG_FIELDS = WHITELIST_CONFIG_FIELDS.union(
     }
 )
 logger = logging.getLogger(__name__)
+
+
+def get_stream_idle_timeout() -> float:
+    """Current inter-chunk idle budget for proxy streaming responses.
+
+    Read from the runtime global config (``proxy_stream_idle_timeout``, whitelisted
+    in ``PUT /config``) so updates land without restarting the process. When the
+    global config is present it is canonical: setting the value back to the
+    default at runtime must win over the startup env/CLI value. Only callers
+    without a global config (e.g. unit tests of the helper itself) fall back to
+    the GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS env.
+    """
+    from gpustack.config.config import get_global_config
+    from gpustack import envs
+
+    cfg = get_global_config()
+    value = (
+        cfg.proxy_stream_idle_timeout
+        if cfg is not None
+        else envs.PROXY_STREAM_IDLE_TIMEOUT
+    )
+    # Startup-provided non-positive values would either trip every stream
+    # immediately or, on some code paths, behave as "no timeout". A bad value
+    # at startup should not wedge the proxy; hold the documented default.
+    # bool is a subclass of int; a boolean must never pass as a timeout.
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return 60
+    return value
 
 
 def _unwrap_optional(tp):

@@ -63,7 +63,18 @@ async def set_config(request: Request):
     updates: Dict[str, Any] = {}
     for k, v in data.items():
         if k in WHITELIST_CONFIG_FIELDS:
-            updates[k] = coerce_value_by_field(k, v)
+            coerced = coerce_value_by_field(k, v)
+            # A zero or negative idle budget would behave as "no timeout" and
+            # permanently disable stream stall detection.
+            if k == "proxy_stream_idle_timeout" and (
+                isinstance(coerced, bool)
+                or not isinstance(coerced, int)
+                or coerced <= 0
+            ):
+                raise InvalidException(
+                    message=f"proxy_stream_idle_timeout must be a positive integer, got {v!r}"
+                )
+            updates[k] = coerced
     for k, v in updates.items():
         setattr(cfg, k, v)
     if "debug" in updates:
