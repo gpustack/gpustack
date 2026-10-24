@@ -30,19 +30,18 @@ def get_stream_idle_timeout() -> float:
     """Current inter-chunk idle budget for proxy streaming responses.
 
     Read from the runtime global config (``proxy_stream_idle_timeout``, whitelisted
-    in ``PUT /config``) so updates land without restarting the process. Falls back
-    to the GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS env only when the global
-    config still carries the field default (so tests that monkeypatch the env
-    module keep working).
+    in ``PUT /config``) so updates land without restarting the process. When the
+    global config is present it is canonical: setting the value back to the
+    default at runtime must win over the startup env/CLI value. Only callers
+    without a global config (e.g. unit tests of the helper itself) fall back to
+    the GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS env.
     """
-    from gpustack.config.config import get_global_config, Config
+    from gpustack.config.config import get_global_config
     from gpustack import envs
 
     cfg = get_global_config()
     if cfg is not None:
-        field_default = Config.model_fields["proxy_stream_idle_timeout"].default
-        if cfg.proxy_stream_idle_timeout != field_default:
-            return cfg.proxy_stream_idle_timeout
+        return cfg.proxy_stream_idle_timeout
     return envs.PROXY_STREAM_IDLE_TIMEOUT
 
 

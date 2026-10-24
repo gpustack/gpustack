@@ -884,6 +884,7 @@ def set_common_options(args, config_data: dict):
         "tls_port",
         "api_port",
         "proxy_port",
+        "proxy_stream_idle_timeout",
         "gateway_mode",
         "gateway_kubeconfig",
         "gateway_namespace",

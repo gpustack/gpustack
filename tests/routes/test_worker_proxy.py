@@ -205,9 +205,12 @@ async def _sse_response(request, chunks: List[bytes], stall_after: bool):
 
 
 @pytest.fixture
-def tight_budgets(monkeypatch):
+def tight_budgets(monkeypatch, config):
     monkeypatch.setattr(envs, "PROXY_TTFT_TIMEOUT", TTFT_TIMEOUT)
-    monkeypatch.setattr(envs, "PROXY_STREAM_IDLE_TIMEOUT", IDLE_TIMEOUT)
+    prior = config.proxy_stream_idle_timeout
+    config.proxy_stream_idle_timeout = IDLE_TIMEOUT
+    yield
+    config.proxy_stream_idle_timeout = prior
 
 
 @pytest.mark.asyncio

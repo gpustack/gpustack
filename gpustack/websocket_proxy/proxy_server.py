@@ -46,18 +46,22 @@ class StallPolicy:
     ttft_timeout: float
     # Inter-chunk budget, applied only once a streaming response has started.
     idle_timeout: float
+    # Absolute ceiling on the whole response, and the only bound that applies
+    # while the response head has not arrived yet.
+    total_timeout: float
     # Optional dynamic access for the idle budget (e.g. tied to a runtime
     # config field). When set it wins over ``idle_timeout`` on each budget
     # evaluation so runtime updates land without recreating the proxy server.
     idle_timeout_getter: Optional[Callable[[], float]] = None
 
     def effective_idle_timeout(self) -> float:
-        if self.idle_timeout_getter is not None:
-            return self.idle_timeout_getter()
-        return self.idle_timeout
-    # Absolute ceiling on the whole response, and the only bound that applies
-    # while the response head has not arrived yet.
-    total_timeout: float
+        if self.idle_timeout_getter is None:
+            return self.idle_timeout
+        # A non-positive value would behave as "no timeout" further down, so a
+        # bad runtime update must not disable stall detection; fall back to the
+        # static budget instead.
+        value = self.idle_timeout_getter()
+        return value if value and value > 0 else self.idle_timeout
     # Body of the synthesized 504 returned when the stall predates the head.
     error_body: bytes = b'{"error":{"message":"upstream stalled"}}'
     # Terminal frames appended when the stall happens mid-stream.
