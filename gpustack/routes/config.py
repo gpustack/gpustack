@@ -67,7 +67,9 @@ async def set_config(request: Request):
             # A zero or negative idle budget would behave as "no timeout" and
             # permanently disable stream stall detection.
             if k == "proxy_stream_idle_timeout" and (
-                not isinstance(coerced, int) or coerced <= 0
+                isinstance(coerced, bool)
+                or not isinstance(coerced, int)
+                or coerced <= 0
             ):
                 raise InvalidException(
                     message=f"proxy_stream_idle_timeout must be a positive integer, got {v!r}"

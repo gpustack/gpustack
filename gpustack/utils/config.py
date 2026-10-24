@@ -48,7 +48,8 @@ def get_stream_idle_timeout() -> float:
     # Startup-provided non-positive values would either trip every stream
     # immediately or, on some code paths, behave as "no timeout". A bad value
     # at startup should not wedge the proxy; hold the documented default.
-    if not isinstance(value, (int, float)) or value <= 0:
+    # bool is a subclass of int; a boolean must never pass as a timeout.
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         return 60
     return value
 
