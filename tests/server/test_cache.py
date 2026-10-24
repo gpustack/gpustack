@@ -1,8 +1,11 @@
 import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from aiocache import Cache
 
-from gpustack.logging import setup_logging
+from gpustack.logging import TRACE_LEVEL, setup_logging
+from gpustack.server import cache as cache_module
 from gpustack.server.cache import (
     build_cache_key,
     delete_cache_by_key,
@@ -412,3 +415,44 @@ class TestDeleteCacheByKey:
 
         assert call_count["a"] == 2
         assert call_count["b"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalidation", ["local", "remote", "broadcast", "broadcast-error"]
+)
+async def test_cache_logs_do_not_expose_keys(monkeypatch, caplog, invalidation):
+    credential = "sensitive-cache-credential"
+    key = f"APIKeyService.get_by_access_key('{credential}',)"
+    coordinator = MagicMock()
+    coordinator.publish = AsyncMock()
+    if invalidation == "broadcast-error":
+        coordinator.publish.side_effect = RuntimeError(f"Cannot publish {key}")
+    monkeypatch.setattr(cache_module, "_coordinator", coordinator)
+    caplog.set_level(TRACE_LEVEL, logger=cache_module.__name__)
+
+    await global_cache.clear()
+    try:
+        await cache_module.set_cache_by_key(key, "cached-value")
+        assert await global_cache.get(key) == "cached-value"
+
+        if invalidation == "remote":
+            await cache_module._local_delete_cache(key)
+        else:
+            await delete_cache_by_key(
+                _key=key, sync_coordinator=invalidation != "local"
+            )
+        assert await global_cache.get(key) is None
+        if invalidation.startswith("broadcast"):
+            coordinator.publish.assert_awaited_once()
+            channel, event = coordinator.publish.await_args.args
+            assert channel == "cache"
+            assert event.data == {"key": key}
+        else:
+            coordinator.publish.assert_not_awaited()
+    finally:
+        await global_cache.clear()
+
+    assert caplog.records
+    assert credential not in caplog.text
+    assert key not in caplog.text
