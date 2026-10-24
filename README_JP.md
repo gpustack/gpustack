@@ -63,7 +63,7 @@ GPUStack は AI 推論用の幅広いアクセラレータをサポートして�
 
 - **NVIDIA GPU**
 - **AMD GPU**
-- **Ascend NPU**
+- **Huawei Ascend NPU**
 - **Hygon DCU**
 - **MThreads GPU**
 - **Iluvatar GPU**
