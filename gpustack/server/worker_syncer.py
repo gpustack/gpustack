@@ -82,8 +82,8 @@ class WorkerSyncer:
 
         async with async_session() as session:
             for worker in should_update_workers:
-                # reload from DB and update states only
-                to_update_worker = await WorkerService(session).get_by_id(worker.id)
+                # Reconciliation needs a database read, not a cached heartbeat.
+                to_update_worker = await Worker.one_by_id(session, worker.id)
                 if to_update_worker:
                     to_update_worker.unreachable = worker.unreachable
                     # The row was reloaded after the reachability pass. Re-run

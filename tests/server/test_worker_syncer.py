@@ -4,7 +4,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gpustack import envs
-from gpustack.schemas.workers import Maintenance, WorkerStateEnum
+from gpustack.schemas.workers import Maintenance, Worker, WorkerStateEnum
+from gpustack.server.cache import cache
+from gpustack.server.services import WorkerService
 from gpustack.server.worker_syncer import WorkerSyncer
 from tests.fixtures.workers.fixtures import linux_nvidia_1_4090_24gx1
 from tests.utils.mock import mock_async_session
@@ -54,6 +56,7 @@ from tests.utils.mock import mock_async_session
             WorkerStateEnum.UNREACHABLE,
             id="reachability-result-applied",
         ),
+        pytest.param(None, None, None, True, None, id="worker-deleted"),
     ],
 )
 async def test_sync_recomputes_state_on_the_fresh_row_before_writing(
@@ -73,43 +76,61 @@ async def test_sync_recomputes_state_on_the_fresh_row_before_writing(
     stale_snapshot.heartbeat_time = now - timedelta(seconds=600)
     stale_snapshot.unreachable = False
 
-    fresh_row = stale_snapshot.model_copy(deep=True)
-    fresh_row.name = "renamed-worker"
-    fresh_row.heartbeat_time = now
-    fresh_row.state = fresh_state
-    fresh_row.state_message = state_message
-    fresh_row.maintenance = maintenance
-    fresh_row.unreachable = reachable
+    cached_row = stale_snapshot.model_copy(deep=True)
+    fresh_row = None
+    if fresh_state is not None:
+        fresh_row = stale_snapshot.model_copy(deep=True)
+        fresh_row.name = "renamed-worker"
+        fresh_row.heartbeat_time = now
+        fresh_row.state = fresh_state
+        fresh_row.state_message = state_message
+        fresh_row.maintenance = maintenance
+        fresh_row.unreachable = reachable
 
     monkeypatch.setattr(envs, "WORKER_UNREACHABLE_CHECK_MODE", "enabled")
     monkeypatch.setattr(envs, "WORKER_HEARTBEAT_GRACE_PERIOD", 60)
     with (
-        patch(
-            "gpustack.server.worker_syncer.async_session",
-            return_value=mock_async_session(),
-        ),
+        patch("gpustack.server.worker_syncer.async_session") as session_factory,
         patch(
             "gpustack.server.worker_syncer.Worker.all",
             AsyncMock(return_value=[stale_snapshot]),
         ),
         patch(
-            "gpustack.server.worker_syncer.WorkerService",
-        ) as service_class,
+            "gpustack.server.worker_syncer.Worker.one_by_id",
+            AsyncMock(side_effect=[cached_row, fresh_row]),
+        ) as load_row,
+        patch.object(Worker, "update", autospec=True) as update_row,
         patch(
             "gpustack.server.worker_syncer.is_worker_reachable",
             AsyncMock(return_value=reachable),
         ) as reachability_check,
     ):
-        service = service_class.return_value
-        service.get_by_id = AsyncMock(return_value=fresh_row)
-        service.update = AsyncMock()
-        caplog.set_level("INFO", logger="gpustack.server.worker_syncer")
-        await WorkerSyncer(lambda: None, lambda: None)._sync_workers_states()
+        session_context = mock_async_session()
+        session_factory.return_value = session_context
+        session = session_context.__aenter__.return_value
+        await cache.clear()
+        try:
+            assert (
+                await WorkerService(session).get_by_id(stale_snapshot.id) is cached_row
+            )
+            assert (
+                await WorkerService(session).get_by_id(stale_snapshot.id) is cached_row
+            )
+            load_row.assert_awaited_once_with(session, stale_snapshot.id)
+            caplog.set_level("INFO", logger="gpustack.server.worker_syncer")
+            await WorkerSyncer(lambda: None, lambda: None)._sync_workers_states()
+        finally:
+            await cache.clear()
 
     reachability_check.assert_awaited_once()
-    service.get_by_id.assert_awaited_once_with(stale_snapshot.id)
-    service.update.assert_awaited_once_with(fresh_row)
+    assert load_row.await_count == 2
     assert stale_snapshot.state == WorkerStateEnum.NOT_READY
+    if fresh_row is None:
+        update_row.assert_not_awaited()
+        assert "Marked worker" not in caplog.text
+        return
+
+    update_row.assert_awaited_once_with(fresh_row, session, None)
     assert fresh_row.state == expected_state
     assert fresh_row.heartbeat_time == now
     assert fresh_row.unreachable is not reachable
