@@ -62,6 +62,7 @@ class StallPolicy:
         # static budget instead.
         value = self.idle_timeout_getter()
         return value if value and value > 0 else self.idle_timeout
+
     # Body of the synthesized 504 returned when the stall predates the head.
     error_body: bytes = b'{"error":{"message":"upstream stalled"}}'
     # Terminal frames appended when the stall happens mid-stream.
