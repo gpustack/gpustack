@@ -32,7 +32,8 @@ class WorkerSyncer:
         self._http_client_no_proxy_getter = http_client_no_proxy_getter
 
         logger.debug(
-            f"WorkerSyncer initialized with unreachable check mode: {envs.WORKER_UNREACHABLE_CHECK_MODE}"
+            "WorkerSyncer initialized with unreachable check mode: "
+            f"{envs.WORKER_UNREACHABLE_CHECK_MODE}"
         )
 
     async def start(self):
@@ -78,16 +79,21 @@ class WorkerSyncer:
         for worker in state_changed_workers:
             if worker and worker.state in state_to_worker_name:
                 should_update_workers.append(worker)
-                state_to_worker_name[worker.state].append(worker.name)
 
         async with async_session() as session:
             for worker in should_update_workers:
-                # reload from DB and update states only
-                to_update_worker = await WorkerService(session).get_by_id(worker.id)
+                # Reconciliation needs a database read, not a cached heartbeat.
+                to_update_worker = await Worker.one_by_id(session, worker.id)
                 if to_update_worker:
                     to_update_worker.unreachable = worker.unreachable
-                    to_update_worker.state = worker.state
-                    to_update_worker.state_message = worker.state_message
+                    # The row was reloaded after the reachability pass. Re-run
+                    # the state transition against its current heartbeat and
+                    # status instead of copying the stale snapshot's result.
+                    to_update_worker.compute_state()
+                    if to_update_worker.state in state_to_worker_name:
+                        state_to_worker_name[to_update_worker.state].append(
+                            to_update_worker.name
+                        )
                     await WorkerService(session).update(to_update_worker)
 
         for state, worker_names in state_to_worker_name.items():
