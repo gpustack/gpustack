@@ -9,6 +9,7 @@ from gpustack.config.config import Config
 WHITELIST_CONFIG_FIELDS = {
     "debug",
     "system_default_container_registry",
+    "proxy_stream_idle_timeout",
 }
 
 READ_ONLY_CONFIG_FIELDS = WHITELIST_CONFIG_FIELDS.union(
@@ -23,6 +24,26 @@ READ_ONLY_CONFIG_FIELDS = WHITELIST_CONFIG_FIELDS.union(
     }
 )
 logger = logging.getLogger(__name__)
+
+
+def get_stream_idle_timeout() -> float:
+    """Current inter-chunk idle budget for proxy streaming responses.
+
+    Read from the runtime global config (``proxy_stream_idle_timeout``, whitelisted
+    in ``PUT /config``) so updates land without restarting the process. Falls back
+    to the GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS env only when the global
+    config still carries the field default (so tests that monkeypatch the env
+    module keep working).
+    """
+    from gpustack.config.config import get_global_config, Config
+    from gpustack import envs
+
+    cfg = get_global_config()
+    if cfg is not None:
+        field_default = Config.model_fields["proxy_stream_idle_timeout"].default
+        if cfg.proxy_stream_idle_timeout != field_default:
+            return cfg.proxy_stream_idle_timeout
+    return envs.PROXY_STREAM_IDLE_TIMEOUT
 
 
 def _unwrap_optional(tp):

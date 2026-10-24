@@ -46,6 +46,15 @@ class StallPolicy:
     ttft_timeout: float
     # Inter-chunk budget, applied only once a streaming response has started.
     idle_timeout: float
+    # Optional dynamic access for the idle budget (e.g. tied to a runtime
+    # config field). When set it wins over ``idle_timeout`` on each budget
+    # evaluation so runtime updates land without recreating the proxy server.
+    idle_timeout_getter: Optional[Callable[[], float]] = None
+
+    def effective_idle_timeout(self) -> float:
+        if self.idle_timeout_getter is not None:
+            return self.idle_timeout_getter()
+        return self.idle_timeout
     # Absolute ceiling on the whole response, and the only bound that applies
     # while the response head has not arrived yet.
     total_timeout: float
@@ -494,7 +503,7 @@ async def wait_for_complete_response(  # noqa: C901
         elif not headers_sent:
             budget = stall_policy.ttft_timeout
         else:
-            budget = stall_policy.idle_timeout
+            budget = stall_policy.effective_idle_timeout()
         remaining = deadline - loop.time()
         if remaining <= 0:
             # A zero or negative budget must not be handed to the reader: some

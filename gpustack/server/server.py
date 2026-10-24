@@ -83,6 +83,7 @@ from gpustack.server.lora_model_routes import (
     create_lora_model_routes,
 )
 from gpustack.utils.lora_model_source import normalized_lora_list
+from gpustack.utils.config import get_stream_idle_timeout
 from gpustack.utils.file import write_credential_file
 from gpustack.server.init_db import init_db, get_query_count
 from gpustack.scheduler.scheduler import Scheduler
@@ -1384,6 +1385,7 @@ class Server:
             stall_policy=StallPolicy(
                 ttft_timeout=envs.PROXY_TTFT_TIMEOUT,
                 idle_timeout=envs.PROXY_STREAM_IDLE_TIMEOUT,
+                idle_timeout_getter=get_stream_idle_timeout,
                 total_timeout=envs.PROXY_TIMEOUT,
                 error_body=stall_error_json(),
                 error_sse=stall_error_sse(),
