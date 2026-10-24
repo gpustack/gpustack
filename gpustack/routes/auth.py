@@ -1,6 +1,7 @@
 import base64
 import functools
 import hmac
+import inspect
 import json
 import os
 import secrets
@@ -140,8 +141,9 @@ async def get_oidc_user_data(
 # Browser-facing SSO callbacks (CAS / OIDC / SAML) are reached via a
 # full-page IdP redirect: a JSON exception raised inside them would
 # land the user on a raw error page rather than the login form.
-# Failures are surfaced via ``/login?error=<code>`` instead, so the
-# login UI can read the code and render an actionable toast.
+# Failures send the browser to the UI carrying ``?error=<code>``
+# instead, so the login UI can read the code and render an actionable
+# toast.
 #
 # Two codes are recognised today:
 #   * ``source_conflict`` — same username collides with a different
@@ -150,24 +152,67 @@ async def get_oidc_user_data(
 #     IdP unreachable, malformed response, …). Generic by design:
 #     the underlying detail goes to ``logger`` for diagnosis rather
 #     than into a URL exposed to an unauthenticated caller.
-SOURCE_CONFLICT_LOGIN_URL = "/login?error=source_conflict"
-AUTH_FAILED_LOGIN_URL = "/login?error=auth_failed"
+SOURCE_CONFLICT_ERROR_CODE = "source_conflict"
+AUTH_FAILED_ERROR_CODE = "auth_failed"
+
+
+def _ui_relative_url(request: Request, error_code: Optional[str] = None) -> str:
+    """A relative URL for the UI root, as seen from ``request``'s own route.
+
+    Relative on purpose, so the server never needs to know the path it is
+    mounted under. A browser resolves ``Location`` against the URL *it*
+    requested, so climbing out of our own route lands on the UI either way:
+    ``/auth/oidc/callback`` yields ``../../`` → ``/``, and behind a proxy that
+    mounts us at ``/gpustack/`` the same answer resolves to ``/gpustack/``. The
+    prefix cancels out without ever being named.
+
+    One level per segment *minus one*: the last segment is the document, not a
+    directory, so resolution starts from ``/auth/oidc/`` and only two hops are
+    left to climb. Getting this wrong is invisible at the root — RFC 3986 drops
+    ``..`` that would escape above ``/``, so an extra hop still lands on ``/``
+    — and overshoots by exactly one directory under every subpath mount.
+
+    ``error_code`` goes in the real query string rather than inside the
+    fragment, because the login form reads it from ``window.location.search``.
+    The route has to go in the fragment because the UI is hash-routed — which
+    is also why landing on the UI root is enough for every other caller.
+    """
+    # Starlette reports root_path as part of scope["path"]. Strip it, or a
+    # server configured with one would climb a level too far per prefix segment
+    # and overshoot past the UI root.
+    root_path = request.scope.get("root_path", "")
+    path = request.url.path
+    if root_path and path.startswith(root_path):
+        path = path[len(root_path) :]
+
+    depth = len([segment for segment in path.strip("/").split("/") if segment])
+    # ``./`` rather than an empty string for a single-segment route: an empty
+    # relative reference means "this document", which would keep the callback's
+    # own path instead of climbing to the directory holding it.
+    up = "../" * (depth - 1) if depth > 1 else "./"
+    if error_code is None:
+        return up
+    return f"{up}?{urlencode({'error': error_code})}#/login"
 
 
 # ``303 See Other`` so a browser arriving via POST (SAML's POST
 # binding) switches to GET on the login page; ``302`` would
 # technically allow the browser to re-POST.
-def _source_conflict_redirect() -> RedirectResponse:
-    return RedirectResponse(url=SOURCE_CONFLICT_LOGIN_URL, status_code=303)
+def _source_conflict_redirect(request: Request) -> RedirectResponse:
+    return RedirectResponse(
+        url=_ui_relative_url(request, SOURCE_CONFLICT_ERROR_CODE), status_code=303
+    )
 
 
-def _auth_failed_redirect() -> RedirectResponse:
-    return RedirectResponse(url=AUTH_FAILED_LOGIN_URL, status_code=303)
+def _auth_failed_redirect(request: Request) -> RedirectResponse:
+    return RedirectResponse(
+        url=_ui_relative_url(request, AUTH_FAILED_ERROR_CODE), status_code=303
+    )
 
 
 def _sso_callback_errors_to_redirect(fn):
     """Decorator: turn auth failures inside an SSO callback into a
-    redirect to ``/login?error=<code>``.
+    redirect to the login form carrying ``?error=<code>``.
 
     ``ConflictException`` maps to ``source_conflict`` (specific
     actionable case). Any other exception — typed auth errors,
@@ -176,13 +221,26 @@ def _sso_callback_errors_to_redirect(fn):
     the cause is recoverable from server-side logs without exposing
     the original message to the browser.
     """
+    # Checked at import rather than on the failure path: the redirect target is
+    # derived from the request's own path, so a callback that does not take a
+    # ``Request`` would only reveal the problem the first time an SSO login
+    # failed — the one moment the redirect has to work.
+    if "request" not in inspect.signature(fn).parameters:
+        raise TypeError(
+            f"{fn.__name__} must declare a `request` parameter: the failure "
+            "redirect is computed from the request path, which is what keeps it "
+            "correct when the server is mounted under a subpath."
+        )
 
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
+        # FastAPI invokes endpoints with keyword arguments throughout, so the
+        # signature check above is enough to make this lookup safe.
+        request = kwargs["request"]
         try:
             return await fn(*args, **kwargs)
         except ConflictException:
-            return _source_conflict_redirect()
+            return _source_conflict_redirect(request)
         except Exception as exc:
             # ``HTTPException`` subclasses store the description on
             # ``.message`` and don't pass it to ``Exception.__init__``,
@@ -193,7 +251,7 @@ def _sso_callback_errors_to_redirect(fn):
             # of a bare exception type.
             detail = getattr(exc, "message", None) or str(exc) or type(exc).__name__
             logger.exception("SSO callback %s failed: %s", fn.__name__, detail)
-            return _auth_failed_redirect()
+            return _auth_failed_redirect(request)
 
     return wrapper
 
@@ -647,7 +705,7 @@ async def saml_callback(request: Request, session: SessionDep):
     access_token = jwt_manager.create_jwt_token(
         username=username,
     )
-    response = RedirectResponse(url='/', status_code=303)
+    response = RedirectResponse(url=_ui_relative_url(request), status_code=303)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=access_token,
@@ -677,7 +735,7 @@ async def saml_logout_callback(request: Request):
         auth.process_slo(False)
     except Exception:
         pass
-    response = RedirectResponse(url="/")
+    response = RedirectResponse(url=_ui_relative_url(request))
     response.delete_cookie(key=SESSION_COOKIE_NAME)
     response.delete_cookie(key=SSO_LOGIN_COOKIE_NAME)
     return response
@@ -924,7 +982,7 @@ async def oidc_callback(request: Request, session: SessionDep):
     access_token = jwt_manager.create_jwt_token(
         username=username,
     )
-    response = RedirectResponse(url='/')
+    response = RedirectResponse(url=_ui_relative_url(request))
     response.delete_cookie(key=OIDC_STATE_COOKIE_NAME)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
@@ -1182,7 +1240,7 @@ async def cas_callback(request: Request, session: SessionDep):
 
     jwt_manager: JWTManager = request.app.state.jwt_manager
     access_token = jwt_manager.create_jwt_token(username=username)
-    response = RedirectResponse(url="/")
+    response = RedirectResponse(url=_ui_relative_url(request))
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=access_token,
