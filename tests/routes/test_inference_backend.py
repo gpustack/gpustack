@@ -12,7 +12,7 @@ from gpustack.schemas.inference_backend import (
     VersionConfig,
     VersionConfigDict,
 )
-from gpustack.schemas.models import BackendSourceEnum
+from gpustack.schemas.models import BackendSourceEnum, Model
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.runner_source import RunnerOverrideEntry
 
@@ -46,6 +46,69 @@ def _platform_community_backend() -> InferenceBackend:
             }
         ),
     )
+
+
+def _scoped_backend(
+    *,
+    backend_id: int,
+    owner_principal_id: int,
+    backend_name: str = "vLLM",
+    version_configs=None,
+) -> InferenceBackend:
+    return InferenceBackend(
+        id=backend_id,
+        backend_name=backend_name,
+        owner_principal_id=owner_principal_id,
+        backend_source=BackendSourceEnum.BUILT_IN,
+        version_configs=version_configs,
+    )
+
+
+def _model(
+    *,
+    name: str,
+    owner_principal_id: int,
+    backend: str = "vLLM",
+    backend_version=None,
+    replicas: int = 1,
+) -> Model:
+    return Model(
+        name=name,
+        owner_principal_id=owner_principal_id,
+        backend=backend,
+        backend_version=backend_version,
+        replicas=replicas,
+    )
+
+
+def _mock_model_usage(monkeypatch, models):
+    def matching_models(fields):
+        return [
+            model
+            for model in models
+            if all(getattr(model, key) == value for key, value in fields.items())
+        ]
+
+    async def all_by_fields(session, fields, **kwargs):
+        return matching_models(fields)
+
+    async def all_by_field(session, field, value, **kwargs):
+        return matching_models({field: value})
+
+    monkeypatch.setattr(Model, "all_by_fields", all_by_fields)
+    monkeypatch.setattr(Model, "all_by_field", all_by_field)
+
+
+async def _delete_backend(monkeypatch, backend: InferenceBackend):
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    delete_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "delete", delete_mock)
+
+    await ib_route.delete_inference_backend(
+        MagicMock(), _org_ctx(backend.owner_principal_id or 1), backend.id
+    )
+    return delete_mock
 
 
 @pytest.mark.asyncio
@@ -254,3 +317,189 @@ async def test_list_backend_configs_reports_database_failures(monkeypatch, faili
     assert e.value.status_code == 500
     assert "inference_backends" not in e.value.message
     assert str(e.value.__cause__) == db_error
+
+
+@pytest.mark.asyncio
+async def test_delete_scoped_backend_ignores_running_models_of_other_owners(
+    monkeypatch,
+):
+    """Deleting owner 56's scoped row must not be blocked by owner 66's model."""
+    backend = _scoped_backend(backend_id=39, owner_principal_id=56)
+    _mock_model_usage(
+        monkeypatch,
+        [_model(name="owner-66-running", owner_principal_id=66)],
+    )
+
+    delete_mock = await _delete_backend(monkeypatch, backend)
+
+    delete_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_scoped_backend_blocks_on_running_model_of_same_owner(
+    monkeypatch,
+):
+    """A running model owned by the scoped backend's owner still blocks delete."""
+    backend = _scoped_backend(backend_id=40, owner_principal_id=66)
+    _mock_model_usage(
+        monkeypatch,
+        [_model(name="owner-66-running", owner_principal_id=66)],
+    )
+    delete_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "delete", delete_mock)
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await ib_route.delete_inference_backend(MagicMock(), _org_ctx(66), backend.id)
+
+    assert exc_info.value.status_code == 400
+    assert "owner-66-running" in exc_info.value.message
+    delete_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_platform_custom_backend_checks_models_for_all_owners(
+    monkeypatch,
+):
+    """Platform custom backends retain the global usage check."""
+    backend = InferenceBackend(
+        id=1,
+        backend_name="platform-custom",
+        owner_principal_id=None,
+        backend_source=BackendSourceEnum.CUSTOM,
+    )
+    _mock_model_usage(
+        monkeypatch,
+        [
+            _model(
+                name="owner-66-running",
+                owner_principal_id=66,
+                backend="platform-custom",
+            )
+        ],
+    )
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    delete_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "delete", delete_mock)
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await ib_route.delete_inference_backend(MagicMock(), _org_ctx(1), backend.id)
+
+    assert exc_info.value.status_code == 400
+    assert "owner-66-running" in exc_info.value.message
+    delete_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_remove_platform_version_checks_models_for_all_owners(monkeypatch):
+    """Platform version removal keeps the global usage check."""
+    backend = InferenceBackend(
+        id=1,
+        backend_name="platform-custom",
+        owner_principal_id=None,
+        backend_source=BackendSourceEnum.CUSTOM,
+        version_configs=VersionConfigDict(
+            root={
+                "v1-custom": VersionConfig(
+                    image_name="custom:v1", built_in_frameworks=None
+                )
+            }
+        ),
+    )
+    _mock_model_usage(
+        monkeypatch,
+        [
+            _model(
+                name="owner-66-running",
+                owner_principal_id=66,
+                backend="platform-custom",
+                backend_version="v1-custom",
+            )
+        ],
+    )
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await ib_route._validate_version_removal(
+            MagicMock(), backend, VersionConfigDict(root={})
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "owner-66-running" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_delete_scoped_backend_without_models_succeeds(monkeypatch):
+    """A scoped row with no association in its own owner scope is deletable."""
+    backend = _scoped_backend(backend_id=39, owner_principal_id=56)
+    _mock_model_usage(monkeypatch, [])
+
+    delete_mock = await _delete_backend(monkeypatch, backend)
+
+    delete_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_remove_scoped_version_blocks_on_same_owner_model(monkeypatch):
+    """Removing a scoped custom version checks a running model of that owner."""
+    backend = _scoped_backend(
+        backend_id=40,
+        owner_principal_id=66,
+        version_configs=VersionConfigDict(
+            root={
+                "v1-custom": VersionConfig(
+                    image_name="custom:v1", built_in_frameworks=None
+                )
+            }
+        ),
+    )
+    _mock_model_usage(
+        monkeypatch,
+        [
+            _model(
+                name="owner-66-running",
+                owner_principal_id=66,
+                backend_version="v1-custom",
+            )
+        ],
+    )
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await ib_route._validate_version_removal(
+            MagicMock(), backend, VersionConfigDict(root={})
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "owner-66-running" in exc_info.value.message
+    assert "v1-custom" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_remove_scoped_version_ignores_model_of_another_owner(monkeypatch):
+    """Another owner's use of the same version must not block removal."""
+    backend = _scoped_backend(
+        backend_id=40,
+        owner_principal_id=66,
+        version_configs=VersionConfigDict(
+            root={
+                "v1-custom": VersionConfig(
+                    image_name="custom:v1", built_in_frameworks=None
+                )
+            }
+        ),
+    )
+    _mock_model_usage(
+        monkeypatch,
+        [
+            _model(
+                name="owner-56-running",
+                owner_principal_id=56,
+                backend_version="v1-custom",
+            )
+        ],
+    )
+
+    await ib_route._validate_version_removal(
+        MagicMock(), backend, VersionConfigDict(root={})
+    )
