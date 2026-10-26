@@ -1791,6 +1791,98 @@ def test_homogeneous_model_parameters(model_type):
     )
 
 
+@pytest.mark.parametrize("wrapped", [False, True], ids=["text", "multimodal"])
+@pytest.mark.parametrize(
+    "attention_config,expected_kv_heads,expected_head_dim",
+    [
+        (
+            {
+                "num_key_value_heads": None,
+                "per_layer_config": {"1": {"num_key_value_heads": 4}},
+            },
+            16,
+            256,
+        ),
+        ({"per_layer_config": {"1": {"num_attention_heads": 32}}}, 4, 256),
+        (
+            {"head_dim": None, "per_layer_config": {"1": {"head_dim": 128}}},
+            4,
+            256,
+        ),
+        (
+            {
+                "num_key_value_heads": None,
+                "head_dim": None,
+                "per_layer_config": {
+                    "1": {
+                        "num_attention_heads": 32,
+                        "num_key_value_heads": 4,
+                        "head_dim": 128,
+                    }
+                },
+            },
+            16,
+            256,
+        ),
+        (
+            {
+                "head_dim": 128,
+                "per_layer_config": {"1": {"num_attention_heads": 32}},
+            },
+            4,
+            128,
+        ),
+        (
+            {
+                "num_key_value_heads": None,
+                "per_layer_config": {"1": {"num_attention_heads": 32}},
+            },
+            32,
+            256,
+        ),
+        (
+            {
+                "num_key_value_heads": None,
+                "head_dim": None,
+                "per_layer_config": {"1": {"head_dim": 128}},
+            },
+            16,
+            256,
+        ),
+    ],
+    ids=[
+        "optional-kv",
+        "derived-dim",
+        "optional-dim",
+        "combined",
+        "explicit-dim",
+        "global-kv-varying-heads",
+        "global-kv-varying-dim",
+    ],
+)
+def test_worker_heterogeneous_attention_defaults(
+    attention_config, expected_kv_heads, expected_head_dim, wrapped
+):
+    raw_config = {
+        "model_type": "llama",
+        "num_hidden_layers": 2,
+        "hidden_size": 4096,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 4,
+        "max_position_embeddings": 8192,
+        **attention_config,
+    }
+    if wrapped:
+        raw_config = {"text_config": raw_config}
+    pretrained = safe_pretrained_config_from_dict(raw_config)
+    params = ModelParameters()
+
+    params.from_model_pretrained_config(make_model(), pretrained)
+
+    assert params.num_key_value_heads == expected_kv_heads
+    assert params.head_dim == expected_head_dim
+
+
 @pytest.mark.parametrize("tp_size,invalid_heads", [(8, None), (64, 96), (96, 64)])
 @pytest.mark.asyncio
 async def test_heterogeneous_attention_heads_tp_divisibility(

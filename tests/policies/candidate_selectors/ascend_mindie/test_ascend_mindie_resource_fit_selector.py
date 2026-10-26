@@ -109,9 +109,10 @@ async def test_heterogeneous_heads_reject_invalid_manual_candidate(config):
 
 @pytest.mark.parametrize("layer_head_dim", [128, 256])
 @pytest.mark.parametrize("kv_quant_type", [None, "c8"])
+@pytest.mark.parametrize("optional_defaults", [False, True])
 @pytest.mark.asyncio
 async def test_heterogeneous_kv_estimate_covers_all_layers(
-    config, layer_head_dim, kv_quant_type
+    config, layer_head_dim, kv_quant_type, optional_defaults
 ):
     model = new_model(
         1,
@@ -125,9 +126,10 @@ async def test_heterogeneous_kv_estimate_covers_all_layers(
     )
     pretrained = PretrainedConfig(
         num_hidden_layers=2,
+        hidden_size=2048,
         num_attention_heads=16,
-        num_key_value_heads=16,
-        head_dim=128,
+        num_key_value_heads=None if optional_defaults else 16,
+        head_dim=None if optional_defaults else 128,
         max_position_embeddings=8192,
         quantization_config={"kv_quant_type": kv_quant_type},
         per_layer_config={
@@ -152,10 +154,7 @@ async def test_heterogeneous_kv_estimate_covers_all_layers(
         usage = await selector._estimate_usage([])
 
     cache_type_size = 1 if kv_quant_type == "c8" else 2
-    kv_bytes = sum(
-        2 * layer.num_key_value_heads * layer.head_dim * 8192 * cache_type_size
-        for layer in pretrained.per_layer_config
-    )
+    kv_bytes = 2 * (16 * 128 + 8 * layer_head_dim) * 8192 * cache_type_size
     assert usage.vram - 3 * 1024**3 >= kv_bytes
 
 
