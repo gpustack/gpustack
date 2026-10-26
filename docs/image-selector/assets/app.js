@@ -890,7 +890,7 @@ function getCurrentImages(component) {
         // Gateway and GPU service images - only required for Kubernetes deployments
         state.images.filter(img => {
             const name = img.split(':')[0];
-            return name.startsWith('gpustack/mirrored-') || ['gpustack/higress-plugins', 'gpustack/gpustack-operator', 'gpustack/ssh-server'].includes(name);
+            return name.startsWith('gpustack/mirrored-') || ['gpustack/higress-plugins', 'gpustack/gpustack-operator', 'gpustack/ssh-server', 'gpustack/llm-router'].includes(name);
         }).forEach(img => {
             const [fullName, tag] = img.split(':');
             imgs.push(getFullImageName(fullName.split('/').pop(), tag, state.selectedRegistry));
@@ -1301,7 +1301,7 @@ function generateImageList() {
         // GPU service images - only required for Kubernetes deployments
         const gpuServiceImgs = state.images.filter(img => {
             const name = img.split(':')[0];
-            return ['gpustack/gpustack-operator', 'gpustack/ssh-server'].includes(name) ||
+            return ['gpustack/gpustack-operator', 'gpustack/ssh-server', 'gpustack/llm-router'].includes(name) ||
                    (name.startsWith('gpustack/mirrored-') && !name.startsWith('gpustack/mirrored-higress-'));
         });
         if (gpuServiceImgs.length) {
