@@ -23,7 +23,7 @@ template: overview.html
 
 # Overview
 
-GPUStack is an open-source GPU cluster manager designed for efficient AI model deployment. It configures and orchestrates inference engines — vLLM, SGLang, TensorRT-LLM, or your own — to optimize performance across GPU clusters.
+GPUStack is an open-source GPU cluster manager for AI model serving and GPU instance provisioning. It configures and orchestrates inference engines — vLLM, SGLang, TensorRT-LLM, or your own — and lets you launch SSH-accessible GPU instances on demand.
 
 <div class="grid cards" markdown>
 
@@ -31,7 +31,7 @@ GPUStack is an open-source GPU cluster manager designed for efficient AI model d
 
     ---
 
-    Manages GPU clusters across multiple environments. This includes on-premises servers, Kubernetes clusters, and cloud providers.
+    Manages GPU clusters across on-premises servers, Kubernetes, and cloud providers. Supports GPU slicing for model deployments and GPU instances, with configurable VRAM and compute allocations.
 
 -   :material-engine-outline:{ .lg .middle .icon-green } __Pluggable Inference Engines__
 
@@ -39,17 +39,23 @@ GPUStack is an open-source GPU cluster manager designed for efficient AI model d
 
     Automatically configures high-performance inference engines such as vLLM, SGLang, and TensorRT-LLM. You can also add custom inference engines as needed.
 
--   :material-rocket-launch-outline:{ .lg .middle .icon-orange } __Day 0 Model Support__
+-   :material-speedometer:{ .lg .middle .icon-red } __Performance-Optimized Configurations__
 
     ---
 
-    GPUStack's pluggable engine architecture enables you to deploy new models on the day they are released.
+    Offers pre-tuned modes for low latency or high throughput. Supports prefill/decode disaggregation, platform-managed shared KV cache, and speculative decoding.
 
--   :material-speedometer:{ .lg .middle .icon-red } __Performance-Optimized__
+-   :material-chart-line:{ .lg .middle .icon-green } __Built-in Benchmarking__
 
     ---
 
-    Offers pre-tuned modes for low latency or high throughput. Supports extended KV cache (LMCache, HiCache) and speculative decoding (EAGLE3, MTP).
+    Sweeps concurrency or request-rate levels to compare throughput and latency, helping you select operating points that meet your performance goals.
+
+-   :material-server-outline:{ .lg .middle .icon-blue } __GPU Instances__
+
+    ---
+
+    Launches SSH-accessible GPU instances on demand for development, fine-tuning, and interactive workloads.
 
 -   :material-shield-check-outline:{ .lg .middle .icon-purple } __Enterprise-Grade Operations__
 
