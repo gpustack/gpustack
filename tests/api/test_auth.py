@@ -12,11 +12,18 @@ from fastapi.testclient import TestClient
 from gpustack.api.exceptions import register_handlers
 from gpustack.api.auth import (
     GATEWAY_AUTH_TOKEN_HEADER,
+    authenticate_request,
     client_ip_getter,
     get_current_user,
     worker_auth,
 )
-from gpustack.api.exceptions import BadRequestException, UnauthorizedException
+from gpustack.api.exceptions import (
+    BadRequestException,
+    ForbiddenException,
+    InternalServerErrorException,
+    UnauthorizedException,
+)
+from gpustack.extension import Plugin, PluginContext
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.schemas.users import AuthProviderEnum
 from gpustack.routes import auth as auth_route
@@ -2146,3 +2153,423 @@ async def test_no_gateway_means_no_gateway_assertions(monkeypatch):
         None,
     )
     assert not calls["by_access_key"], "the lookup must not even be attempted"
+
+
+# ---- Plugin.on_authenticated dispatch ----
+
+
+class _RecordingPlugin(Plugin):
+    seen = None
+
+    @classmethod
+    async def on_authenticated(cls, ctx, request, session, error):
+        cls.seen.append(
+            {
+                "error": error,
+                "user": getattr(request.state, "user", None),
+                "api_key": getattr(request.state, "api_key", None),
+                "session": session,
+            }
+        )
+
+
+def _auth_hook_request(contexts):
+    request = type("Request", (), {})()
+    request.state = type("State", (), {})()
+    request.app = type("App", (), {})()
+    request.app.state = type("State", (), {})()
+    request.app.state.server_config = type("Config", (), {"gateway_mode": None})()
+    request.app.state.plugin_contexts = contexts
+    return request
+
+
+def _auth_hook_session(monkeypatch):
+    session = object()
+
+    @asynccontextmanager
+    async def fake_async_session():
+        yield session
+
+    monkeypatch.setattr("gpustack.api.auth.async_session", fake_async_session)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_on_authenticated_observes_successful_api_key_auth(monkeypatch):
+    session = _auth_hook_session(monkeypatch)
+    plugin_cls = _RecordingPlugin
+    plugin_cls.seen = []
+    request = _auth_hook_request(
+        {
+            "hooked": PluginContext(
+                name="hooked", app=None, cfg=SimpleNamespace(), plugin_cls=plugin_cls
+            )
+        }
+    )
+
+    user = type("User", (), {"is_active": True})()
+    api_key = object()
+    monkeypatch.setattr(
+        "gpustack.api.auth.get_user_from_api_token",
+        AsyncMock(return_value=(user, api_key)),
+    )
+
+    returned = await authenticate_request(request, x_api_key="sk_hook")
+
+    assert returned is user
+    assert len(plugin_cls.seen) == 1
+    seen = plugin_cls.seen[0]
+    assert seen["error"] is None
+    assert seen["user"] is user
+    assert seen["api_key"] is api_key
+    assert seen["session"] is session
+
+
+@pytest.mark.asyncio
+async def test_on_authenticated_observes_basic_auth_without_api_key(monkeypatch):
+    _auth_hook_session(monkeypatch)
+    plugin_cls = _RecordingPlugin
+    plugin_cls.seen = []
+    request = _auth_hook_request(
+        {
+            "hooked": PluginContext(
+                name="hooked", app=None, cfg=SimpleNamespace(), plugin_cls=plugin_cls
+            )
+        }
+    )
+
+    user = type("User", (), {"is_active": True})()
+    monkeypatch.setattr(
+        "gpustack.api.auth.authenticate_basic_user",
+        AsyncMock(return_value=user),
+    )
+
+    await authenticate_request(
+        request, basic_credentials=SimpleNamespace(username="u", password="p")
+    )
+
+    assert len(plugin_cls.seen) == 1
+    assert plugin_cls.seen[0]["error"] is None
+    assert plugin_cls.seen[0]["user"] is user
+    assert plugin_cls.seen[0]["api_key"] is None
+
+
+@pytest.mark.asyncio
+async def test_on_authenticated_observes_failed_resolution(monkeypatch):
+    _auth_hook_session(monkeypatch)
+    plugin_cls = _RecordingPlugin
+    plugin_cls.seen = []
+    request = _auth_hook_request(
+        {
+            "hooked": PluginContext(
+                name="hooked", app=None, cfg=SimpleNamespace(), plugin_cls=plugin_cls
+            )
+        }
+    )
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.get_user_from_api_token",
+        AsyncMock(return_value=(None, None)),
+    )
+
+    with pytest.raises(UnauthorizedException):
+        await authenticate_request(request, x_api_key="no-such-key")
+
+    # The hook sees the same 401 outcome the client gets, with nothing attached.
+    assert len(plugin_cls.seen) == 1
+    assert isinstance(plugin_cls.seen[0]["error"], UnauthorizedException)
+    assert plugin_cls.seen[0]["user"] is None
+
+
+@pytest.mark.asyncio
+async def test_on_authenticated_observes_deactivated_user(monkeypatch):
+    _auth_hook_session(monkeypatch)
+    plugin_cls = _RecordingPlugin
+    plugin_cls.seen = []
+    request = _auth_hook_request(
+        {
+            "hooked": PluginContext(
+                name="hooked", app=None, cfg=SimpleNamespace(), plugin_cls=plugin_cls
+            )
+        }
+    )
+
+    user = type("User", (), {"is_active": False})()
+    monkeypatch.setattr(
+        "gpustack.api.auth.authenticate_basic_user",
+        AsyncMock(return_value=user),
+    )
+
+    with pytest.raises(UnauthorizedException):
+        await authenticate_request(
+            request, basic_credentials=SimpleNamespace(username="u", password="p")
+        )
+
+    assert isinstance(plugin_cls.seen[0]["error"], UnauthorizedException)
+    assert plugin_cls.seen[0]["user"] is None
+
+
+@pytest.mark.asyncio
+async def test_on_authenticated_rejection_refuses_the_request(monkeypatch):
+    _auth_hook_session(monkeypatch)
+
+    class RejectingPlugin(Plugin):
+        @classmethod
+        async def on_authenticated(cls, ctx, request, session, error):
+            raise ForbiddenException(message="blocked by policy")
+
+    request = _auth_hook_request(
+        {
+            "reject": PluginContext(
+                name="reject",
+                app=None,
+                cfg=SimpleNamespace(),
+                plugin_cls=RejectingPlugin,
+            )
+        }
+    )
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.get_user_from_api_token",
+        AsyncMock(return_value=(type("User", (), {"is_active": True})(), object())),
+    )
+
+    with pytest.raises(ForbiddenException):
+        await authenticate_request(request, x_api_key="sk_hook")
+
+
+@pytest.mark.asyncio
+async def test_on_authenticated_crash_fails_closed(monkeypatch):
+    _auth_hook_session(monkeypatch)
+
+    class CrashingPlugin(Plugin):
+        @classmethod
+        async def on_authenticated(cls, ctx, request, session, error):
+            raise RuntimeError("policy engine exploded")
+
+    request = _auth_hook_request(
+        {
+            "crash": PluginContext(
+                name="crash", app=None, cfg=SimpleNamespace(), plugin_cls=CrashingPlugin
+            )
+        }
+    )
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.get_user_from_api_token",
+        AsyncMock(return_value=(type("User", (), {"is_active": True})(), object())),
+    )
+
+    with pytest.raises(InternalServerErrorException):
+        await authenticate_request(request, x_api_key="sk_hook")
+
+
+@pytest.mark.asyncio
+async def test_on_authenticated_crash_never_masks_auth_error(monkeypatch):
+    _auth_hook_session(monkeypatch)
+
+    class CrashingPlugin(Plugin):
+        @classmethod
+        async def on_authenticated(cls, ctx, request, session, error):
+            raise RuntimeError("policy engine exploded")
+
+    request = _auth_hook_request(
+        {
+            "crash": PluginContext(
+                name="crash", app=None, cfg=SimpleNamespace(), plugin_cls=CrashingPlugin
+            )
+        }
+    )
+
+    monkeypatch.setattr(
+        "gpustack.api.auth.get_user_from_api_token",
+        AsyncMock(return_value=(None, None)),
+    )
+
+    with pytest.raises(UnauthorizedException):
+        await authenticate_request(request, x_api_key="no-such-key")
+
+
+@pytest.mark.asyncio
+async def test_on_authenticated_skipped_without_override_or_for_legacy(monkeypatch):
+    _auth_hook_session(monkeypatch)
+    dispatched = []
+
+    class BarePlugin(Plugin):
+        pass
+
+    class LegacyHookPlugin(Plugin):
+        def __init__(self, app, cfg):
+            pass
+
+        async def on_authenticated(self, request, session, error):
+            dispatched.append("legacy")
+
+    request = _auth_hook_request(
+        {
+            "bare": PluginContext(
+                name="bare", app=None, cfg=SimpleNamespace(), plugin_cls=BarePlugin
+            ),
+            "legacy": PluginContext(
+                name="legacy",
+                app=None,
+                cfg=SimpleNamespace(),
+                plugin_cls=LegacyHookPlugin,
+            ),
+        }
+    )
+
+    user = type("User", (), {"is_active": True})()
+    monkeypatch.setattr(
+        "gpustack.api.auth.get_user_from_api_token",
+        AsyncMock(return_value=(user, None)),
+    )
+
+    assert await authenticate_request(request, x_api_key="sk_hook") is user
+    # Neither a plugin that does not override the hook nor a legacy
+    # instance's same-named method is dispatched.
+    assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_on_authenticated_not_called_without_credentials(monkeypatch):
+    _auth_hook_session(monkeypatch)
+    plugin_cls = _RecordingPlugin
+    plugin_cls.seen = []
+    request = _auth_hook_request(
+        {
+            "hooked": PluginContext(
+                name="hooked", app=None, cfg=SimpleNamespace(), plugin_cls=plugin_cls
+            )
+        }
+    )
+
+    with pytest.raises(UnauthorizedException):
+        await authenticate_request(request)
+
+    assert plugin_cls.seen == []
+
+
+@pytest.mark.asyncio
+async def test_on_authenticated_runs_for_gateway_asserted_identity(monkeypatch):
+    """The gateway verified the credential, not the policy: an asserted
+    identity settles through the same funnel as a presented one, so the
+    hooks observe it with the identity already attached."""
+    from gpustack.api.auth import (
+        GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
+        authenticate_gateway_asserted_identity,
+    )
+
+    api_key = _api_token_double(access_key="3192253c1f4a9b7e", deleted_at=None)
+    expected_user = _principal_double()
+    _install_key_lookups(monkeypatch, api_key=api_key, user=expected_user)
+
+    plugin_cls = _RecordingPlugin
+    plugin_cls.seen = []
+    session = _SessionDouble()
+    request = _asserted_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: _GATEWAY_TOKEN,
+            GATEWAY_ASSERTED_ACCESS_KEY_HEADER: "3192253c1f4a9b7e",
+        }
+    )
+    request.app.state.plugin_contexts = {
+        "hooked": PluginContext(
+            name="hooked", app=None, cfg=SimpleNamespace(), plugin_cls=plugin_cls
+        )
+    }
+
+    user, key = await authenticate_gateway_asserted_identity(request, session)
+
+    assert user is expected_user
+    assert key is api_key
+    assert len(plugin_cls.seen) == 1
+    seen = plugin_cls.seen[0]
+    assert seen["error"] is None
+    assert seen["user"] is expected_user
+    assert seen["api_key"] is api_key
+    assert seen["session"] is session
+
+
+@pytest.mark.asyncio
+async def test_on_authenticated_rejection_refuses_an_asserted_identity(monkeypatch):
+    from gpustack.api.auth import (
+        GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
+        authenticate_gateway_asserted_identity,
+    )
+
+    class RejectingPlugin(Plugin):
+        @classmethod
+        async def on_authenticated(cls, ctx, request, session, error):
+            raise ForbiddenException(message="blocked by policy")
+
+    _install_key_lookups(
+        monkeypatch,
+        api_key=_api_token_double(access_key="3192253c1f4a9b7e", deleted_at=None),
+        user=_principal_double(),
+    )
+    request = _asserted_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: _GATEWAY_TOKEN,
+            GATEWAY_ASSERTED_ACCESS_KEY_HEADER: "3192253c1f4a9b7e",
+        }
+    )
+    request.app.state.plugin_contexts = {
+        "reject": PluginContext(
+            name="reject", app=None, cfg=SimpleNamespace(), plugin_cls=RejectingPlugin
+        )
+    }
+
+    with pytest.raises(ForbiddenException):
+        await authenticate_gateway_asserted_identity(request, _SessionDouble())
+
+
+@pytest.mark.asyncio
+async def test_a_401_from_a_hook_is_marked_as_a_policy_rejection(monkeypatch):
+    """``/token-auth`` maps a plain 401 onto anonymous access, so a 401 a
+    hook *chose* carries a marker telling it apart from the 401 of a missing
+    or invalid credential."""
+    from gpustack.api.auth import authenticate_request, is_policy_rejection
+
+    class RejectingWith401Plugin(Plugin):
+        @classmethod
+        async def on_authenticated(cls, ctx, request, session, error):
+            raise UnauthorizedException(message="blocked by policy")
+
+    _auth_hook_session(monkeypatch)
+    request = _auth_hook_request(
+        {
+            "reject": PluginContext(
+                name="reject",
+                app=None,
+                cfg=SimpleNamespace(),
+                plugin_cls=RejectingWith401Plugin,
+            )
+        }
+    )
+    monkeypatch.setattr(
+        "gpustack.api.auth.get_user_from_api_token",
+        AsyncMock(return_value=(type("User", (), {"is_active": True})(), object())),
+    )
+
+    with pytest.raises(UnauthorizedException) as raised:
+        await authenticate_request(request, x_api_key="sk_hook")
+
+    assert is_policy_rejection(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_a_credential_failure_401_is_not_a_policy_rejection(monkeypatch):
+    from gpustack.api.auth import authenticate_request, is_policy_rejection
+
+    _auth_hook_session(monkeypatch)
+    request = _auth_hook_request({})
+    monkeypatch.setattr(
+        "gpustack.api.auth.get_user_from_api_token",
+        AsyncMock(return_value=(None, None)),
+    )
+
+    with pytest.raises(UnauthorizedException) as raised:
+        await authenticate_request(request, x_api_key="no-such-key")
+
+    assert not is_policy_rejection(raised.value)

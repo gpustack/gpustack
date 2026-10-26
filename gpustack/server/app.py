@@ -19,7 +19,13 @@ from gpustack.gateway.utils import worker_websocket_connect_callback
 from gpustack.websocket_proxy.message_server import MessageServerHandler
 
 
-from gpustack.extension import Plugin, iter_plugin_classes, resolve_version_info
+from gpustack.extension import (
+    Plugin,
+    PluginContext,
+    iter_plugin_classes,
+    plugin_needs_instantiation,
+    resolve_version_info,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,10 +107,27 @@ def create_app(cfg: Config) -> FastAPI:
 def _load_extension_plugins(app: FastAPI, cfg: Config):
     """Load extension plugins registered via entry points.
 
-    Each entry point is expected to resolve to a ``Plugin`` subclass
-    whose ``__init__(app, cfg)`` performs the full registration.
+    Every registered plugin gets a :class:`PluginContext` on
+    ``app.state.plugin_contexts`` regardless of shape — the server
+    reuses the contexts at startup for coordinator discovery and task
+    collection.
+
+    Two shapes are supported:
+
+    * *static* (preferred): the entry point resolves to a
+      ``Plugin`` subclass that does **not** override ``__init__``. It
+      is never constructed; core calls its classmethod hooks with its
+      context — ``migrate`` then ``setup`` here, the rest at server
+      startup.
+    * *instance* (legacy): the subclass overrides
+      ``__init__(app, cfg)`` and does all of its wiring from the
+      constructor. It is appended to ``app.state.extension_plugins``
+      exactly as before and no classmethod hook is collected for it.
+
+    Any exception from either shape refuses startup.
     """
     app.state.extension_plugins = []
+    app.state.plugin_contexts = {}
     for name, plugin_class in iter_plugin_classes():
         try:
             if not (
@@ -114,8 +137,32 @@ def _load_extension_plugins(app: FastAPI, cfg: Config):
                     f"Extension plugin {name} does not implement the Plugin interface."
                 )
                 continue
-            plugin = plugin_class(app, cfg)
-            app.state.extension_plugins.append(plugin)
-            logger.info(f"Loaded extension plugin: {name}")
+
+            # Two installed distributions can register the same
+            # entry-point name; letting one overwrite the other would
+            # silently drop its hooks — and even its coordinator,
+            # falling the process back to LocalCoordinator.
+            if name in app.state.plugin_contexts:
+                raise RuntimeError(
+                    f"Duplicate plugin entry-point name '{name}': another "
+                    f"distribution already registered it. Remove one of the "
+                    f"conflicting packages."
+                )
+
+            ctx = PluginContext(name=name, app=app, cfg=cfg, plugin_cls=plugin_class)
+            app.state.plugin_contexts[name] = ctx
+
+            if plugin_needs_instantiation(plugin_class):
+                plugin = plugin_class(app, cfg)
+                app.state.extension_plugins.append(plugin)
+                # Record the instance on its context so the server's
+                # dispatch loops stay in entry-point order across both
+                # plugin shapes.
+                ctx.instance = plugin
+                logger.info(f"Loaded extension plugin: {name}")
+            else:
+                plugin_class.migrate(ctx)
+                plugin_class.setup(ctx)
+                logger.info(f"Loaded extension plugin: {name}")
         except Exception as e:
             raise RuntimeError(f"Failed to load extension plugin '{name}': {e}") from e
