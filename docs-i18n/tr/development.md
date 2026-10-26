@@ -6,7 +6,7 @@ translation_status: translated
 
 ## Önkoşullar { #prerequisites }
 
-1. Python'u yükleyin (sürüm 3.10 - 3.12).
+1. Python'u yükleyin (sürüm 3.11 - 3.12).
 2. Bir veritabanı çalıştırın (PostgreSQL veya MySQL).
 
 Örneğin, Docker'ı kullanarak PostgreSQL veritabanını çalıştırmak için:

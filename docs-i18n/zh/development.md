@@ -6,7 +6,7 @@ translation_status: translated
 
 ## 前置条件 { #prerequisites }
 
-1. 安装 Python（版本 3.10 至 3.12）。
+1. 安装 Python（版本 3.11 至 3.12）。
 2. 运行数据库（PostgreSQL 或 MySQL）。
 
 例如，使用 Docker 运行 PostgreSQL 数据库：
