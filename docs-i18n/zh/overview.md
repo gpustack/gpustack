@@ -24,7 +24,7 @@ translation_status: translated
 
 # 概览 { #overview }
 
-GPUStack 是一款开源 GPU 集群管理器，旨在高效部署 AI 模型。它通过配置和编排 vLLM、SGLang、TensorRT-LLM 或您自己的推理引擎，优化 GPU 集群的推理性能。
+GPUStack 是一款开源 GPU 集群管理器，用于 AI 模型推理服务和 GPU 实例供应。它配置和编排 vLLM、SGLang、TensorRT-LLM 或您自己的推理引擎，并支持按需启动可通过 SSH 访问的 GPU 实例。
 
 <div class="grid cards" markdown>
 
@@ -32,7 +32,7 @@ GPUStack 是一款开源 GPU 集群管理器，旨在高效部署 AI 模型。�
 
     ---
 
-    管理多种环境中的 GPU 集群，包括本地服务器、Kubernetes 集群和云服务商。
+    跨本地服务器、Kubernetes 和云服务商管理 GPU 集群。支持为模型部署和 GPU 实例进行 GPU 切分，并可配置显存和计算资源配额。
 
 -   :material-engine-outline:{ .lg .middle .icon-green } __可插拔推理引擎__
 
@@ -40,17 +40,23 @@ GPUStack 是一款开源 GPU 集群管理器，旨在高效部署 AI 模型。�
 
     自动配置 vLLM、SGLang 和 TensorRT-LLM 等高性能推理引擎，也可按需添加自定义推理引擎。
 
--   :material-rocket-launch-outline:{ .lg .middle .icon-orange } __模型发布当天即可部署__
-
-    ---
-
-    GPUStack 的可插拔引擎架构让您能够在新模型发布当天完成部署。
-
 -   :material-speedometer:{ .lg .middle .icon-red } __推理性能优化__
 
     ---
 
-    提供针对低延迟和高吞吐量预先调优的模式，支持扩展 KV 缓存（LMCache、HiCache）和推测解码（EAGLE3、MTP）。
+    提供低延迟和高吞吐预调优配置。支持 Prefill/Decode 分离、平台统一管理的共享 KV Cache 和推测性解码。
+
+-   :material-chart-line:{ .lg .middle .icon-green } __内置性能评估__
+
+    ---
+
+    扫描不同并发或请求速率下的吞吐量与延迟，帮助您选择满足性能目标的运行配置。
+
+-   :material-server-outline:{ .lg .middle .icon-blue } __GPU 实例__
+
+    ---
+
+    按需启动可通过 SSH 访问的 GPU 实例，适用于开发、微调和交互式工作负载。
 
 -   :material-shield-check-outline:{ .lg .middle .icon-purple } __企业级运维__
 

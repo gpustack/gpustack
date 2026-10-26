@@ -24,7 +24,7 @@ template: overview.html
 
 # 概要 { #overview }
 
-GPUStack は、AI モデルを効率的にデプロイするためのオープンソース GPU クラスターマネージャーです。vLLM、SGLang、TensorRT-LLM、独自の推論エンジンを構成・オーケストレーションし、GPU クラスター全体の性能を最適化します。
+GPUStack は、AI モデルサービングと GPU インスタンスのプロビジョニングのためのオープンソース GPU クラスターマネージャーです。vLLM、SGLang、TensorRT-LLM、独自の推論エンジンを構成・オーケストレーションし、SSH でアクセスできる GPU インスタンスをオンデマンドで起動できます。
 
 <div class="grid cards" markdown>
 
@@ -32,7 +32,7 @@ GPUStack は、AI モデルを効率的にデプロイするためのオープ�
 
     ---
 
-    オンプレミスサーバー、Kubernetes クラスター、クラウドプロバイダーなど、さまざまな環境の GPU クラスターを管理します。
+    オンプレミスサーバー、Kubernetes、クラウドプロバイダーにわたる GPU クラスターを管理します。モデルデプロイメントと GPU インスタンス向けの GPU 分割をサポートし、VRAM と計算リソースの配分を設定できます。
 
 -   :material-engine-outline:{ .lg .middle .icon-green } __プラグイン可能な推論エンジン__
 
@@ -40,17 +40,23 @@ GPUStack は、AI モデルを効率的にデプロイするためのオープ�
 
     vLLM、SGLang、TensorRT-LLM などの高性能推論エンジンを自動で構成します。必要に応じてカスタム推論エンジンも追加できます。
 
--   :material-rocket-launch-outline:{ .lg .middle .icon-orange } __モデル公開当日のサポート__
-
-    ---
-
-    GPUStack のプラグイン可能なエンジンアーキテクチャにより、新しいモデルを公開当日にデプロイできます。
-
 -   :material-speedometer:{ .lg .middle .icon-red } __推論性能の最適化__
 
     ---
 
-    低レイテンシまたは高スループット向けに事前調整されたモードを提供します。拡張 KV キャッシュ（LMCache、HiCache）と投機的デコーディング（EAGLE3、MTP）に対応しています。
+    低レイテンシまたは高スループット向けの事前調整済みモードを提供します。Prefill/Decode 分離、プラットフォームが一元管理する共有 KV キャッシュ、投機的デコーディングをサポートします。
+
+-   :material-chart-line:{ .lg .middle .icon-green } __組み込みベンチマーク__
+
+    ---
+
+    同時実行数やリクエストレートを変えながらスループットとレイテンシを比較し、パフォーマンス目標を満たす運用設定の選択を支援します。
+
+-   :material-server-outline:{ .lg .middle .icon-blue } __GPU インスタンス__
+
+    ---
+
+    開発、ファインチューニング、対話的なワークロード向けに、SSH でアクセスできる GPU インスタンスをオンデマンドで起動します。
 
 -   :material-shield-check-outline:{ .lg .middle .icon-purple } __エンタープライズ水準の運用__
 

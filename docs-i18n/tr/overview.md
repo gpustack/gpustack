@@ -24,7 +24,7 @@ template: overview.html
 
 # Genel Bakış { #overview }
 
-GPUStack, verimli AI modeli dağıtımı için tasarlanmış açık kaynaklı bir GPU küme yöneticisidir. GPU kümeleri genelinde performansı optimize etmek için vLLM, SGLang, TensorRT-LLM veya kendi çıkarım motorlarınızı yapılandırır ve düzenler.
+GPUStack, AI modellerini sunmak ve GPU örnekleri sağlamak için açık kaynaklı bir GPU küme yöneticisidir. vLLM, SGLang, TensorRT-LLM veya kendi çıkarım motorlarınızı yapılandırıp düzenler ve talep üzerine SSH ile erişilebilen GPU örnekleri başlatmanıza olanak tanır.
 
 <div class="grid cards" markdown>
 
@@ -32,7 +32,7 @@ GPUStack, verimli AI modeli dağıtımı için tasarlanmış açık kaynaklı bi
 
     ---
 
-    Birden fazla ortamda GPU kümelerini yönetir. Buna şirket içi sunucular, Kubernetes kümeleri ve bulut sağlayıcıları dahildir.
+    Şirket içi sunucular, Kubernetes ve bulut sağlayıcıları genelinde GPU kümelerini yönetir. Model dağıtımları ve GPU örnekleri için yapılandırılabilir VRAM ve hesaplama kaynağı tahsisleriyle GPU dilimlemeyi destekler.
 
 -   :material-engine-outline:{ .lg .middle .icon-green } __Takılabilir Çıkarım Motorları__
 
@@ -40,17 +40,23 @@ GPUStack, verimli AI modeli dağıtımı için tasarlanmış açık kaynaklı bi
 
     vLLM, SGLang ve TensorRT-LLM gibi yüksek performanslı çıkarım motorlarını otomatik olarak yapılandırır. Gerektiğinde özel çıkarım motorları da ekleyebilirsiniz.
 
--   :material-rocket-launch-outline:{ .lg .middle .icon-orange } __Gün 0 Model Desteği__
-
-    ---
-
-    GPUStack'in takılabilir motor mimarisi, yeni modelleri piyasaya sürüldükleri gün dağıtmanıza olanak tanır.
-
 -   :material-speedometer:{ .lg .middle .icon-red } __Performans İçin Optimize Edilmiş__
 
     ---
 
-    Düşük gecikme veya yüksek verim için önceden ayarlanmış modlar sunar. Genişletilmiş KV önbelleğini (LMCache, HiCache) ve spekülatif kod çözmeyi (EAGLE3, MTP) destekler.
+    Düşük gecikme veya yüksek verim için önceden ayarlanmış modlar sunar. Prefill/decode ayrıştırmasını, platform tarafından yönetilen paylaşımlı KV önbelleğini ve spekülatif kod çözmeyi destekler.
+
+-   :material-chart-line:{ .lg .middle .icon-green } __Yerleşik Performans Testleri__
+
+    ---
+
+    Farklı eşzamanlılık veya istek hızı seviyelerinde verim ve gecikmeyi karşılaştırarak performans hedeflerinize uygun çalışma noktalarını seçmenize yardımcı olur.
+
+-   :material-server-outline:{ .lg .middle .icon-blue } __GPU Örnekleri__
+
+    ---
+
+    Geliştirme, ince ayar ve etkileşimli iş yükleri için talep üzerine SSH ile erişilebilen GPU örnekleri başlatır.
 
 -   :material-shield-check-outline:{ .lg .middle .icon-purple } __Kurumsal Düzeyde İşlemler__
 
