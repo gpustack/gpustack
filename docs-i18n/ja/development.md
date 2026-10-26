@@ -6,7 +6,7 @@ translation_status: translated
 
 ## 前提条件 { #prerequisites }
 
-1. Python（バージョン 3.10～3.12）をインストールします。
+1. Python（バージョン 3.11～3.12）をインストールします。
 2. データベース（PostgreSQL または MySQL）を起動します。
 
 たとえば、Docker で PostgreSQL を起動するには次を実行します。

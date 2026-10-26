@@ -6,7 +6,7 @@ translation_status: translated
 
 ## Предварительные условия { #prerequisites }
 
-1. Установите Python (версии с 3.10 по 3.12).
+1. Установите Python (версии с 3.11 по 3.12).
 2. Запустите базу данных (PostgreSQL или MySQL).
 
 Например, чтобы запустить базу данных PostgreSQL с помощью Docker:
