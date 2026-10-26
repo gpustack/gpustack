@@ -293,6 +293,13 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     self._model_params.qk_nope_head_dim
                     + self._model_params.qk_nope_head_dim
                 )
+            elif (
+                attention_type == ModelAttentionTypeEnum.UNK
+                and self._model_params.num_attention_heads_per_layer
+            ):
+                # Independent per-layer maxima can fail the GQA divisibility check.
+                # KV head and dimension maxima still bound the standard KV cache.
+                n_heads = 2 * self._model_params.num_key_value_heads
 
             vram_kv_cache = n_heads * d_head * n_layers * n_tokens * ct_size
 
@@ -351,7 +358,11 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
     async def _validate_parallelized(self) -> bool:  # noqa: C901
         # Validate whether model can be parallelized.
-        if num_attention_heads := self._model_params.num_attention_heads:
+        for num_attention_heads in self._model_params.num_attention_heads_per_layer or [
+            self._model_params.num_attention_heads
+        ]:
+            if not num_attention_heads:
+                continue
             if self._serving_params.pipeline_parallel_size > 1:
                 if num_attention_heads % self._serving_params.tensor_parallel_size != 0:
                     self._diagnostic_messages.append(
