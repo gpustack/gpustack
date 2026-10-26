@@ -17,6 +17,8 @@ number may belong to a self-built image whose private version carries the fix.
 
 from types import SimpleNamespace
 
+import pytest
+
 from gpustack.schemas.models import (
     DegradationReasonEnum,
     DisaggregationSpec,
@@ -39,7 +41,6 @@ def _model(mode, backend_version=None, roles=None):
 
 
 SGLANG = PDModeEnum.SGLANG_MOONCAKE
-VLLM = PDModeEnum.VLLM_NIXL
 
 
 def test_a_version_under_the_floor_is_reported():
@@ -140,9 +141,22 @@ def test_a_nonexistent_but_parseable_version_is_above_the_floor():
     assert _engine_version_below_recipe_floor(_model(SGLANG, "9.9.9")) is False
 
 
-def test_the_vllm_recipe_has_its_own_floor():
-    assert _engine_version_below_recipe_floor(_model(VLLM, "0.19.0")) is True
-    assert _engine_version_below_recipe_floor(_model(VLLM, "0.20.0")) is False
+@pytest.mark.parametrize(
+    "mode,version,below_floor",
+    [
+        (PDModeEnum.VLLM_NIXL, "0.20.0", True),
+        (PDModeEnum.VLLM_NIXL, "0.25.1", True),
+        (PDModeEnum.VLLM_NIXL, "0.27.1", False),
+        (PDModeEnum.VLLM_NIXL, "0.29.0", False),
+        (PDModeEnum.VLLM_MOONCAKE, "0.25.1", True),
+        (PDModeEnum.VLLM_MOONCAKE, "0.27.1", False),
+        (PDModeEnum.VLLM_MOONCAKE, "0.29.0", False),
+        (PDModeEnum.VLLM_ASCEND_MOONCAKE, "0.20.2", True),
+        (PDModeEnum.VLLM_ASCEND_MOONCAKE, "0.23.0", False),
+    ],
+)
+def test_vllm_recipes_require_runners_with_managed_router(mode, version, below_floor):
+    assert _engine_version_below_recipe_floor(_model(mode, version)) is below_floor
 
 
 def test_a_role_pinning_its_own_old_version_is_reported():
@@ -213,3 +227,22 @@ def test_the_reason_is_its_own_enum_value():
         DegradationReasonEnum.ENGINE_VERSION_BELOW_RECIPE_FLOOR.value
         == "engine_version_below_recipe_floor"
     )
+
+
+def test_an_explicit_engine_image_does_not_carry_a_catalog_version_warning():
+    model = _model(SGLANG, "0.5.5")
+    model.image_name = "my/sglang:patched"
+    assert _engine_version_below_recipe_floor(model) is False
+
+
+def test_a_role_with_an_explicit_image_does_not_carry_a_catalog_version_warning():
+    model = _model(
+        SGLANG,
+        "0.6.0",
+        roles=[
+            RoleSpec(
+                name="decode", backend_version="0.5.5", image_name="my/sglang:patched"
+            )
+        ],
+    )
+    assert _engine_version_below_recipe_floor(model) is False

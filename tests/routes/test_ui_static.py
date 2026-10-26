@@ -28,6 +28,10 @@ SMALL_JS = b"console.log('small');\n"
 CONSOLE_INDEX = b"<html>console</html>"
 HELP_INDEX = b"<html>documentation home</html>"
 HELP_PAGE = b"<html>air-gapped installation</html>"
+HELP_ZH_INDEX = "<html>中文文档</html>".encode()
+HELP_ZH_PAGE = "<html>离线安装</html>".encode()
+HELP_JA_INDEX = "<html>日本語ドキュメント</html>".encode()
+HELP_JA_PAGE = "<html>オフラインインストール</html>".encode()
 # MkDocs emits this for the search plugin, with a .gz beside it in the offline
 # build: a plain file whose URL has no directory form.
 SEARCH_INDEX = b'{"docs": []}\n' * 500
@@ -449,6 +453,23 @@ def _write_package_tree(root: Path, with_help: bool) -> None:
     assets_dir.mkdir(parents=True)
     (assets_dir / "bundle.bd41221c.min.js").write_bytes(BUNDLE_JS)
 
+    for language, index, page in (
+        ("zh", HELP_ZH_INDEX, HELP_ZH_PAGE),
+        ("ja", HELP_JA_INDEX, HELP_JA_PAGE),
+    ):
+        translated_dir = help_dir / language
+        translated_dir.mkdir()
+        (translated_dir / "index.html").write_bytes(index)
+        translated_page = translated_dir / "installation" / "air-gapped"
+        translated_page.mkdir(parents=True)
+        (translated_page / "index.html").write_bytes(page)
+        translated_search = translated_dir / "search"
+        translated_search.mkdir()
+        (translated_search / "search_index.json").write_bytes(SEARCH_INDEX)
+        (translated_search / "search_index.json.gz").write_bytes(
+            gzip.compress(SEARCH_INDEX)
+        )
+
 
 @pytest.fixture
 def help_client(tmp_path, monkeypatch):
@@ -485,6 +506,80 @@ def test_help_directory_url_serves_the_nested_index(help_client):
 
     assert response.status_code == 200
     assert response.content == HELP_PAGE
+
+
+@pytest.mark.parametrize("language", ["zh", "ja", "ru", "tr"])
+def test_unknown_translated_help_url_uses_localized_error(help_client, language):
+    help_dir = Path(ui_routes.PACKAGE_DIR) / "help"
+    translated = help_dir / language
+    translated.mkdir(exist_ok=True)
+    expected = f'<html lang="{language}"><h1>Localized error</h1></html>'.encode()
+    (translated / "404.html").write_bytes(expected)
+
+    response = help_client.get(f"/help/{language}/no-such-page/deep/")
+
+    assert response.status_code == 404
+    assert response.content == expected
+    assert response.headers["cache-control"] == CACHE_REVALIDATE
+
+
+@pytest.mark.parametrize("language", ["en", "zh", "ja", "ru", "tr"])
+@pytest.mark.parametrize("accept_encoding", ["gzip", "identity"])
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_help_error_pages_revalidate_missing_hashed_assets(
+    help_client, language, accept_encoding, method
+):
+    help_dir = Path(ui_routes.PACKAGE_DIR) / "help"
+    (help_dir / "404.html").write_text("<html>English error</html>")
+    prefix = "" if language == "en" else f"{language}/"
+    error_dir = help_dir / prefix
+    error_dir.mkdir(exist_ok=True)
+    expected = f'<html lang="{language}">Missing asset</html>'.encode()
+    (error_dir / "404.html").write_bytes(expected)
+
+    response = help_client.request(
+        method,
+        f"/help/{prefix}assets/nonexistent.deadbeef.js",
+        headers={"accept-encoding": accept_encoding},
+    )
+
+    assert response.status_code == 404
+    assert response.headers["cache-control"] == CACHE_REVALIDATE
+    assert response.headers["content-type"].startswith("text/html")
+    assert {"accept-encoding", "origin"} <= {
+        key.strip().lower() for key in response.headers["vary"].split(",")
+    }
+    assert response.content == (expected if method == "GET" else b"")
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("/help/zh", HELP_ZH_INDEX),
+        ("/help/zh/", HELP_ZH_INDEX),
+        ("/help/zh/installation/air-gapped/", HELP_ZH_PAGE),
+        ("/help/ja", HELP_JA_INDEX),
+        ("/help/ja/", HELP_JA_INDEX),
+        ("/help/ja/installation/air-gapped/", HELP_JA_PAGE),
+    ],
+)
+def test_translated_help_pages_are_public(help_client, path, expected):
+    response = help_client.get(path)
+
+    assert response.status_code == 200
+    assert response.content == expected
+
+
+@pytest.mark.parametrize("language", ["zh", "ja"])
+def test_translated_help_search_is_precompressed(help_client, language):
+    response = help_client.get(
+        f"/help/{language}/search/search_index.json",
+        headers={"accept-encoding": "gzip"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-encoding"] == "gzip"
+    assert response.content == SEARCH_INDEX
 
 
 def test_help_directory_url_falls_through_to_the_plain_index(help_client):
@@ -550,6 +645,10 @@ def test_missing_documentation_is_not_mounted(no_help_app):
         ("/help/", ""),
         ("/help/installation/requirements/", "installation/requirements/"),
         ("/help/troubleshooting/?q=worker", "troubleshooting/?q=worker"),
+        ("/help/zh/", "zh/"),
+        ("/help/zh/troubleshooting/?q=worker", "zh/troubleshooting/?q=worker"),
+        ("/help/ja/", "ja/"),
+        ("/help/ja/troubleshooting/?q=worker", "ja/troubleshooting/?q=worker"),
     ],
 )
 def test_missing_documentation_redirects_to_online_docs(no_help_app, path, suffix):

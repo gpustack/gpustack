@@ -91,6 +91,14 @@ class PDPeerStyleEnum(str, Enum):
     """
 
 
+class PDRouterMembershipUpdateEnum(str, Enum):
+    """How a router refreshes peers after scaling or instance recovery."""
+
+    DYNAMIC = "dynamic"
+    RESTART = "restart"
+    MANUAL = "manual"
+
+
 class PDRouterProtocolEnum(str, Enum):
     TWO_HOP = "two_hop"
     """Router calls prefill, then carries kv_transfer_params to decode."""
@@ -125,14 +133,13 @@ class PDKVLease(BaseModel):
     The parameter name, the default and the injection target all differ per
     connector, and the windows differ by two orders of magnitude (NIXL 30s,
     Mooncake 480s, MoRIIO 3600s), so this cannot be a platform-wide
-    constant. Whether the expiry is observable differs too: NIXL exports a
-    Prometheus counter, Mooncake exports none.
+    constant. Expiry observability also depends on the connector and runtime.
     """
 
     connector: str
-    """Connector identity, and the key modes reference. Unqualified ids are
-    vLLM ``kv_connector`` implementations; ``sglang-*`` ids are SGLang
-    ``--disaggregation-transfer-backend`` values, whose KV lifecycle is a
+    """Connector identity, and the key modes reference. Unqualified ids identify
+    upstream vLLM connectors; ``ascend-*`` identifies vLLM-Ascend and
+    ``sglang-*`` identifies SGLang transports, whose KV lifecycle is a
     different mechanism (bootstrap timeout, not a lease)."""
 
     param: Optional[str] = None
@@ -188,8 +195,8 @@ class PDKVLease(BaseModel):
 class PDPairingToggle(BaseModel):
     """An engine switch both roles of a pair must land on the same way.
 
-    Distinct from the parameters compared in ``server/pd_pairing.py``: those
-    carry a value, this is a boolean argparse spells as a pair of mutually
+    The parameters compared in ``validation/pd/parameters.py`` carry values;
+    this is a boolean argparse spells as a pair of mutually
     exclusive flags, so what gets compared is *which flag came last*, not a
     value. That difference is why it could not go in that table.
     """
@@ -207,6 +214,22 @@ class PDPairingToggle(BaseModel):
     description: Optional[str] = None
     """Why the two sides diverging matters. Written for the operator who has
     to act on the mismatch."""
+
+
+class PDCacheServiceRole(BaseModel):
+    """Store connector settings for one PD role."""
+
+    kv_role: Optional[Literal["kv_producer", "kv_consumer", "kv_both"]] = None
+    kv_connector_module_path: Optional[str] = None
+
+
+class PDCacheService(BaseModel):
+    """A mode's supported cache provider and its composition requirements."""
+
+    provider: str
+    backend_versions: Optional[str] = None
+    """Known compatible engine range; explicit versions may deploy outside it."""
+    roles: Dict[str, PDCacheServiceRole] = {}
 
 
 class PDCacheRefusal(BaseModel):
@@ -232,20 +255,11 @@ class PDCacheRefusal(BaseModel):
 
 
 class PDComposedCache(BaseModel):
-    """What an engine requires once a shared cache is folded in beside the PD
-    connector, keyed by the engine that does the folding.
+    """Engine parser fields lifted onto a composed connector.
 
-    A member that takes both lands them in one ``--kv-transfer-config``, and
-    that composition has requirements neither side owns: not the mode's, since
-    every recipe on the same engine shares them, and not the cache provider's,
-    since swapping providers does not change whether the engine can compose at
-    all. Declared once here rather than spelled into each mode.
-
-    **Absence is the answer for engines that never compose.** SGLang attaches
-    its cache through ``--enable-lmcache`` and a config file, so no entry is
-    declared for it and nothing is enforced — rather than an entry whose
-    fields are permissive enough to always pass, which would read as "checked"
-    when the check is meaningless.
+    Shared-cache compatibility and Store roles come from each mode's
+    ``cache_services`` recipes. Optional catalog-level metadata remains
+    readable without imposing a backend-wide shared-cache gate.
     """
 
     backend: str
@@ -378,10 +392,11 @@ class PDModeRole(BaseModel):
     args: List[str] = []
     files: Dict[str, str] = {}
     host_mounts: List[str] = []
-    """Host paths the engine container needs read-only, same path inside.
+    """Host directories mounted read-only at the same path inside the container."""
+    host_files: List[str] = []
+    """Host files the engine container needs read-only, same path inside.
 
-    A fifth injection channel, and the one the other four cannot stand in
-    for: a transport that reads a host file the accelerator runtime does not
+    A transport that reads a host file the accelerator runtime does not
     inject needs that file *present*, and `files` writes contents GPUStack
     composes rather than passing through something only the host knows.
 
@@ -666,22 +681,20 @@ class PDRouter(BaseModel):
     peers: Optional[PDRouterPeers] = None
     capabilities: PDRouterCapabilities = PDRouterCapabilities()
     membership_api: PDMembershipAPI = PDMembershipAPI()
+    membership_update: PDRouterMembershipUpdateEnum = (
+        PDRouterMembershipUpdateEnum.MANUAL
+    )
+    """Dynamic uses the API; restart re-renders a managed router;
+    manual leaves peer configuration to the operator."""
 
     @property
     def membership_api_usable(self) -> bool:
         """Whether scale-out can go through the API *as this recipe launches it*.
 
-        Deliberately not an assertion in the loader. `membership_api` records
-        the shape upstream serves; `command` records what we actually start.
-        Those two legitimately disagree while a flag is declared but unverified
-        — which is today's state for `--enable-igw` — and a loader that refused
-        the mismatch would force the choice between deleting the knowledge and
-        enabling an untested flag.
-
-        So the mismatch gets a name instead. A consumer asking "can I add a
-        member without an outage" reads this and gets False, and it flips to
-        True the moment the flag is added to the recipe, with nothing else to
-        change.
+        An API declaration alone is insufficient: some builds require a launch
+        flag before the endpoints are reachable. A recipe declaring dynamic
+        updates must launch those flags, while manual/restart recipes may keep
+        an API declaration for reference without using it.
         """
         if not self.membership_api.available:
             return False
@@ -781,6 +794,20 @@ class PDRouter(BaseModel):
         duplicates = sorted({name for name in names if names.count(name) > 1})
         if duplicates:
             raise ValueError(f"duplicate named ports on the router: {duplicates}")
+        return self
+
+    @model_validator(mode="after")
+    def check_membership_update(self) -> "PDRouter":
+        if (
+            self.membership_update == PDRouterMembershipUpdateEnum.DYNAMIC
+            and not self.membership_api_usable
+        ):
+            raise ValueError("dynamic membership requires a usable membership API")
+        if (
+            self.membership_update == PDRouterMembershipUpdateEnum.RESTART
+            and self.protocol == PDRouterProtocolEnum.USER_PROVIDED
+        ):
+            raise ValueError("restart membership requires a managed router")
         return self
 
     def channel(self, target: PDInjectTargetEnum) -> Any:
@@ -958,6 +985,18 @@ class PDMode(BaseModel):
     which roles are admissible, so opening up encoder / draft later stays a
     validation change, not a catalog schema change."""
 
+    cache_services: Optional[List[PDCacheService]] = None
+    """Allowed shared-cache recipes. None delegates compatibility to the
+    provider; an empty list supports no shared cache."""
+
+    in_process_cache_versions: Optional[str] = None
+    """Known compatible local-cache engine range; explicit versions are advisory."""
+
+    connector_variants: Dict[str, str] = {}
+    """Model KV layout -> connector implementation, shared by P and D."""
+    default_connector_variant: Optional[str] = None
+    """Required when variants are declared, for unreadable model KV layouts."""
+
     router: Optional[PDRouter] = None
 
     kv_lease: Optional[PDKVLease] = None
@@ -986,6 +1025,46 @@ class PDMode(BaseModel):
 
     def role(self, name: str) -> Optional[PDModeRole]:
         return self.roles.get(name)
+
+    def cache_service(self, provider: str) -> Optional[PDCacheService]:
+        return next(
+            (item for item in self.cache_services or [] if item.provider == provider),
+            None,
+        )
+
+    def cache_service_role(
+        self, provider: str, role: Optional[str]
+    ) -> Optional[PDCacheServiceRole]:
+        """Return the provider's Store connector settings for a PD role."""
+        recipe = self.cache_service(provider)
+        return recipe.roles.get(role) if recipe and role else None
+
+    def cache_service_reason(self, provider: str, role: Optional[str]) -> Optional[str]:
+        """Explain unsupported providers or roles; version ranges are advisory."""
+        if self.cache_services is None:
+            return None
+        recipe = self.cache_service(provider)
+        if recipe is None:
+            return f"PD mode '{self.name}' does not support cache provider '{provider}'"
+        if role is not None and role not in recipe.roles:
+            return f"PD mode '{self.name}' does not support {provider} on role '{role}'"
+        return None
+
+    @model_validator(mode="after")
+    def check_cache_services(self) -> "PDMode":
+        providers = [item.provider for item in self.cache_services or []]
+        if len(providers) != len(set(providers)):
+            raise ValueError("cache_services contains duplicate providers")
+        for item in self.cache_services or []:
+            if set(item.roles) - set(self.roles):
+                raise ValueError(f"cache provider {item.provider} names unknown roles")
+        if (
+            self.connector_variants or self.default_connector_variant is not None
+        ) and self.default_connector_variant not in self.connector_variants:
+            raise ValueError(
+                "default_connector_variant must name a declared connector variant"
+            )
+        return self
 
     @model_validator(mode="after")
     def check_templates(self) -> "PDMode":
@@ -1108,7 +1187,7 @@ class PDModeCatalog(BaseModel):
     kv_leases: Dict[str, PDKVLease] = {}
     composed_cache: Dict[str, PDComposedCache] = {}
     """Keyed by backend. An engine with no entry composes without a declared
-    requirement — see `PDComposedCache` for why absence is deliberate."""
+    requirement; absence leaves connector requirements to the mode recipe."""
 
     pairing_toggles: List[PDPairingToggle] = []
     """Boolean engine switches both roles must agree on, across every mode of
@@ -1117,9 +1196,8 @@ class PDModeCatalog(BaseModel):
     kv_transfer_metrics: Dict[str, PDTransferMetrics] = {}
     """Keyed by the same connector id as ``kv_leases``, and required to
     cover every connector that appears there: an entry whose fields are all
-    null declares "this connector exports nothing", which is a measured
-    fact about Mooncake, while a *missing* entry would be an oversight that
-    reads identically at runtime."""
+    null explicitly declares unavailable metrics. A missing entry would
+    read identically at runtime without documenting the connector's support."""
 
     modes: List[PDMode] = []
 

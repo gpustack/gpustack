@@ -1,6 +1,6 @@
 from gpustack.gateway import generic_proxy_router_spec_diff
 import re
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -9,9 +9,11 @@ from kubernetes_asyncio.client import ApiException
 
 from gpustack import envs
 from gpustack.api.exceptions import NotFoundException
+from gpustack.gateway.labels_annotations import managed_labels
 from gpustack.gateway.utils import (
     RoutePrefix,
     cleanup_generic_proxy_router_spec_diff,
+    cleanup_model_mapper,
     diff_proxies,
     diff_registries,
     ensure_model_ingress,
@@ -27,10 +29,14 @@ from gpustack.gateway.utils import (
     model_instances_registry_list,
     provider_proxy_plugin_spec,
     provider_registry,
+    route_rule_ingress_names,
     router_header_key,
 )
 from gpustack.schemas.models import ModelInstance
-from gpustack.gateway.client.extensions_higress_io_v1_api import WasmPluginSpec
+from gpustack.gateway.client.extensions_higress_io_v1_api import (
+    WasmPluginMatchRule,
+    WasmPluginSpec,
+)
 from gpustack.schemas.model_provider import (
     ClaudeConfig,
     ModelProvider,
@@ -1007,3 +1013,111 @@ class TestGetExpectedMatchList:
             fallback_model_name_to_registries={"tmp1": ["svc"]},
         )
         assert rules == []
+
+
+class TestRouteRuleIngressNames:
+    """The prune's expected set for mapper-CR rules, in the spelling the
+    rules themselves store: namespace-qualified when the route ingress lives
+    outside the gateway namespace, bare otherwise — and never the plain
+    object names alone, which no rule of a cross-namespace deployment would
+    match."""
+
+    @pytest.mark.parametrize(
+        ("resource_ns", "gateway_ns", "prefix"),
+        [
+            ("gpustack-system", "higress-system", "gpustack-system/"),
+            ("higress-system", "higress-system", ""),
+        ],
+    )
+    def test_spells_main_and_fallback_like_the_rules(
+        self, resource_ns, gateway_ns, prefix
+    ):
+        assert route_rule_ingress_names([6], resource_ns, gateway_ns) == [
+            f"{prefix}ai-route-route-6.internal",
+            f"{prefix}ai-route-route-6.fallback.internal",
+        ]
+
+    @pytest.mark.parametrize(
+        ("resource_ns", "gateway_ns", "prefix"),
+        [
+            ("gpustack-system", "higress-system", "gpustack-system/"),
+            ("higress-system", "higress-system", ""),
+        ],
+    )
+    def test_written_rules_stay_inside_the_expected_set(
+        self, resource_ns, gateway_ns, prefix
+    ):
+        # The write side of the contract: every ingress a mapper rule can
+        # list must be one the prune expects, or the rule is dropped as an
+        # orphan the moment the server restarts.
+        rules = get_expected_match_list(
+            route_name="tmp1",
+            ingress_prefix=prefix,
+            ingress_name="ai-route-route-6.internal",
+            model_name_to_registries={"deepseek-v4": ["model-1-1.static"]},
+            fallback_model_name_to_registries={"qwen3-0.6b": ["model-1-1.static"]},
+        )
+        expected = set(route_rule_ingress_names([6], resource_ns, gateway_ns))
+        assert rules
+        for rule in rules:
+            assert set(rule.ingress) <= expected
+
+
+@pytest.mark.asyncio
+async def test_startup_prune_keeps_cross_namespace_rules():
+    """The startup prune must not strip the mapper rules of a deployment
+    whose namespace differs from the gateway's: their ingresses are
+    namespace-qualified, so the expected set is built by the same spelling
+    (route_rule_ingress_names). A rule of a route gone from the database is
+    still retired."""
+    live_spec = WasmPluginSpec(
+        defaultConfig={},
+        matchRules=[
+            rule.model_dump()
+            for rule in get_expected_match_list(
+                route_name="tmp1",
+                ingress_prefix="gpustack-system/",
+                ingress_name="ai-route-route-6.internal",
+                fallback_model_name_to_registries={"qwen3-0.6b": ["model-1-1.static"]},
+            )
+        ]
+        + [
+            WasmPluginMatchRule(
+                config={"modelMapping": {"gone": "x"}},
+                ingress=["gpustack-system/ai-route-route-404.internal"],
+                configDisable=False,
+            ).model_dump()
+        ],
+    )
+    api = MagicMock()
+    api.get_wasmplugin = AsyncMock(
+        return_value={
+            "metadata": {
+                "name": "gpustack-model-mapper",
+                # ensure_wasm_plugin only rewrites a CR it manages
+                "labels": dict(managed_labels),
+            },
+            "spec": live_spec.model_dump(),
+        }
+    )
+    api.edit_wasmplugin = AsyncMock()
+
+    with (
+        patch("gpustack.gateway.utils.ExtensionsHigressIoV1Api", return_value=api),
+        patch("gpustack.gateway.utils.k8s_client.ApiClient"),
+    ):
+        await cleanup_model_mapper(
+            namespace="higress-system",
+            expected_ingresses=route_rule_ingress_names(
+                [6], "gpustack-system", "higress-system"
+            ),
+            config=MagicMock(),
+        )
+
+    body = api.edit_wasmplugin.await_args.kwargs["body"]
+    assert [rule.ingress for rule in body.spec.matchRules] == [
+        [
+            "gpustack-system/ai-route-route-6.internal",
+            "gpustack-system/ai-route-route-6.fallback.internal",
+        ]
+    ]

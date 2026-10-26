@@ -69,7 +69,11 @@ from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 import aiohttp
 
 from gpustack.schemas.models import Model, ModelInstance, RoleNameEnum
-from gpustack.schemas.pd_modes import PDMembershipAPI, PDMode
+from gpustack.schemas.pd_modes import (
+    PDMembershipAPI,
+    PDMode,
+    PDRouterMembershipUpdateEnum,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -799,20 +803,11 @@ _settled: Dict[int, Tuple[str, float]] = {}
 # How long a confirmation is allowed to stand before the registry is read
 # again even though nothing about the group has changed.
 #
-# The skip below is keyed on what the SERVER knows -- the member set and where
-# the routers are. A router that restarts and comes back with an empty
-# registry changes none of that, and nothing else in the product would notice:
-# the row keeps its id and its port, the members keep running, and the group
-# would sit behind a router serving 503s with every pass agreeing there was
-# nothing to do. Re-reading on a timer is what bounds that window, and it is
-# the whole reason `reconcile` was built to cost one read when nothing changed.
-#
-# A minute, because that is the scale of the damage. The window is an outage
-# for the whole group -- one router, the gateway's only upstream -- so it has
-# to be short enough to be a blip rather than an incident, and long enough
-# that the steady state is one request per group per minute instead of one per
-# instance event.
+# A process can lose its registry without a model-instance event. Periodic
+# reads bound that outage while keeping settled groups to one check per minute.
 RESETTLE_AFTER_SECONDS = 60.0
+_RETRY_AFTER_SECONDS = 5.0
+_MAX_RETRY_AFTER_SECONDS = 60.0
 
 
 def membership_fingerprint(
@@ -825,10 +820,18 @@ def membership_fingerprint(
     Both halves matter. The members decide what `reconcile` would send; the
     routers decide who it would be sent to, so a router that moves to another
     worker or comes back on another port has to read as a change even when the
-    member set is identical. The mode is in it because it chooses the API.
+    member set is identical. Restart metadata distinguishes new processes at
+    the same address. The mode is in it because it chooses the API.
     """
     member_part = ";".join(f"{url}={role}" for url, role in sorted(members.items()))
-    router_part = ";".join(sorted(f"{r.id}@{r.worker_id}:{r.port}" for r in routers))
+    router_part = ";".join(
+        sorted(
+            f"{r.id}@{r.worker_id}:{r.port}:"
+            f"{getattr(r, 'restart_count', 0) or 0}:"
+            f"{getattr(r, 'last_restart_time', None)}"
+            for r in routers
+        )
+    )
     return f"{mode_name or ''}|{member_part}|{router_part}"
 
 
@@ -858,6 +861,29 @@ def note_settled(model_id: int, fingerprint: str, now: Optional[float] = None) -
     _settled[model_id] = (fingerprint, at)
 
 
+def reconcile_after(model: Model) -> Optional[float]:
+    """Return the next dynamic membership check delay for an active deployment."""
+    from gpustack.server.pd_router_membership import membership_policy
+
+    if (
+        model.deleted_at is not None
+        or model.replicas == 0
+        or model.disaggregation is None
+        or membership_policy(model) != PDRouterMembershipUpdateEnum.DYNAMIC
+    ):
+        return None
+    outcome = outcome_for(model.id)
+    if outcome is None or not outcome.ok:
+        return min(
+            _RETRY_AFTER_SECONDS * max(1, consecutive_failures(model.id)),
+            _MAX_RETRY_AFTER_SECONDS,
+        )
+    remembered = _settled.get(model.id)
+    if remembered is None:
+        return RESETTLE_AFTER_SECONDS
+    return max(0.0, RESETTLE_AFTER_SECONDS - (time.monotonic() - remembered[1]))
+
+
 def record(model_id: int, outcome: MembershipOutcome) -> None:
     # Tracked apart from `_failures`: that counter drives the wording of a
     # persistent failure, this one drives an action.
@@ -876,9 +902,11 @@ def record(model_id: int, outcome: MembershipOutcome) -> None:
     if outcome.ok:
         _failures.pop(model_id, None)
     else:
+        _settled.pop(model_id, None)
         count = _failures.get(model_id, 0) + 1
         _failures[model_id] = count
         if count >= PERSISTENT_FAILURE_PASSES and outcome.reason:
+            # Stable diagnostics keep status events from bypassing the retry timer.
             outcome = MembershipOutcome(
                 ok=False,
                 # Carried, not defaulted. Escalating the wording does not
@@ -888,7 +916,8 @@ def record(model_id: int, outcome: MembershipOutcome) -> None:
                 # the reader has no way to notice it.
                 unreadable=outcome.unreadable,
                 reason=(
-                    f"{outcome.reason} (unchanged for {count} passes, so the "
+                    f"{outcome.reason} (failed for at least "
+                    f"{PERSISTENT_FAILURE_PASSES} passes, so the "
                     "member management API is failing consistently rather "
                     "than transiently. Read the router's own member list — "
                     "`GET /workers` on the router's address — and the "

@@ -555,8 +555,11 @@ class _FakeService:
         return len(workers)
 
 
-async def _set(workers, assignments, saved=None):
+async def _set(workers, assignments, saved=None, locked_workers=None):
     stubs = _stubs(workers, saved)
+    locked_read = AsyncMock(
+        return_value=workers if locked_workers is None else locked_workers
+    )
     with (
         stubs[0],
         stubs[1],
@@ -566,13 +569,22 @@ async def _set(workers, assignments, saved=None):
         stubs[5],
         stubs[6],
         patch("gpustack.server.services.WorkerService", _FakeService),
+        patch.object(route, "tenant_list_conditions", return_value=[]),
+        patch.object(_FakeService, "get_workers_for_update", locked_read, create=True),
     ):
         body = route.LocationsRequest(
             assignments=[route.LocationAssignment(**a) for a in assignments]
         )
-        return await route.set_cluster_topology_locations(
+        result = await route.set_cluster_topology_locations(
             session=None, ctx=None, id=1, body=body
         )
+        locked_read.assert_awaited_once()
+        assert locked_read.await_args.args[0] == sorted(
+            {wid for assignment in assignments for wid in assignment["worker_ids"]}
+        )
+        conditions = locked_read.await_args.kwargs["extra_conditions"]
+        assert "workers.cluster_id =" in str(conditions[0])
+        return result
 
 
 @pytest.mark.asyncio
@@ -585,6 +597,31 @@ async def test_setting_a_location_writes_the_fields_own_key():
     assert workers[0].labels == {RACK: "R3"}
     assert workers[1].labels == {RACK: "R3"}
     assert _find(result.topology.tree, "R3").workers == 2
+
+
+@pytest.mark.asyncio
+async def test_setting_location_preserves_labels_read_under_lock():
+    snapshot = _worker(1, "w1", {RACK: "R1"})
+    current = _worker(1, "w1", {RACK: "R1", "env": "prod", ZONE: "Z1"})
+    await _set(
+        [snapshot],
+        [{"worker_ids": [1], "layer": lid("rack"), "value": "R3"}],
+        locked_workers=[current],
+    )
+    assert current.labels == {RACK: "R3", "env": "prod", ZONE: "Z1"}
+    assert snapshot.labels == {RACK: "R1"}
+
+
+@pytest.mark.asyncio
+async def test_location_target_deleted_before_lock_refuses_batch():
+    workers = [_worker(1, "w1", {RACK: "R1"}), _worker(2, "w2", {"env": "prod"})]
+    with pytest.raises(BadRequestException):
+        await _set(
+            workers,
+            [{"worker_ids": [1, 2], "layer": lid("rack"), "value": "R3"}],
+            locked_workers=workers[:1],
+        )
+    assert workers[0].labels == {RACK: "R1"}
 
 
 @pytest.mark.asyncio

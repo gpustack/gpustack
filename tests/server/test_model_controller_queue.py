@@ -221,11 +221,13 @@ async def _reconcile_once(controller, drain_due):
         ),
         patch(
             "gpustack.server.controllers.Model.one_by_id",
-            AsyncMock(return_value=None),
+            AsyncMock(return_value=model),
         ),
+        patch("gpustack.server.controllers.sync_model_status", AsyncMock()),
         patch("gpustack.server.controllers.notify_model_route_target", AsyncMock()),
         patch("gpustack.server.controllers.sync_categories_and_meta", AsyncMock()),
         patch.object(controller, "_ensure_model_mcp_bridge", AsyncMock()),
+        patch.object(controller, "_sync_model_ai_proxy", AsyncMock()),
         patch.object(controller._queue, "add_after") as add_after,
     ):
         await controller._reconcile(
@@ -248,7 +250,7 @@ async def test_an_open_drain_window_books_its_own_reap():
 
     add_after.assert_called_once()
     booked_event, delay = add_after.call_args[0]
-    assert delay == 42.0
+    assert delay == pytest.approx(42.0, abs=0.1)
     assert booked_event.keys == (1,)
 
 

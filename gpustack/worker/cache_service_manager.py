@@ -15,6 +15,7 @@ from gpustack_runtime.deployer import (
     ContainerExecution,
     ContainerProfileEnum,
     ContainerResources,
+    ContainerRestartPolicyEnum,
     WorkloadPlan,
     WorkloadStatusStateEnum,
     delete_workload,
@@ -55,6 +56,7 @@ from gpustack.schemas.cache_services import (
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.cache_provider_manager import CacheProviderManager
 from gpustack.worker.provisioning import run_provisioning
+from gpustack.worker.port_reservations import WorkerPortReservations
 from gpustack.worker.cache_service_logs import (
     CacheServiceLogManager,
     LogWriterBusyError,
@@ -107,7 +109,6 @@ class CacheServiceManager:
     parent cache service.
     """
 
-    _port_lock = threading.Lock()
     _start_lock = threading.Lock()
 
     @property
@@ -150,8 +151,8 @@ class CacheServiceManager:
     _assigned_ports: Dict[int, Tuple[int, ...]]
     """
     Ports allocated in this process, keyed by cache service instance ID.
-    Guarded by _port_lock so concurrent starts can't hand out the same
-    port.
+    Guarded by the shared reservation lock so model and cache starts cannot
+    hand out the same port.
     """
 
     _clientset_getter: Callable[[], ClientSet]
@@ -164,6 +165,7 @@ class CacheServiceManager:
         clientset_getter: Callable[[], ClientSet],
         cfg: Config,
         provider_catalog: CacheProviderManager,
+        port_reservations: Optional[WorkerPortReservations] = None,
     ):
         self._worker_id_getter = worker_id_getter
         # The detected address, which only the worker holds: the config
@@ -175,7 +177,8 @@ class CacheServiceManager:
         # packaged declarations with a document of their own.
         self._provider_catalog = provider_catalog
 
-        self._assigned_ports = {}
+        self._port_reservations = port_reservations or WorkerPortReservations()
+        self._assigned_ports = self._port_reservations.cache_ports
         self._cache_service_instance_by_instance_id = {}
         self._starting = set()
         self._last_start_attempt = {}
@@ -383,6 +386,8 @@ class CacheServiceManager:
                 image=image,
                 name="default",
                 profile=ContainerProfileEnum.RUN,
+                # The manager applies restart_on_error, backoff and retry limits.
+                restart_policy=ContainerRestartPolicyEnum.NEVER,
                 execution=ContainerExecution(
                     privileged=False,
                     command=argv if overrides_entrypoint else None,
@@ -506,8 +511,11 @@ class CacheServiceManager:
                 delete_workload(instance.get_deployment_metadata().name)
             except Exception:
                 logger.exception("Failed to clean up cancelled cache deployment")
-            self._release_ports(instance.id)
-            self._logs.remove(instance.id)
+            else:
+                with self._start_lock:
+                    self._cache_service_instance_by_instance_id.pop(instance.id, None)
+                self._release_ports(instance.id)
+                self._logs.remove(instance.id)
         self._release_start(instance.id)
 
     def _resolve_launch(self, instance: CacheServiceInstance):
@@ -887,36 +895,17 @@ class CacheServiceManager:
         Allocate one port on this worker per name the instance's component
         declares.
 
-        Ports already handed out by this process and ports recorded on other
-        cache service instances of this worker are both treated as
-        unavailable, so a restarted worker can't re-issue a port an existing
-        instance holds. Each port picked excludes the ones picked before it.
+        Model and cache reservations on this worker are unavailable even
+        before their workloads listen. Each port picked excludes the ones
+        picked before it, while the shared lock protects the entire allocation.
         """
         names = list(names)
-        with CacheServiceManager._port_lock:
-            unavailable_ports = {
-                port for ports in self._assigned_ports.values() for port in ports
-            }
-            try:
-                instances_page = self._clientset.cache_service_instances.list(
-                    # page=-1 disables pagination: a truncated page would
-                    # blind the conflict check to the ports it dropped.
-                    params={"worker_id": self._worker_id, "page": -1}
-                )
-                for existing in instances_page.items or []:
-                    if existing.id == instance.id:
-                        continue
-                    for existing_port in (existing.ports or {}).values():
-                        if existing_port:
-                            unavailable_ports.add(existing_port)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to list cache service instances for port "
-                    f"allocation: {e}"
-                )
+        with self._port_reservations.allocation(
+            self._clientset, self._worker_id, cache_instance_id=instance.id
+        ) as unavailable_ports:
 
             def take() -> int:
-                port = network.get_free_port(
+                port = network.get_free_band(
                     port_range=self._config.service_port_range,
                     unavailable_ports=unavailable_ports,
                 )
@@ -931,7 +920,7 @@ class CacheServiceManager:
             # configuration turning one on — takes a fresh one and leaves
             # the rest alone.
             recorded = instance.ports or {}
-            ports: Dict[str, int] = {}
+            kept: Dict[str, int] = {}
             for name in names:
                 port = recorded.get(name)
                 if (
@@ -940,15 +929,15 @@ class CacheServiceManager:
                     and network.is_port_available(port)
                 ):
                     unavailable_ports.add(port)
-                    ports[name] = port
-                else:
-                    ports[name] = take()
+                    kept[name] = port
+            # Protect all reusable ports before a new declaration can take a
+            # lower-numbered port belonging to a later name in the list.
+            ports = {name: kept[name] if name in kept else take() for name in names}
             self._assigned_ports[instance.id] = tuple(ports.values())
             return ports
 
     def _release_ports(self, instance_id: int):
-        with CacheServiceManager._port_lock:
-            self._assigned_ports.pop(instance_id, None)
+        self._port_reservations.release_cache(instance_id)
 
     def sync_cache_service_instances_state(self):
         """
@@ -1367,6 +1356,9 @@ class CacheServiceManager:
             token = self._start_tokens.get(instance.id)
             if token is not None:
                 token.set()
+                # Provisioning can still create a workload after this delete.
+                # Its finalizer owns the reservation until cleanup completes.
+                return
             self._cache_service_instance_by_instance_id.pop(instance.id, None)
         self._release_ports(instance.id)
         self._forget_start(instance.id)

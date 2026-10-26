@@ -64,9 +64,9 @@
 # Per-connector KV lease / abort windows. The parameter's name, its default and
 # where it is configured all differ per connector, and the windows differ by
 # 120x, so this cannot be a platform-wide constant. Modes reference an entry by
-# `kv_lease: <connector>`. Unqualified ids are vLLM `kv_connector`
-# implementations; `sglang-*` ids are `--disaggregation-transfer-backend`
-# values, whose KV lifecycle is a bootstrap timeout rather than a lease. moriio
+# `kv_lease: <connector>`. Unqualified ids identify upstream vLLM connectors;
+# `ascend-*` identifies vLLM-Ascend and `sglang-*` identifies SGLang transports,
+# whose KV lifecycle is a bootstrap timeout rather than a lease. moriio
 # is referenced by no shipped mode: the window is on the record even where
 # GPUStack cannot touch it.
 kv_leases:
@@ -80,8 +80,7 @@ kv_leases:
       Seconds prefill holds computed KV for a decode that has not read it
       yet. Decode renews by heartbeat every kv_lease_duration // 6 while
       the request is queued and stops renewing when it aborts, so the hold
-      is bounded rather than leaked. The only window with a Prometheus
-      counter.
+      is bounded rather than leaked. A Prometheus counter reports expiries.
       A second window lives on the same connector and is deliberately NOT
       an entry here: `engine_ttl` (also connector_extra_config, engine
       default 3600) evicts stale *remote engine state* -- the agent entries
@@ -92,6 +91,17 @@ kv_leases:
       accumulation measured after repeated prefill restarts, so a
       high-restart deployment is where it would need lowering.
   - connector: mooncake
+    param: VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT
+    inject_to: env
+    engine_default: 480
+    gpustack_default: 60
+    expired_metric: vllm:mooncake_num_kv_expired_reqs
+    description: >-
+      Seconds prefill holds KV until completion or abort. GPUStack runner
+      images expose Mooncake transfer and expiry counters through their
+      Mooncake Prometheus integration.
+
+  - connector: ascend-mooncake
     param: VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT
     inject_to: env
     engine_default: 480
@@ -164,49 +174,15 @@ kv_leases:
       side's NIXL transfers to quiesce. That race is the open end here,
       not the reclaim window.
 
-# What a member taking BOTH the mode's connector and a shared cache service
-# requires, once the two are folded into one `--kv-transfer-config` as a
-# MultiConnector. Keyed by engine: the requirements are neither the mode's —
-# every recipe on the same engine shares them — nor the cache provider's.
-# An engine that never folds has no entry; SGLang attaches its cache through
-# `--enable-lmcache` and a config file, which never reaches this flag.
+# vLLM parser settings lifted from children onto MultiConnector.
+# Provider compatibility, versions and Store roles are declared per mode.
 composed_cache:
   - backend: vLLM
-    min_version: "0.26.0"
-    reference: vllm-project/vllm#46865
-    # Below this, MultiConnector hands every connector it did NOT choose an
-    # empty block list. On a cold pool nothing is ever chosen, so the cache
-    # stores nothing and can never warm itself: the engine runs, disaggregation
-    # works, and only the cache is dead — reporting nothing.
-    description: >-
-      a shared KV cache composed with a disaggregated deployment's connector
-      stores nothing and never hits
-    # Folding pushes each descriptor down one level and vLLM reads these off the
-    # TOP level only, so a child's copy parses and is then never consulted —
-    # silently reverting to the engine default while still visible in the launch
-    # command. The same list decides whether a mode may accept the setting.
-    top_level_only:
-      - kv_load_failure_policy
-    # WHICH ROLES MAY NOT TAKE A SHARED CACHE. vLLM's connectors PULL, so decode
-    # already loads the KV prefill computed and a cache there gives it two
-    # asynchronous loads per request. MultiConnector deduplicates saves but NOT
-    # loads: the second completion report names a request the scheduler has
-    # retired, tripping `assert req_id in self.requests` and taking the engine
-    # core down — the first time the pool actually HITS, so the group serves
-    # correctly right up until the cache starts working.
-    #
-    # prefill is unaffected and is the side worth attaching anyway. A pushing
-    # transport never has this problem, which is why the SGLang recipes declare
-    # no entry and take a cache on both roles. `description` is read by an
-    # operator in a tooltip, so it states the conclusion and nothing else.
-    refuse_cache_on:
-      roles: [decode]
-      reference: vllm-project/vllm#53049
-      description: it already loads KV through the disaggregation connector
+    top_level_only: [kv_load_failure_policy]
 
 # Boolean engine switches both roles of a pair must land on the same way.
-# Distinct from the parameters compared in `server/pd_pairing.py`: those carry a
-# value, these are booleans argparse spells as two mutually exclusive flags, so
+# Distinct from the parameters compared in `validation/pd/parameters.py`: those
+# carry a value, these are booleans argparse spells as two mutually exclusive flags, so
 # what gets compared is WHICH FLAG CAME LAST.
 pairing_toggles:
   - backend: vLLM
@@ -227,8 +203,7 @@ pairing_toggles:
 # Which side of a pair owns the KV transfer counters, and whether it has any.
 # Keyed by the same connector id kv_leases uses, since the transport decides
 # both. Every connector above must appear here, all-null if it exports nothing:
-# "Mooncake has no counters" is a measured fact and reads very differently from
-# a connector somebody forgot to add. The metric NAMES live in
+# Unavailable metrics are explicit rather than omitted. The metric NAMES live in
 # metrics_config.yaml, where the worker's aggregator normalizes every engine's
 # spelling and units onto one set of `gpustack:pd_*` names; what is left here is
 # the semantics normalization cannot absorb.
@@ -240,12 +215,13 @@ kv_transfer_metrics:
   - connector: nixl
     read_from_role: decode
 
-  # mooncake/stats.py exports zero Prometheus counters where NIXL exports
-  # fifteen, so nothing here can be timed. Effectiveness still can be:
-  # vllm:prompt_tokens_by_source comes from the engine, not the connector, and
-  # splits prompt tokens the same way under both. The speed figures are simply
-  # unavailable there.
+  # NVIDIA Mooncake writes from prefill; its runner counters belong there.
   - connector: mooncake
+    read_from_role: prefill
+
+  # Ascend has no connector Prometheus counters; decode still supplies the
+  # engine's prompt_tokens_by_source effectiveness metrics.
+  - connector: ascend-mooncake
     read_from_role: decode
 
   - connector: moriio
@@ -267,6 +243,9 @@ kv_transfer_metrics:
     read_from_role: decode
 
 modes:
+  # Generated configs: P=kv_producer, D=kv_consumer, B=kv_both.
+  # Both roles use [PD, Store]; MultiConnector's outer role is P or D.
+
   - name: vllm-nixl
     transport: NIXL
     display_name: vLLM + NIXL
@@ -275,12 +254,37 @@ modes:
       in two-hop mode. Verified on 2x RTX 4090: 1P1D and 2P2D, round-robin
       across both prefills, failure eviction and automatic re-add.
     backends: [vLLM]
-    backend_versions: ">=0.20.0"
+    # The managed router reuses the engine image. Bundled CUDA runners from
+    # 0.27.1 provide vllm-router 0.1.15; the package is recorded in runner.py.json.
+    backend_versions: ">=0.27.1"
     # Declared positively rather than left unconstrained: an absent constraint
     # would offer this on AMD clusters, and phase 1 ships no AMD recipe.
     gpu_filters:
       vendor: nvidia
+    preferred: true
     kv_lease: nixl
+    # MultiConnector must pass real allocated blocks to non-selected Store
+    # children, which upstream vLLM provides from 0.26.0.
+    in_process_cache_versions: ">=0.26.0"
+    cache_services:
+      - provider: LMCache
+        # MultiConnector must supply real blocks to non-selected children.
+        backend_versions: ">=0.26.0"
+        roles:
+          prefill:
+            kv_role: kv_both
+          # LMCache MP does not skip a load when MultiConnector assigns it to
+          # NIXL. A second async completion can crash decode, so
+          # only prefill may attach the shared LMCache service.
+    # none:
+    #   P: NixlConnector(P)
+    #   D: NixlConnector(D)
+    # in_process:
+    #   P: MultiConnector[NixlConnector(P), LMCacheConnectorV1(B)]
+    #   D: MultiConnector[NixlConnector(D), LMCacheConnectorV1(B)]
+    # cache_service (LMCache only):
+    #   P: MultiConnector[NixlConnector(P), LMCacheMPConnector(B)]
+    #   D: NixlConnector(D)
     roles:
       prefill:
         ports:
@@ -316,6 +320,7 @@ modes:
           VLLM_NIXL_SIDE_CHANNEL_PORT: "{{ports.kv_side_channel}}"
           UCX_NET_DEVICES: "{{net_device}}"
     router:
+      membership_update: dynamic
       protocol: two_hop
       image: "{{runner_image}}"
       ports:
@@ -433,6 +438,130 @@ modes:
           - --enable-igw
       health_path: /health
 
+  - name: vllm-mooncake
+    transport: Mooncake
+    display_name: vLLM + Mooncake
+    description: >-
+      vLLM's MooncakeConnector over RDMA, fronted by vllm-router's Mooncake bootstrap
+      protocol.
+    backends: [vLLM]
+    # The managed router reuses the engine image. Bundled CUDA 0.27.1 and
+    # 0.29.0 runners provide vllm-router 0.1.15, including Mooncake bootstrap.
+    backend_versions: '>=0.27.1'
+    gpu_filters:
+      vendor: nvidia
+    preferred: false
+    kv_lease: mooncake
+    # Local LMCache needs the same real-block MultiConnector contract as NIXL.
+    in_process_cache_versions: ">=0.26.0"
+    cache_services:
+      - provider: Mooncake
+        # Bundled 0.29.0 runners include the rejected-load Store fix. A Store
+        # child must skip loads owned by PD, including decode-side cache hits:
+        # MultiConnector passes zero external tokens to the unselected Store,
+        # whose pending load must respect can_load=False. Stock 0.29.0 needs
+        # that backport, while upstream 0.30.0 includes the fix. This baseline
+        # describes cache composition, independent of router availability.
+        backend_versions: '>=0.29.0'
+        roles:
+          prefill:
+            kv_role: kv_both
+          decode:
+            kv_role: kv_consumer
+    # none: P=MooncakeConnector(P); D=MooncakeConnector(D).
+    # in_process:
+    #   P: MultiConnector[MooncakeConnector(P), LMCacheConnectorV1(B)]
+    #   D: MultiConnector[MooncakeConnector(D), LMCacheConnectorV1(B)]
+    # cache_service (Mooncake only):
+    #   P: MultiConnector[MooncakeConnector(P), MooncakeStoreConnector(B)]
+    #   D: MultiConnector[MooncakeConnector(D), MooncakeStoreConnector(D)]
+    # RDMA devices are discovered by Mooncake; Linux interface names are not
+    # passed as its RDMA device_name whitelist.
+    roles:
+      prefill:
+        ports:
+          - name: bootstrap
+            count: 1
+            inject_to: env
+        connector:
+          kv_connector: MooncakeConnector
+          kv_role: kv_producer
+          kv_load_failure_policy: '{{kv_load_failure_policy}}'
+        env:
+          VLLM_MOONCAKE_BOOTSTRAP_PORT: '{{ports.bootstrap}}'
+      decode:
+        connector:
+          kv_connector: MooncakeConnector
+          kv_role: kv_consumer
+          kv_load_failure_policy: '{{kv_load_failure_policy}}'
+    router:
+      membership_update: restart
+      protocol: two_hop
+      image: '{{runner_image}}'
+      ports:
+        - name: prometheus
+          count: 1
+          inject_to: args
+      entrypoint:
+        - vllm-router
+      # Single-router mode consumes the CLI peers and loads their Mooncake
+      # bootstrap metadata at startup; IGW needs explicit API registration.
+      connection_args:
+        - --vllm-pd-disaggregation
+        - --kv-connector
+        - mooncake
+        - --host
+        - '{{worker_ip}}'
+        - --port
+        - '{{port}}'
+        - --prometheus-host
+        - '{{worker_ip}}'
+        - --prometheus-port
+        - '{{ports.prometheus}}'
+      tunable_args:
+        - flag: --prefill-policy
+          default: cache_aware
+          options:
+            - random
+            - round_robin
+            - cache_aware
+            - power_of_two
+            - consistent_hash
+        - flag: --decode-policy
+          default: round_robin
+          options:
+            - random
+            - round_robin
+            - cache_aware
+            - power_of_two
+            - consistent_hash
+        - flag: --cb-failure-threshold
+          default: '10'
+          value_type: int
+          min: 1
+        - flag: --retry-max-retries
+          default: '3'
+          value_type: int
+          min: 0
+      peers:
+        style: repeated_flag
+        prefill:
+          flag: --prefill
+          value: http://{{peer.ip}}:{{peer.port}} {{peer.ports.bootstrap}}
+        decode:
+          flag: --decode
+          value: http://{{peer.ip}}:{{peer.port}}
+      capabilities:
+        metrics: true
+        models_endpoint: true
+        kv_expired_metric: true
+      # Mooncake bootstrap metadata is read at router startup, so membership
+      # changes use the router restart path.
+      membership_api: {}
+      health_path: /health
+    pairing:
+      tensor_parallel: any
+
   - name: sglang-mooncake
     transport: Mooncake
     display_name: SGLang + Mooncake
@@ -466,6 +595,21 @@ modes:
     # case the flag exists for, is unverified.
     preferred: true
     kv_lease: sglang-mooncake
+    cache_services:
+      - provider: LMCache
+        roles:
+          prefill: {}
+          decode: {}
+      - provider: MeshFusion
+        roles:
+          prefill: {}
+          decode: {}
+    # Cache attachment uses SGLang flags, so there is no MultiConnector:
+    #   local:  --enable-hierarchical-cache plus the configured hicache budget
+    #   shared: --enable-lmcache --lmcache-config-file <provider-rendered file>
+    # Both retain --disaggregation-transfer-backend mooncake on each role.
+    # Shared attachment requires a matching SGLang provider integration;
+    # Mooncake as the PD transport does not supply a Mooncake store integration.
     roles:
       prefill:
         ports:
@@ -512,6 +656,7 @@ modes:
           # both roles carry it. See prefill for what it costs to omit.
           MC_TCP_ENABLE_CONNECTION_POOL: "1"
     router:
+      membership_update: dynamic
       protocol: same_dispatch
       image: "{{runner_image}}"
       ports:
@@ -628,6 +773,20 @@ modes:
     gpu_filters:
       vendor: nvidia
     kv_lease: sglang-nixl
+    cache_services:
+      - provider: LMCache
+        roles:
+          prefill: {}
+          decode: {}
+      - provider: MeshFusion
+        roles:
+          prefill: {}
+          decode: {}
+    # Same cache attachment as sglang-mooncake: local hierarchical-cache flags
+    # or shared --enable-lmcache --lmcache-config-file <provider-rendered file>,
+    # alongside --disaggregation-transfer-backend nixl on each role.
+    # There is no MultiConnector or connector-array ordering in this path;
+    # shared attachment requires a matching SGLang provider integration.
     roles:
       prefill:
         ports:
@@ -655,6 +814,7 @@ modes:
           SGLANG_DISAGGREGATION_NIXL_BACKEND: UCX
           UCX_NET_DEVICES: "{{net_device}}"
     router:
+      membership_update: dynamic
       protocol: same_dispatch
       image: "{{runner_image}}"
       ports:
@@ -725,12 +885,10 @@ modes:
     transport: Mooncake
     display_name: vLLM-Ascend + Mooncake
     description: >-
-      vLLM-Ascend's MooncakeHybridConnector with the transfer engine on the
-      Ascend protocol, fronted by vllm-ascend's own proxy example. Reverse
-      engineered from a running cross-host 1P1D on 910B2 x8 x2
-      (vllm-ascend v0.23.0 / vLLM 0.23.0). Every one of the four
-      declarations below differs from the NIXL path, which is why they are
-      declarations and not code.
+      vLLM-Ascend Mooncake PD transport. Standard KV layouts use
+      MooncakeConnectorV1; hybrid layouts use MooncakeHybridConnector.
+      The vllm-router NIXL wire path forwards the Ascend connector's
+      kv_transfer_params between prefill and decode.
     backends: [vLLM]
     # CANN plus the Ascend docker runtime. No vendor_variant whitelist on
     # purpose: measured on 910B2 (A2) and field-proven on 910C (A3), but pinning
@@ -738,7 +896,41 @@ modes:
     # generation unavailable until someone edits this file.
     gpu_filters:
       vendor: ascend
-    kv_lease: mooncake
+    # The managed router reuses the engine image. Bundled CANN 0.23.0 runners
+    # provide vllm-router 0.1.15; this is a runner baseline, not the first
+    # upstream version containing the Ascend Mooncake connectors.
+    backend_versions: ">=0.23.0"
+    kv_lease: ascend-mooncake
+    # The local NPU offload path uses the same bundled CANN runner baseline.
+    in_process_cache_versions: ">=0.23.0"
+    connector_variants:
+      standard: MooncakeConnectorV1
+      hybrid: MooncakeHybridConnector
+    # Hybrid handles standard layouts when model metadata is unavailable.
+    default_connector_variant: hybrid
+    cache_services:
+      - provider: Mooncake
+        # AscendStore composition uses the same bundled CANN runner baseline.
+        backend_versions: ">=0.23.0"
+        roles:
+          prefill:
+            kv_role: kv_producer
+          decode:
+            kv_role: kv_consumer
+    # PD variants: standard=MooncakeConnectorV1; hybrid=MooncakeHybridConnector.
+    # Standard examples: Qwen3, GLM-5, DeepSeek V3.1.
+    # Hybrid examples: DeepSeek V4 / V4 Flash / V4 Pro.
+    # PD below denotes the variant selected from the pretrained KV layout.
+    # none:
+    #   P: PD(P)
+    #   D: PD(D)
+    # in_process (NPU/CPU offload):
+    #   P: MultiConnector[PD(P), SimpleCPUOffloadConnector(B)]
+    #   D: MultiConnector[PD(D), SimpleCPUOffloadConnector(B)]
+    # cache_service (Mooncake only):
+    #   P: MultiConnector[PD(P), AscendStoreConnector(P)]
+    #   D: MultiConnector[PD(D), AscendStoreConnector(D)]
+    # MultiConnector resolves to AscendMultiConnector in vllm-ascend.
     pairing:
       # The opposite of NIXL's rule. This connector carries both roles' tp/dp in
       # its config so a decode rank can gather KV from several prefill ranks;
@@ -787,9 +979,9 @@ modes:
         # cross-host transfers fail on every rank with ret -1 while same-host
         # ones succeed, and the connector answers 200 with garbage rather than
         # failing.
-        host_mounts: ["/etc/hccn.conf"]
+        host_files: ["/etc/hccn.conf"]
         connector:
-          kv_connector: MooncakeHybridConnector
+          kv_connector: "{{pd_connector}}"
           kv_role: kv_producer
           # The port lives inside the connector config, so allocation and
           # connector assembly have to happen at the same moment — the
@@ -823,9 +1015,9 @@ modes:
           - { name: kv_port, count: "{{accelerator_count}}", inject_to: args }
         # Same requirement, and it has to be on both sides: decode is the one
         # that pulls, prefill is the one whose card addresses get resolved.
-        host_mounts: ["/etc/hccn.conf"]
+        host_files: ["/etc/hccn.conf"]
         connector:
-          kv_connector: MooncakeHybridConnector
+          kv_connector: "{{pd_connector}}"
           kv_role: kv_consumer
           kv_port: "{{ports.kv_port}}"
           kv_connector_extra_config:
@@ -841,6 +1033,7 @@ modes:
           GLOO_SOCKET_IFNAME: "{{net_device}}"
           TP_SOCKET_IFNAME: "{{net_device}}"
     router:
+      membership_update: dynamic
       protocol: two_hop
       image: "{{runner_image}}"
       entrypoint:
@@ -867,6 +1060,14 @@ modes:
         - --prometheus-port
         - "{{ports.prometheus}}"
       tunable_args:
+        # Prefix affinity benefits prefill; decode rotates independently
+        # because its prompt KV arrives through the connector.
+        - flag: --prefill-policy
+          default: "cache_aware"
+          options: [random, round_robin, cache_aware, power_of_two, consistent_hash]
+        - flag: --decode-policy
+          default: "round_robin"
+          options: [random, round_robin, cache_aware, power_of_two, consistent_hash]
         # The same two values and the same reasoning as vllm-nixl, including the
         # breaker being inert on this router's PD path. Everything else is left
         # to the router's own defaults, the health check above all.
@@ -894,13 +1095,9 @@ modes:
         # visible only in the engine log. A router with metrics does not conjure
         # an engine-side counter that was never written.
         kv_expired_metric: false
-      # Read from upstream source, NOT measured. The single-router path drops
-      # `worker_type` before the PD router sees it and returns a hardcoded
-      # "requires specific add_prefill_server or add_decode_server methods";
-      # `--enable-igw` routes the call through the manager that dispatches on
-      # that field. `command` above does not carry the flag yet, so a consumer
-      # must read a failed call as "fall back to restart", never as "the group
-      # is broken".
+      # --enable-igw in connection_args routes membership updates through the
+      # manager, which dispatches worker_type to the appropriate PD registry.
+      # Probe the registry after an update to verify the peer was admitted.
       membership_api:
         add: POST /workers
         remove: DELETE /workers/{url}
@@ -932,8 +1129,14 @@ modes:
     # every engine and accelerator — an unsupported pair means "no built-in
     # recipe", never "no PD".
     backends: []
+    # No built-in PD connector means no fixed cache composition example.
+    # On vLLM, worker/kv_transfer.py composes a local cache and a user-supplied
+    # --kv-transfer-config with the PD connector first for both engine roles.
+    # Shared-cache resolution stands down if the user supplies that flag;
+    # an explicit MultiConnector must carry the complete connection config.
     roles: {}
     router:
+      membership_update: manual
       protocol: user_provided
     kv_lease: null
     # No connector GPUStack knows, so no tensor-parallel direction it can vouch

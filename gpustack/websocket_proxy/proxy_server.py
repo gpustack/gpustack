@@ -275,10 +275,12 @@ def _header_get(headers: list[tuple[str, str]], key: str) -> str:
 _EVENT_STREAM_CONTENT_TYPE = 'text/event-stream'
 
 
-def _parse_response_head(head: bytes) -> Tuple[Optional[int], bool, int]:
-    """Extract ``(content_length, is_event_stream, status_code)`` from a response head."""
+def _parse_response_head(head: bytes) -> Tuple[Optional[int], bool, int, bool]:
+    """Extract ``(content_length, is_event_stream, status_code, is_chunked)`` from
+    a response head."""
     content_length: Optional[int] = None
     is_event_stream = False
+    is_chunked = False
     status_code = 0
 
     lines = head.decode('utf-8', errors='ignore').split('\r\n')
@@ -295,7 +297,9 @@ def _parse_response_head(head: bytes) -> Tuple[Optional[int], bool, int]:
                 pass  # malformed value — fall through to chunked streaming
         elif lowered.startswith('content-type:'):
             is_event_stream = _EVENT_STREAM_CONTENT_TYPE in lowered
-    return content_length, is_event_stream, status_code
+        elif lowered.startswith('transfer-encoding:'):
+            is_chunked = 'chunked' in line.split(':', 1)[1].lower()
+    return content_length, is_event_stream, status_code, is_chunked
 
 
 async def _read_from_remote(
@@ -308,11 +312,87 @@ async def _read_from_remote(
     return await remote_reader.read(timeout=timeout)
 
 
+class _ChunkedBoundaryTracker:
+    """Follows the chunked framing of the body being relayed.
+
+    Raw forwarding leaves the client mid-chunked-decode, so whether an error
+    chunk may be appended on a stall depends on the relay position sitting
+    exactly at a chunk boundary -- which can only be known by parsing the
+    framing as the bytes pass through.
+
+    Malformed framing stops tracking (``at_boundary`` stays false) but does
+    not stop relaying: the client will reject the body either way, and the
+    upstream bytes still belong downstream.
+    """
+
+    def __init__(self) -> None:
+        # Set once the terminating 0-chunk (and its trailer section) arrived.
+        self.finished = False
+        # True only when the relay position is right before a chunk-size line.
+        self.at_boundary = True
+        self._pending = b''
+        self._state = 'size'  # 'size' | 'data' | 'data_crlf' | 'trailer'
+        self._remaining = 0
+        self._dead = False
+
+    def feed(self, data: bytes) -> None:
+        """Consume body bytes as they are forwarded to the client."""
+        if self._dead:
+            return
+        self._pending += data
+        while self._pending and not self.finished:
+            if self._state == 'data':
+                take = min(len(self._pending), self._remaining)
+                self._pending = self._pending[take:]
+                self._remaining -= take
+                if self._remaining == 0:
+                    self._state = 'data_crlf'
+                self.at_boundary = False
+            elif self._state == 'data_crlf':
+                if len(self._pending) < 2:
+                    self.at_boundary = False
+                    return
+                self._pending = self._pending[2:]
+                self._state = 'size'
+                self.at_boundary = True
+            else:
+                # 'size' and 'trailer' both parse one CRLF-delimited line.
+                line_end = self._pending.find(b'\r\n')
+                if line_end < 0:
+                    self.at_boundary = False
+                    return
+                line = self._pending[:line_end]
+                self._pending = self._pending[line_end + 2 :]
+                if self._state == 'trailer':
+                    if not line:
+                        self.finished = True
+                        self.at_boundary = False
+                    continue
+                size_field = line.split(b';', 1)[0]
+                try:
+                    size = int(size_field.strip() or b'x', 16)
+                except ValueError:
+                    # Unparseable framing: give up tracking, keep relaying.
+                    self._dead = True
+                    self.at_boundary = False
+                    self._pending = b''
+                    return
+                if size == 0:
+                    self._state = 'trailer'
+                    self.at_boundary = False
+                else:
+                    self._remaining = size
+                    self._state = 'data'
+                    self.at_boundary = False
+
+
 async def _report_stall(
     client_writer: IOConnection,
     stall_policy: Optional[StallPolicy],
     headers_sent: bool,
     is_event_stream: bool,
+    is_chunked: bool = False,
+    at_chunk_boundary: bool = True,
 ) -> None:
     """Tell the client the upstream stopped responding.
 
@@ -321,6 +401,13 @@ async def _report_stall(
     honest ending for a stream is a terminal error event -- just dropping the
     connection is indistinguishable from a finished generation, which is the
     symptom this exists to remove.
+
+    A chunked response carries the error event inside a final data chunk
+    followed by the terminating ``0\\r\\n\\r\\n``: the relay forwards upstream
+    bytes raw, so the client is mid-chunked-decode and bare SSE text would be
+    read as a malformed chunk size line. And that chunk is only valid at a
+    chunk boundary -- mid-chunk, nothing can be appended, so the response ends
+    without the error event rather than with a corrupt one.
     """
     if stall_policy is None:
         logger.debug("[Proxy] Timeout waiting for response")
@@ -340,11 +427,20 @@ async def _report_stall(
                 b"\r\n" + body
             )
         elif is_event_stream:
+            if is_chunked and not at_chunk_boundary:
+                logger.error(
+                    "[Proxy] Upstream stalled mid-chunk, closing without an "
+                    "error event"
+                )
+                return
             logger.error(
                 "[Proxy] Upstream stalled mid-stream, terminating the response "
                 "with an error event"
             )
-            await client_writer.write(stall_policy.error_sse)
+            payload = stall_policy.error_sse
+            if is_chunked:
+                payload = b"%x\r\n%s\r\n0\r\n\r\n" % (len(payload), payload)
+            await client_writer.write(payload)
         else:
             # Nothing meaningful can be appended to a half-delivered body.
             logger.error("[Proxy] Upstream stalled mid-response, closing")
@@ -383,6 +479,8 @@ async def wait_for_complete_response(  # noqa: C901
     content_length: Optional[int] = None
     body_remaining: Optional[int] = None
     is_event_stream = False
+    is_chunked = False
+    chunk_tracker = _ChunkedBoundaryTracker()
 
     def read_timeout() -> Optional[float]:
         if stall_policy is None:
@@ -424,9 +522,12 @@ async def wait_for_complete_response(  # noqa: C901
                 header_end = pending_data.find(b'\r\n\r\n') + 4
                 head = pending_data[:header_end]
                 pending_data = pending_data[header_end:]
-                content_length, is_event_stream, status_code = _parse_response_head(
-                    head
-                )
+                (
+                    content_length,
+                    is_event_stream,
+                    status_code,
+                    is_chunked,
+                ) = _parse_response_head(head)
                 body_remaining = content_length
                 logger.trace(
                     f"[Proxy] Head parsed, content_length={content_length}, "
@@ -465,10 +566,24 @@ async def wait_for_complete_response(  # noqa: C901
                     return
             else:
                 # No Content-Length: stream until source closes (chunked encoding)
+                if is_chunked:
+                    chunk_tracker.feed(pending_data)
                 await client_writer.write(pending_data)
                 pending_data = b''
+                if chunk_tracker.finished:
+                    # The terminating chunk arrived: the response is complete
+                    # even though a keep-alive upstream keeps the connection
+                    # open, and waiting further would read the next response.
+                    return
     except (asyncio.TimeoutError, TimeoutError):
-        await _report_stall(client_writer, stall_policy, headers_sent, is_event_stream)
+        await _report_stall(
+            client_writer,
+            stall_policy,
+            headers_sent,
+            is_event_stream,
+            is_chunked,
+            chunk_tracker.at_boundary,
+        )
         return
     except Exception as e:
         logger.debug(f"[Proxy] Error waiting for complete response: {e}")

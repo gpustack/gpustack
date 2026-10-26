@@ -191,10 +191,12 @@
       options: [LRU, IsolatedLRU, noop]
       description:
         default: >-
+          Controls L1 memory cache eviction independently of L2 storage.
           LRU evicts least-recently-used chunks. IsolatedLRU keeps one LRU
           list per cache salt and requires per-salt quotas via the HTTP
           API. noop never evicts.
         zh-CN: >-
+          控制 L1 内存缓存的淘汰，不影响 L2 存储。
           LRU 淘汰最近最少使用的分块。IsolatedLRU 为每个 cache salt 维护独立的 LRU
           列表，并需通过 HTTP API 为每个 salt 设置配额。noop 从不淘汰。
     - name: eviction_trigger_watermark
@@ -253,10 +255,11 @@
       description:
         default: >-
           Spills KV cache to a local directory (e.g. NVMe) on the worker.
-          max_capacity_gb caps disk usage; 0 or unset means uncapped.
+          Set a positive target capacity and enable automatic cleanup to
+          evict cached data in the background. This is not a hard disk quota.
         zh-CN: >-
-          将 KV Cache 溢出到 worker 上的本地目录（如 NVMe）。max_capacity_gb
-          限制磁盘用量；填 0 或留空表示不限制。
+          将 KV Cache 溢出到 worker 上的本地目录（如 NVMe）。设置大于 0 的目标容量并
+          开启自动清理后，会在后台淘汰缓存。这不是磁盘硬配额。
       fields:
         # Defaults into the platform data dir: on containerized workers
         # the mirrored deployment carries the worker's /var/lib/gpustack
@@ -268,7 +271,31 @@
           default: /var/lib/gpustack/cache/lmcache/l2
         - name: max_capacity_gb
           label: { default: Max Capacity (GiB), zh-CN: 最大容量（GiB） }
+          description:
+            default: >-
+              Target capacity for cache tracked by this cache-server instance.
+              Usage can temporarily exceed this target. Set to 0 or leave
+              empty to prevent capacity-watermark-based automatic cleanup.
+            zh-CN: >-
+              当前缓存服务实例所统计缓存的目标容量，用量可能短时超过此目标。
+              填 0 或留空时，不会触发基于容量水位的自动清理。
           type: number
+        - name: auto_cleanup
+          label: { default: Automatic Cleanup, zh-CN: 自动清理 }
+          description:
+            default: >-
+              Requires a positive target capacity. Evicts least-recently-used
+              L2 cache using LMCache's default watermark and eviction ratio,
+              independently of L1 eviction. When disabled, capacity is only
+              used for usage tracking and storage usage can keep growing.
+            zh-CN: >-
+              需设置大于 0 的目标容量。使用 LMCache 默认水位和淘汰比例，按 LRU
+              清理 L2 缓存，独立于 L1 淘汰配置。关闭后容量仅用于用量统计，存储占用可能持续增长。
+          type: boolean
+          default: true
+          enabled_adapter_options:
+            eviction:
+              eviction_policy: LRU
         - name: num_workers
           label: { default: I/O Workers, zh-CN: I/O 工作线程 }
           description:
@@ -319,7 +346,32 @@
           env_name: LMCACHE_RESP_PASSWORD
         - name: max_capacity_gb
           label: { default: Max Capacity (GiB), zh-CN: 最大容量（GiB） }
+          description:
+            default: >-
+              Target capacity for cache tracked by this cache-server instance,
+              not the Redis/Valkey server-wide memory limit. Usage can
+              temporarily exceed this target. Set to 0 or leave empty to
+              prevent capacity-watermark-based automatic cleanup.
+            zh-CN: >-
+              当前缓存服务实例所统计缓存的目标容量，不是 Redis/Valkey 服务端的总内存上限。
+              用量可能短时超过此目标。填 0 或留空时，不会触发基于容量水位的自动清理。
           type: number
+        - name: auto_cleanup
+          label: { default: Automatic Cleanup, zh-CN: 自动清理 }
+          description:
+            default: >-
+              Requires a positive target capacity. Evicts least-recently-used
+              L2 cache using LMCache's default watermark and eviction ratio,
+              independently of L1 eviction. When disabled, capacity is only
+              used for usage tracking and storage usage can keep growing.
+            zh-CN: >-
+              需设置大于 0 的目标容量。使用 LMCache 默认水位和淘汰比例，按 LRU
+              清理 L2 缓存，独立于 L1 淘汰配置。关闭后容量仅用于用量统计，存储占用可能持续增长。
+          type: boolean
+          default: true
+          enabled_adapter_options:
+            eviction:
+              eviction_policy: LRU
     s3:
       display_name: S3
       icon: /static/catalog_icons/s3.svg
@@ -328,13 +380,14 @@
           Shared L2 in an S3-compatible object store (AWS S3, MinIO, Ceph
           RGW). The endpoint uses virtual-hosted style — the bucket name is
           part of the host, e.g. "kvcache.s3.example.com"; path-style
-          addressing is not supported. max_capacity_gb caps aggregate
-          usage; 0 or unset means uncapped.
+          addressing is not supported. Set a positive target capacity and
+          enable automatic cleanup to evict cached data in the background.
+          This is not a bucket-wide storage quota.
         zh-CN: >-
           以兼容 S3 的对象存储作为共享 L2（AWS S3、MinIO、Ceph RGW）。地址采用
           virtual-hosted 风格——bucket 名是主机名的一部分，例如
-          "kvcache.s3.example.com"；不支持 path-style 寻址。max_capacity_gb
-          限制总用量；填 0 或留空表示不限制。
+          "kvcache.s3.example.com"；不支持 path-style 寻址。设置大于 0 的目标容量并
+          开启自动清理后，会在后台淘汰缓存。这不是整个 bucket 的存储配额。
       fields:
         - name: s3_endpoint
           label: { default: Bucket Endpoint, zh-CN: Bucket 地址 }
@@ -354,7 +407,32 @@
           type: boolean
         - name: max_capacity_gb
           label: { default: Max Capacity (GiB), zh-CN: 最大容量（GiB） }
+          description:
+            default: >-
+              Target capacity for cache tracked by this cache-server instance,
+              not a bucket-wide storage quota. Usage can temporarily exceed
+              this target. Set to 0 or leave empty to prevent
+              capacity-watermark-based automatic cleanup.
+            zh-CN: >-
+              当前缓存服务实例所统计缓存的目标容量，不是整个 bucket 的存储配额。
+              用量可能短时超过此目标。填 0 或留空时，不会触发基于容量水位的自动清理。
           type: number
+        - name: auto_cleanup
+          label: { default: Automatic Cleanup, zh-CN: 自动清理 }
+          description:
+            default: >-
+              Requires a positive target capacity. Evicts least-recently-used
+              L2 cache using LMCache's default watermark and eviction ratio,
+              independently of L1 eviction. When disabled, capacity is only
+              used for usage tracking and storage usage can keep growing.
+            zh-CN: >-
+              需设置大于 0 的目标容量。使用 LMCache 默认水位和淘汰比例，按 LRU
+              清理 L2 缓存，独立于 L1 淘汰配置。关闭后容量仅用于用量统计，存储占用可能持续增长。
+          type: boolean
+          default: true
+          enabled_adapter_options:
+            eviction:
+              eviction_policy: LRU
   # Completion hints for the extra-parameters editor. Deliberately
   # excludes the flags GPUStack always renders from structured config.
   common_parameters:
@@ -603,10 +681,12 @@
       options: [LRU, IsolatedLRU, noop]
       description:
         default: >-
+          Controls L1 memory cache eviction independently of L2 storage.
           LRU evicts least-recently-used chunks. IsolatedLRU keeps one LRU
           list per cache salt and requires per-salt quotas via the HTTP
           API. noop never evicts.
         zh-CN: >-
+          控制 L1 内存缓存的淘汰，不影响 L2 存储。
           LRU 淘汰最近最少使用的分块。IsolatedLRU 为每个 cache salt 维护独立的 LRU
           列表，并需通过 HTTP API 为每个 salt 设置配额。noop 从不淘汰。
     - name: eviction_trigger_watermark

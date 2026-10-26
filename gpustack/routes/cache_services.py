@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import RedirectResponse, StreamingResponse
 
 from gpustack import envs
+from gpustack.policies.worker_filters.label_matching_filter import label_matching
 from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -49,13 +50,20 @@ from gpustack.schemas.cache_services import (
 from gpustack.schemas.common import Pagination
 from gpustack.config.config import get_global_config
 from gpustack.schemas.clusters import Cluster
-from gpustack.schemas.models import Model, ModelInstance, get_backend
+from gpustack.schemas.models import (
+    Model,
+    ModelInstance,
+    get_backend,
+    shared_cache_service_ids_by_role,
+)
 from gpustack.schemas.principals import PrincipalType, platform_principal_id
-from gpustack.schemas.workers import Worker
+from gpustack.schemas.workers import SystemReserved, Worker
 from gpustack.server.cache_provider_catalog import (
     get_cache_provider,
     get_cache_providers,
 )
+from gpustack.server.cache_service_resources import load_resource_view
+from gpustack.server.services import CacheServiceInstanceService, CacheServiceService
 from gpustack.server.db import async_session
 from gpustack.schemas.principals import OrgRole
 from gpustack.server.cache_service_metrics import (
@@ -65,6 +73,7 @@ from gpustack.server.cache_service_metrics import (
 from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
 from gpustack.server.worker_request import stream_to_worker
 from gpustack.utils.grafana import resolve_grafana_base_url
+from gpustack.utils.unit import byte_to_gib
 from gpustack.worker.logs import LogOptionsDep
 
 logger = logging.getLogger(__name__)
@@ -406,7 +415,7 @@ async def delete_cache_service_instance(
     instance = await _fetch_service_instance(session, cache_service, instance_id)
 
     try:
-        await instance.delete(session)
+        await CacheServiceInstanceService(session).delete(instance)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to delete cache service instance: {e}"
@@ -655,20 +664,28 @@ async def get_cache_service_metrics(
     models = await Model.all_by_fields(
         session,
         fields={"cluster_id": cache_service.cluster_id},
-        extra_conditions=[Model.deleted_at.is_(None)],
+        extra_conditions=[
+            Model.deleted_at.is_(None),
+            *tenant_list_conditions(ctx, Model),
+        ],
     )
-    attached_models = {
-        model.id: model
+    attached_roles = {
+        model.id: {
+            role
+            for role, service_id in shared_cache_service_ids_by_role(model).items()
+            if service_id == cache_service.id
+        }
         for model in models
-        if model.extended_kv_cache
-        and model.extended_kv_cache.is_shared()
-        and model.extended_kv_cache.cache_service_id == cache_service.id
     }
+    attached_models = {model.id: model for model in models if attached_roles[model.id]}
     attached = []
     if attached_models:
         instances = await ModelInstance.all_by_fields(
             session,
-            extra_conditions=[ModelInstance.model_id.in_(attached_models.keys())],
+            extra_conditions=[
+                ModelInstance.model_id.in_(attached_models.keys()),
+                ModelInstance.deleted_at.is_(None),
+            ],
         )
         attached = [
             CacheServiceAttachedMetrics(
@@ -678,6 +695,7 @@ async def get_cache_service_metrics(
                 worker_name=instance.worker_name,
             )
             for instance in instances
+            if instance.role in attached_roles[instance.model_id]
         ]
         # a stable row order regardless of how the batched query returns
         attached.sort(
@@ -733,6 +751,86 @@ def _validate_resource_claims(service, provider) -> None:
             cache_service_resource_claim(service, provider, component)
     except ValueError as e:
         raise BadRequestException(message=str(e))
+
+
+async def _validate_cache_service_memory(
+    session: SessionDep,
+    service: CacheServiceCreate,
+    provider: Optional[CacheProvider],
+) -> None:
+    """Check initial placement against the current RAM reservation snapshot.
+
+    This preflight does not reserve memory. Replica targets follow the
+    controller's initial placement order: the pinned worker, then worker ID.
+    """
+    if provider is None:
+        return
+    fields = service.config.fields if service.config else None
+    claims = {
+        component: cache_service_resource_claim(service, provider, component)
+        for component in provider.component_layouts()
+        if provider.component_enabled(component, fields)
+    }
+    if not any(claim and claim.get("ram") for claim in claims.values()):
+        return
+
+    workers = await Worker.all_by_fields(
+        session,
+        {"cluster_id": service.cluster_id},
+        extra_conditions=[Worker.deleted_at.is_(None)],
+    )
+    workers = sorted(
+        (
+            worker
+            for worker in workers
+            if label_matching(service.worker_selector or {}, worker.labels or {})
+        ),
+        key=lambda worker: (worker.id != service.worker_id, worker.id),
+    )
+    if not workers:
+        raise BadRequestException(message="No workers available to validate cache RAM")
+
+    required = {worker.id: 0 for worker in workers}
+    for component, topology in provider.component_layouts().items():
+        ram = (claims.get(component) or {}).get("ram", 0)
+        targets = (
+            workers
+            if topology == "per_node"
+            else workers[: provider.component_replica_count(component, fields)]
+        )
+        for worker in targets:
+            required[worker.id] += ram
+
+    models = await ModelInstance.all_by_fields(
+        session, {"cluster_id": service.cluster_id}
+    )
+    resources = await load_resource_view(session, models, cluster_id=service.cluster_id)
+    for worker in workers:
+        if not required[worker.id]:
+            continue
+        memory = worker.status.memory if worker.status else None
+        if memory is None or memory.total is None:
+            raise BadRequestException(
+                message=f"Memory capacity unavailable for worker '{worker.name}'"
+            )
+        reserved = worker.system_reserved or SystemReserved()
+        # Match config defaults without changing the persisted worker snapshot.
+        capacity_worker = worker.model_copy(
+            update={
+                "system_reserved": SystemReserved(
+                    ram=reserved.ram or 0, vram=reserved.vram or 0
+                )
+            }
+        )
+        available = resources.allocatable(capacity_worker).ram
+        if required[worker.id] > available:
+            raise BadRequestException(
+                message=(
+                    f"Insufficient RAM on worker '{worker.name}': the cache service "
+                    f"requires {byte_to_gib(required[worker.id])} GiB, but only "
+                    f"{byte_to_gib(available)} GiB is available for allocation."
+                )
+            )
 
 
 def _validate_cache_service_provider(
@@ -1289,6 +1387,7 @@ async def create_cache_service(
     _validate_cache_service_worker_selector(cache_service_in)
     _reject_placeholder_secrets(cache_service_in, provider)
     await _validate_cache_service_placement(session, cache_service_in, provider)
+    await _validate_cache_service_memory(session, cache_service_in, provider)
 
     cache_service_dict = cache_service_in.model_dump()
     cache_service_dict["owner_principal_id"] = target_org_id
@@ -1452,9 +1551,7 @@ async def _models_referencing_cache_service(
         model
         for model in models
         if model.deleted_at is None
-        and model.extended_kv_cache is not None
-        and model.extended_kv_cache.is_shared()
-        and model.extended_kv_cache.cache_service_id == cache_service.id
+        and cache_service.id in shared_cache_service_ids_by_role(model).values()
     ]
 
 
@@ -1477,7 +1574,7 @@ async def delete_cache_service(session: SessionDep, ctx: TenantContextDep, id: i
         )
 
     try:
-        await cache_service.delete(session)
+        await CacheServiceService(session).delete(cache_service)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to delete cache service: {e}"

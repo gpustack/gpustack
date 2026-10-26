@@ -24,6 +24,7 @@ from gpustack.api.auth import (
     credentials_exception,
     gateway_token_auth,
     inference_scope,
+    is_policy_rejection,
     GATEWAY_ASSERTED_KEY_REF_HEADER,
     GATEWAY_DOWNSTREAM_CONN_HEADER,
 )
@@ -108,7 +109,12 @@ async def _resolve_caller(
             cookie_token=cookie_token,
             session=session,
         )
-    except UnauthorizedException:
+    except UnauthorizedException as e:
+        if is_policy_rejection(e):
+            # A hook denied an authenticated request with a 401. Kept apart
+            # from the anonymous fallback below: serving the request anyway
+            # would turn a policy denial into anonymous success.
+            raise
         logger.debug("Unauthenticated request to server token-auth endpoint")
         return None, None, "none", False
     except Exception as e:

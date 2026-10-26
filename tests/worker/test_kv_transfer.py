@@ -38,14 +38,13 @@ def _connectors(arguments):
 # --- the order is the point ------------------------------------------------ #
 
 
-def test_prefill_asks_the_cache_first():
-    """A prefix the cache already holds is prefill work that does not have to
-    happen at all; what is left is what disaggregation is optimising."""
+def test_prefill_asks_the_pd_connector_first():
+    """Prefill follows the same PD-first recipe as decode."""
     arguments = ["serve", *_flag(PD), "--x", *_flag(CACHE)]
 
     result = compose_kv_transfer_config(arguments, "prefill", cache_first=CACHE)
 
-    assert _connectors(result) == ["LMCacheConnectorV1", "NixlConnector"]
+    assert _connectors(result) == ["NixlConnector", "LMCacheConnectorV1"]
 
 
 def test_decode_asks_its_own_prefill_first():
@@ -301,3 +300,13 @@ def test_the_equals_spelling_merges_like_the_spaced_one():
     # The token after the `=` form must survive: dropping a fixed two tokens
     # per position would have eaten it.
     assert "--max-model-len" in merged and "8192" in merged, merged
+
+
+@pytest.mark.parametrize(
+    "role,outer", [("prefill", "kv_producer"), ("decode", "kv_consumer")]
+)
+def test_composite_role_describes_pd_member(role, outer):
+    result = compose_kv_transfer_config([*_flag(CACHE), *_flag(PD)], role)
+    descriptor = json.loads(result[1])
+    assert descriptor["kv_role"] == outer
+    assert descriptor["kv_connector_extra_config"]["connectors"] == [PD, CACHE]

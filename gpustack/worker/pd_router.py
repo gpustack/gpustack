@@ -401,32 +401,13 @@ def group_peer_addresses(
     unchanged command — otherwise every reconcile would look like a spec change
     to anything comparing commands.
     """
-    from gpustack.schemas.models import ModelInstanceStateEnum
+    from gpustack.utils.pd_router_membership import active_router_peers
 
     peers: Dict[str, List[PeerAddress]] = {}
-    for instance in instances:
-        role = getattr(instance, "role", None)
-        if not role or getattr(instance, "group_id", None) != group_id:
-            continue
-        if getattr(instance, "state", None) != ModelInstanceStateEnum.RUNNING:
-            # Only running members have had their ports assigned; an address
-            # taken from a member that has not started yet is a placeholder,
-            # and the router would carry it for the rest of its life.
-            continue
-        ip = worker_ip_by_id.get(getattr(instance, "worker_id", None))
-        port = getattr(instance, "port", None)
-        if not ip or not port:
-            continue
-        # Bands, not points: a peer flag needs the base, and carrying the whole
-        # band here would put a width into an address. Absent on a member that
-        # declares none, which is most of them.
-        bands = getattr(instance, "named_ports", None) or {}
-        named = {
-            name: band.base
-            for name, band in bands.items()
-            if getattr(band, "base", None) is not None
-        }
-        peers.setdefault(role, []).append(PeerAddress(ip, int(port), named))
+    for instance, ip, port, named in active_router_peers(
+        instances, group_id, worker_ip_by_id
+    ):
+        peers.setdefault(instance.role, []).append(PeerAddress(ip, port, named))
 
     for role in peers:
         # By address only. The named ports are a mapping and would not compare,

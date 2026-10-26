@@ -44,7 +44,7 @@ from gpustack.schemas.cache_services import (
 )
 from gpustack.worker.logs import LogOptions
 
-from gpustack.schemas.models import ExtendedKVCacheConfig, KVCacheModeEnum
+from gpustack.schemas.models import ExtendedKVCacheConfig, KVCacheModeEnum, RoleSpec
 from gpustack.schemas.principals import PrincipalType
 
 ORG_PRINCIPAL = 42
@@ -1712,15 +1712,20 @@ def _model(name, cache_service_id, enabled=True, mode=KVCacheModeEnum.SHARED):
 
 
 @pytest.mark.asyncio
-async def test_delete_blocked_while_models_reference_service(monkeypatch):
+@pytest.mark.parametrize("role", [None, "prefill"])
+async def test_delete_blocked_while_models_reference_service(monkeypatch, role):
     service = _existing_service()
+    model = _model("llama3", cache_service_id=9)
+    if role:
+        model.roles = [RoleSpec(name=role, extended_kv_cache=model.extended_kv_cache)]
+        model.extended_kv_cache = ExtendedKVCacheConfig(enabled=False)
     monkeypatch.setattr(
         cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=service)
     )
     monkeypatch.setattr(
         cache_services_route.Model,
         "all_by_fields",
-        AsyncMock(return_value=[_model("llama3", cache_service_id=9)]),
+        AsyncMock(return_value=[model]),
     )
 
     with pytest.raises(BadRequestException) as exc_info:
@@ -1779,12 +1784,18 @@ def _referencing_model(id, name, cache_service_id, **overrides):
 
 
 @pytest.mark.asyncio
-async def test_models_lists_referencing_deployments_only(monkeypatch):
+@pytest.mark.parametrize("role", [None, "prefill"])
+async def test_models_lists_referencing_deployments_only(monkeypatch, role):
     service = _existing_service()
     monkeypatch.setattr(
         cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=service)
     )
     referencing = _referencing_model(1, "llama3", cache_service_id=9)
+    if role:
+        referencing.roles = [
+            RoleSpec(name=role, extended_kv_cache=referencing.extended_kv_cache)
+        ]
+        referencing.extended_kv_cache = None
     other_service = _referencing_model(2, "qwen3", cache_service_id=8)
     local = _referencing_model(
         3,
@@ -2545,3 +2556,346 @@ async def test_update_resource_validation_uses_stored_config_when_omitted(monkey
         MagicMock(), _user_ctx(), 9, payload
     )
     service.update.assert_awaited_once()
+
+
+def _memory_worker(worker_id=5, total=16, labels=None):
+    from gpustack.schemas.workers import (
+        MemoryInfo,
+        SystemReserved,
+        Worker,
+        WorkerStatus,
+    )
+
+    return Worker(
+        id=worker_id,
+        name=f"worker-{worker_id}",
+        hostname=f"worker-{worker_id}",
+        ip=f"10.0.0.{worker_id}",
+        cluster_id=1,
+        labels=labels or {},
+        status=WorkerStatus(memory=MemoryInfo(total=total * 1024**3)),
+        system_reserved=SystemReserved(ram=2 * 1024**3, vram=0),
+    )
+
+
+def _patch_create_memory(
+    monkeypatch, workers, *, provider=None, cache_ram=0, model_ram=0
+):
+    from gpustack.schemas.cache_providers import CacheProviderResourceProfile
+
+    if provider is None:
+        provider = _provider()
+        provider.resource_profile = CacheProviderResourceProfile(ram_gib="{{ram_size}}")
+    _patch_provider(monkeypatch, provider)
+    _patch_create_prereqs(monkeypatch)
+    monkeypatch.setattr(
+        cache_services_route.Worker,
+        "one_by_id",
+        AsyncMock(
+            side_effect=lambda session, worker_id: next(
+                (w for w in workers if w.id == worker_id), None
+            )
+        ),
+    )
+    worker_rows = AsyncMock(return_value=workers)
+    monkeypatch.setattr(cache_services_route.Worker, "all_by_fields", worker_rows)
+    model_rows = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                worker_id=5,
+                computed_resource_claim=SimpleNamespace(ram=model_ram * 1024**3),
+                gpu_indexes=[],
+                distributed_servers=None,
+            )
+        ]
+    )
+    monkeypatch.setattr(cache_services_route.ModelInstance, "all_by_fields", model_rows)
+    cache_rows = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                worker_id=5,
+                computed_resource_claim={"ram": cache_ram * 1024**3},
+                deleted_at=None,
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        cache_services_route.CacheServiceInstance, "all_by_fields", cache_rows
+    )
+    create = AsyncMock(return_value=SimpleNamespace(id=9))
+    monkeypatch.setattr(cache_services_route.CacheService, "create", create)
+    return create, worker_rows, model_rows, cache_rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "requested,cache_ram,model_ram,accepted",
+    [
+        (128, 0, 0, False),
+        (8, 8, 0, False),
+        (8, 0, 8, False),
+        (8, 3, 4, False),
+        (14, 0, 0, True),
+    ],
+)
+async def test_create_checks_ram_before_persisting(
+    monkeypatch, requested, cache_ram, model_ram, accepted
+):
+    create, workers, models, caches = _patch_create_memory(
+        monkeypatch, [_memory_worker()], cache_ram=cache_ram, model_ram=model_ram
+    )
+    payload = _managed_create(config=CacheServiceConfig(fields={"ram_size": requested}))
+    if accepted:
+        await cache_services_route.create_cache_service(
+            MagicMock(), _user_ctx(), payload
+        )
+        create.assert_awaited_once()
+    else:
+        with pytest.raises(BadRequestException) as error:
+            await cache_services_route.create_cache_service(
+                MagicMock(), _user_ctx(), payload
+            )
+        assert error.value.status_code == 400
+        assert "Insufficient RAM on worker 'worker-5'" in error.value.message
+        create.assert_not_awaited()
+    assert workers.call_args.args[1] == {"cluster_id": 1}
+    assert models.call_args.args[1] == {"cluster_id": 1}
+    assert caches.call_args.args[1] == {"cluster_id": 1}
+
+
+@pytest.mark.asyncio
+async def test_create_skips_cache_instances_without_resource_claim(monkeypatch):
+    create, _, _, caches = _patch_create_memory(monkeypatch, [_memory_worker()])
+    caches.return_value = [
+        SimpleNamespace(worker_id=5, computed_resource_claim=None, deleted_at=None)
+    ]
+    await cache_services_route.create_cache_service(
+        MagicMock(),
+        _user_ctx(),
+        _managed_create(config=CacheServiceConfig(fields={"ram_size": 8})),
+    )
+    create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_id,accepted", [(None, False), (5, False), (6, True)])
+async def test_create_checks_the_controllers_initial_replica_target(
+    monkeypatch, worker_id, accepted
+):
+    create, *_ = _patch_create_memory(
+        monkeypatch, [_memory_worker(6, total=64), _memory_worker(5)]
+    )
+    payload = _managed_create(worker_id=worker_id)
+    if accepted:
+        await cache_services_route.create_cache_service(
+            MagicMock(), _user_ctx(), payload
+        )
+        create.assert_awaited_once()
+    else:
+        with pytest.raises(BadRequestException) as error:
+            await cache_services_route.create_cache_service(
+                MagicMock(), _user_ctx(), payload
+            )
+        assert "worker-5" in error.value.message
+        create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selector,accepted", [(None, False), ({"cache": "yes"}, True)])
+async def test_create_per_node_checks_every_selected_worker(
+    monkeypatch, selector, accepted
+):
+    from gpustack.schemas.cache_providers import CacheProviderResourceProfile
+
+    provider = _provider("per_node")
+    provider.resource_profile = CacheProviderResourceProfile(ram_gib="{{ram_size}}")
+    create, *_ = _patch_create_memory(
+        monkeypatch,
+        [_memory_worker(5, total=64, labels={"cache": "yes"}), _memory_worker(6)],
+        provider=provider,
+    )
+    payload = _managed_create(worker_id=None, worker_selector=selector)
+    if accepted:
+        await cache_services_route.create_cache_service(
+            MagicMock(), _user_ctx(), payload
+        )
+        create.assert_awaited_once()
+    else:
+        with pytest.raises(BadRequestException) as error:
+            await cache_services_route.create_cache_service(
+                MagicMock(), _user_ctx(), payload
+            )
+        assert "worker-6" in error.value.message
+        create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_sums_component_ram_on_the_same_worker(monkeypatch):
+    from gpustack.schemas.cache_providers import CacheProviderComponent
+
+    provider = _provider()
+    provider.components = {
+        "master": CacheProviderComponent(
+            attach_endpoint=True, resource_profile={"ram_gib": "8"}
+        ),
+        "store": CacheProviderComponent(
+            topology="per_node", resource_profile={"ram_gib": "8"}
+        ),
+    }
+    create, *_ = _patch_create_memory(
+        monkeypatch, [_memory_worker()], provider=provider
+    )
+    with pytest.raises(BadRequestException) as error:
+        await cache_services_route.create_cache_service(
+            MagicMock(), _user_ctx(), _managed_create()
+        )
+    assert (
+        "requires 16.0 GiB, but only 14.0 GiB is available for allocation."
+        in error.value.message
+    )
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fields,accepted",
+    [
+        ({"replicas": 1}, True),
+        ({"replicas": 2}, False),
+        ({}, False),
+        ({"enable_ha": False, "replicas": 2}, True),
+    ],
+)
+async def test_create_checks_field_configured_replica_count(
+    monkeypatch, fields, accepted
+):
+    from gpustack.schemas.cache_providers import CacheProviderComponent
+
+    provider = _provider()
+    provider.fields.extend(
+        [
+            CacheProviderField(name="enable_ha", type="boolean", default=True),
+            CacheProviderField(
+                name="replicas",
+                type="number",
+                default=2,
+                gated_default=1,
+                visible_by="enable_ha",
+                visible_when=True,
+            ),
+        ]
+    )
+    provider.components = {
+        "store": CacheProviderComponent(
+            replicas_by="replicas", resource_profile={"ram_gib": "{{ram_size}}"}
+        )
+    }
+    create, *_ = _patch_create_memory(
+        monkeypatch, [_memory_worker(5, total=64), _memory_worker(6)], provider=provider
+    )
+    payload = _managed_create(
+        config=CacheServiceConfig(fields={"ram_size": 20, **fields})
+    )
+    if accepted:
+        await cache_services_route.create_cache_service(
+            MagicMock(), _user_ctx(), payload
+        )
+        create.assert_awaited_once()
+    else:
+        with pytest.raises(BadRequestException) as error:
+            await cache_services_route.create_cache_service(
+                MagicMock(), _user_ctx(), payload
+            )
+        assert "worker-6" in error.value.message
+        create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["worker", "status", "memory", "total"])
+async def test_create_cannot_validate_ram_without_worker_capacity(monkeypatch, missing):
+    worker = _memory_worker()
+    if missing == "status":
+        worker.status = None
+    elif missing == "memory":
+        worker.status.memory = None
+    elif missing == "total":
+        worker.status.memory.total = None
+    create, *_ = _patch_create_memory(
+        monkeypatch, [] if missing == "worker" else [worker]
+    )
+    with pytest.raises(BadRequestException) as error:
+        await cache_services_route.create_cache_service(
+            MagicMock(), _user_ctx(), _managed_create(worker_id=None)
+        )
+    assert (
+        "capacity unavailable" in error.value.message
+        or "No workers available" in error.value.message
+    )
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reserved,gpu,uma,available",
+    [
+        (None, False, False, 12),
+        ({}, False, False, 12),
+        ({"ram": None, "vram": None}, True, False, 12),
+        ({"ram": 2 * 1024**3}, True, False, 10),
+        ({"vram": 2 * 1024**3}, True, True, 10),
+        ({"ram": 2 * 1024**3}, True, True, 10),
+        ({"ram": 0, "vram": 0}, False, False, 12),
+    ],
+)
+@pytest.mark.parametrize("exceeds", [False, True])
+async def test_create_defaults_missing_system_reservations_to_zero(
+    monkeypatch, reserved, gpu, uma, available, exceeds
+):
+    from gpustack.schemas.workers import GPUDeviceStatus, MemoryInfo, SystemReserved
+
+    worker = _memory_worker()
+    worker.system_reserved = (
+        SystemReserved(**reserved) if reserved is not None else None
+    )
+    original = worker.model_dump()
+    worker.status.memory.is_unified_memory = uma
+    if gpu:
+        worker.status.gpu_devices = [
+            GPUDeviceStatus(index=0, memory=MemoryInfo(total=16 * 1024**3))
+        ]
+    create, *_ = _patch_create_memory(monkeypatch, [worker], model_ram=4)
+    payload = _managed_create(
+        config=CacheServiceConfig(fields={"ram_size": available + int(exceeds)})
+    )
+    if exceeds:
+        with pytest.raises(BadRequestException) as error:
+            await cache_services_route.create_cache_service(
+                MagicMock(), _user_ctx(), payload
+            )
+        assert "Insufficient RAM" in error.value.message
+        create.assert_not_awaited()
+    else:
+        await cache_services_route.create_cache_service(
+            MagicMock(), _user_ctx(), payload
+        )
+        create.assert_awaited_once()
+    assert worker.model_dump()["system_reserved"] == original["system_reserved"]
+
+
+@pytest.mark.asyncio
+async def test_update_does_not_run_creation_memory_check(monkeypatch):
+    _, workers, models, caches = _patch_create_memory(monkeypatch, [_memory_worker()])
+    stored = _existing_service(config=CacheServiceConfig(fields={"ram_size": 8}))
+    monkeypatch.setattr(
+        cache_services_route.CacheService, "one_by_id", AsyncMock(return_value=stored)
+    )
+    await cache_services_route.update_cache_service(
+        MagicMock(),
+        _user_ctx(),
+        9,
+        _update_in(config=CacheServiceConfig(fields={"ram_size": 128})),
+    )
+    stored.update.assert_awaited_once()
+    workers.assert_not_awaited()
+    models.assert_not_awaited()
+    caches.assert_not_awaited()

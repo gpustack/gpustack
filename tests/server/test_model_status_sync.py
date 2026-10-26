@@ -1023,9 +1023,7 @@ def test_a_group_with_no_disaggregation_block_uses_the_default():
 
 @pytest.mark.asyncio
 async def test_reaching_running_releases_the_restart_guard():
-    """The endpoint marks `restarting_since` before it tears the generation
-    down; this is the only thing that clears it, and RUNNING is the only event
-    that actually means the replacements are no longer at risk."""
+    """A serving deployment no longer needs to protect its replacements."""
     model = _model(roles=[RoleSpec(name="prefill", replicas=1)])
     model.restarting_since = datetime.now(timezone.utc)
 
@@ -1048,6 +1046,51 @@ async def test_a_group_still_rebuilding_keeps_the_guard():
     await _sync(model, [_instance(1, ModelInstanceStateEnum.STARTING, role="prefill")])
 
     assert model.state != ModelStateEnum.RUNNING
+    assert model.restarting_since == since
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_roles", [False, True], ids=["plain", "pd"])
+@pytest.mark.parametrize("with_members", [False, True], ids=["empty", "starting"])
+async def test_a_stopped_deployment_releases_the_restart_guard(
+    with_roles, with_members
+):
+    """Stop cancels a restart even when other status fields stay unchanged."""
+    roles = _pd_roles(prefill=1) if with_roles else None
+    model = _model(replicas=0, roles=roles)
+    instances = (
+        [
+            _instance(
+                1, ModelInstanceStateEnum.STARTING, role="prefill" if roles else None
+            )
+        ]
+        if with_members
+        else []
+    )
+    await _sync(model, instances)
+    model.restarting_since = datetime.now(timezone.utc)
+
+    changed, update = await _sync(model, instances)
+
+    assert changed is True
+    update.assert_awaited_once_with(model)
+    assert model.restarting_since is None
+    assert model.state == ModelStateEnum.PENDING
+
+    unchanged, next_update = await _sync(model, instances)
+    assert unchanged is False
+    next_update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_enabled_group_with_no_replacements_keeps_the_restart_guard():
+    model = _model(roles=_pd_roles(prefill=1))
+    since = datetime.now(timezone.utc)
+    model.restarting_since = since
+
+    await _sync(model, [])
+
+    assert model.state == ModelStateEnum.PENDING
     assert model.restarting_since == since
 
 
@@ -1140,3 +1183,23 @@ async def test_the_window_opening_and_closing_both_publish():
     assert opened.draining == 1
     assert changed is True
     assert model.role_status["prefill"].draining == 0
+
+
+@pytest.mark.asyncio
+async def test_membership_refresh_reason_is_visible_in_model_status():
+    from gpustack.server import pd_membership
+
+    model = _model(roles=_pd_roles(prefill=1))
+    reason = "router membership changed; rebuilding router"
+    pd_membership.record(
+        model.id, pd_membership.MembershipOutcome(ok=False, reason=reason)
+    )
+    try:
+        with patch(
+            "gpustack.server.controllers._reconcile_router_membership", AsyncMock()
+        ):
+            await _sync(model, _members({"prefill": 1, "decode": 1, "router": 1}))
+        assert model.state == ModelStateEnum.PARTIAL
+        assert reason in model.state_message
+    finally:
+        pd_membership.forget(model.id)

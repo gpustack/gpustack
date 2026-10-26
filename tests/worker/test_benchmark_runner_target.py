@@ -9,9 +9,12 @@ holds no weights.
 
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
+from gpustack.config.config import Config
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.schemas.benchmark import (
     BenchmarkLoadTypeEnum,
     BenchmarkTargetModeEnum,
@@ -19,6 +22,7 @@ from gpustack.schemas.benchmark import (
     ModelInstanceSnapshot,
 )
 from gpustack.worker.benchmark.runner import BenchmarkRunner, _local_model_snapshot
+from gpustack.worker.benchmark import runner as runner_module
 
 
 def _snapshot(name, worker_id, path, ports=None) -> ModelInstanceSnapshot:
@@ -161,6 +165,7 @@ class TestRouteModeAimsAtTheDeployment:
             name="bm",
             model_name="qwen3",
             target_mode=mode,
+            snapshot=SimpleNamespace(gateway_url="https://cluster-gateway.example"),
             load_type=BenchmarkLoadTypeEnum.CONCURRENCY,
             load_mode=None,
             request_rate=4,
@@ -181,6 +186,10 @@ class TestRouteModeAimsAtTheDeployment:
             stop_on_saturation=None,
         )
         runner._route_name = route_name
+        runner._config = Config.model_construct(
+            server_url="http://10.0.0.9:9091",
+            gateway_mode=GatewayModeEnum.disabled,
+        )
         runner._model_endpoint = "http://10.0.0.1:40050"
         runner._model_path = "/cache/qwen3"
         runner._model_backend_parameters = []
@@ -193,21 +202,126 @@ class TestRouteModeAimsAtTheDeployment:
     def _args(self, **kwargs):
         return self._runner(**kwargs)._build_command_args()
 
-    def test_the_load_goes_at_the_proxy_not_the_member(self):
-        args = self._args(mode=BenchmarkTargetModeEnum.ROUTE, route_name="org1/qwen")
-        target = args[args.index("--target") + 1]
-        # Stops before /v1, which the load generator appends itself.
-        assert target == "http://10.0.0.9:9091/v2/benchmark-proxy"
+    @pytest.mark.parametrize("gateway_mode", list(GatewayModeEnum))
+    def test_the_load_uses_the_cluster_gateway_in_every_worker_mode(self, gateway_mode):
+        runner = self._runner(
+            mode=BenchmarkTargetModeEnum.ROUTE, route_name="org1/qwen"
+        )
+        runner._config.gateway_mode = gateway_mode
+        runner._config.server_url = "http://gpustack-server.default.svc:30080"
+        runner._config.server_external_url = "https://another-entrance.example"
+
+        args = runner._build_command_args()
+
+        assert args[args.index("--target") + 1] == "https://cluster-gateway.example"
+        assert runner._api_url in args
+
+    @pytest.mark.parametrize(
+        "url", ["https://gpu.example:8443/", "https://gpu.example/gpustack/"]
+    )
+    def test_gateway_preserves_scheme_port_and_prefix(self, url):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._benchmark.snapshot.gateway_url = url
+
+        args = runner._build_command_args()
+
+        assert args[args.index("--target") + 1] == url.rstrip("/")
+
+    def test_health_probe_uses_gpustack_healthz(self):
+        args = self._args(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        kwargs = json.loads(args[args.index("--backend-kwargs") + 1])
+        assert kwargs["api_routes"]["/health"] == "healthz"
+
+    @pytest.mark.parametrize(
+        "snapshot", [None, SimpleNamespace(), SimpleNamespace(gateway_url="")]
+    )
+    def test_missing_snapshot_gateway_does_not_fall_back_to_management(self, snapshot):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._benchmark.snapshot = snapshot
+        runner._config.server_external_url = "https://another-entrance.example"
+
+        with pytest.raises(ValueError, match="gateway.*[Rr]ecreate"):
+            runner._build_command_args()
+
+    @pytest.mark.parametrize("insecure", [False, True])
+    def test_route_mode_uses_worker_tls_verification(self, insecure):
+        args = self._args(
+            mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen", insecure=insecure
+        )
+        kwargs = json.loads(args[args.index("--backend-kwargs") + 1])
+        assert kwargs["verify"] is (not insecure)
+
+    @pytest.mark.parametrize("mirrored", [False, True])
+    @pytest.mark.parametrize("insecure", [False, True])
+    @pytest.mark.parametrize(
+        "progress_scheme,target_scheme",
+        [("http", "https"), ("https", "http"), ("https", "https"), ("http", "http")],
+    )
+    def test_progress_and_inference_share_worker_trust(
+        self, tmp_path, monkeypatch, mirrored, insecure, progress_scheme, target_scheme
+    ):
+        runner = self._runner(
+            mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen", insecure=insecure
+        )
+        runner._benchmark.snapshot.gateway_url = f"{target_scheme}://gateway.example"
+        runner._api_url = (
+            f"{progress_scheme}://management.example/v2/benchmarks/1/state"
+        )
+        runner._benchmark.get_deployment_metadata = lambda: SimpleNamespace(name="bm")
+        runner._create_workload = Mock()
+        bundle = tmp_path / "ca.crt"
+        bundle.write_text("worker trust bundle")
+        monkeypatch.setattr(runner_module, "resolve_ca_bundle", lambda: str(bundle))
+        monkeypatch.setattr(
+            runner_module.runtime_envs,
+            "GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT",
+            mirrored,
+        )
+        monkeypatch.setenv("SSL_CERT_FILE", "/worker-only/ca.crt")
+
+        runner.start()
+
+        workload = runner._create_workload.call_args.kwargs
+        args = workload["command_args"]
+        backend = json.loads(args[args.index("--backend-kwargs") + 1])
+        assert backend["verify"] is (not insecure)
+        assert ("--progress-ca-cert" in args) is (
+            progress_scheme == "https" and not insecure
+        )
+        if not insecure and "https" in (progress_scheme, target_scheme):
+            assert len(workload["files"]) == 1
+            ca_file = workload["files"][0]
+            assert ca_file.content == bundle.read_text()
+            if target_scheme == "https":
+                assert workload["env"]["SSL_CERT_FILE"] == ca_file.path
+            else:
+                assert "SSL_CERT_FILE" not in workload["env"]
+        else:
+            assert not workload["files"]
+            assert "SSL_CERT_FILE" not in workload["env"]
+
+    def test_unreadable_worker_ca_refuses_verified_gateway_inference(
+        self, tmp_path, monkeypatch
+    ):
+        runner = self._runner(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
+        runner._benchmark.get_deployment_metadata = lambda: SimpleNamespace(name="bm")
+        runner._create_workload = Mock()
+        monkeypatch.setattr(
+            runner_module, "resolve_ca_bundle", lambda: str(tmp_path / "missing.crt")
+        )
+
+        with pytest.raises(ValueError, match="CA bundle"):
+            runner.start()
+        runner._create_workload.assert_not_called()
 
     def test_the_name_asked_for_is_the_routes(self):
-        # The proxy matches on the route name; the model's own name may not
+        # The gateway matches on the route name; the model's own name may not
         # even be addressable (another Org's route is prefixed).
         args = self._args(mode=BenchmarkTargetModeEnum.ROUTE, route_name="org1/qwen")
         assert args[args.index("--model") + 1] == "org1/qwen"
 
     def test_it_authenticates_with_the_worker_token(self):
-        # The proxy is the server, and the server authenticates. Nothing of the
-        # user's is stored on the run.
+        # Gateway authentication accepts the worker's system principal.
         args = self._args(mode=BenchmarkTargetModeEnum.ROUTE, route_name="qwen")
         kwargs = json.loads(args[args.index("--backend-kwargs") + 1])
         assert kwargs["api_key"] == "worker-token"
@@ -218,6 +332,7 @@ class TestRouteModeAimsAtTheDeployment:
         assert args[args.index("--model") + 1] == "qwen3"
         kwargs = json.loads(args[args.index("--backend-kwargs") + 1])
         assert "api_key" not in kwargs
+        assert "api_routes" not in kwargs
 
     def test_route_mode_without_a_resolved_route_refuses(self):
         # The server refuses to create such a run, so this is a row from a
@@ -231,7 +346,7 @@ class TestRouteModeAimsAtTheDeployment:
         with pytest.raises(Exception, match="no route name"):
             self._args(mode=BenchmarkTargetModeEnum.ROUTE, route_name=None)
 
-    def test_an_insecure_worker_does_not_verify_the_proxys_tls(self):
+    def test_an_insecure_worker_does_not_verify_the_gateways_tls(self):
         # Same switch the progress channel already honours: one worker, one
         # answer about whether it can verify this server.
         args = self._args(

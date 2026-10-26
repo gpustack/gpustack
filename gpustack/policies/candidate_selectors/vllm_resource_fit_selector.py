@@ -212,6 +212,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             "Qwen3ForCausalLM",
             "Qwen3ForSequenceClassification",  # Qwen3-Embedding & Qwen3-Reranker
             "Qwen3VLForConditionalGeneration",  # Qwen3-VL-Embedding & Qwen3-VL-Reranker
+            "Qwen3VLForSequenceClassification",
         }
 
         use_gmu_categories = [CategoryEnum.LLM, CategoryEnum.SPEECH_TO_TEXT]

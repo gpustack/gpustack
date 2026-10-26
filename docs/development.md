@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-1. Install Python (version 3.10 to 3.12).
+1. Install Python (version 3.11 to 3.12).
 2. Run a database (PostgreSQL or MySQL).
 
 For example, to run a PostgreSQL database using Docker:

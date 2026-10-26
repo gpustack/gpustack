@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from gpustack.api.auth import worker_auth
+from gpustack.api.exceptions import InvalidException
 from gpustack.routes.worker import cluster_proxy
 
 
@@ -184,3 +185,38 @@ async def test_cluster_proxy_surfaces_error_when_upstream_stream_fails_mid_read(
                 await client.get("/cluster-proxy/api/v1/namespaces/kube-system/pods")
 
     assert yielded_chunks == [first_chunk]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # Literal and encoded dot segments: whatever decodes to a traversal
+        # attempt must be refused before the URL library can resolve it
+        # against the in-cluster API server. Tested against the guard
+        # directly because HTTP clients normalize dot segments themselves,
+        # so a raw traversal tail cannot be delivered through httpx.
+        "apis/worker.gpustack.ai/v1/namespaces/own/../kube-system/secrets",
+        "apis/worker.gpustack.ai/v1/namespaces/own/%2e%2e/kube-system/secrets",
+        "apis/worker.gpustack.ai/v1/namespaces/own/%252e%252e/kube-system/secrets",
+        "apis/worker.gpustack.ai/v1\x00/namespaces/own/secrets",
+        "apis\\worker.gpustack.ai\\v1",
+        # Decoded URL delimiters must not reach the forwarding URL library:
+        # after the decode round these carry a literal '#' or '?'.
+        "apis/worker.gpustack.ai/v1/instances%23/namespaces/gpustack-user-6",
+        "apis/worker.gpustack.ai/v1/instances%3fnamespaces=gpustack-user-6",
+        "apis/worker.gpustack.ai/v1/instances#/namespaces/gpustack-user-6",
+        "apis/worker.gpustack.ai/v1/instances?namespaces=gpustack-user-6",
+    ],
+)
+def test_traversal_shaped_paths_are_refused(path):
+    """Defense in depth on the worker: the endpoint trusts the worker token,
+    so it must not forward a traversal-shaped path even if a caller bypasses
+    the server-side canonicalization."""
+    with pytest.raises(InvalidException):
+        cluster_proxy._assert_plain_api_path(path)
+
+
+def test_plain_paths_pass_the_worker_guard():
+    cluster_proxy._assert_plain_api_path(
+        "apis/worker.gpustack.ai/v1/namespaces/own/gpuinstances"
+    )

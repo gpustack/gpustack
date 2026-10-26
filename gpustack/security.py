@@ -1,6 +1,7 @@
 import re
 import secrets
 import string
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Union, Tuple
 from functools import lru_cache
@@ -290,6 +291,44 @@ def get_key_pair(key: str) -> Tuple[str, str]:
     valid, access_key, secret_key = is_valid_format(key)
     if not valid:
         return custom_key_hash(key), key
+    return access_key, secret_key
+
+
+def parse_hyphen_uuid(value: str) -> Optional[str]:
+    """A canonical hyphenated UUID, or None. The access-key position of a
+    legacy worker token holds one."""
+    if not re.match(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", value, re.I
+    ):
+        return None
+    try:
+        uuid.UUID(value)
+        return value
+    except ValueError:
+        return None
+
+
+def migrated_token_key_pair(token: str) -> Tuple[str, str]:
+    """The (access_key, secret) pair a deployment-supplied cluster token is
+    stored under.
+
+    A token in the standard three-part shape was minted by some GPUStack
+    database as a real registration token -- the deployment is reusing the
+    string, typically across a migration that carried it without the database
+    that issued it. It is stored the way that database stored it, so the
+    parser resolves it like any other key. A UUID in the access-key position
+    is the legacy worker presentation, which authentication remaps to the
+    empty access key; the pair follows. Anything else is an opaque deployment
+    secret: empty access key, whole string as the secret.
+
+    Must agree with the lookup mapping in api.auth.get_user_from_api_token:
+    that is the reader of what this function writes.
+    """
+    valid, access_key, secret_key = is_valid_format(token)
+    if not valid:
+        return "", token
+    if parse_hyphen_uuid(access_key) is not None:
+        return "", secret_key
     return access_key, secret_key
 
 

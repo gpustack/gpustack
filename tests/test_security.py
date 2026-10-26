@@ -387,3 +387,57 @@ def test_an_underivable_digest_yields_nothing(digest):
     tier-1 check; returning None keeps it out of the table, so it falls through
     to the server instead."""
     assert gateway_digest(digest) is None
+
+
+@pytest.mark.parametrize(
+    "token, expected",
+    [
+        (
+            "gpustack_3192253c1f4a9b7e_c11c75ed6334ea9505da4ad9c11c75ed",
+            ("3192253c1f4a9b7e", "c11c75ed6334ea9505da4ad9c11c75ed"),
+        ),
+        # A UUID in the access position is the legacy worker presentation;
+        # authentication remaps it to the empty access key.
+        (
+            "gpustack_3192253c-c11c-75ed-6334-ea9505da4ad9_opaque-secret",
+            ("", "opaque-secret"),
+        ),
+        # One underscore short of the standard shape: an opaque secret whose
+        # whole string is the credential.
+        (
+            "gpustack_c11c75ed6334ea9505da4ad9c11c75ed",
+            ("", "gpustack_c11c75ed6334ea9505da4ad9c11c75ed"),
+        ),
+        ("deployment-supplied-secret", ("", "deployment-supplied-secret")),
+    ],
+)
+def test_migrated_token_key_pair(token, expected):
+    """A deployment-supplied cluster token is stored under the pair
+    authentication resolves it to. A token in the standard shape is a
+    registration token some GPUStack database minted, so it gets its own
+    access key and secret portion like any key that database issued;
+    everything else hashes the whole string under the empty access key."""
+    assert security.migrated_token_key_pair(token) == expected
+
+
+def test_migrated_standard_token_qualifies_for_the_fast_digest():
+    """The standard-shape pair is a generated secret under a real access key,
+    so the migrated row takes the digest fast path; the opaque pair never
+    does (see secret_key_digest_eligible)."""
+    access_key = generate_access_key()
+    secret_key = generate_secret_key()
+    stored_access, stored_secret = security.migrated_token_key_pair(
+        f"gpustack_{access_key}_{secret_key}"
+    )
+
+    assert stored_access == access_key
+    assert (
+        new_secret_key_digest(
+            secret_key=stored_secret, is_custom=False, access_key=stored_access
+        )
+        is not None
+    )
+    assert (
+        new_secret_key_digest(secret_key="opaque", is_custom=False, access_key="")
+        is None
+    )

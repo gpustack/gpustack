@@ -3,6 +3,7 @@ import re
 import yaml
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence
+from urllib.parse import urlparse
 import aiohttp
 from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import (
@@ -21,6 +22,8 @@ from gpustack.api.exceptions import (
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.api.tenant import (
+    TenantContext,
+    assert_cluster_visible,
     assert_resource_visible,
     tenant_list_conditions,
 )
@@ -48,6 +51,7 @@ from gpustack.schemas.model_routes import (
 from gpustack.schemas.principals import Principal, platform_principal_id
 from gpustack.schemas.workers import Worker
 from gpustack.config.config import get_global_config
+from gpustack.routes.clusters import get_server_url
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.schemas.benchmark import (
@@ -903,12 +907,95 @@ async def _resolve_placement(
     return sorted(decode or with_weights, key=lambda m: m.id)[0]
 
 
+def _assert_trusted_benchmark_request_url(
+    gateway_url: str, trusted_hosts: Optional[List[str]]
+) -> None:
+    """Require an explicit destination allowlist before sending worker credentials.
+
+    Unlike forwarded-header rewriting, wildcard trust cannot authorize a
+    credential destination. Bare hosts permit only the scheme's default port;
+    a non-default port must be named explicitly, e.g. gateway.example:8443.
+    """
+    message = (
+        "Route benchmark request entrance is not trusted. Configure the cluster "
+        "server_url or server_external_url with the Higress entrance, or add "
+        "its exact host and port to the server's trusted_hosts."
+    )
+    try:
+        target = urlparse(gateway_url)
+        default_port = {"http": 80, "https": 443}.get(target.scheme)
+        if (
+            not default_port
+            or not target.hostname
+            or target.username is not None
+            or target.password is not None
+        ):
+            raise ValueError("Invalid gateway authority")
+        target_port = target.port if target.port is not None else default_port
+    except ValueError:
+        raise BadRequestException(message=message)
+
+    for entry in trusted_hosts or []:
+        if "*" in entry:
+            continue
+        try:
+            allowed = urlparse(f"//{entry.strip()}")
+            if (
+                allowed.hostname != target.hostname
+                or allowed.username is not None
+                or allowed.password is not None
+                or allowed.path
+                or allowed.query
+                or allowed.fragment
+            ):
+                continue
+            allowed_port = allowed.port if allowed.port is not None else default_port
+            if 0 < target_port == allowed_port:
+                return
+        except ValueError:
+            continue
+    raise BadRequestException(message=message)
+
+
+async def _resolve_benchmark_gateway_url(
+    session: SessionDep,
+    ctx: TenantContext,
+    placement: ModelInstance,
+    request: Request,
+) -> str:
+    """Resolve the Higress entrance using the cluster registration URL policy."""
+    worker = await WorkerService(session).get_by_id(placement.worker_id)
+    if worker is None:
+        raise BadRequestException(message="Benchmark placement worker not found")
+    cluster = await Cluster.one_by_id(session, worker.cluster_id)
+    assert_cluster_visible(ctx, cluster)
+    if cluster.deleted_at is not None:
+        raise NotFoundException(message="Cluster not found")
+    cluster_url = (cluster.server_url or "").strip() or None
+    cfg = get_global_config()
+    if cluster_url or (cfg and cfg.server_external_url):
+        return get_server_url(request, cluster_url)
+
+    try:
+        gateway_url = get_server_url(request, None)
+    except ValueError:
+        raise BadRequestException(message="Invalid benchmark request entrance")
+    _assert_trusted_benchmark_request_url(
+        gateway_url, cfg.trusted_hosts if cfg else None
+    )
+    return gateway_url
+
+
 async def validate_and_mutate_benchmark_in(  # noqa: C901
-    session: SessionDep, benchmark_in: BenchmarkCreate
+    session: SessionDep,
+    benchmark_in: BenchmarkCreate,
+    ctx: TenantContext,
+    request: Request,
 ) -> Benchmark:
 
     mutated = Benchmark(**benchmark_in.model_dump())
     model = await _resolve_target_model(session, benchmark_in)
+    assert_resource_visible(ctx, model, not_found_message="Model not found")
     instance = await _resolve_target_endpoint(
         session, model, benchmark_in.model_instance_name
     )
@@ -918,6 +1005,7 @@ async def validate_and_mutate_benchmark_in(  # noqa: C901
     # and the snapshot still describes the deployment. What changes is only
     # where the load is SENT, which the runner reads off `target_mode`.
     route_name = None
+    gateway_url = None
     if mutated.target_mode == BenchmarkTargetModeEnum.ROUTE:
         # Named by the caller when it had a list to pick from (the form does),
         # derived when it did not (an API client naming only a model).
@@ -925,6 +1013,9 @@ async def validate_and_mutate_benchmark_in(  # noqa: C901
             await _resolve_named_route(session, model, benchmark_in.route_name)
             if benchmark_in.route_name
             else await _resolve_route_name(session, model)
+        )
+        gateway_url = await _resolve_benchmark_gateway_url(
+            session, ctx, placement, request
         )
 
     mutated.model_id = model.id
@@ -988,6 +1079,7 @@ async def validate_and_mutate_benchmark_in(  # noqa: C901
     snapshot = await get_benchmark_snapshot(
         session, instance, model, route_name=route_name
     )
+    snapshot.gateway_url = gateway_url
     mutated.snapshot = snapshot
     mutated.gpu_summary, mutated.gpu_vendor_summary = summary_gpu_snapshots(
         snapshot.gpus
@@ -1009,7 +1101,10 @@ async def validate_and_mutate_benchmark_in(  # noqa: C901
     response_model=BenchmarkPublic,
 )
 async def create_benchmark(
-    session: SessionDep, ctx: TenantContextDep, benchmark_in: BenchmarkCreate
+    session: SessionDep,
+    ctx: TenantContextDep,
+    benchmark_in: BenchmarkCreate,
+    request: Request,
 ):
     existing = await Benchmark.one_by_field(session, "name", benchmark_in.name)
     if existing:
@@ -1017,7 +1112,9 @@ async def create_benchmark(
             message=f"Benchmark with name '{benchmark_in.name}' already exists."
         )
 
-    mutated = await validate_and_mutate_benchmark_in(session, benchmark_in)
+    mutated = await validate_and_mutate_benchmark_in(
+        session, benchmark_in, ctx, request
+    )
     try:
         benchmark = await Benchmark.create(session, mutated)
     except Exception as e:

@@ -42,6 +42,12 @@ The **Applies to** column indicates where the environment variable should be set
 | `HF_ENDPOINT`                           | Hugging Face Hub endpoint. e.g., `https://hf-mirror.com` | (empty) | Server & Worker |
 | `HF_TOKEN`                              | Hugging Face Hub access token.                           | (empty) | Server & Worker |
 
+### Debugging
+
+| Variable | Description | Default | Applies to |
+| --- | --- | --- | --- |
+| `GPUSTACK_DEBUG_ENABLE_TRACEMALLOC` | Enable Python memory allocation tracing at startup. Independent of `--debug`; tracing adds CPU and memory overhead. Restart GPUStack after changing this setting. | `false` | Server & Worker |
+
 ### Database Configuration
 
 | Variable                   | Description                                  | Default | Applies to |
@@ -182,10 +188,11 @@ These weights and windows apply to deployments that declare roles — a prefill-
 
 ### GPU Instance Configuration
 
-| Variable                                               | Description                                                                                                                                                                                               | Default | Applies to |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
-| `GPUSTACK_GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL` | Interval in seconds at which the controller re-observes a still-transitioning (non-settled) GPU instance via an in-memory requeue; the PV / PVT finalize controllers reuse it to re-probe a still-finalizing instance. Ready-row drift is picked up by the downstream watch instead. Clamped to a minimum of `1` second. | `15`    | Server     |
-| `GPUSTACK_GPU_INSTANCE_READY_SWEEP_INTERVAL`           | Interval in seconds for an opt-in low-frequency sweep that re-observes settled Ready GPU instances, a fallback for worker-side drift that the downstream watch could miss across a reconnect gap. `0` (default) disables it; set a low frequency only if such a coverage hole is observed.                            | `0`     | Server     |
+| Variable                                                    | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Default | Applies to |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL`      | Interval in seconds at which the controller re-observes a still-transitioning (non-settled) GPU instance via an in-memory requeue; the PV / PVT finalize controllers reuse it to re-probe a still-finalizing instance. Ready-row drift is picked up by the downstream watch instead. Clamped to a minimum of `1` second.                                                                                                                                                                        | `15`    | Server     |
+| `GPUSTACK_GPU_INSTANCE_READY_SWEEP_INTERVAL`                | Interval in seconds for an opt-in low-frequency sweep that re-observes settled Ready GPU instances, a fallback for worker-side drift that the downstream watch could miss across a reconnect gap. `0` (default) disables it; set a low frequency only if such a coverage hole is observed.                                                                                                                                                                                                      | `0`     | Server     |
+| `GPUSTACK_GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE` | How long in seconds the persistent volume (PV / PVT) finalizer waits for a Kubernetes cluster whose workers are all down, before it gives up on that cluster and releases the row anyway. A cluster with no worker at all is skipped at once — it never held the volume. A cluster that stays unreachable is waited for, then released, and its volume may survive there. `0` gives up at once — the opposite of `GPUSTACK_GPU_INSTANCE_UNREADABLE_CR_TOLERANCE`, whose `0` disables the bound. | `1800`  | Server     |
 
 ### Worker and Model Configuration
 

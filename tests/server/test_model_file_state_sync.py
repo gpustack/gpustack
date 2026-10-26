@@ -24,6 +24,8 @@ from gpustack.schemas.models import (
     SourceEnum,
 )
 from gpustack.server.controllers import (
+    _refresh_instance_download_progress,
+    _sync_subordinate_worker,
     sync_distributed_model_file_state,
     sync_main_worker_model_file_state,
 )
@@ -75,6 +77,28 @@ def _distributed_instance(sub_download_progress: Optional[float]) -> ModelInstan
         _model_file(20, SUB_WORKER_ID, ModelFileStateEnum.READY, ["/cache/sub"]),
     ]
     return instance
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('subordinate', [False, True])
+async def test_discarded_download_bytes_reduce_displayed_progress(subordinate):
+    instance = _distributed_instance(sub_download_progress=50)
+    instance.download_progress = 50
+    file = instance.model_files[1 if subordinate else 0]
+    file.state = ModelFileStateEnum.DOWNLOADING
+    file.download_progress = 30
+
+    if subordinate:
+        worker = instance.distributed_servers.subordinate_workers[0]
+        changed = await _sync_subordinate_worker(MagicMock(), instance, worker, file)
+        progress = worker.download_progress
+    else:
+        changed = _refresh_instance_download_progress(instance, file)
+        progress = instance.download_progress
+
+    assert changed
+    assert progress == 30
+    assert instance.state == ModelInstanceStateEnum.DOWNLOADING
 
 
 @contextlib.contextmanager

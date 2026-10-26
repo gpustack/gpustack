@@ -23,7 +23,7 @@
 # - HIGRESS_APISERVER_VERSION: Version of Higress API server to use.
 ARG PYTHON_VERSION=3.11
 ARG GPUSTACK_BASE_IMAGE=base
-ARG GPUSTACK_OPERATOR_VERSION=v0.8.6
+ARG GPUSTACK_OPERATOR_VERSION=v0.9.2
 ARG GPUSTACK_RUNTIME_ROCM_VERSION=7.0.2
 ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
 ARG HIGRESS_VERSION=2.1.9
@@ -319,7 +319,8 @@ SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 ARG GIT_COMMIT
 
 COPY docs/ /workspace/docs/
-COPY hack/build-docs.sh hack/mkdocs_offline.py hack/check_offline_docs.py /workspace/hack/
+COPY docs-i18n/ /workspace/docs-i18n/
+COPY hack/build-docs.sh hack/build_docs.py hack/mkdocs_i18n.py hack/mkdocs_multilingual.py hack/mkdocs_offline.py hack/check_offline_docs.py /workspace/hack/
 COPY mkdocs.yml mkdocs.offline.yml pyproject.toml uv.lock /workspace/
 
 WORKDIR /workspace

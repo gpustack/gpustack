@@ -28,7 +28,13 @@ from gpustack.schemas.config import (
 )
 from gpustack import envs
 from gpustack.routes import config as route_config, debug, probes
-from gpustack.routes.worker import logs, proxy, filesystem, cluster_proxy
+from gpustack.routes.worker import (
+    logs,
+    proxy,
+    filesystem,
+    cluster_proxy,
+    port_reservations,
+)
 from gpustack.routes.token import worker_auth
 from gpustack.api.auth import worker_auth as worker_request_auth
 from gpustack.server import catalog
@@ -48,6 +54,7 @@ from gpustack.worker.inference_backend_manager import InferenceBackendManager
 from gpustack.worker.model_file_manager import ModelFileManager
 from gpustack.worker.runtime_metrics_aggregator import RuntimeMetricsAggregator
 from gpustack.worker.serve_manager import ServeManager
+from gpustack.worker.port_reservations import WorkerPortReservations
 from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.tools_manager import ToolsManager
 from gpustack.worker.worker_manager import WorkerManager
@@ -142,10 +149,12 @@ class Worker:
             cache=self._runtime_metrics_cache,
         )
 
+        port_reservations = WorkerPortReservations()
         self._serve_manager = ServeManager(
             worker_id_getter=self.worker_id,
             clientset_getter=self.clientset,
             cfg=self._config,
+            port_reservations=port_reservations,
         )
 
         self._benchmark_manager = BenchmarkManager(
@@ -161,6 +170,7 @@ class Worker:
             clientset_getter=self.clientset,
             cfg=self._config,
             provider_catalog=self._cache_provider_manager,
+            port_reservations=port_reservations,
         )
 
         self._workload_cleaner = WorkloadCleaner(
@@ -380,6 +390,7 @@ class Worker:
         app.state.config = self._config
         app.state.token = read_worker_token(self._config.data_dir)
         app.state.worker_ip_getter = self.worker_ip
+        app.state.serve_manager = self._serve_manager
         app.state.get_instance_port_by_model_instance_id = (
             self._serve_manager.get_instance_port_by_model_instance_id
         )
@@ -405,6 +416,7 @@ class Worker:
         app.include_router(proxy.router)
         app.include_router(filesystem.router)
         app.include_router(cluster_proxy.router)
+        app.include_router(port_reservations.router)
         app.add_api_route(
             path="/token-auth",
             endpoint=worker_auth,

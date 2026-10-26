@@ -2,6 +2,7 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from prometheus_client.core import GaugeMetricFamily
 
 from gpustack.utils.metrics import get_builtin_metrics_config
@@ -132,6 +133,38 @@ def _aggregate(metrics, aggregator=None):
         aggregator._get_metrics_config(),
     )
     return unified, raw
+
+
+@pytest.mark.parametrize(
+    "type_suffix,content_type,eof",
+    [
+        ("_total", PROMETHEUS_CONTENT_TYPE, ""),
+        ("", OPENMETRICS_CONTENT_TYPE, "# EOF\n"),
+    ],
+)
+def test_mooncake_receive_failures_reach_the_unified_counter(
+    type_suffix, content_type, eof
+):
+    text = (
+        "# HELP vllm:mooncake_num_failed_recvs Failed PD KV receives.\n"
+        f"# TYPE vllm:mooncake_num_failed_recvs{type_suffix} counter\n"
+        'vllm:mooncake_num_failed_recvs_total{model_name="m",engine="0"} 7.0\n' + eof
+    )
+    unified, raw = _aggregate(_families(text, content_type))
+    family = unified["gpustack:pd_kv_receive_failed"]
+    assert family.type == "counter"
+    assert [(sample.name, sample.value) for sample in family.samples] == [
+        ("gpustack:pd_kv_receive_failed_total", 7.0)
+    ]
+    assert family.samples[0].labels == {
+        "worker_id": "1",
+        "model_name": "m",
+        "model_instance_id": "1",
+        "engine": "0",
+    }
+    assert [
+        sample.value for sample in raw["vllm:mooncake_num_failed_recvs"].samples
+    ] == [7.0]
 
 
 def test_created_samples_do_not_duplicate_counter_series():

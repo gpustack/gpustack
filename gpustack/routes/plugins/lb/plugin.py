@@ -36,6 +36,10 @@ LB_MODE_META_KEY = "lb_mode"
 
 class LBPlugin(RoutePlugin):
     name = "lb"
+    # ``lb_mode`` is derived and written only by ``refresh_lb_mode``;
+    # declaring it keeps the model-metadata sync from dropping it on
+    # every Model event (only to have the next reconcile restore it).
+    route_meta_keys = (LB_MODE_META_KEY,)
 
     RouteExtension = LBPolicyConfig
 

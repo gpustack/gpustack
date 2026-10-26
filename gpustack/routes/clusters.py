@@ -3,7 +3,7 @@ import math
 import random
 import secrets
 from typing import Any, Callable, Dict, List, Optional, Union
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 
 import aiohttp
 from fastapi import APIRouter, Depends, Request, Response, Query
@@ -1261,6 +1261,32 @@ _PROXY_READ_METHODS = {"GET", "HEAD", "OPTIONS"}
 _PROXY_WORKLOAD_API_PREFIX = "apis/worker.gpustack.ai/"
 
 
+def _canonicalize_proxy_path(raw: str) -> Optional[str]:
+    """Reduce a proxy tail to the single representation that is both
+    authorized and forwarded.
+
+    Kubernetes API resource names cannot contain percent-escapes,
+    backslashes, dot segments or URL delimiters, so anything left after one
+    decode round that still looks like an encoding or a traversal attempt is
+    rejected outright instead of being forwarded for a URL library to
+    interpret. Returning one canonical form keeps the scope check and the
+    forwarded path from diverging (the gateway normalizes plain and
+    single-encoded dot segments, but a double-encoded one reaches the server
+    verbatim and would otherwise pass the namespace check yet resolve to
+    another resource downstream — the same divergence a decoded ``?`` or
+    ``#`` would create by turning a suffix into a query or fragment).
+    """
+    decoded = unquote(raw)
+    if any(c in decoded for c in "%\\?#") or any(
+        ord(c) <= 0x20 or ord(c) == 0x7F for c in decoded
+    ):
+        return None
+    segments = [s for s in decoded.split("/") if s]
+    if any(seg in (".", "..") for seg in segments):
+        return None
+    return "/".join(segments)
+
+
 def _proxy_path_namespace(path: str) -> Optional[str]:
     """The namespace segment of a Kubernetes API path, or None for a
     cluster-scoped or all-namespace request."""
@@ -1322,6 +1348,14 @@ async def cluster_apiserver_proxy(
     immediately after the initial lookup, preventing long-lived Kubernetes
     watch/log streams from holding a database connection.
     """
+    # Authorize and forward the same canonical representation for every
+    # caller — managers included — so no encoding variant can pass the scope
+    # check as one path and reach the API server as another.
+    path = _canonicalize_proxy_path(path)
+    if path is None:
+        raise ForbiddenException(
+            message="Cluster proxy request path is not a plain Kubernetes API path"
+        )
     async with async_session() as session:
         cluster = await Cluster.one_by_id(session, id)
         if not cluster or cluster.deleted_at is not None:

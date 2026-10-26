@@ -110,6 +110,22 @@ class CIDRRegistry:
         self._client_cidrs[client_id] = list(cidrs)
         self._rebuild()
 
+    def find_exact(self, cidr: str) -> Optional[uuid.UUID]:
+        """Return the client that owns exactly ``cidr``, if any.
+
+        Unlike :meth:`find_best_match`, this does not fall back to covering
+        prefixes: it answers "who registered this exact CIDR", which is what
+        ownership checks need.
+        """
+        try:
+            node = self._tree.search_exact(cidr)
+            if node:
+                return node.data.get("client_id")
+        except (ValueError, OSError):
+            # Invalid CIDR format
+            pass
+        return None
+
     def find_best_match(self, ip: str) -> Optional[uuid.UUID]:
         """Find the best matching client for an IP address."""
         try:

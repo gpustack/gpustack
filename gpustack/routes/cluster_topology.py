@@ -38,7 +38,11 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from gpustack.api.exceptions import BadRequestException
-from gpustack.api.tenant import assert_cluster_visible, assert_org_owned_writable
+from gpustack.api.tenant import (
+    assert_cluster_visible,
+    assert_org_owned_writable,
+    tenant_list_conditions,
+)
 from gpustack.schemas.clusters import Cluster, ClusterTopology
 from gpustack.schemas.workers import Worker
 from gpustack.topology.tree import (
@@ -497,8 +501,19 @@ async def set_cluster_topology_locations(
     assert_cluster_visible(ctx, cluster, not_found_message=f"cluster {id} not found")
     assert_org_owned_writable(ctx, cluster, resource_label="cluster")
 
+    worker_ids = sorted(
+        {worker_id for a in body.assignments for worker_id in a.worker_ids}
+    )
+    service = WorkerService(session)
+    locked_workers = await service.get_workers_for_update(
+        worker_ids,
+        extra_conditions=[
+            Worker.cluster_id == id,
+            *tenant_list_conditions(ctx, Worker),
+        ],
+    )
     workers = await Worker.all_by_field(session, "cluster_id", id)
-    by_id = {w.id: w for w in workers}
+    by_id = {w.id: w for w in locked_workers}
     try:
         resolved_view = build_view(cluster.topology, workers)
     except TopologyError as e:
@@ -557,7 +572,7 @@ async def set_cluster_topology_locations(
         previous.setdefault((layer, before), {})[worker.id] = before
 
     if changed:
-        await WorkerService(session).batch_update(list(changed.values()))
+        await service.batch_update(list(changed.values()))
 
     # One inverse assignment per (field, previous value): the undo of "these
     # three got R3" is "these two get back R1 and that one gets cleared".

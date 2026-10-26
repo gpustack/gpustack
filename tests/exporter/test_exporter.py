@@ -729,3 +729,88 @@ async def test_aggregated_models_publish_no_pd_mode_series():
 
     pd_mode = next(m for m in metrics if m.name == "gpustack:pd_mode")
     assert pd_mode.samples == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decode_service", [None, 3, 4])
+@pytest.mark.parametrize(
+    "injected,live,expected_attached",
+    [(True, True, 1), (False, None, 0), (True, False, 0)],
+)
+async def test_pd_cache_metrics_follow_role_references(
+    decode_service, injected, live, expected_attached
+):
+    from gpustack.schemas.models import ExtendedKVCacheConfig, RoleSpec
+
+    def shared(service_id):
+        return ExtendedKVCacheConfig(
+            enabled=True, mode="shared", cache_service_id=service_id
+        )
+
+    model = SimpleNamespace(
+        id=10,
+        name="qwen-pd",
+        backend="vllm",
+        backend_version="0.8.0",
+        source="huggingface",
+        model_source_key="qwen",
+        categories=[],
+        replicas=1,
+        ready_replicas=1,
+        extended_kv_cache=None,
+        roles=[
+            RoleSpec(name="prefill", extended_kv_cache=shared(3)),
+            RoleSpec(
+                name="decode",
+                extended_kv_cache=shared(decode_service) if decode_service else None,
+            ),
+            RoleSpec(name="router"),
+        ],
+        instances=[
+            SimpleNamespace(
+                role=role,
+                name=f"qwen-{role}",
+                worker_id=2,
+                worker_name="worker-2",
+                state=ModelInstanceStateEnum.RUNNING,
+                restart_count=0,
+                last_restart_time=None,
+                cache_config=SimpleNamespace(injected=injected, endpoint_live=live),
+            )
+            for role in ("prefill", "decode", "router")
+        ],
+    )
+    with (
+        patch(
+            "gpustack.exporter.exporter.Cluster.all",
+            return_value=[_cluster_with_model(model)],
+        ),
+        patch(
+            "gpustack.exporter.exporter.CacheService.all_by_fields",
+            return_value=[
+                SimpleNamespace(id=3, name="cache-3"),
+                SimpleNamespace(id=4, name="cache-4"),
+            ],
+        ),
+    ):
+        metrics = await MetricExporter(
+            SimpleNamespace(metrics_port=10163)
+        )._collect_metrics(session=SimpleNamespace())
+
+    relations = next(
+        m for m in metrics if m.name == "gpustack:cache_service_attached_model"
+    ).samples
+    expected_services = {3, decode_service} if decode_service else {3}
+    assert len(relations) == len(expected_services)
+    assert {sample.labels["cache_service_id"] for sample in relations} == {
+        str(service_id) for service_id in expected_services
+    }
+    attachments = next(
+        m for m in metrics if m.name == "gpustack:model_instance_cache_attached"
+    ).samples
+    assert {
+        sample.labels["model_instance_name"]: sample.value for sample in attachments
+    } == {
+        f"qwen-{role}": expected_attached
+        for role in (["prefill", "decode"] if decode_service else ["prefill"])
+    }

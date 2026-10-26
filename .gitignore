@@ -124,6 +124,9 @@ venv.bak/
 
 # mkdocs documentation
 /site
+/.docs-build-*/
+/.docs-preview-*/
+/.docs-root-*/
 /mkdocs.offline.generated.yml
 
 # mypy

@@ -13,6 +13,7 @@ from transformers import PretrainedConfig
 
 from gpustack_runner.runner import BackendVersionedRunner
 from gpustack_runtime.deployer import (
+    ContainerFile,
     ContainerResources,
     ContainerMount,
     ContainerMountModeEnum,
@@ -74,6 +75,11 @@ from gpustack.utils.runtime import transform_workload_plan
 from gpustack.worker.pd_injection import PDInjection, render_pd_injection
 
 logger = logging.getLogger(__name__)
+
+PD_CONFIGURATION_CHANGED_MESSAGE = (
+    "Configuration changed; stop the deployment, wait for all instances to be "
+    "removed, then start it to rebuild the whole group."
+)
 
 # Distinguishes "the caller said nothing" from "the caller said None". A
 # managed router legitimately has no backend row of its own, and passing None
@@ -300,7 +306,14 @@ class InferenceServer(ABC):
         pass
 
     def get_model(self):
-        model = self._clientset.models.get(id=self._model_instance.model_id)
+        model = self._clientset.models.get(
+            id=self._model_instance.model_id,
+            use_cache=not bool(self._model_instance.group_id),
+        )
+        # The subprocess reads configuration independently of the manager;
+        # an edit after its launch decision must not reach the container.
+        if self._model_instance.group_id and model.stale is True:
+            raise RuntimeError(PD_CONFIGURATION_CHANGED_MESSAGE)
         # Keep the model as the server holds it, for the one path that writes
         # back: a projection must never be persisted, and a PUT built from one
         # would push a role's overrides up to the Model-level spec.
@@ -624,6 +637,18 @@ class InferenceServer(ABC):
             model, instance.role, peers=peers, variables=variables
         )
         _refuse_unrendered_router(rendered, instance)
+        from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+        if not next(
+            (r.run_command for r in (model.roles or []) if r.name == instance.role),
+            None,
+        ):
+            self._update_model_instance(
+                instance.id,
+                router_peer_snapshot=router_peer_snapshot(
+                    members, instance.group_id, worker_ips
+                ),
+            )
         return rendered
 
     def _net_device_plane(self):
@@ -1188,12 +1213,8 @@ class InferenceServer(ABC):
                 ),
             )
 
-        # The PD recipe's host mounts, unlike the model directory, apply under
-        # mirrored deployment too: mirroring copies what the *worker* container
-        # happens to have, and a transport's host file is a property of the
-        # recipe rather than of how the worker was launched. The runtime merges
-        # explicit mounts with mirrored ones and keeps the explicit entry, so
-        # naming a path the worker already carries is harmless.
+        # Recipe directories are required even when the worker's own mounts
+        # are mirrored. Explicit mounts take precedence over mirrored mounts.
         pd_injection = self._pd_injection()
         if pd_injection and pd_injection.host_mounts:
             declared = {m.path for m in mounts}
@@ -1207,6 +1228,18 @@ class InferenceServer(ABC):
                     ),
                 )
         return mounts
+
+    def _get_configured_files(self) -> List[ContainerFile]:
+        """Bind the PD role's host files read-only, including in mirrored deployments.
+
+        Returns:
+            Host file bindings without generated or copied contents.
+        """
+        injection = self._pd_injection()
+        return [
+            ContainerFile(path=path, mode=0o444)
+            for path in (injection.host_files if injection else [])
+        ]
 
     def _get_configured_ports(self) -> List[ContainerPort]:
         """

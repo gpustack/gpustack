@@ -779,7 +779,8 @@ def test_the_ascend_recipe_asks_for_the_hccn_map_on_both_sides():
             ),
             _variables(role=role),
         )
-        assert injection.host_mounts == ["/etc/hccn.conf"], role
+        assert injection.host_files == ["/etc/hccn.conf"], role
+        assert injection.host_mounts == [], role
 
 
 def test_a_recipe_that_needs_no_host_file_asks_for_none():
@@ -788,9 +789,11 @@ def test_a_recipe_that_needs_no_host_file_asks_for_none():
     containers that have no use for it."""
     injection = render_pd_injection(_model(), _instance(), _variables())
     assert injection.host_mounts == []
+    assert injection.host_files == []
 
 
-def test_an_unrendered_mount_path_stops_the_launch():
+@pytest.mark.parametrize("channel", ["host_mounts", "host_files"])
+def test_an_unrendered_mount_path_stops_the_launch(channel):
     """Same class as an unrendered env: the bind either fails or creates an
     empty directory where the transport expects a file, and neither says
     why."""
@@ -800,7 +803,7 @@ def test_an_unrendered_mount_path_stops_the_launch():
     mode = PDMode(
         name=PDModeEnum.VLLM_NIXL.value,
         backends=["vLLM"],
-        roles={"prefill": PDModeRole(host_mounts=["/etc/{{nowhere}}.conf"])},
+        roles={"prefill": PDModeRole(**{channel: ["/etc/{{nowhere}}.conf"]})},
     )
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(module, "get_pd_mode", lambda name: mode)
@@ -821,12 +824,112 @@ def test_the_mount_reaches_the_container_read_only():
         _model_path = None
 
         def _pd_injection(self):
-            return PDInjection(host_mounts=["/etc/hccn.conf"])
+            return PDInjection(host_mounts=["/host/config"])
 
     mounts = InferenceServer._get_configured_mounts(_Stub())
     assert [(m.path, m.mode) for m in mounts] == [
-        ("/etc/hccn.conf", ContainerMountModeEnum.ROX)
+        ("/host/config", ContainerMountModeEnum.ROX)
     ]
+
+
+@pytest.mark.parametrize("mirrored", [True, False])
+def test_host_files_generate_read_only_kubernetes_file_volumes(monkeypatch, mirrored):
+    from kubernetes import client as k8s
+    from gpustack_runtime import envs as runtime_envs
+    from gpustack_runtime.deployer import Container, WorkloadPlan
+    from gpustack_runtime.deployer.kubernetes import KubernetesDeployer
+    from gpustack.worker.backends.base import InferenceServer
+    from gpustack.worker.pd_injection import PDInjection
+
+    monkeypatch.setattr(
+        runtime_envs, "GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT", mirrored
+    )
+
+    class _Stub:
+        _model_path = "/models/model/config.json"
+
+        def _pd_injection(self):
+            return PDInjection(host_files=["/etc/hccn.conf"])
+
+    backend = _Stub()
+    container = Container(
+        name="engine",
+        image="test",
+        files=InferenceServer._get_configured_files(backend),
+        mounts=InferenceServer._get_configured_mounts(backend),
+    )
+    pod_container = k8s.V1Container(name="engine")
+    pod = k8s.V1Pod(spec=k8s.V1PodSpec(containers=[pod_container]))
+    plan = WorkloadPlan(name="test", containers=[container])
+    KubernetesDeployer._append_pod_volumes(pod, plan, {})
+    KubernetesDeployer._append_container_volume_mounts(pod_container, container, 0, {})
+
+    volume = next(v for v in pod.spec.volumes if v.host_path.path == "/etc/hccn.conf")
+    mount = next(m for m in pod_container.volume_mounts if m.name == volume.name)
+    assert volume.host_path.type == "File"
+    assert mount.mount_path == "/etc/hccn.conf"
+    assert mount.read_only is True
+    assert container.files[0].content is None
+    assert [m.path for m in container.mounts] == ([] if mirrored else ["/models/model"])
+
+
+def test_host_file_paths_are_rendered_and_deduplicated(monkeypatch):
+    from gpustack.schemas.pd_modes import PDMode, PDModeRole
+    from gpustack.worker import pd_injection as module
+
+    mode = PDMode(
+        name=PDModeEnum.VLLM_NIXL.value,
+        backends=["vLLM"],
+        roles={
+            "prefill": PDModeRole(
+                host_files=["{{model_path}}/config", "/models/llm/config"]
+            )
+        },
+    )
+    monkeypatch.setattr(module, "get_pd_mode", lambda name: mode)
+    injection = render_pd_injection(_model(), _instance(), _variables())
+    assert injection.host_files == ["/models/llm/config"]
+
+
+@pytest.mark.parametrize("leader", [True, False])
+def test_vllm_workload_passes_host_files_to_engine_and_ray(monkeypatch, leader):
+    from gpustack.schemas.inference_backend import ContainerEnvConfig
+    from gpustack.worker.backends import vllm
+    from gpustack.worker.pd_injection import PDInjection
+
+    backend = vllm.VLLMServer.__new__(vllm.VLLMServer)
+    backend._model = _model()
+    backend._model_path = None
+    backend._pd_injection = lambda: PDInjection(host_files=["/etc/hccn.conf"])
+    backend._override_entrypoint = lambda command, args, script: (command, args)
+    backend._get_configured_resources = lambda: {}
+    backend._get_configured_ports = lambda: []
+    backend._get_container_env_config = lambda env: ContainerEnvConfig()
+    backend._host_ipc_enabled = lambda: False
+    backend._build_ray_configuration = lambda **kwargs: (["ray"], [], [])
+    backend._transform_workload_plan = lambda plan: plan
+    monkeypatch.setattr(vllm, "resolve_executor_backend", lambda *args: "ray")
+    plans = []
+    monkeypatch.setattr(vllm, "create_workload", plans.append)
+
+    backend._create_workload(
+        types.SimpleNamespace(
+            name="pd-engine", distributed_follower=not leader, distributed_leader=leader
+        ),
+        ["vllm"],
+        None,
+        [],
+        {},
+        "test",
+    )
+
+    assert len(plans) == 1
+    assert len(plans[0].containers) == (2 if leader else 1)
+    for container in plans[0].containers:
+        assert [(f.path, f.content, f.mode) for f in container.files] == [
+            ("/etc/hccn.conf", None, 0o444)
+        ]
+        assert all(m.path != "/etc/hccn.conf" for m in container.mounts)
 
 
 # --- whose cards are whose ------------------------------------------------- #
@@ -970,3 +1073,83 @@ def test_a_peer_pinned_across_machines_refuses_rather_than_borrows():
         render_pd_injection(model, instance, _variables())
 
     assert "tensor_parallel_size" in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "variant,connector",
+    [
+        ("standard", "MooncakeConnectorV1"),
+        ("hybrid", "MooncakeHybridConnector"),
+    ],
+)
+def test_ascend_pair_uses_the_same_model_layout_variant(variant, connector):
+    model = _model(
+        mode=PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        backend_parameters=["--tensor-parallel-size=1"],
+        meta={"pd_connector_variant": variant},
+    )
+    for role in ("prefill", "decode"):
+        injection = render_pd_injection(
+            model,
+            _instance(role, named_ports={"kv_port": PortBand(base=5600, count=1)}),
+            _variables(),
+        )
+        assert json.loads(injection.args[1])["kv_connector"] == connector
+
+
+@pytest.mark.parametrize("variant", [None, "", "unknown", [], {}])
+def test_ascend_invalid_layout_metadata_uses_the_conservative_default(variant):
+    model = _model(
+        mode=PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        backend_parameters=["--tensor-parallel-size=1"],
+        meta={"pd_connector_variant": variant},
+    )
+    for role in ("prefill", "decode"):
+        injection = render_pd_injection(
+            model,
+            _instance(role, named_ports={"kv_port": PortBand(base=5600, count=1)}),
+            _variables(),
+        )
+        assert _connector(injection)["kv_connector"] == "MooncakeHybridConnector"
+
+
+@pytest.mark.parametrize("default", [None, "", "unknown"])
+@pytest.mark.parametrize("variant", [None, "unknown"])
+def test_connector_fallback_without_a_usable_default_fails_clearly(
+    monkeypatch, default, variant
+):
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+
+    mode = get_pd_mode(PDModeEnum.VLLM_ASCEND_MOONCAKE).model_copy(
+        update={"default_connector_variant": default}
+    )
+    monkeypatch.setattr("gpustack.worker.pd_injection.get_pd_mode", lambda name: mode)
+    model = _model(
+        mode=PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        backend_parameters=["--tensor-parallel-size=1"],
+        meta={"pd_connector_variant": variant},
+    )
+    with pytest.raises(
+        PDInjectionError,
+        match="PD mode 'vllm-ascend-mooncake'.*default_connector_variant",
+    ):
+        render_pd_injection(
+            model,
+            _instance(named_ports={"kv_port": PortBand(base=5600, count=1)}),
+            _variables(),
+        )
+
+
+def test_nvidia_mooncake_renders_bootstrap_and_pd_roles():
+    model = _model(mode=PDModeEnum.VLLM_MOONCAKE)
+    for role, kv_role in (("prefill", "kv_producer"), ("decode", "kv_consumer")):
+        injection = render_pd_injection(
+            model,
+            _instance(role, named_ports={"bootstrap": PortBand(base=5600, count=1)}),
+            _variables(),
+        )
+        assert json.loads(injection.args[1])["kv_connector"] == "MooncakeConnector"
+        assert json.loads(injection.args[1])["kv_role"] == kv_role
+        assert injection.env["VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT"] == "60"
+        if role == "prefill":
+            assert injection.env["VLLM_MOONCAKE_BOOTSTRAP_PORT"] == "5600"

@@ -177,6 +177,10 @@ async def _run(model, instances, instance_type_snapshot=None):
             AsyncMock(return_value=None),
         ),
         patch("gpustack.server.controllers.ModelInstanceService", recorder),
+        patch(
+            "gpustack.schemas.workers.Worker.all_by_field",
+            AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")]),
+        ),
         # Soft scale-down marks the surplus instead of deleting it, and the
         # mark is a row write. Recorded rather than performed, for the same
         # reason the deletes are: this harness has no database.
@@ -281,6 +285,58 @@ async def test_replicas_zero_parks_the_whole_group():
 
     assert len(recorder.deleted) == 2
     assert not recorder.created
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_role", ["prefill", "decode"])
+async def test_stop_then_start_rebuilds_stale_group_with_saved_configuration(
+    failed_role,
+):
+    model = _model(roles=_pd_roles())
+    old_digest = await model_spec_digest(_pass(), model)
+    members = [
+        _instance(
+            index,
+            role=role.name,
+            group_id="1-old",
+            spec_digest=old_digest,
+            state=(
+                ModelInstanceStateEnum.ERROR
+                if role.name == failed_role
+                else ModelInstanceStateEnum.RUNNING
+            ),
+        )
+        for index, role in enumerate(model.roles, start=1)
+    ]
+    for role in model.roles[:2]:
+        role.backend_parameters = ["--max-model-len=8192"]
+
+    model.replicas = 0
+    stopped = await _run(model, members)
+    assert stopped.deleted == members
+    assert not stopped.created
+
+    model.replicas = 1
+    started = await _run(model, [])
+    current = await model_spec_digest(_pass(), model)
+    assert current != old_digest
+    assert _by_role(started.created) == {"prefill": 1, "decode": 1}
+    assert all(member.spec_digest == current for member in started.created)
+    assert all(member.group_id != "1-old" for member in started.created)
+
+    running = [
+        _instance(
+            index,
+            role=member.role,
+            group_id=member.group_id,
+            spec_digest=member.spec_digest,
+        )
+        for index, member in enumerate(started.created, start=10)
+    ]
+    routed = await _run(model, running)
+    assert _by_role(routed.created) == {"router": 1}
+    assert routed.created[0].spec_digest == current
+    assert routed.created[0].group_id == running[0].group_id
 
 
 # --- the router's dependency gate ------------------------------------------ #
@@ -613,7 +669,7 @@ async def test_a_gap_is_not_filled_across_a_spec_edit():
         members,
     )
 
-    assert recorder.created == [], "the gap waits for the restart"
+    assert recorder.created == [], "the gap waits for a stop/start cycle"
     assert not recorder.deleted, "and the members that are serving keep serving"
 
 
@@ -842,7 +898,7 @@ async def test_one_pass_reads_one_catalog():
     digest is computed twice while another task may retire-and-insert the
     type behind a `gpu_type_selector`. Were the two reads independent,
     `_sync_replicas_per_role` would stamp a member with one answer and
-    `_stale_members` would judge it against another.
+    `model_members_stale` would judge it against another.
     """
     model = _model(
         roles=[
@@ -871,7 +927,7 @@ async def test_one_pass_reads_one_catalog():
 
 @pytest.mark.asyncio
 async def test_the_substitute_version_is_still_its_own_answer():
-    """`_stale_members` asks twice in one pass, with and without the model's
+    """`model_members_stale` asks twice in one pass, with and without the model's
     own `backend_version`, and the two are different questions."""
     model = _model(roles=_pd_roles(), backend_version="v1")
     session = _pass()
@@ -962,3 +1018,207 @@ async def test_the_pool_a_member_draws_its_cards_from_still_is_one():
         )
 
     assert plain != pooled
+
+
+async def _static_group(mode="vllm-mooncake", prefill=1):
+    from gpustack.schemas.models import DisaggregationSpec
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    model = _model(
+        roles=_pd_roles(prefill=prefill), disaggregation=DisaggregationSpec(mode=mode)
+    )
+    members = [
+        _instance(1, "prefill", "g", CURRENT),
+        _instance(2, "decode", "g", CURRENT),
+        _instance(3, "router", "g", CURRENT),
+    ]
+    for member in members:
+        member.worker_id = 1
+        member.worker_ip = "10.0.0.1"
+        member.port = 8000 + member.id
+    members[-1].router_peer_snapshot = router_peer_snapshot(
+        members, "g", {1: "10.0.0.1"}
+    )
+    return model, members
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change", ["identity", "restart", "address", "bootstrap", "unknown"]
+)
+async def test_static_router_is_recreated_after_peer_changes(change):
+    from gpustack.schemas.models import PortBand
+
+    model, members = await _static_group()
+    if change == "identity":
+        members[0].id = 10
+    elif change == "restart":
+        members[0].restart_count = 1
+    elif change == "address":
+        members[0].port += 1
+    elif change == "bootstrap":
+        members[0].named_ports = {"bootstrap": PortBand(base=9001)}
+    else:
+        members[-1].router_peer_snapshot = None
+    result = await _run(model, members)
+    assert [i.role for i in result.deleted] == ["router"]
+    assert not result.created
+
+
+@pytest.mark.asyncio
+async def test_static_router_creation_records_expected_peers():
+    model, members = await _static_group()
+    expected = members[-1].router_peer_snapshot
+    result = await _run(model, members[:-1])
+    assert len(result.created) == 1
+    assert result.created[0].router_peer_snapshot == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason", ["unchanged", "unready", "stale", "dynamic", "manual", "command"]
+)
+async def test_static_router_does_not_restart_without_a_safe_peer_change(reason):
+    mode = {"dynamic": "vllm-nixl", "manual": "custom"}.get(reason, "vllm-mooncake")
+    model, members = await _static_group(mode)
+    if reason != "unchanged":
+        members[0].restart_count = 1
+    if reason == "unready":
+        members[0].state = ModelInstanceStateEnum.STARTING
+    elif reason == "stale":
+        members[0].spec_digest = "older"
+    elif reason == "command":
+        model.roles[-1].run_command = "my-router"
+    result = await _run(model, members)
+    assert not result.deleted
+
+
+@pytest.mark.asyncio
+async def test_static_scale_out_waits_for_all_new_members_before_router_recreation():
+    model, members = await _static_group(prefill=2)
+    result = await _run(model, members)
+    assert [i.role for i in result.created] == ["prefill"]
+    assert not result.deleted
+    added = _instance(4, "prefill", "g", CURRENT)
+    added.worker_id, added.port = 1, 8004
+    result = await _run(model, [*members, added])
+    assert [i.role for i in result.deleted] == ["router"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change,ready", [(False, True), (True, False)])
+async def test_static_membership_status_requires_the_rendered_peers(change, ready):
+    from gpustack.server import controllers, pd_membership
+
+    model, members = await _static_group()
+    digest = await model_spec_digest(_pass(), model)
+    for member in members:
+        member.spec_digest = digest
+    if change:
+        members[0].restart_count = 1
+    with patch(
+        "gpustack.schemas.workers.Worker.all_by_field",
+        AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")]),
+    ):
+        await controllers._reconcile_router_membership(_pass(), model, members)
+    try:
+        outcome = pd_membership.outcome_for(model.id)
+        assert outcome.ok is ready
+        if change:
+            assert "rebuilding router" in outcome.reason
+    finally:
+        pd_membership.forget(model.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group_id", ["g", "older"])
+async def test_static_membership_reads_worker_addresses_once_per_pass(group_id):
+    from gpustack.server import controllers, pd_membership
+
+    model, members = await _static_group()
+    router = members[-1].model_copy(
+        update={"id": 4, "group_id": group_id, "router_peer_snapshot": []}
+    )
+    if group_id == "g":
+        router.router_peer_snapshot = members[-1].router_peer_snapshot
+    workers = AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")])
+    with patch("gpustack.schemas.workers.Worker.all_by_field", workers):
+        await controllers._record_static_router_membership(
+            _pass(), model, [*members, router]
+        )
+    try:
+        assert pd_membership.outcome_for(model.id).ok
+        workers.assert_awaited_once()
+    finally:
+        pd_membership.forget(model.id)
+
+
+@pytest.mark.asyncio
+async def test_static_scale_down_refreshes_router_without_reaping_draining_peer():
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    model, members = await _static_group()
+    surplus = _instance(4, "prefill", "g", CURRENT)
+    surplus.worker_id, surplus.port = 1, 8004
+    members.insert(1, surplus)
+    members[-1].router_peer_snapshot = router_peer_snapshot(
+        members, "g", {1: "10.0.0.1"}
+    )
+    with patch(
+        "gpustack.server.controllers.find_scale_down_candidates",
+        AsyncMock(return_value=[SimpleNamespace(model_instance=surplus)]),
+    ):
+        result = await _run(model, members)
+    assert surplus.draining_since is not None
+    assert [i.role for i in result.deleted] == ["router"]
+    assert surplus not in result.deleted
+
+
+@pytest.mark.asyncio
+async def test_static_router_replacement_converges_with_seeded_peers():
+    model, members = await _static_group()
+    members[-1].router_peer_snapshot = None
+    result = await _run(model, members)
+    assert [i.role for i in result.deleted] == ["router"]
+    result = await _run(model, members[:-1])
+    replacement = ModelInstance(id=10, **result.created[0].model_dump())
+    replacement.state = ModelInstanceStateEnum.RUNNING
+    replacement.created_at = members[0].created_at
+    replacement.worker_id, replacement.worker_ip, replacement.port = 1, "10.0.0.1", 8010
+    result = await _run(model, [*members[:-1], replacement])
+    assert not result.created
+    assert not result.deleted
+
+
+@pytest.mark.asyncio
+async def test_static_router_removes_a_lost_peer_before_its_replacement_is_ready():
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    model, members = await _static_group(prefill=2)
+    lost = _instance(4, "prefill", "g", CURRENT)
+    lost.worker_id, lost.port = 1, 8004
+    members[-1].router_peer_snapshot = router_peer_snapshot(
+        [*members, lost], "g", {1: "10.0.0.1"}
+    )
+    result = await _run(model, members)
+    assert [i.role for i in result.created] == ["prefill"]
+    assert [i.role for i in result.deleted] == ["router"]
+
+
+@pytest.mark.asyncio
+async def test_static_router_serves_existing_peers_while_scale_out_is_incomplete():
+    from gpustack.server import controllers, pd_membership
+
+    model, members = await _static_group(prefill=3)
+    added = _instance(4, "prefill", "g", CURRENT)
+    added.worker_id, added.port = 1, 8004
+    members.append(added)
+    with patch(
+        "gpustack.schemas.workers.Worker.all_by_field",
+        AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")]),
+    ):
+        await controllers._reconcile_router_membership(_pass(), model, members)
+    try:
+        assert pd_membership.outcome_for(model.id).ok
+    finally:
+        pd_membership.forget(model.id)

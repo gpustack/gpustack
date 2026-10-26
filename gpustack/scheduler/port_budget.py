@@ -86,8 +86,8 @@ def ports_taken_on(
 
     Cache service instances are counted alongside model instances because
     they come out of the *same* `service_port_range`. A host running a cache
-    server has two fewer ports for members, and a group is exactly the kind of
-    workload that is placed onto cache-bearing hosts on purpose (F6).
+    server has fewer ports for members by its number of allocated ports, and
+    a group is placed onto cache-bearing hosts on purpose (F6).
 
     **A member counts on every machine it spans, not on the one its row is
     filed under.** One `ModelInstance` holds one set of ports:
@@ -120,12 +120,10 @@ def ports_taken_on(
     for instance in cache_instances:
         if getattr(instance, "worker_id", None) != worker_id:
             continue
-        for port in (
-            getattr(instance, "port", None),
-            getattr(instance, "metrics_port", None),
-        ):
-            if port is not None:
-                taken.add(port)
+        taken.update((getattr(instance, "ports", None) or {}).values())
+        port = getattr(instance, "port", None)
+        if port is not None:
+            taken.add(port)
 
     return len(taken)
 

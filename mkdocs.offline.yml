@@ -21,6 +21,8 @@ exclude_docs: |
 
 hooks:
   - hack/mkdocs_offline.py
+  - hack/mkdocs_i18n.py
+  - hack/mkdocs_multilingual.py
 
 theme:
   # Material otherwise emits a fonts.googleapis.com stylesheet and a
@@ -38,8 +40,8 @@ extra:
 plugins:
   # Downloads every external asset at build time and rewrites the references to
   # the local copies. It finds more than a hand-written inventory does: besides
-  # katex and tablesort, the pages here reach out for katex's font files,
-  # Mermaid and the shields.io badges.
+  # tablesort, the pages here reach out for Mermaid and the shields.io badges.
+  # KaTeX and its fonts are shared local assets under docs/assets/katex/.
   #
   # The cost is that this build needs network access. Its cache
   # (.cache/plugin/privacy) makes every rebuild after the first one offline.

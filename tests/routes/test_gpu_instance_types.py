@@ -1484,6 +1484,85 @@ async def test_aggregated_all_model_service_short_circuits(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_aggregated_cluster_id_narrows_to_single_cluster(monkeypatch, engine):
+    _patch_db(monkeypatch, engine)
+    query_capture = {}
+    _patch_visible_clusters(
+        monkeypatch, _cluster(1), _cluster(2), capture=query_capture
+    )
+
+    captured = {}
+
+    async def fake_list(clusters=None, aggregated=False):
+        captured["clusters"] = clusters
+        captured["aggregated"] = aggregated
+        return {"items": []}
+
+    monkeypatch.setattr(it_routes.gateway_client, "list_instance_types", fake_list)
+
+    await it_routes.get_gpu_aggregated_instance_types(CTX, cluster_id=2)
+
+    assert query_capture["fields"] == {
+        "provider": ClusterProvider.Kubernetes,
+        "id": 2,
+    }
+    assert captured["clusters"] == ["2"]
+    assert captured["aggregated"] is True
+
+
+@pytest.mark.asyncio
+async def test_aggregated_cluster_id_watch_narrows_to_single_cluster(
+    monkeypatch, engine
+):
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1), _cluster(2))
+
+    captured = {}
+
+    async def fake_watch(clusters=None, aggregated=False):
+        captured["clusters"] = clusters
+        captured["aggregated"] = aggregated
+        for _ in ():
+            yield ""
+
+    monkeypatch.setattr(it_routes.gateway_client, "watch_instance_types", fake_watch)
+
+    resp = await it_routes.get_gpu_aggregated_instance_types(
+        CTX, watch=True, cluster_id=2
+    )
+    assert isinstance(resp, StreamingResponse)
+    _ = [chunk async for chunk in resp.body_iterator]
+
+    assert captured["clusters"] == ["2"]
+    assert captured["aggregated"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_cluster_id", [9, 2])
+async def test_aggregated_disallowed_cluster_id_short_circuits(
+    monkeypatch, engine, target_cluster_id
+):
+    # A foreign/invisible cluster_id (9) or a Model Service cluster_id (2)
+    # resolves to an empty cluster set and short-circuits without calling the
+    # gateway.
+    _patch_db(monkeypatch, engine)
+    _patch_visible_clusters(monkeypatch, _cluster(1), _cluster(2, gpu_service=False))
+
+    async def boom(*args, **kwargs):
+        raise AssertionError(
+            "gateway must not be called when cluster_id is filtered out"
+        )
+
+    monkeypatch.setattr(it_routes.gateway_client, "list_instance_types", boom)
+    monkeypatch.setattr(it_routes.gateway_client, "watch_instance_types", boom)
+
+    out = await it_routes.get_gpu_aggregated_instance_types(
+        CTX, cluster_id=target_cluster_id
+    )
+    assert out.items == []
+
+
+@pytest.mark.asyncio
 async def test_per_cluster_read_still_serves_a_model_service_cluster(
     monkeypatch, engine
 ):

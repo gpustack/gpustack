@@ -1,9 +1,11 @@
-"""Reject external asset requests in HTML, allowing links and code examples."""
+"""Reject external HTML assets and missing or external CSS dependencies."""
 
 import re
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Iterable, Optional
+from urllib.parse import unquote, urlsplit
 
 EXTERNAL_URL = re.compile(
     r"(?:https?:)?//(?:unpkg\.com|fonts\.googleapis\.com|fonts\.gstatic\.com|"
@@ -20,6 +22,37 @@ RESOURCE_LINKS = {
     "preconnect",
     "dns-prefetch",
 }
+CSS_REFERENCE = re.compile(
+    r"url\(\s*(?:\"(?P<double>[^\"]*)\"|'(?P<single>[^']*)'|"
+    r"(?P<bare>[^)\s]*))\s*\)|"
+    r"@import\s+(?:\"(?P<import_double>[^\"]*)\"|'(?P<import_single>[^']*)')",
+    re.IGNORECASE,
+)
+
+
+def css_references(stylesheet: str) -> Iterable[str]:
+    """Extract resource URLs, excluding comments and CSS local() font names."""
+    content = re.sub(r"/\*.*?\*/", "", stylesheet, flags=re.DOTALL)
+    for match in CSS_REFERENCE.finditer(content):
+        yield next(value for value in match.groups() if value is not None).strip()
+
+
+def css_dependency_error(reference: str, stylesheet: Path, site: Path) -> Optional[str]:
+    """Require CSS URLs to resolve to files within the generated site."""
+    url = urlsplit(reference)
+    if url.scheme == "data" or (not url.scheme and not url.netloc and not url.path):
+        return None
+    if url.scheme or url.netloc:
+        return "external asset reference"
+    path = unquote(url.path)
+    target = (
+        site / path.lstrip("/") if path.startswith("/") else stylesheet.parent / path
+    ).resolve()
+    if not target.is_relative_to(site):
+        return "asset path outside site"
+    if not target.is_file():
+        return "missing local asset"
+    return None
 
 
 class ExternalAssets(HTMLParser):
@@ -58,13 +91,20 @@ class ExternalAssets(HTMLParser):
 
 def main(site_dir):
     failed = False
-    for page in sorted(Path(site_dir).rglob("*.html")):
+    site = Path(site_dir).resolve()
+    for page in sorted(site.rglob("*.html")):
         parser = ExternalAssets()
         parser.feed(page.read_text(encoding="utf-8"))
         parser.close()
         for reference in parser.references:
             print(f"{page}: external asset reference: {reference}", file=sys.stderr)
             failed = True
+    for stylesheet in sorted(site.rglob("*.css")):
+        for reference in css_references(stylesheet.read_text(encoding="utf-8")):
+            error = css_dependency_error(reference, stylesheet, site)
+            if error:
+                print(f"{stylesheet}: {error}: {reference}", file=sys.stderr)
+                failed = True
     return int(failed)
 
 

@@ -79,6 +79,7 @@ from gpustack.schemas.models import (
     get_backend,
     member_worker_ids,
     role_effective_model,
+    shared_cache_service_ids_by_role,
 )
 from gpustack.schemas.gpu_instance_types import GPUInstanceType
 from gpustack.server.workqueue import WorkEvent, WorkEventType, WorkQueue
@@ -113,12 +114,12 @@ from gpustack.server.cache_provider_catalog import (
     builtin_catalog_text,
     get_cache_provider,
 )
-from gpustack.server.pd_pairing import (
+from gpustack.validation.pd.pairing import undecidable_factors
+from gpustack.validation.pd.parameters import (
     PAIRING_ANY_PARALLELISM,
     PAIRING_TP,
     role_parameters,
     tensor_parallel_rule,
-    undecidable_factors,
     violates_tensor_parallel_direction,
 )
 from gpustack.utils.command import find_last_int_parameter, find_last_parameter
@@ -182,6 +183,7 @@ from gpustack.utils.model_source import get_draft_model_source
 from gpustack import envs
 from gpustack.server.db import async_session
 from gpustack.server.services import (
+    CacheServiceInstanceService,
     ModelFileService,
     ModelInstanceService,
     ModelService,
@@ -480,23 +482,19 @@ class ModelController:
             return
         try:
             async with async_session() as session:
+                # Delayed events are hints: a user may have stopped, edited or
+                # deleted the deployment since this pass was scheduled.
+                attached = await Model.one_by_id(session, model.id)
+                if attached is not None:
+                    model = attached
+                elif event.type != EventType.DELETED:
+                    return
                 drain_due = await sync_replicas(session, model)
-                if drain_due is not None:
-                    # The only self-scheduled pass this controller books, and it
-                    # exists because nothing else would arrive: a drained member
-                    # publishes no further Model event and a settled deployment
-                    # publishes none either, so `_reap_drained` would wait on a
-                    # reconcile that never comes. `add_after` is
-                    # last-schedule-wins per key, so re-booking on every pass
-                    # keeps one timer rather than accumulating them.
-                    self._queue.add_after(
-                        WorkEvent(
-                            keys=(model.id,),
-                            type=WorkEventType.MODIFIED,
-                            object=event,
-                        ),
-                        drain_due,
-                    )
+                drain_deadline = (
+                    asyncio.get_running_loop().time() + drain_due
+                    if drain_due is not None
+                    else None
+                )
                 # The status owner has to run on the spec side too, not only on
                 # instance events. `role_status.desired` is read straight off
                 # `roles[].replicas`, so a spec edit changes it with no instance
@@ -506,16 +504,29 @@ class ModelController:
                 # show. Safe to call from both sides: the change gate inside
                 # means a pass that finds nothing new writes nothing, so the
                 # update this may publish converges after one round.
-                #
-                # Load a session-attached row rather than writing through
-                # `event.data`: what arrives on the bus is a detached copy whose
-                # identity may already have been collected, and assigning to it
-                # raises "parent object of type <Model> has been garbage
-                # collected". `notify_model_route_target` below re-fetches for
-                # the same reason.
-                attached = await Model.one_by_id(session, model.id)
                 if attached is not None:
                     await sync_model_status(session, attached)
+                membership_due = (
+                    pd_membership.reconcile_after(model)
+                    if attached is not None
+                    else None
+                )
+                delays = [membership_due] if membership_due is not None else []
+                if drain_deadline is not None:
+                    delays.append(
+                        max(0.0, drain_deadline - asyncio.get_running_loop().time())
+                    )
+                if delays:
+                    # One timer per model must preserve both the drain deadline
+                    # and membership checks, even without another bus event.
+                    self._queue.add_after(
+                        WorkEvent(
+                            keys=(model.id,),
+                            type=WorkEventType.MODIFIED,
+                            object=Event(type=EventType.UPDATED, data=model),
+                        ),
+                        min(delays),
+                    )
                 await notify_model_route_target(
                     session=session, model=model, event=event
                 )
@@ -524,6 +535,7 @@ class ModelController:
                 await self._sync_model_ai_proxy(session, model)
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
+            raise
 
     async def _sync_model_ai_proxy(self, session: AsyncSession, model: Model):
         """The Model controller owns the ai-proxy CR: the entry's content
@@ -649,27 +661,38 @@ class ModelInstanceController:
             )
 
 
-def _component_replica_count(
-    spec, provider, config_fields: Optional[Dict[str, Any]]
-) -> int:
-    """The component's replica count: its declared one unless a managed
-    field sizes it (a value below one, or one that is not a number at
-    all, keeps the declaration). The sizing field resolves through its
-    visibility gate, so a count offered only with a feature falls back to
-    the gated default while the feature is off."""
-    count = spec.replicas if spec else 1
-    if spec is None or not spec.replicas_by:
-        return count
-    resolved = resolved_field_values(
-        provider.fields if provider else [], config_fields or {}
+def _is_cache_worker_unreachable(worker: Worker) -> bool:
+    return not worker.state.is_provisioning and (
+        worker.unreachable
+        or worker.state in (WorkerStateEnum.NOT_READY, WorkerStateEnum.UNREACHABLE)
     )
-    configured = resolved.get(spec.replicas_by)
-    try:
-        if configured is not None and int(configured) >= 1:
-            count = int(configured)
-    except (TypeError, ValueError):
-        pass
-    return count
+
+
+async def _sync_cache_instances_worker_states(
+    session: AsyncSession,
+    instances: List[CacheServiceInstance],
+    workers: List[Worker],
+) -> None:
+    """Invalidate running cache instances until their workers can probe them."""
+    unreachable_workers = {
+        worker.id: worker for worker in workers if _is_cache_worker_unreachable(worker)
+    }
+    for instance in instances:
+        worker = unreachable_workers.get(instance.worker_id)
+        if worker is None or instance.state != CacheServiceStateEnum.RUNNING:
+            continue
+        await CacheServiceInstanceService(session).update(
+            instance,
+            {
+                "state": CacheServiceStateEnum.UNREACHABLE,
+                "healthy": False,
+                "state_message": "Worker is unreachable from the server",
+            },
+        )
+        logger.info(
+            f"Marked cache service instance {instance.name} unreachable "
+            f"since worker {worker.name} is unreachable from the server"
+        )
 
 
 class CacheServiceController:
@@ -855,12 +878,13 @@ class CacheServiceController:
             fields={"cluster_id": service.cluster_id},
             extra_conditions=[Model.deleted_at.is_(None)],
         )
+        cache_services_by_model = {
+            model.id: shared_cache_service_ids_by_role(model) for model in models
+        }
         attached = [
             model
             for model in models
-            if model.extended_kv_cache
-            and model.extended_kv_cache.is_shared()
-            and model.extended_kv_cache.cache_service_id == service.id
+            if service.id in cache_services_by_model[model.id].values()
         ]
         if not attached:
             return
@@ -877,7 +901,11 @@ class CacheServiceController:
                 session, {"model_id": model.id}
             )
             for mi in instances:
-                if mi.worker_id is None:
+                if (
+                    mi.worker_id is None
+                    or cache_services_by_model[model.id].get(mi.role) != service.id
+                ):
+                    # Refresh only scheduled members referencing this service.
                     # Pre-scheduling instances resolve at placement.
                     continue
                 refreshable = mi.state in self._PRE_START_STATES
@@ -1000,6 +1028,14 @@ class CacheServiceController:
         instances = await CacheServiceInstance.all_by_fields(
             session, {"cache_service_id": service.id}
         )
+        workers = await Worker.all_by_fields(
+            session,
+            fields={"cluster_id": service.cluster_id},
+            extra_conditions=[Worker.deleted_at.is_(None)],
+        )
+        # Current worker rows let periodic reconciliation repair missed events
+        # before component addresses and service availability use instance state.
+        await _sync_cache_instances_worker_states(session, instances, workers)
         if provider is not None:
             for instance in instances:
                 if (
@@ -1010,11 +1046,13 @@ class CacheServiceController:
                         service, provider, instance.component
                     )
                     if claim is not None:
-                        await instance.update(
-                            session, {"computed_resource_claim": claim}
+                        await CacheServiceInstanceService(session).update(
+                            instance, {"computed_resource_claim": claim}
                         )
         desired_by_component, error_message, reconcile = (
-            await self._desired_component_workers(session, service, instances, provider)
+            await self._desired_component_workers(
+                session, service, instances, workers, provider
+            )
         )
         if error_message is not None and not reconcile:
             await self._set_service_state(
@@ -1070,7 +1108,7 @@ class CacheServiceController:
             key = (component, instance.worker_id)
             surplus = room.get(key, 0) <= 0
             if surplus or stale_address:
-                await instance.delete(session)
+                await CacheServiceInstanceService(session).delete(instance)
                 reason = (
                     "its dependency's address changed"
                     if stale_address
@@ -1119,8 +1157,7 @@ class CacheServiceController:
                     random.choices(string.ascii_lowercase + string.digits, k=5)
                 )
                 name_role = f"-{component}" if component else ""
-                await CacheServiceInstance.create(
-                    session,
+                await CacheServiceInstanceService(session).create(
                     CacheServiceInstanceCreate(
                         name=f"{service.name}{name_role}-{name_suffix}",
                         cache_service_id=service.id,
@@ -1209,6 +1246,7 @@ class CacheServiceController:
         session: AsyncSession,
         service: CacheService,
         instances: List[CacheServiceInstance],
+        workers: List[Worker],
         provider: Optional[CacheProvider] = None,
     ) -> Tuple[Dict[str, Dict[int, int]], Optional[str], bool]:
         """How many instances each provider component should have on each
@@ -1232,11 +1270,6 @@ class CacheServiceController:
         layouts = provider.component_layouts() if provider else {"": "replicas"}
         multi_component = bool(provider and provider.components)
 
-        workers = await Worker.all_by_fields(
-            session,
-            fields={"cluster_id": service.cluster_id},
-            extra_conditions=[Worker.deleted_at.is_(None)],
-        )
         selector = service.worker_selector
         matching = [
             worker
@@ -1270,8 +1303,11 @@ class CacheServiceController:
                 desired[component] = {worker_id: 1 for worker_id in matching_ids}
                 continue
 
-            spec = provider.get_component(component) if provider else None
-            count = _component_replica_count(spec, provider, config_fields)
+            count = (
+                provider.component_replica_count(component, config_fields)
+                if provider
+                else 1
+            )
 
             pinned: Set[int] = set()
             if service.worker_id:
@@ -1391,9 +1427,7 @@ class CacheServiceController:
                 for name, requested in (
                     (
                         name,
-                        _component_replica_count(
-                            provider.get_component(name), provider, config_fields
-                        ),
+                        provider.component_replica_count(name, config_fields),
                     )
                     for name in components
                 )
@@ -1706,7 +1740,7 @@ _DIGEST_EXCLUDED_SPEC_FIELDS = frozenset(
 # (`scheduler.py` sets each once it has worked the value out). In the digest
 # they made a group go stale with nobody having edited anything, and the
 # restart that clears the warning only confirms the value the platform had
-# already chosen -- the shape `_stale_members` warns about, where a false
+# already chosen -- the shape `model_members_stale` warns about, where a false
 # reading is indistinguishable from a true one because acting on it appears
 # to work. `backend_version` has an explicit exemption for exactly this; these
 # had none.
@@ -1787,14 +1821,14 @@ async def model_spec_digest(
 
     `backend_version` substitutes for the model's own, and exists for one
     caller: asking whether a *particular member* is out of date with the spec.
-    See `_stale_members`.
+    See `model_members_stale`.
 
     **One answer per reconcile pass, and that is a correctness property
     rather than a saving.** A Model event runs `sync_replicas` and
     `sync_model_status` inside one session, so the digest is computed twice
     against a catalog a *different* task may retire-and-insert into between
     them: `_sync_replicas_per_role` stamps a new member with what it computed,
-    `_stale_members` then compares against what it computed, and a member
+    `model_members_stale` then compares against what it computed, and a member
     created moments earlier reads as out of date with the spec it was built
     from. Memoising on the session makes the two the same value by
     construction, because the session is exactly one pass.
@@ -1842,12 +1876,12 @@ async def model_spec_digest(
     return digest
 
 
-async def _stale_members(
+async def model_members_stale(
     session: AsyncSession,
     model: Model,
     instances: Sequence[ModelInstance],
 ) -> Optional[bool]:
-    """Whether any running member predates the config it is shown with.
+    """Whether any member's recorded spec predates the model configuration.
 
     None where nothing can be said: a member created before `spec_digest`
     existed carries None, and reading that as "differs" would mark every
@@ -1856,8 +1890,8 @@ async def _stale_members(
     One exemption, and it is not a loophole -- it is the difference between
     a config change and a record of what is already running.
 
-    The case it exists for is a model deployed with no version pinned. Once a
-    member starts, the worker reads the engine's version off it and writes it
+    The case it exists for is a model deployed with no version pinned. During
+    startup, the worker resolves the engine image's version and writes it
     back to the Model. That write is deliberate: without it a later replica
     resolves its own, newer build and the group goes heterogeneous. But
     `backend_version` is in the digest -- also correctly, since a different
@@ -1873,14 +1907,25 @@ async def _stale_members(
     - its stamp matches the spec with `backend_version` unset. Not a guess at
       the old value -- the write-back only fires when the field was falsy, so
       unset is precisely what the member was stamped against.
-    - the version now recorded is the one the member is actually running.
-      Without this, pinning 0.5.14 onto a group running 0.5.15 would also be
-      excused, and that edit genuinely needs a restart. A member that cannot
-      say what it runs stays stale, which is the conservative direction.
+    - the version now recorded is the one the member is actually running,
+      or the member belongs to a group and is starting or retrying without
+      a recorded version. Image resolution happens after STARTING, so these
+      members can still adopt the pinned version. Pinning 0.5.14 onto a group
+      running 0.5.15 still needs a restart. Running or unreachable members with
+      unknown versions stay stale because their active build is unverified.
 
     The stamps are deliberately *not* rewritten to match. `group_id` is derived
     from the digest and is what the router matches its peers on, so re-stamping
     would rename a running group's generation underneath it.
+
+    Args:
+        session: The current read or reconciliation session.
+        model: The deployment's current configuration.
+        instances: The deployment's current instance records to compare.
+
+    Returns:
+        True if a stamped member differs from the current configuration, False
+        if all stamped members match, or None if no member has a stamp.
     """
     digested = [i for i in instances if i.spec_digest]
     if not digested:
@@ -1896,10 +1941,21 @@ async def _stale_members(
     def is_current(instance: ModelInstance) -> bool:
         if instance.spec_digest == current:
             return True
-        return (
-            instance.spec_digest == unpinned
-            and recorded is not None
-            and instance.backend_version == recorded
+        if instance.spec_digest != unpinned or recorded is None:
+            return False
+        if instance.backend_version is not None:
+            return instance.backend_version == recorded
+        # Image resolution can still be pending in STARTING or after a failed
+        # attempt. The unpinned digest proves that every other configuration
+        # field matches, so these members can start or retry the pinned build.
+        return bool(instance.group_id) and instance.state in (
+            ModelInstanceStateEnum.PENDING,
+            ModelInstanceStateEnum.ANALYZING,
+            ModelInstanceStateEnum.SCHEDULED,
+            ModelInstanceStateEnum.INITIALIZING,
+            ModelInstanceStateEnum.DOWNLOADING,
+            ModelInstanceStateEnum.STARTING,
+            ModelInstanceStateEnum.ERROR,
         )
 
     return not all(is_current(i) for i in digested)
@@ -2046,6 +2102,37 @@ async def _release_and_delete(
     return names
 
 
+async def _refresh_static_routers(session, model, generation, spec_moved):
+    """Replace static routers from the serialized per-model replica pass."""
+    from gpustack.schemas.pd_modes import PDRouterMembershipUpdateEnum
+    from gpustack.server.pd_router_membership import (
+        expected_router_peers,
+        membership_policy,
+        router_refresh_ready,
+    )
+
+    if spec_moved or membership_policy(model) != PDRouterMembershipUpdateEnum.RESTART:
+        return
+    routers = pd_membership.router_instances(generation)
+    if not routers:
+        return
+    snapshot = await expected_router_peers(
+        session, model, generation, routers[0].group_id
+    )
+    changed = [
+        router
+        for router in routers
+        if router.router_peer_snapshot != snapshot
+        and router_refresh_ready(model, snapshot, router.router_peer_snapshot)
+    ]
+    if changed:
+        logger.info(
+            f"Rebuilding {len(changed)} router(s) of model {model.name} "
+            "to refresh startup peer and bootstrap metadata"
+        )
+        await _release_and_delete(session, changed)
+
+
 async def _sync_replicas_per_role(
     session: AsyncSession, model: Model
 ) -> Optional[float]:
@@ -2179,7 +2266,7 @@ async def _sync_replicas_per_role(
     # predate the edit is a cross-generation pairing like any other.
     # Use the same version write-back exemption as the model's stale marker:
     # recording the build the members already run does not change their spec.
-    spec_moved = bool(await _stale_members(session, model, generation))
+    spec_moved = bool(await model_members_stale(session, model, generation))
 
     for role in model.roles:
         have = [i for i in generation if i.role == role.name]
@@ -2190,7 +2277,8 @@ async def _sync_replicas_per_role(
                     f"{role.name} member(s) of model {model.name}: the spec has "
                     f"changed since group {group_id} was formed, and a new "
                     f"member would run the edited spec beside peers that do "
-                    f"not. Restart the model to rebuild the whole group."
+                    f"not. Stop the deployment, wait for all instances to be "
+                    f"removed, then start it to rebuild the whole group."
                 )
                 continue
             if not _dependencies_ready(model, role, generation):
@@ -2201,6 +2289,11 @@ async def _sync_replicas_per_role(
                 )
                 for _ in range(role.replicas - len(have))
             ]
+            from gpustack.server.pd_router_membership import seed_router_peer_snapshots
+
+            await seed_router_peer_snapshots(
+                session, model, generation, group_id, pending
+            )
             await ModelInstanceService(session).batch_create(pending)
             logger.debug(
                 f"Created {len(pending)} {role.name} instance(s) for "
@@ -2209,6 +2302,7 @@ async def _sync_replicas_per_role(
         elif len(have) > role.replicas:
             await _scale_down_role(session, model, role, have, generation)
 
+    await _refresh_static_routers(session, model, generation, spec_moved)
     return _next_drain_due(generation)
 
 
@@ -3439,6 +3533,8 @@ def _engine_version_below_recipe_floor(model: Model) -> bool:
     disaggregation = getattr(model, "disaggregation", None)
     if disaggregation is None:
         return False
+    if getattr(model, "image_name", None):
+        return False
 
     mode_name = disaggregation.mode.value
     mode = get_pd_mode(mode_name)
@@ -3474,6 +3570,7 @@ def _engine_version_below_recipe_floor(model: Model) -> bool:
         or getattr(model, "backend_version", None)
         for role in (model.roles or [])
         if not role_takes_no_accelerator(model, role.name)
+        and not getattr(role, "image_name", None)
     }
     pinned.add(getattr(model, "backend_version", None))
 
@@ -3508,7 +3605,7 @@ def _pairing_unverified(model: Model) -> bool:
     group that was accepted reads as a group that was checked, and until now a
     single silent role was enough to make that untrue.
 
-    Not "the pair is wrong". `server.pd_pairing` spells out why the silent
+    Not "the pair is wrong". `validation.pd.parameters` spells out why the silent
     side's value cannot be resolved here for any of these factors, and most
     deployments this marks are correct. The claim is only that nothing verified
     them.
@@ -3517,7 +3614,12 @@ def _pairing_unverified(model: Model) -> bool:
     if prefill is None or decode is None:
         return False
     return bool(
-        undecidable_factors(prefill, decode, getattr(model, "backend_parameters", None))
+        undecidable_factors(
+            prefill,
+            decode,
+            getattr(model, "backend_parameters", None),
+            model=model,
+        )
     )
 
 
@@ -3919,6 +4021,46 @@ async def _router_dial(
     return worker.get_dial_address() or fallback, None, None
 
 
+async def _record_static_router_membership(session, model, instances):
+    """Keep stale startup metadata out of the deployment's RUNNING state."""
+    from gpustack.server.pd_router_membership import (
+        expected_router_peers,
+        MEMBERSHIP_REFRESH_REASON,
+        router_refresh_ready,
+        router_worker_ips,
+    )
+
+    routers = pd_membership.router_instances(instances)
+    reason = "waiting for router startup after membership update"
+    ok = bool(routers)
+    worker_ips = await router_worker_ips(session, model.cluster_id) if routers else {}
+    for router in routers:
+        snapshot = await expected_router_peers(
+            session, model, instances, router.group_id, worker_ip_by_id=worker_ips
+        )
+        if router.router_peer_snapshot != snapshot:
+            previous = router.router_peer_snapshot
+            if (
+                previous is not None
+                and all(peer in snapshot for peer in previous)
+                and not router_refresh_ready(model, snapshot, previous)
+            ):
+                # The existing peers still serve while pure scale-out waits.
+                continue
+            ok = False
+            reason = MEMBERSHIP_REFRESH_REASON
+            if await model_members_stale(session, model, instances):
+                reason = (
+                    "router membership changed; stop the deployment, wait for "
+                    "all instances to be removed, then start it to apply configuration"
+                )
+            break
+    pd_membership.record(
+        model.id,
+        pd_membership.MembershipOutcome(ok=ok, reason=None if ok else reason),
+    )
+
+
 async def _reconcile_router_membership(
     session: AsyncSession, model: Model, instances: List[ModelInstance]
 ) -> None:
@@ -3938,15 +4080,19 @@ async def _reconcile_router_membership(
         pd_membership.forget(model.id)
         return
 
-    mode_name = model.disaggregation.mode.value
-    mode = get_pd_mode(mode_name)
-    if mode is None or not mode.router.membership_api_usable:
-        # Command-line path: the router knows its peers already. Recording
-        # nothing is what lets `upstream_registration_ready` stay vacuously
-        # true for these groups.
+    from gpustack.schemas.pd_modes import PDRouterMembershipUpdateEnum
+    from gpustack.server.pd_router_membership import membership_policy
+
+    policy = membership_policy(model)
+    if policy == PDRouterMembershipUpdateEnum.RESTART:
+        await _record_static_router_membership(session, model, instances)
+        return
+    if policy == PDRouterMembershipUpdateEnum.MANUAL:
         pd_membership.forget(model.id)
         return
 
+    mode_name = model.disaggregation.mode.value
+    mode = get_pd_mode(mode_name)
     routers = pd_membership.router_instances(instances)
     if not routers:
         pd_membership.record(
@@ -4049,8 +4195,8 @@ def _explain_unreadable(
             "the router's member list could not be read. Recreating the "
             "router is what usually repairs this, and the platform did NOT "
             "do it because this deployment has «restart on error» off — so "
-            "the group stays as it is. Restart it manually once you have "
-            "looked, or turn the switch on to let the platform try."
+            "the group stays as it is. After inspecting it, stop the deployment, "
+            "wait for all instances to be removed, then start it."
         )
     else:
         return outcome
@@ -4180,9 +4326,8 @@ async def sync_model_status(session: AsyncSession, model: Model) -> bool:  # noq
     # traffic only once the router's own read-back reports it. Deriving RUNNING
     # first and registering after would publish an upstream that cannot serve.
     #
-    # A no-op for any group whose recipe does not launch what its membership
-    # API needs: `reconcile` returns ok immediately when
-    # `membership_api_usable` is false.
+    # The catalog chooses API read-back or comparison with startup peers.
+    # Static membership changes stay PARTIAL until a replacement router starts.
     await _reconcile_router_membership(session, model, instances)
 
     # The one failure a restart can fix, and only after it has persisted.
@@ -4216,6 +4361,15 @@ async def sync_model_status(session: AsyncSession, model: Model) -> bool:  # noq
         error_count=error_count,
     )
 
+    membership = membership_outcome_for(model.id)
+    if state == ModelStateEnum.PARTIAL and membership and not membership.ok:
+        state_message = (
+            "; ".join(
+                message for message in (state_message, membership.reason) if message
+            )
+            or None
+        )
+
     reasons, state_message = await _degradation_reasons(
         session,
         model,
@@ -4239,16 +4393,14 @@ async def sync_model_status(session: AsyncSession, model: Model) -> bool:  # noq
     # Only members that carry a digest count. A row created before this column
     # existed has None, and reading that as "differs" would mark every
     # pre-upgrade model stale on the first pass after an upgrade.
-    stale = await _stale_members(session, model, instances)
+    stale = await model_members_stale(session, model, instances)
 
-    # The restart guard's other half. Set by the endpoint before it tears the
-    # generation down, released here the moment the rebuilt one is serving —
-    # which is the only event that actually means "the replacements are no
-    # longer at risk". It rides the same change gate rather than getting its
-    # own write, so releasing the guard costs nothing on a pass that was
-    # already publishing the transition into RUNNING.
+    # Release the restart guard when the rebuilt deployment is serving or its
+    # deployment switch is off. A stopped deployment has no replacements to
+    # protect, even while its last members are being removed. The same change
+    # gate publishes the release even when no other status field changes.
     restarting_since = model.restarting_since
-    if restarting_since is not None and state == ModelStateEnum.RUNNING:
+    if model.replicas == 0 or state == ModelStateEnum.RUNNING:
         restarting_since = None
 
     if (
@@ -4708,7 +4860,7 @@ class WorkerController:
 
     async def _reconcile(self, event: Event):
         """
-        Delete instances base on the worker state and event type.
+        Propagate worker availability and deletion to its instances.
         """
         if event.type not in (EventType.UPDATED, EventType.DELETED):
             return
@@ -4721,13 +4873,18 @@ class WorkerController:
             # There is a dedicated controller to handle provisioning.
             return
 
-        if event.type == EventType.UPDATED:
-            changed_fields = event.changed_fields
-            if not changed_fields or "state" not in changed_fields:
-                # No state change
-                return
-
         async with async_session() as session:
+            # Coalesced updates carry only the latest changed_fields. Cache
+            # availability must follow the worker snapshot even on a label edit.
+            await self._reconcile_cache_instances(session, worker, event.type)
+            if event.type == EventType.UPDATED:
+                changed_fields = event.changed_fields
+                if (
+                    not changed_fields
+                    or not {"state", "unreachable"} & changed_fields.keys()
+                ):
+                    return
+
             all_instances = await ModelInstance.all_by_field(
                 session, "cluster_id", worker.cluster_id
             )
@@ -4767,6 +4924,18 @@ class WorkerController:
                     worker.name,
                 )
                 return
+
+    async def _reconcile_cache_instances(
+        self, session: AsyncSession, worker: Worker, event_type: EventType
+    ) -> None:
+        """Mark running cache instances unreachable until their worker probes them."""
+        if event_type != EventType.UPDATED or not _is_cache_worker_unreachable(worker):
+            return
+
+        instances = await CacheServiceInstance.all_by_field(
+            session, "worker_id", worker.id
+        )
+        await _sync_cache_instances_worker_states(session, instances, [worker])
 
     async def update_impacted_instance_states_to_unreachable(
         self,
@@ -6502,12 +6671,13 @@ async def sync_categories_and_meta(session: AsyncSession, model: Model, event: E
         fields={"created_model_id": model.id, "deleted_at": None},
     )
     # Plugins keep per-route state in meta under their registered names
-    # (the lb base capability). The model-sync wholesale meta replace
-    # would clobber those keys, so they are carried over from the
-    # current row — model metadata owns the rest.
-    from gpustack.routes.plugins import route_plugins
+    # and any extra keys they declare (the lb base capability's derived
+    # ``lb_mode``). The model-sync wholesale meta replace would clobber
+    # those keys, so they are carried over from the current row — model
+    # metadata owns the rest.
+    from gpustack.routes.plugins import route_plugin_meta_keys
 
-    plugin_meta_keys = {p.name for p in route_plugins()}
+    plugin_meta_keys = route_plugin_meta_keys()
     for route in routes:
         merged_meta = {
             # A plugin-named key in model.meta is ordinary user data,

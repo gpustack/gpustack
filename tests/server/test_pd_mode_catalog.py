@@ -31,6 +31,7 @@ from gpustack.server.pd_mode_catalog import (
 # something else can fill in the modes it does not care about.
 _SHIPPED_BACKENDS = {
     PDModeEnum.VLLM_NIXL.value: [BackendEnum.VLLM.value],
+    PDModeEnum.VLLM_MOONCAKE.value: [BackendEnum.VLLM.value],
     PDModeEnum.VLLM_ASCEND_MOONCAKE.value: [BackendEnum.VLLM.value],
     PDModeEnum.SGLANG_MOONCAKE.value: [BackendEnum.SGLANG.value],
     PDModeEnum.SGLANG_NIXL.value: [BackendEnum.SGLANG.value],
@@ -592,8 +593,7 @@ def test_unknown_peer_style_fails_the_load():
 def test_kv_lease_windows_are_per_connector():
     leases = get_kv_leases()
 
-    # NIXL: a lease with heartbeat renewal, in the connector's extra
-    # config, and the one window with a Prometheus counter.
+    # NIXL: a lease with heartbeat renewal in the connector's extra config.
     nixl = leases["nixl"]
     assert nixl.param == "kv_lease_duration"
     assert nixl.inject_to == PDKVLeaseTargetEnum.CONNECTOR_EXTRA_CONFIG
@@ -602,14 +602,21 @@ def test_kv_lease_windows_are_per_connector():
     assert nixl.expired_metric == "vllm:nixl_num_kv_expired_reqs"
     assert nixl.settable is True
 
-    # Mooncake: an env var, 16x the window, and no Prometheus counter at
-    # all — an expiry is only visible in the engine log.
+    # NVIDIA Mooncake: an env var and expiry metrics from the runner integration.
     mooncake = leases["mooncake"]
     assert mooncake.param == "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT"
     assert mooncake.inject_to == PDKVLeaseTargetEnum.ENV
     assert mooncake.engine_default == 480
     assert mooncake.gpustack_default == 60
-    assert mooncake.expired_metric is None
+    assert mooncake.expired_metric == "vllm:mooncake_num_kv_expired_reqs"
+
+    # Ascend has the same timeout but no connector Prometheus expiry counter.
+    ascend_mooncake = leases["ascend-mooncake"]
+    assert ascend_mooncake.param == "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT"
+    assert ascend_mooncake.inject_to == PDKVLeaseTargetEnum.ENV
+    assert ascend_mooncake.engine_default == 480
+    assert ascend_mooncake.gpustack_default == 60
+    assert ascend_mooncake.expired_metric is None
 
     # MoRIIO: the window that reclaims prefill's blocks is `defer_timeout`
     # and it IS settable. The 3600 read-abort constant is a different
@@ -644,8 +651,11 @@ def test_kv_lease_windows_are_per_connector():
 
 def test_modes_resolve_their_connector_window():
     assert get_pd_mode(PDModeEnum.VLLM_NIXL.value).kv_lease is get_kv_lease("nixl")
-    assert get_pd_mode(PDModeEnum.VLLM_ASCEND_MOONCAKE.value).kv_lease is get_kv_lease(
+    assert get_pd_mode(PDModeEnum.VLLM_MOONCAKE.value).kv_lease is get_kv_lease(
         "mooncake"
+    )
+    assert get_pd_mode(PDModeEnum.VLLM_ASCEND_MOONCAKE.value).kv_lease is get_kv_lease(
+        "ascend-mooncake"
     )
     assert get_pd_mode(PDModeEnum.SGLANG_NIXL.value).kv_lease is get_kv_lease(
         "sglang-nixl"
@@ -727,6 +737,8 @@ def test_the_read_side_is_declared_because_reading_the_wrong_one_inverts_it():
     """
     nixl = get_transfer_metrics("nixl")
     assert nixl.read_from_role == "decode"
+    assert get_transfer_metrics("mooncake").read_from_role == "prefill"
+    assert get_transfer_metrics("ascend-mooncake").read_from_role == "decode"
 
     for connector in ("sglang-mooncake", "sglang-nixl"):
         assert get_transfer_metrics(connector).read_from_role == "decode", connector
@@ -769,7 +781,12 @@ def test_sglang_is_read_on_decode_even_though_prefill_is_the_sender():
 def test_modes_resolve_their_connector_counters_through_one_reference():
     """The connector id names the transport once; the lease window and the
     counters both hang off it, so the two cannot come to disagree."""
-    for name in (PDModeEnum.VLLM_NIXL.value, PDModeEnum.SGLANG_NIXL.value):
+    for name in (
+        PDModeEnum.VLLM_NIXL.value,
+        PDModeEnum.VLLM_MOONCAKE.value,
+        PDModeEnum.VLLM_ASCEND_MOONCAKE.value,
+        PDModeEnum.SGLANG_NIXL.value,
+    ):
         mode = get_pd_mode(name)
         assert mode.transfer_metrics is get_transfer_metrics(mode.kv_lease.connector)
     assert get_pd_mode(PDModeEnum.CUSTOM.value).transfer_metrics is None
@@ -1148,28 +1165,55 @@ def test_the_plane_round_trips_through_serialization():
 # --- what an engine needs before a cache is folded in beside the connector -- #
 
 
-def test_the_shipped_catalog_declares_the_multiconnector_floor():
-    """vLLM below 0.26.0 hands a non-chosen child empty blocks, so a composed
-    cache stores nothing and the pool can never warm itself. The requirement
-    belongs to the engine, not to any one mode or provider."""
-    declared = get_composed_cache("vLLM")
+def test_cache_composition_requirements_are_mode_and_provider_specific():
+    common = get_composed_cache("vLLM")
+    assert common.min_version is None
+    assert common.refuse_cache_on is None
+    assert (
+        get_pd_mode("vllm-nixl").cache_service("LMCache").backend_versions == ">=0.26.0"
+    )
+    assert (
+        get_pd_mode("vllm-ascend-mooncake").cache_service("Mooncake").backend_versions
+        == ">=0.23.0"
+    )
 
-    assert declared is not None
-    assert declared.min_version == "0.26.0"
-    assert "46865" in (declared.reference or "")
+
+def test_decode_cache_roles_are_declared_per_recipe():
+    assert get_pd_mode("vllm-nixl").cache_service_role("LMCache", "decode") is None
+    assert (
+        get_pd_mode("vllm-mooncake").cache_service("Mooncake").roles["decode"].kv_role
+        == "kv_consumer"
+    )
+    assert (
+        get_pd_mode("vllm-ascend-mooncake")
+        .cache_service("Mooncake")
+        .roles["prefill"]
+        .kv_role
+        == "kv_producer"
+    )
 
 
-def test_which_role_may_take_a_cache_is_readable_from_the_document():
-    """Answerable from the catalog alone: decode is refused, prefill is not.
-    Keyed on role names rather than the connector's `kv_role` because every
-    mode has roles while only the vLLM ones declare a kv_role — a rule keyed on
-    a field two of five shipped modes leave unset would go quiet exactly where
-    nobody would notice."""
-    refused = set(get_composed_cache("vLLM").refuse_cache_on.roles)
+@pytest.mark.parametrize(
+    "mode,provider,role,allowed",
+    [
+        ("vllm-nixl", "LMCache", "prefill", True),
+        ("vllm-nixl", "LMCache", "decode", False),
+        ("vllm-nixl", "Mooncake", "prefill", False),
+        ("vllm-mooncake", "LMCache", "prefill", False),
+        ("vllm-mooncake", "Mooncake", "decode", True),
+        ("vllm-ascend-mooncake", "Mooncake", "decode", True),
+        ("sglang-mooncake", "LMCache", "decode", True),
+        ("custom", "Other", "decode", True),
+    ],
+)
+def test_mode_provider_role_matrix(mode, provider, role, allowed):
+    reason = get_pd_mode(mode).cache_service_reason(provider, role)
+    assert (reason is None) is allowed
 
-    assert refused == {"decode"}
-    for name in (PDModeEnum.VLLM_NIXL.value, PDModeEnum.VLLM_ASCEND_MOONCAKE.value):
-        assert set(get_pd_mode(name).roles) >= {"prefill", "decode"}
+
+def test_lmcache_prefill_declares_only_connector_settings():
+    declared_role = get_pd_mode("vllm-nixl").cache_service_role("LMCache", "prefill")
+    assert declared_role.model_dump(exclude_none=True) == {"kv_role": "kv_both"}
 
 
 def test_a_refused_role_no_recipe_declares_is_caught_at_load():
@@ -1277,3 +1321,34 @@ def test_the_allowance_is_not_vacuous():
     # And everything about reaching the router is the same.
     for shared in ("entrypoint", "peers", "membership_api", "health_path"):
         assert left.get(shared) == right.get(shared), shared
+
+
+def test_nvidia_mooncake_metrics_follow_the_sender_and_keep_ascend_capabilities_separate():
+    mode = get_pd_mode("vllm-mooncake")
+    assert mode.transfer_metrics.read_from_role == "prefill"
+    assert mode.kv_lease.expired_metric == "vllm:mooncake_num_kv_expired_reqs"
+    assert mode.router.capabilities.kv_expired_metric
+    assert not get_pd_mode("vllm-ascend-mooncake").router.capabilities.kv_expired_metric
+    assert not mode.router.membership_api.available
+
+
+@pytest.mark.parametrize(
+    "name,policy",
+    [
+        ("vllm-nixl", "dynamic"),
+        ("vllm-mooncake", "restart"),
+        ("sglang-mooncake", "dynamic"),
+        ("sglang-nixl", "dynamic"),
+        ("vllm-ascend-mooncake", "dynamic"),
+        ("custom", "manual"),
+    ],
+)
+def test_catalog_declares_membership_update_policy(name, policy):
+    assert get_pd_mode(name).router.membership_update == policy
+
+
+def test_dynamic_membership_requires_a_launched_api():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="membership API"):
+        PDRouter(protocol="user_provided", membership_update="dynamic")

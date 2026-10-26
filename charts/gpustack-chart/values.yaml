@@ -264,6 +264,14 @@ higress-core:
       # external LB performs health checks against healthCheckNodePort,
       # otherwise nodes without a gateway pod will drop traffic.
       externalTrafficPolicy: Local
+    # Envoy memory grows with route/config churn and connection count, and the
+    # sub-chart default (2Gi limit) is not enough for sustained operation —
+    # the gateway gets OOMKilled after a while. Only the limits are raised;
+    # requests keep the sub-chart defaults.
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 4096Mi
   controller:
     hub: ""
     image: gpustack/mirrored-higress-higress

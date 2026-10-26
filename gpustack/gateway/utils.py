@@ -325,6 +325,25 @@ def route_ingress_names_for_plugins(
     )
 
 
+def route_rule_ingress_names(
+    route_ids: List[int], resource_namespace: str, gateway_namespace: str
+) -> List[str]:
+    """The expected ingress set for pruning mapper-CR match rules: main and
+    fallback names together, spelled exactly as the reconciler writes them
+    (see :func:`route_ingress_names_for_plugins`) so a live rule is never
+    judged orphaned for the namespace qualification alone."""
+    names: List[str] = []
+    for route_id in route_ids:
+        names.extend(
+            route_ingress_names_for_plugins(
+                model_route_id=route_id,
+                resource_namespace=resource_namespace,
+                gateway_namespace=gateway_namespace,
+            )
+        )
+    return names
+
+
 def model_ingress_name(model_id: int) -> str:
     return f"{model_ingress_prefix}{model_id}"
 

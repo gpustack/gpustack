@@ -835,6 +835,7 @@ async def test_an_unchanged_group_does_not_reach_the_router_a_second_time(
 
     model = SimpleNamespace(
         id=4244,
+        roles=[SimpleNamespace(name="router", run_command=None)],
         name="pd",
         disaggregation=SimpleNamespace(mode=SimpleNamespace(value="vllm-nixl")),
         restart_on_error=False,

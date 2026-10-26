@@ -3,7 +3,7 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 from gpustack_runtime.detector import ManufacturerEnum
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 from packaging.specifiers import SpecifierSet
 
 from gpustack_runtime.deployer import (
@@ -464,9 +464,12 @@ class SGLangServer(InferenceServer):
         user_backend_parameters = self._flatten_backend_param()
         arguments.extend(user_backend_parameters)
 
-        # Set host and port.
+        # Match the served model name to the deployment name used in API requests.
         extend_args_no_exist(
-            arguments, ("--host", self._worker.ip), ("--port", str(port))
+            arguments,
+            ("--host", self._worker.ip),
+            ("--port", str(port)),
+            ("--served-model-name", self._model_instance.model_name),
         )
 
         injected = self._get_injected_backend_parameters(
@@ -666,7 +669,22 @@ class SGLangServer(InferenceServer):
                     ]
                 )
 
-            if speculative_config.ngram_max_match_length:
+            supports_bounds = _supports_ngram_match_window(self._model.backend_version)
+            if (
+                speculative_config.ngram_min_match_length
+                or speculative_config.ngram_max_match_length
+            ) and not supports_bounds:
+                logger.warning(
+                    "Ignoring ngram_min_match_length=%s and ngram_max_match_length=%s "
+                    "(backend version: %s): --speculative-ngram-min-match-window-size "
+                    "and --speculative-ngram-max-match-window-size were removed in "
+                    "SGLang 0.5.10; using SGLang's own n-gram defaults.",
+                    speculative_config.ngram_min_match_length,
+                    speculative_config.ngram_max_match_length,
+                    self._model.backend_version or 'unknown',
+                )
+
+            if supports_bounds and speculative_config.ngram_max_match_length:
                 arguments.extend(
                     [
                         "--speculative-ngram-max-match-window-size",
@@ -674,7 +692,7 @@ class SGLangServer(InferenceServer):
                     ]
                 )
 
-            if speculative_config.ngram_min_match_length:
+            if supports_bounds and speculative_config.ngram_min_match_length:
                 arguments.extend(
                     [
                         "--speculative-ngram-min-match-window-size",
@@ -728,6 +746,21 @@ class SGLangServer(InferenceServer):
         else:
             # The default value for all other models
             return (5, 4)
+
+
+def _supports_ngram_match_window(backend_version: Optional[str]) -> bool:
+    """Whether SGLang still has the n-gram match-window flags (removed in 0.5.10).
+
+    Unknown or unparseable versions are treated as unsupported. This uses
+    packaging.version rather than compare_versions, which orders 0.5.10rc0 after 0.5.10
+    although that prerelease still has the flags.
+    """
+    if backend_version is None:
+        return False
+    try:
+        return Version(backend_version) < Version("0.5.10")
+    except InvalidVersion:
+        return False
 
 
 def get_auto_parallelism_arguments(

@@ -493,36 +493,21 @@ async def _apply_effective_name_to_my_models(
         )
 
 
-def _drop_derived_meta_keys(meta: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Strip server-derived meta keys from client input.
-    ``meta[lb_mode]`` is a passive record of what the route's targets
-    add up to, re-derived on every reconcile; a client-supplied value
-    would be stale at best and a lie at worst, so it never reaches the
-    row."""
-    if not meta:
-        return meta
-    return {k: v for k, v in meta.items() if k != LB_MODE_META_KEY}
-
-
 def _merge_meta_update(
     existing_meta: Optional[Dict[str, Any]], input_meta: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
     """The meta an explicit update writes: the client's keys minus the
-    plugin-owned and derived ones, with the plugin-owned keys carried
-    over from the stored row. Responses hide plugin-owned meta keys (see
-    _strip_plugin_meta_keys), so a client round-tripping a response or
-    editing unrelated metadata sends a meta without them — and a client
-    that forges them anyway is dropped, because deleting or writing a
-    policy is expressed through the plugins section, never through
-    meta."""
-    from gpustack.routes.plugins import route_plugins
+    plugin-owned ones (registered names and derived keys alike), with
+    the plugin-owned keys carried over from the stored row. Responses
+    hide plugin-owned meta keys (see _strip_plugin_meta_keys), so a
+    client round-tripping a response or editing unrelated metadata
+    sends a meta without them — and a client that forges them anyway is
+    dropped, because deleting or writing a policy is expressed through
+    the plugins section, never through meta."""
+    from gpustack.routes.plugins import route_plugin_meta_keys
 
-    reserved = {p.name for p in route_plugins()}
-    cleaned = {
-        k: v
-        for k, v in (_drop_derived_meta_keys(input_meta) or {}).items()
-        if k not in reserved
-    }
+    reserved = route_plugin_meta_keys()
+    cleaned = {k: v for k, v in (input_meta or {}).items() if k not in reserved}
     preserved = {k: v for k, v in (existing_meta or {}).items() if k in reserved}
     return {**cleaned, **preserved}
 
@@ -632,14 +617,14 @@ async def _route_with_fresh_lb_mode(session: AsyncSession, route_id: int) -> Mod
 def _strip_plugin_meta_keys(items: List[Any]) -> None:
     """Hide plugin-owned meta keys from responses: ``plugins.*`` is the
     plugins' public face, and a visible storage copy invites clients to
-    write it directly. The derived ``lb_mode`` is hoisted to its
-    top-level response field and dropped from meta, so every path
-    (list, detail, create, update) exposes the same shape. The stored
-    row is untouched (``__dict__`` writes, like the other response
-    rewrites)."""
-    from gpustack.routes.plugins import route_plugins
+    write it directly. Derived keys are plugin-owned too, so they are
+    hidden the same way; the derived ``lb_mode`` is additionally hoisted
+    to its top-level response field, so every path (list, detail,
+    create, update) exposes the same shape. The stored row is untouched
+    (``__dict__`` writes, like the other response rewrites)."""
+    from gpustack.routes.plugins import route_plugin_meta_keys
 
-    plugin_keys = {p.name for p in route_plugins()}
+    plugin_keys = route_plugin_meta_keys()
     for item in items:
         meta = item.__dict__.get("meta") or getattr(item, "meta", None) or {}
         if any(k in meta for k in plugin_keys):
@@ -647,12 +632,6 @@ def _strip_plugin_meta_keys(items: List[Any]) -> None:
                 k: v for k, v in meta.items() if k not in plugin_keys
             }
         item.__dict__["lb_mode"] = meta.get(LB_MODE_META_KEY)
-        if LB_MODE_META_KEY in meta:
-            if "meta" not in item.__dict__:
-                item.__dict__["meta"] = dict(meta)
-            item.__dict__["meta"] = {
-                k: v for k, v in item.__dict__["meta"].items() if k != LB_MODE_META_KEY
-            }
 
 
 async def _apply_route_plugin_sections(session: AsyncSession, items: List[Any]) -> None:

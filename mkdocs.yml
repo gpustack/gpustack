@@ -7,6 +7,11 @@ site_description: >-
   It lets you run models efficiently on your own GPU hardware by choosing the best inference engines,
   scheduling GPU resources, analyzing model architectures, and automatically configuring deployment parameters.
 
+# Hooks
+hooks:
+  - hack/mkdocs_i18n.py
+  - hack/mkdocs_multilingual.py
+
 # Repository
 repo_name: gpustack/gpustack
 repo_url: https://github.com/gpustack/gpustack
@@ -115,14 +120,14 @@ extra:
       link: https://discord.gg/VXYJzuaqwD
 extra_javascript:
   - image-selector/assets/extra.js
-  - https://unpkg.com/katex@0/dist/katex.min.js
+  - assets/katex/katex.min.js
+  - assets/katex/contrib/auto-render.min.js
   - javascripts/katex.js
-  - https://unpkg.com/katex@0/dist/contrib/auto-render.min.js
   - https://unpkg.com/tablesort@5.3.0/dist/tablesort.min.js
   - javascripts/tablesort.js
 extra_css:
   - stylesheets/extra.css
-  - https://unpkg.com/katex@0/dist/katex.min.css
+  - assets/katex/katex.min.css
 markdown_extensions:
   - abbr
   - def_list

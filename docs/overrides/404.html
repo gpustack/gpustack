@@ -1,0 +1,12 @@
+{% extends "main.html" %}
+
+{% block content %}
+  {% set titles = {
+    "en": "404 - Not found",
+    "zh": "404 - 页面未找到",
+    "ja": "404 - ページが見つかりません",
+    "ru": "404 — Страница не найдена",
+    "tr": "404 — Sayfa bulunamadı"
+  } %}
+  <h1>{{ titles.get(config.theme.language, titles.en) }}</h1>
+{% endblock %}

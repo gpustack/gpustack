@@ -14,7 +14,9 @@ access-log attribution and the rate-limit consumer dimension.
 """
 
 import logging
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from starlette.datastructures import Headers
@@ -26,7 +28,8 @@ from gpustack.api.auth import (
     GATEWAY_AUTH_TOKEN_HEADER,
     GATEWAY_DOWNSTREAM_CONN_HEADER,
 )
-from gpustack.api.exceptions import UnauthorizedException
+from gpustack.api.exceptions import ForbiddenException, UnauthorizedException
+from gpustack.extension import Plugin, PluginContext
 from gpustack.routes.token import server_auth
 from gpustack.schemas.api_keys import PermissionScope
 from gpustack.schemas.model_routes import AccessPolicyEnum
@@ -253,6 +256,87 @@ async def test_anonymous_request_on_a_public_route_stays_anonymous(
     assert response.status_code == 200
     assert response.headers["X-Mse-Consumer"] == "none"
     assert GATEWAY_ASSERTED_KEY_REF_HEADER not in response.headers
+
+
+def _with_plugin_contexts(request, plugin_cls):
+    request.app.state.plugin_contexts = {
+        plugin_cls.__name__: PluginContext(
+            name=plugin_cls.__name__,
+            app=None,
+            cfg=SimpleNamespace(),
+            plugin_cls=plugin_cls,
+        )
+    }
+    return request
+
+
+@pytest.mark.asyncio
+async def test_form_b_policy_hook_can_deny_the_inference_path(
+    monkeypatch, route_policy
+):
+    """The gateway verified the credential, not the policy: a denying hook
+    must refuse an asserted identity too, instead of the endpoint answering
+    200 without a single hook call."""
+    _install_asserted_lookups(monkeypatch, _api_key(), _principal())
+    _forbid_credential_auth(monkeypatch)
+
+    class DenyingPlugin(Plugin):
+        @classmethod
+        async def on_authenticated(cls, ctx, request, session, error):
+            raise ForbiddenException(message="blocked by policy")
+
+    request = _with_plugin_contexts(
+        _request(
+            {
+                GATEWAY_AUTH_TOKEN_HEADER: GATEWAY_TOKEN,
+                GATEWAY_ASSERTED_ACCESS_KEY_HEADER: ACCESS_KEY,
+                "x-higress-llm-model": MODEL,
+            }
+        ),
+        DenyingPlugin,
+    )
+
+    with pytest.raises(ForbiddenException):
+        await server_auth(request, session=object())
+
+
+@pytest.mark.asyncio
+async def test_a_401_policy_rejection_is_not_downgraded_to_anonymous(
+    monkeypatch, route_policy
+):
+    """A hook may reject through any project HTTPException, a 401 included.
+    Swallowing it like a missing-credential 401 would serve a PUBLIC model to
+    the very request the policy denied, so it propagates instead."""
+    route_policy["policy"] = AccessPolicyEnum.PUBLIC
+
+    class RejectingWith401Plugin(Plugin):
+        @classmethod
+        async def on_authenticated(cls, ctx, request, session, error):
+            raise UnauthorizedException(message="blocked by policy")
+
+    @asynccontextmanager
+    async def fake_async_session():
+        yield object()
+
+    monkeypatch.setattr("gpustack.api.auth.async_session", fake_async_session)
+    monkeypatch.setattr(
+        "gpustack.api.auth.get_user_from_api_token",
+        AsyncMock(return_value=(_principal(), _api_key())),
+    )
+
+    request = _with_plugin_contexts(
+        _request(
+            {
+                GATEWAY_AUTH_TOKEN_HEADER: GATEWAY_TOKEN,
+                "authorization": f"Bearer gpustack_{ACCESS_KEY}_secret",
+                "x-higress-llm-model": MODEL,
+            }
+        ),
+        RejectingWith401Plugin,
+    )
+
+    with pytest.raises(UnauthorizedException):
+        await server_auth(request, session=object())
 
 
 @pytest.mark.asyncio
