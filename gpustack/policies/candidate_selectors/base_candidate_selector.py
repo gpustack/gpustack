@@ -126,7 +126,7 @@ class ModelParameters:
                     "head_dim",
                 }:
                     layer_values = [
-                        getattr(layer_config, attr_name)
+                        self._get_attention_parameter(layer_config, attr_name)
                         for layer_config in pretrained_config.per_layer_config
                     ]
                     # Scalar resource estimates must cover the widest layer.
@@ -135,6 +135,12 @@ class ModelParameters:
                         self.num_attention_heads_per_layer = layer_values
                 else:
                     attr_value = getattr(pretrained_config, attr_name, None)
+                if (
+                    attr_name == "num_key_value_heads"
+                    and attr_value is None
+                    and per_layer_attributes
+                ):
+                    attr_value = self.num_attention_heads
                 if attr_value is not None:
                     setattr(self, attr_name, attr_value)
             except AttributeError:
@@ -148,7 +154,11 @@ class ModelParameters:
             # For backward compatibility, try to get num_attention_heads from llm_config.
             self.num_attention_heads = get_model_num_attention_heads(pretrained_config)
         if not self.head_dim and self.hidden_size and self.num_attention_heads:
-            self.head_dim = self.hidden_size // self.num_attention_heads
+            # The smallest head count gives the widest inferred head dimension.
+            num_attention_heads = min(
+                self.num_attention_heads_per_layer or [self.num_attention_heads]
+            )
+            self.head_dim = self.hidden_size // num_attention_heads
         if not self.moe_num_experts:
             for key in [
                 "n_routed_experts",
@@ -166,6 +176,20 @@ class ModelParameters:
                 if value := getattr(pretrained_config, key, None):
                     setattr(self, "moe_num_shared_experts", value)
                     break
+
+    @staticmethod
+    def _get_attention_parameter(config: Any, attr_name: str) -> Optional[int]:
+        """Resolve optional attention defaults before aggregating layer values."""
+        value = getattr(config, attr_name, None)
+        if attr_name == "num_key_value_heads" and value is None:
+            # Multi-head attention uses one KV head for each query head.
+            return getattr(config, "num_attention_heads", None)
+        if attr_name == "head_dim" and not value:
+            hidden_size = getattr(config, "hidden_size", None)
+            num_attention_heads = getattr(config, "num_attention_heads", None)
+            if hidden_size and num_attention_heads:
+                return hidden_size // num_attention_heads
+        return value
 
     def get_attention_type(self) -> ModelAttentionTypeEnum:
         """
