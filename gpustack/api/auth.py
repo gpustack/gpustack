@@ -43,11 +43,17 @@ from gpustack.security import (
 from gpustack.server.cache import delete_cache_by_key
 from gpustack.server.passwords import verify_password
 from gpustack.server.services import APIKeyService, UserService
+from gpustack.extension import Plugin, plugin_needs_instantiation
 from gpustack.websocket_proxy.authenticator import (
     Authenticator as WebsocketAuthenticator,
 )
 
 logger = logging.getLogger(__name__)
+
+# The base no-op ``on_authenticated``. Comparing the underlying function
+# lets the per-request dispatch skip plugins that do not override the
+# hook without paying a coroutine per request.
+_DEFAULT_ON_AUTHENTICATED = Plugin.on_authenticated.__func__
 
 SESSION_COOKIE_NAME = "gpustack_session"
 OIDC_ID_TOKEN_COOKIE_NAME = "gpustack_oidc_id_token"
@@ -197,45 +203,179 @@ async def authenticate_request(
         return user
     api_key: Optional[ApiKey] = None
     user = None
+    error: Optional[HTTPException] = None
     try:
         server_config: Config = request.app.state.server_config
         if basic_credentials and is_system_user(basic_credentials.username):
-            user = await authenticate_system_principal(server_config, basic_credentials)
+            # Same short-scoped session as the other branches: the
+            # ``on_authenticated`` hooks run inside it and may query their
+            # own tables without opening a second connection.
+            async with _optional_session(session) as auth_session:
+                try:
+                    user = await authenticate_system_principal(
+                        server_config, basic_credentials
+                    )
+                except HTTPException as e:
+                    error = e
+                return await _settle_authentication(
+                    request, auth_session, user, api_key, error
+                )
         elif basic_credentials or cookie_token or bearer_token or x_api_key:
             # Scoped to just the auth lookup (not Depends(get_session)) so the
             # connection/transaction isn't held open for the lifetime of the
             # request -- otherwise a long-lived StreamingResponse (SSE watch,
             # streaming inference proxy) leaves it idle-in-transaction until
             # the stream ends, which can be hours. See #5678.
-            async with _optional_session(session) as session:
-                if basic_credentials:
-                    user = await authenticate_basic_user(session, basic_credentials)
-                elif cookie_token:
-                    jwt_manager: JWTManager = request.app.state.jwt_manager
-                    user = await get_user_from_jwt_token(
-                        session, jwt_manager, cookie_token
-                    )
-                elif bearer_token or x_api_key:
-                    token = (
-                        bearer_token.credentials if bearer_token else None
-                    ) or x_api_key
-                    if token is not None:
-                        user, api_key = await get_user_from_api_token(session, token)
-
-        if user:
-            if not user.is_active:
-                raise UnauthorizedException(message="User account is deactivated")
-            request.state.user = user
-            if api_key is not None:
-                request.state.api_key = api_key
-            return user
-
+            async with _optional_session(session) as auth_session:
+                user, api_key, error = await _resolve_request_identity(
+                    request,
+                    auth_session,
+                    basic_credentials,
+                    cookie_token,
+                    bearer_token,
+                    x_api_key,
+                )
+                return await _settle_authentication(
+                    request, auth_session, user, api_key, error
+                )
     except HTTPException:
         raise
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to authenticate user: {e}")
 
     raise credentials_exception()
+
+
+async def _resolve_request_identity(
+    request: Request,
+    session: AsyncSession,
+    basic_credentials: Optional[HTTPBasicCredentials],
+    cookie_token: Optional[str],
+    bearer_token: Optional[HTTPAuthorizationCredentials],
+    x_api_key: Optional[str],
+) -> Tuple[Optional[User], Optional[ApiKey], Optional[HTTPException]]:
+    """Resolve presented credentials into an identity.
+
+    Returns ``(user, api_key, error)``; every failure is an outcome
+    rather than a raise, so the ``on_authenticated`` hooks observe the
+    same result the client will get.
+    """
+    api_key: Optional[ApiKey] = None
+    user = None
+    try:
+        if basic_credentials:
+            user = await authenticate_basic_user(session, basic_credentials)
+        elif cookie_token:
+            jwt_manager: JWTManager = request.app.state.jwt_manager
+            user = await get_user_from_jwt_token(session, jwt_manager, cookie_token)
+        elif bearer_token or x_api_key:
+            token = (bearer_token.credentials if bearer_token else None) or x_api_key
+            if token is not None:
+                user, api_key = await get_user_from_api_token(session, token)
+    except HTTPException as e:
+        return None, None, e
+    except Exception as e:
+        return (
+            None,
+            None,
+            InternalServerErrorException(message=f"Failed to authenticate user: {e}"),
+        )
+    return user, api_key, None
+
+
+async def _settle_authentication(
+    request: Request,
+    session: AsyncSession,
+    user: Optional[User],
+    api_key: Optional[ApiKey],
+    error: Optional[HTTPException],
+) -> User:
+    """Finish the auth funnel once an outcome exists.
+
+    A deactivated account becomes a failure outcome here (one check for
+    both resolution branches), the resolved identity is attached to
+    ``request.state`` — the same place the rest of the request pipeline
+    reads it from — before the ``on_authenticated`` hooks observe it,
+    and whatever the request should fail with is raised only after the
+    hooks ran: a hook can reject an admitted request, but never rewrite
+    the identity it saw.
+    """
+    if error is None and user is not None and not user.is_active:
+        error = UnauthorizedException(message="User account is deactivated")
+    if error is None and user is not None:
+        request.state.user = user
+        if api_key is not None:
+            request.state.api_key = api_key
+    elif error is None:
+        # Credentials that resolved to nothing: the hooks observe the
+        # same 401 the client is about to get.
+        error = credentials_exception()
+    await _run_authenticated_hooks(request, session, error)
+    if error is not None:
+        raise error
+    return user
+
+
+# Flags an exception as a policy denial raised by an ``on_authenticated``
+# hook. ``/token-auth`` maps a plain 401 onto anonymous access (PUBLIC models
+# serve it), so it has to tell a 401 a hook *chose* apart from the 401 of a
+# missing or invalid credential: the first is a denial that must reach the
+# client, the second is the anonymous fallback.
+_POLICY_REJECTION_FLAG = "_gpustack_policy_rejection"
+
+
+def _mark_policy_rejection(exc: HTTPException) -> None:
+    setattr(exc, _POLICY_REJECTION_FLAG, True)
+
+
+def is_policy_rejection(exc: BaseException) -> bool:
+    """Whether ``exc`` is a policy denial an ``on_authenticated`` hook
+    raised, rather than an authentication failure."""
+    return getattr(exc, _POLICY_REJECTION_FLAG, False) is True
+
+
+async def _run_authenticated_hooks(
+    request: Request, session: AsyncSession, error: Optional[HTTPException]
+) -> None:
+    """Dispatch ``Plugin.on_authenticated`` in entry-point order.
+
+    Static plugins only — new capabilities land on the static shape.
+    Fail-closed: on an admitted request an unexpected hook crash
+    surfaces as a 500 instead of letting the request through; on an
+    already-failed one it is only logged, so it cannot mask the real
+    auth error.
+    """
+    state = getattr(getattr(request, "app", None), "state", None)
+    contexts = getattr(state, "plugin_contexts", None)
+    if not contexts:
+        return
+    for name, ctx in contexts.items():
+        if ctx.plugin_cls is None or plugin_needs_instantiation(ctx.plugin_cls):
+            continue
+        hook = ctx.plugin_cls.on_authenticated
+        if getattr(hook, "__func__", None) is _DEFAULT_ON_AUTHENTICATED:
+            continue
+        try:
+            await hook(ctx, request, session, error)
+        except HTTPException as e:
+            if error is None:
+                # A hook rejected an admitted request; marked so a caller
+                # that maps a 401 onto anonymous access keeps treating it
+                # as the denial it is (see ``is_policy_rejection``).
+                _mark_policy_rejection(e)
+                raise
+            logger.warning(
+                "on_authenticated hook of plugin %s raised %r on an "
+                "already-failed auth; keeping the original error",
+                name,
+                e,
+            )
+        except Exception:
+            logger.exception("on_authenticated hook of plugin %s crashed", name)
+            if error is None:
+                raise InternalServerErrorException(
+                    message="Authentication policy hook failed"
+                )
 
 
 async def get_admin_user(
@@ -622,6 +762,12 @@ async def authenticate_gateway_asserted_identity(
     unauthenticated, which is what the credential path would have done for a
     revoked key anyway; on a PUBLIC route that still means allowed with the
     ``'none'`` consumer, exactly as today.
+
+    An honoured assertion settles through the same funnel as the credential
+    path: identity attached to ``request.state``, then the
+    ``on_authenticated`` hooks. The gateway verified the credential, not
+    the policy, so plugin policy applies to an asserted identity exactly as
+    it does to a presented one, and a hook rejection propagates from here.
     """
     # No gateway, no gateway assertions. Defence in depth rather than a check
     # that carries weight on its own -- the gateway token below is the boundary
@@ -689,10 +835,12 @@ async def authenticate_gateway_asserted_identity(
         )
         return None, None
 
-    # Same state the credential path publishes, so ``inference_scope`` and the
-    # rest of the authorization checks read the key's scope either way.
-    request.state.user = user
-    request.state.api_key = api_key
+    # Settle through the same funnel as the credential path: identity
+    # attached to request.state, then the ``on_authenticated`` hooks. The
+    # gateway verified the credential, not the policy, so an asserted
+    # identity is subject to exactly the plugin policy a presented one is,
+    # and a hook rejection propagates from here.
+    await _settle_authentication(request, session, user, api_key, None)
     return user, api_key
 
 
