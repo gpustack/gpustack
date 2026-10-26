@@ -1,5 +1,6 @@
 import pytest
 from tenacity import retry, stop_after_attempt, wait_fixed
+from transformers import PretrainedConfig
 from gpustack.utils import hub
 from gpustack.utils.hub import (
     get_hugging_face_model_min_gguf_path,
@@ -14,6 +15,22 @@ from gpustack.schemas.models import (
     SourceEnum,
 )
 from tests.utils.model import new_model
+
+
+def test_get_hf_text_config_with_heterogeneous_attention_heads():
+    config = PretrainedConfig(
+        text_config={
+            "num_hidden_layers": 2,
+            "num_attention_heads": 64,
+            "per_layer_config": {1: {"num_attention_heads": 96}},
+        },
+    )
+
+    text_config = hub.get_hf_text_config(config)
+
+    assert text_config.per_layer_config[0].num_attention_heads == 64
+    assert text_config.per_layer_config[1].num_attention_heads == 96
+    assert not text_config.allow_global_per_layer_attribute_access
 
 
 @pytest.mark.parametrize('status', [401, 403])
