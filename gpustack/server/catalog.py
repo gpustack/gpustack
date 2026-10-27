@@ -134,7 +134,7 @@ def read_builtin_catalog_text(model_catalog_file: Optional[str] = None) -> str:
         response = requests.get(model_catalog_file, timeout=_CATALOG_FETCH_TIMEOUT)
         response.raise_for_status()
         return response.text
-    with open(model_catalog_file, "r") as f:
+    with open(model_catalog_file, "r", encoding="utf-8") as f:
         return f.read()
 
 

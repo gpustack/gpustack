@@ -3894,3 +3894,26 @@ def test_sglang_diffusion_explicit_path_precedes_version_handling(backend_versio
         assert is_ready(BackendEnum.SGLANG, mi, "/ready", model) is False
 
     get.assert_called_once_with("http://10.0.0.1:8000/ready", timeout=1)
+
+
+def test_dynamo_server_class_mapping_and_health_check():
+    from gpustack.worker.backends.custom import CustomServer
+    from gpustack.worker.serve_manager import _SERVER_CLASS_MAPPING
+
+    assert _SERVER_CLASS_MAPPING.get(BackendEnum.DYNAMO) is CustomServer
+
+    model = new_model(
+        1,
+        "dynamo-test",
+        huggingface_repo_id="example/model",
+        backend=BackendEnum.DYNAMO,
+    )
+    mi = new_model_instance(1, "dynamo-test", 1, worker_id=1)
+    mi.worker_ip = "10.0.0.1"
+    mi.port = 8000
+
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.return_value = SimpleNamespace(status_code=200)
+        assert is_ready(BackendEnum.DYNAMO, mi, None, model) is True
+
+    get.assert_called_once_with("http://10.0.0.1:8000/health", timeout=1)

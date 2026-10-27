@@ -6,7 +6,12 @@ import json
 import socket
 from typing import Optional
 from filelock import SoftFileLock, Timeout
-import fcntl
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
 import errno
 from modelscope.hub.utils.utils import model_id_to_group_owner_name
 
@@ -59,7 +64,7 @@ class HeartbeatSoftFileLock:
             logger.warning(f"Failed to cleanup stale lock: {e}")
 
     def __enter__(self):
-        if DISABLE_OS_FILELOCK:
+        if DISABLE_OS_FILELOCK or fcntl is None:
             self._using_soft_lock = True
         else:
             self._acquire_os_lock()
