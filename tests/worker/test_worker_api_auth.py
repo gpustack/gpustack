@@ -14,6 +14,7 @@ async def worker_app(monkeypatch, tmp_path):
     worker = worker_module.Worker.__new__(worker_module.Worker)
     worker._config = SimpleNamespace(
         data_dir=tmp_path,
+        disable_openapi_docs=False,
         token="registration-token",
         get_server_url=lambda: "http://server",
         get_api_port=lambda embedded: 10150,
