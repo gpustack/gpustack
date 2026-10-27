@@ -124,13 +124,35 @@ class UserDataTemplate:
         for idx, command in enumerate(commands):
             command_list.insert(idx, command)
 
+    def add_ssh_authorized_keys(self, *public_keys: Optional[str]):
+        """
+        Trust the given public keys on first boot via cloud-init's
+        ``ssh_authorized_keys``.
+
+        Only for providers whose API has no way to attach a key to the
+        instance; the ones that do (DigitalOcean's ``ssh_keys``) let the API
+        inject it and never call this. The list is created on first key, so a
+        provider that doesn't call this renders exactly the same document as
+        before.
+        """
+        keys: List[str] = self._data.setdefault('ssh_authorized_keys', [])
+        for public_key in public_keys:
+            public_key = (public_key or "").strip()
+            if public_key and public_key not in keys:
+                keys.append(public_key)
+        if not keys:
+            # Don't leave an empty key behind for a caller that passed nothing.
+            self._data.pop('ssh_authorized_keys')
+
     def _process_install_driver(self) -> bool:
         """
         process_install_driver handles the installation of the GPU drivers.
         Returns True if a reboot is required after installation.
         """
+        # Refresh the apt lists either way — the packages below are installed on
+        # first boot and a stale cache makes that fail — but stop short of
+        # upgrading.
         self._data['package_update'] = True
-        self._data['package_upgrade'] = True
         packages: List[str] = self._data.get('packages')
         write_files: List[Dict[str, Any]] = self._data.get('write_files')
         # only supports nvidia and debian/ubuntu for now
@@ -139,6 +161,14 @@ class UserDataTemplate:
             "ubuntu",
         ]:
             return False
+        # A full upgrade only pays for itself when a driver is about to be
+        # built: linux-headers-generic tracks the newest kernel in the repo, so
+        # the running kernel is brought up to match it before DKMS compiles
+        # against it, and this path reboots into that kernel anyway. On an image
+        # that already ships a driver it would just cost minutes of boot time —
+        # and risk pulling in a kernel the prebuilt driver has no DKMS setup to
+        # rebuild for.
+        self._data['package_upgrade'] = True
         driver_name = debian_driver_map.get(self.distribution, "nvidia-driver-570")
         nvidia_toolkit_version = "1.17.8-1"
         packages.extend(

@@ -1,0 +1,1224 @@
+"""Role-aware replica convergence.
+
+``sync_replicas`` carries two rules behind one name. The role-less one is
+unchanged and pinned here so it stays that way; the role-bearing one is new,
+and the properties worth pinning are the ones whose absence produced the
+active bug this replaces:
+
+* a role-bearing model fans out to ``sum(roles[].replicas)`` members, not to
+  ``Model.replicas`` — which for such a model is a 0/1 deployment switch;
+* every member carries its ``role``, ``group_id`` and ``spec_digest``, because
+  nothing downstream can tell a prefill from a decode without them;
+* the router is NOT part of the atomic first formation and waits on a
+  dependency gate, since its command line is rendered from peer addresses that
+  do not exist until those peers are running;
+* surplus is measured against the ROLE's count. The pre-PD expression
+  ``len(candidates) - model.replicas`` deletes eight members of a 4P4D in one
+  pass once it is scoped to a single role.
+"""
+
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from gpustack.schemas.models import (
+    Model,
+    ModelInstance,
+    ModelInstanceStateEnum,
+    ModelStateEnum,
+    RoleSpec,
+    SourceEnum,
+)
+from gpustack.server.controllers import (
+    _dependencies_ready,
+    _gpu_roles,
+    _role_dependencies,
+    find_scale_down_candidates,
+    model_spec_digest,
+    sync_replicas,
+)
+
+# A member stamped with whatever the model's digest works out to on this run.
+# Spelled as a sentinel rather than a literal because the distinction now
+# decides behaviour: peers on the CURRENT spec get their gaps filled, peers
+# from before an edit do not.
+CURRENT = "spec_digest:current"
+
+
+def _pass():
+    """A stand-in for one reconcile pass.
+
+    `session.info` is a real dict because that is where `model_spec_digest`
+    keeps its per-pass memo; a bare `MagicMock` would answer `.get` with a
+    mock and hand back a digest nobody computed. A fresh one per call is a
+    fresh pass.
+    """
+    session = MagicMock()
+    session.info = {}
+    return session
+
+
+def _model(replicas=1, roles=None, **kwargs) -> Model:
+    return Model(
+        id=1,
+        name="m",
+        replicas=replicas,
+        ready_replicas=0,
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/repo",
+        owner_principal_id=1,
+        cluster_id=1,
+        roles=roles,
+        **kwargs,
+    )
+
+
+def _pd_roles(prefill=1, decode=1, router=1):
+    return [
+        RoleSpec(name="prefill", replicas=prefill),
+        RoleSpec(name="decode", replicas=decode),
+        RoleSpec(name="router", replicas=router),
+    ]
+
+
+def _instance(
+    id,
+    role=None,
+    group_id=None,
+    spec_digest=None,
+    state=ModelInstanceStateEnum.RUNNING,
+) -> ModelInstance:
+    return ModelInstance(
+        id=id,
+        name=f"m-{id}",
+        model_id=1,
+        model_name="m",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/repo",
+        state=state,
+        role=role,
+        group_id=group_id,
+        spec_digest=spec_digest,
+        created_at=datetime(2026, 8, 24, tzinfo=timezone.utc),
+    )
+
+
+class _Recorder:
+    """Stands in for ``ModelInstanceService``, recording what convergence did."""
+
+    def __init__(self):
+        self.created = []
+        self.deleted = []
+
+    def __call__(self, session):
+        return SimpleNamespace(
+            batch_create=self._batch_create,
+            create=self._create,
+            batch_delete=self._batch_delete,
+        )
+
+    async def _batch_create(self, instances):
+        self.created.extend(instances)
+        return instances
+
+    async def _create(self, instance):
+        self.created.append(instance)
+        return instance
+
+    async def _batch_delete(self, instances):
+        self.deleted.extend(instances)
+        return [i.name for i in instances]
+
+
+async def _run(model, instances, instance_type_snapshot=None):
+    recorder = _Recorder()
+    matched = (
+        [SimpleNamespace(snapshot=instance_type_snapshot)]
+        if instance_type_snapshot
+        else []
+    )
+    # The second read inside convergence re-lists the model's instances to pick
+    # up the rows the atomic formation just wrote; returning the created rows
+    # keeps that read honest without a database.
+    reads = {"n": 0}
+
+    async def _all_by_field(session, field, value, **kwargs):
+        reads["n"] += 1
+        if reads["n"] == 1:
+            return instances
+        return instances + [
+            _instance(
+                100 + i,
+                role=c.role,
+                group_id=c.group_id,
+                spec_digest=c.spec_digest,
+                state=ModelInstanceStateEnum.PENDING,
+            )
+            for i, c in enumerate(recorder.created)
+        ]
+
+    with (
+        patch(
+            "gpustack.server.controllers.Model.one_by_id",
+            AsyncMock(return_value=model),
+        ),
+        patch(
+            "gpustack.server.controllers.ModelInstance.all_by_field",
+            AsyncMock(side_effect=_all_by_field),
+        ),
+        patch(
+            "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+            AsyncMock(return_value=matched),
+        ),
+        patch(
+            "gpustack.server.controllers.get_draft_model_source",
+            AsyncMock(return_value=None),
+        ),
+        patch("gpustack.server.controllers.ModelInstanceService", recorder),
+        patch(
+            "gpustack.schemas.workers.Worker.all_by_field",
+            AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")]),
+        ),
+        # Soft scale-down marks the surplus instead of deleting it, and the
+        # mark is a row write. Recorded rather than performed, for the same
+        # reason the deletes are: this harness has no database.
+        patch.object(ModelInstance, "update", AsyncMock()),
+    ):
+        current = await model_spec_digest(_pass(), model)
+        for stamped in instances:
+            if stamped.spec_digest == CURRENT:
+                stamped.spec_digest = current
+        await sync_replicas(_pass(), model)
+    return recorder
+
+
+def _by_role(created):
+    counts = {}
+    for c in created:
+        counts[c.role] = counts.get(c.role, 0) + 1
+    return counts
+
+
+# --- the role-less baseline ------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_role_less_still_fans_out_by_model_replicas():
+    recorder = await _run(_model(replicas=3), [])
+
+    assert len(recorder.created) == 3
+    # Nothing role-shaped is invented for a plain deployment.
+    assert all(c.role is None for c in recorder.created)
+    assert all(c.group_id is None for c in recorder.created)
+
+
+@pytest.mark.asyncio
+async def test_role_less_scale_down_unchanged():
+    model = _model(replicas=1)
+    instances = [_instance(1), _instance(2)]
+    with patch(
+        "gpustack.server.controllers.find_scale_down_candidates",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(model_instance=instances[0]),
+                SimpleNamespace(model_instance=instances[1]),
+            ]
+        ),
+    ):
+        recorder = await _run(model, instances)
+
+    assert len(recorder.deleted) == 1
+
+
+# --- fan-out --------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_a_group_fans_out_to_the_sum_of_its_gpu_roles():
+    """The bug this replaces: 1P1D+router against `replicas == 1` produced one
+    anonymous instance. The GPU roles form together; the router does not."""
+    recorder = await _run(_model(replicas=1, roles=_pd_roles()), [])
+
+    assert _by_role(recorder.created) == {"prefill": 1, "decode": 1}
+    assert not recorder.deleted
+
+
+@pytest.mark.asyncio
+async def test_xpyd_fans_out_by_each_roles_own_count():
+    recorder = await _run(_model(replicas=1, roles=_pd_roles(prefill=3, decode=2)), [])
+
+    assert _by_role(recorder.created) == {"prefill": 3, "decode": 2}
+
+
+@pytest.mark.asyncio
+async def test_every_member_carries_role_group_and_digest():
+    recorder = await _run(_model(replicas=1, roles=_pd_roles()), [])
+
+    group_ids = {c.group_id for c in recorder.created}
+    digests = {c.spec_digest for c in recorder.created}
+    assert len(group_ids) == 1, "one generation is one group_id"
+    assert len(digests) == 1, "one generation is one spec_digest"
+    assert group_ids.pop().startswith("1-")
+    assert digests.pop().startswith("sha1:")
+    assert all(c.role for c in recorder.created)
+
+
+@pytest.mark.asyncio
+async def test_member_names_say_which_role_they_are():
+    recorder = await _run(_model(replicas=1, roles=_pd_roles()), [])
+
+    assert any(c.name.startswith("m-prefill-") for c in recorder.created)
+    assert any(c.name.startswith("m-decode-") for c in recorder.created)
+
+
+@pytest.mark.asyncio
+async def test_replicas_zero_parks_the_whole_group():
+    """`Model.replicas` is a deployment switch for a role-bearing model, so
+    zero is "the group is off", not "zero of each role"."""
+    members = [
+        _instance(1, role="prefill", group_id="1-abc"),
+        _instance(2, role="decode", group_id="1-abc"),
+    ]
+    recorder = await _run(_model(replicas=0, roles=_pd_roles()), members)
+
+    assert len(recorder.deleted) == 2
+    assert not recorder.created
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_role", ["prefill", "decode"])
+async def test_stop_then_start_rebuilds_stale_group_with_saved_configuration(
+    failed_role,
+):
+    model = _model(roles=_pd_roles())
+    old_digest = await model_spec_digest(_pass(), model)
+    members = [
+        _instance(
+            index,
+            role=role.name,
+            group_id="1-old",
+            spec_digest=old_digest,
+            state=(
+                ModelInstanceStateEnum.ERROR
+                if role.name == failed_role
+                else ModelInstanceStateEnum.RUNNING
+            ),
+        )
+        for index, role in enumerate(model.roles, start=1)
+    ]
+    for role in model.roles[:2]:
+        role.backend_parameters = ["--max-model-len=8192"]
+
+    model.replicas = 0
+    stopped = await _run(model, members)
+    assert stopped.deleted == members
+    assert not stopped.created
+
+    model.replicas = 1
+    started = await _run(model, [])
+    current = await model_spec_digest(_pass(), model)
+    assert current != old_digest
+    assert _by_role(started.created) == {"prefill": 1, "decode": 1}
+    assert all(member.spec_digest == current for member in started.created)
+    assert all(member.group_id != "1-old" for member in started.created)
+
+    running = [
+        _instance(
+            index,
+            role=member.role,
+            group_id=member.group_id,
+            spec_digest=member.spec_digest,
+        )
+        for index, member in enumerate(started.created, start=10)
+    ]
+    routed = await _run(model, running)
+    assert _by_role(routed.created) == {"router": 1}
+    assert routed.created[0].spec_digest == current
+    assert routed.created[0].group_id == running[0].group_id
+
+
+# --- the router's dependency gate ------------------------------------------ #
+
+
+def test_a_router_depends_on_every_gpu_role_by_default():
+    model = _model(roles=_pd_roles())
+    router = model.roles[-1]
+
+    assert _role_dependencies(model, router) == ["prefill", "decode"]
+    assert [r.name for r in _gpu_roles(model)] == ["prefill", "decode"]
+
+
+def test_an_explicit_dependency_list_wins():
+    model = _model(
+        roles=[
+            RoleSpec(name="prefill", replicas=1),
+            RoleSpec(name="decode", replicas=1),
+            RoleSpec(name="router", replicas=1, dependencies=["prefill"]),
+        ]
+    )
+    assert _role_dependencies(model, model.roles[-1]) == ["prefill"]
+
+
+def test_dependencies_need_running_not_merely_created():
+    model = _model(roles=_pd_roles())
+    router = model.roles[-1]
+    pending = [
+        _instance(1, role="prefill", state=ModelInstanceStateEnum.PENDING),
+        _instance(2, role="decode", state=ModelInstanceStateEnum.PENDING),
+    ]
+    running = [
+        _instance(1, role="prefill"),
+        _instance(2, role="decode"),
+    ]
+
+    assert _dependencies_ready(model, router, pending) is False
+    assert _dependencies_ready(model, router, running) is True
+
+
+@pytest.mark.asyncio
+async def test_the_router_is_not_created_before_its_peers_run():
+    """Creating it early does not merely start it sooner — it renders a router
+    whose peer flags have no addresses to carry."""
+    members = [
+        _instance(
+            1,
+            role="prefill",
+            group_id="1-abc",
+            spec_digest="sha1:abc",
+            state=ModelInstanceStateEnum.PENDING,
+        ),
+        _instance(
+            2,
+            role="decode",
+            group_id="1-abc",
+            spec_digest="sha1:abc",
+            state=ModelInstanceStateEnum.PENDING,
+        ),
+    ]
+    recorder = await _run(_model(replicas=1, roles=_pd_roles()), members)
+
+    assert not recorder.created
+
+
+@pytest.mark.asyncio
+async def test_the_router_appears_once_its_peers_are_running():
+    members = [
+        _instance(1, role="prefill", group_id="1-abc", spec_digest=CURRENT),
+        _instance(2, role="decode", group_id="1-abc", spec_digest=CURRENT),
+    ]
+    recorder = await _run(_model(replicas=1, roles=_pd_roles()), members)
+
+    assert _by_role(recorder.created) == {"router": 1}
+    # It joins the generation its peers are already in, rather than starting
+    # one of its own.
+    assert recorder.created[0].group_id == "1-abc"
+    assert recorder.created[0].spec_digest == members[0].spec_digest
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "member_versions,recorded_version,parameters,created_roles",
+    [
+        (["0.23.0", "0.23.0"], "0.23.0", None, {"router": 1}),
+        (["0.23.0", "0.23.0"], "0.24.0", None, {}),
+        (["0.23.0", "0.24.0"], "0.23.0", None, {}),
+        (["0.23.0", None], "0.23.0", None, {}),
+        (["0.23.0", "0.23.0"], "0.23.0", ["--max-model-len=4096"], {}),
+    ],
+)
+async def test_router_creation_checks_version_writeback_and_real_edits(
+    member_versions, recorded_version, parameters, created_roles
+):
+    model = _model(roles=_pd_roles())
+    digest = await model_spec_digest(_pass(), model)
+    members = [
+        _instance(1, role="prefill", group_id="1-unpinned", spec_digest=digest),
+        _instance(2, role="decode", group_id="1-unpinned", spec_digest=digest),
+    ]
+    for member, version in zip(members, member_versions):
+        member.backend_version = version
+    model.backend_version = recorded_version
+    model.backend_parameters = parameters
+
+    recorder = await _run(model, members)
+
+    assert _by_role(recorder.created) == created_roles
+    assert not recorder.deleted
+    for created in recorder.created:
+        assert created.group_id == "1-unpinned"
+        assert created.spec_digest == digest
+        assert created.backend_version == recorded_version
+
+
+@pytest.mark.asyncio
+async def test_version_writeback_allows_adding_gpu_members_to_the_generation():
+    model = _model(roles=_pd_roles()[:-1])
+    digest = await model_spec_digest(_pass(), model)
+    members = [
+        _instance(1, role="prefill", group_id="1-unpinned", spec_digest=digest),
+        _instance(2, role="decode", group_id="1-unpinned", spec_digest=digest),
+    ]
+    for member in members:
+        member.backend_version = "0.23.0"
+    model.backend_version = "0.23.0"
+    model.roles[0].replicas = 2
+
+    recorder = await _run(model, members)
+
+    assert _by_role(recorder.created) == {"prefill": 1}
+    assert not recorder.deleted
+    assert recorder.created[0].group_id == "1-unpinned"
+    assert recorder.created[0].spec_digest == digest
+    assert recorder.created[0].backend_version == "0.23.0"
+
+
+# --- per-role convergence -------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_scaling_one_role_up_touches_only_that_role():
+    """Group-granular convergence would express this as delete-group plus
+    create-group — a full outage to add one prefill."""
+    members = [
+        _instance(1, role="prefill", group_id="1-abc", spec_digest=CURRENT),
+        _instance(2, role="decode", group_id="1-abc", spec_digest=CURRENT),
+        _instance(3, role="router", group_id="1-abc", spec_digest=CURRENT),
+    ]
+    recorder = await _run(_model(replicas=1, roles=_pd_roles(prefill=3)), members)
+
+    assert _by_role(recorder.created) == {"prefill": 2}
+    assert not recorder.deleted
+
+
+@pytest.mark.asyncio
+async def test_surplus_is_measured_against_the_roles_count():
+    """The pre-PD expression was `len(candidates) - model.replicas`. Scoped to
+    one role of a group where `model.replicas == 1`, it takes out every member
+    the scorer returns.
+
+    A group's surplus is *drained* rather than deleted — the arithmetic is
+    what this asserts, so it reads the mark instead of the delete.
+    """
+    prefills = [
+        _instance(i, role="prefill", group_id="1-abc", spec_digest="sha1:abc")
+        for i in (1, 2, 3, 4)
+    ]
+    members = prefills + [
+        _instance(5, role="decode", group_id="1-abc", spec_digest="sha1:abc"),
+        _instance(6, role="router", group_id="1-abc", spec_digest="sha1:abc"),
+    ]
+    with patch(
+        "gpustack.server.controllers.find_scale_down_candidates",
+        AsyncMock(return_value=[SimpleNamespace(model_instance=p) for p in prefills]),
+    ):
+        await _run(_model(replicas=1, roles=_pd_roles(prefill=2)), members)
+
+    drained = [i for i in members if i.draining_since is not None]
+    assert len(drained) == 2, "4 prefills down to 2, not down to 0"
+    assert {i.role for i in drained} == {"prefill"}
+
+
+@pytest.mark.asyncio
+async def test_a_scoring_failure_deletes_nothing():
+    """`find_scale_down_candidates` returns [] on its internal exception, so an
+    empty result cannot be told apart from "nothing to remove"."""
+    prefills = [
+        _instance(i, role="prefill", group_id="1-abc", spec_digest="sha1:abc")
+        for i in (1, 2, 3)
+    ]
+    with patch(
+        "gpustack.server.controllers.find_scale_down_candidates",
+        AsyncMock(return_value=[]),
+    ):
+        recorder = await _run(_model(replicas=1, roles=_pd_roles(prefill=1)), prefills)
+
+    assert not recorder.deleted
+
+
+@pytest.mark.asyncio
+async def test_mixed_roles_are_refused_by_the_scale_down_selector():
+    """Its PlacementScorer aggregates per worker by `model_id`, so an
+    eight-card prefill and a cpu_only router share one distribution and their
+    scores are not comparable. Ranking them together picks a plausible wrong
+    victim rather than failing."""
+    with pytest.raises(ValueError, match="single role"):
+        await find_scale_down_candidates(
+            [_instance(1, role="prefill"), _instance(2, role="router")],
+            _model(roles=_pd_roles()),
+        )
+
+
+# --- generation identity --------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_a_scale_does_not_change_the_digest():
+    """Folding replica counts into the digest would make every scale a
+    generation change, and a generation change is a full-group restart."""
+    session = _pass()
+    with patch(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    ):
+        one = await model_spec_digest(session, _model(roles=_pd_roles(prefill=1)))
+        three = await model_spec_digest(session, _model(roles=_pd_roles(prefill=3)))
+        scaled = await model_spec_digest(session, _model(replicas=1, roles=_pd_roles()))
+        parked = await model_spec_digest(session, _model(replicas=0, roles=_pd_roles()))
+
+    assert one == three
+    assert scaled == parked
+
+
+@pytest.mark.asyncio
+async def test_a_description_change_does_not_change_the_digest():
+    session = _pass()
+    with patch(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    ):
+        plain = await model_spec_digest(session, _model(roles=_pd_roles()))
+        described = await model_spec_digest(
+            session, _model(roles=_pd_roles(), description="notes")
+        )
+
+    assert plain == described
+
+
+@pytest.mark.asyncio
+async def test_a_deployment_shaping_change_does_change_the_digest():
+    # A pass each, because a spec change is something that happens BETWEEN
+    # reconciles; within one the digest is pinned on purpose.
+    with patch(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    ):
+        plain = await model_spec_digest(_pass(), _model(roles=_pd_roles()))
+        env = await model_spec_digest(
+            _pass(), _model(roles=_pd_roles(), env={"A": "1"})
+        )
+        overridden = await model_spec_digest(
+            _pass(),
+            _model(
+                roles=[
+                    RoleSpec(name="prefill", replicas=1, backend_parameters=["--x"]),
+                    RoleSpec(name="decode", replicas=1),
+                    RoleSpec(name="router", replicas=1),
+                ]
+            ),
+        )
+
+    assert plain != env
+    assert plain != overridden
+
+
+@pytest.mark.asyncio
+async def test_the_instance_type_snapshot_is_part_of_the_digest():
+    """D13: a `gpu_type_selector` records only the type's NAME, while the
+    catalog behind that name is versioned by retire-and-insert. Without this,
+    two members admitted at different moments can resolve one name to
+    different card specs and the group looks like one generation."""
+    model = _model(
+        roles=[
+            RoleSpec(
+                name="prefill",
+                replicas=1,
+                gpu_type_selector={"type": "a100-slice"},
+            ),
+            RoleSpec(name="decode", replicas=1),
+        ]
+    )
+
+    async def _snapshot(value):
+        # "At different moments" is the whole claim, so each reading is its
+        # own pass. Two readings inside one pass are pinned to one answer by
+        # the memo -- see `test_one_pass_reads_one_catalog`.
+        with patch(
+            "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+            AsyncMock(return_value=[SimpleNamespace(snapshot=value)] if value else []),
+        ):
+            return await model_spec_digest(_pass(), model)
+
+    assert await _snapshot("sha1:gen1") != await _snapshot("sha1:gen2")
+    # A type that vanished is itself a digest input, not a dropped one.
+    assert await _snapshot(None) != await _snapshot("sha1:gen1")
+
+
+@pytest.mark.asyncio
+async def test_a_gap_is_not_filled_across_a_spec_edit():
+    """A spec edit makes the running members stale; it does not retire them.
+    Nor does it let the gap they leave be filled.
+
+    `spec_digest` labels a member's generation; it does not preserve what that
+    generation was built from. A replacement is built from the model as it is
+    NOW -- and the worker reads the live row again at start -- so stamping it
+    with the peers' digest would record a sameness it does not have. The pair
+    that produces agrees at handshake and fails on the first prompt long
+    enough to reach what they disagree about, which is why the switch has to
+    be all-stop-then-all-start.
+    """
+    members = [
+        _instance(1, role="prefill", group_id="1-old", spec_digest="sha1:old"),
+        _instance(2, role="decode", group_id="1-old", spec_digest="sha1:old"),
+        _instance(3, role="router", group_id="1-old", spec_digest="sha1:old"),
+    ]
+
+    recorder = await _run(
+        _model(replicas=1, roles=_pd_roles(prefill=2), env={"CHANGED": "1"}),
+        members,
+    )
+
+    assert recorder.created == [], "the gap waits for a stop/start cycle"
+    assert not recorder.deleted, "and the members that are serving keep serving"
+
+
+@pytest.mark.asyncio
+async def test_a_gap_is_filled_when_the_spec_has_not_moved():
+    """The other side of it, and the ordinary case: peers on the current spec
+    get their missing member back without anyone being asked to restart."""
+    members = [
+        _instance(1, role="prefill", group_id="1-old", spec_digest=CURRENT),
+        _instance(2, role="decode", group_id="1-old", spec_digest=CURRENT),
+        _instance(3, role="router", group_id="1-old", spec_digest=CURRENT),
+    ]
+
+    recorder = await _run(_model(replicas=1, roles=_pd_roles(prefill=2)), members)
+
+    assert _by_role(recorder.created) == {"prefill": 1}
+    assert recorder.created[0].group_id == "1-old"
+
+
+# --- staleness ------------------------------------------------------------- #
+
+
+async def _sync_status(model, instances, snapshot=None):
+    from gpustack.server.controllers import sync_model_status
+
+    update = AsyncMock()
+    service = MagicMock(return_value=SimpleNamespace(update=update))
+    with (
+        patch(
+            "gpustack.server.controllers.ModelInstance.all_by_field",
+            AsyncMock(return_value=instances),
+        ),
+        patch(
+            "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+            AsyncMock(
+                return_value=[SimpleNamespace(snapshot=snapshot)] if snapshot else []
+            ),
+        ),
+        patch("gpustack.server.controllers.ModelService", service),
+    ):
+        await sync_model_status(_pass(), model)
+    return model
+
+
+@pytest.mark.asyncio
+async def test_members_matching_the_current_spec_are_not_stale():
+    model = _model(replicas=1, roles=_pd_roles())
+    with patch(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    ):
+        digest = await model_spec_digest(_pass(), model)
+
+    await _sync_status(
+        model,
+        [
+            _instance(1, role="prefill", group_id="g", spec_digest=digest),
+            _instance(2, role="decode", group_id="g", spec_digest=digest),
+            _instance(3, role="router", group_id="g", spec_digest=digest),
+        ],
+    )
+    assert model.stale is False
+
+
+@pytest.mark.asyncio
+async def test_members_predating_a_spec_edit_are_stale_but_still_serving():
+    """Orthogonal to `state`: this is exactly the case worth surfacing, since
+    a user who edits a config and sees RUNNING has no other signal that the
+    edit has not taken effect."""
+    model = _model(replicas=1, roles=_pd_roles())
+    await _sync_status(
+        model,
+        [
+            _instance(1, role="prefill", group_id="g", spec_digest="sha1:old"),
+            _instance(2, role="decode", group_id="g", spec_digest="sha1:old"),
+            _instance(3, role="router", group_id="g", spec_digest="sha1:old"),
+        ],
+    )
+    assert model.stale is True
+    assert model.state == ModelStateEnum.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_rows_predating_the_column_are_not_marked_stale():
+    """A pre-upgrade instance carries no digest. Reading that as "differs"
+    would mark every existing model stale on the first pass after an
+    upgrade."""
+    model = _model(replicas=1)
+    await _sync_status(model, [_instance(1), _instance(2)])
+
+    assert model.stale is None
+
+
+# --- gateway registration -------------------------------------------------- #
+
+
+def test_a_role_less_model_registers_every_instance():
+    from gpustack.server.controllers import _gateway_registrable_instances
+
+    instances = [_instance(1), _instance(2)]
+    assert _gateway_registrable_instances(_model(), instances) == instances
+
+
+def test_a_group_registers_only_its_router():
+    """Every member serves an OpenAI-shaped API on its own port, so registering
+    them all yields upstreams that answer the same requests wrongly: a request
+    balanced onto a prefill returns after one token, one onto a decode runs
+    without the prefix its KV was meant to carry. Both return 200."""
+    from gpustack.server.controllers import _gateway_registrable_instances
+
+    router = _instance(3, role="router")
+    registrable = _gateway_registrable_instances(
+        _model(roles=_pd_roles()),
+        [_instance(1, role="prefill"), _instance(2, role="decode"), router],
+    )
+    assert registrable == [router]
+
+
+def test_a_routerless_group_registers_nothing():
+    """Falling back to the GPU members would be the same wrong answer by
+    another route: no member of a group can serve a whole request alone."""
+    from gpustack.server.controllers import _gateway_registrable_instances
+
+    model = _model(
+        roles=[
+            RoleSpec(name="prefill", replicas=1),
+            RoleSpec(name="decode", replicas=1),
+        ]
+    )
+    assert (
+        _gateway_registrable_instances(
+            model, [_instance(1, role="prefill"), _instance(2, role="decode")]
+        )
+        == []
+    )
+
+
+# --- turning disaggregation off -------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_removing_roles_retires_the_group_first():
+    """The role-less rule ranks every instance in one comparison, which an
+    eight-card prefill and a cpu_only router cannot share — and the gateway
+    filter keys on `model.roles`, so the moment roles are gone every leftover
+    member becomes a registered upstream answering whole requests it cannot
+    serve."""
+    members = [
+        _instance(1, role="prefill", group_id="1-abc", spec_digest="sha1:abc"),
+        _instance(2, role="decode", group_id="1-abc", spec_digest="sha1:abc"),
+        _instance(3, role="router", group_id="1-abc", spec_digest="sha1:abc"),
+    ]
+    recorder = await _run(_model(replicas=1, roles=None), members)
+
+    assert len(recorder.deleted) == 3
+    # Nothing is built in the same pass: the deletion has to be settled before
+    # anything counts what is left.
+    assert not recorder.created
+
+
+@pytest.mark.asyncio
+async def test_plain_replicas_are_built_on_the_next_pass():
+    recorder = await _run(_model(replicas=2, roles=None), [])
+
+    assert len(recorder.created) == 2
+    assert all(c.role is None for c in recorder.created)
+
+
+@pytest.mark.asyncio
+async def test_a_mix_of_leftover_and_plain_instances_only_retires_the_leftovers():
+    members = [
+        _instance(1, role="prefill", group_id="1-abc", spec_digest="sha1:abc"),
+        _instance(2),
+    ]
+    recorder = await _run(_model(replicas=1, roles=None), members)
+
+    assert [i.id for i in recorder.deleted] == [1]
+
+
+# --- turning disaggregation on --------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_enabling_roles_retires_the_instances_that_predate_the_group():
+    """Observed live on a two-card host: the pre-PD instance carried no role,
+    so nothing counted it toward any role and the gateway had already stopped
+    routing to it — but it still held a GPU, and holding it is what kept the
+    new group's decode from being schedulable."""
+    legacy = [_instance(1), _instance(2)]
+    recorder = await _run(_model(replicas=1, roles=_pd_roles()), legacy)
+
+    assert len(recorder.deleted) == 2
+    assert all(i.group_id is None for i in recorder.deleted)
+
+
+@pytest.mark.asyncio
+async def test_the_group_still_forms_in_the_same_pass():
+    """Retiring is not a reason to defer forming: the new generation is what
+    the retirement is making room for."""
+    recorder = await _run(_model(replicas=1, roles=_pd_roles()), [_instance(1)])
+
+    assert len(recorder.deleted) == 1
+    assert _by_role(recorder.created) == {"prefill": 1, "decode": 1}
+
+
+@pytest.mark.asyncio
+async def test_an_established_group_keeps_its_members():
+    """Only role-less instances are orphans. A member of the current
+    generation must not be swept up by the same rule."""
+    members = [
+        _instance(1, role="prefill", group_id="1-abc", spec_digest="sha1:abc"),
+        _instance(2, role="decode", group_id="1-abc", spec_digest="sha1:abc"),
+        _instance(3, role="router", group_id="1-abc", spec_digest="sha1:abc"),
+    ]
+    recorder = await _run(_model(replicas=1, roles=_pd_roles()), members)
+
+    assert not recorder.deleted
+    assert not recorder.created
+
+
+@pytest.mark.asyncio
+async def test_one_pass_reads_one_catalog():
+    """A member must not be stale against the spec it was just built from.
+
+    `sync_replicas` and `sync_model_status` run inside one session, so the
+    digest is computed twice while another task may retire-and-insert the
+    type behind a `gpu_type_selector`. Were the two reads independent,
+    `_sync_replicas_per_role` would stamp a member with one answer and
+    `model_members_stale` would judge it against another.
+    """
+    model = _model(
+        roles=[
+            RoleSpec(
+                name="prefill",
+                replicas=1,
+                gpu_type_selector={"type": "a100-slice"},
+            ),
+            RoleSpec(name="decode", replicas=1),
+        ]
+    )
+    session = _pass()
+
+    async def _digest_with(catalog):
+        with patch(
+            "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+            AsyncMock(return_value=[SimpleNamespace(snapshot=catalog)]),
+        ):
+            return await model_spec_digest(session, model)
+
+    stamped = await _digest_with("sha1:gen1")
+    judged = await _digest_with("sha1:gen2")
+
+    assert stamped == judged, "the catalog moved mid-pass and the digest followed it"
+
+
+@pytest.mark.asyncio
+async def test_the_substitute_version_is_still_its_own_answer():
+    """`model_members_stale` asks twice in one pass, with and without the model's
+    own `backend_version`, and the two are different questions."""
+    model = _model(roles=_pd_roles(), backend_version="v1")
+    session = _pass()
+
+    with patch(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    ):
+        pinned = await model_spec_digest(session, model)
+        unpinned = await model_spec_digest(session, model, backend_version=None)
+
+    assert pinned != unpinned
+
+
+@pytest.mark.asyncio
+async def test_a_placement_preference_is_not_a_new_generation():
+    """Nothing re-places a member that already holds its cards, so an edit
+    that only steers the next placement must not ask for a restart that would
+    move nothing. `gather` established this; the rest of the preferences are
+    the same kind of field and none of them is read anywhere on the worker."""
+    from gpustack.schemas.models import GPUSelector, PlacementStrategyEnum
+
+    with patch(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    ):
+        plain = await model_spec_digest(_pass(), _model(roles=_pd_roles()))
+        labelled = await model_spec_digest(
+            _pass(), _model(roles=_pd_roles(), worker_selector={"zone": "a"})
+        )
+        pinned = await model_spec_digest(
+            _pass(),
+            _model(roles=_pd_roles(), gpu_selector=GPUSelector(gpu_ids=["w1:cuda:0"])),
+        )
+        spread = await model_spec_digest(
+            _pass(),
+            _model(roles=_pd_roles(), placement_strategy=PlacementStrategyEnum.BINPACK),
+        )
+
+    assert plain == labelled
+    assert plain == pinned
+    assert plain == spread
+
+
+@pytest.mark.asyncio
+async def test_what_the_server_works_out_for_itself_is_not_an_edit():
+    """`distributable` and `distributed_inference_across_workers` are set by
+    the scheduler once it has worked them out, not by anyone editing the
+    model. In the digest they made a group stale with nobody having touched
+    it, and the restart that cleared the warning only confirmed the value the
+    platform had already chosen."""
+    with patch(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    ):
+        before = await model_spec_digest(_pass(), _model(roles=_pd_roles()))
+        after = await model_spec_digest(
+            _pass(),
+            _model(
+                roles=_pd_roles(),
+                distributable=True,
+                distributed_inference_across_workers=True,
+            ),
+        )
+
+    assert before == after
+
+
+@pytest.mark.asyncio
+async def test_the_pool_a_member_draws_its_cards_from_still_is_one():
+    """The exclusion above stops at `gpu_type_selector`. It becomes the
+    workload's resource keys — whole card, sliced percentage, MIG profile —
+    so a member left running against the old ones is a member asking for
+    something the node no longer offers it."""
+    from gpustack.schemas.models import GPUTypeSelector
+
+    with patch(
+        "gpustack.server.controllers.GPUInstanceType.all_by_fields",
+        AsyncMock(return_value=[]),
+    ):
+        plain = await model_spec_digest(_pass(), _model(roles=_pd_roles()))
+        pooled = await model_spec_digest(
+            _pass(),
+            _model(
+                roles=_pd_roles(),
+                gpu_type_selector=GPUTypeSelector(type="a100-slice"),
+            ),
+        )
+
+    assert plain != pooled
+
+
+async def _static_group(mode="vllm-mooncake", prefill=1):
+    from gpustack.schemas.models import DisaggregationSpec
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    model = _model(
+        roles=_pd_roles(prefill=prefill), disaggregation=DisaggregationSpec(mode=mode)
+    )
+    members = [
+        _instance(1, "prefill", "g", CURRENT),
+        _instance(2, "decode", "g", CURRENT),
+        _instance(3, "router", "g", CURRENT),
+    ]
+    for member in members:
+        member.worker_id = 1
+        member.worker_ip = "10.0.0.1"
+        member.port = 8000 + member.id
+    members[-1].router_peer_snapshot = router_peer_snapshot(
+        members, "g", {1: "10.0.0.1"}
+    )
+    return model, members
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change", ["identity", "restart", "address", "bootstrap", "unknown"]
+)
+async def test_static_router_is_recreated_after_peer_changes(change):
+    from gpustack.schemas.models import PortBand
+
+    model, members = await _static_group()
+    if change == "identity":
+        members[0].id = 10
+    elif change == "restart":
+        members[0].restart_count = 1
+    elif change == "address":
+        members[0].port += 1
+    elif change == "bootstrap":
+        members[0].named_ports = {"bootstrap": PortBand(base=9001)}
+    else:
+        members[-1].router_peer_snapshot = None
+    result = await _run(model, members)
+    assert [i.role for i in result.deleted] == ["router"]
+    assert not result.created
+
+
+@pytest.mark.asyncio
+async def test_static_router_creation_records_expected_peers():
+    model, members = await _static_group()
+    expected = members[-1].router_peer_snapshot
+    result = await _run(model, members[:-1])
+    assert len(result.created) == 1
+    assert result.created[0].router_peer_snapshot == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason", ["unchanged", "unready", "stale", "dynamic", "manual", "command"]
+)
+async def test_static_router_does_not_restart_without_a_safe_peer_change(reason):
+    mode = {"dynamic": "vllm-nixl", "manual": "custom"}.get(reason, "vllm-mooncake")
+    model, members = await _static_group(mode)
+    if reason != "unchanged":
+        members[0].restart_count = 1
+    if reason == "unready":
+        members[0].state = ModelInstanceStateEnum.STARTING
+    elif reason == "stale":
+        members[0].spec_digest = "older"
+    elif reason == "command":
+        model.roles[-1].run_command = "my-router"
+    result = await _run(model, members)
+    assert not result.deleted
+
+
+@pytest.mark.asyncio
+async def test_static_scale_out_waits_for_all_new_members_before_router_recreation():
+    model, members = await _static_group(prefill=2)
+    result = await _run(model, members)
+    assert [i.role for i in result.created] == ["prefill"]
+    assert not result.deleted
+    added = _instance(4, "prefill", "g", CURRENT)
+    added.worker_id, added.port = 1, 8004
+    result = await _run(model, [*members, added])
+    assert [i.role for i in result.deleted] == ["router"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change,ready", [(False, True), (True, False)])
+async def test_static_membership_status_requires_the_rendered_peers(change, ready):
+    from gpustack.server import controllers, pd_membership
+
+    model, members = await _static_group()
+    digest = await model_spec_digest(_pass(), model)
+    for member in members:
+        member.spec_digest = digest
+    if change:
+        members[0].restart_count = 1
+    with patch(
+        "gpustack.schemas.workers.Worker.all_by_field",
+        AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")]),
+    ):
+        await controllers._reconcile_router_membership(_pass(), model, members)
+    try:
+        outcome = pd_membership.outcome_for(model.id)
+        assert outcome.ok is ready
+        if change:
+            assert "rebuilding router" in outcome.reason
+    finally:
+        pd_membership.forget(model.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group_id", ["g", "older"])
+async def test_static_membership_reads_worker_addresses_once_per_pass(group_id):
+    from gpustack.server import controllers, pd_membership
+
+    model, members = await _static_group()
+    router = members[-1].model_copy(
+        update={"id": 4, "group_id": group_id, "router_peer_snapshot": []}
+    )
+    if group_id == "g":
+        router.router_peer_snapshot = members[-1].router_peer_snapshot
+    workers = AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")])
+    with patch("gpustack.schemas.workers.Worker.all_by_field", workers):
+        await controllers._record_static_router_membership(
+            _pass(), model, [*members, router]
+        )
+    try:
+        assert pd_membership.outcome_for(model.id).ok
+        workers.assert_awaited_once()
+    finally:
+        pd_membership.forget(model.id)
+
+
+@pytest.mark.asyncio
+async def test_static_scale_down_refreshes_router_without_reaping_draining_peer():
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    model, members = await _static_group()
+    surplus = _instance(4, "prefill", "g", CURRENT)
+    surplus.worker_id, surplus.port = 1, 8004
+    members.insert(1, surplus)
+    members[-1].router_peer_snapshot = router_peer_snapshot(
+        members, "g", {1: "10.0.0.1"}
+    )
+    with patch(
+        "gpustack.server.controllers.find_scale_down_candidates",
+        AsyncMock(return_value=[SimpleNamespace(model_instance=surplus)]),
+    ):
+        result = await _run(model, members)
+    assert surplus.draining_since is not None
+    assert [i.role for i in result.deleted] == ["router"]
+    assert surplus not in result.deleted
+
+
+@pytest.mark.asyncio
+async def test_static_router_replacement_converges_with_seeded_peers():
+    model, members = await _static_group()
+    members[-1].router_peer_snapshot = None
+    result = await _run(model, members)
+    assert [i.role for i in result.deleted] == ["router"]
+    result = await _run(model, members[:-1])
+    replacement = ModelInstance(id=10, **result.created[0].model_dump())
+    replacement.state = ModelInstanceStateEnum.RUNNING
+    replacement.created_at = members[0].created_at
+    replacement.worker_id, replacement.worker_ip, replacement.port = 1, "10.0.0.1", 8010
+    result = await _run(model, [*members[:-1], replacement])
+    assert not result.created
+    assert not result.deleted
+
+
+@pytest.mark.asyncio
+async def test_static_router_removes_a_lost_peer_before_its_replacement_is_ready():
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    model, members = await _static_group(prefill=2)
+    lost = _instance(4, "prefill", "g", CURRENT)
+    lost.worker_id, lost.port = 1, 8004
+    members[-1].router_peer_snapshot = router_peer_snapshot(
+        [*members, lost], "g", {1: "10.0.0.1"}
+    )
+    result = await _run(model, members)
+    assert [i.role for i in result.created] == ["prefill"]
+    assert [i.role for i in result.deleted] == ["router"]
+
+
+@pytest.mark.asyncio
+async def test_static_router_serves_existing_peers_while_scale_out_is_incomplete():
+    from gpustack.server import controllers, pd_membership
+
+    model, members = await _static_group(prefill=3)
+    added = _instance(4, "prefill", "g", CURRENT)
+    added.worker_id, added.port = 1, 8004
+    members.append(added)
+    with patch(
+        "gpustack.schemas.workers.Worker.all_by_field",
+        AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")]),
+    ):
+        await controllers._reconcile_router_membership(_pass(), model, members)
+    try:
+        assert pd_membership.outcome_for(model.id).ok
+    finally:
+        pd_membership.forget(model.id)

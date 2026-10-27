@@ -2,6 +2,8 @@
 
 GPUStack supports Single Sign-On (SSO) authentication methods such as OIDC, SAML, and CAS. This allows users to log in using their existing credentials from an external identity provider.
 
+One SSO method is active at a time, and the login page labels its SSO button with the protocol in use, e.g. `Log in with OIDC`. To name the identity provider instead, e.g. `Log in with Okta`, set `--external-auth-provider-name`.
+
 ## OIDC
 
 Any authentication provider that supports OIDC can be configured. The `email`, `name`, and `picture` claims are used if available. The allowed redirect URI should include `<server-url>/auth/oidc/callback`.
@@ -16,6 +18,7 @@ The following CLI flags are available for OIDC configuration:
 | `--oidc-client-id`                                    | OIDC client ID.                                                                                                                                                      |
 | `--oidc-client-secret`                                | OIDC client secret.                                                                                                                                                  |
 | `--oidc-redirect-uri`                                 | The redirect URI configured in your OIDC application. This must be set to `<server-url>/auth/oidc/callback`.                                                         |
+| `--external-auth-provider-name` (Optional)            | Name of the identity provider shown on the login page's SSO button, e.g., `Okta`. Defaults to `OIDC` when unset.                                                     |
 | `--external-auth-name` (Optional)                     | Mapping of OIDC user information to username, e.g., `preferred_username`. By default, the `email` claim is used if available.                                        |
 | `--external-auth-full-name` (Optional)                | Mapping of OIDC user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`. By default, the `name` claim is used. |
 | `--external-auth-avatar-url` (Optional)               | Mapping of OIDC user information to user's avatar URL. By default, the `picture` claim is used if available.                                                         |
@@ -30,6 +33,7 @@ GPUSTACK_OIDC_CLIENT_ID="your-client-id"
 GPUSTACK_OIDC_CLIENT_SECRET="your-client-secret"
 GPUSTACK_OIDC_REDIRECT_URI="{your-server-url}/auth/oidc/callback"
 # Optional
+GPUSTACK_EXTERNAL_AUTH_PROVIDER_NAME="Okta"
 GPUSTACK_EXTERNAL_AUTH_NAME="email"
 GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
 GPUSTACK_EXTERNAL_AUTH_AVATAR_URL="picture"
@@ -96,6 +100,7 @@ The following CLI flags are available for SAML configuration:
 | `--saml-sp-slo-url` (Optional)                | SAML Service Provider Single Logout Service callback URL (e.g., `<server-url>/auth/saml/logout/callback`).                                                                                                                                                     |
 | `--saml-sp-attribute-prefix` (Optional)       | SAML Service Provider attribute prefix, which is used for fetching the attributes that are specified by --external-auth-\*. e.g., 'http://schemas.auth0.com/'.                                                                                                 |
 | `--saml-security` (Optional)                  | SAML security settings in JSON format.                                                                                                                                                                                                                         |
+| `--external-auth-provider-name` (Optional)    | Name of the identity provider shown on the login page's SSO button, e.g., `Okta`. Defaults to `SAML` when unset.                                                                                                                                               |
 | `--external-auth-name` (Optional)             | Mapping of SAML user information to username. You must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress' or simplify with 'emailaddress' by '--saml-sp-attribute-prefix'.                            |
 | `--external-auth-full-name` (Optional)        | Mapping of SAML user information to user's full name. Multiple elements can be combined. You must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name' or simplify with 'name' by '--saml-sp-attribute-prefix'. |
 | `--external-auth-avatar-url` (Optional)       | Mapping of SAML user information to user's avatar URL. You must configure the full attribute name like 'http://schemas.auth0.com/picture' or simplify with 'picture' by '--saml-sp-attribute-prefix'.                                                          |
@@ -114,6 +119,7 @@ GPUSTACK_SAML_SP_PRIVATE_KEY="your-sp-private-key"
 # Optional
 GPUSTACK_SAML_SP_ATTRIBUTE_PREFIX="http://schemas.auth0.com/"
 GPUSTACK_SAML_SECURITY="{}"
+GPUSTACK_EXTERNAL_AUTH_PROVIDER_NAME="Okta"
 GPUSTACK_EXTERNAL_AUTH_NAME="emailaddress"
 GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
 GPUSTACK_EXTERNAL_AUTH_AVATAR_URL="picture"
@@ -205,6 +211,7 @@ The following CLI flags are available for CAS configuration:
 | `--cas-username-attribute` (Optional)         | CAS XML attribute name to use as the GPUStack username. Defaults to the CAS `cas:user` element when unset.                                                                                 |
 | `--cas-full-name-attribute` (Optional)        | CAS XML attribute name to use as the user's full name, e.g., `displayName`. Falls back to a `displayName` attribute if present, otherwise the username.                                    |
 | `--cas-avatar-attribute` (Optional)           | CAS XML attribute name to use as the user's avatar URL.                                                                                                                                    |
+| `--external-auth-provider-name` (Optional)    | Name of the identity provider shown on the login page's SSO button, e.g., `Campus SSO`. Defaults to `CAS` when unset.                                                                       |
 | `--external-auth-default-inactive` (Optional) | Prevents new SSO users from being activated by default.                                                                                                                                    |
 
 You can also set these options via environment variables instead of CLI flags:
@@ -217,6 +224,7 @@ GPUSTACK_CAS_VALIDATE_ENDPOINT="/p3/serviceValidate"
 GPUSTACK_CAS_USERNAME_ATTRIBUTE="uid"
 GPUSTACK_CAS_FULL_NAME_ATTRIBUTE="displayName"
 GPUSTACK_CAS_AVATAR_ATTRIBUTE=""
+GPUSTACK_EXTERNAL_AUTH_PROVIDER_NAME="Campus SSO"
 GPUSTACK_EXTERNAL_AUTH_DEFAULT_INACTIVE="true"
 ```
 

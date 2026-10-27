@@ -1,6 +1,7 @@
 """Database-related utilities shared across GPUStack components."""
 
 import re
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 import asyncpg
@@ -9,19 +10,130 @@ from sqlalchemy.dialects.postgresql import base as pg_base
 _pg_version_patched = False
 
 
+# Query parameters dropped before the probe connects. ``options`` uses libpq's
+# ``-c...`` syntax, which asyncpg does not accept. ``target_session_attrs``
+# would refuse a node that cannot accept writes, and this probe only reads
+# ``version()``, which every node in a cluster reports identically; leaving it
+# in place would fail startup whenever the DSN happens to name a standby.
+PROBE_EXCLUDED_PARAMS = {'options', 'target_session_attrs'}
+
+
+def _netloc_host_list(hosts: str, ports: str) -> Optional[str]:
+    """Render libpq's comma-separated host and port lists as one netloc.
+
+    Only a list naming a port for every host is rendered. SQLAlchemy's asyncpg
+    dialect accepts no other count and raises ``ArgumentError`` on one, so a
+    list that does not pair up cannot reach an engine either way; giving it a
+    default here would only send the probe somewhere the engine will never go.
+
+    Args:
+        hosts: Comma-separated host list, as it appeared in the query string.
+        ports: Comma-separated port list, as it appeared in the query string.
+
+    Returns:
+        The ``host:port,host:port`` form asyncpg's DSN parser reads, or None
+        when the two lists do not pair up.
+    """
+    host_list = [h.strip() for h in hosts.split(',')]
+    port_list = [p.strip() for p in ports.split(',')]
+    if len(host_list) != len(port_list) or not all(host_list) or not all(port_list):
+        return None
+    return ','.join(
+        # A bare IPv6 address carries colons of its own and has to be bracketed
+        # before a port can be appended to it.
+        f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
+        for host, port in zip(host_list, port_list)
+    )
+
+
+# One ``host=<host>:<port>`` token: a hostname or IPv4 address and a port. An
+# IPv6 address does not fit, and SQLAlchemy's dialect cannot split one in this
+# spelling either.
+_HOST_PORT_TOKEN = re.compile(r'^[^:,\[\]]+:\d+$')
+
+
+def _netloc_host_port_list(host_tokens: List[str]) -> Optional[str]:
+    """Render repeated ``host=<host>:<port>`` tokens as one netloc.
+
+    This is the multihost spelling SQLAlchemy documents for its asyncpg
+    dialect. Only a list in which every token carries a port is rendered: the
+    dialect raises ``ArgumentError`` when one does not, so such a list cannot
+    reach an engine either way.
+
+    Args:
+        host_tokens: Every ``host`` value from the query string, in order.
+
+    Returns:
+        The tokens joined with commas, which is already the
+        ``host:port,host:port`` form asyncpg's DSN parser reads, or None when
+        a token does not spell one host with a port.
+    """
+    if not all(_HOST_PORT_TOKEN.match(token) for token in host_tokens):
+        return None
+    return ','.join(host_tokens)
+
+
+def _probe_dsn(db_url: str) -> str:
+    """Build the DSN the openGauss probe connects with.
+
+    asyncpg reads the host list from the netloc only: ``host`` and ``port`` in
+    the query string are ignored outright, so a URL naming several nodes would
+    leave the probe talking to whichever one the netloc happens to name. That
+    is the node most likely to be unreachable, since listing several is what an
+    operator does when one of them may be, and the probe failing takes startup
+    down with it before an engine is ever built. Moving the list into the
+    netloc lets asyncpg try each node in turn.
+
+    Both spellings SQLAlchemy's dialect accepts are read: libpq's
+    ``host=a,b&port=1,2`` and the ``host=a:1&host=b:2`` form its own
+    documentation uses. Mixing the two is an error in the dialect and is left
+    for it to report.
+
+    Args:
+        db_url: The PostgreSQL URL as configured.
+
+    Returns:
+        A DSN with ``PROBE_EXCLUDED_PARAMS`` removed and a usable host list
+        moved into the netloc. The netloc is left as it stands otherwise.
+    """
+    parsed = urlparse(db_url)
+    params: List[Tuple[str, str]] = [
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k not in PROBE_EXCLUDED_PARAMS
+    ]
+    hosts = [v for k, v in params if k == 'host' and v]
+    ports = [v for k, v in params if k == 'port' and v]
+    if len(hosts) == 1 and ports:
+        netloc_hosts = _netloc_host_list(hosts[0], ports[-1])
+    elif hosts and not ports:
+        netloc_hosts = _netloc_host_port_list(hosts)
+    else:
+        netloc_hosts = None
+    if netloc_hosts is None:
+        return urlunparse(parsed._replace(query=urlencode(params)))
+
+    params = [(k, v) for k, v in params if k not in ('host', 'port')]
+    userinfo, sep, _ = parsed.netloc.rpartition('@')
+    return urlunparse(
+        parsed._replace(netloc=userinfo + sep + netloc_hosts, query=urlencode(params))
+    )
+
+
 async def is_opengauss(db_url: str) -> bool:
     """Return True when the PostgreSQL-shaped URL points at openGauss.
 
     Opens a one-off asyncpg connection and inspects ``SELECT version()`` —
     openGauss reports itself with ``openGauss`` in the version string
-    rather than ``PostgreSQL``. Only the ``options`` query parameter is
-    stripped from the DSN (asyncpg does not accept libpq's ``-c...``
-    syntax); other params such as ``sslmode`` are preserved.
+    rather than ``PostgreSQL``.
+
+    Args:
+        db_url: The PostgreSQL URL as configured.
+
+    Returns:
+        True when the server identifies itself as openGauss.
     """
-    parsed = urlparse(db_url)
-    filtered = [(k, v) for k, v in parse_qsl(parsed.query) if k != 'options']
-    dsn = urlunparse(parsed._replace(query=urlencode(filtered)))
-    conn = await asyncpg.connect(dsn=dsn)
+    conn = await asyncpg.connect(dsn=_probe_dsn(db_url))
     try:
         version_str = await conn.fetchval("SELECT version()")
     finally:

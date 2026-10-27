@@ -2,8 +2,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gpustack.api.exceptions import BadRequestException, InternalServerErrorException
 from gpustack.api.tenant import TenantContext
 from gpustack.routes import inference_backend as ib_route
+from gpustack.schemas import Worker
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
     InferenceBackendUpdate,
@@ -12,6 +14,7 @@ from gpustack.schemas.inference_backend import (
 )
 from gpustack.schemas.models import BackendSourceEnum
 from gpustack.schemas.principals import Principal, PrincipalType
+from gpustack.schemas.runner_source import RunnerOverrideEntry
 
 
 def _org_ctx(current_principal_id: int) -> TenantContext:
@@ -168,3 +171,86 @@ async def test_redirect_noop_in_all_mode(monkeypatch):
     )
 
     assert result is None
+
+
+def _all_mode_admin_ctx() -> TenantContext:
+    """Platform admin in "All" mode — the only caller that may write a Global row."""
+    user = Principal(id=1, name="admin", kind=PrincipalType.USER, is_admin=True)
+    return TenantContext(
+        user=user,
+        is_platform_admin=True,
+        current_principal_id=None,
+        org_role=None,
+        current_is_personal_scope=False,
+    )
+
+
+def _downgraded_backend(source_name) -> InferenceBackend:
+    """A community row no source publishes any more: reconcile_backend converted
+    it to CUSTOM, so it keeps the source-given name — which carries no
+    ``-custom`` suffix — and its versions look hand-added."""
+    return InferenceBackend(
+        id=12,
+        backend_name="llama.cpp",
+        owner_principal_id=None,
+        backend_source=BackendSourceEnum.CUSTOM,
+        enabled=False,
+        source_name=source_name,
+        version_configs=VersionConfigDict(
+            root={"v1": VersionConfig(image_name="img:v1", built_in_frameworks=None)}
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_name, accepted", [("builtin", True), (None, False)])
+async def test_a_downgraded_row_stays_writable_under_its_source_given_name(
+    monkeypatch, source_name, accepted
+):
+    """A row downgraded from a source must stay editable: holding its
+    source-given name to the ``-custom`` suffix would reject every write to it.
+    A row carrying no source stamp is still held to the suffix."""
+    backend = _downgraded_backend(source_name)
+    backend_in = InferenceBackendUpdate(
+        backend_name="llama.cpp",
+        backend_source=BackendSourceEnum.CUSTOM,
+        description="edited",
+        version_configs=backend.version_configs,
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    if accepted:
+        await ib_route.update_inference_backend(
+            MagicMock(), _all_mode_admin_ctx(), backend.id, backend_in
+        )
+        assert update_mock.await_args.args[1]["description"] == "edited"
+    else:
+        with pytest.raises(BadRequestException) as e:
+            await ib_route.update_inference_backend(
+                MagicMock(), _all_mode_admin_ctx(), backend.id, backend_in
+            )
+        assert "must end with '-custom'" in str(e.value.message)
+        update_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", [Worker, RunnerOverrideEntry, InferenceBackend])
+async def test_list_backend_configs_reports_database_failures(monkeypatch, failing):
+    """Any failing read must surface as a 500, not a 200 with an empty list the
+    UI renders as "no backends available". The cause stays in the log: a
+    database error carries SQL and schema details."""
+    db_error = 'relation "inference_backends" does not exist'
+
+    for model in (Worker, RunnerOverrideEntry, InferenceBackend):
+        monkeypatch.setattr(model, "all", AsyncMock(return_value=[]))
+    monkeypatch.setattr(failing, "all", AsyncMock(side_effect=RuntimeError(db_error)))
+
+    with pytest.raises(InternalServerErrorException) as e:
+        await ib_route.list_backend_configs(session=None, ctx=None)
+
+    assert e.value.status_code == 500
+    assert "inference_backends" not in e.value.message
+    assert str(e.value.__cause__) == db_error

@@ -10,7 +10,8 @@
 # 2. gpustack target.
 #    - Install PostgreSQL.
 #    - Install Higress standalone components.
-#    - Install gpustack package from the mounted source code.
+#    - Install gpustack package from the mounted source code, packaging the
+#      served Helm chart with the operator image's Helm.
 #    - Setup entrypoint to gpustack command.
 
 # Argument usage:
@@ -22,7 +23,7 @@
 # - HIGRESS_APISERVER_VERSION: Version of Higress API server to use.
 ARG PYTHON_VERSION=3.11
 ARG GPUSTACK_BASE_IMAGE=base
-ARG GPUSTACK_OPERATOR_VERSION=v0.5.4
+ARG GPUSTACK_OPERATOR_VERSION=v0.9.2
 ARG GPUSTACK_RUNTIME_ROCM_VERSION=7.0.2
 ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
 ARG HIGRESS_VERSION=2.1.9
@@ -294,6 +295,54 @@ ENV S6_KEEP_ENV=1 \
 # platform explicitly; the build host itself can be any platform.
 FROM --platform=linux/amd64 rocm/dev-ubuntu-22.04:${GPUSTACK_RUNTIME_ROCM_VERSION} AS rocm-base
 
+# Stage Docs
+#
+# Builds the user documentation the server serves at /help/, so an air-gapped
+# deployment has it. Kept out of the gpustack stage because mkdocs-material and
+# its plugins are needed to build the site and never to serve it: shipping them
+# would add a few hundred packages a vulnerability scan has to answer for.
+#
+# Example build command:
+#   docker build --tag=gpustack/gpustack:docs --file=pack/Dockerfile --target=docs \
+#     --build-arg GIT_COMMIT="$(git rev-parse HEAD)" --progress=plain .
+#
+FROM base AS docs
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+# The stamp the site shows in its header. Required, not optional: this stage
+# copies sources without .git, so the build script cannot work the commit out for
+# itself, and it refuses to stamp a site it cannot identify.
+#
+# Every caller has to pass it. That is all three of them: .github/workflows/pack.yaml
+# builds the published images and never goes through hack/package.sh, hack/package.sh
+# covers a local `make package`, and a hand-run docker build has to say so itself.
+ARG GIT_COMMIT
+
+COPY docs/ /workspace/docs/
+COPY docs-i18n/ /workspace/docs-i18n/
+COPY hack/build-docs.sh hack/build_docs.py hack/mkdocs_i18n.py hack/mkdocs_multilingual.py hack/mkdocs_offline.py hack/check_offline_docs.py /workspace/hack/
+COPY mkdocs.yml mkdocs.offline.yml pyproject.toml uv.lock /workspace/
+
+WORKDIR /workspace
+
+RUN --mount=type=cache,target=/root/.cache \
+    --mount=type=cache,target=/workspace/.cache <<EOF
+    # Build the offline documentation site
+
+    export UV_NO_CACHE=0
+    export UV_LINK_MODE=copy
+    export DOCS_COMMIT="${GIT_COMMIT}"
+
+    # The dependency group only, never the project: the site does not import
+    # gpustack, and installing it here would drag in its whole runtime tree.
+    uv sync --frozen --only-group docs --no-install-project
+
+    # UV_NO_SYNC stops the `uv run` inside the script from doing it anyway. The
+    # cache mount above is where the privacy plugin keeps the external assets it
+    # downloads, so a rebuild does not depend on those hosts being up.
+    UV_NO_SYNC=1 bash hack/build-docs.sh --offline
+EOF
+
 FROM ${GPUSTACK_BASE_IMAGE} AS gpustack
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
@@ -496,7 +545,15 @@ EOF
 
 ARG UI_DOWNLOAD=true
 
+# Helm is a build dependency, not a runtime one: hack/install.sh packages the
+# GPUStack chart into the UI's static tree, which the server then serves to a
+# registered cluster's bootstrap Job. It is borrowed from the operator image for
+# the duration of this step rather than installed, so it never reaches the
+# final image — and so the Helm that packages the chart is the same one that
+# installs it in a cluster, since the bootstrap Job runs that image.
+
 RUN --mount=type=cache,target=/root/.cache \
+    --mount=type=bind,from=gpustack-operator,source=/usr/bin/helm,target=/usr/local/bin/helm \
     --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     # Install GPUStack
 
@@ -520,8 +577,12 @@ RUN --mount=type=cache,target=/root/.cache \
     tree -hs "$(pip show gpustack | grep Location: | head -n 1 | cut -d" " -f 2)/gpustack/third_party"
 
     # Set up environment
+    # 0711, not 0700: the embedded PostgreSQL runs as its own user and must
+    # traverse the data dir to reach <data_dir>/postgresql. Listing is denied
+    # to everyone else, the credential files inside are 0600, and a fresh
+    # named volume initialized from this directory inherits its mode.
     mkdir -p /var/lib/gpustack \
-        && chmod -R 0755 /var/lib/gpustack
+        && chmod -R 0711 /var/lib/gpustack
 
     # Review
     uv pip tree \
@@ -586,7 +647,7 @@ RUN --mount=type=bind,from=rocm-base,source=/opt/rocm/share,target=/opt/rocm/sha
     fi
 EOF
 ENV AMD_VISIBLE_DEVICES="all" \
-    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/rocm"
+    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/rocm;/opt/rocm/lib"
 
 ## Active all Ascend devices detection,
 ## works with (default) Ascend container runtime and privileged mode.
@@ -639,7 +700,7 @@ ENV CAMBRICON_VISIBLE_DEVICES="all" \
 ##   + Disallowing privileged, try with:
 ##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --security-opt seccomp=unconfined -v /dev:/dev:ro --group-add video -v /opt/hyhal:/opt/hyhal:ro -v /opt/dtk:/opt/dtk:ro -e ROCM_SMI_LIB_PATH=/opt/hyhal/lib -e ROCM_PATH=/opt/dtk ...
 ENV HYGON_VISIBLE_DEVICES="all" \
-    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/dtk;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}"
+    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/dtk;/etc/dmi_mig_config;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}"
 
 ## Active all Iluvatar devices detection,
 ## works with (default) Iluvatar container runtime and privileged mode.
@@ -737,16 +798,37 @@ ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
 ## GPUSTACK_RUNTIME_DOCKER_IMAGE_NO_PULL_VISUALIZATION=true: Disable visualizating image pull progress, instead using simple logs.
 ## GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS: Configure filter labels for mirrored deployment.
 ## GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES: Declare volumes to be ignored during mirrored deployment.
+## GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_ENVIRONMENTS: Declare environments to be ignored during mirrored deployment.
+##     NVIDIA_MIG_CONFIG_DEVICES/NVIDIA_MIG_MONITOR_DEVICES are MIG capability declarations
+##     set on the worker for MIG visibility; they are only legal in a privileged container,
+##     so keep them out of the non-privileged model pods the deployer mirrors its env into.
 ENV GPUSTACK_RUNTIME_LOG_EXCEPTION="false" \
     GPUSTACK_RUNTIME_DEPLOY_CDI_SPECS_DIRECTORY="/var/run/cdi" \
     GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT="true" \
     GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/var/run/cdi;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}" \
+    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_ENVIRONMENTS="NVIDIA_MIG_CONFIG_DEVICES;NVIDIA_MIG_MONITOR_DEVICES" \
     GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE="false" \
     GPUSTACK_RUNTIME_DOCKER_IMAGE_NO_PULL_VISUALIZATION="true" \
     GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS="${GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS}"
 
 COPY --from=gpustack-operator /usr/bin/gpustack-operator /usr/bin/gpustack-operator
 COPY --chmod=755 pack/entrypoint.sh /usr/bin/entrypoint.sh
+
+## Install the user documentation
+#
+# Last of the content on purpose: the site is rebuilt whenever docs/ changes, and
+# a layer this size sitting above the accelerator layers would make a typo in a
+# guide cost a full image rebuild.
+
+RUN --mount=type=bind,from=docs,source=/workspace/gpustack/help,target=/tmp/help <<EOF
+    # Install the user documentation
+
+    # Beside the UI inside the installed package, which is where
+    # gpustack.routes.ui looks for it. The wheel deliberately does not carry the
+    # site -- see .gitignore and the artifacts list in pyproject.toml -- so the
+    # image is what places it.
+    cp -a /tmp/help "$(python3 -c 'import importlib.util; print(next(iter(importlib.util.find_spec("gpustack").submodule_search_locations)))')/help"
+EOF
 
 ## KUBE_FEATURE_WatchListClient=false: Disable WatchListClient to avoid potential issues with Kubernetes API server versions that do not support it.
 ENV KUBE_FEATURE_WatchListClient="false"

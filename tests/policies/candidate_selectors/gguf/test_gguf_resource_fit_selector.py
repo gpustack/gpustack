@@ -1,3 +1,4 @@
+from gpustack.policies.resource_view import ResourceView
 import pytest
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.policies.candidate_selectors import GGUFResourceFitSelector
@@ -126,8 +127,10 @@ async def test_schedule_to_single_worker_single_gpu(config):
 
     mis = []
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -146,7 +149,10 @@ async def test_schedule_to_single_worker_single_gpu(config):
 
         candidates = await resource_fit_selector.select_candidates(workers)
         candidates = await placement_scorer.score(candidates)
-        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        # Supply the complete resource view so selection does not query storage.
+        candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -215,8 +221,10 @@ async def test_schedule_to_single_worker_multi_gpu(config):
 
     mis = []
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -236,7 +244,9 @@ async def test_schedule_to_single_worker_multi_gpu(config):
         # filter
         candidates = await resource_fit_selector.select_candidates(workers)
         candidates = await placement_scorer.score(candidates)
-        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -275,8 +285,10 @@ async def test_schedule_to_single_worker_multi_gpu_with_deepseek_r1(config):
 
     mis = []
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mis)
-    placement_scorer_spread = PlacementScorer(m, mis)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer_spread = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -299,7 +311,9 @@ async def test_schedule_to_single_worker_multi_gpu_with_deepseek_r1(config):
 
         spread_candidates = await resource_fit_selector.select_candidates(workers)
         spread_candidates = await placement_scorer_spread.score(spread_candidates)
-        spread_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        spread_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -388,11 +402,15 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
         ),
     ]
 
-    resource_fit_selector_binpack = GGUFResourceFitSelector(m, mis)
-    placement_scorer_binpack = PlacementScorer(m, mis)
+    resource_fit_selector_binpack = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer_binpack = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
-    resource_fit_selector_spread = GGUFResourceFitSelector(m, mis)
-    placement_scorer_spread = PlacementScorer(m, mis)
+    resource_fit_selector_spread = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer_spread = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -414,7 +432,9 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
             workers
         )
         binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
-        binpack_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        binpack_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -489,7 +509,9 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
             workers
         )
         spread_candidates = await placement_scorer_spread.score(spread_candidates)
-        spread_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        spread_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -538,8 +560,10 @@ async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
 
     mis = []
 
-    resource_fit_selector_binpack = GGUFResourceFitSelector(m, mis)
-    placement_scorer_binpack = PlacementScorer(m, mis)
+    resource_fit_selector_binpack = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer_binpack = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -561,7 +585,9 @@ async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
             workers
         )
         binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
-        binpack_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        binpack_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -645,8 +671,10 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
             ),
         ),
     ]
-    resource_fit_selector_binpack = GGUFResourceFitSelector(m, mis)
-    placement_scorer_binpack = PlacementScorer(m, mis)
+    resource_fit_selector_binpack = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer_binpack = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -668,7 +696,9 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
             workers
         )
         binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
-        binpack_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        binpack_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -698,14 +728,20 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
         # spread
         m.placement_strategy = PlacementStrategyEnum.SPREAD
 
-        resource_fit_selector_spread = GGUFResourceFitSelector(m, mis)
-        placement_policy_spread = PlacementScorer(m, mis)
+        resource_fit_selector_spread = GGUFResourceFitSelector(
+            m, mis, resource_view=ResourceView(mis)
+        )
+        placement_policy_spread = PlacementScorer(
+            m, mis, resource_view=ResourceView(mis)
+        )
 
         spread_candidates = await resource_fit_selector_spread.select_candidates(
             workers
         )
         spread_candidates = await placement_policy_spread.score(spread_candidates)
-        spread_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        spread_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_spread_candidates = [
             {"worker_id": 7, "score": 90.0},
@@ -735,8 +771,10 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
 
     mis = []
 
-    resource_fit_selector_binpack = GGUFResourceFitSelector(m, mis)
-    placement_scorer_binpack = PlacementScorer(m, mis)
+    resource_fit_selector_binpack = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer_binpack = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -770,7 +808,9 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
             workers
         )
         binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
-        binpack_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        binpack_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -832,8 +872,10 @@ async def test_manual_schedule_to_multi_worker_multi_gpu(config):
 
     mis = []
 
-    resource_fit_selector_binpack = GGUFResourceFitSelector(m, mis)
-    placement_scorer_binpack = PlacementScorer(m, mis)
+    resource_fit_selector_binpack = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer_binpack = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -867,7 +909,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu(config):
             workers
         )
         binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
-        binpack_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        binpack_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -934,8 +978,10 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
 
     mis = []
 
-    resource_fit_selector_spread = GGUFResourceFitSelector(m, mis)
-    placement_scorer_spread = PlacementScorer(m, mis)
+    resource_fit_selector_spread = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer_spread = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -960,7 +1006,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
             workers
         )
         spread_candidates = await placement_scorer_spread.score(spread_candidates)
-        spread_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        spread_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -1066,8 +1114,10 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
 
     mis = []
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1090,7 +1140,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
 
         candidates = await resource_fit_selector.select_candidates(workers)
         candidates = await placement_scorer.score(candidates)
-        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         expected_candidates = [
             {
@@ -1191,8 +1243,10 @@ async def test_manual_schedule_to_single_worker_multi_gpu(config):
         ),
     ]
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1234,8 +1288,10 @@ async def test_manual_schedule_to_single_worker_multi_gpu(config):
             gpu_ids=["host-4-4080:cuda:0", "host-4-4080:cuda:1", "host-4-4080:cuda:2"]
         )
 
-        resource_fit_selector = GGUFResourceFitSelector(m, mis)
-        placement_scorer = PlacementScorer(m, mis)
+        resource_fit_selector = GGUFResourceFitSelector(
+            m, mis, resource_view=ResourceView(mis)
+        )
+        placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
         candidates = await resource_fit_selector.select_candidates(workers())
         candidates = await placement_scorer.score(candidates)
@@ -1281,8 +1337,10 @@ async def test_manual_schedule_to_single_worker_multi_gpu_partial_offload(config
 
     mis = []
 
-    resource_fit_selector_binpack = GGUFResourceFitSelector(m, mis)
-    placement_scorer_binpack = PlacementScorer(m, mis)
+    resource_fit_selector_binpack = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer_binpack = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1401,7 +1459,9 @@ async def test_schedule_candidates_1x_197gx1(config, m, expected):
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mis)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mis, resource_view=ResourceView(mis)
+    )
 
     with (
         patch(

@@ -11,7 +11,8 @@ repos:
         args: [ --unsafe ]
       - id: debug-statements
       - id: end-of-file-fixer
-        exclude: "CNAME"
+        # Preserve the original bytes of the vendored upstream scripts.
+        exclude: 'CNAME|^docs/assets/katex/.*\.min\.js$'
   - repo: https://github.com/pycqa/flake8
     rev: 7.0.0
     hooks:

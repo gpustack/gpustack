@@ -1,17 +1,19 @@
-import re
 import shlex
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
 from pydantic import BaseModel, Field, RootModel
 from sqlalchemy import JSON, Column, ForeignKey, Integer, Text, UniqueConstraint
 from sqlmodel import SQLModel, Field as SQLField
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.mixins import BaseModelMixin
+from gpustack.schemas.source import SourceTypeEnum
+from gpustack.utils.template import deployment_variables, render
 from .common import pydantic_column_type, PaginatedList
-from .models import BackendEnum, BackendSourceEnum
+from .models import BackendEnum, BackendSourceEnum, Model
 
 
 class ParameterFormatEnum(str, Enum):
@@ -48,6 +50,11 @@ class VersionConfig(BaseModel):
     built_in_frameworks: Optional[List[str]] = Field(None)
     custom_framework: Optional[str] = Field(None)
     env: Optional[Dict[str, str]] = Field(None)
+    # Per-version source origin: which managed source produced this version
+    # (FILE-yaml / URL / BUILTIN). None for user-added versions and packaged
+    # runner-catalog versions the UI renders without a badge.
+    source_name: Optional[str] = Field(None)
+    source_type: Optional[SourceTypeEnum] = Field(None)
 
 
 class VersionConfigDict(RootModel[Dict[str, VersionConfig]]):
@@ -111,6 +118,11 @@ class InferenceBackendBase(SQLModel):
     backend_source: Optional[BackendSourceEnum] = SQLField(default=None)
     enabled: Optional[bool] = SQLField(default=None)
     icon: Optional[str] = SQLField(default=None)
+    # Card-level source origin: which managed source last produced this
+    # community backend (BUILTIN packaged / FILE-yaml / URL). NULL on built-in
+    # engine rows and user-created custom backends.
+    source_name: Optional[str] = SQLField(default=None)
+    source_type: Optional[SourceTypeEnum] = SQLField(default=None)
     default_env: Optional[Dict[str, str]] = SQLField(
         sa_column=Column(JSON), default=None
     )
@@ -215,44 +227,21 @@ class InferenceBackendBase(SQLModel):
             if not command:
                 return ""
 
-        command = command.replace("{{model_path}}", model_path or "")
-        command = command.replace("{{port}}", str(port))
-        command = command.replace("{{worker_ip}}", worker_ip or "")
-        command = command.replace("{{model_name}}", model_name or "")
-        command = command.replace(
-            "{{gpu_count}}", str(gpu_count) if gpu_count is not None else ""
-        )
-        command = command.replace(
-            "{{gpu_ids}}", ",".join(str(i) for i in gpu_ids) if gpu_ids else ""
-        )
-
-        # Resolve environment variables using {{VAR_NAME}} syntax
-        # Use provided env (from model) if available, otherwise fall back to backend env
-        if env:
-            command = self._resolve_env_vars(command, env)
-
-        return command
-
-    def _resolve_env_vars(self, command: str, env_dict: Dict[str, str]) -> str:
-        """
-        Resolve {{VAR_NAME}} placeholders in the command string using the provided environment dict.
-
-        Args:
-            command: The command string with {{VAR_NAME}} placeholders
-            env_dict: Dictionary of environment variable names to values
-
-        Returns:
-            Command with placeholders replaced by their values.
-            If a variable is not found in env_dict, the placeholder is left unchanged.
-        """
-        # Match valid variable names: start with letter or underscore, followed by alphanumeric or underscore
-        pattern = r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}"
-
-        def replace_var(match):
-            var_name = match.group(1)
-            return env_dict.get(var_name, match.group(0))
-
-        return re.sub(pattern, replace_var, command)
+        # One renderer, shared with the env-value path: the substitution used
+        # to live here, and living here is what kept it away from every
+        # built-in backend. See gpustack.utils.template.
+        variables = {
+            **(env or {}),
+            **deployment_variables(
+                model_path=model_path,
+                port=port,
+                worker_ip=worker_ip,
+                model_name=model_name,
+                gpu_count=gpu_count,
+                gpu_ids=gpu_ids,
+            ),
+        }
+        return render(command, variables, context="run command")
 
     def get_container_entrypoint(
         self, version: Optional[str] = None
@@ -329,6 +318,8 @@ class VersionListItem(BaseModel):
     version: str = Field(...)
     is_deprecated: bool = Field(default=False)
     env: Optional[Dict[str, str]] = Field(None)
+    source_name: Optional[str] = Field(None)
+    source_type: Optional[SourceTypeEnum] = Field(None)
 
 
 class InferenceBackendListItem(BaseModel):
@@ -346,6 +337,8 @@ class InferenceBackendListItem(BaseModel):
     default_env: Optional[Dict[str, str]] = Field(None)
     parameter_format: Optional[ParameterFormatEnum] = Field(None)
     common_parameters: Optional[List[str]] = Field(None)
+    source_name: Optional[str] = Field(None)
+    source_type: Optional[SourceTypeEnum] = Field(None)
 
 
 class InferenceBackendResponse(BaseModel):
@@ -385,6 +378,46 @@ def get_built_in_backend() -> List[InferenceBackend]:
         InferenceBackend(backend_name=BackendEnum.VOX_BOX.value, is_built_in=True),
         InferenceBackend(backend_name=BackendEnum.CUSTOM.value, is_built_in=True),
     ]
+
+
+def built_in_backend_names_by_service() -> Dict[str, str]:
+    """Built-in backend names keyed by their runner ``service``: a model row says
+    ``vLLM`` where the runner catalog says ``vllm``, the same bridge
+    ``get_runner_versions_and_configs`` crosses."""
+    return {
+        backend.backend_name.lower(): backend.backend_name
+        for backend in get_built_in_backend()
+        if backend.backend_name != BackendEnum.CUSTOM.value
+    }
+
+
+async def deployed_backend_versions(
+    session: AsyncSession,
+) -> Dict[Tuple[str, str], List[str]]:
+    """Every ``(backend_name, version)`` a live deployment pins, to the models
+    pinning it.
+
+    Read in one query rather than one per pair: a first custom runner document
+    takes the whole packaged catalog away at once — dozens of coordinates — and
+    asking about each separately is both slow and only ever answers about the
+    first violation.
+
+    Deliberately not ``check_backend_in_use``: that helper answers ``False`` on a
+    database error, which reads as "nothing is in use" — letting a destructive
+    write through, or deleting the rows a deployment runs on. A model pinning no
+    version is left out, because Auto resolves at placement rather than against a
+    fixed version.
+
+    Shared by the pre-write checks and the reconciles, so "in use" means one thing
+    on every path that can take content away.
+    """
+    deployed: Dict[Tuple[str, str], List[str]] = {}
+    for model in await Model.all(session):
+        if model.replicas > 0 and model.backend_version:
+            deployed.setdefault((model.backend, model.backend_version), []).append(
+                model.name
+            )
+    return deployed
 
 
 def is_built_in_backend(backend_name: Optional[str]) -> bool:

@@ -1,0 +1,6 @@
+{% extends "main.html" %}
+
+{% block content %}
+  {% set github_buttons %}{% include "partials/github-buttons.html" %}{% endset %}
+  {{ super() | replace("<!-- github-buttons -->", github_buttons) }}
+{% endblock %}

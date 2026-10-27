@@ -32,12 +32,10 @@ class ModelFileLocalityScorer(ScheduleCandidatesScorer):
 
         try:
             async with async_session() as session:
-                ready_main_workers = await self._get_ready_worker_ids(
-                    session, self._model
-                )
+                ready_main_workers = await ready_worker_ids(session, self._model)
                 ready_draft_workers: Set[int] = set()
                 if self._draft_model_source is not None:
-                    ready_draft_workers = await self._get_ready_worker_ids(
+                    ready_draft_workers = await ready_worker_ids(
                         session, self._draft_model_source
                     )
         except Exception as e:
@@ -52,32 +50,6 @@ class ModelFileLocalityScorer(ScheduleCandidatesScorer):
             )
 
         return candidates
-
-    async def _get_ready_worker_ids(self, session, source: ModelSource) -> Set[int]:
-        source_index = source.model_source_index
-        if not source_index:
-            return set()
-
-        model_files = (
-            await ModelFileService(session).get_by_source_index(source_index) or []
-        )
-
-        if source.source == SourceEnum.LOCAL_PATH and source.local_path:
-            local_path_files = await ModelFileService(session).get_by_resolved_path(
-                source.local_path
-            )
-            if local_path_files:
-                model_files = model_files + local_path_files
-
-        ready_worker_ids = set()
-        for model_file in model_files:
-            if (
-                model_file.state == ModelFileStateEnum.READY
-                and model_file.worker_id is not None
-            ):
-                ready_worker_ids.add(model_file.worker_id)
-
-        return ready_worker_ids
 
     def _calculate_score(
         self,
@@ -120,3 +92,47 @@ class ModelFileLocalityScorer(ScheduleCandidatesScorer):
                     worker_ids.add(subworker.worker_id)
 
         return worker_ids
+
+
+async def ready_worker_ids(session, source: ModelSource) -> Set[int]:
+    """Workers already holding a READY copy of ``source``.
+
+    Module-level rather than a method because two callers want the same
+    answer about the same fleet and only one of them scores candidates: the
+    group solver ranks *whole placements*, where "where are the files" is a
+    property of a set of workers and no candidate exists yet to hang it on.
+    One implementation, so a group and a single instance cannot disagree
+    about which workers are warm.
+
+    Args:
+        session: An open database session.
+        source: The model, or its draft model, whose files are being located.
+
+    Returns:
+        Worker ids with a READY copy; empty when the source has no index or
+        nothing has been downloaded.
+    """
+    source_index = source.model_source_index
+    if not source_index:
+        return set()
+
+    model_files = (
+        await ModelFileService(session).get_by_source_index(source_index) or []
+    )
+
+    if source.source == SourceEnum.LOCAL_PATH and source.local_path:
+        local_path_files = await ModelFileService(session).get_by_resolved_path(
+            source.local_path
+        )
+        if local_path_files:
+            model_files = model_files + local_path_files
+
+    out = set()
+    for model_file in model_files:
+        if (
+            model_file.state == ModelFileStateEnum.READY
+            and model_file.worker_id is not None
+        ):
+            out.add(model_file.worker_id)
+
+    return out

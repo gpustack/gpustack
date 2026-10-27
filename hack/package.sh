@@ -21,6 +21,13 @@ function pack() {
         exit 1
     fi
 
+    if ! docker buildx version &>/dev/null; then
+        gpustack::log::fatal "Docker Buildx plugin is not available." \
+            "Install it with the package manager, e.g. 'apt-get install docker-buildx-plugin' or 'yum install docker-buildx-plugin'," \
+            "or drop the release binary into '/usr/local/lib/docker/cli-plugins/docker-buildx' and make it executable." \
+            "See https://docs.docker.com/build/install-buildx/ for details."
+    fi
+
     if ! docker buildx inspect --builder "gpustack" &>/dev/null; then
         gpustack::log::info "Creating new buildx builder 'gpustack'"
         docker run --rm --privileged tonistiigi/binfmt:qemu-v9.2.2-52 --uninstall qemu-*
@@ -60,6 +67,7 @@ function pack() {
         --progress plain \
         --build-arg "GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS=$(printf "%s;" "${LABELS[@]}")" \
         --build-arg "UI_DOWNLOAD=${PACKAGE_UI_DOWNLOAD}" \
+        --build-arg "GIT_COMMIT=${GIT_COMMIT}" \
         "${EXTRA_ARGS[@]}" \
         "${ROOT_DIR}"
     set +x

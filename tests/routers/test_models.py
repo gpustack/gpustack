@@ -1,19 +1,68 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
+import yaml
+from sqlalchemy import delete, func, update
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    BadRequestException,
     ForbiddenException,
     NotFoundException,
 )
 from gpustack.api.tenant import TenantContext
 from gpustack.routes import models as models_route
-from gpustack.routes.models import create_model, update_model
+from gpustack.routes.models import (
+    create_model,
+    export_models,
+    import_models,
+    _apply_model_update,
+    validate_model_in,
+)
 from gpustack.routes.model_common import ModelStateFilterEnum
-from gpustack.schemas.models import ModelCreate, ModelUpdate, SourceEnum
-from gpustack.schemas.principals import PrincipalType, platform_principal_id
+from gpustack.schemas.clusters import Cluster
+from gpustack.schemas.deployment_document import (
+    ENTRY_FIELDS,
+    OVERWRITABLE_FIELDS,
+    DeploymentExportRequest,
+    DeploymentImportRequest,
+    dump_deployments,
+    load_deployments,
+)
+from gpustack.routes.plugins.capability_policy import CapabilityPolicy
+from gpustack.schemas.links import ModelRoutePrincipalLink
+from gpustack.schemas.model_routes import (
+    AccessPolicyEnum,
+    ModelRoute,
+    ModelRouteTarget,
+)
+from gpustack.schemas.model_revisions import ModelRevision
+from gpustack.schemas.models import (
+    BackendEnum,
+    GPUSelector,
+    LoraListEntry,
+    Model,
+    ModelCreate,
+    ModelInstance,
+    ModelInstanceStateEnum,
+    ModelStateEnum,
+    ModelUpdate,
+    ScalingSchedule,
+    ScalingScheduleRule,
+    SourceEnum,
+)
+from gpustack.schemas.principals import (
+    Principal,
+    PrincipalType,
+    platform_principal_id,
+)
+from gpustack.utils.export_limits import attachment_headers
 
 DEFAULT_ORG_ID = platform_principal_id()
 CUSTOM_ORG_ID = 5
@@ -43,6 +92,15 @@ def _model_create(cluster_id=None):
         source=SourceEnum.HUGGING_FACE,
         huggingface_repo_id="org/repo",
         cluster_id=cluster_id,
+    )
+
+
+def _model_update(**kwargs):
+    return ModelUpdate(
+        name="m1",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/repo",
+        **kwargs,
     )
 
 
@@ -200,10 +258,10 @@ async def _run_update(monkeypatch, ctx, cluster_return):
         "gpustack.routes.models.Cluster.one_by_id",
         AsyncMock(return_value=cluster_return),
     )
-    await update_model(
+    await _apply_model_update(
         MagicMock(),
         ctx,
-        1,
+        model,
         ModelUpdate(
             name="m1",
             source=SourceEnum.HUGGING_FACE,
@@ -237,6 +295,488 @@ async def test_update_model_rejects_missing_cluster(monkeypatch):
         await _run_update(monkeypatch, _ctx(CUSTOM_ORG_ID), None)
 
 
+def _stored_model(backend, image_name=None, run_command=None, backend_version=None):
+    model = MagicMock()
+    model.owner_principal_id = CUSTOM_ORG_ID
+    model.cluster_id = CLUSTER_ID
+    model.backend = backend
+    model.image_name = image_name
+    model.run_command = run_command
+    model.backend_version = backend_version
+    # Backfilled into the patch before validation, so a bare MagicMock would
+    # read as "both selectors set" and trip their own mutual exclusion first.
+    model.gpu_type_selector = None
+    model.gpu_selector = None
+    model.roles = None
+    model.scaling_schedule = None
+    model.disaggregation = None
+    return model
+
+
+async def _capture_update_patch(monkeypatch, model, model_in, *, apply_schedule=False):
+    """Drive update_model past validation and return what ModelService saw."""
+    captured = {}
+
+    class _Service:
+        def __init__(self, session):
+            pass
+
+        async def update(self, model, source, auto_commit=True):
+            captured["source"] = source
+
+    monkeypatch.setattr(
+        "gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=model)
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_resource_visible", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_cluster_belongs_to_org",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "gpustack.validation.pd.placement.validate_gather_layer", AsyncMock()
+    )
+    if not apply_schedule:
+        monkeypatch.setattr(
+            models_route, "apply_scaling_schedule_baseline", lambda *a, **k: None
+        )
+    monkeypatch.setattr(models_route, "validate_shared_kv_cache", AsyncMock())
+    monkeypatch.setattr(models_route, "ModelService", _Service)
+    monkeypatch.setattr(
+        "gpustack.routes.models.ModelRoute.one_by_fields", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(models_route, "revoke_model_access_cache", AsyncMock())
+
+    session = MagicMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+
+    await _apply_model_update(session, _ctx(CUSTOM_ORG_ID), model, model_in)
+    return captured["source"]
+
+
+def _scaling_schedule(enabled=True, baseline=1):
+    return ScalingSchedule(
+        enabled=enabled,
+        baseline_replicas=baseline,
+        rules=[
+            ScalingScheduleRule(
+                start_cron="* * * * *", duration_seconds=86400, replicas=3
+            )
+        ],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replicas", [0, 5])
+async def test_sparse_manual_scaling_requires_disabling_schedule(monkeypatch, replicas):
+    model = _stored_model(BackendEnum.CUSTOM)
+    model.replicas = 3
+    model.scaling_schedule = _scaling_schedule()
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await _capture_update_patch(
+            monkeypatch, model, _model_update(replicas=replicas)
+        )
+    assert "Disable scheduled scaling" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replicas", [0, 2, 5])
+async def test_manual_scaling_disables_schedule_and_preserves_rules(
+    monkeypatch, replicas
+):
+    model = _stored_model(BackendEnum.CUSTOM)
+    model.replicas = 3
+    model.scaling_schedule = _scaling_schedule()
+    disabled = model.scaling_schedule.model_copy(update={"enabled": False})
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(replicas=replicas, scaling_schedule=disabled),
+        apply_schedule=True,
+    )
+
+    assert source.replicas == replicas
+    assert source.scaling_schedule.enabled is False
+    assert source.scaling_schedule.baseline_replicas == 1
+    assert source.scaling_schedule.rules == model.scaling_schedule.rules
+    assert "scaling_schedule" in source.model_fields_set
+    assert model.scaling_schedule.enabled is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replicas", [None, 3])
+async def test_sparse_edit_uses_stored_schedule_without_resubmitting_it(
+    monkeypatch, replicas
+):
+    model = _stored_model(BackendEnum.CUSTOM)
+    model.replicas = 3
+    model.scaling_schedule = _scaling_schedule()
+    fields = {} if replicas is None else {"replicas": replicas}
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(description="edited", **fields),
+        apply_schedule=True,
+    )
+
+    assert source.replicas == 3
+    assert "scaling_schedule" not in source.model_fields_set
+    assert source.scaling_schedule == model.scaling_schedule
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clear_schedule", [False, True])
+async def test_manual_scaling_allowed_with_disabled_or_removed_schedule(
+    monkeypatch, clear_schedule
+):
+    model = _stored_model(BackendEnum.CUSTOM)
+    model.replicas = 3
+    model.scaling_schedule = _scaling_schedule(enabled=clear_schedule)
+    fields = {"scaling_schedule": None} if clear_schedule else {}
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(replicas=0, **fields),
+        apply_schedule=True,
+    )
+
+    assert source.replicas == 0
+    if clear_schedule:
+        assert source.scaling_schedule is None
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_keeps_window_ownership_of_replicas(monkeypatch):
+    model = _stored_model(BackendEnum.CUSTOM)
+    model.replicas = 3
+    model.scaling_schedule = _scaling_schedule()
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(replicas=5, scaling_schedule=_scaling_schedule(baseline=5)),
+        apply_schedule=True,
+    )
+
+    assert source.replicas == 3
+    assert source.scaling_schedule.baseline_replicas == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [None, 0, 4])
+async def test_update_preserves_retention_unless_explicitly_set(monkeypatch, limit):
+    model = Model(
+        **_model_update(backend=BackendEnum.VLLM).model_dump(
+            exclude={"revision_history_limit"}
+        ),
+        revision_history_limit=2,
+    )
+    values = {} if limit is None else {"revision_history_limit": limit}
+    source = await _capture_update_patch(
+        monkeypatch, model, _model_update(backend=BackendEnum.VLLM, **values)
+    )
+    monkeypatch.setattr(Model, "save", AsyncMock())
+    monkeypatch.setattr(Model, "_publish_event_after_commit", lambda *args: None)
+    await model.update(MagicMock(), source, auto_commit=False)
+    assert model.revision_history_limit == (2 if limit is None else limit)
+
+
+@pytest.mark.asyncio
+async def test_a_custom_image_and_a_backend_version_are_mutually_exclusive():
+    """An image pins a runtime the runner catalog does not carry, so it
+    replaces the backend version rather than joining it."""
+    with pytest.raises(BadRequestException) as exc_info:
+        await validate_model_in(
+            MagicMock(),
+            _model_update(
+                backend=BackendEnum.VLLM,
+                image_name="vllm/vllm-openai:nightly",
+                backend_version="0.11.0",
+            ),
+        )
+    assert "custom image" in exc_info.value.message
+
+    # Either one alone is fine.
+    await validate_model_in(
+        MagicMock(),
+        _model_update(backend=BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly"),
+    )
+    await validate_model_in(
+        MagicMock(), _model_update(backend=BackendEnum.VLLM, backend_version="0.11.0")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_sparse_update_cannot_pin_a_second_runtime(monkeypatch):
+    """Validation sees the merged state, so omitting backend_version cannot
+    leave the model pinned to both a version and an image."""
+    model = _stored_model(BackendEnum.VLLM, backend_version="0.11.0")
+
+    monkeypatch.setattr(
+        "gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=model)
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_resource_visible", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_cluster_belongs_to_org",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "gpustack.validation.pd.placement.validate_gather_layer", AsyncMock()
+    )
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await _apply_model_update(
+            MagicMock(),
+            _ctx(CUSTOM_ORG_ID),
+            model,
+            _model_update(
+                backend=BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly"
+            ),
+        )
+    assert "custom image" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_editing_an_unrelated_field_keeps_the_custom_image(monkeypatch):
+    model = _stored_model(BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly")
+    model_in = _model_update(backend=BackendEnum.VLLM, replicas=3)
+
+    source = await _capture_update_patch(monkeypatch, model, model_in)
+
+    assert source is model_in
+    assert "image_name" not in source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_switching_away_from_the_custom_backend_drops_its_image(monkeypatch):
+    """The image and command belong to the backend they were entered for, but a
+    request that supplies a replacement keeps it."""
+    model = _stored_model(
+        BackendEnum.CUSTOM, image_name="my/own:v1", run_command="python serve.py"
+    )
+
+    source = await _capture_update_patch(
+        monkeypatch, model, _model_update(backend=BackendEnum.VLLM)
+    )
+    assert source.image_name is None
+    assert source.run_command is None
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(backend=BackendEnum.VLLM, image_name="vllm/vllm-openai:nightly"),
+    )
+    assert source.image_name == "vllm/vllm-openai:nightly"
+    assert source.run_command is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "old_backend, old_image, old_command, old_version, changes, expected",
+    [
+        (
+            BackendEnum.CUSTOM,
+            "my/own:v1",
+            "python serve.py",
+            None,
+            {"backend": BackendEnum.VLLM, "backend_version": "0.11.0"},
+            (None, None, "0.11.0"),
+        ),
+        (
+            BackendEnum.VLLM,
+            "vllm/old:latest",
+            None,
+            None,
+            {"backend": BackendEnum.SGLANG, "backend_version": "0.5.6"},
+            (None, None, "0.5.6"),
+        ),
+        (
+            BackendEnum.VLLM,
+            None,
+            None,
+            "0.11.0",
+            {"backend": BackendEnum.SGLANG},
+            (None, None, None),
+        ),
+        (
+            BackendEnum.VLLM,
+            "vllm/old:latest",
+            "--old-option",
+            None,
+            {"backend": BackendEnum.SGLANG, "image_name": "sglang/new:latest"},
+            ("sglang/new:latest", None, None),
+        ),
+        (
+            BackendEnum.VLLM,
+            None,
+            None,
+            "0.11.0",
+            {"backend": "my-backend"},
+            (None, None, None),
+        ),
+    ],
+)
+async def test_switching_backend_validates_the_new_runtime(
+    monkeypatch, old_backend, old_image, old_command, old_version, changes, expected
+):
+    model = _stored_model(old_backend, old_image, old_command, old_version)
+
+    source = await _capture_update_patch(monkeypatch, model, _model_update(**changes))
+
+    assert (source.image_name, source.run_command, source.backend_version) == expected
+    assert {"image_name", "run_command", "backend_version"} <= source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_switching_backend_rejects_conflicting_replacements(monkeypatch):
+    model = _stored_model(BackendEnum.CUSTOM, image_name="my/own:v1")
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await _capture_update_patch(
+            monkeypatch,
+            model,
+            _model_update(
+                backend=BackendEnum.VLLM,
+                image_name="vllm/vllm-openai:nightly",
+                backend_version="0.11.0",
+            ),
+        )
+
+    assert "custom image" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_sparse_custom_backend_update_keeps_its_version_and_image(monkeypatch):
+    model = _stored_model("my-backend", image_name="my/own:v1", backend_version="v1")
+
+    source = await _capture_update_patch(monkeypatch, model, _model_update(replicas=2))
+
+    assert source.backend == "my-backend"
+    assert source.image_name == "my/own:v1"
+    assert source.backend_version == "v1"
+    assert not {"backend", "image_name", "backend_version"} & source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_editing_a_legacy_builtin_image_clears_its_unused_version(monkeypatch):
+    model = _stored_model(
+        BackendEnum.VLLM,
+        image_name="vllm/vllm-openai:nightly",
+        backend_version="0.11.0",
+    )
+
+    source = await _capture_update_patch(monkeypatch, model, _model_update(replicas=2))
+
+    assert source.image_name == "vllm/vllm-openai:nightly"
+    assert source.backend_version is None
+    assert "backend_version" in source.model_fields_set
+    assert "image_name" not in source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_replacing_a_legacy_builtin_image_clears_its_unused_version(monkeypatch):
+    model = _stored_model(
+        BackendEnum.VLLM,
+        image_name="vllm/vllm-openai:old",
+        backend_version="0.11.0",
+    )
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(image_name="vllm/vllm-openai:nightly"),
+    )
+
+    assert source.image_name == "vllm/vllm-openai:nightly"
+    assert source.backend_version is None
+    assert {"image_name", "backend_version"} <= source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_clearing_a_legacy_builtin_image_keeps_its_version(monkeypatch):
+    model = _stored_model(
+        BackendEnum.VLLM,
+        image_name="vllm/vllm-openai:old",
+        backend_version="0.11.0",
+    )
+
+    source = await _capture_update_patch(
+        monkeypatch, model, _model_update(image_name=None)
+    )
+
+    assert source.image_name is None
+    assert source.backend_version == "0.11.0"
+    assert "backend_version" not in source.model_fields_set
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "image_name",
+    ["vllm/vllm-openai:old", "vllm/vllm-openai:nightly"],
+)
+async def test_full_update_of_legacy_builtin_image_clears_unchanged_version(
+    monkeypatch, image_name
+):
+    model = _stored_model(
+        BackendEnum.VLLM,
+        image_name="vllm/vllm-openai:old",
+        backend_version="0.11.0",
+    )
+
+    source = await _capture_update_patch(
+        monkeypatch,
+        model,
+        _model_update(image_name=image_name, backend_version="0.11.0", replicas=2),
+    )
+
+    assert source.image_name == image_name
+    assert source.backend_version is None
+    assert {"image_name", "backend_version"} <= source.model_fields_set
+
+
+@pytest.mark.asyncio
+async def test_legacy_builtin_image_rejects_changed_version_without_clearing_image(
+    monkeypatch,
+):
+    model = _stored_model(
+        BackendEnum.VLLM,
+        image_name="vllm/vllm-openai:old",
+        backend_version="0.11.0",
+    )
+
+    with pytest.raises(BadRequestException) as exc_info:
+        await _capture_update_patch(
+            monkeypatch, model, _model_update(backend_version="0.12.0")
+        )
+    assert "custom image" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_null_backend_does_not_clear_runtime_settings(monkeypatch):
+    model = _stored_model(
+        BackendEnum.VLLM,
+        image_name="vllm/vllm-openai:nightly",
+        run_command="--max-model-len=8192",
+    )
+
+    source = await _capture_update_patch(
+        monkeypatch, model, _model_update(backend=None)
+    )
+
+    assert source.backend is None
+    assert source.image_name == "vllm/vllm-openai:nightly"
+    assert source.run_command is None
+    assert not {"image_name", "run_command"} & source.model_fields_set
+
+
 @pytest.mark.parametrize(
     "ready, replicas, state, expected",
     [
@@ -252,22 +792,1375 @@ async def test_update_model_rejects_missing_cluster(monkeypatch):
 def test_model_watch_filter_applies_state(
     monkeypatch, ready, replicas, state, expected
 ):
-    """The /models watch stream honors ``state`` via replica counts."""
-    monkeypatch.setattr(models_route, "cluster_scoped_system", lambda ctx: False)
+    """The /models watch stream honors ``state``. A payload carrying no
+    ``state`` field — a row from before the column existed — is still
+    filtered by the replica counts, unchanged."""
 
-    visible = models_route._make_model_watch_filter(
-        ctx=None, categories=None, state=state
-    )
+    visible = models_route._make_model_watch_filter(categories=None, state=state)
     data = SimpleNamespace(ready_replicas=ready, replicas=replicas)
+    assert visible(data) is expected
+
+
+@pytest.mark.parametrize(
+    "model_state, replicas, state, expected",
+    [
+        (ModelStateEnum.RUNNING, 3, ModelStateFilterEnum.READY, True),
+        # A model scaling up, and a group with a role at zero ready members:
+        # both have members running, so both are "ready" to this filter.
+        (ModelStateEnum.PARTIAL, 3, ModelStateFilterEnum.READY, True),
+        (ModelStateEnum.PENDING, 3, ModelStateFilterEnum.READY, False),
+        (ModelStateEnum.ERROR, 3, ModelStateFilterEnum.READY, False),
+        (ModelStateEnum.PENDING, 3, ModelStateFilterEnum.NOT_READY, True),
+        (ModelStateEnum.ERROR, 3, ModelStateFilterEnum.NOT_READY, True),
+        (ModelStateEnum.RUNNING, 3, ModelStateFilterEnum.NOT_READY, False),
+        (ModelStateEnum.PENDING, 0, ModelStateFilterEnum.NOT_READY, False),
+        (ModelStateEnum.PENDING, 0, ModelStateFilterEnum.STOPPED, True),
+        (ModelStateEnum.RUNNING, 3, ModelStateFilterEnum.STOPPED, False),
+    ],
+)
+def test_model_watch_filter_reads_the_model_state_field(
+    monkeypatch, model_state, replicas, state, expected
+):
+    """Once the row carries a status field, the filter reads it instead of
+    re-deriving readiness from the counters."""
+
+    visible = models_route._make_model_watch_filter(categories=None, state=state)
+    # ready_replicas is deliberately inconsistent with model_state here: the
+    # filter must not fall back to it when a state is present.
+    data = SimpleNamespace(state=model_state, ready_replicas=0, replicas=replicas)
     assert visible(data) is expected
 
 
 def test_model_watch_filter_passes_id_only_delete_events(monkeypatch):
     """ID-only DELETED payloads lack replica counts and must not be dropped
     by the state filter, else watch clients hold stale rows."""
-    monkeypatch.setattr(models_route, "cluster_scoped_system", lambda ctx: False)
 
     visible = models_route._make_model_watch_filter(
-        ctx=None, categories=None, state=ModelStateFilterEnum.READY
+        categories=None, state=ModelStateFilterEnum.READY
     )
     assert visible({"id": 7}) is True
+
+
+@pytest.mark.asyncio
+async def test_update_model_rejects_gpu_selector_on_vgpu_model(monkeypatch):
+    """A sparse PUT setting gpu_selector on a model that already carries
+    gpu_type_selector must fail mutual-exclusion validation against the
+    merged (stored + request) state, not just the request payload."""
+    from gpustack.api.exceptions import BadRequestException
+    from gpustack.schemas.models import GPUSelector, GPUTypeSelector
+
+    stored = MagicMock()
+    stored.owner_principal_id = CUSTOM_ORG_ID
+    stored.cluster_id = CLUSTER_ID
+    stored.gpu_type_selector = GPUTypeSelector(
+        type="pool-a100",
+        accelerator_sliced_memory_percentage=50,
+        accelerator_sliced_cores_percentage=50,
+    )
+    stored.gpu_selector = None
+    monkeypatch.setattr(
+        "gpustack.routes.models.Model.one_by_id",
+        AsyncMock(return_value=stored),
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_resource_visible",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_cluster_belongs_to_org",
+        AsyncMock(),
+    )
+
+    with pytest.raises(BadRequestException):
+        await _apply_model_update(
+            MagicMock(),
+            _ctx(CUSTOM_ORG_ID),
+            stored,
+            ModelUpdate(
+                name="m1",
+                source=SourceEnum.HUGGING_FACE,
+                huggingface_repo_id="org/repo",
+                gpu_selector=GPUSelector(
+                    gpu_ids=["worker-1:nvidia:0"],
+                    gpus_per_replica=1,
+                ),
+            ),
+        )
+
+
+# ==================== Deployment YAML export / import ====================
+#
+# The document schema (what an exported entry carries, how strictly it reads
+# back) and the two routes, the latter against an in-memory SQLite database
+# with the handlers driven directly through a ``TenantContext``.
+
+EXPORTED_AT = datetime(2026, 9, 7, 10, 0, 0, tzinfo=timezone.utc)
+
+TABLES = (
+    Principal.__table__,
+    Cluster.__table__,
+    Model.__table__,
+    ModelRevision.__table__,
+    ModelInstance.__table__,
+    ModelRoute.__table__,
+    ModelRouteTarget.__table__,
+    ModelRoutePrincipalLink.__table__,
+    # the deploy-time route creation enables the least-load capability
+    # for multi-replica models, which writes through the shared
+    # capability policy table
+    CapabilityPolicy.__table__,
+)
+
+# What a user would hand-write: a routed base model with a LoRA, explicit GPU
+# placement and a credential, plus a plain embedding model.
+DOCUMENT = """
+- name: qwen3-8b
+  source: huggingface
+  huggingface_repo_id: Qwen/Qwen3-8B
+  backend: vLLM
+  backend_parameters:
+  - --max-model-len=32768
+  env:
+    HF_TOKEN: hf_xxx
+  gpu_selector:
+    gpu_ids:
+    - worker-1:cuda:0
+  lora_list:
+  - lora_name: sql
+    lora_repo_name: org/sql-lora
+  enable_model_route: true
+- name: bge-m3
+  source: huggingface
+  huggingface_repo_id: BAAI/bge-m3
+  replicas: 2
+"""
+
+# A live scaling schedule drives `replicas` itself, so it is kept out of
+# DOCUMENT (which the overwrite tests stop entry by entry) and appended only
+# where a round trip has to carry one.
+SCHEDULED_ENTRY = """- name: scheduled
+  source: huggingface
+  huggingface_repo_id: org/scheduled
+  scaling_schedule:
+    enabled: true
+    baseline_replicas: 1
+    rules:
+    - start_cron: 0 8 * * *
+      duration_seconds: 3600
+      replicas: 4
+      name: daytime
+"""
+
+
+def _model_row(
+    name, cluster_id=1, owner_principal_id=DEFAULT_ORG_ID, **fields
+) -> Model:
+    fields.setdefault("source", SourceEnum.HUGGING_FACE)
+    fields.setdefault("huggingface_repo_id", f"org/{name}")
+    return Model(
+        name=name,
+        cluster_id=cluster_id,
+        owner_principal_id=owner_principal_id,
+        **fields,
+    )
+
+
+def _exported_row(**overrides) -> Model:
+    """A fully configured row with every server-derived field set, so the dump
+    tests can check that none of those leak into the document."""
+    fields = dict(
+        id=7,
+        name="qwen3-8b",
+        huggingface_repo_id="Qwen/Qwen3-8B",
+        backend="vLLM",
+        backend_version="0.11.0",
+        backend_parameters=["--max-model-len=32768"],
+        env={"HF_TOKEN": "hf_xxx"},
+        gpu_selector=GPUSelector(gpu_ids=["worker-1:cuda:0"]),
+        lora_list=[
+            LoraListEntry(
+                lora_name="qwen3-8b:sql",
+                lora_repo_name="org/sql-lora",
+                path="/var/lib/gpustack/cache/sql",
+                model_file_id=9,
+            )
+        ],
+        meta={"n_params": 8_000_000_000},
+        ready_replicas=1,
+        cluster_id=3,
+        owner_principal_id=CUSTOM_ORG_ID,
+        access_policy=AccessPolicyEnum.ALLOWED_PRINCIPALS,
+        created_at=datetime(2026, 1, 1),
+        updated_at=datetime(2026, 1, 2),
+    )
+    fields.update(overrides)
+    return _model_row(fields.pop("name"), **fields)
+
+
+def test_dump_keeps_user_input_and_drops_server_state():
+    text = dump_deployments(
+        [_exported_row()],
+        route_backed_ids={7},
+        cluster_names={3: "c1"},
+        exported_at=EXPORTED_AT,
+    )
+
+    assert text.startswith("# Exported from GPUStack ")
+    assert "at 2026-09-07T10:00:00Z\n" in text
+    # Each deployment starts at the left margin, never indented into a list.
+    assert "\nname: qwen3-8b\n" in text
+    (entry,) = yaml.safe_load_all(text)
+
+    # The cluster travels by name; its id never leaves the server.
+    assert entry["cluster_name"] == "c1"
+    # ``name`` and ``cluster`` lead, everything else keeps the schema's
+    # declaration order.
+    assert list(entry)[:4] == ["name", "cluster_name", "source", "huggingface_repo_id"]
+    assert list(entry)[-1] == "enable_model_route"
+    assert entry["enable_model_route"] is True
+    assert entry["backend_version"] == "0.11.0"
+    assert entry["backend_parameters"] == ["--max-model-len=32768"]
+    assert entry["env"] == {"HF_TOKEN": "hf_xxx"}
+    assert entry["gpu_selector"] == {"gpu_ids": ["worker-1:cuda:0"]}
+    assert entry["lora_list"] == [
+        {"lora_name": "sql", "lora_repo_name": "org/sql-lora", "source": "huggingface"}
+    ]
+
+    for field in (
+        "id",
+        "created_at",
+        "updated_at",
+        "ready_replicas",
+        "meta",
+        "cluster_id",
+        "owner_principal_id",
+        "access_policy",
+    ):
+        assert field not in entry, field
+    # ``None`` never round-trips into an explicit null.
+    assert "description" not in entry
+    assert "worker_selector" in entry  # an empty dict is user input, kept
+
+
+def test_dump_is_byte_stable_and_infers_the_route_flag_per_model():
+    models = [_exported_row(), _exported_row(id=8, name="second", lora_list=None)]
+    dump = dict(route_backed_ids={7}, cluster_names={3: "c1"}, exported_at=EXPORTED_AT)
+
+    first = dump_deployments(models, **dump)
+    second = dump_deployments(models, **dump)
+    assert first == second
+
+    # One `---` between the two deployments, and none before the first.
+    assert first.count("\n---\n") == 1
+    flags = [entry["enable_model_route"] for entry in yaml.safe_load_all(first)]
+    assert flags == [True, False]
+
+
+def test_entry_fields_are_pinned():
+    """The document's field set is derived, so a new column on the deployment
+    schema would silently join both the export and what an overwrite writes.
+    Pinning it makes that a deliberate edit, here and in the docs."""
+    assert ENTRY_FIELDS == [
+        "name",
+        "cluster_name",
+        "source",
+        "huggingface_repo_id",
+        "huggingface_filename",
+        "model_scope_model_id",
+        "model_scope_file_path",
+        "local_path",
+        "description",
+        "replicas",
+        "categories",
+        "placement_strategy",
+        "cpu_offloading",
+        "distributed_inference_across_workers",
+        "worker_selector",
+        "gpu_selector",
+        "gpu_type_selector",
+        "backend",
+        "backend_version",
+        "backend_parameters",
+        "image_name",
+        "run_command",
+        "native_anthropic_api",
+        "env",
+        "restart_on_error",
+        "distributable",
+        "extended_kv_cache",
+        "speculative_config",
+        "scaling_schedule",
+        "generic_proxy",
+        "lora_list",
+        "roles",
+        "disaggregation",
+        "gather",
+        "enable_model_route",
+    ]
+    # An overwrite settles routes rather than writing a column, and never
+    # moves a deployment between clusters.
+    assert OVERWRITABLE_FIELDS == [
+        field
+        for field in ENTRY_FIELDS
+        if field not in ("enable_model_route", "cluster_name")
+    ]
+    # Tenancy and identity are the fields that must never be written by an
+    # import, whatever else the schema grows. The cluster travels by name
+    # instead, which the route resolves within the caller's own Org.
+    for field in ("id", "cluster_id", "owner_principal_id", "access_policy", "meta"):
+        assert field not in ENTRY_FIELDS, field
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        # A mapping is one deployment, so what is left to reject outright is a
+        # file holding no deployment at all.
+        ("just a string\n", "one deployment per '---' section"),
+        ("\n", "one deployment per '---' section"),
+        ("- [\n", "not valid YAML"),
+    ],
+)
+def test_load_rejects_a_malformed_document_outright(text, message):
+    with pytest.raises(ValueError) as raised:
+        load_deployments(text)
+    assert message in str(raised.value)
+
+
+def test_load_reads_both_spellings_of_the_same_deployments():
+    """One deployment per YAML document is what export writes; a single list
+    is how it used to, and an already exported file has to stay importable."""
+    sections = """name: a
+source: huggingface
+huggingface_repo_id: org/a
+---
+name: b
+source: huggingface
+huggingface_repo_id: org/b
+"""
+    listed = """- name: a
+  source: huggingface
+  huggingface_repo_id: org/a
+- name: b
+  source: huggingface
+  huggingface_repo_id: org/b
+"""
+    for text in (sections, listed):
+        loaded = load_deployments(text)
+        assert [(item.index, item.name, item.errors) for item in loaded] == [
+            (0, "a", []),
+            (1, "b", []),
+        ]
+
+    # A separator around the outside marks a document boundary, not an empty
+    # deployment; one deployment needs no separator at all.
+    assert len(load_deployments(f"---\n{sections}---\n")) == 2
+    assert len(load_deployments(sections.split("---")[0])) == 1
+
+
+def test_load_reports_every_entry_problem_and_keeps_the_good_entries():
+    text = """
+- name: good
+  source: huggingface
+  huggingface_repo_id: org/good
+  .anchor: &shared {}
+- name: broken
+  source: huggingface
+  huggingface_repo_id: org/broken
+  replicas: -1
+  colour: red
+  id: 12
+  cluster_id: 3
+  gpu_selector:
+    gpu_ids: [worker-1:cuda:0]
+    typo: 1
+  lora_list:
+  - lora_name: sql
+    lora_repo_name: org/sql-lora
+    colour: red
+    path: /var/lib/gpustack/cache/sql
+- name: good
+  source: huggingface
+  huggingface_repo_id: org/again
+- not a mapping
+- name: [oops]
+  source: huggingface
+  huggingface_repo_id: org/list
+- name: 123
+  source: huggingface
+  huggingface_repo_id: org/number
+"""
+    loaded = load_deployments(text)
+
+    # One entry per document item, in order, whether or not it parsed. A name
+    # that is not a string is no name at all.
+    assert [(item.index, item.name) for item in loaded] == [
+        (0, "good"),
+        (1, "broken"),
+        (2, "good"),
+        (3, None),
+        (4, None),
+        (5, None),
+    ]
+    assert [item.entry is not None for item in loaded] == [True] + [False] * 5
+    assert loaded[0].label == "deployment[0] (good)"
+    assert loaded[3].label == "deployment[3]"
+
+    # The schema error keeps pydantic's own text; the entry carries it
+    # unlabelled, since the entry it belongs to is right there.
+    broken = loaded[1].errors
+    assert broken[2].startswith("replicas: ")
+    assert broken[:2] + broken[3:] == [
+        "server-managed field(s) are not allowed: cluster_id, id, lora_list[0].path",
+        "unknown field(s): colour, gpu_selector.typo, lora_list[0].colour",
+    ]
+    assert loaded[2].errors == [
+        "duplicate name, already used by deployment[0]",
+    ]
+    assert loaded[3].errors == ["must be a mapping"]
+    assert loaded[4].errors[0].startswith("name: ")
+    assert loaded[5].errors[0].startswith("name: ")
+
+    # An entry that validated needs no raw copy — its projection is what a
+    # client shows. One that did not has no projection, so the file's own
+    # text is all there is to put in front of the user to fix.
+    assert [bool(item.raw) for item in loaded] == [False, True, True, False, True, True]
+    assert loaded[1].raw["colour"] == "red"
+    assert loaded[4].raw["name"] == ["oops"]
+
+
+def test_attachment_header_fallback_stays_a_well_formed_quoted_string():
+    header = attachment_headers('模型"x.yaml')["Content-Disposition"]
+    assert header == (
+        'attachment; filename="___x.yaml"; '
+        "filename*=UTF-8''%E6%A8%A1%E5%9E%8B%22x.yaml"
+    )
+
+
+@pytest_asyncio.fixture
+async def engine():
+    e = create_async_engine("sqlite+aiosqlite://")
+    async with e.begin() as conn:
+        for table in TABLES:
+            await conn.run_sync(table.create)
+    yield e
+    await e.dispose()
+
+
+@pytest.fixture
+def no_gpu_lookup(monkeypatch):
+    """``gpu_selector`` validation needs live workers; placement is not under test."""
+    monkeypatch.setattr("gpustack.routes.models.validate_gpu_ids", AsyncMock())
+
+
+async def _seed(session: AsyncSession, *rows):
+    session.add_all(rows)
+    await session.commit()
+    return rows
+
+
+async def _count(session: AsyncSession, table) -> int:
+    return (await session.exec(select(func.count()).select_from(table))).one()
+
+
+async def _route_names(session: AsyncSession):
+    return sorted(route.name for route in await ModelRoute.all_by_fields(session))
+
+
+def _entries(response):
+    assert response.media_type == "application/x-yaml"
+    return list(yaml.safe_load_all(response.body))
+
+
+def _body_without_header(response) -> str:
+    return response.body.decode().split("\n", 1)[1]
+
+
+async def _import(session, ctx, content, cluster_id=1, dry_run=False, **overrides):
+    return await import_models(
+        session,
+        ctx,
+        DeploymentImportRequest(
+            content=content, cluster_id=cluster_id, dry_run=dry_run, **overrides
+        ),
+    )
+
+
+async def _stop_all(session):
+    """Only a stopped deployment can be overwritten."""
+    await session.exec(update(Model).values(replicas=0))
+    await session.commit()
+
+
+def _stopped(document: str) -> str:
+    """The document with every entry stopped, to match rows _stop_all left."""
+    return document.replace("  replicas: 2\n", "").replace(
+        "  source: huggingface\n", "  source: huggingface\n  replicas: 0\n"
+    )
+
+
+def _plan(result) -> list:
+    """The plan as (name, action, changed field names) per entry."""
+    return [
+        (
+            entry.name,
+            entry.action and entry.action.value,
+            [change.field for change in entry.changes],
+        )
+        for entry in result.entries
+    ]
+
+
+@pytest.mark.asyncio
+async def test_export_scopes_to_the_caller_and_names_the_file(engine):
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        first, second, foreign = await _seed(
+            session,
+            _model_row("first", env={"HF_TOKEN": "hf_xxx"}),
+            _model_row("second", cluster_id=2),
+            _model_row("foreign", owner_principal_id=CUSTOM_ORG_ID),
+        )
+        await _seed(
+            session,
+            ModelRoute(name="first", created_model_id=first.id),
+            # A LoRA child route also points at its base model; without the
+            # primary route the flag must stay off.
+            ModelRoute(name="second:sql", created_model_id=second.id),
+        )
+
+        # Everything the Org can see, in id order; the route flag is inferred.
+        response = await export_models(
+            session, _ctx(DEFAULT_ORG_ID), DeploymentExportRequest()
+        )
+        entries = _entries(response)
+        assert [entry["name"] for entry in entries] == ["first", "second"]
+        assert [entry["enable_model_route"] for entry in entries] == [True, False]
+        assert entries[0]["env"] == {"HF_TOKEN": "hf_xxx"}
+        assert "cluster_id" not in entries[0]
+        assert response.headers["content-disposition"].startswith(
+            'attachment; filename="gpustack-deployments-'
+        )
+
+        # ``cluster_id`` narrows; a single model is named after itself.
+        response = await export_models(
+            session, _ctx(DEFAULT_ORG_ID), DeploymentExportRequest(cluster_id=2)
+        )
+        assert [entry["name"] for entry in _entries(response)] == ["second"]
+        assert (
+            response.headers["content-disposition"]
+            == 'attachment; filename="second.yaml"'
+        )
+
+        # A cross-tenant or unknown id is 404 with no partial result.
+        with pytest.raises(NotFoundException):
+            await export_models(
+                session,
+                _ctx(DEFAULT_ORG_ID),
+                DeploymentExportRequest(ids=[first.id, foreign.id]),
+            )
+        with pytest.raises(NotFoundException):
+            await export_models(
+                session, _ctx(DEFAULT_ORG_ID), DeploymentExportRequest(ids=[9999])
+            )
+
+        # The admin in "All" mode sees every Org, but a document covers one:
+        # names are unique per Org, so two Orgs' rows could collide in a file.
+        admin = _ctx(None, is_admin=True)
+        with pytest.raises(BadRequestException) as raised:
+            await export_models(
+                session, admin, DeploymentExportRequest(ids=[foreign.id, second.id])
+            )
+        assert "more than one organization" in raised.value.message
+        response = await export_models(
+            session, admin, DeploymentExportRequest(ids=[foreign.id])
+        )
+        assert [entry["name"] for entry in _entries(response)] == ["foreign"]
+
+        # A name with shell/quote characters still yields a well-formed header.
+        (odd,) = await _seed(session, _model_row('odd"name/v1'))
+        response = await export_models(
+            session, _ctx(DEFAULT_ORG_ID), DeploymentExportRequest(ids=[odd.id])
+        )
+        assert (
+            response.headers["content-disposition"]
+            == 'attachment; filename="odd_name_v1.yaml"'
+        )
+
+
+@pytest.mark.asyncio
+async def test_export_omits_scheduler_placement(engine, no_gpu_lookup):
+    """Where the scheduler put a deployment must never reach the document:
+    those GPUs need not exist in the cluster it is imported into. A sentinel
+    for a property nothing enforces -- placement lives on ModelInstance, and
+    only a user writes Model.gpu_selector."""
+    ctx = _ctx(DEFAULT_ORG_ID)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session,
+            Cluster(id=1, name="c1", owner_principal_id=DEFAULT_ORG_ID),
+            _model_row("auto", worker_selector={"zone": "a"}),
+            _model_row(
+                "manual",
+                gpu_selector=GPUSelector(
+                    gpu_ids=["worker-1:cuda:0", "worker-1:cuda:1"],
+                    gpus_per_replica=2,
+                ),
+            ),
+        )
+        auto = await Model.one_by_field(session, "name", "auto")
+        await _seed(
+            session,
+            ModelInstance(
+                name="auto-0",
+                source=SourceEnum.HUGGING_FACE,
+                huggingface_repo_id="org/auto",
+                model_id=auto.id,
+                model_name="auto",
+                worker_id=4,
+                gpu_indexes=[0, 1],
+                state=ModelInstanceStateEnum.RUNNING,
+            ),
+        )
+
+        entries = _entries(await export_models(session, ctx, DeploymentExportRequest()))
+        by_name = {entry["name"]: entry for entry in entries}
+        assert "gpu_selector" not in by_name["auto"]
+        assert "gpu_type_selector" not in by_name["auto"]
+        assert by_name["auto"]["worker_selector"] == {"zone": "a"}
+        # A manual pick is the user's own intent, and survives verbatim.
+        assert by_name["manual"]["gpu_selector"] == {
+            "gpu_ids": ["worker-1:cuda:0", "worker-1:cuda:1"],
+            "gpus_per_replica": 2,
+        }
+
+
+@pytest.mark.asyncio
+async def test_import_round_trips_an_export(engine, no_gpu_lookup):
+    ctx = _ctx(DEFAULT_ORG_ID)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session, Cluster(id=1, name="c1", owner_principal_id=DEFAULT_ORG_ID)
+        )
+
+        document = DOCUMENT + SCHEDULED_ENTRY
+        result = await _import(session, ctx, document)
+        assert result.dry_run is False
+        assert _plan(result) == [
+            ("qwen3-8b", "create", []),
+            ("bge-m3", "create", []),
+            ("scheduled", "create", []),
+        ]
+        assert [item.name for item in result.items] == [
+            "qwen3-8b",
+            "bge-m3",
+            "scheduled",
+        ]
+        assert [item.cluster_id for item in result.items] == [1, 1, 1]
+        # Public form: the LoRA name is bare, as everywhere else in the API.
+        assert result.items[0].model_dump()["lora_list"][0]["lora_name"] == "sql"
+        # The route flag created the base route and the LoRA child route.
+        assert await _route_names(session) == ["qwen3-8b", "qwen3-8b:sql"]
+        assert await _count(session, ModelRouteTarget.__table__) == 2
+
+        exported = await export_models(session, ctx, DeploymentExportRequest())
+
+        # Re-importing an export of rows that still exist changes nothing --
+        # including while they run, since nothing would be written.
+        result = await _import(session, ctx, exported.body.decode(), dry_run=True)
+        assert [entry.action.value for entry in result.entries] == ["unchanged"] * 3
+        assert result.valid is True
+
+        for table in (ModelRevision, ModelRouteTarget, ModelRoute, Model):
+            await session.exec(delete(table))
+        await session.commit()
+        assert await _count(session, Model.__table__) == 0
+
+        # No cluster forced: the document carries its own, which is the whole
+        # of what restoring a backup has to go on.
+        await _import(session, ctx, exported.body.decode(), cluster_id=None)
+        # The scheduled entry survives the trip with its rules intact.
+        scheduled = await Model.one_by_field(session, "name", "scheduled")
+        assert scheduled.scaling_schedule.rules[0].start_cron == "0 8 * * *"
+        exported_again = await export_models(session, ctx, DeploymentExportRequest())
+        assert _body_without_header(exported_again) == _body_without_header(exported)
+        assert await _route_names(session) == ["qwen3-8b", "qwen3-8b:sql"]
+
+
+@pytest.mark.asyncio
+async def test_each_deployment_returns_to_its_own_cluster(engine, no_gpu_lookup):
+    """A selection spanning clusters exports as one document and imports back
+    whole, every deployment to the cluster it came from."""
+    ctx = _ctx(DEFAULT_ORG_ID)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session,
+            Cluster(id=1, name="c1", owner_principal_id=DEFAULT_ORG_ID),
+            Cluster(id=2, name="c2", owner_principal_id=DEFAULT_ORG_ID),
+            _model_row("here", cluster_id=1, replicas=0),
+            _model_row("there", cluster_id=2, replicas=0),
+        )
+        exported = (
+            await export_models(session, ctx, DeploymentExportRequest())
+        ).body.decode()
+        assert [entry["cluster_name"] for entry in yaml.safe_load_all(exported)] == [
+            "c1",
+            "c2",
+        ]
+
+        for table in (ModelRevision, ModelRouteTarget, ModelRoute, Model):
+            await session.exec(delete(table))
+        await session.commit()
+
+        result = await _import(session, ctx, exported, cluster_id=None)
+        assert [(item.name, item.cluster_id) for item in result.items] == [
+            ("here", 1),
+            ("there", 2),
+        ]
+
+        # Re-importing the same document changes nothing: the cluster is a
+        # document field, so a deployment that is where the file says it is
+        # reads as unchanged rather than as a move.
+        plan = await _import(session, ctx, exported, cluster_id=None, dry_run=True)
+        assert [entry.action.value for entry in plan.entries] == ["unchanged"] * 2
+
+        # A document with no cluster of its own leaves an existing deployment
+        # where it is, and has nothing to go on for a new one.
+        bare = """
+- name: there
+  source: huggingface
+  huggingface_repo_id: org/there
+  replicas: 3
+- name: fresh
+  source: huggingface
+  huggingface_repo_id: org/fresh
+"""
+        plan = await _import(session, ctx, bare, cluster_id=None, dry_run=True)
+        assert plan.entries[0].errors == []
+        assert plan.entries[0].desired["cluster_name"] == "c2"
+        assert plan.entries[1].errors == [
+            'no cluster; choose a target cluster for the import, or add a "cluster_name" '
+            "field to this deployment"
+        ]
+
+        # A cluster this installation does not have is named, not guessed at,
+        # and said once: a deployment that already exists somewhere else must
+        # not also be told it targets no cluster, which is the same fault
+        # heard twice.
+        plan = await _import(
+            session,
+            ctx,
+            bare.replace(
+                "- name: fresh\n", "- name: fresh\n  cluster_name: elsewhere\n"
+            ).replace("- name: there\n", "- name: there\n  cluster_name: elsewhere\n"),
+            cluster_id=None,
+            dry_run=True,
+        )
+        not_found = [
+            "cluster 'elsewhere' not found; rename it to a cluster in this "
+            "installation, or choose a target cluster for the import"
+        ]
+        assert plan.entries[0].errors == not_found
+        assert plan.entries[1].errors == not_found
+
+
+@pytest.mark.asyncio
+async def test_an_admin_following_the_file_reads_the_org_off_it(engine, no_gpu_lookup):
+    """A platform admin in "All" mode has no Org context to import under, so
+    the Org is read off the clusters the document names -- and refused unless
+    they agree on exactly one."""
+    admin = _ctx(None, is_admin=True)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session,
+            Cluster(id=1, name="platform", owner_principal_id=DEFAULT_ORG_ID),
+            Cluster(id=2, name="org", owner_principal_id=CUSTOM_ORG_ID),
+        )
+        named = DOCUMENT.replace(
+            "  source: huggingface\n", "  source: huggingface\n  cluster_name: org\n"
+        )
+
+        result = await _import(session, admin, named, cluster_id=None)
+        assert {item.owner_principal_id for item in result.items} == {CUSTOM_ORG_ID}
+        assert {item.cluster_id for item in result.items} == {2}
+
+        # Two Orgs in one file is refused rather than split or collapsed.
+        spans = named.replace("cluster_name: org", "cluster_name: platform", 1)
+        with pytest.raises(BadRequestException) as raised:
+            await _import(session, admin, spans, cluster_id=None)
+        assert "more than one organization" in raised.value.message
+
+        # Nothing to read it off: the admin has to say where the file goes.
+        with pytest.raises(BadRequestException) as raised:
+            await _import(session, admin, DOCUMENT, cluster_id=None)
+        assert "no organization to import into" in raised.value.message
+
+        # A cluster this installation does not have is the same dead end.
+        with pytest.raises(BadRequestException) as raised:
+            await _import(
+                session,
+                admin,
+                named.replace("cluster_name: org", "cluster_name: elsewhere"),
+                cluster_id=None,
+            )
+        assert "no cluster named elsewhere" in raised.value.message
+
+
+@pytest.mark.asyncio
+async def test_two_clusters_of_one_name_are_never_guessed_between(
+    engine, no_gpu_lookup
+):
+    """An Org left with two clusters of one name: resolving by name has to
+    refuse rather than pick, and a move is settled on the resolved id."""
+    ctx = _ctx(DEFAULT_ORG_ID)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session, Cluster(id=1, name="c1", owner_principal_id=DEFAULT_ORG_ID)
+        )
+        document = """
+- name: bge-m3
+  source: huggingface
+  huggingface_repo_id: BAAI/bge-m3
+  replicas: 0
+  cluster_name: c1
+"""
+        await _import(session, ctx, document, cluster_id=None)
+        assert (await Model.one_by_field(session, "name", "bge-m3")).cluster_id == 1
+
+        await _seed(
+            session, Cluster(id=2, name="c1", owner_principal_id=DEFAULT_ORG_ID)
+        )
+        plan = await _import(session, ctx, document, cluster_id=None, dry_run=True)
+        assert plan.entries[0].errors == [
+            "more than one cluster is named 'c1'; rename them apart, or choose "
+            "a target cluster for the import"
+        ]
+
+        # Forcing one is unambiguous, and moves the deployment -- even though
+        # both sides of the diff spell the cluster the same way.
+        plan = await _import(session, ctx, document, cluster_id=2, dry_run=True)
+        assert (plan.entries[0].errors, plan.entries[0].changes) == ([], [])
+        assert plan.entries[0].action.value == "update"
+        await _import(session, ctx, document, cluster_id=2, overwrite=["bge-m3"])
+        session.expire_all()
+        assert (await Model.one_by_field(session, "name", "bge-m3")).cluster_id == 2
+
+
+@pytest.mark.asyncio
+async def test_import_reports_every_problem_on_its_own_entry(engine, no_gpu_lookup):
+    ctx = _ctx(DEFAULT_ORG_ID)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session,
+            Cluster(id=1, name="c1", owner_principal_id=DEFAULT_ORG_ID),
+            _model_row("running", replicas=1),
+            _model_row("broken", replicas=0),
+        )
+        document = """
+- name: running
+  source: huggingface
+  huggingface_repo_id: org/running
+- name: fine
+  source: huggingface
+  huggingface_repo_id: org/fine
+- name: broken
+  source: huggingface
+  huggingface_repo_id: org/broken
+  replicas: -1
+  colour: red
+- name: fine
+  source: huggingface
+  huggingface_repo_id: org/fine-again
+- name: bad-params
+  source: huggingface
+  huggingface_repo_id: org/bad
+  backend_parameters:
+  - --port=8000
+- name: [oops]
+  source: huggingface
+  huggingface_repo_id: org/oops
+"""
+        result = await _import(session, ctx, document, dry_run=True)
+        assert result.valid is False
+        errors = [entry.errors for entry in result.entries]
+        assert errors[0] == [
+            "already exists and is running (replicas=1); stop it before overwriting"
+        ]
+        assert errors[1] == []
+        assert errors[2][0] == "unknown field(s): colour"
+        assert errors[2][1].startswith("replicas: ")
+        assert errors[3] == ["duplicate name, already used by deployment[1]"]
+        assert errors[4] == [
+            "Setting the port using --port is not supported. Ports are "
+            "automatically allocated by GPUStack."
+        ]
+        # A name that is not a string is an invalid entry like any other,
+        # rather than reaching the lookup and the plan model as itself.
+        assert errors[5][0].startswith("name: ")
+        assert result.entries[5].name is None
+        # An entry that did not validate has no plan, but the deployment it
+        # names is still projected: the diff keeps the side the user reads to
+        # work out what they broke.
+        assert result.entries[2].action is None
+        assert result.entries[2].desired == {}
+        assert result.entries[2].current["name"] == "broken"
+        assert result.entries[2].current["huggingface_repo_id"] == "org/broken"
+        # An entry naming nothing that exists has nothing to show there.
+        assert result.entries[4].current == {}
+        assert await _count(session, Model.__table__) == 2
+
+        # Writing the same document is still a 400 — only the preview is
+        # error-free — and it names each entry there.
+        with pytest.raises(BadRequestException) as raised:
+            await _import(session, ctx, document)
+        assert "deployment[2] (broken): unknown field(s): colour" in (
+            raised.value.message
+        )
+        assert await _count(session, Model.__table__) == 2
+
+        # A cluster the caller cannot use is one 404, not one error per entry.
+        with pytest.raises(NotFoundException):
+            await _import(session, ctx, DOCUMENT, cluster_id=42)
+        # A document holding no deployment at all has no plan to show.
+        with pytest.raises(BadRequestException):
+            await _import(session, ctx, "just a string\n", dry_run=True)
+        assert await _count(session, Model.__table__) == 2
+
+        # A LoRA route name owned by another model only conflicts while the
+        # routes are created; the error still names the entry, nothing stays.
+        await _seed(session, ModelRoute(name="qwen3-8b:sql", created_model_id=999))
+        with pytest.raises(BadRequestException) as raised:
+            await _import(session, ctx, DOCUMENT)
+        assert raised.value.message.startswith("deployment[0] (qwen3-8b): LoRA route")
+        assert await _count(session, Model.__table__) == 2
+
+
+@pytest.mark.asyncio
+async def test_overwrite_replaces_only_what_was_confirmed(engine, no_gpu_lookup):
+    ctx = _ctx(CUSTOM_ORG_ID)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session, Cluster(id=2, name="org", owner_principal_id=CUSTOM_ORG_ID)
+        )
+        await _import(session, ctx, DOCUMENT, cluster_id=2)
+        before = await Model.one_by_field(session, "name", "qwen3-8b")
+        identity = (
+            before.id,
+            before.created_at,
+            before.owner_principal_id,
+            before.access_policy,
+            before.cluster_id,
+        )
+
+        # A running deployment is never overwritten, so stop them first, and
+        # drop the GPU pin from the document.
+        await _stop_all(session)
+        edited = _stopped(DOCUMENT).replace(
+            "  gpu_selector:\n    gpu_ids:\n    - worker-1:cuda:0\n", ""
+        )
+
+        # Without the caller's confirmation the overwrite is refused outright.
+        with pytest.raises(BadRequestException) as raised:
+            await _import(session, ctx, edited, cluster_id=2)
+        assert "confirm the overwrite before importing" in raised.value.message
+        after = await Model.one_by_field(session, "name", "qwen3-8b")
+        assert after.gpu_selector is not None
+
+        result = await _import(
+            session, ctx, edited, cluster_id=2, overwrite=["qwen3-8b"]
+        )
+        assert [item.name for item in result.items] == ["qwen3-8b", "bge-m3"]
+        after = await Model.one_by_field(session, "name", "qwen3-8b")
+        # A whole replacement: a field dropped from the document goes back to
+        # its default, returning the deployment to automatic placement.
+        assert after.gpu_selector is None
+        # Tenancy is never written by an import.
+        assert (
+            after.id,
+            after.created_at,
+            after.owner_principal_id,
+            after.access_policy,
+            after.cluster_id,
+        ) == identity
+
+        # Re-applying it now changes nothing, so it needs no confirmation.
+        result = await _import(session, ctx, edited, cluster_id=2)
+        assert {entry.action.value for entry in result.entries} == {"unchanged"}
+
+        # Setting a nested column takes a different path from clearing one,
+        # and mutating one is exactly one change.
+        repinned = _stopped(DOCUMENT).replace("worker-1:cuda:0", "worker-2:cuda:3")
+        result = await _import(session, ctx, repinned, cluster_id=2, dry_run=True)
+        assert [change.field for change in result.entries[0].changes] == [
+            "gpu_selector"
+        ]
+        await _import(session, ctx, repinned, cluster_id=2, overwrite=["qwen3-8b"])
+        session.expire_all()
+        after = await Model.one_by_field(session, "name", "qwen3-8b")
+        assert after.gpu_selector.gpu_ids == ["worker-2:cuda:3"]
+
+        # Every unconfirmed overwrite is named at once, not just the first.
+        both = _stopped(DOCUMENT).replace("Qwen/Qwen3-8B", "Qwen/Qwen3-4B")
+        both = both.replace("BAAI/bge-m3", "BAAI/bge-m3-v2")
+        with pytest.raises(BadRequestException) as raised:
+            await _import(session, ctx, both, cluster_id=2)
+        assert raised.value.message.split("\n") == [
+            "deployment[0] (qwen3-8b): already exists; confirm the overwrite "
+            "before importing",
+            "deployment[1] (bge-m3): already exists; confirm the overwrite "
+            "before importing",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_overwrite_settles_the_model_route(engine, no_gpu_lookup):
+    ctx = _ctx(DEFAULT_ORG_ID)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session, Cluster(id=1, name="c1", owner_principal_id=DEFAULT_ORG_ID)
+        )
+        await _import(session, ctx, DOCUMENT)
+        await _stop_all(session)
+        assert await _route_names(session) == ["qwen3-8b", "qwen3-8b:sql"]
+
+        # A second deployment attached to the same route is not covered by the
+        # "it is stopped" argument, so the route stays put.
+        primary = await ModelRoute.one_by_field(session, "name", "qwen3-8b")
+        (other,) = await _seed(session, _model_row("other"))
+        await _seed(
+            session,
+            ModelRouteTarget(
+                name="other-deployment",
+                route_name=primary.name,
+                route_id=primary.id,
+                model_id=other.id,
+                weight=100,
+            ),
+        )
+        unrouted = _stopped(DOCUMENT).replace("  enable_model_route: true\n", "")
+        result = await _import(session, ctx, unrouted, dry_run=True)
+        assert result.entries[0].errors == [
+            "model route(s) qwen3-8b also target other deployments; "
+            "detach them before disabling the route"
+        ]
+        assert "enable_model_route" in [
+            change.field for change in result.entries[0].changes
+        ]
+
+        # A LoRA child route is deleted by the same step, so it is held to the
+        # same test -- sharing one blocks the entry just as the primary does.
+        await session.exec(
+            delete(ModelRouteTarget).where(ModelRouteTarget.model_id == other.id)
+        )
+        child = await ModelRoute.one_by_field(session, "name", "qwen3-8b:sql")
+        await _seed(
+            session,
+            ModelRouteTarget(
+                name="other-lora",
+                route_name=child.name,
+                route_id=child.id,
+                model_id=other.id,
+                weight=100,
+            ),
+        )
+        result = await _import(session, ctx, unrouted, dry_run=True)
+        assert result.entries[0].errors == [
+            "model route(s) qwen3-8b:sql also target other deployments; "
+            "detach them before disabling the route"
+        ]
+
+        # Once it serves only this deployment, disabling it takes the primary
+        # route and its LoRA children with it.
+        await session.exec(
+            delete(ModelRouteTarget).where(ModelRouteTarget.model_id == other.id)
+        )
+        await session.commit()
+        await _import(session, ctx, unrouted, overwrite=["qwen3-8b"])
+        assert await _route_names(session) == []
+
+        # And asking for it back builds it again.
+        await _import(session, ctx, _stopped(DOCUMENT), overwrite=["qwen3-8b"])
+        assert await _route_names(session) == ["qwen3-8b", "qwen3-8b:sql"]
+
+        # Keeping the route enabled still reaps a LoRA child the document stops
+        # listing, so a shared one blocks the entry just the same.
+        child = await ModelRoute.one_by_field(session, "name", "qwen3-8b:sql")
+        await _seed(
+            session,
+            ModelRouteTarget(
+                name="other-lora",
+                route_name=child.name,
+                route_id=child.id,
+                model_id=other.id,
+                weight=100,
+            ),
+        )
+        no_lora = _stopped(DOCUMENT).replace(
+            "  lora_list:\n  - lora_name: sql\n    lora_repo_name: org/sql-lora\n", ""
+        )
+        result = await _import(session, ctx, no_lora, dry_run=True)
+        assert result.entries[0].errors == [
+            "model route(s) qwen3-8b:sql also target other deployments; "
+            "detach them before removing the adapter(s)"
+        ]
+
+        # Detached, dropping the adapter takes only its own route with it.
+        await session.exec(
+            delete(ModelRouteTarget).where(ModelRouteTarget.model_id == other.id)
+        )
+        await session.commit()
+        await _import(session, ctx, no_lora, overwrite=["qwen3-8b"])
+        assert await _route_names(session) == ["qwen3-8b"]
+
+
+@pytest.mark.asyncio
+async def test_overwrite_guards_a_shared_lora_route_with_no_primary(
+    engine, no_gpu_lookup
+):
+    # Disabling the route deletes every route the deployment owns. With the
+    # primary route already gone out of band, a LoRA child it left behind is
+    # still one of those, and another deployment may target it -- so the
+    # blocker has to fire on the child even with no primary route beside it.
+    ctx = _ctx(DEFAULT_ORG_ID)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session, Cluster(id=1, name="c1", owner_principal_id=DEFAULT_ORG_ID)
+        )
+        await _import(session, ctx, DOCUMENT)
+        await _stop_all(session)
+
+        # The primary route disappears; its LoRA child stays and another
+        # deployment picks it up.
+        await session.exec(delete(ModelRoute).where(ModelRoute.name == "qwen3-8b"))
+        child = await ModelRoute.one_by_field(session, "name", "qwen3-8b:sql")
+        (other,) = await _seed(session, _model_row("other"))
+        await _seed(
+            session,
+            ModelRouteTarget(
+                name="other-lora",
+                route_name=child.name,
+                route_id=child.id,
+                model_id=other.id,
+                weight=100,
+            ),
+        )
+        await session.commit()
+
+        # Removing enable_model_route disables the route; dropping the GPU pin
+        # is the change that makes this an overwrite rather than a no-op.
+        disabled = _stopped(DOCUMENT).replace("  enable_model_route: true\n", "")
+        disabled = disabled.replace(
+            "  gpu_selector:\n    gpu_ids:\n    - worker-1:cuda:0\n", ""
+        )
+        result = await _import(session, ctx, disabled, dry_run=True)
+        assert result.entries[0].errors == [
+            "model route(s) qwen3-8b:sql also target other deployments; "
+            "detach them before disabling the route"
+        ]
+
+
+@pytest.mark.asyncio
+async def test_overwrite_waits_for_a_running_deployment_to_stop(engine, no_gpu_lookup):
+    ctx = _ctx(DEFAULT_ORG_ID)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session,
+            Cluster(id=1, name="c1", owner_principal_id=DEFAULT_ORG_ID),
+            Cluster(id=3, name="c3", owner_principal_id=DEFAULT_ORG_ID),
+            _model_row("bge-m3", replicas=3),
+        )
+        running = """
+- name: bge-m3
+  source: huggingface
+  huggingface_repo_id: BAAI/bge-m3
+  replicas: 1
+"""
+        # Whether the document -- or an override -- says zero is irrelevant:
+        # what counts is the row in the database.
+        for kwargs in ({}, {"replica_overrides": {"bge-m3": 0}}):
+            result = await _import(session, ctx, running, dry_run=True, **kwargs)
+            assert result.entries[0].errors == [
+                "already exists and is running (replicas=3); "
+                "stop it before overwriting"
+            ]
+        with pytest.raises(BadRequestException):
+            await _import(session, ctx, running, overwrite=["bge-m3"])
+
+        # Scaled to zero but not drained yet: replicas is the operator's
+        # intent, the instance rows are the cluster's state, and the overwrite
+        # path needs both.
+        stopped = await Model.one_by_field(session, "name", "bge-m3")
+        await stopped.update(session, {"replicas": 0})
+        await _seed(
+            session,
+            ModelInstance(
+                name="bge-m3-0",
+                source=SourceEnum.HUGGING_FACE,
+                huggingface_repo_id="BAAI/bge-m3",
+                model_id=stopped.id,
+                model_name="bge-m3",
+            ),
+        )
+        result = await _import(session, ctx, running, dry_run=True)
+        assert result.entries[0].errors == [
+            "already exists and still has 1 instance(s) shutting down; "
+            "wait for them to stop before overwriting"
+        ]
+        await session.exec(delete(ModelInstance))
+        await session.commit()
+
+        # Stopped and drained, a cluster change is an ordinary field change:
+        # the row carries no instances to leave behind, and the next ones are
+        # placed in whatever cluster it names by then. Writing the cluster
+        # down and forcing one are the same claim, so both move it.
+        names_c3 = running.replace(
+            "- name: bge-m3\n", "- name: bge-m3\n  cluster_name: c3\n"
+        )
+        for document, cluster_id in ((running, 3), (names_c3, None)):
+            result = await _import(
+                session, ctx, document, cluster_id=cluster_id, dry_run=True
+            )
+            assert result.entries[0].errors == []
+            assert result.entries[0].desired["cluster_name"] == "c3"
+
+        await _import(session, ctx, names_c3, cluster_id=None, overwrite=["bge-m3"])
+        moved = await Model.one_by_field(session, "name", "bge-m3")
+        assert moved.cluster_id == 3
+
+
+@pytest.mark.asyncio
+async def test_replica_overrides_apply_to_every_kind_of_entry(engine, no_gpu_lookup):
+    ctx = _ctx(DEFAULT_ORG_ID)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session, Cluster(id=1, name="c1", owner_principal_id=DEFAULT_ORG_ID)
+        )
+
+        # The preview shows the count that will actually be written, for a
+        # manually placed entry (qwen3-8b) as much as an auto-scheduled one.
+        result = await _import(
+            session,
+            ctx,
+            DOCUMENT,
+            dry_run=True,
+            replica_overrides={"qwen3-8b": 3, "bge-m3": 5},
+        )
+        assert result.valid is True
+        assert [entry.desired["replicas"] for entry in result.entries] == [3, 5]
+        await _import(
+            session, ctx, DOCUMENT, replica_overrides={"qwen3-8b": 3, "bge-m3": 5}
+        )
+        stored = await Model.all_by_fields(session, {})
+        assert {model.name: model.replicas for model in stored} == {
+            "qwen3-8b": 3,
+            "bge-m3": 5,
+        }
+
+        # An enabled schedule owns `replicas`, so the count is what the
+        # schedule falls back to rather than a value it would overwrite.
+        result = await _import(
+            session,
+            ctx,
+            SCHEDULED_ENTRY,
+            dry_run=True,
+            replica_overrides={"scheduled": 3},
+        )
+        assert result.entries[0].desired["scaling_schedule"]["baseline_replicas"] == 3
+
+        # A name that matches nothing is a mistake, not a silent no-op.
+        with pytest.raises(BadRequestException) as raised:
+            await _import(
+                session, ctx, DOCUMENT, dry_run=True, replica_overrides={"typo": 1}
+            )
+        assert "names no deployment in the document: typo" in raised.value.message
+
+
+@pytest.mark.asyncio
+async def test_dry_run_plans_without_writing(engine, no_gpu_lookup):
+    ctx = _ctx(DEFAULT_ORG_ID)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session, Cluster(id=1, name="c1", owner_principal_id=DEFAULT_ORG_ID)
+        )
+
+        result = await _import(session, ctx, DOCUMENT, dry_run=True)
+        assert result.dry_run is True
+        assert result.valid is True
+        assert result.items == []
+        assert _plan(result) == [("qwen3-8b", "create", []), ("bge-m3", "create", [])]
+        # Nothing of either name exists, so there is nothing to diff against.
+        assert [entry.current for entry in result.entries] == [{}, {}]
+        assert await _count(session, Model.__table__) == 0
+        assert await _count(session, ModelRoute.__table__) == 0
+
+        await _import(session, ctx, DOCUMENT)
+        assert await _count(session, Model.__table__) == 2
+
+        # Edit the document and the diff names exactly what would change:
+        # a raised replica count, and a GPU selector deleted outright.
+        edited = DOCUMENT.replace("  replicas: 2", "  replicas: 5").replace(
+            "  gpu_selector:\n    gpu_ids:\n    - worker-1:cuda:0\n", ""
+        )
+        result = await _import(session, ctx, edited, dry_run=True)
+        assert _plan(result) == [
+            ("qwen3-8b", "update", ["gpu_selector"]),
+            ("bge-m3", "update", ["replicas"]),
+        ]
+        (change,) = result.entries[0].changes
+        assert change.current == {"gpu_ids": ["worker-1:cuda:0"]}
+        assert change.desired is None
+        assert result.entries[1].changes[0].current == 2
+        assert result.entries[1].changes[0].desired == 5
+
+        # The row being replaced comes back whole, projected onto the same
+        # fields in the same order as the entry that would replace it, so the
+        # two read as one document against another rather than as two shapes.
+        current, desired = result.entries[0].current, result.entries[0].desired
+        assert current["gpu_selector"] == {"gpu_ids": ["worker-1:cuda:0"]}
+        assert "gpu_selector" not in desired
+        assert [field for field in current if field in desired] == [
+            field for field in desired if field in current
+        ]
+        for field in ("id", "cluster_id", "owner_principal_id"):
+            assert field not in current, field
+
+        # Picking GPUs by hand submits a null worker_selector, which drops out
+        # of the export and comes back as the schema's empty default. Unset
+        # either way, so re-importing reports no change.
+        await session.exec(update(Model).values(worker_selector=None, categories=None))
+        await session.commit()
+        exported = await export_models(session, ctx, DeploymentExportRequest())
+        result = await _import(session, ctx, exported.body.decode(), dry_run=True)
+        assert [entry.action.value for entry in result.entries] == ["unchanged"] * 2
+
+
+@pytest.mark.asyncio
+async def test_import_stamps_the_callers_org_and_refuses_foreign_clusters(
+    engine, no_gpu_lookup
+):
+    ctx = _ctx(CUSTOM_ORG_ID)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await _seed(
+            session,
+            Cluster(id=1, name="platform", owner_principal_id=DEFAULT_ORG_ID),
+            Cluster(id=2, name="org", owner_principal_id=CUSTOM_ORG_ID),
+        )
+
+        # Another Org's cluster is reported as missing, and nothing is written.
+        with pytest.raises(NotFoundException):
+            await _import(session, ctx, DOCUMENT, cluster_id=1)
+        assert await _count(session, Model.__table__) == 0
+
+        # Own cluster: rows are stamped with the Org, scoped to it, and the
+        # Org is granted on the route it asked for.
+        result = await _import(session, ctx, DOCUMENT, cluster_id=2)
+        assert {item.owner_principal_id for item in result.items} == {CUSTOM_ORG_ID}
+        assert {item.access_policy for item in result.items} == {
+            AccessPolicyEnum.ALLOWED_PRINCIPALS
+        }
+        route = await ModelRoute.one_by_field(session, "name", "qwen3-8b")
+        granted = await session.exec(
+            select(ModelRoutePrincipalLink.principal_id).where(
+                ModelRoutePrincipalLink.route_id == route.id
+            )
+        )
+        assert list(granted.all()) == [CUSTOM_ORG_ID]

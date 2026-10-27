@@ -5,6 +5,7 @@ Message Server - Handles WebSocket connections and message protocol
 
 import uuid
 import asyncio
+import ipaddress
 import logging
 from typing import Optional, Dict, List, Callable, Coroutine, Any, TypeAlias
 
@@ -57,6 +58,60 @@ def default_client_info_getter(
 ) -> Optional['RegisteredClientInfo']:
     """Extract client info from headers if this is a client connection"""
     return RegisteredClientInfo.from_headers(websocket.headers)
+
+
+# ==================== Registration Claim Validation ====================
+
+# A worker registers the CIDRs and unix-socket paths it serves so the proxy
+# can route traffic to it. Neither claim may be trusted verbatim: a client
+# claiming the whole address space (0.0.0.0/0, ::/0) or another worker's
+# socket path would receive traffic meant for someone else. Workers
+# register their own address (/32, /128) or at most the subnet they serve,
+# so anything shorter than a /8 is not a legitimate claim.
+MIN_CIDR_PREFIXLEN = 8
+
+# Runtime paths a client may proxy unix sockets from. Kept to well-known
+# locations so one client cannot claim another's socket by path.
+UNIX_SOCKET_PREFIXES = ("/var/run/", "/run/", "/tmp/")
+
+
+def _valid_cidr_claim(cidr: str) -> bool:
+    try:
+        network = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return False
+    return network.prefixlen >= MIN_CIDR_PREFIXLEN
+
+
+def _valid_socket_claim(path: str) -> bool:
+    return path.startswith(UNIX_SOCKET_PREFIXES)
+
+
+def _authorized_host_route(cidr: str, authorized_addresses: List[str]) -> bool:
+    """Whether ``cidr`` is the host route of one of the client's authorized addresses.
+
+    Workers only ever register their own address as a /32 (or /128).
+    Restricting authorized claims to exactly that keeps one worker from
+    registering a subnet that overlaps another worker's routes — under
+    longest-prefix match the more specific claim would then receive the
+    overlapped traffic. Subnet claims stay legal in the generic protocol
+    module (no authorized addresses); only the production wiring passes
+    them in.
+    """
+    try:
+        network = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return False
+    if network.prefixlen != network.max_prefixlen:
+        return False
+    return str(network.network_address) in authorized_addresses
+
+
+def _invalid_client_claims(client_info: 'RegisteredClientInfo') -> List[str]:
+    """Return the claims in ``client_info`` a client is not allowed to make."""
+    invalid = [c for c in client_info.cidrs if not _valid_cidr_claim(c)]
+    invalid += [s for s in client_info.unix_sockets if not _valid_socket_claim(s)]
+    return invalid
 
 
 # ==================== Dataclasses ====================
@@ -352,17 +407,38 @@ class MessageServerHandler:
 
             logger.debug(f"[Server] Peer disconnected: {peer_server_id}")
 
+    def _foreign_cidr_claims(self, client_id: uuid.UUID, cidrs: List[str]) -> List[str]:
+        """Return CIDRs in ``cidrs`` already owned by a different client.
+
+        ``CIDRRegistry.insert`` overwrites an existing mapping, so accepting
+        such a claim would silently redirect the owning client's tunneled
+        traffic to the caller.
+        """
+        foreign = []
+        for cidr in cidrs:
+            owner = self._cidr_registry.find_exact(cidr)
+            if owner is not None and owner != client_id:
+                foreign.append(cidr)
+        return foreign
+
     async def handle_peer_client_update(self, msg: ClientUpdateMessage):
         """Handle client update from peer"""
         for update in msg.updates:
             if update.action == "add":
-                # Add client's CIDRs to local registry
                 client_info = RegisteredClientInfo(
                     client_id=update.client_id,
                     cidrs=update.cidrs,
                     unix_sockets=update.unix_sockets,
                     server_id=msg.server_id,
                 )
+                invalid = _invalid_client_claims(client_info)
+                invalid += self._foreign_cidr_claims(update.client_id, update.cidrs)
+                if invalid:
+                    logger.warning(
+                        f"[Server] Dropping client update from peer {msg.server_id}"
+                        f" for client {update.client_id} with out-of-policy claims: {invalid}"
+                    )
+                    continue
                 self.client_registry[update.client_id] = client_info
                 # Index CIDRs for efficient lookup
                 for cidr in update.cidrs:
@@ -464,13 +540,40 @@ class MessageServerHandler:
                     )
 
     async def handle_client_connection(
-        self, websocket: WebSocket, client_info: RegisteredClientInfo
+        self,
+        websocket: WebSocket,
+        client_info: RegisteredClientInfo,
+        authorized_addresses: Optional[List[str]] = None,
     ):
-        """Handle a client WebSocket connection"""
+        """Handle a client WebSocket connection.
+
+        ``authorized_addresses`` are the addresses the authenticated client is
+        allowed to register routes for (a worker's own ``ip`` /
+        ``advertise_address``). When provided, every claimed CIDR must be the
+        host route of one of them. It is ``None`` for unauthenticated
+        deployments, where only the generic claim policy (which also permits
+        subnet claims) applies.
+        """
         # Accept first — if the handshake fails nothing needs cleanup.
         await websocket.accept()
 
         client_id = client_info.client_id
+        invalid = _invalid_client_claims(client_info)
+        invalid += self._foreign_cidr_claims(client_id, client_info.cidrs)
+        if authorized_addresses is not None:
+            invalid += [
+                cidr
+                for cidr in client_info.cidrs
+                if not _authorized_host_route(cidr, authorized_addresses)
+            ]
+        if invalid:
+            logger.warning(
+                f"[Server] Rejecting client {client_id} with out-of-policy claims: {invalid}"
+            )
+            await websocket.close(
+                code=1008, reason="invalid client registration claims"
+            )
+            return
         cidr_list = client_info.cidrs
         socket_list = client_info.unix_sockets
 
@@ -622,6 +725,33 @@ def authenticator_getter(websocket: WebSocket) -> Authenticator:
     return authenticator
 
 
+def _authenticated_worker_addresses(websocket: WebSocket) -> Optional[List[str]]:
+    """Addresses the authenticated worker may register routes for.
+
+    ``BearerTokenAuthenticator`` stores the resolved user on the websocket
+    scope; the worker on it is the identity the bearer token was checked
+    against, so its own addresses are the only routes it may claim.
+
+    Returns ``None`` only when the connection carries no authenticated
+    worker (standalone deployment). An authenticated worker with no
+    reported addresses gets an empty list instead: falling back to
+    ``None`` would disable the address check entirely and re-open the
+    generic protocol policy (subnet claims) to it.
+    """
+    user = websocket.scope.get("user")
+    worker = getattr(user, "worker", None)
+    if worker is None:
+        return None
+    return [
+        address
+        for address in (
+            getattr(worker, "ip", None),
+            getattr(worker, "advertise_address", None),
+        )
+        if address
+    ]
+
+
 router = APIRouter()
 
 
@@ -654,7 +784,11 @@ async def websocket_endpoint(
     client_info = handler._client_info_getter(websocket)
     if client_info:
         logger.debug(f"[Server] Detected client connection: {client_info.client_id}")
-        await handler.handle_client_connection(websocket, client_info)
+        await handler.handle_client_connection(
+            websocket,
+            client_info,
+            authorized_addresses=_authenticated_worker_addresses(websocket),
+        )
         return
 
     logger.debug(

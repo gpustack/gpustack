@@ -1,4 +1,4 @@
-{{- if and .Values.server.ingress.tls.cert .Values.server.ingress.tls.key .Values.server.ingress.hostname }}
+{{- if and .Values.server.enabled .Values.server.ingress.tls.cert .Values.server.ingress.tls.key .Values.server.ingress.hostname }}
 apiVersion: v1
 kind: Secret
 metadata:

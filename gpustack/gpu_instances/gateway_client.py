@@ -40,6 +40,11 @@ _BASE_URL = "https://gpustack-operator/apis"
 # bounded connect timeout so a broken socket still fails fast and reconnects.
 _WATCH_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30)
 
+# The subscribe/unsubscribe calls are short exchanges over a local socket, and their
+# caller reconciles under a lock. aiohttp's 5-minute default would let an operator that
+# accepts the connection but never answers stall that reconciliation for the same time.
+_CONTROL_TIMEOUT = aiohttp.ClientTimeout(total=30, sock_connect=10)
+
 _unix_path: Optional[str] = None
 
 
@@ -50,6 +55,19 @@ def set_gateway_unix_path(path: str) -> None:
     """
     global _unix_path
     _unix_path = path
+
+
+def is_gateway_configured() -> bool:
+    """Whether the operator's worker gateway socket path is known.
+
+    ``False`` means the operator subprocess was never spawned (its binary is not
+    installed), so every call in this module would fail. The path is recorded
+    once at startup, before any consumer starts, so a ``False`` here is final
+    for the lifetime of the process and callers may opt out permanently rather
+    than retry. The truthiness test mirrors :func:`_session`, so the two agree
+    on what counts as configured.
+    """
+    return bool(_unix_path)
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -134,15 +152,11 @@ async def subscribe_worker(
     gvk: Optional[list[tuple[str, str, str]]] = None,
 ) -> None:
     """POST /apis/workers — subscribe a worker cluster to the gateway."""
-    if gvk is None:
-        gvk = [
-            ("worker.gpustack.ai", "v1", "InstanceType"),
-        ]
     async with _session() as session:
         params = _query(clusters=[cluster], token=token, force=force)
-        body = {"gvks": [f"{g}/{v}/{k}" if g else f"{v}/{k}" for g, v, k in gvk]}
+        body = {"gvks": [f"{g}/{v}/{k}" if g else f"{v}/{k}" for g, v, k in gvk or []]}
         async with session.post(
-            f"{_BASE_URL}/workers", params=params, json=body
+            f"{_BASE_URL}/workers", params=params, json=body, timeout=_CONTROL_TIMEOUT
         ) as resp:
             resp.raise_for_status()
 
@@ -153,8 +167,30 @@ async def unsubscribe_worker(
     """DELETE /apis/workers — unsubscribe a worker cluster from the gateway."""
     async with _session() as session:
         params = _query(clusters=[cluster])
-        async with session.delete(f"{_BASE_URL}/workers", params=params) as resp:
+        async with session.delete(
+            f"{_BASE_URL}/workers", params=params, timeout=_CONTROL_TIMEOUT
+        ) as resp:
             resp.raise_for_status()
+
+
+async def list_instance_type_flavors(
+    clusters: Optional[list[str]] = None,
+    aggregated: bool = False,
+) -> dict[str, Any]:
+    """GET /apis/instancetypeflavors — list InstanceTypeFlavors across one or more clusters."""
+    return await _get_json(
+        "/instancetypeflavors", _query(clusters=clusters, aggregated=aggregated)
+    )
+
+
+async def watch_instance_type_flavors(
+    clusters: Optional[list[str]] = None,
+    aggregated: bool = False,
+) -> AsyncIterator[str]:
+    """GET /apis/instancetypeflavors?watch=true — stream InstanceTypeFlavor change events."""
+    params = _query(clusters=clusters, aggregated=aggregated, watch=True)
+    async for evt in _stream("/instancetypeflavors", params):
+        yield evt
 
 
 async def list_instance_types(

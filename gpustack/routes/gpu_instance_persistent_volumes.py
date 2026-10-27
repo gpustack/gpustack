@@ -1,12 +1,14 @@
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    ConflictException,
     InternalServerErrorException,
     InvalidException,
     NotFoundException,
@@ -21,6 +23,7 @@ from sqlmodel import select
 from gpustack.gpu_instances import validate_k8s_object_name
 
 from gpustack.schemas import (
+    GPUInstance,
     GPUInstancePersistentVolume,
     GPUInstancePersistentVolumeType,
     GPUInstancePersistentVolumeUpdate,
@@ -31,11 +34,25 @@ from gpustack.schemas import (
     GPUInstancePersistentVolumeStatus,
     GPUInstancePersistentVolumePhase,
 )
+from gpustack.schemas.gpu_instance_persistent_volumes import (
+    GPUInstancePersistentVolumeAttachment,
+)
+from gpustack.schemas.gpu_instances import GPUInstancePhase
 from gpustack.schemas.principals import platform_principal_id
+from gpustack.server.bus import EventType
+from gpustack.routes.gpu_instances_helper import (
+    display_name_label,
+    order_by_display_label,
+)
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 
 router = APIRouter()
+
+# How many holders a delete-rejection message names before it says "and
+# others" — the same cap as the finalizer controller's blocked-delete reason,
+# so the synchronous 409 and the async backstop describe the same wall.
+_CONFLICT_HOLDERS_NAMED = 3
 
 
 @router.get("", response_model=GPUInstancePersistentVolumesPublic)
@@ -54,25 +71,40 @@ async def get_gpu_instance_persistent_volumes(
 
     fuzzy_fields: dict = {}
     if search:
+        # The Name column renders ``display_name || name``, so searching only
+        # ``name`` hid rows behind the label the list actually shows (#6104).
         fuzzy_fields["name"] = search
+        fuzzy_fields["display_name"] = search
 
     if params.watch:
         return StreamingResponse(
-            GPUInstancePersistentVolume.streaming(
+            tenant_streaming(
+                GPUInstancePersistentVolume,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
+                event_transform=_inject_attachments_into_event,
             ),
             media_type="text/event-stream",
         )
 
     async with async_session() as session:
-        return await GPUInstancePersistentVolume.paginated_by_query(
+        paginated = await GPUInstancePersistentVolume.paginated_by_query(
             session=session,
             fields=fields,
             fuzzy_fields=fuzzy_fields,
-            order_by=params.order_by,
+            order_by=order_by_display_label(
+                params.order_by, display_name_label(GPUInstancePersistentVolume)
+            ),
             page=params.page,
             per_page=params.perPage,
+        )
+        attachments = await _attachments_by_volume(
+            session, [pv.id for pv in paginated.items]
+        )
+        items = [_to_public(pv, attachments.get(pv.id, [])) for pv in paginated.items]
+        return GPUInstancePersistentVolumesPublic(
+            items=items, pagination=paginated.pagination
         )
 
 
@@ -82,13 +114,15 @@ async def get_gpu_instance_persistent_volume(
     ctx: TenantContextDep,
     id: int,
 ):
-    return ensure_visible(
+    pv = ensure_visible(
         await GPUInstancePersistentVolume.one_by_id(
             session=session,
             id=id,
         ),
         ctx,
     )
+    attachments = await _attachments_by_volume(session, [pv.id])
+    return _to_public(pv, attachments.get(pv.id, []))
 
 
 @router.post("", response_model=GPUInstancePersistentVolumePublic)
@@ -170,6 +204,9 @@ async def delete_gpu_instance_persistent_volume(
     Stamps ``status.phase = Deleting`` and retains the row; the PV
     finalizer controller cleans up the downstream CRs across clusters and
     then hard-deletes the row.
+
+    Rejects with 409 while a holder's instance is not itself ``Deleting`` —
+    such a delete could never finalize.
     """
     ret = ensure_writable(
         await GPUInstancePersistentVolume.one_by_id(
@@ -178,6 +215,8 @@ async def delete_gpu_instance_persistent_volume(
         ),
         ctx,
     )
+
+    await _ensure_delete_not_blocked(session, ret)
 
     source = _build_delete_phase_source(ret)
     async with handle_error(
@@ -188,6 +227,103 @@ async def delete_gpu_instance_persistent_volume(
             source=source,
         )
         return ret
+
+
+def _describe_holder(attachment: GPUInstancePersistentVolumeAttachment) -> str:
+    """``<name> (<phase>)``, matching the controller's holder description;
+    an unresolved phase is stated as the bare name."""
+    return (
+        f"{attachment.name} ({attachment.phase})"
+        if attachment.phase
+        else f"{attachment.name}"
+    )
+
+
+async def _ensure_delete_not_blocked(
+    session: AsyncSession, pv: GPUInstancePersistentVolume
+) -> None:
+    """Reject the delete while a holder's instance is not itself ``Deleting``.
+
+    ``GPUInstance.persistent_volume_id`` is not phase-filtered, so a Stopped
+    instance holds the volume exactly like a running one, and an accepted
+    delete could never finalize. An instance in ``Deleting`` does not block:
+    its own teardown releases the reference, so the volume delete proceeds and
+    finalizes right after it.
+    """
+    attachments = (await _attachments_by_volume(session, [pv.id])).get(pv.id, [])
+    blocking = [a for a in attachments if a.phase != GPUInstancePhase.DELETING]
+    if not blocking:
+        return
+    described = [_describe_holder(a) for a in blocking[:_CONFLICT_HOLDERS_NAMED]]
+    if len(blocking) > _CONFLICT_HOLDERS_NAMED:
+        described.append("and others")
+    raise ConflictException(
+        message=(
+            "The volume is still attached to GPU instance(s): "
+            f"{', '.join(described)}. "
+            "Detach the volume or delete the instance before deleting it."
+        )
+    )
+
+
+async def _attachments_by_volume(
+    session: AsyncSession, volume_ids: List[int]
+) -> Dict[int, List[GPUInstancePersistentVolumeAttachment]]:
+    """``{pv_id: [attachment, ...]}`` for the given volumes, in one query.
+
+    ``GPUInstance.persistent_volume_id`` is the only record of the mount, and it
+    is NOT phase-filtered — a Stopped instance holds the volume exactly as a
+    running one does (and blocks its reclaim). So every referencing instance is
+    reported with its phase, rather than filtering to "active" ones and telling
+    the user nothing holds a volume that is in fact held.
+    """
+    if not volume_ids:
+        return {}
+    rows = (
+        await session.exec(
+            select(
+                GPUInstance.persistent_volume_id,
+                GPUInstance.id,
+                GPUInstance.name,
+                GPUInstance.status,
+            ).where(GPUInstance.persistent_volume_id.in_(volume_ids))
+        )
+    ).all()
+    out: Dict[int, List[GPUInstancePersistentVolumeAttachment]] = {}
+    for pv_id, instance_id, name, status in rows:
+        phase = status.phase if status is not None else None
+        out.setdefault(pv_id, []).append(
+            GPUInstancePersistentVolumeAttachment(
+                id=instance_id, name=name, phase=phase
+            )
+        )
+    return out
+
+
+def _to_public(
+    pv: GPUInstancePersistentVolume,
+    attachments: List[GPUInstancePersistentVolumeAttachment],
+) -> GPUInstancePersistentVolumePublic:
+    public = GPUInstancePersistentVolumePublic.model_validate(pv, from_attributes=True)
+    # Always set it, even when empty: an empty list is the meaningful answer
+    # "nothing is attached" (so the volume is billed while idle), which is
+    # different from ``None`` = "not resolved".
+    public.attached_instances = attachments
+    return public
+
+
+async def _inject_attachments_into_event(event) -> None:
+    """Populate ``attached_instances`` on a watch event so the streamed payload
+    matches the REST response — otherwise a UI in watch mode would show the
+    column as empty on every update."""
+    if event.type == EventType.DELETED:
+        return
+    pv = event.data
+    if not isinstance(pv, GPUInstancePersistentVolumePublic) or pv.id is None:
+        return
+    async with async_session() as session:
+        attachments = await _attachments_by_volume(session, [pv.id])
+    pv.attached_instances = attachments.get(pv.id, [])
 
 
 def ensure_visible(obj, ctx: TenantContext):

@@ -1,6 +1,4 @@
 import asyncio
-import re
-import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
@@ -11,7 +9,7 @@ from starlette.datastructures import Headers
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.server.db import async_session
-from typing import Annotated, Optional, Tuple, List, Dict
+from typing import Annotated, Optional, Set, Tuple, List, Dict
 from fastapi.security import (
     APIKeyCookie,
     APIKeyHeader,
@@ -21,6 +19,7 @@ from fastapi.security import (
     HTTPBearer,
 )
 from fastapi.security.utils import get_authorization_scheme_param
+from sqlalchemy import update
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.api.exceptions import (
     ForbiddenException,
@@ -33,16 +32,28 @@ from gpustack.schemas.users import User
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.security import (
     JWTManager,
+    is_valid_format,
+    new_secret_key_digest,
+    parse_hyphen_uuid,
+    secret_key_digest_usable,
     verify_hashed_secret,
+    verify_secret_key_digest,
     get_key_pair,
 )
+from gpustack.server.cache import delete_cache_by_key
 from gpustack.server.passwords import verify_password
 from gpustack.server.services import APIKeyService, UserService
+from gpustack.extension import Plugin, plugin_needs_instantiation
 from gpustack.websocket_proxy.authenticator import (
     Authenticator as WebsocketAuthenticator,
 )
 
 logger = logging.getLogger(__name__)
+
+# The base no-op ``on_authenticated``. Comparing the underlying function
+# lets the per-request dispatch skip plugins that do not override the
+# hook without paying a coroutine per request.
+_DEFAULT_ON_AUTHENTICATED = Plugin.on_authenticated.__func__
 
 SESSION_COOKIE_NAME = "gpustack_session"
 OIDC_ID_TOKEN_COOKIE_NAME = "gpustack_oidc_id_token"
@@ -51,6 +62,20 @@ SSO_LOGIN_COOKIE_NAME = "gpustack_sso_login"
 SYSTEM_USER_PREFIX = "system/"
 SYSTEM_WORKER_USER_PREFIX = "system/worker/"
 GATEWAY_AUTH_TOKEN_HEADER = "X-GPUStack-Auth-Token"
+# Identity the gateway plugin says it has already verified locally, sent
+# *instead of* the credential. Both are request headers a client must never be
+# able to set: the transformer plugin strips them at priority 810, before
+# ext-auth injects the trusted values at 360 in the same AUTHN phase.
+GATEWAY_ASSERTED_ACCESS_KEY_HEADER = "X-GPUStack-Access-Key"
+GATEWAY_ASSERTED_KEY_REF_HEADER = "X-GPUStack-Key-Ref"
+# The client connection the gateway plugin observed for this request, used to
+# bind an auth-cache marker to it. The server never derives this -- only the
+# plugin can read source.address -- so it embeds whatever the plugin sends at
+# mint time and compares against whatever it sends on the pass that presents the
+# marker. Trustworthy for the same reason as the two above: the plugin sets it
+# fresh from source.address on every authorization call, overwriting any
+# client-supplied copy, so it names the connection the client is actually on.
+GATEWAY_DOWNSTREAM_CONN_HEADER = "X-GPUStack-Downstream-Conn"
 basic_auth = HTTPBasic(auto_error=False)
 bearer_auth = HTTPBearer(auto_error=False)
 api_key_header_auth = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -73,6 +98,32 @@ def gateway_token_auth(
     request: Request,
     token: Annotated[Optional[str], Depends(_gateway_auth_header)] = None,
 ):
+    """Verify that a request came from the API gateway.
+
+    What this token authorizes grew with the move of authentication to the
+    gateway: it used to say only "this request came from the gateway", and it
+    now also lets the caller assert an identity to ``/token-auth`` -- see
+    :func:`authenticate_gateway_asserted_identity`.
+
+    Holding it is still much less than being able to act as someone. This
+    endpoint answers with a consumer name and a marker, not with inference: a
+    client that presents the token and an asserted identity learns who the
+    server would call them, and nothing more. Reaching a model that way needs a
+    marker the gateway will accept, and the gateway signs those with a
+    *different* key -- while stripping any identity header a client sends.
+
+    That other key is the one worth guarding. ``auth_cache.signing_key`` sits in
+    the same WasmPlugin resource as this token, and forging markers with it is
+    impersonation outright. Read access to the gateway namespace is therefore
+    closer to platform-level authority than it looks, which is worth knowing
+    before granting it -- the API key documentation says so where it tells an
+    operator to edit that resource.
+
+    Rotating this token means rotating ``jwt_secret_key``, which also
+    invalidates every user session. A dedicated derivation is the change to make
+    if it ever needs rotating on its own, the way the marker signing key already
+    has one.
+    """
     if not token:
         token = request.headers.get(GATEWAY_AUTH_TOKEN_HEADER)
     if not token:
@@ -152,45 +203,179 @@ async def authenticate_request(
         return user
     api_key: Optional[ApiKey] = None
     user = None
+    error: Optional[HTTPException] = None
     try:
         server_config: Config = request.app.state.server_config
         if basic_credentials and is_system_user(basic_credentials.username):
-            user = await authenticate_system_principal(server_config, basic_credentials)
+            # Same short-scoped session as the other branches: the
+            # ``on_authenticated`` hooks run inside it and may query their
+            # own tables without opening a second connection.
+            async with _optional_session(session) as auth_session:
+                try:
+                    user = await authenticate_system_principal(
+                        server_config, basic_credentials
+                    )
+                except HTTPException as e:
+                    error = e
+                return await _settle_authentication(
+                    request, auth_session, user, api_key, error
+                )
         elif basic_credentials or cookie_token or bearer_token or x_api_key:
             # Scoped to just the auth lookup (not Depends(get_session)) so the
             # connection/transaction isn't held open for the lifetime of the
             # request -- otherwise a long-lived StreamingResponse (SSE watch,
             # streaming inference proxy) leaves it idle-in-transaction until
             # the stream ends, which can be hours. See #5678.
-            async with _optional_session(session) as session:
-                if basic_credentials:
-                    user = await authenticate_basic_user(session, basic_credentials)
-                elif cookie_token:
-                    jwt_manager: JWTManager = request.app.state.jwt_manager
-                    user = await get_user_from_jwt_token(
-                        session, jwt_manager, cookie_token
-                    )
-                elif bearer_token or x_api_key:
-                    token = (
-                        bearer_token.credentials if bearer_token else None
-                    ) or x_api_key
-                    if token is not None:
-                        user, api_key = await get_user_from_api_token(session, token)
-
-        if user:
-            if not user.is_active:
-                raise UnauthorizedException(message="User account is deactivated")
-            request.state.user = user
-            if api_key is not None:
-                request.state.api_key = api_key
-            return user
-
+            async with _optional_session(session) as auth_session:
+                user, api_key, error = await _resolve_request_identity(
+                    request,
+                    auth_session,
+                    basic_credentials,
+                    cookie_token,
+                    bearer_token,
+                    x_api_key,
+                )
+                return await _settle_authentication(
+                    request, auth_session, user, api_key, error
+                )
     except HTTPException:
         raise
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to authenticate user: {e}")
 
     raise credentials_exception()
+
+
+async def _resolve_request_identity(
+    request: Request,
+    session: AsyncSession,
+    basic_credentials: Optional[HTTPBasicCredentials],
+    cookie_token: Optional[str],
+    bearer_token: Optional[HTTPAuthorizationCredentials],
+    x_api_key: Optional[str],
+) -> Tuple[Optional[User], Optional[ApiKey], Optional[HTTPException]]:
+    """Resolve presented credentials into an identity.
+
+    Returns ``(user, api_key, error)``; every failure is an outcome
+    rather than a raise, so the ``on_authenticated`` hooks observe the
+    same result the client will get.
+    """
+    api_key: Optional[ApiKey] = None
+    user = None
+    try:
+        if basic_credentials:
+            user = await authenticate_basic_user(session, basic_credentials)
+        elif cookie_token:
+            jwt_manager: JWTManager = request.app.state.jwt_manager
+            user = await get_user_from_jwt_token(session, jwt_manager, cookie_token)
+        elif bearer_token or x_api_key:
+            token = (bearer_token.credentials if bearer_token else None) or x_api_key
+            if token is not None:
+                user, api_key = await get_user_from_api_token(session, token)
+    except HTTPException as e:
+        return None, None, e
+    except Exception as e:
+        return (
+            None,
+            None,
+            InternalServerErrorException(message=f"Failed to authenticate user: {e}"),
+        )
+    return user, api_key, None
+
+
+async def _settle_authentication(
+    request: Request,
+    session: AsyncSession,
+    user: Optional[User],
+    api_key: Optional[ApiKey],
+    error: Optional[HTTPException],
+) -> User:
+    """Finish the auth funnel once an outcome exists.
+
+    A deactivated account becomes a failure outcome here (one check for
+    both resolution branches), the resolved identity is attached to
+    ``request.state`` — the same place the rest of the request pipeline
+    reads it from — before the ``on_authenticated`` hooks observe it,
+    and whatever the request should fail with is raised only after the
+    hooks ran: a hook can reject an admitted request, but never rewrite
+    the identity it saw.
+    """
+    if error is None and user is not None and not user.is_active:
+        error = UnauthorizedException(message="User account is deactivated")
+    if error is None and user is not None:
+        request.state.user = user
+        if api_key is not None:
+            request.state.api_key = api_key
+    elif error is None:
+        # Credentials that resolved to nothing: the hooks observe the
+        # same 401 the client is about to get.
+        error = credentials_exception()
+    await _run_authenticated_hooks(request, session, error)
+    if error is not None:
+        raise error
+    return user
+
+
+# Flags an exception as a policy denial raised by an ``on_authenticated``
+# hook. ``/token-auth`` maps a plain 401 onto anonymous access (PUBLIC models
+# serve it), so it has to tell a 401 a hook *chose* apart from the 401 of a
+# missing or invalid credential: the first is a denial that must reach the
+# client, the second is the anonymous fallback.
+_POLICY_REJECTION_FLAG = "_gpustack_policy_rejection"
+
+
+def _mark_policy_rejection(exc: HTTPException) -> None:
+    setattr(exc, _POLICY_REJECTION_FLAG, True)
+
+
+def is_policy_rejection(exc: BaseException) -> bool:
+    """Whether ``exc`` is a policy denial an ``on_authenticated`` hook
+    raised, rather than an authentication failure."""
+    return getattr(exc, _POLICY_REJECTION_FLAG, False) is True
+
+
+async def _run_authenticated_hooks(
+    request: Request, session: AsyncSession, error: Optional[HTTPException]
+) -> None:
+    """Dispatch ``Plugin.on_authenticated`` in entry-point order.
+
+    Static plugins only — new capabilities land on the static shape.
+    Fail-closed: on an admitted request an unexpected hook crash
+    surfaces as a 500 instead of letting the request through; on an
+    already-failed one it is only logged, so it cannot mask the real
+    auth error.
+    """
+    state = getattr(getattr(request, "app", None), "state", None)
+    contexts = getattr(state, "plugin_contexts", None)
+    if not contexts:
+        return
+    for name, ctx in contexts.items():
+        if ctx.plugin_cls is None or plugin_needs_instantiation(ctx.plugin_cls):
+            continue
+        hook = ctx.plugin_cls.on_authenticated
+        if getattr(hook, "__func__", None) is _DEFAULT_ON_AUTHENTICATED:
+            continue
+        try:
+            await hook(ctx, request, session, error)
+        except HTTPException as e:
+            if error is None:
+                # A hook rejected an admitted request; marked so a caller
+                # that maps a 401 onto anonymous access keeps treating it
+                # as the denial it is (see ``is_policy_rejection``).
+                _mark_policy_rejection(e)
+                raise
+            logger.warning(
+                "on_authenticated hook of plugin %s raised %r on an "
+                "already-failed auth; keeping the original error",
+                name,
+                e,
+            )
+        except Exception:
+            logger.exception("on_authenticated hook of plugin %s crashed", name)
+            if error is None:
+                raise InternalServerErrorException(
+                    message="Authentication policy hook failed"
+                )
 
 
 async def get_admin_user(
@@ -317,16 +502,152 @@ async def get_user_from_jwt_token(
     return user
 
 
-def parse_hyphen_uuid(value: str) -> Optional[str]:
-    if not re.match(
-        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', value, re.I
-    ):
-        return None
+_backfill_tasks: Set[asyncio.Task] = set()
+_backfill_in_flight: Set[int] = set()
+# Keys whose stored digest this build cannot parse. Warned about once per key per
+# process: the condition is per-request, and a polling worker would otherwise
+# flood the log with the same line.
+_warned_unusable_digest: Set[int] = set()
+
+
+def _schedule_secret_key_digest_backfill(api_key: ApiKey, secret_key: str) -> None:
+    """Write ``secret_key_digest`` for a key that has no usable one.
+
+    Off the request path on purpose: this is a pure optimization -- a key without
+    a digest keeps working through argon2 -- and the first wave after an upgrade
+    would otherwise put a DB write in front of a batch of authentications. For the
+    same reason nothing here may raise: the caller has already authenticated the
+    request, and turning that into a 500 over a missed optimization would be
+    absurd.
+
+    Each key converges after one successful verification, so this is a one-time
+    cost per key rather than anything the steady state pays.
+    """
     try:
-        uuid.UUID(value)
-        return value
-    except ValueError:
-        return None
+        digest = new_secret_key_digest(
+            secret_key=secret_key,
+            is_custom=api_key.is_custom,
+            access_key=api_key.access_key,
+        )
+        if digest is None or api_key.id is None:
+            # Whatever the eligibility test refuses stays on argon2: the legacy
+            # cluster token always, and a custom key while
+            # ``GATEWAY_AUTH_ALLOW_CUSTOM_KEYS`` is off. Nothing here knows
+            # which -- backfilling a custom key is the same code path as
+            # backfilling a generated one, and has to stay that way, since the
+            # switch can be turned back on and keys created while it was off
+            # have to converge without being touched by hand.
+            return
+        if api_key.id in _backfill_in_flight:
+            return
+        # Hold a reference: a bare create_task may be collected mid-flight.
+        task = asyncio.create_task(
+            _backfill_secret_key_digest(
+                api_key.id,
+                api_key.access_key,
+                digest,
+                expected_current=api_key.secret_key_digest,
+            )
+        )
+        # Marked in flight only once the task exists, and safe to do after
+        # ``create_task`` because the coroutine cannot run -- and so cannot reach
+        # its ``finally`` -- before this synchronous function yields.
+        _backfill_in_flight.add(api_key.id)
+        _backfill_tasks.add(task)
+        task.add_done_callback(_backfill_tasks.discard)
+    except Exception:
+        logger.exception(
+            f"Failed to schedule secret key digest backfill for {api_key.id}"
+        )
+
+
+async def _backfill_secret_key_digest(
+    api_key_id: int,
+    access_key: str,
+    digest: str,
+    expected_current: Optional[str] = None,
+) -> None:
+    """Store ``digest`` for ``api_key_id``, unless the row moved under us.
+
+    The update is a compare-and-set against the value the caller read, so
+    concurrent authentications of the same key collapse into one effective write,
+    and a value another process wrote in the meantime is never clobbered.
+    ``expected_current`` is NULL for a key that predates the column and the old
+    string when replacing one this build cannot parse -- an unusable value is
+    worth nothing, so leaving it in place would pin the key to argon2 forever.
+
+    ``updated_at`` is assigned its own value on purpose: the column carries
+    ``onupdate``, which fires on a bulk UPDATE too, and naming it in the SET
+    clause is what suppresses that. Otherwise the first wave after an upgrade
+    would restamp every API key -- a user-visible change, and one the API sorts
+    on -- for a derived column the user never set.
+    """
+    try:
+        async with async_session() as session:
+            guard = (
+                ApiKey.secret_key_digest.is_(None)
+                if expected_current is None
+                else ApiKey.secret_key_digest == expected_current
+            )
+            await session.execute(
+                update(ApiKey)
+                .where(ApiKey.id == api_key_id, guard)
+                .values(secret_key_digest=digest, updated_at=ApiKey.updated_at)
+            )
+            await session.commit()
+            # ``APIKeyService.get_by_access_key`` is cached, so without this the
+            # next requests would keep re-verifying through argon2 until the entry
+            # expired, and keep rescheduling this backfill.
+            await delete_cache_by_key(
+                APIKeyService(session).get_by_access_key, access_key
+            )
+    except Exception:
+        # Purely an optimization: the key keeps verifying through argon2, and the
+        # next request retries. Keep the traceback -- a failure here is either a
+        # DB problem or a bug, and both need the stack to diagnose.
+        logger.exception(f"Failed to backfill secret key digest for {api_key_id}")
+    finally:
+        _backfill_in_flight.discard(api_key_id)
+
+
+async def _verify_secret_against_key(api_key: ApiKey, plaintexts: List[str]) -> bool:
+    """Check the credential's presentations against the row's verifiers.
+
+    The digest goes first when the row carries a usable one: it covers the
+    same plaintext as the argon2 hash and costs microseconds. argon2 is the
+    permanent fallback, so a missing or unparsable value costs the request
+    the slow path instead of locking a valid key out.
+    """
+    if secret_key_digest_usable(api_key.secret_key_digest):
+        # A few microseconds, and cheap enough to stay on the event loop.
+        # Only secrets this server generated ever get a digest, so a fast
+        # hash here is not a downgrade -- see security.new_secret_key_digest.
+        return any(
+            verify_secret_key_digest(api_key.secret_key_digest, plaintext)
+            for plaintext in plaintexts
+        )
+
+    if api_key.secret_key_digest and api_key.id not in _warned_unusable_digest:
+        _warned_unusable_digest.add(api_key.id)
+        logger.warning(
+            f"API key {api_key.id} has an unusable secret_key_digest; "
+            "verifying via argon2 and replacing the value. The column held "
+            "something this version cannot parse."
+        )
+    # argon2 verification is synchronous and CPU-bound; run it off the
+    # event loop so concurrent requests keep flowing instead of
+    # serializing behind each hash.
+    for plaintext in plaintexts:
+        verified = await asyncio.to_thread(
+            verify_hashed_secret, api_key.hashed_secret_key, plaintext
+        )
+        if verified:
+            # The plaintext is in hand exactly here, and only here, for a key
+            # that predates the digest column. Fill it in so the next request
+            # takes the fast path.
+            _schedule_secret_key_digest_backfill(api_key, plaintext)
+            return True
+    return False
 
 
 async def get_user_from_api_token(
@@ -349,6 +670,13 @@ async def get_user_from_api_token(
             if api_key:
                 logger.trace(f"Found API key for access key: {candidate}")
                 break
+        if api_key is None and "" not in access_keys:
+            # A token in the standard shape can still be the legacy cluster
+            # token: that row lives under an empty access key with a hash of
+            # the whole deployment-provided string, and nothing in the string
+            # itself says which database issued it. One extra indexed lookup,
+            # paid only on a miss.
+            api_key = await APIKeyService(session).get_by_access_key("")
         if api_key is None:
             return None, None
         if api_key.expires_at is not None and api_key.expires_at <= datetime.now(
@@ -364,13 +692,24 @@ async def get_user_from_api_token(
         # rollback() is safe -- this lookup is read-only.
         await session.rollback()
 
-        # argon2 verification is synchronous and CPU-bound; run it off the
-        # event loop so concurrent requests keep flowing instead of serializing
-        # behind each hash.
-        verified = await asyncio.to_thread(
-            verify_hashed_secret, api_key.hashed_secret_key, secret_key
-        )
-        if verified:
+        # A row under an empty access key predates the parser's split and its
+        # hash may cover either form: pre-2.0 worker rows hash the secret
+        # portion and arrive UUID-wrapped, the legacy cluster token row hashes
+        # the whole deployment string. The wrapped form tries both plaintexts.
+        # A token in the standard shape is only ever the latter -- no
+        # empty-key row has ever held just its secret portion -- so it tries
+        # the whole string alone, keeping a brute-forced standard-format
+        # guess at a single argon2 verify, the cost a custom-key guess already
+        # pays. Rows with a real access key always hashed the secret alone.
+        plaintexts = [secret_key]
+        if not api_key.access_key:
+            valid, parsed_access, _ = is_valid_format(token)
+            if valid and parse_hyphen_uuid(parsed_access) is None:
+                plaintexts = [token]
+            elif token != secret_key:
+                plaintexts.append(token)
+
+        if await _verify_secret_against_key(api_key, plaintexts):
             user: Optional[User] = await UserService(session).get_by_id(
                 user_id=api_key.user_id,
             )
@@ -380,6 +719,129 @@ async def get_user_from_api_token(
         raise InternalServerErrorException(message=f"Failed to get user: {e}")
 
     return None, None
+
+
+# ``api_keys.id`` is a 32-bit serial. A larger value parses fine as a Python
+# int and only fails at the driver, as a DataError the caller would surface as
+# a 500 -- so the range is part of "is this a key ref", not a database concern.
+_MAX_KEY_REF = 2**31 - 1
+
+
+def _parse_key_ref(key_ref: str) -> Optional[int]:
+    try:
+        key_id = int(key_ref)
+    except ValueError:
+        logger.debug("Ignoring asserted identity: key ref is not an id")
+        return None
+    if not 0 < key_id <= _MAX_KEY_REF:
+        logger.debug("Ignoring asserted identity: key ref is out of range")
+        return None
+    return key_id
+
+
+async def authenticate_gateway_asserted_identity(
+    request: Request, session: AsyncSession
+) -> Tuple[Optional[User], Optional[ApiKey]]:
+    """Resolve an identity the gateway states it has already authenticated.
+
+    The gateway plugin verifies the secret locally for keys that carry a
+    ``secret_key_digest`` and then calls ``/token-auth`` with the identity in a
+    header and no credential at all, so this stands in for authentication on
+    that path -- the server only evaluates policy afterwards.
+
+    The assertion is honoured *only* behind ``gateway_token_auth``. That check
+    is the whole trust boundary here: authentication no longer happens on this
+    path, so without it any client could name any ``access_key`` and nothing
+    else would stop it. A missing or wrong gateway token makes this a no-op and
+    the caller falls through to ordinary credential authentication, which is
+    also what a client forging the header gets.
+
+    Returns ``(None, None)`` whenever the assertion cannot be honoured -- no
+    header, no gateway token, or a key that is gone, expired, or owned by a
+    deactivated principal. The caller then treats the request as
+    unauthenticated, which is what the credential path would have done for a
+    revoked key anyway; on a PUBLIC route that still means allowed with the
+    ``'none'`` consumer, exactly as today.
+
+    An honoured assertion settles through the same funnel as the credential
+    path: identity attached to ``request.state``, then the
+    ``on_authenticated`` hooks. The gateway verified the credential, not
+    the policy, so plugin policy applies to an asserted identity exactly as
+    it does to a presented one, and a hook rejection propagates from here.
+    """
+    # No gateway, no gateway assertions. Defence in depth rather than a check
+    # that carries weight on its own -- the gateway token below is the boundary
+    # -- but with the gateway disabled these headers can only be a client's, so
+    # there is no reason to be reachable. Mirrors client_ip_getter, which gates
+    # its own trust in gateway-set headers the same way.
+    server_config: Config = request.app.state.server_config
+    if server_config.gateway_mode == GatewayModeEnum.disabled:
+        return None, None
+
+    access_key = request.headers.get(GATEWAY_ASSERTED_ACCESS_KEY_HEADER)
+    key_ref = request.headers.get(GATEWAY_ASSERTED_KEY_REF_HEADER)
+    if not access_key and not key_ref:
+        return None, None
+    try:
+        gateway_token_auth(request)
+    except UnauthorizedException:
+        logger.debug("Ignoring asserted identity: gateway token missing or invalid")
+        return None, None
+
+    api_key: Optional[ApiKey] = None
+    if access_key:
+        api_key = await APIKeyService(session).get_by_access_key(access_key)
+    else:
+        key_id = _parse_key_ref(key_ref)
+        if key_id is None:
+            return None, None
+        # Detached like the access-key branch above, which goes through a cached
+        # service that expunges. Harmless either way under
+        # ``expire_on_commit=False``, but two paths returning objects with
+        # different session affinity is a difference waiting to matter.
+        api_key = await ApiKey.one_by_id(session, key_id)
+        if api_key is not None:
+            session.expunge(api_key)
+    if api_key is None:
+        return None, None
+    # The access-key branch is already filtered by ``get_by_access_key``; the
+    # ref branch reads the row by id and is not. Checked here so both branches
+    # -- and the gateway's own table, which the assertion came from -- agree on
+    # what a deleted key is.
+    if api_key.deleted_at is not None:
+        return None, None
+    if api_key.expires_at is not None and api_key.expires_at <= datetime.now(
+        timezone.utc
+    ):
+        return None, None
+
+    user: Optional[User] = await UserService(session).get_by_id(user_id=api_key.user_id)
+    if user is None or not user.is_active:
+        return None, None
+    # A SYSTEM principal is never something the gateway is in a position to
+    # assert: those keys are kept out of its tables precisely because one of
+    # them -- the cluster registration token -- is what ai-proxy puts into
+    # ``Authorization`` on every fallback trip. If one ever reached the tables
+    # anyway, the plugin would authenticate that credential as the system
+    # identity and assert it here, and policy would then be evaluated for the
+    # platform's own subject. Filtering on the gateway side is the primary
+    # defence; refusing it here means a lapse there cannot escalate. Nothing
+    # legitimate is lost: workers authenticate with a credential, not an
+    # assertion.
+    if user.kind == PrincipalType.SYSTEM:
+        logger.warning(
+            "Refusing a gateway-asserted identity for SYSTEM principal "
+            f"{user.id}: these keys must never reach the gateway's tables."
+        )
+        return None, None
+
+    # Settle through the same funnel as the credential path: identity
+    # attached to request.state, then the ``on_authenticated`` hooks. The
+    # gateway verified the credential, not the policy, so an asserted
+    # identity is subject to exactly the plugin policy a presented one is,
+    # and a hook rejection propagates from here.
+    await _settle_authentication(request, session, user, api_key, None)
+    return user, api_key
 
 
 async def authenticate_user(
@@ -404,23 +866,41 @@ async def worker_auth(
         Optional[HTTPAuthorizationCredentials], Depends(bearer_auth)
     ] = None,
     x_api_key: Annotated[Optional[str], Depends(api_key_header_auth)] = None,
-):
+) -> None:
+    """Require a worker or registration token for worker management APIs."""
     token_value = (bearer_token.credentials if bearer_token else None) or x_api_key
     if not token_value:
         raise UnauthorizedException(message="Invalid authentication credentials")
     token = request.app.state.token
     config: Config = request.app.state.config
     registration_token = config.token
-    server_url = config.get_server_url()
     if token_value in [token, registration_token]:
         return
+    raise UnauthorizedException(message="Invalid authentication credentials")
+
+
+async def worker_proxy_auth(
+    request: Request,
+    bearer_token: Annotated[
+        Optional[HTTPAuthorizationCredentials], Depends(bearer_auth)
+    ] = None,
+    x_api_key: Annotated[Optional[str], Depends(api_key_header_auth)] = None,
+) -> None:
+    """Allow delegated model authorization only for the inference proxy."""
+    try:
+        await worker_auth(request, bearer_token, x_api_key)
+        return
+    except UnauthorizedException:
+        pass
+
+    token_value = (bearer_token.credentials if bearer_token else None) or x_api_key
+    if not token_value:
+        raise UnauthorizedException(message="Invalid authentication credentials")
     model_name = request.headers.get("X-Higress-Llm-Model")
     if model_name is not None:
-        cred = token_value
-        show_len = max(1, min(6, len(cred)))
-        masked_token = f"{'*' * (len(cred) - show_len)}{cred[-show_len:]}"
-        logger.debug(f"Verifying worker token {masked_token} via server authentication")
+        logger.debug("Verifying inference proxy credentials via server authentication")
         cached_auth = make_auth_token_via_server(request.app.state.http_client_no_proxy)
+        server_url = request.app.state.config.get_server_url()
         is_valid = await cached_auth(server_url, token_value, model_name)
         if is_valid:
             return

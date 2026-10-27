@@ -1,3 +1,4 @@
+{{- if .Values.server.enabled }}
 {{- /*
 Bootstrap admin password delivery. A pinned password is injected as an env var
 (the same channel as --bootstrap-password), so the server treats it as
@@ -29,6 +30,15 @@ spec:
         prometheus.io/port: "{{ .Values.server.metricsPort }}"
         prometheus.io/path: "/metrics"
     spec:
+      # Disable Kubernetes service-link env injection. Kubernetes injects a
+      # <SVCNAME>_PORT=tcp://... env var (name uppercased, '-' -> '_') for every
+      # Service in the namespace; a GPUSTACK_-prefixed name would collide with
+      # GPUStack's GPUSTACK_-prefixed config defaults and crash-loop prerun
+      # (e.g. a worker Service named gpustack-worker -> GPUSTACK_WORKER_PORT).
+      # GPUStack sets every env it needs explicitly and resolves peers via DNS,
+      # so it never relies on these link vars. KUBERNETES_SERVICE_HOST and
+      # KUBERNETES_SERVICE_PORT are exempt from this flag and keep working.
+      enableServiceLinks: false
       {{- with (include "image_pull_secrets" . | trim) }}
       {{- nindent 6 . }}
       {{- end }}
@@ -50,6 +60,9 @@ spec:
             {{- if index .Values "higress-core" "enabled" }}
             - name: GPUSTACK_GATEWAY_NAMESPACE
               value: "{{ .Release.Namespace }}"
+            {{- else if .Values.gateway.namespace }}
+            - name: GPUSTACK_GATEWAY_NAMESPACE
+              value: "{{ .Values.gateway.namespace }}"
             {{- end }}
             - name: GPUSTACK_DEFAULT_CLUSTER_KUBERNETES
               value: 'true'
@@ -76,7 +89,7 @@ spec:
           envFrom:
             {{- if .Values.worker.enabled }}
             - secretRef:
-                name: registration-token
+                name: {{ include "gpustack.registrationTokenSecretName" . }}
                 optional: false
             {{- end }}
             - secretRef:
@@ -160,6 +173,10 @@ spec:
         - name: bootstrap-password
           secret:
             secretName: {{ .Release.Name }}-server-bootstrap-password
+            # Owner-only: the mounted file is the initial admin password. The
+            # subPath mount is read-only, so the server cannot tighten it at
+            # runtime and the volume mode is the effective one.
+            defaultMode: 0600
         {{- end }}
         {{- if .Values.server.dataVolume.hostPath }}
         - name: gpustack-data-dir
@@ -181,3 +198,4 @@ spec:
           requests:
             storage: {{ .Values.server.dataVolume.size | default "10Gi" }}
   {{- end }}
+{{- end }}

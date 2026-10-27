@@ -1,3 +1,4 @@
+from gpustack.policies.resource_view import ResourceView
 import logging
 import os
 import random
@@ -253,8 +254,10 @@ async def test_schedule_with_deepseek_r1_bf16_end_in_patial_offload(temp_dir):
     )
     mi = new_model_instance(1, "test", 1)
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
-    placement_scorer_spread = PlacementScorer(m, mi)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mi, cache_dir, resource_view=ResourceView(mi)
+    )
+    placement_scorer_spread = PlacementScorer(m, mi, resource_view=ResourceView(mi))
 
     with (
         patch(
@@ -389,8 +392,10 @@ async def test_schedule_with_deepseek_r1_bf16_end_in_cpu(temp_dir):
     )
     mi = new_model_instance(1, "test", 1)
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
-    placement_scorer_spread = PlacementScorer(m, mi)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mi, cache_dir, resource_view=ResourceView(mi)
+    )
+    placement_scorer_spread = PlacementScorer(m, mi, resource_view=ResourceView(mi))
 
     with (
         patch(
@@ -525,8 +530,10 @@ async def test_schedule_with_deepseek_r1_bf16_with_30_workers(temp_dir):
     )
     mi = new_model_instance(1, "test", 1)
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
-    placement_scorer_spread = PlacementScorer(m, mi)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mi, cache_dir, resource_view=ResourceView(mi)
+    )
+    placement_scorer_spread = PlacementScorer(m, mi, resource_view=ResourceView(mi))
 
     with (
         patch(
@@ -643,7 +650,9 @@ async def test_schedule_with_deepseek_r1_bf16_with_end_in_no_candidate(temp_dir)
     )
     mi = new_model_instance(1, "test", 1)
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mi, cache_dir, resource_view=ResourceView(mi)
+    )
 
     with (
         patch(
@@ -721,8 +730,10 @@ async def test_schedule_with_deepseek_r1_q8_0_with_end_with_workerx2x80gx8(temp_
 
     mi = new_model_instance(1, "test", 1)
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
-    placement_scorer_spread = PlacementScorer(m, mi)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mi, cache_dir, resource_view=ResourceView(mi)
+    )
+    placement_scorer_spread = PlacementScorer(m, mi, resource_view=ResourceView(mi))
 
     with (
         patch(
@@ -863,8 +874,10 @@ async def test_schedule_with_deepseek_r1_q8_0_with_ngl_with_end_in_multi_worker_
 
     mi = new_model_instance(1, "test", 1)
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
-    placement_scorer_spread = PlacementScorer(m, mi)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mi, cache_dir, resource_view=ResourceView(mi)
+    )
+    placement_scorer_spread = PlacementScorer(m, mi, resource_view=ResourceView(mi))
 
     with (
         patch(
@@ -986,8 +999,10 @@ async def test_schedule_with_ngl_end_in_patial_offload(temp_dir):
     )
     mi = new_model_instance(1, "test", 1)
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
-    placement_scorer_spread = PlacementScorer(m, mi)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mi, cache_dir, resource_view=ResourceView(mi)
+    )
+    placement_scorer_spread = PlacementScorer(m, mi, resource_view=ResourceView(mi))
 
     with (
         patch(
@@ -1115,8 +1130,10 @@ async def test_schedule_with_ngl_end_in_cpu_offload(temp_dir):
     )
     mi = new_model_instance(1, "test", 1)
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
-    placement_scorer_spread = PlacementScorer(m, mi)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mi, cache_dir, resource_view=ResourceView(mi)
+    )
+    placement_scorer_spread = PlacementScorer(m, mi, resource_view=ResourceView(mi))
 
     with (
         patch(
@@ -1227,8 +1244,10 @@ async def test_schedule_with_deepseek_r1_bf16_with_manual_selected_cant_offload_
     )
     mi = new_model_instance(1, "test", 1)
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
-    placement_scorer_spread = PlacementScorer(m, mi)
+    resource_fit_selector = GGUFResourceFitSelector(
+        m, mi, cache_dir, resource_view=ResourceView(mi)
+    )
+    placement_scorer_spread = PlacementScorer(m, mi, resource_view=ResourceView(mi))
 
     with (
         patch(

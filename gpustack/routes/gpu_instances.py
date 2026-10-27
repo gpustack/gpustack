@@ -31,11 +31,13 @@ Route → target phase:
 """
 
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends
+from sqlmodel import select
 from starlette.responses import StreamingResponse
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -44,16 +46,26 @@ from gpustack.api.exceptions import (
 )
 from gpustack.api.tenant import (
     bypass_tenant_filter,
+    tenant_list_conditions,
     TenantContext,
+    assert_cluster_visible,
     assert_org_owned_writable,
     validate_owner_principal,
 )
 from gpustack.gpu_instances import validate_k8s_object_name
+from gpustack.gpu_instances.placeholders import substitute_generated_placeholders
 from gpustack.routes.gpu_instance_persistent_volumes import resolve_pv_type_for_ctx
+from gpustack.routes.gpu_instances_helper import (
+    assert_cluster_gpu_service,
+    display_name_label,
+    order_by_display_label,
+)
+from gpustack.schemas.clusters import Cluster
 
 from gpustack.schemas import (
     GPUInstance,
     GPUInstancePersistentVolume,
+    GPUInstanceType,
     GPUInstanceUpdate,
     GPUInstancePublic,
     GPUInstanceListParams,
@@ -65,9 +77,13 @@ from gpustack.schemas.gpu_instances import (
     INTERRUPTED_PHASES,
     TRANSITIONING_PHASES,
     GPUInstancePhase,
+    GPUInstanceSpec,
     GPUInstanceStatus,
+    GPUInstanceVolume,
 )
+from gpustack.schemas.gpu_instance_types import GPUInstanceTypePublic
 from gpustack.schemas.principals import platform_principal_id
+from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -91,25 +107,42 @@ async def get_gpu_instances(
 
     fuzzy_fields: dict = {}
     if search:
+        # The Name column renders ``display_name || name``, so searching only
+        # ``name`` hid rows behind the label the list actually shows (#6104).
         fuzzy_fields["name"] = search
+        fuzzy_fields["display_name"] = search
 
     if params.watch:
         return StreamingResponse(
-            GPUInstance.streaming(
+            tenant_streaming(
+                GPUInstance,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
+                event_transform=_inject_type_snapshot_detail_into_event,
             ),
             media_type="text/event-stream",
         )
 
     async with async_session() as session:
-        return await GPUInstance.paginated_by_query(
+        paginated = await GPUInstance.paginated_by_query(
             session=session,
             fields=fields,
+            extra_conditions=tenant_list_conditions(ctx, GPUInstance),
             fuzzy_fields=fuzzy_fields,
-            order_by=params.order_by,
+            order_by=order_by_display_label(
+                params.order_by, display_name_label(GPUInstance)
+            ),
             page=params.page,
             per_page=params.perPage,
+        )
+        type_rows = await _types_by_snapshot(session, paginated.items)
+        return GPUInstancesPublic(
+            items=[
+                _public_with_type_rows(instance, type_rows)
+                for instance in paginated.items
+            ],
+            pagination=paginated.pagination,
         )
 
 
@@ -119,12 +152,15 @@ async def get_gpu_instance(
     ctx: TenantContextDep,
     id: int,
 ):
-    return ensure_visible(
-        await GPUInstance.one_by_id(
-            session=session,
-            id=id,
+    return await _to_public_with_type(
+        session,
+        ensure_visible(
+            await GPUInstance.one_by_id(
+                session=session,
+                id=id,
+            ),
+            ctx,
         ),
-        ctx,
     )
 
 
@@ -134,6 +170,9 @@ async def create_gpu_instance(
     ctx: TenantContextDep,
     create_obj: GPUInstanceCreate,
 ):
+    if create_obj.cluster_id is None:
+        raise InvalidException(message="cluster_id is required")
+
     if create_obj.owner_principal_id is None:
         create_obj.owner_principal_id = (
             ctx.current_principal_id or platform_principal_id()
@@ -145,7 +184,27 @@ async def create_gpu_instance(
         allow_member=True,
     )
 
+    # A GPU instance is a workload, not org-owned infrastructure: it may run
+    # on any cluster the caller can see — one owned by the instance's Org, or
+    # one shared via cluster_access (e.g. the Default-Org cluster granted to
+    # every authenticated user for usage). Cluster ownership is the model-level
+    # rule; a workload only requires visibility. A cluster the caller can't see
+    # is a 404, so cross-tenant cluster ids can't be probed or targeted.
+    if create_obj.cluster_id is not None:
+        not_found = f"Cluster {create_obj.cluster_id} not found"
+        cluster = await Cluster.one_by_id(session, create_obj.cluster_id)
+        assert_cluster_visible(ctx, cluster, not_found_message=not_found)
+        if cluster.deleted_at is not None:
+            raise NotFoundException(message=not_found)
+        assert_cluster_gpu_service(cluster)
+
     persistent_volume_id = await _validate_create_obj(session, ctx, create_obj)
+
+    type_snapshot = await _resolve_type_snapshot(
+        session,
+        cluster_id=create_obj.cluster_id,
+        type_name=create_obj.spec.type_,
+    )
 
     existed = await GPUInstance.exist_by_fields(
         session=session,
@@ -159,13 +218,18 @@ async def create_gpu_instance(
             message=(f"GPU instance with name '{create_obj.name}' already exists."),
         )
 
-    source = _build_create_source(create_obj, ctx.user.id, persistent_volume_id)
+    source = _build_create_source(
+        create_obj, ctx.user.id, persistent_volume_id, type_snapshot
+    )
     async with handle_error(
         message="Failed to create GPU instance",
     ):
-        return await GPUInstance.create(
-            session=session,
-            source=source,
+        return await _to_public_with_type(
+            session,
+            await GPUInstance.create(
+                session=session,
+                source=source,
+            ),
         )
 
 
@@ -184,9 +248,9 @@ async def update_gpu_instance(
         ctx,
     )
 
-    source = _build_update_source(update_obj, ret)
+    source = await _build_update_source(session, ctx, update_obj, ret)
     if not source:
-        return ret
+        return await _to_public_with_type(session, ret)
 
     async with handle_error(
         message="Failed to update GPU instance",
@@ -195,7 +259,7 @@ async def update_gpu_instance(
             session=session,
             source=source,
         )
-        return ret
+        return await _to_public_with_type(session, ret)
 
 
 @router.delete("/{id}", status_code=202, response_model=GPUInstancePublic)
@@ -249,13 +313,13 @@ async def start_gpu_instance(
     )
 
 
-def ensure_visible(obj, ctx: TenantContext):
+def ensure_visible(obj: GPUInstance, ctx: TenantContext) -> GPUInstance:
     if obj and is_visible(obj, ctx):
         return obj
     raise NotFoundException(message="GPU instance not found")
 
 
-def ensure_writable(obj, ctx: TenantContext):
+def ensure_writable(obj: GPUInstance, ctx: TenantContext) -> GPUInstance:
     if obj is None:
         raise NotFoundException(message="GPU instance not found")
     assert_org_owned_writable(
@@ -264,7 +328,7 @@ def ensure_writable(obj, ctx: TenantContext):
     return obj
 
 
-def is_visible(obj, ctx: TenantContext) -> bool:
+def is_visible(obj: GPUInstance, ctx: TenantContext) -> bool:
     if bypass_tenant_filter(ctx):
         return True
     return ctx.current_principal_id == obj.owner_principal_id
@@ -285,34 +349,45 @@ async def _validate_create_obj(
     ctx: TenantContext,
     create_obj: GPUInstanceCreate,
 ) -> Optional[int]:
-    """Enforce create-time invariants that aren't expressible in the schema:
+    """Enforce create-time invariants that aren't expressible in the schema.
 
-    - ``spec.volume`` is required, and exactly one of ``ephemeral``,
-      ``persistent``, ``persistentTemplate`` must be set.
-    - If ``spec.volume.persistent`` is set, it must reference an existing PV by name,
-      then resolved PV's id is returned.
-      So the caller can stamp it onto the new GPU instance's ``persistent_volume_id`` FK.
-    - If ``spec.volume.persistentTemplate`` is set,
-      its name must not yet exist and its type must reference an existing PV type by name.
-      The template is then provisioned inline,
-      and the new PV's id is returned for stamping onto the GPU instance's FK.
-
-    Return the resolved ``persistent_volume_id`` (``None`` for ephemeral volumes).
-
-    The returned id is what the caller stamps onto
-    :class:`GPUInstance.persistent_volume_id`. Three branches mirror
-    ``spec.volume``:
-
-    - ``ephemeral``: no FK; returns ``None``.
-    - ``persistent``: existing PV by ``(owner, name)``; returns its id.
-    - ``persistentTemplate``: provisions a new PV inline (after
-      resolving its ``spec.type`` to a PV type id) and returns the new
-      row's id.
+    Validates the (create-only) k8s object name, then resolves ``spec.volume``
+    to a ``persistent_volume_id`` via :func:`_resolve_volume` (shared with the
+    stopped-instance spec update). Returns the resolved id (``None`` for
+    ephemeral volumes) for the caller to stamp onto
+    :class:`GPUInstance.persistent_volume_id`.
     """
 
     validate_k8s_object_name(create_obj.name)
 
-    volume = create_obj.spec.volume
+    return await _resolve_volume(
+        session,
+        ctx,
+        owner_principal_id=create_obj.owner_principal_id,
+        volume=create_obj.spec.volume,
+    )
+
+
+async def _resolve_volume(
+    session: AsyncSession,
+    ctx: TenantContext,
+    *,
+    owner_principal_id: int,
+    volume: Optional[GPUInstanceVolume],
+) -> Optional[int]:
+    """Validate a ``spec.volume`` selection and resolve it to a
+    ``persistent_volume_id``. Shared by create and the stopped-instance spec
+    update.
+
+    - ``spec.volume`` is required, and exactly one of ``ephemeral``,
+      ``persistent``, ``persistentTemplate`` must be set.
+    - ``ephemeral``: no FK; returns ``None``.
+    - ``persistent``: existing PV by ``(owner, name)``; returns its id.
+    - ``persistentTemplate``: its name must not yet exist and its type must
+      reference an existing PV type by name; the template is provisioned inline
+      (``auto_commit=False``, committed by the caller's row write) and the new
+      PV's id is returned.
+    """
 
     if volume is None:
         raise InvalidException(
@@ -343,7 +418,7 @@ async def _validate_create_obj(
         pv = await GPUInstancePersistentVolume.first_by_fields(
             session=session,
             fields={
-                "owner_principal_id": create_obj.owner_principal_id,
+                "owner_principal_id": owner_principal_id,
                 "name": volume.persistent.name,
             },
         )
@@ -360,7 +435,7 @@ async def _validate_create_obj(
         existing = await GPUInstancePersistentVolume.first_by_fields(
             session=session,
             fields={
-                "owner_principal_id": create_obj.owner_principal_id,
+                "owner_principal_id": owner_principal_id,
                 "name": template.name,
             },
         )
@@ -375,7 +450,7 @@ async def _validate_create_obj(
         pvt = await resolve_pv_type_for_ctx(
             session,
             ctx,
-            owner_principal_id=create_obj.owner_principal_id,
+            owner_principal_id=owner_principal_id,
             name=template.spec.type_,
         )
         if pvt is None or pvt.is_deleting():
@@ -389,7 +464,7 @@ async def _validate_create_obj(
         pv = GPUInstancePersistentVolume(
             name=template.name,
             spec=template.spec,
-            owner_principal_id=create_obj.owner_principal_id,
+            owner_principal_id=owner_principal_id,
             creator_id=ctx.user.id,
             persistent_volume_type_id=pvt.id,
         )
@@ -403,29 +478,156 @@ async def _validate_create_obj(
     return None
 
 
+async def _resolve_type_snapshot(
+    session: AsyncSession,
+    *,
+    cluster_id: Optional[int],
+    type_name: str,
+) -> str:
+    """Resolve ``spec.type_`` to the persisted instance type's snapshot.
+
+    Looks up the active (non-soft-deleted) :class:`GPUInstanceType` for the
+    target cluster and returns its ``snapshot`` to stamp onto the instance. A
+    missing or soft-deleted type means the instance references a type the
+    cluster does not offer, so it is a client error
+    (:class:`InvalidException`) rather than an instance created against a
+    non-existent type.
+    """
+    row = await GPUInstanceType.first_by_fields(
+        session=session,
+        fields={
+            "cluster_id": cluster_id,
+            "name": type_name,
+            "deleted_at": None,
+        },
+    )
+    if row is None:
+        raise InvalidException(
+            message=(
+                f"GPU instance type '{type_name}' not found in " f"cluster {cluster_id}"
+            ),
+        )
+    return row.snapshot
+
+
+async def _types_by_snapshot(
+    session: AsyncSession,
+    instances: List[Union[GPUInstance, GPUInstancePublic]],
+) -> Dict[str, GPUInstanceType]:
+    """``{snapshot: row}`` for every type stamped on the given instances, in
+    one query.
+
+    The key is each instance's own server-stamped ``type_snapshot`` — never a
+    client input — and it is globally unique
+    (``uq_gpu_instance_type_snapshot``), so a resolved row is exactly the
+    definition the visible instance was stamped against. The summary therefore
+    inherits the instance's own visibility and cannot cross tenants.
+    Soft-deleted types still resolve: the instance legitimately points at the
+    definition it was created against.
+    """
+    snapshots = sorted({i.type_snapshot for i in instances if i.type_snapshot})
+    if not snapshots:
+        return {}
+    rows = await session.exec(
+        select(GPUInstanceType).where(GPUInstanceType.snapshot.in_(snapshots))
+    )
+    return {row.snapshot: row for row in rows.all()}
+
+
+def _type_summary_detail(
+    row: GPUInstanceType,
+) -> Optional[GPUInstanceTypePublic]:
+    """Project a persisted type row into the read-only summary carried by
+    ``GPUInstancePublic.type_snapshot_detail``."""
+    return GPUInstanceTypePublic.model_validate(row, from_attributes=True)
+
+
+def _public_with_type_rows(
+    instance: GPUInstance, type_rows: Dict[str, GPUInstanceType]
+) -> GPUInstancePublic:
+    """Build the public payload carrying the resolved type summary, so every
+    response renders the instance's type from the definition the server
+    stamped rather than from ``description``."""
+    public = GPUInstancePublic.model_validate(instance, from_attributes=True)
+    row = type_rows.get(instance.type_snapshot or "")
+    if row is not None:
+        public.type_snapshot_detail = _type_summary_detail(row)
+    return public
+
+
+async def _to_public_with_type(
+    session: AsyncSession, instance: GPUInstance
+) -> GPUInstancePublic:
+    """Resolve the stamped snapshot to its type row and attach the summary to
+    the public payload (single-row routes)."""
+    return _public_with_type_rows(
+        instance, await _types_by_snapshot(session, [instance])
+    )
+
+
+async def _inject_type_snapshot_detail_into_event(event) -> None:
+    """Populate ``type_snapshot_detail`` on a watch event so the streamed
+    payload matches the REST response — otherwise a UI in watch mode would
+    overwrite a fully rendered row with one missing the type summary."""
+    if event.type == EventType.DELETED:
+        return
+    instance = event.data
+    if not isinstance(instance, GPUInstancePublic) or instance.id is None:
+        return
+    if not instance.type_snapshot:
+        return
+    async with async_session() as session:
+        row = (await _types_by_snapshot(session, [instance])).get(
+            instance.type_snapshot
+        )
+    if row is not None:
+        instance.type_snapshot_detail = _type_summary_detail(row)
+
+
 def _build_create_source(
     create_obj: GPUInstanceCreate,
     creator_id: int,
     persistent_volume_id: Optional[int],
+    type_snapshot: str,
 ) -> dict:
+    # Resolve {{generated_*}} placeholders before persisting: the stored spec
+    # must carry the concrete values so stop/start replays and UI access links
+    # see the same credential.
+    substitute_generated_placeholders(create_obj.spec)
     source: dict = create_obj.model_dump()
     source["creator_id"] = creator_id
+    source["type_snapshot"] = type_snapshot
     if persistent_volume_id is not None:
         source["persistent_volume_id"] = persistent_volume_id
     return source
 
 
-def _build_update_source(
-    update_obj: GPUInstanceUpdate, existing_obj: GPUInstance
+async def _build_update_source(
+    session: AsyncSession,
+    ctx: TenantContext,
+    update_obj: GPUInstanceUpdate,
+    existing_obj: GPUInstance,
 ) -> dict:
     """Filter ``update_obj`` down to the fields that may actually change.
 
-    Only ``display_name``, ``description``, and ``spec.sshPublicKeys`` are
-    mutable post-create. ``spec`` on the request is a
-    :class:`GPUInstanceSpecUpdate` (a narrow subset of the row's
-    :class:`GPUInstanceSpec`); assigning it directly would clobber every
-    other field on the row's spec, so we merge ``sshPublicKeys`` onto the
-    existing spec and keep the row's type intact.
+    ``display_name`` / ``description`` are metadata and may change from any
+    phase. ``spec`` is a full replacement carrying every field except the
+    instance ``name``; the client always PUTs the whole desired spec, and what
+    it changed decides the gate:
+
+    - ``spec.sshPublicKeys`` alone may change from any phase (keys are resynced
+      to the worker live), so an edit whose only diff is the SSH key list is
+      accepted while the instance is running.
+    - any other field change requires the instance to be Stopped; such an edit
+      takes effect on the next ``/start`` when the controller re-applies the
+      spec to the worker CR.
+
+    When ``spec.volume`` changes (only possible while Stopped) it is re-resolved
+    to a ``persistent_volume_id`` FK (same rules as create); an unchanged volume
+    keeps the existing FK. A volume swap only re-points the FK; it never deletes
+    the previously bound persistent volume (that could destroy user data), so an
+    auto-provisioned template PV left behind by a swap must be removed
+    explicitly via the PV delete endpoint.
     """
     source: dict = {}
 
@@ -435,17 +637,62 @@ def _build_update_source(
     if "description" in fields_set:
         source["description"] = update_obj.description
 
-    if (
-        "spec" in fields_set
-        and update_obj.spec is not None
-        and "ssh_public_keys" in update_obj.spec.model_fields_set
-    ):
-        merged_spec = existing_obj.spec.model_copy(
-            update={"ssh_public_keys": update_obj.spec.ssh_public_keys or []},
-        )
-        source["spec"] = merged_spec
+    if "spec" in fields_set and update_obj.spec is not None:
+        new_spec = update_obj.spec
+        if not existing_obj.is_stopped():
+            # Only the SSH key list is editable while running; reject an edit
+            # that touches any other field until the instance is stopped.
+            if _spec_changes_beyond_ssh(new_spec, existing_obj.spec):
+                raise InvalidException(
+                    message=(
+                        "Only spec.sshPublicKeys can be updated while the GPU "
+                        "instance is running; stop it to change any other "
+                        "configuration"
+                    ),
+                )
+            # SSH-only edit: the volume is unchanged, so the FK stays put.
+            source["spec"] = new_spec
+            return source
+
+        if new_spec.volume == existing_obj.spec.volume:
+            persistent_volume_id = existing_obj.persistent_volume_id
+        else:
+            persistent_volume_id = await _resolve_volume(
+                session,
+                ctx,
+                owner_principal_id=existing_obj.owner_principal_id,
+                volume=new_spec.volume,
+            )
+        # Resolve {{generated_*}} placeholders in the accepted spec, same as at
+        # create: the stored spec must carry concrete values.
+        substitute_generated_placeholders(new_spec)
+        source["spec"] = new_spec
+        source["persistent_volume_id"] = persistent_volume_id
+        # Re-stamp the type snapshot ONLY when the referenced type changed. An
+        # edit to any other field (image, resources, volume) keeps the original
+        # pinned snapshot, so an unrelated edit neither rebinds the instance's
+        # recorded type nor fails when that type has since been removed. The
+        # cluster is immutable post-create; a now-missing new type is rejected,
+        # same as at create.
+        if new_spec.type_ != existing_obj.spec.type_:
+            source["type_snapshot"] = await _resolve_type_snapshot(
+                session,
+                cluster_id=existing_obj.cluster_id,
+                type_name=new_spec.type_,
+            )
 
     return source
+
+
+def _spec_changes_beyond_ssh(
+    new_spec: GPUInstanceSpec, current_spec: GPUInstanceSpec
+) -> bool:
+    """Whether ``new_spec`` differs from ``current_spec`` in any field other than
+    ``ssh_public_keys`` — the one field editable while the instance runs."""
+    ignore_ssh = {"ssh_public_keys": None}
+    return new_spec.model_copy(update=ignore_ssh) != current_spec.model_copy(
+        update=ignore_ssh
+    )
 
 
 def _build_update_phase_source(existing_obj: GPUInstance, phase: str) -> dict:
@@ -483,9 +730,10 @@ async def _transition_to_phase(
     action: str,
     target_phase: str,
     fail_message: str,
-) -> GPUInstance:
+) -> GPUInstancePublic:
     """Load + ownership-check the row, gate the transition by ``action``,
-    stamp the target phase, and persist. Returns the updated row."""
+    stamp the target phase, and persist. Returns the updated payload with its
+    resolved type summary."""
     ret = ensure_writable(
         await GPUInstance.one_by_id(
             session=session,
@@ -519,4 +767,4 @@ async def _transition_to_phase(
             session=session,
             source=source,
         )
-        return ret
+        return await _to_public_with_type(session, ret)

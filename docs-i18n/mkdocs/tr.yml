@@ -1,0 +1,106 @@
+site_name: GPUStack
+site_description: GPUStack, GPU kümelerini yönetmek ve yapay zekâ modellerini verimli biçimde dağıtmak için açık kaynaklı bir platformdur.
+theme_translations:
+  Switch to light mode: Açık temaya geç
+  Switch to dark mode: Koyu temaya geç
+  Switch to system preference: Sistem temasını kullan
+nav_translations:
+  Home: Ana Sayfa
+  Overview: Genel Bakış
+  Quickstart: Hızlı başlangıç
+  Installation: Kurulum
+  Requirements: Gereksinimler
+  Installation via Docker: Docker ile kurulum
+  Installation via Helm: Helm ile Kurulum
+  Air-Gapped Installation: İnternete Kapalı Ortamda Kurulum
+  Uninstallation: Kaldırma
+  Upgrade: Yükseltme
+  Upgrade via Docker: Docker aracılığıyla yükseltme
+  Upgrade via Helm: Helm ile Yükseltme
+  Upgrade a Cluster Deployment: Küme Dağıtımını Yükseltme
+  Migration: Geçiş
+  User Guide: Kullanım Kılavuzu
+  Playground: Deneme Alanı
+  Chat: Sohbet
+  Image: Resim
+  Audio: Ses
+  Embedding: Vektör Gömme
+  Rerank: Yeniden Sıralama
+  Model Catalog: Model Kataloğu
+  Model Deployment Management: Model Dağıtım Yönetimi
+  PD Disaggregation: Prefill/Decode Ayrımı
+  Model Route Management: Model Rota Yönetimi
+  Model Provider Management: Model Sağlayıcı Yönetimi
+  Inference Backend Management: Çıkarım Arka Uç Yönetimi
+  Built-in Inference Backends: Yerleşik Çıkarım Arka Uçları
+  Cache Service Management: Önbellek Hizmeti Yönetimi
+  OTA Content Updates: OTA İçerik Güncellemeleri
+  Compatibility Check: Uyumluluk Kontrolü
+  Model File management: Model Dosya yönetimi
+  Cluster Management: Küme Yönetimi
+  GPU Service: GPU Hizmeti
+  GPU Instances: GPU Örnekleri
+  Instance Types: Örnek Türleri
+  Instance Templates: Örnek Şablonları
+  Storage: Depolama
+  Storage Types: Depolama Türleri
+  SSH Public Keys: SSH Açık Anahtarları
+  Cloud Credential Management: Bulut Kimlik Bilgisi Yönetimi
+  API Key Management: API Anahtar Yönetimi
+  User Management: Kullanıcı Yönetimi
+  Usage: Kullanım
+  Single Sign-On (SSO) Authentication: Tek Oturum Açma (SSO) Kimlik Doğrulaması
+  Observability: Gözlemlenebilirlik
+  Benchmarking: Performans Ölçümü
+  Using Models: Modelleri Kullanma
+  Using Large Language Models: Büyük Dil Modellerini Kullanma
+  Using Vision Language Models: Görsel Dil Modellerini Kullanma
+  Using Embedding Models: Gömme Modellerini Kullanma
+  Using Reranker Models: Yeniden Sıralama Modellerini Kullanma
+  Using Image Generation Models: Görüntü Oluşturma Modellerini Kullanma
+  Using Audio Models: Ses Modellerini Kullanma
+  Tutorials: Öğreticiler
+  Integrations: Entegrasyonlar
+  Inference APIs: Çıkarım API'leri
+  Integrate with Claude Code: Claude Code ile Entegrasyon
+  Integrate with Dify: Dify ile entegrasyon
+  Integrate with RAGFlow: RAGFlow ile entegrasyon
+  Integrate with Cherry Studio: Cherry Studio ile entegrasyon
+  Integrate with OpenClaw: OpenClaw ile entegrasyon
+  Integrate with n8n: n8n ile entegrasyon
+  Integrate with MaxKB: MaxKB ile entegrasyon
+  Integrate with NewAPI: NewAPI ile entegrasyon
+  Integrate with LiteLLM: LiteLLM ile entegrasyon
+  Running DeepSeek R1 671B with Distributed vLLM: DeepSeek R1 671B'yi Dağıtılmış vLLM ile Çalıştırma
+  Running Distributed vLLM with the MultiProcessing Backend: MultiProcessing Arka Ucuyla Dağıtılmış vLLM Çalıştırma
+  Running DeepSeek R1 671B with Distributed Ascend Mindie: Dağıtılmış Ascend MindIE ile DeepSeek R1 671B Çalıştırma
+  Inference On CPUs: CPU'larda Çıkarım
+  Inference with Tool Calling: Araç Çağırma ile Çıkarım
+  Using Custom Inference Backend: Özel Çıkarım Arka Uçunu Kullanma
+  Adding a GPU Cluster Using DigitalOcean: DigitalOcean Kullanarak GPU Kümesi Ekleme
+  Adding a GPU Cluster Using Shuihua: Shuihua Kullanarak GPU Kümesi Ekleme
+  Adding a GPU Cluster Using Kubernetes: Kubernetes Kullanarak GPU Kümesi Ekleme
+  Managing Model Routes: Model Rotaları Yönetme
+  Routing with LB Policies: LB Politikalarıyla Yönlendirme
+  Serving Models with LoRA Adapters: LoRA Adaptörlü Modeller Sunma
+  Architecture: Mimari
+  Scheduler: Zamanlayıcı
+  Troubleshooting: Sorun giderme
+  FAQ: SSS
+  API Reference: API Referansı
+  CLI Reference: CLI Referansı
+  Start: Başlat
+  Download Tools: Araçları İndirme
+  Reload Config: Yapılandırmayı Yeniden Yükleme
+  List Images: İmajları Listeleme
+  Save Images: İmajları Kaydetme
+  Load Images: İmajları Yükleme
+  Copy Images: İmajları Kopyalama
+  Environment Variables: Ortam Değişkenleri
+  Inference Performance Lab: Çıkarım Performansı Laboratuvarı
+  Optimizing Throughput: Verimi Optimize Etme
+  Optimizing Latency: Gecikmeyi Optimize Etme
+  References: Referanslar
+  The Impact of Quantization on vLLM Inference Performance: Nicelemenin vLLM Çıkarım Performansı Üzerindeki Etkisi
+  Evaluating LMCache Prefill Acceleration in vLLM: vLLM'de LMCache Ön Doldurma Hızlandırmasını Değerlendirme
+  Container Image Selector: Konteyner İmajı Seçici

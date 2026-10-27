@@ -208,13 +208,13 @@ async def _resolve_direct_consumer_org(
     falls back to attributing the usage to the caller themselves. Best-effort —
     attribution must never break usage recording.
     """
-    from gpustack.api.tenant import get_tenant_context
+    from gpustack.api.tenant import resolve_tenant_context
     from gpustack.server.db import async_session
 
     try:
         async with async_session() as session:
-            ctx = await get_tenant_context(
-                request, session, user, x_organization_id=raw_header
+            ctx = await resolve_tenant_context(
+                request, user, x_organization_id=raw_header, session=session
             )
         cpid = ctx.current_principal_id
         return str(cpid) if cpid is not None else None

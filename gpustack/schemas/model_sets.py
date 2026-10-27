@@ -1,29 +1,18 @@
 from datetime import date
 from enum import Enum
-from typing import List, Optional, Union
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from typing import List, Optional
+from pydantic import BaseModel, ConfigDict, Field
 
 from gpustack.schemas.models import (
     ModelSource,
     ModelSpecBase,
 )
+from gpustack.schemas.source import SourceTypeEnum
+from gpustack.schemas.gpu_filters import GPUFilters
 
-
-class GPUFilters(BaseModel):
-    vendor: Optional[Union[str, List[str]]] = None
-    """List of GPU vendors, e.g., ['nvidia', 'amd'] or 'nvidia'."""
-    compute_capability: Optional[str] = None
-    """Compute capability filter expressed using pip-style version specifiers. E.g., '>=7.0,<8.0'."""
-    vendor_variant: Optional[Union[str, List[str]]] = None
-    """List of GPU vendor variants. For example, ['910b', '310p'] or '910b' for Ascend NPUs."""
-
-    @field_validator("vendor", "vendor_variant", mode="before")
-    def normalize_str_or_list_fields(cls, v):
-        if v is None:
-            return []
-        if isinstance(v, str):
-            return [v]
-        return v
+# Re-exported: the model-catalog code and its tests import GPUFilters from
+# this module.
+__all__ = ["GPUFilters"]
 
 
 class ModelSpec(ModelSpecBase):
@@ -46,6 +35,14 @@ class ModelSpec(ModelSpecBase):
     # non-nullable int — echoing ``null`` there fails validation with
     # a 422.
     owner_principal_id: Optional[int] = Field(default=None, exclude=True)
+
+    # The cluster the model would be evaluated against, stamped
+    # server-side by the evaluation route from the request's top-level
+    # cluster_id (never trusted from the client). ``ModelSpecBase``
+    # deliberately has no cluster_id, but vGPU/InstanceType checks
+    # resolve pools per cluster. Excluded from responses for the same
+    # merge-back reason as owner_principal_id.
+    cluster_id: Optional[int] = Field(default=None, exclude=True)
 
 
 class SizeUnit(str, Enum):
@@ -73,7 +70,10 @@ class ModelSetBase(BaseModel):
 
 
 class ModelSetPublic(ModelSetBase):
-    pass
+    # Source-origin display: which source this set came from (None for the
+    # packaged built-in catalog, which the UI shows without a badge).
+    source_name: Optional[str] = None
+    source_type: Optional[SourceTypeEnum] = None
 
 
 class ModelSet(ModelSetBase):

@@ -1,31 +1,54 @@
 from gpustack.gateway import generic_proxy_router_spec_diff
 import re
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from kubernetes_asyncio import client as k8s_client
+from kubernetes_asyncio.client import ApiException
 
+from gpustack import envs
 from gpustack.api.exceptions import NotFoundException
+from gpustack.gateway.labels_annotations import managed_labels
 from gpustack.gateway.utils import (
     RoutePrefix,
     cleanup_generic_proxy_router_spec_diff,
+    cleanup_model_mapper,
+    diff_proxies,
+    diff_registries,
+    ensure_model_ingress,
+    gateway_tls_annotations,
     generate_model_ingress,
     generic_proxy_router_diff_spec,
+    get_expected_match_list,
     get_instance_id_from_header,
+    higress_metadata_equal,
     lora_registry_name_suffix,
+    mirror_from_anchor_ingress,
     model_instance_registry,
     model_instances_registry_list,
+    provider_proxy_plugin_spec,
     provider_registry,
+    route_rule_ingress_names,
     router_header_key,
 )
 from gpustack.schemas.models import ModelInstance
-from gpustack.gateway.client.extensions_higress_io_v1_api import WasmPluginSpec
+from gpustack.gateway.client.extensions_higress_io_v1_api import (
+    WasmPluginMatchRule,
+    WasmPluginSpec,
+)
 from gpustack.schemas.model_provider import (
+    ClaudeConfig,
     ModelProvider,
     ModelProviderTypeEnum,
     OpenAIConfig,
     OllamaConfig,
 )
-from gpustack.gateway.client.networking_higress_io_v1_api import McpBridgeRegistry
+from gpustack.gateway.client.networking_higress_io_v1_api import (
+    McpBridgeProxy,
+    McpBridgeRegistry,
+)
+from gpustack.server.bus import EventType
 
 
 def test_flattened_prefixes():
@@ -149,6 +172,104 @@ def test_ollama_registry():
     assert reg.port == 80
     assert reg.type == "static"
     assert reg.protocol == "http"
+
+
+class TestClaudeCustomUrlRouting:
+    """A custom Anthropic endpoint has to reach Envoy twice over.
+
+    ``provider_registry`` decides where the connection goes; the ai-proxy
+    provider config decides the authority and path on it. Only one of the two
+    coming from ``claudeCustomUrl`` is the failure worth a test: the request
+    lands on the custom host carrying ``Host: api.anthropic.com``, or on
+    Anthropic carrying the custom one.
+    """
+
+    def _provider(self, url: str) -> ModelProvider:
+        return ModelProvider(
+            id=7,
+            name="claude-1",
+            api_tokens=["sk-test"],
+            config=ClaudeConfig(type=ModelProviderTypeEnum.CLAUDE, claudeCustomUrl=url),
+        )
+
+    def test_the_registry_points_at_the_custom_host(self):
+        reg = provider_registry(self._provider("http://192.168.50.14:8080"))
+
+        assert reg.domain == "192.168.50.14:8080"
+        assert reg.protocol == "http"
+        assert reg.type == "static"
+        # A static registry carries the port in the domain, and Higress ignores
+        # the field -- same shape openaiCustomUrl already produces.
+        assert reg.port == 80
+
+    def test_a_hostname_registry_stays_dns(self):
+        reg = provider_registry(self._provider("https://claude.example.com/anthropic"))
+
+        assert reg.domain == "claude.example.com"
+        assert reg.port == 443
+        assert reg.protocol == "https"
+        assert reg.type == "dns"
+
+    def test_without_a_custom_url_the_registry_is_anthropic(self):
+        provider = ModelProvider(
+            id=7,
+            name="claude-1",
+            api_tokens=["sk-test"],
+            config=ClaudeConfig(type=ModelProviderTypeEnum.CLAUDE),
+        )
+
+        reg = provider_registry(provider)
+
+        assert reg.domain == "api.anthropic.com"
+        assert reg.type == "dns"
+        assert reg.port == 443
+
+    def test_the_plugin_config_carries_the_endpoint(self):
+        configs, rules = provider_proxy_plugin_spec(
+            self._provider("http://192.168.50.14:8080/anthropic")
+        )
+
+        assert len(configs) == 1
+        assert configs[0]["providerDomain"] == "192.168.50.14:8080"
+        assert configs[0]["providerBasePath"] == "/anthropic"
+        # claudeCustomUrl is ours, not the plugin's: it is translated into the
+        # two knobs above and must not also be emitted raw.
+        assert "claudeCustomUrl" not in configs[0]
+        assert len(rules) == 1
+
+    def test_passthrough_is_opt_in(self):
+        # The endpoint alone says nothing about which protocol to expose it as,
+        # so protocol is left to the config. Deriving it from claudeCustomUrl
+        # would flip every existing custom provider to passthrough on reconcile.
+        default = self._provider("http://192.168.50.14:8080")
+        passthrough = ModelProvider(
+            id=7,
+            name="claude-1",
+            api_tokens=["sk-test"],
+            config=ClaudeConfig(
+                type=ModelProviderTypeEnum.CLAUDE,
+                claudeCustomUrl="http://192.168.50.14:8080",
+                protocol="original",
+            ),
+        )
+
+        assert "protocol" not in provider_proxy_plugin_spec(default)[0][0]
+        assert provider_proxy_plugin_spec(passthrough)[0][0]["protocol"] == "original"
+
+    def test_an_anthropic_provider_gets_no_protocol_override(self):
+        provider = ModelProvider(
+            id=7,
+            name="claude-1",
+            api_tokens=["sk-test"],
+            config=ClaudeConfig(type=ModelProviderTypeEnum.CLAUDE),
+        )
+
+        configs, _ = provider_proxy_plugin_spec(provider)
+
+        # Absent, not "openai": ai-proxy already defaults to openai, and writing
+        # it would rewrite the deployed config of every existing provider.
+        assert "protocol" not in configs[0]
+        assert "providerDomain" not in configs[0]
 
 
 # --- Generic proxy router -------------------------------------------------
@@ -518,4 +639,485 @@ def test_model_instances_registry_list_threads_suffix():
     assert [registry.name for _, _, registry in dests] == [
         f"model-5-1-{suffix}",
         f"model-5-2-{suffix}",
+    ]
+
+
+def _reg(name: str) -> McpBridgeRegistry:
+    return McpBridgeRegistry(name=name, domain="127.0.0.1", type="dns", port=80)
+
+
+def test_diff_registries_prefix_deletes_matching_prefix():
+    existing = [_reg("provider-1"), _reg("provider-10"), _reg("model-5-1")]
+    need_update, result = diff_registries(
+        existing, desired=[], to_delete_prefix="provider-"
+    )
+    assert need_update is True
+    assert {r.name for r in result} == {"model-5-1"}
+
+
+def test_diff_registries_exact_name_avoids_prefix_collision():
+    # Deleting provider id "1" must NOT drop "provider-10"/"provider-11".
+    existing = [
+        _reg("provider-1"),
+        _reg("provider-10"),
+        _reg("provider-11"),
+        _reg("model-5-1"),
+    ]
+    need_update, result = diff_registries(
+        existing, desired=[], to_delete_names=["provider-1"]
+    )
+    assert need_update is True
+    assert {r.name for r in result} == {"provider-10", "provider-11", "model-5-1"}
+
+
+def test_diff_registries_no_delete_targets_keeps_all():
+    existing = [_reg("provider-1"), _reg("provider-10")]
+    need_update, result = diff_registries(existing, desired=[])
+    assert need_update is False
+    assert {r.name for r in result} == {"provider-1", "provider-10"}
+
+
+def test_diff_registries_nameless_entry_is_kept_not_crashed():
+    # name is Optional[str]; a nameless existing entry must not raise on the
+    # prefix check and should be preserved as unrelated.
+    nameless = McpBridgeRegistry(domain="127.0.0.1", type="dns", port=80)
+    existing = [nameless, _reg("provider-1")]
+    need_update, result = diff_registries(
+        existing, desired=[], to_delete_prefix="provider-"
+    )
+    assert need_update is True
+    assert result == [nameless]
+
+
+def _proxy(name: str) -> McpBridgeProxy:
+    return McpBridgeProxy(
+        name=name, serverAddress="127.0.0.1", serverPort=80, type="HTTP"
+    )
+
+
+def test_diff_proxies_exact_name_deletes_only_target():
+    existing = [_proxy("provider-1-proxy"), _proxy("provider-10-proxy")]
+    need_update, result = diff_proxies(
+        existing, desired=[], to_delete_names=["provider-1-proxy"]
+    )
+    assert need_update is True
+    assert {p.name for p in result} == {"provider-10-proxy"}
+
+
+def test_diff_proxies_nameless_entry_is_kept_not_crashed():
+    nameless = McpBridgeProxy(serverAddress="127.0.0.1", serverPort=80, type="HTTP")
+    existing = [nameless, _proxy("provider-1-proxy")]
+    need_update, result = diff_proxies(
+        existing, desired=[], to_delete_prefix="provider-"
+    )
+    assert need_update is True
+    assert result == [nameless]
+
+
+def _model_ingress_api(existing_ingress=None, existing_status=404):
+    api = MagicMock()
+    if existing_ingress is not None:
+        api.read_namespaced_ingress = AsyncMock(return_value=existing_ingress)
+    else:
+        api.read_namespaced_ingress = AsyncMock(
+            side_effect=ApiException(status=existing_status)
+        )
+    api.create_namespaced_ingress = AsyncMock()
+    api.replace_namespaced_ingress = AsyncMock()
+    api.delete_namespaced_ingress = AsyncMock()
+    return api
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_ingress_with_no_destinations_and_no_existing_ingress_is_noop():
+    api = _model_ingress_api(existing_status=404)
+    await ensure_model_ingress(
+        ingress_name="model-route-1",
+        ingress_class_name="higress",
+        route_name="route-1",
+        namespace="gpustack",
+        destinations=[],
+        event_type=EventType.CREATED,
+        networking_api=api,
+    )
+    api.delete_namespaced_ingress.assert_awaited_once_with(
+        name="model-route-1", namespace="gpustack"
+    )
+    api.create_namespaced_ingress.assert_not_awaited()
+    api.replace_namespaced_ingress.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_ingress_with_no_destinations_deletes_existing():
+    api = _model_ingress_api()
+    await ensure_model_ingress(
+        ingress_name="model-route-1",
+        ingress_class_name="higress",
+        route_name="route-1",
+        namespace="gpustack",
+        destinations=[],
+        event_type=EventType.UPDATED,
+        networking_api=api,
+    )
+    api.delete_namespaced_ingress.assert_awaited_once_with(
+        name="model-route-1", namespace="gpustack"
+    )
+    api.create_namespaced_ingress.assert_not_awaited()
+    api.replace_namespaced_ingress.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_ingress_with_destinations_still_creates():
+    api = _model_ingress_api(existing_status=404)
+    registry = MagicMock()
+    registry.get_service_name_with_port.return_value = (
+        "svc.gpustack.svc.cluster.local:80"
+    )
+    await ensure_model_ingress(
+        ingress_name="model-route-1",
+        ingress_class_name="higress",
+        route_name="route-1",
+        namespace="gpustack",
+        destinations=[(100, "downstream-model", registry)],
+        event_type=EventType.CREATED,
+        networking_api=api,
+    )
+    api.create_namespaced_ingress.assert_awaited_once()
+    body = api.create_namespaced_ingress.await_args.kwargs["body"]
+    assert (
+        body.metadata.annotations["higress.io/destination"]
+        == "100% svc.gpustack.svc.cluster.local:80"
+    )
+
+
+# --- Gateway TLS protocol version bounds -----------------------------------
+#
+# The failure these guard is silent: Higress refuses an annotation value it
+# cannot parse by keeping its own TLS 1.0 floor, logging one line in a container
+# nobody watches, and applying the Ingress anyway. So a wrong spelling here does
+# not break a deployment loudly -- it leaves a security scan's finding in place
+# while the operator believes it is fixed.
+
+
+@pytest.fixture
+def tls_versions(monkeypatch):
+    """Set the two TLS environment variables as the server reads them."""
+
+    def _set(minimum: str = "", maximum: str = ""):
+        monkeypatch.setattr(envs, "GATEWAY_TLS_MIN_PROTOCOL_VERSION", minimum)
+        monkeypatch.setattr(envs, "GATEWAY_TLS_MAX_PROTOCOL_VERSION", maximum)
+
+    return _set
+
+
+def test_tls_annotations_are_absent_by_default(tls_versions):
+    # Unset must stay unset: stamping a floor on upgrade would drop clients an
+    # existing deployment still serves.
+    tls_versions()
+    assert gateway_tls_annotations() == {}
+
+
+def test_tls_annotations_use_higress_spelling(tls_versions):
+    tls_versions(minimum="TLSv1.2", maximum="TLSv1.3")
+    assert gateway_tls_annotations() == {
+        "higress.io/tls-min-protocol-version": "TLSv1.2",
+        "higress.io/tls-max-protocol-version": "TLSv1.3",
+    }
+
+
+def test_tls_annotations_normalize_the_envoy_spelling(tls_versions):
+    # TLSv1_2 is Envoy's own spelling and the likeliest thing to reach for, but
+    # Higress rejects it. Normalized rather than passed through and ignored.
+    tls_versions(minimum="tlsv1_2")
+    assert gateway_tls_annotations() == {
+        "higress.io/tls-min-protocol-version": "TLSv1.2"
+    }
+
+
+@pytest.mark.parametrize("value", ["1.2", "TLS1.2", "TLSv1.4", "yes"])
+def test_tls_annotations_reject_an_unusable_version(tls_versions, value):
+    tls_versions(minimum=value)
+    with pytest.raises(ValueError, match="Valid values are"):
+        gateway_tls_annotations()
+
+
+def test_tls_annotations_reject_an_inverted_range(tls_versions):
+    tls_versions(minimum="TLSv1.3", maximum="TLSv1.2")
+    with pytest.raises(ValueError, match="no TLS version would be accepted"):
+        gateway_tls_annotations()
+
+
+def test_model_ingress_carries_the_mirrored_bounds(tls_versions):
+    # Mirrored off the anchor, never read from the environment here: in-cluster
+    # the anchor belongs to the helm chart and this server's environment has
+    # nothing to say about it.
+    tls_versions(minimum="TLSv1.3")
+    ingress = generate_model_ingress(
+        ingress_name="ai-route-route-42.internal",
+        namespace="default",
+        route_name="my-route",
+        destinations="100% svc.default.svc.cluster.local:80",
+        tls_protocol_annotations={"higress.io/tls-min-protocol-version": "TLSv1.2"},
+    )
+    assert (
+        ingress.metadata.annotations["higress.io/tls-min-protocol-version"] == "TLSv1.2"
+    )
+    assert "higress.io/tls-max-protocol-version" not in ingress.metadata.annotations
+
+
+def test_model_ingress_without_an_anchor_bound_carries_none(tls_versions):
+    tls_versions(minimum="TLSv1.2")
+    ingress = generate_model_ingress(
+        ingress_name="ai-route-route-42.internal",
+        namespace="default",
+        route_name="my-route",
+        destinations="100% svc.default.svc.cluster.local:80",
+    )
+    assert not [
+        k for k in ingress.metadata.annotations if "tls-m" in k
+    ], "the environment must not reach a generated route directly"
+
+
+@pytest.mark.asyncio
+async def test_anchor_mirroring_reads_hostname_tls_and_bounds():
+    anchor = k8s_client.V1Ingress(
+        metadata=k8s_client.V1ObjectMeta(
+            annotations={
+                "higress.io/tls-min-protocol-version": "TLSv1.2",
+                "higress.io/destination": "svc:80",
+            }
+        ),
+        spec=k8s_client.V1IngressSpec(
+            rules=[k8s_client.V1IngressRule(host="gpustack.example.com")],
+            tls=[
+                k8s_client.V1IngressTLS(
+                    hosts=["gpustack.example.com"], secret_name="tls-x"
+                )
+            ],
+        ),
+    )
+    api = MagicMock()
+    api.read_namespaced_ingress = AsyncMock(return_value=anchor)
+
+    settings = await mirror_from_anchor_ingress(
+        network_v1_client=api,
+        gateway_namespace="higress-system",
+        target_ingress_name="gpustack",
+    )
+
+    assert settings.hostname == "gpustack.example.com"
+    assert settings.tls[0].secret_name == "tls-x"
+    # Only the TLS bounds are mirrored; the anchor's own routing annotations
+    # would send every generated route to the control plane.
+    assert settings.tls_protocol_annotations == {
+        "higress.io/tls-min-protocol-version": "TLSv1.2"
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_anchor_without_metadata_or_spec_mirrors_nothing():
+    # Both are optional on V1Ingress. Nothing the API server returns looks like
+    # this, but the anchor is re-read on every model-route reconcile, so raising
+    # here would take the whole loop down rather than mirror nothing.
+    api = MagicMock()
+    api.read_namespaced_ingress = AsyncMock(return_value=k8s_client.V1Ingress())
+
+    settings = await mirror_from_anchor_ingress(
+        network_v1_client=api,
+        gateway_namespace="higress-system",
+        target_ingress_name="gpustack",
+    )
+
+    assert settings.hostname is None
+    assert settings.tls is None
+    assert settings.tls_protocol_annotations == {}
+
+
+@pytest.mark.asyncio
+async def test_a_missing_anchor_mirrors_nothing():
+    api = MagicMock()
+    api.read_namespaced_ingress = AsyncMock(
+        side_effect=ApiException(status=404, reason="Not Found")
+    )
+
+    settings = await mirror_from_anchor_ingress(
+        network_v1_client=api,
+        gateway_namespace="higress-system",
+        target_ingress_name="gpustack",
+    )
+
+    assert settings.hostname is None
+    assert settings.tls is None
+    assert settings.tls_protocol_annotations == {}
+
+
+def test_clearing_the_tls_bound_makes_a_live_ingress_unequal():
+    # Dropping a bound from the expected set has to read as a difference. If it
+    # did not, the object would be judged equal, never rewritten, and the floor
+    # would stay in force after it was turned off.
+    existing = k8s_client.V1ObjectMeta(
+        annotations={
+            "higress.io/destination": "svc:80",
+            "higress.io/tls-min-protocol-version": "TLSv1.2",
+        }
+    )
+    expected = k8s_client.V1ObjectMeta(annotations={"higress.io/destination": "svc:80"})
+    assert not higress_metadata_equal(existing, expected)
+    # Other higress.io annotations stay compared one-way, so an unmanaged one
+    # does not on its own provoke a rewrite. Whether it survives a rewrite
+    # provoked by something else is the caller's call, not this function's.
+    existing.annotations = {
+        "higress.io/destination": "svc:80",
+        "higress.io/ignore-path-case": "true",
+    }
+    assert higress_metadata_equal(existing, expected)
+
+
+class TestGetExpectedMatchList:
+    def test_fallback_rules_are_dual_attached(self):
+        rules = get_expected_match_list(
+            route_name="tmp1",
+            ingress_prefix="higress-system/",
+            ingress_name="ai-route-route-6.internal",
+            fallback_model_name_to_registries={"qwen3-0.6b": ["model-1-1.static"]},
+        )
+        assert len(rules) == 1
+        rule = rules[0]
+        # The fallback rule lists the main ingress too: when only fallback
+        # targets exist the main ingress may be the only one carrying the
+        # traffic.
+        assert rule.ingress == [
+            "higress-system/ai-route-route-6.internal",
+            "higress-system/ai-route-route-6.fallback.internal",
+        ]
+        assert rule.config == {"modelMapping": {"tmp1": "qwen3-0.6b"}}
+        assert rule.service == ["model-1-1.static"]
+
+    def test_no_main_path_rules_are_emitted(self):
+        # The main-path model rewrite is owned by the LB rule — candidates
+        # carry one model name per cluster — so the mapper emits nothing
+        # for non-fallback destinations.
+        rules = get_expected_match_list(
+            route_name="tmp1",
+            ingress_prefix="higress-system/",
+            ingress_name="ai-route-route-6.internal",
+            fallback_model_name_to_registries={},
+        )
+        assert rules == []
+
+    def test_self_mapping_is_skipped(self):
+        rules = get_expected_match_list(
+            route_name="tmp1",
+            ingress_prefix="",
+            ingress_name="ai-route-route-6.internal",
+            fallback_model_name_to_registries={"tmp1": ["svc"]},
+        )
+        assert rules == []
+
+
+class TestRouteRuleIngressNames:
+    """The prune's expected set for mapper-CR rules, in the spelling the
+    rules themselves store: namespace-qualified when the route ingress lives
+    outside the gateway namespace, bare otherwise — and never the plain
+    object names alone, which no rule of a cross-namespace deployment would
+    match."""
+
+    @pytest.mark.parametrize(
+        ("resource_ns", "gateway_ns", "prefix"),
+        [
+            ("gpustack-system", "higress-system", "gpustack-system/"),
+            ("higress-system", "higress-system", ""),
+        ],
+    )
+    def test_spells_main_and_fallback_like_the_rules(
+        self, resource_ns, gateway_ns, prefix
+    ):
+        assert route_rule_ingress_names([6], resource_ns, gateway_ns) == [
+            f"{prefix}ai-route-route-6.internal",
+            f"{prefix}ai-route-route-6.fallback.internal",
+        ]
+
+    @pytest.mark.parametrize(
+        ("resource_ns", "gateway_ns", "prefix"),
+        [
+            ("gpustack-system", "higress-system", "gpustack-system/"),
+            ("higress-system", "higress-system", ""),
+        ],
+    )
+    def test_written_rules_stay_inside_the_expected_set(
+        self, resource_ns, gateway_ns, prefix
+    ):
+        # The write side of the contract: every ingress a mapper rule can
+        # list must be one the prune expects, or the rule is dropped as an
+        # orphan the moment the server restarts.
+        rules = get_expected_match_list(
+            route_name="tmp1",
+            ingress_prefix=prefix,
+            ingress_name="ai-route-route-6.internal",
+            model_name_to_registries={"deepseek-v4": ["model-1-1.static"]},
+            fallback_model_name_to_registries={"qwen3-0.6b": ["model-1-1.static"]},
+        )
+        expected = set(route_rule_ingress_names([6], resource_ns, gateway_ns))
+        assert rules
+        for rule in rules:
+            assert set(rule.ingress) <= expected
+
+
+@pytest.mark.asyncio
+async def test_startup_prune_keeps_cross_namespace_rules():
+    """The startup prune must not strip the mapper rules of a deployment
+    whose namespace differs from the gateway's: their ingresses are
+    namespace-qualified, so the expected set is built by the same spelling
+    (route_rule_ingress_names). A rule of a route gone from the database is
+    still retired."""
+    live_spec = WasmPluginSpec(
+        defaultConfig={},
+        matchRules=[
+            rule.model_dump()
+            for rule in get_expected_match_list(
+                route_name="tmp1",
+                ingress_prefix="gpustack-system/",
+                ingress_name="ai-route-route-6.internal",
+                fallback_model_name_to_registries={"qwen3-0.6b": ["model-1-1.static"]},
+            )
+        ]
+        + [
+            WasmPluginMatchRule(
+                config={"modelMapping": {"gone": "x"}},
+                ingress=["gpustack-system/ai-route-route-404.internal"],
+                configDisable=False,
+            ).model_dump()
+        ],
+    )
+    api = MagicMock()
+    api.get_wasmplugin = AsyncMock(
+        return_value={
+            "metadata": {
+                "name": "gpustack-model-mapper",
+                # ensure_wasm_plugin only rewrites a CR it manages
+                "labels": dict(managed_labels),
+            },
+            "spec": live_spec.model_dump(),
+        }
+    )
+    api.edit_wasmplugin = AsyncMock()
+
+    with (
+        patch("gpustack.gateway.utils.ExtensionsHigressIoV1Api", return_value=api),
+        patch("gpustack.gateway.utils.k8s_client.ApiClient"),
+    ):
+        await cleanup_model_mapper(
+            namespace="higress-system",
+            expected_ingresses=route_rule_ingress_names(
+                [6], "gpustack-system", "higress-system"
+            ),
+            config=MagicMock(),
+        )
+
+    body = api.edit_wasmplugin.await_args.kwargs["body"]
+    assert [rule.ingress for rule in body.spec.matchRules] == [
+        [
+            "gpustack-system/ai-route-route-6.internal",
+            "gpustack-system/ai-route-route-6.fallback.internal",
+        ]
     ]

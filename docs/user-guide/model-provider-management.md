@@ -18,6 +18,7 @@ The currently supported providers are:
 - Dify
 - Doubao
 - Fireworks AI
+- Galadriel
 - Google Gemini
 - Generic Provider
 - GitHub Copilot
@@ -46,6 +47,30 @@ The currently supported providers are:
 3. Fill the required options like `Name`, `Type`, `API Key`.
 4. Click `Add Model` to configure at least one model for this provider.
 5. Click the `Save` button.
+
+## Use an Anthropic-Compatible Endpoint
+
+An `Anthropic Claude` provider talks to `api.anthropic.com` by default. To point it at a
+self-hosted or proxied service that speaks the same API, set `claudeCustomUrl` to an
+absolute `http(s)` URL, including the port and any path prefix — for example
+`http://192.168.50.14:8080` or `https://gateway.example.com/anthropic`.
+
+Give the origin and the prefix the service is mounted under, **not** its API base: the
+Anthropic paths are appended to what you set, so `claudeCustomUrl` should not end in
+`/v1` even though most Anthropic-compatible services advertise a base URL that does.
+Setting `http://192.168.50.14:8080/v1` makes GPUStack look for `/v1/v1/models` and
+`/v1/v1/messages`, which usually shows up as `Test Model` failing against an endpoint
+that inference itself reaches. Note this is the opposite of `openaiCustomUrl`, which is
+the full API base and does include `/v1`. Credentials, a query, or a fragment in the URL
+are rejected — the API key belongs in the provider's own key field.
+
+Such a provider is still exposed through the OpenAI API by default: requests are
+converted to the Anthropic protocol on the way to the endpoint and back on the way
+home. To forward them unchanged instead, add `protocol: original` to the provider
+config. Passthrough preserves everything the OpenAI schema has no place for (prompt
+caching, thinking blocks, tool-use blocks), but the provider then serves the
+**Anthropic protocol only** — OpenAI-style requests to `/v1/chat/completions` are no
+longer translated for it, so use the Anthropic paths (`/v1/messages`) with it.
 
 ## Add Route for Provider
 

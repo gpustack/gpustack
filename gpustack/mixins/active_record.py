@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import importlib
+from inspect import isawaitable
 import json
 import logging
 import math
@@ -29,7 +30,6 @@ from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.cache import locked_cached, delete_cache_by_key, class_key
 from gpustack.server.db import async_session
-
 
 logger = logging.getLogger(__name__)
 
@@ -87,9 +87,56 @@ def send_post_commit_events(session: AsyncSession):
             # Detach from the SQLAlchemy session so subscribers don't see
             # lazy loads or further mutations on the same row.
             bus_event.data = bus_event.data.model_copy(deep=True)
+            # ``CommitEvent`` builds the Event when the write is queued, which
+            # for a CREATED event is before the INSERT assigns the primary
+            # key -- so it snapshotted ``id=None`` while ``data.id`` is now
+            # correct. Derive after the copy, so ``id`` can never disagree
+            # with the payload subscribers are handed.
+            bus_event.refresh_id()
             asyncio.create_task(event_bus.publish(event.name, bus_event))
         except Exception as e:
             logger.exception(f"Failed to publish events: {e}")
+
+
+# ``LIKE`` reads ``%`` and ``_`` in the pattern as wildcards, so an unescaped
+# needle silently changed what a search meant: ``team_a`` matched ``teamXa`` and a
+# lone ``%`` matched every row. The watch stream's ``_match_fuzzy_fields`` does a
+# plain Python substring test and never had wildcards, so the two disagreed — a
+# searched page listed a superset of the rows it then received updates for.
+# Escaping converges the SQL onto the literal reading the stream already had.
+_LIKE_ESCAPE = "\\"
+
+
+def _fuzzy_pattern(value: Any) -> str:
+    """``value`` as a case-folded ``LIKE`` pattern matching it literally."""
+    needle = str(value).lower()
+    # The escape character first, or escaping the wildcards would re-escape it.
+    for special in (_LIKE_ESCAPE, "%", "_"):
+        needle = needle.replace(special, _LIKE_ESCAPE + special)
+    return f"%{needle}%"
+
+
+def fuzzy_like(column: Any, value: Any):
+    """A ``LIKE`` predicate matching ``value`` literally in ``column``, case-folded.
+
+    Public because a route that builds its own search condition needs the same
+    reading of the needle as the generic one below: an escape rule that lives in
+    two places is an escape rule that drifts.
+    """
+    return func.lower(column).like(_fuzzy_pattern(value), escape=_LIKE_ESCAPE)
+
+
+def _fuzzy_conditions(cls, fuzzy_fields: Optional[dict]) -> List:
+    """The OR-ed ``LIKE`` predicates for ``fuzzy_fields``, lowered on both sides.
+
+    One definition, because both the item query and its COUNT need the
+    identical predicate: written out separately they drift, and a COUNT that
+    loses the ``lower()`` on each side disagrees with the page it counts.
+    """
+    return [
+        fuzzy_like(getattr(cls, key), value)
+        for key, value in (fuzzy_fields or {}).items()
+    ]
 
 
 class ActiveRecordMixin:
@@ -238,11 +285,8 @@ class ActiveRecordMixin:
         for key, value in fields.items():
             statement = statement.where(getattr(cls, key) == value)
 
-        if fuzzy_fields:
-            fuzzy_conditions = [
-                func.lower(getattr(cls, key)).like(f"%{str(value).lower()}%")
-                for key, value in fuzzy_fields.items()
-            ]
+        fuzzy_conditions = _fuzzy_conditions(cls, fuzzy_fields)
+        if fuzzy_conditions:
             statement = statement.where(or_(*fuzzy_conditions))
 
         if extra_conditions:
@@ -291,11 +335,14 @@ class ActiveRecordMixin:
             ]
             statement = statement.where(and_(*conditions))
 
-        if fuzzy_fields:
-            fuzzy_conditions = [
-                func.lower(getattr(cls, key)).like(f"%{str(value).lower()}%")
-                for key, value in fuzzy_fields.items()
-            ]
+        # Built once and applied to the COUNT below as well, the way
+        # ``extra_conditions`` already is. Rebuilding the predicate a second time
+        # is what let the two drift: the count omitted the ``lower()`` on each
+        # side, so on a database whose LIKE is case-sensitive a search differing
+        # in case from the stored value returned rows ``total`` did not count —
+        # a page rendering items its pagination said were not there.
+        fuzzy_conditions = _fuzzy_conditions(cls, fuzzy_fields)
+        if fuzzy_conditions:
             statement = statement.where(or_(*fuzzy_conditions))
 
         if extra_conditions:
@@ -340,11 +387,7 @@ class ActiveRecordMixin:
             ]
             count_statement = count_statement.where(and_(*conditions))
 
-        if fuzzy_fields:
-            fuzzy_conditions = [
-                col(getattr(cls, key)).like(f"%{value}%")
-                for key, value in fuzzy_fields.items()
-            ]
+        if fuzzy_conditions:
             count_statement = count_statement.where(or_(*fuzzy_conditions))
 
         if extra_conditions:
@@ -809,17 +852,19 @@ class ActiveRecordMixin:
             id(subscriber),
         )
 
-        if replay_existing:
-            include_created = event_types is None or EventType.CREATED in event_types
-            if include_created:
-                initial_items = await cls.cached_all(options=options)
-                for item in initial_items:
-                    yield Event(type=EventType.CREATED, data=item)
-
-        heartbeat_interval = timedelta(seconds=15)
-        last_event_time = datetime.now(timezone.utc)
-
         try:
+            if replay_existing:
+                include_created = (
+                    event_types is None or EventType.CREATED in event_types
+                )
+                if include_created:
+                    initial_items = await cls.cached_all(options=options)
+                    for item in initial_items:
+                        yield Event(type=EventType.CREATED, data=item)
+
+            heartbeat_interval = timedelta(seconds=15)
+            last_event_time = datetime.now(timezone.utc)
+
             while True:
                 try:
                     event = await asyncio.wait_for(
@@ -841,7 +886,7 @@ class ActiveRecordMixin:
         cls,
         fields: Optional[dict] = None,
         fuzzy_fields: Optional[dict] = None,
-        filter_func: Optional[Callable[[Any], bool]] = None,
+        filter_func: Optional[Callable[[Any], Union[bool, Awaitable[bool]]]] = None,
         options: Optional[List] = None,
         event_transform: Optional[Callable[[Event], Awaitable[None]]] = None,
     ) -> AsyncGenerator[str, None]:
@@ -850,7 +895,7 @@ class ActiveRecordMixin:
         Args:
             fields: Exact match filters as key-value pairs
             fuzzy_fields: Fuzzy match filters
-            filter_func: Optional filter function to apply to event data
+            filter_func: Optional sync or async predicate applied before projection
             options: SQLAlchemy options for eager loading relationships (e.g., selectinload)
             event_transform: Optional async hook called with the public Event
                 right before serialization. May mutate ``event.data`` in
@@ -859,8 +904,9 @@ class ActiveRecordMixin:
                 allocated computed from current ModelInstance bindings so
                 the watch stream matches the REST response.
         """
+        events = cls.subscribe(source="streaming", options=options)
         try:
-            async for event in cls.subscribe(source="streaming", options=options):
+            async for event in events:
                 if event.type == EventType.HEARTBEAT:
                     yield "\n\n"
                     continue
@@ -871,8 +917,12 @@ class ActiveRecordMixin:
                 if not cls._match_fuzzy_fields(event, fuzzy_fields):
                     continue
 
-                if filter_func and not filter_func(event.data):
-                    continue
+                if filter_func:
+                    matched = filter_func(event.data)
+                    if isawaitable(matched):
+                        matched = await matched
+                    if not matched:
+                        continue
 
                 public_event = Event(
                     type=event.type,
@@ -896,21 +946,54 @@ class ActiveRecordMixin:
             raise
         except Exception as e:
             logger.error(f"Error in streaming {cls.__name__}: {e}")
+        finally:
+            await events.aclose()
 
     @classmethod
     def _match_fields(cls, event: Any, fields: Optional[dict]) -> bool:
-        """Match fields using AND condition."""
+        """Match fields using AND condition.
+
+        ``deleted_at: None`` is exempt on a DELETED event. Callers pass it to
+        mean "stream the live rows", but :meth:`delete` stamps ``deleted_at``
+        before the after-commit hook publishes, so matching it here dropped the
+        one event that says the row is gone — leaving it rendered on every open
+        page until a reload. :meth:`_format_event` already assumes the opposite,
+        keeping id-only payloads for DELETED alone so "clients can still remove
+        by ID from their cache".
+
+        The exemption is per-key, not per-event: every other filter still
+        applies, so a stream scoped to one cluster (or one name) never learns
+        about another's deletions. And only ``None`` is exempt — a concrete
+        timestamp would mean "this retirement", not "live rows".
+        """
         for key, value in (fields or {}).items():
+            if (
+                key == "deleted_at"
+                and value is None
+                and event.type == EventType.DELETED
+            ):
+                continue
             if getattr(event.data, key, None) != value:
                 return False
         return True
 
     @classmethod
     def _match_fuzzy_fields(cls, event: Any, fuzzy_fields: Optional[dict]) -> bool:
-        """Match fuzzy fields using OR condition."""
+        """Match fuzzy fields using OR condition.
+
+        A key whose attribute is None is skipped rather than stringified: SQL is
+        the reference here, and ``NULL LIKE '%x%'`` is NULL, never true. Reading
+        it as ``str(None)`` made every row with a NULL column match the term
+        "none", so a search for it returned nothing from the read while the
+        stream kept delivering those rows — they appeared in an empty list one by
+        one as they changed. An id-only payload resolves every key to None the
+        same way.
+        """
         for key, value in (fuzzy_fields or {}).items():
-            attr_value = str(getattr(event.data, key, "")).lower()
-            if str(value).lower() in attr_value:
+            attr_value = getattr(event.data, key, None)
+            if attr_value is None:
+                continue
+            if str(value).lower() in str(attr_value).lower():
                 return True
         return not fuzzy_fields
 

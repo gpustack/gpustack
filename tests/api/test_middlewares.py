@@ -16,7 +16,7 @@ from gpustack.api.exceptions import ForbiddenException, NotFoundException
 
 class _FakeSessionCtx:
     """Minimal ``async with async_session() as session`` stand-in — the real
-    session is never touched because ``get_tenant_context`` is stubbed."""
+    session is never touched because ``resolve_tenant_context`` is stubbed."""
 
     async def __aenter__(self):
         return SimpleNamespace()
@@ -31,12 +31,12 @@ def _stub_async_session(monkeypatch):
 
 
 def _stub_tenant_context(monkeypatch, *, result=None, exc=None):
-    async def _fake(request, session, user, x_organization_id=None):
+    async def _fake(request, user, x_organization_id=None, session=None):
         if exc is not None:
             raise exc
         return result
 
-    monkeypatch.setattr("gpustack.api.tenant.get_tenant_context", _fake)
+    monkeypatch.setattr("gpustack.api.tenant.resolve_tenant_context", _fake)
 
 
 _REQUEST = SimpleNamespace(state=SimpleNamespace())
@@ -60,7 +60,7 @@ async def test_resolve_direct_consumer_org_none_when_no_context(monkeypatch):
 @pytest.mark.asyncio
 async def test_resolve_direct_consumer_org_nonexistent_id_dropped(monkeypatch):
     # A stale / spoofed id that doesn't resolve to a principal must NOT be
-    # trusted — get_tenant_context raises NotFound, we swallow it and return
+    # trusted — resolve_tenant_context raises NotFound, we swallow it and return
     # None so the FK can't be violated.
     _stub_tenant_context(
         monkeypatch, exc=NotFoundException(message="Organization 999999999 not found")

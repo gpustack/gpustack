@@ -37,6 +37,35 @@ roleRef:
   name: {{ .Release.Name }}-worker-ingressclass-viewer
   apiGroup: rbac.authorization.k8s.io
 ---
+# Allow the worker (gpustack-runtime deployer) to resolve the vendor RuntimeClass
+# (e.g. "ascend", "nvidia") for accelerated workload Pods,
+# see GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_RUNTIME_CLASS.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-worker-runtimeclass-viewer
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+rules:
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-worker-runtimeclass-viewer-binding
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-worker
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ .Release.Name }}-worker-runtimeclass-viewer
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -70,11 +99,17 @@ rules:
       - get
       - list
       - watch
+  # The read is what turns a bare "ImagePullBackOff" into the registry error
+  # behind it: gpustack-runtime reads the workload Pod's Events to explain why
+  # the pull fails, and reports it on the workload's state message,
+  # see gpustack/gpustack#5869.
   - apiGroups:
       - ""
-    resources: 
+    resources:
       - "events"
-    verbs: 
+    verbs:
+      - "get"
+      - "list"
       - "create"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -91,5 +126,74 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: {{ .Release.Name }}-worker-pod-cm-creator
+  apiGroup: rbac.authorization.k8s.io
+---
+# The cluster API proxy (/v2/clusters/{id}/proxy/...) tunnels through a worker
+# pod and calls the API server with the worker's in-pod ServiceAccount, so the
+# SA must be able to read and write the worker.gpustack.ai workload API
+# (instances and their log/events/metrics subresources, instance types,
+# persistent volumes, ...) and manage the per-principal namespaces those
+# resources live in. It also reads APIService objects: the operator's
+# worker-gateway readiness check ("check api services ready") queries the
+# aggregated API's Available condition with this SA. It reads and patches the
+# operator's Setting objects (gpustack.ai/settings) the same way: the server
+# reconciles the settings it manages through this proxy. Callers are authorized on
+# the GPUStack server side before anything reaches the worker, so this grant
+# is broad on purpose — script/Docker installs already proxy with the host's
+# admin kubeconfig.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-worker-workload-api
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+rules:
+  - apiGroups:
+      - "worker.gpustack.ai"
+    resources:
+      - "*"
+    verbs:
+      - "*"
+  - apiGroups:
+      - "gpustack.ai"
+    resources:
+      - "settings"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+      - "patch"
+  - apiGroups:
+      - ""
+    resources:
+      - "namespaces"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+      - "create"
+      - "delete"
+  - apiGroups:
+      - "apiregistration.k8s.io"
+    resources:
+      - "apiservices"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-worker-workload-api-binding
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-worker
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ .Release.Name }}-worker-workload-api
   apiGroup: rbac.authorization.k8s.io
 {{- end }}

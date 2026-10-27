@@ -6,7 +6,8 @@ GPU-instance / storage breakdowns, Last Active and resource-event times all
 line up in one operator-chosen calendar instead of a mix of UTC and local.
 
 Resolution (``resolve_rollup_tz``):
-  1. ``GPUSTACK_USAGE_ROLLUP_TIMEZONE`` (IANA name, e.g. ``Asia/Shanghai``)
+  1. ``GPUSTACK_TIMEZONE`` (IANA name, e.g. ``Asia/Shanghai``; the legacy
+     ``GPUSTACK_USAGE_ROLLUP_TIMEZONE`` is still honored as a deprecated alias)
   2. the OS local timezone (``TZ`` / ``/etc/localtime``)
   3. UTC as a last resort.
 
@@ -22,18 +23,35 @@ from gpustack import envs
 
 logger = logging.getLogger(__name__)
 
+# Emit the deprecation warning at most once, and only when the timezone is
+# actually resolved — envs is imported before logging is configured, so the
+# warning is deferred here rather than logged at import time.
+_legacy_tz_warned = False
+
 
 def resolve_rollup_tz() -> tzinfo:
-    tz_name = envs.USAGE_ROLLUP_TIMEZONE
+    global _legacy_tz_warned
+    using_legacy = getattr(envs, "USING_DEPRECATED_TIMEZONE", False)
+    if using_legacy and not _legacy_tz_warned:
+        logger.warning(
+            "GPUSTACK_USAGE_ROLLUP_TIMEZONE is deprecated; use GPUSTACK_TIMEZONE "
+            "instead. Honoring the legacy value for now."
+        )
+        _legacy_tz_warned = True
+
+    tz_name = envs.TIMEZONE
     if tz_name:
         try:
             return ZoneInfo(tz_name)
         except (ZoneInfoNotFoundError, ValueError):
-            logger.warning(
-                "Invalid GPUSTACK_USAGE_ROLLUP_TIMEZONE=%r, falling back to OS "
-                "local tz",
-                tz_name,
+            # Name the variable the value actually came from, so the message
+            # isn't misleading when it was set via the legacy alias.
+            var = (
+                "GPUSTACK_USAGE_ROLLUP_TIMEZONE"
+                if using_legacy
+                else "GPUSTACK_TIMEZONE"
             )
+            logger.warning("Invalid %s=%r, falling back to OS local tz", var, tz_name)
     return datetime.now(timezone.utc).astimezone().tzinfo or timezone.utc
 
 

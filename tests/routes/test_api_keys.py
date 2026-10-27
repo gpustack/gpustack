@@ -24,6 +24,18 @@ def _ctx(*, user_id=1, is_admin=False, current_principal_id=10, org_role=None):
     )
 
 
+class _NoopSession:
+    """Stand-in for the session get_api_keys opens via async_session(); the DB
+    query itself is monkeypatched, so it only needs the async context manager
+    protocol."""
+
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 @pytest.mark.asyncio
 async def test_org_owner_lists_all_api_keys_in_current_org(monkeypatch):
     captured = {}
@@ -36,9 +48,9 @@ async def test_org_owner_lists_all_api_keys_in_current_org(monkeypatch):
         )
 
     monkeypatch.setattr(ApiKey, "paginated_by_query", fake_paginated_by_query)
+    monkeypatch.setattr(api_keys, "async_session", lambda: _NoopSession())
 
     await api_keys.get_api_keys(
-        session=object(),
         ctx=_ctx(org_role=OrgRole.OWNER),
         params=ApiKeyListParams(),
         user_id=None,
@@ -59,9 +71,9 @@ async def test_org_member_lists_only_own_api_keys_in_current_org(monkeypatch):
         )
 
     monkeypatch.setattr(ApiKey, "paginated_by_query", fake_paginated_by_query)
+    monkeypatch.setattr(api_keys, "async_session", lambda: _NoopSession())
 
     await api_keys.get_api_keys(
-        session=object(),
         ctx=_ctx(user_id=2, org_role=OrgRole.MEMBER),
         params=ApiKeyListParams(),
         user_id=None,

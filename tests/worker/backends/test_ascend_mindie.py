@@ -1,4 +1,8 @@
 import argparse
+import json
+from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from gpustack.worker.backends.ascend_mindie import (
     AscendMindIEParameters,
@@ -346,6 +350,21 @@ async def test_ascend_mindie_parameters_parallelism_violation(
         params.from_args_and_envs(args)
 
 
+@pytest.mark.parametrize(
+    "args, envs, expected",
+    [
+        [["--max-link-num", "100"], {"NPU_MEMORY_FRACTION": "0.5"}, 0.5],
+        [["--npu-memory-fraction", "0.5"], {"NPU_MEMORY_FRACTION": "0.9"}, 0.5],
+        [[], {"NPU_MEMORY_FRACTION": "0.5"}, 0.5],
+    ],
+)
+def test_ascend_mindie_parameters_npu_memory_fraction(args, envs, expected):
+    params = AscendMindIEParameters()
+    params.from_args_and_envs(args, envs)
+
+    assert params.npu_memory_fraction == expected
+
+
 def test_ascend_mindie_parameters_changed_backend_parameters():
     baseline = AscendMindIEParameters(max_seq_len=32768)
     baseline.from_args_and_envs([])
@@ -390,3 +409,55 @@ def test_backend_parameter_name_keeps_store_true_no_prefix():
         AscendMindIEServer._backend_parameter_name("--no-enable-split")
         == "enable-split"
     )
+
+
+def test_start_writes_timeouts_into_generated_config(tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type": "llama"}', encoding="utf-8")
+
+    server = AscendMindIEServer.__new__(AscendMindIEServer)
+    server._model_path = str(model_dir)
+    server._model_instance = SimpleNamespace(
+        id=1,
+        name="mindie-test",
+        distributed_servers=None,
+        gpu_indexes=[0],
+        mounted_loras=None,
+    )
+    backend_parameters = [
+        "--token-timeout",
+        "1200",
+        "--e2e-timeout",
+        "1800",
+        "--max-link-num",
+        "100",
+    ]
+    server._model = SimpleNamespace(name="demo", backend_version=None, run_command=None)
+    server._worker = SimpleNamespace(ip="127.0.0.1")
+    server.inference_backend = None
+    server._get_deployment_metadata = Mock(
+        return_value=SimpleNamespace(distributed=False, distributed_follower=False)
+    )
+    server._get_configured_env = Mock(return_value={})
+    server._get_serving_port = Mock(return_value=8080)
+    server._derive_max_model_len = Mock(return_value=8192)
+    server._flatten_backend_param = Mock(return_value=backend_parameters)
+    server._get_selected_gpu_devices = Mock(return_value=[])
+    server._get_mindie_config_json = Mock(
+        return_value=deepcopy(server._get_mindie_config_json())
+    )
+    server._update_model_instance = Mock()
+    server._create_workload = Mock()
+
+    server._start()
+
+    workload = server._create_workload.call_args.kwargs
+    generated_config = next(
+        item
+        for item in workload["config_files"]
+        if item.path == workload["env"]["MIES_CONFIG_JSON_PATH"]
+    )
+    server_config = json.loads(generated_config.content)["ServerConfig"]
+    assert server_config["maxLinkNum"] == 100
+    assert (server_config["tokenTimeout"], server_config["e2eTimeout"]) == (1200, 1800)

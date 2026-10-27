@@ -1,0 +1,107 @@
+# Chinese labels for the shared documentation navigation and theme.
+site_name: GPUStack
+site_description: GPUStack 是一个开源 GPU 集群管理平台，用于高效部署和运行 AI 模型。
+theme_translations:
+  Switch to light mode: 切换到浅色模式
+  Switch to dark mode: 切换到深色模式
+  Switch to system preference: 跟随系统设置
+nav_translations:
+  Home: 首页
+  Overview: 概览
+  Quickstart: 快速入门
+  Installation: 安装
+  Requirements: 环境要求
+  Installation via Docker: 使用 Docker 安装
+  Installation via Helm: 使用 Helm 安装
+  Air-Gapped Installation: 离线安装
+  Uninstallation: 卸载
+  Upgrade: 升级
+  Upgrade via Docker: 使用 Docker 升级
+  Upgrade via Helm: 使用 Helm 升级
+  Upgrade a Cluster Deployment: 升级集群部署
+  Migration: 数据迁移
+  User Guide: 用户指南
+  Playground: 体验中心
+  Chat: 对话
+  Image: 图像
+  Audio: 音频
+  Embedding: 向量嵌入
+  Rerank: 重排序
+  Model Catalog: 模型目录
+  Model Deployment Management: 模型部署管理
+  PD Disaggregation: 预填充与解码分离
+  Model Route Management: 模型路由管理
+  Model Provider Management: 模型提供商管理
+  Inference Backend Management: 推理后端管理
+  Built-in Inference Backends: 内置推理后端
+  Cache Service Management: 缓存服务管理
+  OTA Content Updates: 在线内容更新
+  Compatibility Check: 兼容性检查
+  Model File management: 模型文件管理
+  Cluster Management: 集群管理
+  GPU Service: GPU 服务
+  GPU Instances: GPU 实例
+  Instance Types: 实例类型
+  Instance Templates: 实例模板
+  Storage: 存储
+  Storage Types: 存储类型
+  SSH Public Keys: SSH 公钥
+  Cloud Credential Management: 云凭证管理
+  API Key Management: API 密钥管理
+  User Management: 用户管理
+  Usage: 用量
+  Single Sign-On (SSO) Authentication: 单点登录（SSO）认证
+  Observability: 可观测性
+  Benchmarking: 性能测试
+  Using Models: 使用模型
+  Using Large Language Models: 使用大语言模型
+  Using Vision Language Models: 使用视觉语言模型
+  Using Embedding Models: 使用向量嵌入模型
+  Using Reranker Models: 使用重排序模型
+  Using Image Generation Models: 使用图像生成模型
+  Using Audio Models: 使用音频模型
+  Tutorials: 教程
+  Integrations: 集成
+  Inference APIs: 推理 API
+  Integrate with Claude Code: 与 Claude Code 集成
+  Integrate with Dify: 与 Dify 集成
+  Integrate with RAGFlow: 与 RAGFlow 集成
+  Integrate with Cherry Studio: 与 Cherry Studio 集成
+  Integrate with OpenClaw: 与 OpenClaw 集成
+  Integrate with n8n: 与 n8n 集成
+  Integrate with MaxKB: 与 MaxKB 集成
+  Integrate with NewAPI: 与 NewAPI 集成
+  Integrate with LiteLLM: 与 LiteLLM 集成
+  Running DeepSeek R1 671B with Distributed vLLM: 使用分布式 vLLM 运行 DeepSeek R1 671B
+  Running Distributed vLLM with the MultiProcessing Backend: 使用 MultiProcessing 后端运行分布式 vLLM
+  Running DeepSeek R1 671B with Distributed Ascend Mindie: 使用分布式昇腾 MindIE 运行 DeepSeek R1 671B
+  Inference On CPUs: 在 CPU 上运行推理
+  Inference with Tool Calling: 使用工具调用进行推理
+  Using Custom Inference Backend: 使用自定义推理后端
+  Adding a GPU Cluster Using DigitalOcean: 使用 DigitalOcean 添加 GPU 集群
+  Adding a GPU Cluster Using Shuihua: 使用 Shuihua 添加 GPU 集群
+  Adding a GPU Cluster Using Kubernetes: 使用 Kubernetes 添加 GPU 集群
+  Managing Model Routes: 管理模型路由
+  Routing with LB Policies: 使用负载均衡策略进行路由
+  Serving Models with LoRA Adapters: 使用 LoRA 适配器提供模型服务
+  Architecture: 架构
+  Scheduler: 调度器
+  Troubleshooting: 故障排查
+  FAQ: 常见问题
+  API Reference: API 参考
+  CLI Reference: 命令行参考
+  Start: 启动
+  Download Tools: 下载工具
+  Reload Config: 重新加载配置
+  List Images: 列出镜像
+  Save Images: 保存镜像
+  Load Images: 加载镜像
+  Copy Images: 复制镜像
+  Environment Variables: 环境变量
+  Inference Performance Lab: 推理性能实验室
+  Optimizing Throughput: 吞吐量优化
+  Optimizing Latency: 延迟优化
+  References: 参考资料
+  The Impact of Quantization on vLLM Inference Performance: 量化对 vLLM 推理性能的影响
+  Evaluating LMCache Prefill Acceleration in vLLM: 评估 LMCache 对 vLLM 预填充的加速效果
+  Container Image Selector: 容器镜像选择器

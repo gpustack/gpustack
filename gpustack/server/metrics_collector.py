@@ -19,7 +19,6 @@ from gpustack.schemas.models import Model, is_embedding_model, is_reranker_model
 from gpustack.schemas.principals import (
     Principal,
     PrincipalType,
-    platform_principal_id,
 )
 from gpustack.server.db import async_session
 from gpustack.utils.rollup_tz import resolve_rollup_tz
@@ -78,6 +77,18 @@ class ModelUsageMetrics(BaseModel):
     # downstream (see ``_unixmilli_to_naive_utc``).
     started_at: Optional[int] = None
     completed_at: Optional[int] = None
+    # Milliseconds from request entry to the first response body chunk.
+    # Streaming only -- the non-streaming path never sees intermediate
+    # chunks -- so ``None`` is the ordinary case, not a degraded one. No
+    # duration field beside it: the duration is the two stamps above.
+    ttft_ms: Optional[int] = None
+    # Envoy's ``x-request-id``, echoed to the caller by the gateway plugin so
+    # there is an id to quote. Not unique per row: a fallback pass is an
+    # internal redirect of one downstream request and reports twice.
+    request_id: Optional[str] = None
+    # The model's own id for the response (``chatcmpl-…`` / ``resp_…`` /
+    # ``msg_…``), taken verbatim from the upstream body.
+    upstream_response_id: Optional[str] = None
     user_id: Optional[int] = None
     model_id: Optional[int] = None
     model_route_id: Optional[int] = None
@@ -96,6 +107,71 @@ class ModelUsageMetrics(BaseModel):
     # Tenant identifier sourced from the gateway's X-Organization-Id header
     # (configurable via the token-usage plugin's ``organizationIDHeader``).
     organization_id: Optional[str] = None
+
+
+# Width of the two reported-id columns, which ``AutoString`` renders as
+# VARCHAR(255) on MySQL and OceanBase. Those two reject an over-long value
+# rather than truncating it, and a rejected insert is not one lost row:
+# ``flush_gateway_metrics`` re-buffers the whole batch on failure, so a single
+# oversized value would fail every later flush too and usage would stop
+# persisting for good. PostgreSQL and openGauss render TEXT and would take it,
+# which is exactly what would make this show up on one deployment and not
+# another.
+_MAX_REPORTED_ID_CHARS = 255
+
+
+def _bounded_reported_id(value: Optional[str], field: str) -> Optional[str]:
+    """A reported id, or ``None`` if it could not be stored.
+
+    ``upstream_response_id`` is copied verbatim out of a third-party response
+    body and is bounded by nothing on the way here, so the length has to be
+    checked rather than assumed.
+
+    Dropped rather than truncated: both columns are already nullable with a
+    documented absent case, and they exist to be looked up by. A truncated id
+    is indistinguishable from a real one to whoever is doing the looking, so it
+    would answer a question wrongly where absence answers it honestly.
+    """
+    if value is None or len(value) <= _MAX_REPORTED_ID_CHARS:
+        return value
+    logger.warning(
+        "Gateway usage report carried a %s of %d characters, over the %d the "
+        "column holds; storing it as absent.",
+        field,
+        len(value),
+        _MAX_REPORTED_ID_CHARS,
+    )
+    return None
+
+
+# ``ttft_ms`` is an ``Integer`` column, which is 32-bit on all four supported
+# databases. Unlike the reported-id width above this is not a dialect
+# difference -- every backend rejects an out-of-range value -- but the cost of
+# letting one through is the same and then some: ``store_usage_metrics`` writes
+# the daily ``ModelUsage`` rollups and the ``ModelUsageDetails`` audit rows
+# under a single commit, so one unstorable TTFT takes the whole flush window's
+# usage with it, and the re-buffering makes every later flush fail identically
+# until the buffer cap evicts the row.
+_TTFT_MS_UPPER_BOUND = 2**31
+
+
+def _bounded_ttft_ms(value: Optional[int]) -> Optional[int]:
+    """A reported TTFT, or ``None`` if it could not be stored.
+
+    Negative values are refused alongside over-large ones. TTFT is a duration
+    measured from request entry, so anything below zero is a clock that moved
+    backwards rather than a measurement, and ``None`` already carries the
+    "no TTFT observed" meaning that a nonsensical number could not.
+    """
+    if value is None or 0 <= value < _TTFT_MS_UPPER_BOUND:
+        return value
+    logger.warning(
+        "Gateway usage report carried a ttft_ms of %d, outside the [0, %d) "
+        "the column holds; storing it as absent.",
+        value,
+        _TTFT_MS_UPPER_BOUND,
+    )
+    return None
 
 
 def _unixmilli_to_naive_utc(ms: Optional[int]) -> Optional[datetime]:
@@ -333,7 +409,15 @@ async def flush_gateway_metrics():
 async def flush_gateway_metrics_to_db():
     while True:
         await asyncio.sleep(FLUSH_INTERVAL_SECONDS)
-        await flush_gateway_metrics()
+        try:
+            await flush_gateway_metrics()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Never let a flush error escape this loop -- an unhandled
+            # exception propagates through the server's asyncio.gather and
+            # crashes the whole process. Log and retry on the next tick.
+            logger.exception("Error in gateway metrics flush loop")
 
 
 async def create_or_update_model_usage(
@@ -483,9 +567,16 @@ def _build_metric_snapshot(
                     "api_key_name": api_key.name,
                     "access_key": api_key.access_key,
                     "api_key_is_custom": api_key.is_custom,
-                    "consumer_principal_id": api_key.owner_principal_id,
                 }
             )
+            # A key with a non-NULL owner pins the consumer to that tenant
+            # (an Org, or a user's own personal principal). An admin
+            # "All"-mode key carries ``owner_principal_id = NULL``; leaving
+            # the field unset lets the no-Org fallback below attribute the
+            # usage to the caller's personal domain instead of writing a
+            # NULL row.
+            if api_key.owner_principal_id is not None:
+                snapshot["consumer_principal_id"] = api_key.owner_principal_id
         if model_route_id is not None:
             snapshot["model_route_id"] = model_route_id
             snapshot["model_route_name"] = model_route_name
@@ -519,35 +610,40 @@ def _build_metric_snapshot(
     snapshot.setdefault("provider_type", metric.provider_type)
     snapshot.setdefault("access_key", metric.access_key)
     snapshot.setdefault("api_key_is_custom", None)
-    # The api_key path above stamps ``consumer_principal_id`` from
-    # ``api_key.owner_principal_id`` whenever a key is present. For
-    # cookie-authed traffic (no api_key) the gateway plugin still
-    # provides the active tenant via the wire-format
-    # ``organization_id`` header — parse it back to int so the row
-    # carries its Org scope.
+    # For cookie-authed traffic (no api_key) the gateway plugin provides the
+    # active tenant via the wire-format ``organization_id`` header — parse it
+    # back to int so the row carries its Org scope.
     #
-    # ``organization_id`` must already reference a real principal by the time
-    # it reaches here (``model_usages.consumer_principal_id`` FKs ``principals``,
-    # and a dangling id would blow up the batch ``commit()``). The two producers
-    # guarantee that: the gateway path only ever hits this branch behind an
-    # api_key whose owner already set ``consumer_principal_id`` above, so the
-    # header is ignored there; the direct (cookie) path validates the header
-    # against ``get_tenant_context`` before stamping the metric (see
-    # ``_resolve_direct_consumer_org`` in ``api/middlewares.py``).
-    if "consumer_principal_id" not in snapshot and metric.organization_id:
+    # The raw header is client-controlled, so it must be validated before it
+    # becomes an attribution: a spoofed / stale id would silently mis-attribute
+    # usage to the wrong (or a non-existent) principal. This branch is therefore
+    # gated on ``api_key is None`` — only the direct (cookie) path validates the
+    # header against ``get_tenant_context`` before stamping the metric (see
+    # ``_resolve_direct_consumer_org`` in ``api/middlewares.py``). The gateway /
+    # api_key path never trusts the raw header: a NULL-owner key leaves
+    # ``consumer_principal_id`` unset (above) and falls through to the
+    # personal-domain fallback below rather than the unvalidated header.
+    if (
+        "consumer_principal_id" not in snapshot
+        and api_key is None
+        and metric.organization_id
+    ):
         try:
             snapshot["consumer_principal_id"] = int(metric.organization_id)
         except (TypeError, ValueError):
             pass
-    # Fallback for cookie-authed traffic with no Org header — the Enterprise
-    # UI sends ``X-Organization-Id`` (parsed above), but the OSS UI omits it
-    # since there's a single Org. Attribute to the caller's tenant the same
-    # way ownership is resolved everywhere else (``current_principal_id or
-    # platform_principal_id()``): a regular user consumes as themselves, a
-    # platform admin as the default/platform Org. This mirrors the read side
-    # (a regular user's self-scope filters ``consumer_principal_id ==
-    # user.id``) so the user sees their own usage, and keeps NULL off new
-    # rows. Enterprise is unaffected — ``organization_id`` is set there, so
+    # Fallback for no-Org traffic — attribute the usage to the caller's
+    # personal domain (their own USER-principal). This is the same rule for
+    # everyone, admin included: there is no active Org to bill, so consumption
+    # is personal. It covers
+    #   * OSS regular users (never in an Org; the OSS UI omits the header),
+    #   * cookie-authed Playground traffic with no Org header,
+    #   * admin / "All"-scope callers whose api_key has a NULL owner (the
+    #     api_key branch above intentionally leaves the field unset for them).
+    # Recording to the personal domain keeps NULL off new rows and mirrors the
+    # read side's self-scope filter (``consumer_principal_id == user.id OR IS
+    # NULL``) so the caller sees their own usage. Enterprise Org traffic is
+    # unaffected — either ``organization_id`` or the api_key owner is set, so
     # this branch never runs. SYSTEM callers (worker-proxied inference) are
     # left unattributed.
     if (
@@ -555,9 +651,7 @@ def _build_metric_snapshot(
         and user is not None
         and user.kind == PrincipalType.USER
     ):
-        snapshot["consumer_principal_id"] = (
-            platform_principal_id() if user.is_admin else user.id
-        )
+        snapshot["consumer_principal_id"] = user.id
     return snapshot
 
 
@@ -804,6 +898,19 @@ async def store_usage_metrics(
                         # ones.
                         started_at=started_dt,
                         completed_at=completed_dt,
+                        # Per-request locating data, on the audit row only:
+                        # a daily rollup covers many requests, so neither id
+                        # nor a single TTFT would mean anything there. The
+                        # server has nothing to add to a reported value or to
+                        # check it against, so the only handling is the range
+                        # bounds below.
+                        ttft_ms=_bounded_ttft_ms(metric.ttft_ms),
+                        request_id=_bounded_reported_id(
+                            metric.request_id, "request_id"
+                        ),
+                        upstream_response_id=_bounded_reported_id(
+                            metric.upstream_response_id, "upstream_response_id"
+                        ),
                         # Audit timestamps still pinned to the request's
                         # wall-clock so the row's lifecycle stamps don't
                         # drift by the flush interval.

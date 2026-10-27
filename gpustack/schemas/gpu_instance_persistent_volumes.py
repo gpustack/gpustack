@@ -1,5 +1,6 @@
+from datetime import datetime
 from enum import Enum
-from typing import Optional, ClassVar, List
+from typing import Optional, ClassVar, Dict, List
 
 from pydantic import ConfigDict, BaseModel
 from sqlalchemy import UniqueConstraint, Column, Integer, ForeignKey
@@ -75,6 +76,14 @@ class GPUInstancePersistentVolumeStatus(BaseModel):
     """
     Cluster ids whose downstream object is not yet cleaned up; the row is
     hard-deleted once this is empty.
+    """
+
+    unreachable_since: Optional[Dict[int, datetime]] = None
+    """
+    When each unreachable cluster was first seen unreachable — the per-cluster
+    wait clock. A field of the hold itself, so an unrelated write to the row
+    cannot reset it, and per cluster, so an outage never inherits another
+    cluster's clock. A cluster's clock is kept until it recovers.
     """
 
 
@@ -232,6 +241,34 @@ class GPUInstancePersistentVolumeCreate(GPUInstancePersistentVolumeUpdate):
     """
 
 
+class GPUInstancePersistentVolumeAttachment(BaseModel):
+    """
+    Represents one GPU instance currently referencing a persistent volume.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=pydantic_camel_case_generator,
+        populate_by_name=True,
+    )
+
+    id: int
+    """
+    Id of the referencing GPU instance.
+    """
+
+    name: Optional[str] = None
+    """
+    Name of the referencing GPU instance.
+    """
+
+    phase: Optional[str] = None
+    """
+    Phase of the referencing GPU instance. A *Stopped* instance still holds the
+    volume — the reference is not phase-filtered — so the phase has to be shown
+    or the list would look like nothing is using it.
+    """
+
+
 class GPUInstancePersistentVolumePublic(
     GPUInstancePersistentVolumeCreate, PublicFields
 ):
@@ -253,6 +290,19 @@ class GPUInstancePersistentVolumePublic(
     status: Optional[GPUInstancePersistentVolumeStatus] = None
     """
     Status of the GPU instance persistent volume (soft-delete phase, finalizing clusters).
+    """
+
+    attached_instances: Optional[List[GPUInstancePersistentVolumeAttachment]] = None
+    """
+    Read-only: the GPU instances currently referencing this volume, resolved by
+    the API from ``GPUInstance.persistent_volume_id``.
+
+    A persistent volume has its own lifecycle — it is created independently and
+    keeps being metered while detached, which is correct but invisible: without
+    this field a detached-but-billed volume is indistinguishable from one in use,
+    and a user cannot tell whether deleting it is safe. ``None`` means "not
+    resolved" (the field is populated by the list / detail endpoints), while an
+    empty list means "confirmed not attached".
     """
 
 

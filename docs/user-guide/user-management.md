@@ -16,6 +16,16 @@ In the default setup, this file is located at `/var/lib/gpustack/initial_admin_p
 
 You can set a custom password for the default admin by using the `--bootstrap-password` flag when starting `GPUStack`.
 
+## Password Requirements
+
+A password set through the UI or the API must contain at least one uppercase letter, one lowercase letter, one digit, and one of the following special characters:
+
+```
+! @ # $ % ^ & * _ + .
+```
+
+The UI additionally limits passwords to 6–64 characters.
+
 ## Create User
 
 1. Navigate to the `Users` page.

@@ -9,6 +9,7 @@ from gpustack.utils.config import (
     READ_ONLY_CONFIG_FIELDS,
     coerce_value_by_field,
 )
+from gpustack.utils.rollup_tz import resolve_rollup_tz
 
 router = APIRouter()
 
@@ -38,6 +39,15 @@ async def get_config(request: Request):
     for field in READ_ONLY_CONFIG_FIELDS:
         if hasattr(cfg, field):
             result[field] = getattr(cfg, field)
+    # Platform-wide business timezone (GPUSTACK_TIMEZONE) as an IANA name, so the
+    # UI can render schedule/usage times in the same calendar the server uses.
+    # Only emit it when it resolves to a real IANA name (ZoneInfo.key). The
+    # OS-local fallback is a fixed-offset tzinfo whose str() is an ambiguous
+    # abbreviation ("CST", "EDT") that Intl / dayjs.tz reject — omit it then so
+    # the client falls back to the browser timezone.
+    tz_key = getattr(resolve_rollup_tz(), "key", None)
+    if tz_key:
+        result["timezone"] = tz_key
     return result
 
 

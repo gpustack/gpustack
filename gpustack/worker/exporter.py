@@ -13,7 +13,7 @@ from prometheus_client.core import (
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config
 from gpustack.logging import setup_logging
-from gpustack.policies.utils import compute_worker_allocated
+from gpustack.policies.resource_view import compute_worker_allocated
 from gpustack.utils.name import metric_name
 from gpustack.worker.collector import WorkerStatusCollector
 import uvicorn
@@ -38,6 +38,20 @@ def _add_metric(
     if value is None:
         return
     metric.add_metric(labels, value)
+
+
+def _drain(future, kind: str):
+    """
+    Collected metrics, or an empty list if that half of the collection failed.
+    """
+    try:
+        return future.result()
+    except Exception as e:
+        logger.error(
+            f"Failed to collect {kind} metrics: {e}",
+            exc_info=logger.isEnabledFor(logging.DEBUG),
+        )
+        return []
 
 
 class MetricExporter(Collector):
@@ -68,10 +82,10 @@ class MetricExporter(Collector):
         with ThreadPoolExecutor() as executor:
             worker_future = executor.submit(list, self.collect_worker_metrics())
             runtime_future = executor.submit(list, self.collect_runtime_metrics())
-            for metric in worker_future.result():
-                yield metric
-            for metric in runtime_future.result():
-                yield metric
+            # Collected independently: worker metrics failing should not take the
+            # runtime metrics down with them, nor the other way round.
+            yield from _drain(worker_future, "worker")
+            yield from _drain(runtime_future, "runtime")
 
     def collect_worker_metrics(self):  # noqa: C901
         labels = ["worker_id", "worker_name", "instance"]
@@ -129,6 +143,16 @@ class MetricExporter(Collector):
         gpu_temperature = GaugeMetricFamily(
             metric_name("worker_node_gpu_temperature_celsius"),
             "GPU temperature in celsius of the worker node",
+            labels=gpu_labels,
+        )
+        gpu_power_limit = GaugeMetricFamily(
+            metric_name("worker_node_gpu_power_limit_watts"),
+            "GPU power management limit in watts of the worker node",
+            labels=gpu_labels,
+        )
+        gpu_power_used = GaugeMetricFamily(
+            metric_name("worker_node_gpu_power_used_watts"),
+            "GPU power usage in watts of the worker node",
             labels=gpu_labels,
         )
         gram_total = GaugeMetricFamily(
@@ -284,6 +308,9 @@ class MetricExporter(Collector):
 
                 _add_metric(gpu_temperature, gpu_label_values, d.temperature)
 
+                _add_metric(gpu_power_limit, gpu_label_values, d.power)
+                _add_metric(gpu_power_used, gpu_label_values, d.power_used)
+
                 if d.memory is not None:
                     _add_metric(gram_total, gpu_label_values, d.memory.total)
                     _add_metric(
@@ -339,6 +366,8 @@ class MetricExporter(Collector):
         yield gpu_cores
         yield gpu_utilization_rate
         yield gpu_temperature
+        yield gpu_power_limit
+        yield gpu_power_used
         yield gram_total
         yield gram_allocated
         yield gram_used
@@ -356,7 +385,6 @@ class MetricExporter(Collector):
 
     def start(self):
         try:
-
             raw_collector = RawCollector(
                 cache=self._cache,
             )

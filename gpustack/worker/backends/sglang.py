@@ -3,7 +3,7 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 from gpustack_runtime.detector import ManufacturerEnum
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 from packaging.specifiers import SpecifierSet
 
 from gpustack_runtime.deployer import (
@@ -18,7 +18,9 @@ from gpustack_runtime.deployer import (
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
 from gpustack.scheduler.model_registry import is_multimodal_model
+from gpustack.schemas.inference_backend import is_built_in_backend_custom_version
 from gpustack.schemas.models import (
+    BackendEnum,
     LoraListEntry,
     ModelInstance,
     SpeculativeAlgorithmEnum,
@@ -179,6 +181,12 @@ class SGLangServer(InferenceServer):
     ):
         if (
             self.is_diffusion
+            and self._model.backend_version is not None
+            and not is_built_in_backend_custom_version(
+                BackendEnum.SGLANG,
+                self._model.backend_version,
+                self._model.image_name,
+            )
             and compare_versions(self._model.backend_version, "0.5.5") < 0
         ):
             raise ValueError(
@@ -236,6 +244,7 @@ class SGLangServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
             host_network=True,
+            host_ipc=self._host_ipc_enabled(),
             shm_size=int(container_config.shm_size_gib * (1 << 30)),
             containers=[run_container],
             run_as_user=container_config.user,
@@ -265,6 +274,10 @@ class SGLangServer(InferenceServer):
         )
         env["RUNAI_STREAMER_LOG_LEVEL"] = env.pop("RUNAI_STREAMER_LOG_LEVEL", "INFO")
 
+        # Persist the compiled kernel caches so repeated starts don't recompile.
+        # From v0.5.18 SGLang also redirects the Triton/Inductor/FlashInfer caches here.
+        self._set_cache_env(env, "SGLANG_CACHE_DIR", "sglang")
+
         # Apply distributed environment variables
         if is_distributed:
             self._set_distributed_env(env)
@@ -272,6 +285,19 @@ class SGLangServer(InferenceServer):
         # Apply Ascend-specific environment variables
         if is_ascend(self._get_selected_gpu_devices()):
             self._set_ascend_env(env)
+
+        # Shared-cache connector env resolved server-side is snapshotted
+        # onto the instance (e.g. the pinned hash seed keeping chunk keys
+        # consistent across engine processes).
+        extended_kv_cache = self._model.extended_kv_cache
+        if (
+            extended_kv_cache
+            and extended_kv_cache.enabled
+            and extended_kv_cache.is_shared()
+        ):
+            cache_config = getattr(self._model_instance, "cache_config", None)
+            if cache_config and cache_config.injected:
+                env.update(cache_config.env or {})
 
         return env
 
@@ -438,9 +464,12 @@ class SGLangServer(InferenceServer):
         user_backend_parameters = self._flatten_backend_param()
         arguments.extend(user_backend_parameters)
 
-        # Set host and port.
+        # Match the served model name to the deployment name used in API requests.
         extend_args_no_exist(
-            arguments, ("--host", self._worker.ip), ("--port", str(port))
+            arguments,
+            ("--host", self._worker.ip),
+            ("--port", str(port)),
+            ("--served-model-name", self._model_instance.model_name),
         )
 
         injected = self._get_injected_backend_parameters(
@@ -517,6 +546,19 @@ class SGLangServer(InferenceServer):
         """
         extended_kv_cache = self._model.extended_kv_cache
         if not (extended_kv_cache and extended_kv_cache.enabled):
+            return []
+
+        if extended_kv_cache.is_shared():
+            # Shared mode: connector args resolved server-side are
+            # snapshotted onto the instance (--enable-lmcache plus the
+            # config file the serving script writes). Without an injected
+            # snapshot the instance starts degraded, and the hicache flags
+            # below must not fire either way.
+            cache_config = getattr(
+                getattr(self, "_model_instance", None), "cache_config", None
+            )
+            if cache_config and cache_config.injected:
+                return list(cache_config.args or [])
             return []
 
         arguments = ["--enable-hierarchical-cache"]
@@ -627,7 +669,22 @@ class SGLangServer(InferenceServer):
                     ]
                 )
 
-            if speculative_config.ngram_max_match_length:
+            supports_bounds = _supports_ngram_match_window(self._model.backend_version)
+            if (
+                speculative_config.ngram_min_match_length
+                or speculative_config.ngram_max_match_length
+            ) and not supports_bounds:
+                logger.warning(
+                    "Ignoring ngram_min_match_length=%s and ngram_max_match_length=%s "
+                    "(backend version: %s): --speculative-ngram-min-match-window-size "
+                    "and --speculative-ngram-max-match-window-size were removed in "
+                    "SGLang 0.5.10; using SGLang's own n-gram defaults.",
+                    speculative_config.ngram_min_match_length,
+                    speculative_config.ngram_max_match_length,
+                    self._model.backend_version or 'unknown',
+                )
+
+            if supports_bounds and speculative_config.ngram_max_match_length:
                 arguments.extend(
                     [
                         "--speculative-ngram-max-match-window-size",
@@ -635,7 +692,7 @@ class SGLangServer(InferenceServer):
                     ]
                 )
 
-            if speculative_config.ngram_min_match_length:
+            if supports_bounds and speculative_config.ngram_min_match_length:
                 arguments.extend(
                     [
                         "--speculative-ngram-min-match-window-size",
@@ -691,6 +748,21 @@ class SGLangServer(InferenceServer):
             return (5, 4)
 
 
+def _supports_ngram_match_window(backend_version: Optional[str]) -> bool:
+    """Whether SGLang still has the n-gram match-window flags (removed in 0.5.10).
+
+    Unknown or unparseable versions are treated as unsupported. This uses
+    packaging.version rather than compare_versions, which orders 0.5.10rc0 after 0.5.10
+    although that prerelease still has the flags.
+    """
+    if backend_version is None:
+        return False
+    try:
+        return Version(backend_version) < Version("0.5.10")
+    except InvalidVersion:
+        return False
+
+
 def get_auto_parallelism_arguments(
     backend_parameters: List[str],
     model_instance: ModelInstance,
@@ -706,10 +778,12 @@ def get_auto_parallelism_arguments(
         [
             "tensor-parallel-size",
             "tp-size",
+            "tp",
             "pipeline-parallel-size",
             "pp-size",
             "data-parallel-size",
             "dp-size",
+            "dp",
         ],
     )
 

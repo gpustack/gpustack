@@ -18,6 +18,8 @@ def main():
             "InferenceBackend",
             "Benchmark",
             "ModelRouteTarget",
+            "CacheService",
+            "CacheServiceInstance",
         ]
     )
 

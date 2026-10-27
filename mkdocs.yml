@@ -7,6 +7,11 @@ site_description: >-
   It lets you run models efficiently on your own GPU hardware by choosing the best inference engines,
   scheduling GPU resources, analyzing model architectures, and automatically configuring deployment parameters.
 
+# Hooks
+hooks:
+  - hack/mkdocs_i18n.py
+  - hack/mkdocs_multilingual.py
+
 # Repository
 repo_name: gpustack/gpustack
 repo_url: https://github.com/gpustack/gpustack
@@ -21,20 +26,31 @@ theme:
   custom_dir: docs/overrides
   palette:
     - media: "(prefers-color-scheme)"
+      # This entry is what Material writes into the served HTML, before its
+      # JS picks the light/dark entry below. Leaving scheme/primary unset
+      # here means the page ships as Material's default indigo and repaints
+      # to white only once the script runs — a visible purple header flash
+      # on a slow connection. Stating the light values makes the initial
+      # paint already correct for the common case.
+      scheme: default
+      primary: white
+      accent: indigo
       toggle:
         icon: material/brightness-auto
         name: Switch to light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: custom
-      accent: orange
+      # `white` / `black` keep the header out of a saturated colour block;
+      # the brand hue lives in links and accents instead (see extra.css).
+      primary: white
+      accent: indigo
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: light blue
-      accent: orange
+      primary: black
+      accent: indigo
       toggle:
         icon: material/brightness-4
         name: Switch to system preference
@@ -58,27 +74,37 @@ theme:
     - toc.follow
   icon:
     repo: fontawesome/brands/github
+  # `false` stops Material from emitting the fonts.googleapis.com link.
+  # Inter and JetBrains Mono — the pair gpustack.ai uses — are served from
+  # docs/assets/fonts/ instead; see the @font-face block at the top of
+  # stylesheets/extra.css, which also sets --md-text-font/--md-code-font
+  # so Material builds its stacks around them.
+  font: false
   language: en
+# A mapping rather than a list, because mkdocs.offline.yml adds a plugin to this
+# set through INHERIT. A child config replaces a list wholesale but merges a
+# mapping, so the list form would force that file to restate every entry below —
+# and to silently lose whichever one a later edit here forgot to copy over.
 plugins:
-  - glightbox
-  - search
-  - redirects:
-      redirect_maps:
-        'installation/nvidia/installation.md': 'installation/requirements.md'
-        'installation/amd/installation.md': 'installation/requirements.md'
-        'installation/ascend/installation.md': 'installation/requirements.md'
-        'installation/hygon/installation.md': 'installation/requirements.md'
-        'installation/mthreads/installation.md': 'installation/requirements.md'
-        'installation/iluvatar/installation.md': 'installation/requirements.md'
-        'installation/cambricon/installation.md': 'installation/requirements.md'
-        'installation/metax/installation.md': 'installation/requirements.md'
-  - minify:
-      minify_html: true
-      minify_css: true
-      minify_js: true
-      cache_safe: true
-      htmlmin_opts:
-        remove_comments: true
+  glightbox: {}
+  search: {}
+  redirects:
+    redirect_maps:
+      'installation/nvidia/installation.md': 'installation/requirements.md'
+      'installation/amd/installation.md': 'installation/requirements.md'
+      'installation/ascend/installation.md': 'installation/requirements.md'
+      'installation/hygon/installation.md': 'installation/requirements.md'
+      'installation/mthreads/installation.md': 'installation/requirements.md'
+      'installation/iluvatar/installation.md': 'installation/requirements.md'
+      'installation/cambricon/installation.md': 'installation/requirements.md'
+      'installation/metax/installation.md': 'installation/requirements.md'
+  minify:
+    minify_html: true
+    minify_css: true
+    minify_js: true
+    cache_safe: true
+    htmlmin_opts:
+      remove_comments: true
 extra:
   generator: false
   version:
@@ -87,21 +113,21 @@ extra:
     - icon: fontawesome/brands/github
       link: https://github.com/gpustack
     - icon: fontawesome/brands/docker
-      link: https://hub.docker.com/r/gpustack
+      link: https://hub.docker.com/u/gpustack
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/gpustack/
     - icon: fontawesome/brands/discord
       link: https://discord.gg/VXYJzuaqwD
 extra_javascript:
   - image-selector/assets/extra.js
-  - https://unpkg.com/katex@0/dist/katex.min.js
+  - assets/katex/katex.min.js
+  - assets/katex/contrib/auto-render.min.js
   - javascripts/katex.js
-  - https://unpkg.com/katex@0/dist/contrib/auto-render.min.js
   - https://unpkg.com/tablesort@5.3.0/dist/tablesort.min.js
   - javascripts/tablesort.js
 extra_css:
   - stylesheets/extra.css
-  - https://unpkg.com/katex@0/dist/katex.min.css
+  - assets/katex/katex.min.css
 markdown_extensions:
   - abbr
   - def_list
@@ -164,10 +190,13 @@ nav:
               - Rerank: user-guide/playground/rerank.md
           - Model Catalog: user-guide/model-catalog.md
           - Model Deployment Management: user-guide/model-deployment-management.md
+          - PD Disaggregation: user-guide/pd-disaggregation.md
           - Model Route Management: user-guide/model-route-management.md
           - Model Provider Management: user-guide/model-provider-management.md
           - Inference Backend Management: user-guide/inference-backend-management.md
           - Built-in Inference Backends: user-guide/built-in-inference-backends.md
+          - Cache Service Management: user-guide/cache-service-management.md
+          - OTA Content Updates: user-guide/ota-content-updates.md
           - Compatibility Check: user-guide/compatibility-check.md
           - Model File management: user-guide/model-file-management.md
           - Cluster Management: user-guide/cluster-management.md
@@ -200,8 +229,10 @@ nav:
           - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
           - Using Custom Inference Backend: tutorials/using-custom-backends.md
           - Adding a GPU Cluster Using DigitalOcean: tutorials/adding-gpucluster-using-digitalocean.md
+          - Adding a GPU Cluster Using Shuihua: tutorials/adding-gpucluster-using-shuihua.md
           - Adding a GPU Cluster Using Kubernetes: tutorials/adding-gpucluster-using-kubernetes.md
           - Managing Model Routes: tutorials/managing-model-routes.md
+          - Routing with LB Policies: tutorials/routing-with-lb-policies.md
           - Serving Models with LoRA Adapters: tutorials/serving-with-lora-adapters.md
       - Integrations:
           - Inference APIs: integrations/inference-apis.md
@@ -212,6 +243,8 @@ nav:
           - Integrate with OpenClaw: integrations/integrate-with-openclaw.md
           - Integrate with n8n: integrations/integrate-with-n8n.md
           - Integrate with MaxKB: integrations/integrate-with-maxkb.md
+          - Integrate with NewAPI: integrations/integrate-with-newapi.md
+          - Integrate with LiteLLM: integrations/integrate-with-litellm.md
       - Architecture: architecture.md
       - Scheduler: scheduler.md
       - Troubleshooting: troubleshooting.md

@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from typing import List, NamedTuple, Optional, Tuple, Union, Set
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -9,6 +10,11 @@ from sqlalchemy.orm import selectinload
 from gpustack.api.exceptions import InternalServerErrorException
 
 from gpustack.schemas.api_keys import ApiKey
+from gpustack.schemas.cache_services import (
+    CacheService,
+    CacheServiceInstance,
+    CacheServiceInstanceCreate,
+)
 from gpustack.schemas.links import ModelRoutePrincipalLink
 from gpustack.schemas.model_files import ModelFile
 from gpustack.schemas.models import (
@@ -39,9 +45,13 @@ from gpustack.server.cache import (
     delete_cache_by_key,
     locked_cached,
 )
-from gpustack.server.worker_allocated_cache import invalidate_workers_allocated
+from gpustack.server.cache_services import resolve_instance_cache_config_safe
+from gpustack.server.cache_service_resources import cache_ram_by_worker
+from gpustack.server.worker_allocated_cache import (
+    invalidate_cache_workers_ram,
+    invalidate_workers_allocated,
+)
 from gpustack.utils.usage_snapshots import propagate_user_rename
-
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +161,16 @@ class UserService:
             await delete_cache_by_key(self.get_by_username, old_name)
 
     async def delete(self, user: User):
+        # The keys have to be read before the delete and invalidated by hand:
+        # ``Principal.api_keys`` is ``lazy="noload"``, so ``_handle_cascade_delete``
+        # sees an empty list and ``ApiKey.delete`` — which would otherwise drop
+        # each entry — never runs. The rows themselves do go: both principal FKs
+        # on ``api_keys`` carry ``ON DELETE CASCADE`` in the schema the
+        # migrations build (``c45e397531d1``, ``7c5e3f9a2d18``), whatever the
+        # model's own ``user_id`` declaration says — nothing ever builds this
+        # table from the model. That is exactly why the cache is what's left:
+        # losing this loop leaves every key of a deleted user authenticating
+        # from its cached entry for the rest of the TTL.
         apikeys = await APIKeyService(self.session).get_by_user_id(user.id)
         result = await user.delete(self.session)
         await delete_cache_by_key(self.get_by_id, user.id)
@@ -456,7 +476,27 @@ class APIKeyService:
 
     @locked_cached()
     async def get_by_access_key(self, access_key: str) -> Optional[ApiKey]:
-        result = await ApiKey.one_by_field(self.session, "access_key", access_key)
+        """Look up a live key by its access key, for authentication.
+
+        ``deleted_at IS NULL`` is part of the predicate, not a caller's
+        responsibility. This is the query behind ``/token-auth``'s credential
+        path, which is what every request falls back to when the gateway's own
+        local key table cannot answer -- and that table is built with the same
+        filter (``build_local_auth_tables``). Without it here, a soft-deleted
+        row keeps authenticating on the fallback path forever while the gateway
+        has already stopped honouring it, so revocation never converges.
+
+        No caller soft-deletes a key today: ``ApiKey.delete()`` hard-deletes
+        unless asked otherwise, and an owner's removal never reaches the row
+        through the ORM at all -- ``Principal.api_keys`` is ``lazy="noload"``,
+        so the cascade reads an empty list. The filter is here because a
+        revocation that depends on which delete path ran is not a revocation --
+        the first ``soft=True`` caller must not silently keep the credential
+        alive on the one path that still answers when the gateway cannot.
+        """
+        result = await ApiKey.one_by_fields(
+            self.session, {"access_key": access_key, "deleted_at": None}
+        )
         if result is None:
             return None
         self.session.expunge(result)
@@ -520,6 +560,34 @@ class PrincipalService:
 class WorkerService:
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def get_workers_for_update(
+        self,
+        worker_ids: List[int],
+        extra_conditions: Optional[List] = None,
+    ) -> List[Worker]:
+        """Read live workers under row locks for a label read-modify-write.
+
+        Args:
+            worker_ids: Workers to lock.
+            extra_conditions: Caller-provided tenant or cluster scope.
+
+        Returns:
+            Matching workers in ID order, refreshed from the database.
+        """
+        statement = (
+            select(Worker)
+            .where(
+                Worker.id.in_(worker_ids),
+                Worker.deleted_at.is_(None),
+                *(extra_conditions or []),
+            )
+            .order_by(Worker.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        result = await self.session.exec(statement)
+        return list(result.all())
 
     @locked_cached()
     async def get_by_id(self, worker_id: int) -> Optional[Worker]:
@@ -705,6 +773,13 @@ class ModelRouteService:
                 # try the literal name (handles edge cases like a route
                 # called "literal/with/slashes" before the prefix
                 # convention existed).
+        # A raw (unprefixed) name is the platform Org's namespace by the
+        # effective-route-name scheme; non-platform Orgs are addressed only
+        # via their `<owner-name>/<route>` prefix. Scope an unprefixed lookup
+        # to platform-owned routes so a raw name resolves within the platform
+        # Org rather than a same-named route in another Org.
+        if owner_principal_id is None:
+            owner_principal_id = platform_principal_id()
         target_fields = {
             "route_name": raw_name,
             "state": TargetStateEnum.ACTIVE,
@@ -714,10 +789,9 @@ class ModelRouteService:
             self.session,
             fields=target_fields,
         )
-        # When a principal name prefix was parsed, narrow to that
-        # owner's route by joining through the parent ModelRoute's
-        # ``owner_principal_id``. Avoids an extra round-trip when the
-        # route name is globally unique (the typical single-Org case).
+        # Narrow to the resolved owner's route (the parsed prefix owner, or
+        # the platform Org for a raw name) by joining through the parent
+        # ModelRoute's ``owner_principal_id``.
         if owner_principal_id is not None and len(targets) > 0:
             route_ids = {t.route_id for t in targets if t.route_id is not None}
             owner_routes = await ModelRoute.all_by_fields(
@@ -767,7 +841,13 @@ class ModelRouteService:
                     )
                     if route is not None:
                         return route
-        return await ModelRoute.one_by_field(self.session, "name", name)
+        # An unprefixed name is the platform Org's namespace, matching
+        # resolve_route_targets — so attribution resolves to the same route
+        # the request was actually routed to.
+        return await ModelRoute.one_by_fields(
+            self.session,
+            {"name": name, "owner_principal_id": platform_principal_id()},
+        )
 
     async def update(
         self,
@@ -858,6 +938,35 @@ class ModelService:
                 )
             )
 
+        route_service = ModelRouteService(self.session)
+        # A route this model created (enable_model_route, plus the LoRA child
+        # routes) must not outlive the model: while one exists, the
+        # unique-name lookup in create_model resolves it and rejects a new
+        # model of that name. Delete it in the same transaction as the model,
+        # unless targets other than this model's still point at it — a shared
+        # route stays, and ModelRouteTargetController owns it from there.
+        created_routes = await ModelRoute.all_by_fields(
+            self.session,
+            fields={"created_model_id": model.id, "deleted_at": None},
+        )
+        for route in created_routes or []:
+            other_targets = (
+                await self.session.exec(
+                    select(func.count())
+                    .select_from(ModelRouteTarget)
+                    .where(
+                        ModelRouteTarget.route_id == route.id,
+                        ModelRouteTarget.deleted_at.is_(None),
+                        or_(
+                            ModelRouteTarget.model_id.is_(None),
+                            ModelRouteTarget.model_id != model.id,
+                        ),
+                    )
+                )
+            ).one()
+            if other_targets == 0:
+                await route_service.delete(route, auto_commit=False)
+
         result = await model.delete(self.session)
         await delete_cache_by_key(self.get_by_id, model.id)
         await delete_cache_by_key(self.get_by_name, model.name)
@@ -867,7 +976,6 @@ class ModelService:
         for instance_id in instance_ids:
             await delete_cache_by_key(instance_service.get_by_id, instance_id)
 
-        route_service = ModelRouteService(self.session)
         for route_name in route_names:
             await delete_cache_by_key(route_service.resolve_route_targets, route_name)
             await delete_cache_by_key(
@@ -875,6 +983,45 @@ class ModelService:
             )
 
         return result
+
+
+class CacheServiceService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def delete(self, cache_service: CacheService) -> None:
+        # The parent commits all instance deletions in one transaction.
+        await cache_service.delete(self.session)
+        await invalidate_cache_workers_ram()
+
+
+class CacheServiceInstanceService:
+    """Mutate cache instances and invalidate reservations after commit."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(
+        self, instance: Union[CacheServiceInstance, CacheServiceInstanceCreate]
+    ) -> CacheServiceInstance:
+        result = await CacheServiceInstance.create(self.session, instance)
+        await invalidate_cache_workers_ram()
+        return result
+
+    async def update(
+        self,
+        instance: CacheServiceInstance,
+        source: Union[dict, SQLModel, None] = None,
+    ) -> None:
+        reservations = cache_ram_by_worker([instance])
+        await instance.update(self.session, source)
+        # With no patch, the caller may have mutated the instance before entry.
+        if source is None or reservations != cache_ram_by_worker([instance]):
+            await invalidate_cache_workers_ram()
+
+    async def delete(self, instance: CacheServiceInstance) -> None:
+        await instance.delete(self.session)
+        await invalidate_cache_workers_ram()
 
 
 class ModelInstanceService:
@@ -903,10 +1050,92 @@ class ModelInstanceService:
         return results
 
     async def create(self, model_instance):
+        # Denormalize the shared-cache connection info onto the instance so
+        # the worker can inject engine config without a server round-trip.
+        model = await Model.one_by_id(self.session, model_instance.model_id)
+        if model is not None:
+            # The degrading variant: replica creation must not fail on a
+            # resolution error — the instance starts without the shared
+            # cache instead (same contract as the scheduler's re-resolve).
+            model_instance.cache_config = await resolve_instance_cache_config_safe(
+                self.session, model, role=model_instance.role
+            )
         result = await ModelInstance.create(self.session, model_instance)
         await delete_cache_by_key(self.get_running_instances, model_instance.model_id)
         await invalidate_workers_allocated([model_instance])
         return result
+
+    async def batch_create(self, model_instances: List[ModelInstance]):
+        """Create every instance in ONE transaction.
+
+        The mirror of ``batch_delete``, and it exists for the same reason that
+        one does: a PD group's members have to appear together. Kueue's
+        pod-group admission counts the members it can see against the declared
+        total, so a group whose rows land one commit at a time is repeatedly
+        seen as incomplete. The group's feasibility verdict also has to be
+        settled before any member row exists, which a per-row loop cannot
+        express.
+
+        Cache resolution is per instance and per the same degrading contract
+        as ``create``: a group must not fail to form because a shared cache
+        could not be resolved.
+        """
+        if not model_instances:
+            return []
+
+        model_ids = {mi.model_id for mi in model_instances}
+        models = {}
+        for model_id in model_ids:
+            models[model_id] = await Model.one_by_id(self.session, model_id)
+
+        try:
+            created = []
+            for model_instance in model_instances:
+                model = models.get(model_instance.model_id)
+                if model is not None:
+                    model_instance.cache_config = (
+                        await resolve_instance_cache_config_safe(
+                            self.session, model, role=model_instance.role
+                        )
+                    )
+                result = await ModelInstance.create(
+                    self.session, model_instance, auto_commit=False
+                )
+                created.append(result)
+            await self.session.commit()
+        except Exception as e:
+            await self.session.rollback()
+            names = [mi.name for mi in model_instances]
+            raise InternalServerErrorException(
+                message=f"Failed to create model instances {names}: {e}"
+            )
+
+        # Past the commit, so past the point where anything can be undone. The
+        # cache work below used to sit inside the block above, where a failure
+        # in it rolled back a transaction that had already landed -- a no-op --
+        # and then told the caller the members had not been created. For a
+        # group that is the worst answer available: the rows exist, and a
+        # caller acting on "not created" creates them again.
+        #
+        # create(auto_commit=False) returns before invalidating cached_all, so
+        # the batch has to do it or subscribe()'s replay snapshot will not
+        # carry the new rows. A failure there is reported rather than raised:
+        # a stale cache is a pass of lag that the next invalidation clears,
+        # and losing a created group to it is not a trade worth making.
+        try:
+            await ModelInstance._invalidate_cached_all()
+            for model_id in model_ids:
+                await delete_cache_by_key(self.get_running_instances, model_id)
+            await invalidate_workers_allocated(model_instances)
+        except Exception as e:
+            logger.warning(
+                "Model instances %s were created, but a cache could not be "
+                "invalidated: %s. Readers may lag by a pass.",
+                [mi.name for mi in model_instances],
+                e,
+            )
+
+        return created
 
     async def update(
         self, model_instance: ModelInstance, source: Union[dict, SQLModel, None] = None
@@ -936,6 +1165,12 @@ class ModelInstanceService:
                 ids.add(m.model_id)
             await self.session.commit()
 
+            # delete(auto_commit=False) returns before invalidating cached_all,
+            # so the batch commit must do it. Otherwise subscribe()'s replay
+            # snapshot keeps serving the deleted rows and watch reconnects
+            # resurrect them as ghost CREATED events.
+            await ModelInstance._invalidate_cached_all()
+
             for id in ids:
                 await delete_cache_by_key(self.get_running_instances, id)
             await invalidate_workers_allocated(model_instances)
@@ -952,6 +1187,9 @@ class ModelInstanceService:
         model_instances: List[ModelInstance],
         source: Union[dict, SQLModel, None] = None,
     ):
+        if not model_instances:
+            return []
+
         names = [mi.name for mi in model_instances]
         ids = set()
         try:
@@ -959,6 +1197,12 @@ class ModelInstanceService:
                 await m.update(self.session, source, auto_commit=False)
                 ids.add(m.model_id)
             await self.session.commit()
+
+            # Per-instance update() invalidates cached_all at flush time, i.e.
+            # before this manual commit — a concurrent read in that window could
+            # repopulate it with pre-commit state. Invalidate again after commit
+            # so the replay snapshot reflects the committed rows.
+            await ModelInstance._invalidate_cached_all()
 
             for id in ids:
                 await delete_cache_by_key(self.get_running_instances, id)

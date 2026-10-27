@@ -20,6 +20,23 @@ from gpustack.schemas.inference_backend import (
     InferenceBackendCreate,
     InferenceBackendUpdate,
 )
+from gpustack.schemas.runner_source import (
+    InferenceRunnerSource,
+    RunnerOverrideEntry,
+    RunnerOverrideEntryPublic,
+    RunnerOverrideEntriesPublic,
+)
+from gpustack.schemas.catalog_source import (  # noqa: F401  table registration
+    CatalogSource,
+    CatalogModelEntry,
+)
+from gpustack.schemas.inference_backend_source import (  # noqa: F401  table registration
+    InferenceBackendSource,
+)
+from gpustack.schemas.cache_provider_source import (  # noqa: F401  table registration
+    CacheProviderSource,
+    CacheProviderEntry,
+)
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
@@ -98,6 +115,26 @@ from gpustack.schemas.benchmark import (
     BenchmarkUpdate,
     BenchmarkPublic,
     BenchmarksPublic,
+)
+from gpustack.schemas.cache_services import (
+    CacheService,
+    CacheServiceCreate,
+    CacheServiceUpdate,
+    CacheServicePublic,
+    CacheServicesPublic,
+    CacheServiceInstance,
+    CacheServiceInstanceCreate,
+    CacheServiceInstanceUpdate,
+    CacheServiceInstancePublic,
+    CacheServiceInstancesPublic,
+    CacheServiceStateEnum,
+    CacheConfigSnapshot,
+)
+from gpustack.schemas.cache_providers import (
+    CacheProvider,
+)
+from gpustack.schemas.pd_modes import (
+    PDMode,
 )
 from gpustack.schemas.filesystem import (
     FileExistsResponse,
@@ -183,8 +220,20 @@ from gpustack.schemas.gpu_instance_templates import (
     GPUInstanceTemplatesPublic,
 )
 from gpustack.schemas.gpu_instance_types import (
+    GPUInstanceType,
+    GPUInstanceTypeListParams,
+    GPUInstanceTypeCreate,
+    GPUInstanceTypeUpdate,
+    GPUInstanceTypePublic,
+    GPUInstanceTypesPublic,
     GPUAggregatedInstanceTypePublic,
     GPUAggregatedInstanceTypesPublic,
+)
+from gpustack.schemas.gpu_instance_type_flavors import (
+    GPUInstanceTypeFlavorPublic,
+    GPUInstanceTypeFlavorsPublic,
+    GPUAggregatedInstanceTypeFlavorPublic,
+    GPUAggregatedInstanceTypeFlavorsPublic,
 )
 from gpustack.schemas.gpu_instances import (
     GPUInstance,
@@ -195,7 +244,10 @@ from gpustack.schemas.gpu_instances import (
     GPUInstancesPublic,
 )
 
+from gpustack.schemas.model_revisions import ModelRevision
+
 __all__ = [
+    "ModelRevision",
     "ApiKey",
     "ApiKeyCreate",
     "ApiKeyPublic",
@@ -266,6 +318,13 @@ __all__ = [
     "InferenceBackendsPublic",
     "InferenceBackendCreate",
     "InferenceBackendUpdate",
+    "InferenceRunnerSource",
+    "RunnerOverrideEntry",
+    "RunnerOverrideEntryPublic",
+    "RunnerOverrideEntriesPublic",
+    "CatalogSource",
+    "CatalogModelEntry",
+    "InferenceBackendSource",
     "Benchmark",
     "BenchmarkCreate",
     "BenchmarkUpdate",
@@ -280,6 +339,20 @@ __all__ = [
     "GPUSnapshots",
     "BenchmarkSnapshot",
     "BenchmarkMetrics",
+    "CacheService",
+    "CacheServiceCreate",
+    "CacheServiceUpdate",
+    "CacheServicePublic",
+    "CacheServicesPublic",
+    "CacheServiceInstance",
+    "CacheServiceInstanceCreate",
+    "CacheServiceInstanceUpdate",
+    "CacheServiceInstancePublic",
+    "CacheServiceInstancesPublic",
+    "CacheServiceStateEnum",
+    "CacheConfigSnapshot",
+    "CacheProvider",
+    "PDMode",
     "FileExistsResponse",
     "ModelProvider",
     "ModelProviderCreate",
@@ -342,8 +415,18 @@ __all__ = [
     "GPUInstanceTemplateUpdate",
     "GPUInstanceTemplatePublic",
     "GPUInstanceTemplatesPublic",
+    "GPUInstanceType",
+    "GPUInstanceTypeListParams",
+    "GPUInstanceTypeCreate",
+    "GPUInstanceTypeUpdate",
+    "GPUInstanceTypePublic",
+    "GPUInstanceTypesPublic",
     "GPUAggregatedInstanceTypePublic",
     "GPUAggregatedInstanceTypesPublic",
+    "GPUInstanceTypeFlavorPublic",
+    "GPUInstanceTypeFlavorsPublic",
+    "GPUAggregatedInstanceTypeFlavorPublic",
+    "GPUAggregatedInstanceTypeFlavorsPublic",
     "GPUInstance",
     "GPUInstanceListParams",
     "GPUInstanceCreate",

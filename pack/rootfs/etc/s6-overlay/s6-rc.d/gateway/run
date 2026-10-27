@@ -44,7 +44,16 @@ if [ -n "$LITE_METRICS" ]; then
 fi
 # end copied
 
+# Envoy no longer needs the API to load its Wasm modules -- it reads them off
+# this container's filesystem -- but it does need it to serve a request, so the
+# wait stays. The timings are what is new: a bound port is not a server that
+# can answer, and on a first boot the gap between the two was seven seconds.
+# Without these lines the log could not tell "Envoy started too early" from
+# "Envoy started late enough and still failed".
+echo "[INFO] Waiting for the GPUStack API on 127.0.0.1:${GPUSTACK_API_PORT} before starting Envoy."
+GATEWAY_WAIT_START=$(date +%s)
 readinessCheck "GPUStack API server" "$GPUSTACK_API_PORT"
+echo "[INFO] Starting Envoy $(($(date +%s) - GATEWAY_WAIT_START))s after the wait began."
 
 cd /
 

@@ -1,5 +1,6 @@
+from datetime import datetime
 from enum import Enum
-from typing import Optional, ClassVar, List, Literal
+from typing import Dict, Optional, ClassVar, List, Literal
 
 from pydantic import (
     ConfigDict,
@@ -21,6 +22,7 @@ from gpustack.schemas.common import (
 from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolumeSpec,
 )
+from gpustack.schemas.gpu_instance_types import GPUInstanceTypePublic
 
 
 class GPUInstancePort(BaseModel):
@@ -47,6 +49,13 @@ class GPUInstancePort(BaseModel):
     name: Optional[str] = None
     """
     Name of the port mapping.
+    """
+
+    access_params: Optional[Dict[str, str]] = None
+    """
+    URL query parameters the UI appends to this port's web access link,
+    e.g. {"token": "..."} for JupyterLab. Server-side presentation metadata
+    only; stripped before submitting the worker CR.
     """
 
 
@@ -103,6 +112,34 @@ class GPUInstanceResources(BaseModel):
     """
     Accelerator resource request/limit for the GPU instance,
     e.g., "1" for 1 GPU.
+    """
+
+    accelerator_sliced_memory_percentage: Optional[int] = PField(
+        default=None, ge=0, le=100
+    )
+    """
+    Per-card VRAM budget requested on a sliced InstanceType, as a percentage
+    in [0,100]. 0 disables slicing (the request becomes an exclusive whole-card
+    request). It is ignored by non-sliced requests.
+    """
+
+    accelerator_sliced_cores_percentage: Optional[int] = PField(
+        default=None, ge=0, le=100
+    )
+    """
+    Per-card compute (SM) budget requested on a sliced InstanceType, as a
+    percentage in [0,100]. It must not be smaller than
+    accelerator_sliced_memory_percentage; when only one of the two is set the
+    other is copied from it. It is ignored by non-sliced requests.
+    """
+
+    accelerator_partitioned_profile: Optional[str] = None
+    """
+    Hardware partition profile requested on a partition-offering InstanceType,
+    e.g. "3g.40gb". A non-empty value makes this a request for one hardware
+    partition of that shape, which is mutually exclusive with the two slice
+    percentages above: hardware partitioning and software slicing cannot both
+    apply to one card. It is ignored by InstanceTypes offering no partition.
     """
 
 
@@ -324,22 +361,6 @@ class GPUInstanceSpec(BaseModel):
     """
 
 
-class GPUInstanceSpecUpdate(BaseModel):
-    """
-    Represents the specification for updating a GPU instance.
-    """
-
-    model_config = ConfigDict(
-        alias_generator=pydantic_camel_case_generator,
-        populate_by_name=True,
-    )
-
-    ssh_public_keys: Optional[List[GPUInstanceSSHPublicKeyReference]] = None
-    """
-    Optional list of references to GPU instance SSH public keys to update for the GPU instance.
-    """
-
-
 class GPUInstanceAcceleratorAllocation(BaseModel):
     """
     Represents the allocation status of an accelerator device for a GPU instance.
@@ -532,6 +553,22 @@ class GPUInstanceStatus(BaseModel):
     Optional list of allocated accelerator devices for the GPU instance, grouped by manufacturer and type.
     """
 
+    unreadable_since: Optional[datetime] = None
+    """
+    When this row entered the "worker-side CR is unreadable" hold, in UTC.
+
+    The one field here the worker does NOT report — the server stamps it, and
+    ``merge_from_kuberes`` drops it whenever a real CR is read, so it exists
+    exactly as long as the hold does.
+
+    It is what bounds a *metered* phase, so it cannot be inferred from
+    ``updated_at``: that timestamp is row-level, and ``display_name`` /
+    ``description`` / ``spec.sshPublicKeys`` are editable from any phase, so an
+    unrelated edit would silently restart the tolerance window and let a row
+    accrue metered uptime at Unknown indefinitely. See
+    ``_unreadable_cr_expired``.
+    """
+
 
 class GPUInstanceBase(SQLModel):
     """
@@ -657,6 +694,14 @@ class GPUInstance(GPUInstanceBase, BaseModelMixin, table=True):
     Status of the GPU instance, including phase, host IPs, ports, etc.
     """
 
+    # Server-stamped snapshot of the GPUInstanceType this instance was created
+    # against (see ``GPUInstanceType.snapshot``). Resolved from
+    # ``(cluster_id, spec.type_)`` at create/update time; never a client input.
+    type_snapshot: Optional[str] = Field(
+        nullable=True,
+        default=None,
+    )
+
     # -- phase predicates -------------------------------------------------- #
     # Single source of truth for phase semantics, so the controller and routes
     # stop re-deriving them with ad-hoc ``== PHASE_*`` / ``endswith`` checks.
@@ -737,8 +782,13 @@ class GPUInstance(GPUInstanceBase, BaseModelMixin, table=True):
            provisioning and are not part of the CRD).
         3. ``sshPublicKeys`` (list) collapses into ``sshPublicKey`` (singular
            ``LocalObjectReference`` named after the instance).
+        4. ``ports[].accessParams`` is stripped — it is server-side
+           presentation metadata for the UI, not part of the operator CRD.
         """
         spec = self.spec.model_dump(by_alias=True, exclude_none=True)
+
+        for port in spec.get("ports") or []:
+            port.pop("accessParams", None)
 
         if self.display_name is not None:
             spec["displayName"] = self.display_name
@@ -789,9 +839,15 @@ class GPUInstanceUpdate(GPUInstanceBase):
         populate_by_name=True,
     )
 
-    spec: Optional[GPUInstanceSpecUpdate] = None
+    spec: Optional[GPUInstanceSpec] = None
     """
-    Optional updated specification for the GPU instance.
+    Optional full replacement specification for the GPU instance.
+
+    The client PUTs the whole desired spec (every field except the instance
+    ``name``). ``sshPublicKeys`` may change from any phase; changing any other
+    field requires the instance to be Stopped and takes effect on the next
+    ``/start``. When ``spec.volume`` changes it is re-resolved to the
+    ``persistent_volume_id`` FK.
     """
 
 
@@ -841,6 +897,22 @@ class GPUInstancePublic(GPUInstanceCreate, PublicFields):
     status: Optional[GPUInstanceStatus] = None
     """
     Status of the GPU instance, including phase, host IPs, ports, etc.
+    """
+
+    type_snapshot: Optional[str] = None
+    """
+    Server-stamped snapshot of the GPU instance type this instance was created
+    against (``sha1:<hexdigest>``). Read-only; never accepted as a client input.
+    """
+
+    type_snapshot_detail: Optional[GPUInstanceTypePublic] = None
+    """
+    Resolved read-only summary of the GPU instance type this instance was
+    created against, joined from the persisted ``gpu_instance_types`` row by
+    the ``type_snapshot`` key. Carries the type's ``name``, ``spec`` and
+    observed ``status.detail`` so clients can render the instance's type
+    without relying on ``description``; ``None`` when the stamped type row no
+    longer exists. Read-only; never accepted as a client input.
     """
 
 

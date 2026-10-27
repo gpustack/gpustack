@@ -2,7 +2,8 @@ import json
 import logging
 import asyncio
 import re
-from typing import Any, Dict, List, Tuple, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, NamedTuple, Tuple, Optional
 from cachetools import TTLCache
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
@@ -35,6 +36,12 @@ from gpustack.schemas.gpu_instance_persistent_volume_types import (
     GPUInstancePersistentVolumeType,
     GPUInstancePersistentVolumeTypeStatus,
 )
+from gpustack.schemas.gpu_instance_types import (
+    DERIVED_FROM_NODE_LABEL,
+    GPUInstanceType,
+    GPUInstanceTypeSpec,
+    GPUInstanceTypeStatusPublic,
+)
 from gpustack.schemas.gpu_instance_ssh_public_keys import (
     GPUInstanceSSHPublicKey,
 )
@@ -46,9 +53,14 @@ from gpustack.schemas.principals import (
 )
 from gpustack.schemas.clusters import (
     Cluster,
+    ClusterProvider,
+)
+from gpustack.schemas.workers import (
+    Worker,
+    WorkerStateEnum,
 )
 
-from gpustack.server.bus import Event, EventType
+from gpustack.server.bus import Event, EventType, event_field, resolve_event_id
 from gpustack.server.workqueue import WorkEvent, WorkEventType, WorkQueue
 from gpustack import envs
 from gpustack.server.db import async_session
@@ -62,6 +74,46 @@ _USER_NAMESPACE_RE = re.compile(r"^user-(\d+)$")
 
 # Backoff before reconnecting the downstream watch stream after it ends/errors.
 _WATCH_RECONNECT_INTERVAL = 5.0
+
+# ``phase_message`` stamped when the worker-side CR cannot be read for a
+# not-yet-Ready row. Matched (not just written) by ``_unreadable_cr_expired`` to
+# recognize its own hold, so the two must stay in sync.
+_UNREADABLE_CR_MESSAGE = "Not found in cluster"
+
+
+# How many holders a blocked-delete reason names before it says "and others".
+# Three keeps the message readable; the overflow is stated rather than dropped.
+_BLOCKED_REASON_HOLDERS = 3
+
+
+def _describe_holder(name: Optional[str], status: Optional[GPUInstanceStatus]) -> str:
+    """``<name> (<phase>)`` for an instance blocking a volume reclaim.
+
+    ``status`` is declared with ``pydantic_column_type``, whose result processor
+    validates the JSON into the model — recursively, and including on a tuple
+    select like the one this feeds (verified on a cold session, so the identity
+    map is not what is doing it). Hence the plain attribute read, here and at
+    every other read of such a column.
+    """
+    phase = status.phase if status is not None else None
+    return f"{name} ({phase})" if phase else f"{name}"
+
+
+# Ceiling for the per-cluster instance-type watch backoff. A cluster with no
+# reachable worker fails every attempt (the cluster proxy answers 503), and it
+# can sit that way for as long as it has no worker — so its retry decays to this
+# instead of polling the proxy every few seconds forever.
+_WATCH_BACKOFF_MAX = 60.0
+
+# Kubernetes watch verbs -> work-queue event types. Anything else (notably
+# BOOKMARK / ERROR) is absent here and dropped.
+_WATCH_VERB_TO_WORK_EVENT = {
+    "ADDED": WorkEventType.ADDED,
+    "MODIFIED": WorkEventType.MODIFIED,
+    "DELETED": WorkEventType.DELETED,
+}
+
+_INSTANCE_TYPE_SOURCE = "gpu_instance_type_controller"
 
 
 class _InstanceAssetsError(Exception):
@@ -151,6 +203,12 @@ class GPUInstanceController:
         )
         # Opt-in fallback: re-observe Ready rows every N seconds (0 disables).
         self._ready_sweep_interval: int = max(0, envs.GPU_INSTANCE_READY_SWEEP_INTERVAL)
+        # How long a not-yet-Ready row may be held at Unknown for an unreadable
+        # worker-side CR before it settles to Stopped. Unknown is metered, so the
+        # hold has to be bounded (see ``_unreadable_cr_expired``). 0 disables.
+        self._unreadable_cr_tolerance: int = max(
+            0, envs.GPU_INSTANCE_UNREADABLE_CR_TOLERANCE
+        )
 
     async def start(self):
         self._dispatch_task = asyncio.create_task(self._dispatch())
@@ -209,7 +267,11 @@ class GPUInstanceController:
 
     def _enqueue(self, event: Event):
         """Map a bus event onto the work queue (coalescing happens in the queue)."""
-        iid = event.data.id if event.data is not None else event.id
+        # resolve_event_id rather than ``event.data.id``: the latter raises on
+        # an id-only payload (see Event). This topic is not registered for
+        # cross-instance enrichment today, so nothing reaches here in that
+        # shape -- registering it later should not be what discovers that.
+        iid = resolve_event_id(event)
         if iid is None:
             return
         self._queue.add(self._to_work_event(iid, event))
@@ -268,7 +330,16 @@ class GPUInstanceController:
         so a worker-side change (phase drift, CR deleted out of band) flows back
         into the same work queue without a DB-triggered re-read. Runs leader-only
         because the whole controller is. The stream is reconnected on any error.
+
+        Without the operator there is no stream to consume at all, so the watcher
+        stops instead of reconnecting forever; upstream reconciles keep working.
         """
+        if not gateway_client.is_gateway_configured():
+            logger.info(
+                "Operator worker gateway is not configured; "
+                "GPU instance downstream watch is disabled."
+            )
+            return
         while True:
             try:
                 async for line in gateway_client.watch_instances():
@@ -447,19 +518,24 @@ class GPUInstanceController:
         it raises :class:`_InstanceAssetsError` carrying the matching
         ``*CreateFailed`` phase; the caller records that phase and stops.
         """
-        # SSH public key.
-        if fresh.spec.ssh_public_keys is not None:
-            try:
-                data = await self._aggregate_ssh_public_key_data(session, fresh)
-                await ops.upsert_ssh_public_key(name=fresh.name, spec={"data": data})
-            except Exception as e:
-                logger.exception(
-                    f"Failed to sync worker-side ssh public key for {fresh.name}"
-                )
-                raise _InstanceAssetsError(
-                    self.PHASE_SSH_KEY_CREATE_FAILED,
-                    f"Failed to sync worker-side ssh public key: {e}",
-                )
+        # SSH public key. Unconditional, matching the resync path below and
+        # ``to_kuberes``, which always writes ``spec.sshPublicKey``: the operator
+        # therefore always mounts a secret named after the instance, and an
+        # instance that referenced no keys used to leave that mount pointing at
+        # a secret nobody ever created — the pod then waits in ContainerCreating
+        # forever. An empty body is the right answer; the operator renders it as
+        # an empty ``authorized_keys``.
+        try:
+            data = await self._aggregate_ssh_public_key_data(session, fresh)
+            await ops.upsert_ssh_public_key(name=fresh.name, spec={"data": data})
+        except Exception as e:
+            logger.exception(
+                f"Failed to sync worker-side ssh public key for {fresh.name}"
+            )
+            raise _InstanceAssetsError(
+                self.PHASE_SSH_KEY_CREATE_FAILED,
+                f"Failed to sync worker-side ssh public key: {e}",
+            )
 
         # Persistent volume (type).
         pv_name: Optional[str] = None
@@ -665,7 +741,9 @@ class GPUInstanceController:
 
         ``stop`` keeps the CR alive (worker reports Stopped), so /start must
         patch ``spec.stop`` off; without it the observe below would merge the
-        worker's Stopped back and revert the row.
+        worker's Stopped back and revert the row. The full row spec is
+        re-applied in the same patch so any config edit made while Stopped takes
+        effect on resume.
         """
         read = await ops.read_instance(fresh.name)
         if read is None:
@@ -689,7 +767,9 @@ class GPUInstanceController:
             self._requeue_after(fresh, self._transitioning_interval)
             return
         try:
-            await ops.start_instance(fresh.name)
+            await ops.start_instance(
+                fresh.name, spec=fresh.convert_to_kuberes()["spec"]
+            )
         except Exception:
             logger.exception(f"Failed to start worker-side instance for {fresh.name}")
             await self._write_phase_message(
@@ -777,10 +857,17 @@ class GPUInstanceController:
         unknown) instead keeps observing as Unknown — the CR may simply not be
         visible yet (eventual consistency), so it must not be prematurely
         stopped and stranded once it does appear.
+
+        That tolerance is BOUNDED. ``Unknown`` is a metered phase, so an
+        indefinite hold means an instance whose CR is gone for good keeps
+        accruing uptime forever — the bulk case being an
+        uninstall-and-reinstall upgrade, which deletes every Instance CR at once.
+        Past ``GPU_INSTANCE_UNREADABLE_CR_TOLERANCE`` the row settles to Stopped,
+        which both stops metering and leaves it restartable.
         """
         read = await ops.read_instance(fresh.name)
         if read is None:
-            if fresh.is_ready():
+            if fresh.is_ready() or self._unreadable_cr_expired(fresh):
                 await self._write_status(
                     session,
                     fresh,
@@ -795,10 +882,82 @@ class GPUInstanceController:
                 "metadata": {"namespace": ops.org_namespace},
                 "status": {
                     "phase": self.PHASE_UNKNOWN,
-                    "phaseMessage": "Not found in cluster",
+                    "phaseMessage": _UNREADABLE_CR_MESSAGE,
+                    # The hold's own clock, carried forward once stamped so the
+                    # synthetic status stays byte-identical across passes — which
+                    # is what keeps ``_write_status`` from writing every tick.
+                    "unreadableSince": self._unreadable_since(fresh),
                 },
             }
         await self._db_update_instance_status(session, fresh, read)
+
+    def _unreadable_since(self, fresh: GPUInstance) -> datetime:
+        """When the current unreadable-CR hold began.
+
+        Reuses the stamp already on the row when it is in that hold, so the
+        timestamp marks the START of the hold and not the latest observation. A
+        row that entered the hold under an older version has none; it gets one on
+        the first observation after the upgrade, which restarts its tolerance
+        once, at the version boundary only.
+        """
+        status = fresh.status
+        if (
+            status is not None
+            and status.phase == self.PHASE_UNKNOWN
+            and status.phase_message == _UNREADABLE_CR_MESSAGE
+            and status.unreadable_since is not None
+        ):
+            return status.unreadable_since
+        return datetime.now(timezone.utc)
+
+    def _unreadable_cr_expired(self, fresh: GPUInstance) -> bool:
+        """Whether this row has been held at ``Unknown`` for an unreadable CR
+        longer than the tolerance allows.
+
+        The clock is ``status.unreadable_since`` — a field of the hold itself,
+        stamped when it begins and carried forward while it lasts. Requeues keep
+        re-observing on the transitioning cadence (``Unknown`` is transitioning),
+        so this is re-evaluated until it trips.
+
+        It deliberately does NOT use ``updated_at``. That reads correct at first
+        glance, because ``_write_status`` writes only on a real change, so the
+        row's timestamp does stop advancing once the hold settles. But it is a
+        ROW-level timestamp and the hold bounds a METERED phase: ``display_name``
+        / ``description`` / ``spec.sshPublicKeys`` are all editable from any phase
+        (see the update route), so editing a note on an instance restarted its
+        30-minute bound from zero — silently, and repeatably. The one guarantee
+        this mechanism exists to give is a ceiling on metered time at Unknown, and
+        a clock any unrelated write can reset cannot give it.
+
+        Only the ``Unknown`` + not-found state counts — a row that is
+        ``Starting`` or ``NotReady`` for its own reasons is not being held by
+        this tolerance and must not be swept up by it.
+        """
+        if self._unreadable_cr_tolerance <= 0:
+            return False
+        status = fresh.status
+        if status is None or status.phase != self.PHASE_UNKNOWN:
+            return False
+        if status.phase_message != _UNREADABLE_CR_MESSAGE:
+            return False
+        since = status.unreadable_since
+        if since is None:
+            return False
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        held = (datetime.now(timezone.utc) - since).total_seconds()
+        if held < self._unreadable_cr_tolerance:
+            return False
+        logger.warning(
+            "GPU instance %s (id=%s) has been Unknown with an unreadable "
+            "worker-side CR for %.0fs (> %ss); settling it to Stopped so it stops "
+            "accruing metered uptime",
+            fresh.name,
+            fresh.id,
+            held,
+            self._unreadable_cr_tolerance,
+        )
+        return True
 
     async def _release_template_persistent_volume(
         self, session: AsyncSession, fresh: GPUInstance
@@ -962,27 +1121,61 @@ class GPUInstanceController:
                 },
             )
             if key is None:
-                raise RuntimeError(
-                    f"GPU instance SSH public key '{ref.name}' not found"
+                # A deleted key must not block the instance's remaining keys.
+                logger.warning(
+                    "GPU instance SSH public key '%s' referenced by %s "
+                    "not found, skipping it",
+                    ref.name,
+                    instance.name,
                 )
+                continue
             parts.append(key.spec.data)
         return "\n".join(parts)
+
+
+class _ClusterProbe(NamedTuple):
+    """The outcome of one finalize round's sweep over the live clusters."""
+
+    finalizing: List[int]
+    """Clusters that were reachable and still hold the downstream object."""
+
+    unreachable: List[int]
+    """Clusters that may still hold it but cannot be reached right now."""
 
 
 class _PersistentVolumeFinalizeController:
     """Shared machinery for the PV / PVT soft-delete finalizers.
 
     A PV / PVT ``DELETE`` is a soft delete (``status.phase = Deleting``); these
-    leader-only controllers finalize such rows: they enumerate every cluster,
-    probe the downstream CR, delete it where present, record the clusters still
-    holding it in ``status.finalizing``, and hard-delete the row once none
-    remain. Steady polling is an in-memory ``add_after`` requeue with no DB
-    write, and ``status.finalizing`` is persisted only when it changes, so the
-    finalizer adds no write-to-self churn.
+    leader-only controllers finalize such rows: they enumerate every live
+    Kubernetes cluster, probe the downstream CR, delete it where present, record
+    the clusters still holding it in ``status.finalizing``, and hard-delete the
+    row once none remain. Steady polling is an in-memory ``add_after`` requeue
+    with no DB write, and ``status.finalizing`` is persisted only when it
+    changes, so the finalizer adds no write-to-self churn.
+
+    A cluster is judged by its workers, because a worker is what the apiserver
+    proxy routes the request through:
+
+    - no worker at all, and the row never recorded the cluster — the cluster
+      never held a downstream object (the server creates it through that same
+      proxy), so it is skipped;
+    - workers, but none ``READY`` — the cluster may still hold the object, so
+      the row waits for the connection to come back, for at most
+      ``GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE`` seconds, and is
+      released anyway after that;
+    - a ``READY`` worker — the cluster is probed, its downstream object deleted,
+      and the row waits until the deletion is confirmed.
+
+    A cluster the row already records in ``status.finalizing`` is one a probe
+    found holding the object, so it is never skipped on the strength of an
+    empty worker table: a worker row can disappear entirely (a worker without
+    an ``external_id`` is deleted rather than soft-deleted), and the row's own
+    record is the stronger evidence.
 
     Subclasses bind the model + the downstream probe/delete + the "still
     referenced?" gate; the base owns the queue, the Deleting-only enqueue, the
-    all-cluster finalize loop, the change-only ``status`` write, and the
+    Kubernetes cluster finalize loop, the change-only ``status`` write, and the
     hard-delete.
     """
 
@@ -1007,6 +1200,11 @@ class _PersistentVolumeFinalizeController:
         # ``add_after`` into a busy loop.
         self._finalize_interval: float = max(
             1, envs.GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL
+        )
+        # How long a cluster that cannot be reached is waited for before the
+        # row is released anyway. 0 gives up at once.
+        self._unreachable_tolerance: float = max(
+            0, envs.GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE
         )
 
     async def start(self):
@@ -1039,7 +1237,8 @@ class _PersistentVolumeFinalizeController:
 
     def _enqueue(self, event: Event):
         """Map a bus event onto the work queue (coalescing happens in the queue)."""
-        row_id = event.data.id if event.data is not None else event.id
+        # See the note on GPUInstanceController._enqueue.
+        row_id = resolve_event_id(event)
         if row_id is None:
             return
         self._queue.add(self._to_work_event(row_id, event))
@@ -1104,28 +1303,133 @@ class _PersistentVolumeFinalizeController:
                 return
             owner_identifier = principal_namespace_identifier(principal)
 
+            clusters = await self._live_clusters(session)
+
             blocked = await self._blocked_reason(session, row)
             if blocked is not None:
-                await self._write_status(session, row, phase_message=blocked)
+                await self._write_status(
+                    session,
+                    row,
+                    finalizing=self._prune_finalizing(row, clusters),
+                    phase_message=blocked,
+                    # This path does not probe the clusters, so it cannot tell
+                    # whether an unreachable-cluster hold is still running.
+                    # Carrying an unverifiable stamp across it would let a stamp
+                    # from an earlier hold expire a fresh one — the row would be
+                    # released with no wait at all, which is the one thing the
+                    # window exists to prevent. The wait restarts when the row
+                    # is unblocked and the clusters are observed again.
+                    unreachable_since=None,
+                )
                 self._requeue_after(row, self._finalize_interval)
                 return
 
-            finalizing = await self._probe_clusters(session, row, owner_identifier)
+            probe = await self._probe_clusters(session, row, owner_identifier, clusters)
+            finalizing, phase_message, unreachable_since = self._verdict(row, probe)
             if not finalizing:
                 await self._hard_delete(session, row)
                 return
 
-            await self._write_status(session, row, finalizing=finalizing)
+            await self._write_status(
+                session,
+                row,
+                finalizing=finalizing,
+                phase_message=phase_message,
+                unreachable_since=unreachable_since,
+            )
             self._requeue_after(row, self._finalize_interval)
 
+    async def _live_clusters(self, session: AsyncSession) -> List[Cluster]:
+        """The live Kubernetes clusters — the ones that can hold a downstream object.
+
+        A soft-deleted cluster is gone as far as the downstream CR is concerned:
+        the apiserver proxy refuses it, so nothing can be deleted there and
+        nothing has to be waited for either.
+        """
+        return await Cluster.all_by_fields(
+            session,
+            fields={
+                "provider": ClusterProvider.Kubernetes,
+                "deleted_at": None,
+            },
+        )
+
+    @staticmethod
+    def _prune_finalizing(row, clusters: List[Cluster]) -> List[int]:
+        """Drop the clusters that are no longer live from ``status.finalizing``.
+
+        A cluster that was removed from the database cannot hold the downstream
+        object, so keeping it in the list would strand the row in ``Deleting``
+        forever — the very symptom this controller exists to prevent.
+        """
+        status = row.status
+        listed = (
+            list(status.finalizing) if status is not None and status.finalizing else []
+        )
+        if not listed:
+            return []
+        live = {cluster.id for cluster in clusters}
+        return sorted(cid for cid in listed if cid in live)
+
     async def _probe_clusters(
-        self, session: AsyncSession, row, owner_identifier: str
-    ) -> List[int]:
-        """Probe every cluster; delete the downstream CR where present. Returns
-        the cluster ids that still hold the object (a cluster whose probe errored
-        is kept so the next round retries it)."""
+        self,
+        session: AsyncSession,
+        row,
+        owner_identifier: str,
+        clusters: List[Cluster],
+    ) -> _ClusterProbe:
+        """Probe every live cluster; delete the downstream CR where present.
+
+        Returns the clusters that still hold the object, split into the ones
+        that could be reached and the ones that could not (a cluster whose
+        workers are all down). A cluster whose probe errored is kept so the
+        next round retries it.
+        """
         finalizing: List[int] = []
-        for cluster in await Cluster.all(session):
+        unreachable: List[int] = []
+        # The clusters a previous probe found holding the object. A worker row
+        # can disappear entirely (a worker without an ``external_id`` is deleted
+        # rather than soft-deleted), and an empty worker table must not make the
+        # finalizer forget that the row already recorded the cluster as a holder:
+        # that record is the stronger evidence.
+        status = row.status
+        listed = status.finalizing if status is not None else None
+        recorded = set(listed or [])
+        for cluster in clusters:
+            try:
+                if not await self._has_ready_worker(session, cluster):
+                    if (
+                        not await self._has_worker(session, cluster)
+                        and cluster.id not in recorded
+                    ):
+                        # The cluster never had a worker and the row never
+                        # recorded it, so it never held the downstream object:
+                        # the server creates it through the apiserver proxy,
+                        # which needs a READY worker.
+                        logger.info(
+                            "Skipping cluster %s for %s %s: it has no worker",
+                            cluster.id,
+                            self.SOURCE,
+                            row.name,
+                        )
+                        continue
+                    # The cluster has workers but none of them is READY, or its
+                    # worker rows are gone even though the row recorded it as a
+                    # holder. Either way the apiserver proxy cannot reach it, so
+                    # the remote delete cannot run now; wait for the connection
+                    # to come back.
+                    unreachable.append(cluster.id)
+                    continue
+            except Exception:
+                logger.exception(
+                    "Failed checking the workers of cluster %s for %s %s",
+                    cluster.id,
+                    self.SOURCE,
+                    row.name,
+                )
+                finalizing.append(cluster.id)
+                continue
+
             try:
                 ops = self._build_ops(cluster, owner_identifier)
                 async with ops:
@@ -1139,10 +1443,144 @@ class _PersistentVolumeFinalizeController:
                     row.name,
                 )
                 finalizing.append(cluster.id)
-        # Normalize order: ``Cluster.all`` has no ORDER BY, so the same set of
-        # ids in a different row order must not trip the change-gated status
-        # write (a spurious DB write + bus event every finalize round).
-        return sorted(finalizing)
+        # Normalize order: ``Cluster.all_by_fields`` has no ORDER BY, so the
+        # same set of ids in a different row order must not trip the
+        # change-gated status write (a spurious DB write + bus event every
+        # finalize round).
+        return _ClusterProbe(
+            finalizing=sorted(finalizing),
+            unreachable=sorted(unreachable),
+        )
+
+    @staticmethod
+    async def _has_ready_worker(session: AsyncSession, cluster: Cluster) -> bool:
+        """Whether the cluster has a READY worker.
+
+        The same gate the apiserver proxy applies: it serves the downstream API
+        through a READY worker and answers 503 without one. Mirroring it here
+        means the finalizer never issues a remote call the proxy would refuse.
+        """
+        return await Worker.exist_by_fields(
+            session,
+            fields={"cluster_id": cluster.id, "state": WorkerStateEnum.READY},
+        )
+
+    @staticmethod
+    async def _has_worker(session: AsyncSession, cluster: Cluster) -> bool:
+        """Whether the cluster has any worker at all.
+
+        A cluster that never had a worker never held the downstream object, so
+        it must not keep the row in ``Deleting``. A worker that was removed
+        keeps its (soft-deleted) row, so a cluster that lost its workers is
+        "has workers" — it may still hold the object, and the row waits for it.
+
+        A worker without an ``external_id`` is deleted rather than
+        soft-deleted, so it leaves no row behind and the cluster looks like it
+        never had one. The caller decides what to make of that.
+        """
+        return await Worker.exist_by_fields(session, fields={"cluster_id": cluster.id})
+
+    def _verdict(
+        self, row, probe: _ClusterProbe
+    ) -> Tuple[List[int], Optional[str], Optional[Dict[int, datetime]]]:
+        """What the row keeps waiting for after a probe round.
+
+        Returns the clusters the row still waits for, the message to show, and
+        the wait clock of the clusters that cannot be reached.
+        """
+        if not probe.unreachable:
+            return probe.finalizing, None, None
+
+        clocks = self._unreachable_clocks(row, probe.unreachable)
+        expired = [
+            cid for cid, since in clocks.items() if self._unreachable_expired(since)
+        ]
+        waiting = [cid for cid in clocks if cid not in expired]
+        message = self._unreachable_message(waiting, expired)
+
+        if expired:
+            # The clusters stayed unreachable for the whole window: release them
+            # rather than hold the row forever. The downstream objects may
+            # survive in those clusters, but a row that can never finalize is
+            # worse than a leftover object an operator can clean up.
+            #
+            # Their clocks are KEPT, which is what makes the give-up stick: a
+            # cleared clock would be re-stamped on the next round, the clusters
+            # would go back into ``finalizing``, and the row would wait — and
+            # be released — over and over instead of once. A clock is dropped
+            # when its cluster recovers, which is when the hold for it ends.
+            status = row.status
+            previous = status.phase_message if status is not None else None
+            if previous != message:
+                # On the transition only. The row is re-probed on every
+                # requeue, and an unconditional warning would repeat it every
+                # few seconds for as long as the row lives.
+                logger.warning(
+                    "%s %s gives up on unreachable cluster(s) %s after %ss; "
+                    "the custom resource may still exist in those clusters",
+                    self.SOURCE,
+                    row.name,
+                    ", ".join(str(cid) for cid in expired),
+                    self._unreachable_tolerance,
+                )
+
+        return sorted(probe.finalizing + waiting), message, clocks
+
+    def _unreachable_clocks(self, row, unreachable: List[int]) -> Dict[int, datetime]:
+        """The wait clock of each cluster that cannot be reached.
+
+        A cluster's clock starts when it is first seen unreachable and is kept
+        until it recovers. It is per cluster on purpose: a row-level clock
+        would let a fresh outage inherit an expired clock from another
+        cluster's outage, and the row would then be released with no wait at
+        all — the one thing the window exists to prevent.
+        """
+        now = datetime.now(timezone.utc)
+        status = row.status
+        stored = status.unreachable_since if status is not None else None
+        stored = stored or {}
+        clocks: Dict[int, datetime] = {}
+        for cluster_id in unreachable:
+            since = stored.get(cluster_id)
+            if since is None:
+                clocks[cluster_id] = now
+            elif since.tzinfo is None:
+                clocks[cluster_id] = since.replace(tzinfo=timezone.utc)
+            else:
+                clocks[cluster_id] = since
+        return clocks
+
+    def _unreachable_expired(self, since: datetime) -> bool:
+        """Whether a cluster has been unreachable for longer than the window."""
+        held = (datetime.now(timezone.utc) - since).total_seconds()
+        return held >= self._unreachable_tolerance
+
+    def _unreachable_message(self, waiting: List[int], expired: List[int]) -> str:
+        """The message shown while the row waits for unreachable clusters.
+
+        It has to say why the row is waiting, that the wait is bounded, and what
+        is left behind if the bound passes — a user watching a row that will not
+        move has no other way to learn any of them.
+        """
+        clauses = []
+        if waiting:
+            clauses.append(
+                "Waiting for cluster(s) "
+                + ", ".join(str(cid) for cid in waiting)
+                + " to become reachable again (no ready worker) to finish the "
+                "deletion"
+            )
+        if expired:
+            clauses.append(
+                "gave up on unreachable cluster(s) "
+                + ", ".join(str(cid) for cid in expired)
+                + ", whose custom resource may still exist"
+            )
+        if waiting:
+            clauses.append(
+                f"the row is released after {self._unreachable_tolerance}s anyway"
+            )
+        return "; ".join(clauses)
 
     def _build_ops(self, cluster: Cluster, owner_identifier: str) -> ClusterOps:
         return ClusterOps(
@@ -1159,17 +1597,25 @@ class _PersistentVolumeFinalizeController:
         *,
         finalizing: Optional[List[int]] = None,
         phase_message: Optional[str] = None,
+        unreachable_since: Optional[Dict[int, datetime]] = None,
     ):
-        """Persist ``finalizing`` / ``phase_message`` onto status — but only on a
-        real change, so a steady wait re-queues without a DB write."""
+        """Persist ``finalizing`` / ``phase_message`` / ``unreachable_since`` onto
+        status — but only on a real change, so a steady wait re-queues without a
+        DB write."""
         base = row.status or self.STATUS_CLS()
         target_finalizing = finalizing if finalizing is not None else base.finalizing
-        if base.phase_message == phase_message and (base.finalizing or []) == (
-            target_finalizing or []
+        if (
+            base.phase_message == phase_message
+            and (base.finalizing or []) == (target_finalizing or [])
+            and base.unreachable_since == unreachable_since
         ):
             return
         updated = base.model_copy(
-            update={"finalizing": target_finalizing, "phase_message": phase_message}
+            update={
+                "finalizing": target_finalizing,
+                "phase_message": phase_message,
+                "unreachable_since": unreachable_since,
+            }
         )
         await row.update(session, source={"status": updated})
 
@@ -1218,14 +1664,31 @@ class GPUInstancePersistentVolumeController(_PersistentVolumeFinalizeController)
         # detach a volume still mounted by a running instance. Wait until every
         # active reference clears (a deleting instance clears its ref only once
         # its own hard-delete SET NULLs it).
+        #
+        # The FK is not phase-filtered, so a *Stopped* instance blocks reclaim
+        # just as much as a running one. Report the instance name and phase rather
+        # than the word "active": the user has to know which instance to release,
+        # and calling a Stopped instance "active" is exactly the misleading part.
+        #
+        # Capped at three names, and fetched one over the cap so the overflow can
+        # be STATED. Truncating silently made the message actively misleading: a
+        # user who released the three listed instances would find the volume still
+        # blocked, with the reason naming nothing new.
         stmt = (
-            select(GPUInstance.id)
+            select(GPUInstance.name, GPUInstance.status)
             .where(GPUInstance.persistent_volume_id == row.id)
-            .limit(1)
+            .limit(_BLOCKED_REASON_HOLDERS + 1)
         )
-        if (await session.exec(stmt)).first() is not None:
-            return "waiting for active GPU instance(s) to release this volume"
-        return None
+        holders = (await session.exec(stmt)).all()
+        if not holders:
+            return None
+        listed = holders[:_BLOCKED_REASON_HOLDERS]
+        described = [_describe_holder(name, status) for name, status in listed]
+        if len(holders) > _BLOCKED_REASON_HOLDERS:
+            described.append("and others")
+        return "waiting for GPU instance(s) to release this volume: " + ", ".join(
+            described
+        )
 
     async def _probe_and_delete(
         self, ops: ClusterOps, row, owner_identifier: str
@@ -1268,3 +1731,459 @@ class GPUInstancePersistentVolumeTypeController(_PersistentVolumeFinalizeControl
             row.name, principal_identifier=owner_identifier
         )
         return await ops.delete_persistent_volume_type(cluster_name)
+
+
+class GPUInstanceTypeController:
+    """Projects every Kubernetes cluster's operator InstanceType catalog into the
+    ``gpu_instance_types`` table.
+
+    Unlike :class:`GPUInstanceController` there is no DB bus source for the
+    catalog itself: one list-then-watch per cluster over :class:`ClusterOps` is
+    the sole source of truth, feeding a per-``(cluster_id, name)`` serial work
+    queue drained by a single dispatcher. The ``Cluster`` bus is subscribed only
+    to decide *which* clusters have a watcher.
+
+    Per cluster rather than through the operator worker-gateway: the gateway
+    carries only the clusters that opted into GPU-instance handling
+    (``k8s_options.gpu_instance_options`` — see ``gpu_instances/gateway.py``), so
+    a model-service cluster would never populate the projection and every
+    ``gpu_type_selector`` deployment onto it would be rejected as "no synced GPU
+    InstanceTypes". ``ClusterOps`` reaches each cluster's aggregated apiserver
+    through ``/v2/clusters/{id}/proxy``, which is the same path the per-cluster
+    ``/v2/gpu-instance-types`` route already uses for both cluster families.
+
+    ADDED / MODIFIED upsert a row keyed by its ``snapshot`` — the row's durable
+    identity (a content hash that excludes the mutable ``display_name``): the
+    same snapshot revives/refreshes its row, a new snapshot inserts a NEW row and
+    retires the previous active row for that ``(cluster_id, name)`` (a same-named
+    type recreated with different resources is a different type, kept distinct so
+    an instance stamped with the old snapshot still resolves). The observed
+    ``status.detail`` is projected alongside: the operator backfills it
+    asynchronously, so it typically arrives via a MODIFIED event after the ADDED
+    (the snapshot hashes the spec only, so the backfill refreshes the same row).
+    DELETED retires the active row. The queue keys on ``(cluster_id, name)`` so
+    every event for one logical name is serialized (a delete-then-recreate of the
+    same name must not race), while the DB identity is the ``snapshot``.
+
+    Each (re)connect starts with a full catalog LIST (list-then-watch): the watch
+    only carries *future* events, so without it a fresh table would leave every
+    already-existing type unresolvable, and a DELETE missed during a reconnect gap
+    would strand a type as permanently active. The resync populates present types
+    and retires active rows the cluster's catalog no longer lists. Runs
+    leader-only, like the other controllers (by virtue of its
+    ``_start_controllers`` call site).
+    """
+
+    def __init__(self, config: Config):
+        self._config = config
+        # Per-``(cluster_id, name)`` serial queue with a LATEST-WINS coalescer.
+        # The default coalescer keeps a pending DELETED sticky, which is wrong
+        # here: a catalog DELETED is not terminal (a same-name type can be
+        # recreated), so a later ADDED must win or the recreate is lost and the
+        # type stays wrongly retired. Per-keys backoff (``add_rate_limited`` /
+        # ``forget``) is driven from ``_process``.
+        self._queue: WorkQueue = WorkQueue(coalesce=self._latest_wins)
+        # In-flight per-keys worker tasks, tracked so shutdown can cancel them.
+        self._inflight: Dict[Any, asyncio.Task] = {}
+        # Consumes ``_queue`` and fans out one worker task per keys.
+        self._dispatch_task: Optional[asyncio.Task] = None
+        # One catalog watcher task per Kubernetes cluster, tagged with the
+        # registration token it was built with: that token authenticates the
+        # cluster proxy, so a rotated one invalidates the running watcher.
+        self._watchers: Dict[int, Tuple[str, asyncio.Task]] = {}
+
+    @staticmethod
+    def _latest_wins(existing: WorkEvent, incoming: WorkEvent) -> WorkEvent:
+        """Coalesce policy: the newest event always wins (no DELETED stickiness).
+
+        A DELETED still jumps the ready queue (``WorkQueue`` priority), but it
+        must not survive a later ADDED for the same key — that later ADDED is a
+        recreate and has to be projected, not dropped."""
+        return incoming
+
+    async def start(self):
+        self._dispatch_task = asyncio.create_task(self._dispatch())
+        try:
+            await self._watch_clusters()
+        finally:
+            tasks: List[asyncio.Task] = []
+            if self._dispatch_task is not None:
+                self._dispatch_task.cancel()
+                tasks.append(self._dispatch_task)
+            for task in list(self._inflight.values()):
+                task.cancel()
+                tasks.append(task)
+            for _, task in list(self._watchers.values()):
+                task.cancel()
+                tasks.append(task)
+            self._watchers.clear()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    # ======================================================================= #
+    # Cluster set -> per-cluster watchers
+    # ======================================================================= #
+
+    async def _watch_clusters(self):
+        """Keep exactly one catalog watcher alive per Kubernetes cluster.
+
+        ``Cluster.subscribe`` replays every existing row first, so this both
+        bootstraps the watchers at startup and tracks later create / delete /
+        token changes. Reachability is deliberately NOT tracked here: an
+        unreachable cluster simply fails its watcher's list and is retried with
+        backoff, which avoids a second (Worker) subscription just to learn what
+        the retry already discovers.
+        """
+        async for event in Cluster.subscribe(source=_INSTANCE_TYPE_SOURCE):
+            try:
+                self._reconcile_cluster(event)
+            except Exception:
+                logger.exception(
+                    "Failed to reconcile the GPU instance type watcher set"
+                )
+
+    def _reconcile_cluster(self, event: Event):
+        """Start / stop / restart one cluster's watcher from a bus event."""
+        cluster: Cluster = event.data
+        if cluster is None:
+            # HEARTBEAT carries no row.
+            return
+
+        if (
+            event.type == EventType.DELETED
+            or event_field(cluster, "provider") != ClusterProvider.Kubernetes
+        ):
+            # A deleted cluster's rows go with it (``cluster_id`` is ON DELETE
+            # CASCADE), so stopping the watcher is the whole cleanup, and the
+            # id is all of it. Take that off the event rather than the payload:
+            # a cross-instance DELETE arrives id-only (see Event, and the
+            # cluster topic is not preloaded into the change-detector cache),
+            # and a watcher left running here outlives the process.
+            cluster_id = resolve_event_id(event)
+            if cluster_id is not None:
+                self._stop_watcher(cluster_id)
+            return
+
+        existing = self._watchers.get(cluster.id)
+        if existing is not None and existing[0] == cluster.registration_token:
+            return
+        # Either no watcher yet, or the token it authenticates with was rotated
+        # — the running one can no longer reach the cluster, so replace it.
+        self._stop_watcher(cluster.id)
+        self._watchers[cluster.id] = (
+            cluster.registration_token,
+            asyncio.create_task(
+                self._watch_cluster(cluster.id, cluster.registration_token)
+            ),
+        )
+
+    def _stop_watcher(self, cluster_id: int):
+        entry = self._watchers.pop(cluster_id, None)
+        if entry is not None:
+            entry[1].cancel()
+
+    # ======================================================================= #
+    # Watch source -> work queue
+    # ======================================================================= #
+
+    async def _watch_cluster(self, cluster_id: int, registration_token: str):
+        """List-then-watch one cluster's InstanceType catalog, forever.
+
+        The resync runs on every (re)connect so a fresh table is populated and a
+        delete missed during the previous gap is reconciled before the watch
+        resumes. Failures back off up to :data:`_WATCH_BACKOFF_MAX` — a cluster
+        with no reachable worker fails every attempt and may stay that way — and
+        the backoff resets as soon as a resync succeeds.
+        """
+        delay = _WATCH_RECONNECT_INTERVAL
+        while True:
+            try:
+                ops = ClusterOps(
+                    server_api_port=self._config.get_api_port(),
+                    cluster_id=cluster_id,
+                    cluster_registration_token=registration_token,
+                    # InstanceType is cluster-scoped, so the owner identifier —
+                    # which only derives the org namespace of *namespaced* CRDs —
+                    # never reaches the wire; the constructor requires one anyway.
+                    cluster_owner_principal_identifier=PLATFORM_PRINCIPAL_NAME,
+                )
+                async with ops:
+                    resource_version = await self._resync(ops, cluster_id)
+                    delay = _WATCH_RECONNECT_INTERVAL
+                    async for native in ops.watch_instance_types(resource_version):
+                        self._on_watch_event(
+                            cluster_id,
+                            native.get("type"),
+                            native.get("raw_object") or {},
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(
+                    "GPU instance type watch for cluster %s failed, "
+                    "retrying in %ss: %s",
+                    cluster_id,
+                    delay,
+                    e,
+                )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, _WATCH_BACKOFF_MAX)
+
+    async def _resync(self, ops: ClusterOps, cluster_id: int) -> Optional[str]:
+        """List one cluster's catalog and reconcile it via the queue: enqueue an
+        ADDED for every listed type, and a DELETED for every active row of that
+        cluster the catalog no longer lists (a delete missed during a watch gap).
+        Routing through the queue keeps the per-``(cluster_id, name)``
+        serialization, so a concurrent watch event coalesces (latest-wins)
+        instead of racing a direct write.
+
+        An empty list is taken at face value — a cluster is allowed to define no
+        instance types. Unlike an aggregate over subscriptions, this list either
+        answers for the cluster or raises, so "no items" cannot be an outage in
+        disguise.
+
+        Returns the list's ``resourceVersion`` so the caller's watch resumes
+        exactly where this snapshot ends, leaving no gap between the two.
+        """
+        result = await ops.list_instance_types()
+        items = result.get("items") or []
+        seen: set = set()
+        for item in items:
+            name = (item.get("metadata") or {}).get("name")
+            if not name:
+                continue
+            keys = (cluster_id, name)
+            self._queue.add(WorkEvent(keys=keys, type=WorkEventType.ADDED, object=item))
+            seen.add(keys)
+        async with async_session() as session:
+            actives = await GPUInstanceType.all_by_fields(
+                session, fields={"cluster_id": cluster_id, "deleted_at": None}
+            )
+        for row in actives:
+            keys = (cluster_id, row.name)
+            if keys not in seen:
+                self._queue.add(
+                    WorkEvent(keys=keys, type=WorkEventType.DELETED, object={})
+                )
+        return (result.get("metadata") or {}).get("resourceVersion")
+
+    def _on_watch_event(self, cluster_id: int, verb: Optional[str], obj: dict) -> None:
+        """Map one native Kubernetes watch event onto a queue event.
+
+        The cluster id comes from the watcher, not the object: a raw CR carries
+        no cluster identity. The object itself is carried on the event so the
+        reconcile can build the row without a second fetch (the watch is the only
+        source). Unexpected verbs and nameless objects are skipped so one odd
+        event can't break the stream.
+        """
+        wtype = _WATCH_VERB_TO_WORK_EVENT.get(verb)
+        if wtype is None:
+            return
+        name = (obj.get("metadata") or {}).get("name")
+        if not name:
+            return
+        self._queue.add(WorkEvent(keys=(cluster_id, name), type=wtype, object=obj))
+
+    # ======================================================================= #
+    # Work queue — consumer (mirrors GPUInstanceController)
+    # ======================================================================= #
+
+    async def _dispatch(self):
+        while True:
+            event = await self._queue.get()
+            self._inflight[event.keys] = asyncio.create_task(self._process(event))
+
+    async def _process(self, event: WorkEvent):
+        keys = event.keys
+        try:
+            await self._reconcile(event)
+            # Success — reset the per-keys backoff counter.
+            self._queue.forget(keys)
+        except asyncio.CancelledError:
+            # Shutdown/cancel must propagate, not be treated as a failure.
+            raise
+        except Exception:
+            logger.exception("Failed to reconcile GPU instance type %s", keys)
+            # Failure — retry with a capped exponential backoff.
+            self._queue.add_rate_limited(event)
+        finally:
+            self._queue.done(keys)
+            # Drop the finished task; the returned Task is intentionally discarded.
+            _ = self._inflight.pop(keys, None)
+
+    # ======================================================================= #
+    # Reconcile — project the catalog event onto the DB row
+    # ======================================================================= #
+
+    async def _reconcile(self, event: WorkEvent):
+        cluster_id, name = event.keys
+        async with async_session() as session:
+            if event.type == WorkEventType.DELETED:
+                await self._retire_active(session, cluster_id, name)
+            else:
+                await self._upsert(session, cluster_id, name, event.object or {})
+
+    async def _upsert(
+        self, session: AsyncSession, cluster_id: int, name: str, obj: dict
+    ):
+        """Project an ADDED/MODIFIED catalog object onto a row, keyed by the
+        ``snapshot`` (the row's durable identity).
+
+        The snapshot excludes the mutable ``display_name`` (and the observed
+        ``status.detail``, which lives outside the spec), so:
+
+        - the exact snapshot already exists -> revive it (if soft-deleted) and
+          refresh its ``spec`` (a ``display_name`` edit) and ``status`` (the
+          operator's asynchronous ``status.detail`` backfill, which arrives via
+          MODIFIED without any spec change);
+        - a new snapshot -> a genuinely different definition (e.g. a same-named
+          type recreated with different resources): retire the current active row
+          for this ``(cluster_id, name)`` and insert a NEW row, so an instance
+          stamped with the old snapshot still resolves against the old (now
+          soft-deleted) row and the two sides never silently diverge.
+
+        A ``snapshot`` unique-constraint ``IntegrityError`` (a concurrent insert
+        of the same identity) falls back to re-query-by-snapshot + revive.
+        """
+        spec = GPUInstanceTypeSpec.model_validate(obj.get("spec") or {})
+        # ``status`` absent (never backfilled yet) means "no status information"
+        # — it must NOT overwrite an already-persisted detail; a present status
+        # is authoritative and always projected.
+        status: Optional[GPUInstanceTypeStatusPublic] = None
+        if "status" in obj:
+            status = GPUInstanceTypeStatusPublic.model_validate(obj.get("status") or {})
+        # Provenance marker: the operator stamps this label on the types it
+        # derives from node flavors. It is deliberately outside both snapshots,
+        # so it cannot ride in on the row's identity — a label that only appears
+        # on a later MODIFIED has to be projected by ``_revive`` too.
+        labels = (obj.get("metadata") or {}).get("labels") or {}
+        derived_from_node = labels.get(DERIVED_FROM_NODE_LABEL) == "true"
+        candidate = GPUInstanceType(cluster_id=cluster_id, name=name, spec=spec)
+        snapshot = candidate.compute_snapshot()
+        definition_snapshot = candidate.compute_definition_snapshot()
+        existing = await GPUInstanceType.first_by_fields(
+            session, fields={"snapshot": snapshot}
+        )
+        if existing is not None:
+            await self._revive(
+                session, existing, spec, status, derived_from_node, definition_snapshot
+            )
+            return
+        # A new definition supersedes the current active row for this name, so at
+        # most one snapshot is ever active per ``(cluster_id, name)``. Retire
+        # without committing so the retire + insert land as ONE transaction — no
+        # window where a concurrent ``_resolve_type_snapshot`` sees zero active
+        # rows, and no crash-between-commits leaving the name with no active row.
+        await self._retire_active(session, cluster_id, name, auto_commit=False)
+        try:
+            await GPUInstanceType.create(
+                session,
+                source={
+                    "cluster_id": cluster_id,
+                    "name": name,
+                    "spec": spec,
+                    "status": status,
+                    "snapshot": snapshot,
+                    "definition_snapshot": definition_snapshot,
+                    "derived_from_node": derived_from_node,
+                },
+            )
+        except IntegrityError:
+            # ``save`` already rolled the transaction back; a concurrent writer
+            # inserted this snapshot -> revive/update that row instead. The
+            # rollback also reverted the ``_retire_active`` above, so re-retire
+            # before reviving — otherwise the old active row and the revived one
+            # would both stay active, breaking "at most one active row per
+            # (cluster_id, name)".
+            existing = await GPUInstanceType.first_by_fields(
+                session, fields={"snapshot": snapshot}
+            )
+            if existing is not None:
+                await self._retire_active(session, cluster_id, name, auto_commit=False)
+                await self._revive(
+                    session,
+                    existing,
+                    spec,
+                    status,
+                    derived_from_node,
+                    definition_snapshot,
+                )
+
+    @staticmethod
+    async def _revive(
+        session: AsyncSession,
+        existing: GPUInstanceType,
+        spec: GPUInstanceTypeSpec,
+        status: Optional[GPUInstanceTypeStatusPublic],
+        derived_from_node: bool,
+        definition_snapshot: Optional[str] = None,
+    ):
+        """Refresh ``spec`` (a ``display_name`` edit) and ``status`` (the
+        operator's ``status.detail`` backfill), and clear ``deleted_at`` —
+        reviving a soft-deleted row, skipped when it is already active and
+        unchanged so a watch re-LIST does not churn writes. A ``None`` status
+        means the event carried no status information, so the persisted status
+        is left untouched. The ``snapshot`` is unchanged by definition (it
+        identified this row). Mirrors the ``deleted_at`` revive idiom in
+        ``server/services.py``.
+
+        That skip is load-bearing: a status rewrite that only moved the
+        (unpersisted) resource ledger must not reach the DB, because every row
+        write publishes on the internal bus and the list route puts one SSE
+        stream per open page on the other end of it. The persisted status fields
+        enter the comparison on their own — Pydantic's ``__eq__`` compares every
+        field — so widening ``GPUInstanceTypeStatusPublic`` needs no edit here.
+        ``derived_from_node`` does need its own clause: it is a real column, not
+        a field of ``status``, so without it a marker stamped on a later
+        MODIFIED would be swallowed by the skip.
+
+        ``definition_snapshot`` is also written when the row predates that
+        column (upgrade backfill): the migration adds it NULL, and the first
+        watch re-LIST after the upgrade fills every active row in place. It is a
+        pure function of ``(name, spec)``, so writing it never changes identity.
+        Soft-deleted rows are never re-LISTed and stay NULL — the metering read
+        path derives the value on the fly for those.
+        """
+        needs_definition_snapshot = (
+            definition_snapshot is not None
+            and existing.definition_snapshot != definition_snapshot
+        )
+        if (
+            existing.deleted_at is None
+            and existing.spec == spec
+            and (status is None or existing.status == status)
+            and existing.derived_from_node == derived_from_node
+            and not needs_definition_snapshot
+        ):
+            return
+        source: Dict[str, Any] = {
+            "spec": spec,
+            "deleted_at": None,
+            "derived_from_node": derived_from_node,
+        }
+        if status is not None:
+            source["status"] = status
+        if needs_definition_snapshot:
+            source["definition_snapshot"] = definition_snapshot
+        await existing.update(session, source=source)
+
+    @staticmethod
+    async def _retire_active(
+        session: AsyncSession,
+        cluster_id: int,
+        name: str,
+        *,
+        auto_commit: bool = True,
+    ):
+        """Soft-delete the current active row for ``(cluster_id, name)``, if any
+        — driven by a DELETED event and by a new snapshot superseding the old
+        definition. A no-op when nothing is active. DELETED may be a spec-less
+        tombstone, so this keys on ``(cluster_id, name)``, not the snapshot.
+        ``auto_commit=False`` defers the commit so a caller can bundle the retire
+        with a following insert into one transaction."""
+        active = await GPUInstanceType.first_by_fields(
+            session,
+            fields={"cluster_id": cluster_id, "name": name, "deleted_at": None},
+        )
+        if active is not None:
+            await active.delete(session, soft=True, auto_commit=auto_commit)

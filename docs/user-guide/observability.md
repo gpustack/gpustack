@@ -176,6 +176,8 @@ These metrics are mapped from various runtime engines (vLLM, SGLang, MindIE) as 
 | gpustack:worker_node_gpu_cores                   | Gauge | Total GPU cores of the worker node.              |
 | gpustack:worker_node_gpu_utilization_rate        | Gauge | GPU utilization rate of the worker node.         |
 | gpustack:worker_node_gpu_temperature_celsius     | Gauge | GPU temperature in Celsius.                      |
+| gpustack:worker_node_gpu_power_limit_watts       | Gauge | GPU power management limit in watts.             |
+| gpustack:worker_node_gpu_power_used_watts        | Gauge | GPU power usage in watts.                        |
 | gpustack:worker_node_gram_total_bytes            | Gauge | Total GPU RAM in bytes.                          |
 | gpustack:worker_node_gram_allocated_bytes        | Gauge | Allocated GPU RAM in bytes.                      |
 | gpustack:worker_node_gram_used_bytes             | Gauge | Used GPU RAM in bytes.                           |
@@ -190,7 +192,7 @@ These metrics are mapped from various runtime engines (vLLM, SGLang, MindIE) as 
 | ------------------------------------------- | ----- | ------------------------------------------------------------- |
 | gpustack:cluster                            | Info  | Cluster information (ID, name, provider).                     |
 | gpustack:cluster_status                     | Gauge | Cluster status (with state label).                            |
-| gpustack:model                              | Info  | Model information (ID, name, runtime, source).                |
+| gpustack:model                              | Info  | Model information (ID, name, runtime, source, category).      |
 | gpustack:model_desired_instances            | Gauge | Desired number of model instances.                            |
 | gpustack:model_running_instances            | Gauge | Number of running model instances.                            |
 | gpustack:model_instance_status              | Gauge | Status of each model instance (with state label).             |
@@ -199,14 +201,14 @@ These metrics are mapped from various runtime engines (vLLM, SGLang, MindIE) as 
 
 ### Event Bus Metrics
 
-| Metric Name                         | Type    | Description                                                       |
-| ----------------------------------- | ------- | ----------------------------------------------------------------- |
-| gpustack:bus_subscribers            | Gauge   | Active bus subscribers per topic.                                 |
-| gpustack:bus_queue_depth            | Gauge   | Per-subscriber queue depth at scrape time.                        |
-| gpustack:bus_queue_capacity         | Gauge   | Per-subscriber queue maxsize (see env knob below).                |
-| gpustack:bus_queue_full             | Gauge   | 1 if the queue is full at scrape time, 0 otherwise.               |
-| gpustack:bus_queue_saturation_ratio | Gauge   | `qsize / maxsize` in `[0, 1]`. Sustained > 0.8 ⇒ slow consumer.   |
-| gpustack:bus_subscriber_latest_keys | Gauge   | Ids pending coalesced UPDATED delivery (size of `latest_by_key`). |
-| gpustack:bus_events_total           | Counter | Cumulative event counts. Extra labels: `kind`, `event_type`.      |
+| Metric Name                         | Type    | Description                                                                                                      |
+| ----------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
+| gpustack:bus_subscribers            | Gauge   | Active bus subscribers per `topic` + `source` (several may share `source=streaming`, one per open watch stream). |
+| gpustack:bus_queue_depth            | Gauge   | Max queue depth across subscribers sharing `topic`+`source`.                                                     |
+| gpustack:bus_queue_capacity         | Gauge   | Per-subscriber queue maxsize (see env knob below).                                                               |
+| gpustack:bus_queue_full             | Gauge   | 1 if any subscriber sharing `topic`+`source` has a full queue.                                                   |
+| gpustack:bus_queue_saturation_ratio | Gauge   | Max `qsize / maxsize` in `[0, 1]`. Sustained > 0.8 ⇒ slow consumer.                                              |
+| gpustack:bus_subscriber_latest_keys | Gauge   | Max ids pending coalesced UPDATED delivery (size of `latest_by_key`).                                            |
+| gpustack:bus_events_total           | Counter | Cumulative event counts summed across subscribers sharing `topic`+`source`. Extra labels: `kind`, `event_type`.  |
 
 > **Note**: All metrics are labeled with relevant identifiers (cluster, worker, model, instance, user) for fine-grained monitoring and filtering.

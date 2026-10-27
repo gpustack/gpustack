@@ -28,10 +28,12 @@
 ## Overview
 
 GPUStack is an open-source GPU cluster manager for AI model serving and GPU instance provisioning. It configures and orchestrates inference engines — vLLM, SGLang, TensorRT-LLM, or your own — and lets you launch SSH-accessible GPU instances on demand. Its core features include:
-- **Multi-Cluster GPU Management.** Manages GPU clusters across multiple environments. This includes on-premises servers, Kubernetes clusters, and cloud providers.
+
+- **Multi-Cluster GPU Management.** Manages GPU clusters across on-premises servers, Kubernetes clusters, and cloud providers. Supports GPU slicing for model deployments and GPU instances, with configurable VRAM and compute allocations.
 - **Pluggable Inference Engines.** Automatically configures high-performance inference engines such as vLLM, SGLang, and TensorRT-LLM. You can also add custom inference engines as needed.
 - **Day 0 Model Support.** GPUStack's pluggable engine architecture enables you to deploy new models on the day they are released.
-- **Performance-Optimized Configurations.** Offers pre-tuned modes for low latency or high throughput. GPUStack supports extended KV cache systems like LMCache and HiCache to reduce TTFT. It also includes built-in support for speculative decoding methods such as EAGLE3, MTP, and N-grams.
+- **Performance-Optimized Configurations.** Offers pre-tuned modes for low latency or high throughput. Supports prefill/decode disaggregation with independently configurable replicas and resources for each phase. Platform-managed shared KV cache lets compatible deployments and replicas reuse cached prefixes, with L2 storage extending capacity and reuse across nodes. It also includes built-in support for speculative decoding methods such as EAGLE3, MTP, and N-grams.
+- **Built-in Benchmarking.** Sweeps concurrency or request-rate levels to compare throughput and latency, helping you select operating points that meet your performance goals.
 - **GPU Instances.** Launches SSH-accessible GPU instances on demand for development, fine-tuning, and interactive workloads.
 - **Enterprise-Grade Operations.** Offers support for automated failure recovery, load balancing, monitoring, authentication, and access control.
 
@@ -43,11 +45,17 @@ The figure below illustrates how a single GPUStack server can manage multiple GP
 
 ![gpustack-v2-architecture](docs/assets/gpustack-v2-architecture.png)
 
+## Cluster Visibility at a Glance
+
+The GPU Cluster Topology view in [GPUStack Enterprise](https://gpustack.ai/enterprise/) provides a live, bird's-eye view of your entire fleet — every worker, GPU, and model deployment in one place, with real-time utilization, allocation, and health status.
+
+![gpustack-cluster-topology](docs/assets/cluster-topology.png)
+
 ## Optimized Inference Performance
 
 GPUStack's automated engine selection and parameter optimization deliver strong inference performance out of the box. The following figure shows throughput improvements over default vLLM configurations:
 
-![a100-throughput-comparison](docs/assets/a100-throughput-comparison.png)
+![h200-throughput-comparison](docs/assets/h200-throughput-comparison.png)
 
 For detailed benchmarking methods and results, visit our [Inference Performance Lab](https://docs.gpustack.ai/latest/performance-lab/overview/).
 
@@ -208,13 +216,19 @@ Please see the [official docs site](https://docs.gpustack.ai) for complete docum
 
 2. Run `make package`.
 
+## Join Community
+
+Any issues or have suggestions, feel free to join our [Community](https://discord.gg/VXYJzuaqwD) for support.
+
 ## Contributing
 
 Please read the [Contributing Guide](./docs/contributing.md) if you're interested in contributing to GPUStack.
 
-## Join Community
+Thanks to all of our contributors!
 
-Any issues or have suggestions, feel free to join our [Community](https://discord.gg/VXYJzuaqwD) for support.
+<a href="https://github.com/gpustack/gpustack/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=gpustack/gpustack" alt="GPUStack contributors" />
+</a>
 
 ## License
 

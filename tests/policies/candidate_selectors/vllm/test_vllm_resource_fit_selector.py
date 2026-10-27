@@ -1,3 +1,4 @@
+from gpustack.policies.resource_view import ResourceView
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -16,6 +17,7 @@ from gpustack.schemas.models import (
     CategoryEnum,
     ComputedResourceClaim,
     ExtendedKVCacheConfig,
+    KVCacheModeEnum,
     LoraListEntry,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
@@ -64,6 +66,52 @@ def expected_candidate(
     if ram is not None:
         candidate["ram"] = ram
     return candidate
+
+
+@pytest.mark.parametrize(
+    "architecture,expected_gmu",
+    [
+        ("Qwen3ForSequenceClassification", 0.9),
+        ("Qwen3VLForConditionalGeneration", 0.9),
+        ("Qwen3VLForSequenceClassification", 0.9),
+        ("BertForSequenceClassification", 0),
+    ],
+)
+@pytest.mark.asyncio
+async def test_reranker_candidate_vram_reservation(config, architecture, expected_gmu):
+    worker = linux_nvidia_1_4090_24gx1()
+    model = new_model(
+        1,
+        "reranker",
+        huggingface_repo_id="test/reranker",
+        backend=BackendEnum.VLLM,
+        categories=[CategoryEnum.RERANKER],
+    )
+    selector = VLLMResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    pretrained = SimpleNamespace(
+        architectures=[architecture],
+        num_attention_heads=8,
+        max_position_embeddings=32768,
+    )
+    weight_vram = 2 * 1024**3
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=pretrained),
+        ),
+        patch(
+            "gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram",
+            new=AsyncMock(return_value=weight_vram),
+        ),
+    ):
+        candidates = await selector.select_candidates([worker])
+
+    assert len(candidates) == 1
+    card_vram = worker.status.gpu_devices[0].memory.total
+    expected_vram = int(card_vram * expected_gmu) if expected_gmu else weight_vram
+    assert candidates[0].computed_resource_claim.vram == {0: expected_vram}
 
 
 @pytest.mark.parametrize(
@@ -594,12 +642,17 @@ async def test_select_candidates(
 
         mis = []
 
-        resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-        placement_scorer = PlacementScorer(m, mis)
+        resource_fit_selector = VLLMResourceFitSelector(
+            config, m, mis, resource_view=ResourceView(mis)
+        )
+        placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await placement_scorer.score(actual_candidates)
-        actual_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        # Supply the complete resource view so selection does not query storage.
+        actual_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         try:
             assert len(actual_candidates) == len(expected_candidates)
@@ -854,12 +907,16 @@ async def test_select_candidates_headless(
 
         mis = []
 
-        resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-        placement_scorer = PlacementScorer(m, mis)
+        resource_fit_selector = VLLMResourceFitSelector(
+            config, m, mis, resource_view=ResourceView(mis)
+        )
+        placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await placement_scorer.score(actual_candidates)
-        actual_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        actual_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         try:
             assert len(actual_candidates) == len(expected_candidates)
@@ -1103,12 +1160,16 @@ async def test_select_candidates_from_different_gpu_types(
     ):
         m.backend = BackendEnum.VLLM.value
         mis = []
-        resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-        scorer = PlacementScorer(m, mis)
+        resource_fit_selector = VLLMResourceFitSelector(
+            config, m, mis, resource_view=ResourceView(mis)
+        )
+        scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await scorer.score(actual_candidates)
-        actual_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
+        actual_candidate, _ = await scheduler.find_candidate(
+            None, config, m, workers, mis, resource_view=ResourceView(mis)
+        )
 
         try:
             assert len(actual_candidates) == len(expected_candidates)
@@ -1146,8 +1207,10 @@ async def test_auto_schedule_single_work_single_gpu(config):
         ),
     ]
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1227,8 +1290,10 @@ async def test_auto_schedule_single_work_multi_gpu(
     m = model
     mis = []
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     original_init_model_params = resource_fit_selector._init_model_parameters
 
@@ -1282,7 +1347,9 @@ async def test_tp_divisibility_checks_vision_heads_for_vllm(config):
     )
     m.backend = BackendEnum.VLLM
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, [])
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, [], resource_view=ResourceView([])
+    )
     resource_fit_selector._num_attention_heads = 0
     resource_fit_selector._vision_num_attention_heads = 16
     resource_fit_selector._model_params.vocab_size = None
@@ -1313,7 +1380,9 @@ async def test_tp_divisibility_skips_vision_heads_in_language_only_mode_for_vllm
     )
     m.backend = BackendEnum.VLLM
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, [])
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, [], resource_view=ResourceView([])
+    )
     resource_fit_selector._num_attention_heads = 0
     resource_fit_selector._vision_num_attention_heads = 16
     resource_fit_selector._model_params.vocab_size = None
@@ -1330,8 +1399,10 @@ async def test_auto_schedule_multi_work_multi_gpu(config):
     m = make_model(2, None, "Qwen/Qwen3-32B")
     mis = []
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1406,11 +1477,15 @@ async def test_manual_schedule_multi_work_multi_gpu(config):
         ),
     ]
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
-    resource_fit_selector2 = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer2 = PlacementScorer(m, mis)
+    resource_fit_selector2 = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer2 = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1667,8 +1742,10 @@ async def test_output_schedule_msg(config, index, workers, model, expect_msg):
     m = model
     mis = []
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1741,8 +1818,10 @@ async def test_lora_vram_claim_in_output_schedule_msg(config):
     )
     mis = []
 
-    resource_fit_selector = VLLMResourceFitSelector(config, m, mis)
-    placement_scorer = PlacementScorer(m, mis)
+    resource_fit_selector = VLLMResourceFitSelector(
+        config, m, mis, resource_view=ResourceView(mis)
+    )
+    placement_scorer = PlacementScorer(m, mis, resource_view=ResourceView(mis))
 
     with (
         patch(
@@ -1779,3 +1858,108 @@ async def test_lora_vram_claim_in_output_schedule_msg(config):
 - The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM."""
     ]
     assert resource_fit_selector._messages == expect_msg
+
+
+@pytest.mark.asyncio
+async def test_a_shared_kv_cache_books_no_host_ram(config):
+    """`ram_ratio` sizes the cache the engine offloads into host memory, and a
+    shared deployment has none — the cache service holds it, and
+    `_set_lmcache_env` returns before it ever sets
+    `LMCACHE_MAX_LOCAL_CPU_SIZE`. Booked anyway, and with the field defaulting
+    to 1.2, a deployment whose author only picked a cache service reserved
+    1.2x its VRAM claim of memory no process would take.
+
+    Both modes in one test because the pair is the assertion: the local
+    booking has to survive the change that removes the shared one.
+    """
+    workers = [linux_nvidia_1_4090_24gx1()]
+
+    def _with_cache(name, **cache):
+        m = new_model(
+            1,
+            name,
+            1,
+            huggingface_repo_id="Qwen/Qwen3-0.6B",
+            cpu_offloading=False,
+            extended_kv_cache=ExtendedKVCacheConfig(
+                enabled=True, ram_ratio=2.0, **cache
+            ),
+        )
+        m.backend = BackendEnum.VLLM.value
+        return m
+
+    local = _with_cache("local-cache")
+    shared = _with_cache(
+        "shared-cache", mode=KVCacheModeEnum.SHARED, cache_service_id=1
+    )
+
+    with (
+        patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=True,
+        ),
+        patch('gpustack.schemas.workers.Worker.all', return_value=workers),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=mock_async_session(),
+        ),
+    ):
+        local_candidates = await VLLMResourceFitSelector(
+            config, local, [], resource_view=ResourceView([])
+        ).select_candidates(workers)
+        shared_candidates = await VLLMResourceFitSelector(
+            config, shared, [], resource_view=ResourceView([])
+        ).select_candidates(workers)
+
+    assert len(local_candidates) == 1 and len(shared_candidates) == 1
+    vram = sum(local_candidates[0].computed_resource_claim.vram.values())
+    assert local_candidates[0].computed_resource_claim.ram == int(vram * 2.0)
+    assert shared_candidates[0].computed_resource_claim.ram is None
+    # The cards themselves are untouched by any of this.
+    assert (
+        shared_candidates[0].computed_resource_claim.vram
+        == local_candidates[0].computed_resource_claim.vram
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_member_is_priced_by_what_it_reserves_not_by_its_weights(config):
+    """The two differ by an order of magnitude on a fraction-based engine, and
+    the refusal path has only this to go on: a 0.6B model whose weights want
+    ~4 GiB still books 90% of a 24 GiB card. Reported as the weights figure, a
+    group of two read as needing 8 GiB on a cluster of 24 GiB cards -- which
+    looks like room to spare and is the opposite of the truth.
+    """
+    workers = [linux_nvidia_1_4090_24gx1()]
+    m = new_model(
+        1,
+        "priced",
+        1,
+        huggingface_repo_id="Qwen/Qwen3-0.6B",
+        cpu_offloading=False,
+    )
+    m.backend = BackendEnum.VLLM.value
+    selector = VLLMResourceFitSelector(config, m, [], resource_view=ResourceView([]))
+
+    with (
+        patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=True,
+        ),
+        patch('gpustack.schemas.workers.Worker.all', return_value=workers),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=mock_async_session(),
+        ),
+    ):
+        candidates = await selector.select_candidates(workers)
+
+    claim = selector.get_resource_claim()
+    card_total = workers[0].status.gpu_devices[0].memory.total
+    booked = int(card_total * selector._gpu_memory_utilization)
+
+    # What the card will actually hold, not what the weights measure.
+    assert claim.vram == booked
+    assert claim.vram > selector._vram_claim * 2
+    # And it is the same number the placement itself carries.
+    assert sum(candidates[0].computed_resource_claim.vram.values()) == booked

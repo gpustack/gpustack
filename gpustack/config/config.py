@@ -5,7 +5,7 @@ import secrets
 import socket
 import uuid
 from enum import Enum
-from typing import List, Optional, Dict
+from typing import Any, List, Literal, Optional, Dict
 from urllib.parse import urlparse
 
 import httpx
@@ -17,7 +17,7 @@ from gpustack_runtime.detector import (
     available_manufacturers,
     available_backends,
 )
-from pydantic import model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from gpustack.utils import validators
 from gpustack.schemas.workers import (
@@ -46,17 +46,63 @@ from gpustack.config.registration import (
     read_registration_token,
     read_worker_token,
     determine_default_registry,
+    registration_token_filename,
+    worker_token_filename,
 )
 from gpustack.ssl_context import make_ssl_context
+from gpustack.utils.certificates import read_server_ca_bundle
 from gpustack.utils.network import (
     get_first_non_loopback_ip,
     use_proxy_env_for_url,
+)
+from gpustack.utils.file import (
+    CREDENTIAL_FILE_MODE,
+    DATA_DIR_MODE,
+    ensure_dir,
+    restrict_permissions,
+    write_credential_file,
 )
 from gpustack.utils import platform
 
 _config = None
 
 logger = logging.getLogger(__name__)
+
+
+class GatewayPluginEntry(BaseModel):
+    """Operator-supplied overrides for one gateway plugin.
+
+    Deliberately a generic envelope: this module knows nothing about any
+    individual plugin's settings, so adding a knob to a plugin never touches
+    config.py. ``config`` is handed to the plugin's own module, which validates
+    its slice against a model declaring exactly the fields it is willing to let
+    an operator set -- for a plugin that makes access decisions that whitelist
+    is load-bearing, since some of its config fields would be a way to grant
+    access rather than to configure it.
+
+    The scope of this section is "what ends up in the WasmPlugin CR". Knobs
+    that govern how the *server* maintains that CR stay in ``gpustack.envs``,
+    which keeps the two mechanisms honest about when a change takes effect:
+    here, on the next reconcile; there, on restart.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Where Envoy pulls the module from, replacing the URL derived from the
+    # plugin manifest. Set both this and ``sha256`` when pointing at a build
+    # the manifest does not carry.
+    url: Optional[str] = None
+    sha256: Optional[str] = None
+    # Constrained rather than free text: an unrecognised value is only refused
+    # by the Kubernetes API, i.e. once per reconcile, forever, with the failure
+    # nowhere near the thing that caused it.
+    image_pull_policy: Optional[
+        Literal["UNSPECIFIED_POLICY", "IfNotPresent", "Always"]
+    ] = None
+    # Passed through to the plugin module for validation; shaped like the CR's
+    # own ``defaultConfig`` so an operator can transcribe field paths straight
+    # out of the plugin's documentation.
+    config: Dict[str, Any] = {}
 
 
 class WorkerConfig(PredefinedConfig):
@@ -68,6 +114,23 @@ class WorkerConfig(PredefinedConfig):
     server_url: Optional[str] = None
     worker_ip: Optional[str] = None
     worker_name: Optional[str] = None
+    # Escape hatch for the KV transfer plane of disaggregated serving. Only the
+    # management-plane NIC is auto-detected (``worker_ifname``), and on a
+    # multi-NIC host -- or when KV traffic belongs on a dedicated fabric -- that
+    # is not the answer, so this is the only way to say which NIC is. Left
+    # unset, the derivation falls back to the management NIC on a host with a
+    # single candidate interface and otherwise refuses outright: never a guess,
+    # since UCX guessing wrong yields an unroutable address in the NIXL metadata
+    # rather than a clean failure.
+    #
+    # Lives on ``WorkerConfig`` and not on ``PredefinedConfig`` on purpose.
+    # ``PredefinedConfig`` is the *cluster-wide* channel (``Cluster.worker_config``
+    # -> registration env -> every worker in the cluster), and a NIC name is a
+    # property of one machine. Broadcasting one value would set ``ib0`` on hosts
+    # that have no ``ib0``, converting a single-host ambiguity into a
+    # cluster-wide misconfiguration whose failure mode is the very
+    # ``NIXL_ERR_BACKEND`` this field exists to avoid.
+    kv_transfer_ifname: Optional[str] = None
 
 
 class Config(WorkerConfig, BaseSettings):
@@ -86,7 +149,14 @@ class Config(WorkerConfig, BaseSettings):
         disable_metrics: Disable server metrics.
         ssl_keyfile: Path to the SSL key file.
         ssl_certfile: Path to the SSL certificate file.
+        ssl_ca_certfile: Path to the CA bundle workers use to verify the server.
         database_url: URL of the database.
+        redis_url: URL of the Redis used by features that need shared,
+                    fast state (e.g. LB plugin's shared state backend).
+                    Format: redis://host[:port][/db]. No credentials
+                    (they would be materialized in the gateway CR) and
+                    no TLS (rediss://): the LB plugin's redis client
+                    has no TLS knob.
         disable_worker: (Deprecated) Disable embedded worker.
         enable_worker: Enable embedded worker.
         bootstrap_password: Password for the bootstrap admin user.
@@ -95,6 +165,8 @@ class Config(WorkerConfig, BaseSettings):
                               Retained for backwards compatibility.
         disable_update_check: Disable update check.
         update_check_url: URL to check for updates.
+        ota_server_url: URL of the OTA server the official content sources are read
+                        from. Defaults to the public OTA server.
         model_catalog_file: Path or URL to the model catalog file.
 
         token: Shared secret used to register worker.
@@ -102,6 +174,9 @@ class Config(WorkerConfig, BaseSettings):
         worker_ip: IP address of the worker node. Auto-detected by default.
         worker_ifname: Network interface name of the worker node. Auto-detected by default.
         worker_name: Name of the worker node. Use the hostname by default.
+        kv_transfer_ifname: Network interface name carrying the KV transfer plane of disaggregated serving.
+                   Falls back to worker_ifname when unset and this host has a single candidate
+                   interface; required on a multi-NIC host.
         disable_worker_metrics: Disable worker metrics.
         worker_metrics_port: Port to expose metrics on.
         worker_port: Port to bind the worker to.
@@ -121,9 +196,9 @@ class Config(WorkerConfig, BaseSettings):
         allow_methods: A list of HTTP methods that should be allowed for cross-origin requests.
         allow_headers: A list of HTTP request headers that should be supported for cross-origin requests.
         server_external_url: Specified external URL for the server.
-        system_default_container_registry: Default registry for container images (server and inference images).
+        system_default_container_registry: Default registry for container images (server and inference images). Images are expected under the 'gpustack' namespace; for multi-level namespaces keep 'gpustack' as the last level and set this to the parent path.
         image_name_override: Force override of the image name.
-        image_repo: Repository for the container images.
+        image_repo: Repository for the container images. When the image lives outside the 'gpustack' namespace (e.g. 'gpustack-ai/gpustack'), point system_default_container_registry to the parent namespace path and set this to the remaining repository path.
         service_discovery_name: Name of the service discovery service in DNS. Only useful when deployed in Kubernetes with service discovery.
         gateway_mode: Gateway deployment mode. Options are 'auto', 'embedded', 'incluster', 'external', 'disabled'. Default is 'auto'.
         gateway_kubeconfig: Path to the kubeconfig file for gateway. Only used when gateway_mode is 'external'.
@@ -131,10 +206,15 @@ class Config(WorkerConfig, BaseSettings):
         gateway_namespace: The namespace where the gateway component is deployed.
         namespace: Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.
         disable_builtin_observability: Disable embedded Grafana and Prometheus services.
+        prometheus_url: Base URL of an external Prometheus to query. When unset, the embedded one is used if it is enabled. Set this to keep the server's own metric queries working on a deployment that delegates observability to its own stack.
         grafana_url: Base URL for Grafana UI used by redirects and proxying. When unset, defaults to the embedded Grafana URL unless builtin observability is disabled.
         grafana_worker_dashboard_uid: Grafana dashboard UID for worker dashboard.
         grafana_model_dashboard_uid: Grafana dashboard UID for model dashboard.
+        grafana_pd_dashboard_uid: Grafana dashboard UID for the prefill/decode dashboard,
+            which a disaggregated model's monitoring link goes to instead of the model one.
+        grafana_cache_service_dashboard_uid: Grafana dashboard UID for cache service dashboard.
         gateway_plugin_server_url: URL to fetch gateway plugin manifest for embedded gateway.
+        shuihua_api_base_url: Base URL of the Shuihua API.
     """
 
     # Server options
@@ -148,6 +228,13 @@ class Config(WorkerConfig, BaseSettings):
     proxy_port: Optional[int] = 30079
     database_port: Optional[int] = 5432
     database_url: Optional[str] = None
+    # Redis URL for features that need shared, fast state (the LB
+    # plugin's shared-state backend, and enterprise features when the
+    # enterprise edition is installed). redis://host[:port][/db] only:
+    # credentialed urls are refused (they would be materialized in the
+    # gateway CR) and so is rediss:// (the LB plugin's redis client has
+    # no TLS knob).
+    redis_url: Optional[str] = None
     disable_worker: Optional[bool] = None  # Deprecated
     enable_worker: bool = False
     bootstrap_password: Optional[str] = None
@@ -155,6 +242,7 @@ class Config(WorkerConfig, BaseSettings):
     resources: Optional[dict] = None
     ssl_keyfile: Optional[str] = None
     ssl_certfile: Optional[str] = None
+    ssl_ca_certfile: Optional[str] = None
     # Deprecated, no-op. Localhost callers must always authenticate now.
     # Kept for backwards compatibility with existing config files
     # and CLI invocations. Will be removed in a future release.
@@ -164,6 +252,7 @@ class Config(WorkerConfig, BaseSettings):
     disable_update_check: bool = False
     disable_openapi_docs: bool = False
     update_check_url: Optional[str] = None
+    ota_server_url: Optional[str] = None
     model_catalog_file: Optional[str] = None
     enable_cors: bool = False
     allow_origins: Optional[List[str]] = ['*']
@@ -171,6 +260,12 @@ class Config(WorkerConfig, BaseSettings):
     allow_methods: Optional[List[str]] = ['GET', 'POST']
     allow_headers: Optional[List[str]] = ['Authorization', 'Content-Type', 'X-API-Key']
     external_auth_type: Optional[str] = None  # external auth type
+    # Human-readable name of the identity provider behind the active SSO
+    # provider (e.g. "Okta"), shown on the login page's SSO button. When
+    # it is unset or blank, the login page falls back to the protocol
+    # name in ``external_auth_type``. Global rather than per-provider
+    # because ``init_auth`` activates at most one provider.
+    external_auth_provider_name: Optional[str] = None
     external_auth_name: Optional[str] = None  # external auth name
     external_auth_full_name: Optional[str] = None  # external auth full name
     external_auth_avatar_url: Optional[str] = None  # external auth avatar url
@@ -237,8 +332,10 @@ class Config(WorkerConfig, BaseSettings):
     cas_full_name_attribute: Optional[str] = None
     cas_avatar_attribute: Optional[str] = None
     server_external_url: Optional[str] = None
-    # Allowlist for the X-Forwarded-Host header behind a reverse proxy;
-    # ["*"] trusts any host. Unset -> derived from server_external_url.
+    # Allowlist for the X-Forwarded-Host header behind a reverse proxy. When
+    # unset, derived from server_external_url. If both are unset, it defaults to
+    # ["*"] (trust any host), which is not recommended unless the server is only
+    # reachable via a trusted proxy.
     trusted_hosts: Optional[List[str]] = None
     # custom post-logout redirection key for compatibility with different IdPs.
     external_auth_post_logout_redirect_key: Optional[str] = None
@@ -246,12 +343,25 @@ class Config(WorkerConfig, BaseSettings):
     gateway_concurrency: int = 16
     gateway_plugin_server_url: Optional[str] = None
     gateway_ingress_class: str = "higress"
+    # Per-plugin overrides, keyed by the plugin's *manifest* name -- the one
+    # ``supported_plugins`` and the module URL are built from, which for five of
+    # the eight plugins differs from the WasmPlugin resource name they appear
+    # under in the cluster (``transformer`` vs ``gpustack-header-transformer``,
+    # ``ai-statistics`` vs ``gpustack-ai-statistics``, ...). See
+    # ``gpustack.gateway.plugins.plugin_spec_overrides``.
+    gateway_plugin: Dict[str, GatewayPluginEntry] = {}
+
+    shuihua_api_base_url: str = "https://hub.do.top"
+
     disable_builtin_observability: bool = False
     builtin_prometheus_port: int = 19090
+    prometheus_url: Optional[str] = None
     builtin_grafana_port: int = 13000
     grafana_url: Optional[str] = None
     grafana_worker_dashboard_uid: Optional[str] = "gpustack-worker"
     grafana_model_dashboard_uid: Optional[str] = "gpustack-model"
+    grafana_pd_dashboard_uid: Optional[str] = "gpustack-pd"
+    grafana_cache_service_dashboard_uid: Optional[str] = "gpustack-cache-service"
 
     # Server-wide default for the GPUStack Operator image. Cluster-level
     # ``k8s_options.operator_image`` overrides this when set.
@@ -268,6 +378,7 @@ class Config(WorkerConfig, BaseSettings):
 
     _set_worker_fields = {}
     _derive_gateway_token = None
+    _derive_auth_cache_key = None
     _jwt_secret_key_user_provided = False
     _data_dir_was_fresh = False
 
@@ -357,6 +468,20 @@ class Config(WorkerConfig, BaseSettings):
         self._derive_gateway_token = hmac.new(
             self.jwt_secret_key.encode(), b"gateway-metrics-push", hashlib.sha256
         ).hexdigest()
+        # Signing key for the ``x-gpustack-auth-cache`` marker, which the gateway
+        # plugin issues and verifies on its own (see the API-key auth design,
+        # §3.5). Derived rather than reused for two independent reasons:
+        #
+        # * ``jwt_secret_key`` itself also signs user session JWTs, so putting it
+        #   in a WasmPlugin CR would ship the ability to forge an admin session
+        #   cookie to every gateway pod via xDS.
+        # * the derived *gateway token* is no substitute either -- that one is
+        #   sent to the server in plaintext on every request and compared for
+        #   equality, i.e. designed to be transmitted, whereas a signing key is
+        #   designed never to be.
+        self._derive_auth_cache_key = hmac.new(
+            self.jwt_secret_key.encode(), b"gateway-auth-cache", hashlib.sha256
+        ).hexdigest()
 
     @model_validator(mode="after")
     def check_all(self):  # noqa: C901
@@ -370,6 +495,14 @@ class Config(WorkerConfig, BaseSettings):
             raise Exception(
                 'Both "ssl_keyfile" and "ssl_certfile" must be provided, or neither.'
             )
+
+        if self.ssl_ca_certfile and not os.path.isfile(self.ssl_ca_certfile):
+            raise Exception(
+                f'CA certificate file "{self.ssl_ca_certfile}" does not exist.'
+            )
+
+        if self.ssl_ca_certfile:
+            read_server_ca_bundle(self.ssl_ca_certfile, self.ssl_certfile)
 
         if self.server_url:
             self.server_url = self.server_url.rstrip("/")
@@ -411,6 +544,23 @@ class Config(WorkerConfig, BaseSettings):
             return None
         return f"http://127.0.0.1:{self.builtin_prometheus_port}"
 
+    def get_prometheus_url(self) -> Optional[str]:
+        """Where to send PromQL, external first.
+
+        An explicit `prometheus_url` wins over the embedded one, and that
+        ordering is the point of the setting: a deployment that delegates
+        observability to its own stack disables the embedded Prometheus, and
+        without this every metric-backed feature would go dark there — not
+        just the charts, but the checks that read metrics to decide whether a
+        deployment is working at all.
+
+        `None` means no Prometheus is reachable. Callers must treat that as
+        "cannot tell", never as "nothing is wrong".
+        """
+        if self.prometheus_url:
+            return self.prometheus_url.rstrip("/")
+        return self.get_builtin_prometheus_url()
+
     @staticmethod
     def check_port_range(port_range: str, diff: Optional[int] = None):
         ports = port_range.split("-")
@@ -427,7 +577,24 @@ class Config(WorkerConfig, BaseSettings):
                 )
 
     def make_dirs(self):
-        os.makedirs(self.data_dir, exist_ok=True)
+        # The data dir holds every credential this process mints or accepts
+        # (the JWT signing secret, registration and worker tokens, the initial
+        # admin password). It is kept unlistable rather than fully private:
+        # the embedded PostgreSQL runs as its own user and must traverse it,
+        # and the credential files themselves are 0600, so traversal without
+        # read rights exposes nothing. Credential files present at startup
+        # are re-tightened on every start; on a read-only mount (the chart's
+        # bootstrap-password Secret) that chmod is a best-effort no-op.
+        ensure_dir(self.data_dir, DATA_DIR_MODE)
+        for credential_filename in (
+            "jwt_secret_key",
+            registration_token_filename,
+            worker_token_filename,
+            "initial_admin_password",
+        ):
+            credential_path = os.path.join(self.data_dir, credential_filename)
+            if os.path.exists(credential_path):
+                restrict_permissions(credential_path, CREDENTIAL_FILE_MODE)
         os.makedirs(self.cache_dir, exist_ok=True)
         os.makedirs(self.bin_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -573,6 +740,8 @@ class Config(WorkerConfig, BaseSettings):
               device_index: 0              # optional
               device_chip_index: 0         # optional
               compute_capability: "9.0"    # optional
+              power: 300                   # optional, power limit in Watts
+              power_used: 150              # optional, current power in Watts
               memory:
                   total: 22906503168
                   is_unified_memory: true
@@ -605,6 +774,8 @@ class Config(WorkerConfig, BaseSettings):
             memory = gd.get("memory")
             network = gd.get("network")
             runtime_version = gd.get("runtime_version")
+            power = gd.get("power", None)
+            power_used = gd.get("power_used", None)
             type_ = gd.get("type") or manufacturer_to_backend(vendor)
 
             if not name:
@@ -675,6 +846,8 @@ class Config(WorkerConfig, BaseSettings):
                             mtu=network.get("mtu", None),
                         )
                     ),
+                    power=power,
+                    power_used=power_used,
                     type=type_,
                 )
             )
@@ -704,7 +877,16 @@ class Config(WorkerConfig, BaseSettings):
             self.external_auth_type = AuthProviderEnum.OIDC
             self.openid_configuration = get_openid_configuration(
                 self.oidc_issuer,
-                insecure_skip_tls_verify=self.external_auth_insecure_skip_tls_verify,
+                # This fetch runs during Config.__init__, before the global
+                # config exists and before make_ssl_context could see
+                # insecure_tls -- whose documented scope includes the
+                # external-auth IdP handshake. Passing it here skips the
+                # handshake directly and keeps the factory's cache from
+                # being seeded with a verifying context first.
+                insecure_skip_tls_verify=(
+                    self.external_auth_insecure_skip_tls_verify
+                    or bool(self.insecure_tls)
+                ),
             )
         elif self.saml_idp_server_url:
             self.external_auth_type = AuthProviderEnum.SAML
@@ -733,9 +915,8 @@ class Config(WorkerConfig, BaseSettings):
                 key = file.read().strip()
         else:
             key = secrets.token_hex(32)
-            os.makedirs(self.data_dir, exist_ok=True)
-            with open(key_path, "w") as file:
-                file.write(key)
+            ensure_dir(self.data_dir, DATA_DIR_MODE)
+            write_credential_file(key_path, key)
 
         self.jwt_secret_key = key
 
@@ -868,17 +1049,26 @@ class Config(WorkerConfig, BaseSettings):
     def get_trusted_hosts(self) -> List[str]:
         """Resolve the allowlist gating X-Forwarded-Host rewriting.
 
-        A non-empty trusted_hosts wins (including the ["*"] opt-out). An empty
-        or unset trusted_hosts derives the host from server_external_url; when
-        that is also unset, return [] so the middleware ignores
-        X-Forwarded-Host. Port/bracket normalization is left to the middleware.
+        Priority:
+        1. non-empty trusted_hosts (incl. ["*"] opt-out)
+        2. host derived from server_external_url
+        3. ["*"] — trust any host (protection is opt-in via trusted_hosts)
+
+        Port/bracket normalization is left to the middleware.
         """
         if self.trusted_hosts:
-            return [host for host in self.trusted_hosts if host and host.strip()]
+            # Blank/whitespace entries are dropped; a list left with no valid
+            # host falls through so ["", " "] behaves like the empty list.
+            hosts = [
+                host.strip() for host in self.trusted_hosts if host and host.strip()
+            ]
+            if hosts:
+                return hosts
         if self.server_external_url:
             hostname = urlparse(self.server_external_url).hostname
-            return [hostname] if hostname else []
-        return []
+            if hostname:
+                return [hostname]
+        return ["*"]
 
     def get_tls_secret_name(self) -> Optional[str]:
         if not self.ssl_certfile or not self.ssl_keyfile:
@@ -961,6 +1151,9 @@ class Config(WorkerConfig, BaseSettings):
 
     def get_derived_gateway_token(self) -> str:
         return self._derive_gateway_token
+
+    def get_derived_auth_cache_key(self) -> str:
+        return self._derive_auth_cache_key
 
 
 def get_image_name(

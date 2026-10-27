@@ -1,0 +1,43 @@
+name: OTA Pre
+
+# Tells gpustack/gpustack-ota that a document it publishes from this repo changed
+# on main, so https://ota.gpustack.ai/pre follows main within minutes of the
+# merge. The paths are the ones gpustack-ota's sources.yaml reads from here; a
+# document added there needs its path added here too. Run it by hand to check
+# the announcement reaches gpustack-ota, or to resend one that did not.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'gpustack/assets/model-catalog.yaml'
+      - 'gpustack/assets/model-catalog-modelscope.yaml'
+      - 'gpustack/assets/community-inference-backends.yaml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # A fork's main is nothing the OTA server publishes.
+    if: github.repository == 'gpustack/gpustack'
+    steps:
+      - name: Generate dispatch token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_PRT_GENERATOR_ID }}
+          private-key: ${{ secrets.CI_PRT_GENERATOR_KEY }}
+          owner: gpustack
+          repositories: gpustack-ota
+          # All a dispatch needs; unset, it inherits every installation permission.
+          permission-contents: write
+
+      - name: Announce the change
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: gh api repos/gpustack/gpustack-ota/dispatches -f event_type=source-changed

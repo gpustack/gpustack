@@ -1,6 +1,8 @@
 import logging
+import shlex
 from typing import Dict, List, Optional
 
+from gpustack.policies.resource_view import ResourceView
 from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
 )
@@ -14,24 +16,52 @@ from gpustack.policies.candidate_selectors.base_candidate_selector import (
 )
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
 from gpustack.policies.utils import (
-    get_worker_allocatable_resource,
     ListMessageBuilder,
     group_workers_by_gpu_type,
     estimate_model_vram,
 )
 from gpustack.schemas.models import (
+    ModelInstance,
+    ROUTER_DEFAULT_MEMORY,
     ComputedResourceClaim,
     Model,
-    ModelInstance,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.config import Config
+from gpustack.utils.command import find_last_parameter
 from gpustack.utils.unit import byte_to_gib
 
 logger = logging.getLogger(__name__)
 
 EVENT_ACTION_RESOURCE_ESTIMATION = "backend_resource_estimation_msg"
 EVENT_ACTION_CPU_ONLY = "backend_cpu_only_scheduling_msg"
+
+# Parameters that mean "this process will take THIS FRACTION OF THE WHOLE CARD
+# up front", regardless of what the weights need. Both engines behave that way
+# and both are reachable through a custom backend, which is how a member gets
+# booked at its weights and then takes most of the card.
+#
+# Unaccounted, a group is admitted against memory the ledger calls free and a
+# member then dies of `torch.OutOfMemoryError`: the process holds its declared
+# fraction of the card rather than the weights the ledger booked.
+#
+# **Only a declared one is read, and the gap that leaves is deliberate.** A
+# custom backend that runs a vLLM image without writing the flag still takes
+# vLLM's 0.9 default and is still booked at its weights -- this does not
+# prevent that. The alternative is worse: nothing here can tell from an image
+# name which engine is inside, and assuming the default would make every
+# backend that does NOT pre-allocate ask for most of a card, turning
+# schedulable deployments unschedulable for a guess. An operator closes this
+# by writing the parameter out, which is also the only evidence that would
+# justify acting on it.
+#
+# PD is where the accounted half bites hardest: a group puts three to five
+# members on the cards a plain deployment puts one on, so one member's
+# understatement is multiplied by the group.
+_WHOLE_CARD_FRACTION_PARAMETERS = (
+    "gpu-memory-utilization",  # vLLM
+    "mem-fraction-static",  # SGLang
+)
 
 
 class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
@@ -44,16 +74,115 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
     - Supports both GPU and CPU-only deployments
     """
 
-    def __init__(self, cfg: Config, model: Model, model_instances: List[ModelInstance]):
-        super().__init__(cfg, model, model_instances)
+    def __init__(
+        self,
+        cfg: Config,
+        model: Model,
+        model_instances: List[ModelInstance],
+        cpu_only: bool = False,
+        ram_claim: Optional[int] = None,
+        *,
+        resource_view: ResourceView,
+    ):
+        super().__init__(cfg, model, model_instances, resource_view=resource_view)
         self._event_collector = EventCollector(model, logger)
         self._messages = []
 
         # Estimated resource requirements
         self._vram_claim = 0
         self._ram_claim = 0
+        # The reservation a group's refusal quotes, filled in as the scans
+        # below prove candidates. Zero means nothing was sized, and
+        # `get_resource_claim` then falls back to the weights estimate.
+        self._reserved_vram = 0
+
+        # Set for a member that takes no accelerator at all — today, a
+        # disaggregated group's router. Distinct from `cpu_offloading`, which
+        # means "GPU placement preferred, CPU acceptable": this one means the
+        # GPU paths must not be tried, because a candidate found on one would
+        # be a router holding a card it will never use.
+        self._cpu_only = cpu_only
+
+        # The accelerator-free role's declared memory, resolved by the caller
+        # because `resources` is a role-OWN field and this selector is handed a
+        # model that has already been projected. None means "nothing declared",
+        # and the router floor applies.
+        self._declared_ram_claim = ram_claim
+
+        # None when the model declares no such parameter, which is the case
+        # this must not disturb: a custom backend that is neither vLLM nor
+        # SGLang has no whole-card behaviour to model, and inventing one would
+        # make every one of them ask for most of a card.
+        self._whole_card_fraction = self._find_whole_card_fraction()
 
         self._set_gpu_count()
+
+    def _declared_arguments(self) -> List[str]:
+        """Every token the engine will be handed, in the order it gets them.
+
+        `run_command` is a string the worker splits, and a malformed one is
+        the worker's to refuse at start-up rather than this pass's to fail on:
+        an unbalanced quote here costs the command's half of the reading and
+        leaves the parameters' half intact.
+        """
+        tokens: List[str] = []
+        command = getattr(self._model, "run_command", None)
+        if command:
+            try:
+                tokens.extend(shlex.split(command))
+            except ValueError:
+                pass
+        tokens.extend(self._model.backend_parameters or [])
+        return tokens
+
+    def _find_whole_card_fraction(self) -> Optional[float]:
+        """The fraction of each card this member will take up front, if it says.
+
+        Only an explicitly declared value. A custom backend is by definition an
+        engine GPUStack does not model, so assuming vLLM's 0.9 default when the
+        flag is absent would be a guess applied to backends that never
+        pre-allocate anything.
+
+        Read from the whole command line rather than from `backend_parameters`
+        alone. A custom backend's invocation is `run_command` first and those
+        parameters after it, and writing engine flags straight into the
+        command is the ordinary way to use one -- so looking at only half of
+        what the engine is handed missed declarations that were made plainly.
+        """
+        # The LAST occurrence, because that is the one argparse hands the
+        # engine: a repeated flag means the later value wins, and reserving
+        # from the earlier one would admit a member whose real reservation
+        # does not fit. Which also fixes the order the two halves go in: the
+        # parameters are appended after the command, so a flag in both places
+        # resolves to the parameters' value. (The older selectors read the
+        # first; they predate `find_last_parameter` and changing them would
+        # move placement for deployments that already run.)
+        raw = find_last_parameter(
+            self._declared_arguments(), list(_WHOLE_CARD_FRACTION_PARAMETERS)
+        )
+        if raw is None:
+            return None
+        try:
+            fraction = float(raw)
+        except (TypeError, ValueError):
+            return None
+        # Out-of-range is the engine's argument to reject, not this one's to
+        # act on: clamping would book a number the engine will never honour.
+        return fraction if 0 < fraction <= 1 else None
+
+    def _vram_claim_on(self, gpu_device) -> int:
+        """This member's claim on one card.
+
+        The larger of what the weights need and what the engine will seize.
+        The maximum rather than the fraction alone because the two answer
+        different questions and either can be the binding one -- a fraction
+        below what the weights need would under-book a model that does not
+        fit, which is the failure this is fixing, pointed the other way.
+        """
+        if self._whole_card_fraction is None:
+            return self._vram_claim
+        total = getattr(getattr(gpu_device, "memory", None), "total", None) or 0
+        return max(self._vram_claim, int(total * self._whole_card_fraction))
 
     def get_messages(self) -> List[str]:
         """Get scheduling messages."""
@@ -101,15 +230,24 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         """
         Get schedule candidates that fit the GPU resources requirement.
         """
-        # Estimate VRAM requirements using actual model weight
-        self._vram_claim = await estimate_model_vram(
-            self._model, self._config.huggingface_token, workers
-        )
+        if self._cpu_only:
+            # Deliberately not estimated. `estimate_model_vram` sizes the
+            # model's weights, and this member never loads them — a router
+            # proxies requests to the members that do. Estimating anyway is
+            # not merely wasted work: it is what made a router ask for the
+            # weights' worth of VRAM and sit unschedulable on a full host.
+            self._vram_claim = 0
+            self._ram_claim = self._declared_ram_claim or ROUTER_DEFAULT_MEMORY
+        else:
+            # Estimate VRAM requirements using actual model weight
+            self._vram_claim = await estimate_model_vram(
+                self._model, self._config.huggingface_token, workers
+            )
 
-        # Estimate RAM requirements (conservative estimate)
-        self._ram_claim = max(
-            int(self._vram_claim * 0.1), 2 * 1024**3
-        )  # At least 2GB RAM
+            # Estimate RAM requirements (conservative estimate)
+            self._ram_claim = max(
+                int(self._vram_claim * 0.1), 2 * 1024**3
+            )  # At least 2GB RAM
 
         logger.info(
             f"Calculated resource claim for model {self._model.readable_source}, "
@@ -128,15 +266,21 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         )
 
         # Try different candidate selection strategies
-        candidate_functions = [
-            self.find_manual_gpu_selection_candidates,
-            self.find_single_worker_single_gpu_candidates,
-            self.find_single_worker_multi_gpu_candidates,
-        ]
+        if self._cpu_only:
+            # The only path. Listing the GPU ones first and relying on them
+            # finding nothing would place the router on a card whenever one
+            # happened to be free.
+            candidate_functions = [self._find_cpu_only_candidates]
+        else:
+            candidate_functions = [
+                self.find_manual_gpu_selection_candidates,
+                self.find_single_worker_single_gpu_candidates,
+                self.find_single_worker_multi_gpu_candidates,
+            ]
 
-        # Add CPU-only candidates if supported
-        if self._model.cpu_offloading:
-            candidate_functions.append(self._find_cpu_only_candidates)
+            # Add CPU-only candidates if supported
+            if self._model.cpu_offloading:
+                candidate_functions.append(self._find_cpu_only_candidates)
 
         for candidate_func in candidate_functions:
             if self.should_skip_candidate_func(candidate_func):
@@ -210,9 +354,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                 if not worker.status or not worker.status.gpu_devices:
                     continue
 
-                allocatable = get_worker_allocatable_resource(
-                    self._model_instances, worker, gpu_type
-                )
+                allocatable = self._resource_view.allocatable(worker, gpu_type)
 
                 for gpu_device in worker.status.gpu_devices:
                     gpu_index = gpu_device.index
@@ -220,14 +362,21 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                     # Check if GPU has enough VRAM
                     if gpu_index in allocatable.vram:
                         available_vram = allocatable.vram[gpu_index]
+                        claim = self._vram_claim_on(gpu_device)
 
-                        if available_vram >= self._vram_claim:
+                        if available_vram >= claim:
+                            # What a group's refusal quotes, the same way the
+                            # vLLM and SGLang selectors record it: the
+                            # reservation, not the weights estimate. Without it
+                            # a fraction-declaring backend is reported at the
+                            # smaller of the two numbers.
+                            self._reserved_vram = max(self._reserved_vram, claim)
                             # Check RAM requirement
                             if allocatable.ram >= self._ram_claim:
                                 candidate = self._create_single_gpu_candidate(
                                     worker,
                                     [gpu_index],
-                                    {gpu_index: self._vram_claim},
+                                    {gpu_index: claim},
                                     gpu_type,
                                 )
                                 candidates.append(candidate)
@@ -264,33 +413,58 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                 if len(worker.status.gpu_devices) < 2:
                     continue  # Need at least 2 GPUs for multi-GPU
 
-                allocatable = get_worker_allocatable_resource(
-                    self._model_instances, worker, gpu_type
-                )
+                allocatable = self._resource_view.allocatable(worker, gpu_type)
 
                 # Try to distribute VRAM across multiple GPUs
                 available_gpus = []
                 total_available_vram = 0
 
+                claim_by_index: Dict[int, int] = {}
                 for gpu_device in worker.status.gpu_devices:
                     gpu_index = gpu_device.index
-                    if gpu_index in allocatable.vram:
-                        available_vram = allocatable.vram[gpu_index]
-                        available_gpus.append((gpu_index, available_vram))
-                        total_available_vram += available_vram
+                    if gpu_index not in allocatable.vram:
+                        continue
+                    available_vram = allocatable.vram[gpu_index]
+                    if self._whole_card_fraction is not None:
+                        # A card that cannot hold its own share is not part of
+                        # this candidate. The sum alone would let a roomy card
+                        # cover a nearly full one, and the distribution below
+                        # then books the full per-card claim against memory the
+                        # ledger says is taken -- admitted here, OOM at startup.
+                        claim = self._vram_claim_on(gpu_device)
+                        if available_vram < claim:
+                            continue
+                        claim_by_index[gpu_index] = claim
+                    available_gpus.append((gpu_index, available_vram))
+                    total_available_vram += available_vram
+
+                # Per card, not the weights split across them: the fraction is
+                # what each engine rank seizes on the card it runs on, so a
+                # four-way split does not make it a quarter each. Without a
+                # declared fraction there is nothing per-card to claim, and the
+                # weights are split as they always were -- booking the whole
+                # estimate on every card would reserve it N times over.
+                required_vram = (
+                    sum(claim_by_index.values())
+                    if self._whole_card_fraction is not None
+                    else self._vram_claim
+                )
 
                 # Check if total VRAM is sufficient
-                if (
-                    total_available_vram >= self._vram_claim
-                    and len(available_gpus) >= 2
-                ):
+                if total_available_vram >= required_vram and len(available_gpus) >= 2:
                     # Check RAM requirement
                     if allocatable.ram >= self._ram_claim:
                         # Distribute VRAM evenly across GPUs
                         gpu_indexes = [gpu[0] for gpu in available_gpus]
                         vram_per_gpu = self._vram_claim // len(gpu_indexes)
-                        vram_distribution = {idx: vram_per_gpu for idx in gpu_indexes}
+                        vram_distribution = {
+                            idx: max(vram_per_gpu, claim_by_index.get(idx, 0))
+                            for idx in gpu_indexes
+                        }
 
+                        self._reserved_vram = max(
+                            self._reserved_vram, sum(vram_distribution.values())
+                        )
                         candidate = self._create_multi_gpu_candidate(
                             worker, gpu_indexes, vram_distribution, gpu_type
                         )
@@ -324,7 +498,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         candidates = []
 
         for worker in workers:
-            allocatable = get_worker_allocatable_resource(self._model_instances, worker)
+            allocatable = self._resource_view.allocatable(worker)
 
             # Check if worker has enough RAM for CPU inference
             if allocatable.ram >= self._ram_claim:

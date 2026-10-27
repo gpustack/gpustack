@@ -1,18 +1,26 @@
 from datetime import datetime, timedelta, timezone
-import secrets
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
     InvalidException,
     NotFoundException,
 )
-from gpustack.security import API_KEY_PREFIX, get_secret_hash, get_key_pair
+from gpustack.security import (
+    API_KEY_PREFIX,
+    generate_access_key,
+    generate_secret_key,
+    get_secret_hash,
+    get_key_pair,
+    new_secret_key_digest,
+)
+from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.schemas.api_keys import (
     ApiKey,
@@ -106,7 +114,6 @@ def _api_key_list_fields(ctx, user_id: Optional[str]) -> dict:
 
 @router.get("", response_model=ApiKeysPublic)
 async def get_api_keys(
-    session: SessionDep,
     ctx: TenantContextDep,
     params: ApiKeyListParams = Depends(),
     user_id: Optional[str] = Query(
@@ -131,29 +138,32 @@ async def get_api_keys(
 
     if params.watch:
         return StreamingResponse(
-            ApiKey.streaming(
+            tenant_streaming(
+                ApiKey,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=lambda api_key: not _is_hidden_api_key(api_key),
+                visibility_filter=lambda api_key: not _is_hidden_api_key(api_key),
                 options=[selectinload(ApiKey.user)],
             ),
             media_type="text/event-stream",
         )
 
-    result = await ApiKey.paginated_by_query(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        extra_conditions=extra_conditions,
-        page=params.page,
-        per_page=params.perPage,
-        order_by=params.order_by,
-        options=[selectinload(ApiKey.user)],
-    )
+    async with async_session() as session:
+        result = await ApiKey.paginated_by_query(
+            session=session,
+            fields=fields,
+            fuzzy_fields=fuzzy_fields,
+            extra_conditions=extra_conditions,
+            page=params.page,
+            per_page=params.perPage,
+            order_by=params.order_by,
+            options=[selectinload(ApiKey.user)],
+        )
 
-    # Convert ApiKey to ApiKeyPublic
-    items = [_api_key_to_public(item) for item in result.items]
-    result.items = items
+        # Convert ApiKey to ApiKeyPublic
+        items = [_api_key_to_public(item) for item in result.items]
+        result.items = items
     return result
 
 
@@ -183,7 +193,7 @@ async def create_api_key(
         )
 
     if key_in.custom is None:
-        access_key, secret_key = secrets.token_hex(8), secrets.token_hex(16)
+        access_key, secret_key = generate_access_key(), generate_secret_key()
     else:
         access_key, secret_key = get_key_pair(key_in.custom)
         existing_key = await ApiKey.one_by_field(
@@ -213,6 +223,16 @@ async def create_api_key(
             owner_principal_id=target_org_id,
             access_key=access_key,
             hashed_secret_key=get_secret_hash(secret_key),
+            # None whenever the eligibility test refuses -- for a custom key,
+            # that is what ``GATEWAY_AUTH_ALLOW_CUSTOM_KEYS`` decides. A key
+            # created while the switch was off is not stranded: it has no
+            # digest, so the first authentication after the switch is turned
+            # back on backfills one, the same as a key predating the column.
+            secret_key_digest=new_secret_key_digest(
+                secret_key=secret_key,
+                is_custom=key_in.custom is not None,
+                access_key=access_key,
+            ),
             expires_at=expires_at,
             allowed_model_names=key_in.allowed_model_names,
             is_custom=key_in.custom is not None,

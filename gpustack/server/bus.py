@@ -6,7 +6,12 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from gpustack.envs import EVENT_BUS_SUBSCRIBER_QUEUE_SIZE
 
 # Re-export from coordinator.base for backward compatibility
-from gpustack.server.coordinator.base import Event, EventType
+from gpustack.server.coordinator.base import (
+    Event,
+    EventType,
+    event_field,
+    resolve_event_id,
+)
 from gpustack.server.coordinator.cache import get_change_detector
 from gpustack.server.coordinator.models import get_model_for_topic
 
@@ -41,6 +46,12 @@ __all__ = [
     'event_bus',
     'set_coordinator',
     'event_decoder',
+    # Payload-shape helpers. Exported here rather than left in
+    # coordinator.base because this is the module consumers -- in-tree and
+    # plugins alike -- already import Event/EventType from, and handling
+    # both shapes is not optional for any of them. See Event's docstring.
+    'event_field',
+    'resolve_event_id',
 ]
 
 
@@ -214,6 +225,19 @@ class EventBus:
         # doesn't reap them mid-execution (Python's create_task only
         # holds a weak reference to the task it returns).
         self._pending_tasks: Set[asyncio.Task] = set()
+        # Event counts of unsubscribed subscribers, folded in on unsubscribe
+        # and never decremented. ``BusMetricsCollector`` adds these to the
+        # live subscribers' counts so ``bus_events_total`` stays monotonic
+        # even for short-lived sources (notably source="streaming", one
+        # subscriber per open watch stream): without this, a stream closing
+        # would drop the summed series and Prometheus would read it as a
+        # counter reset, mis-counting rate()/increase(). Keyed by
+        # ``(topic, source, kind, event_type)`` — a bounded label space, so
+        # this dict cannot grow without limit.
+        self.retired_event_counts: Dict[Tuple[str, str, str, str], int] = {}
+        # Topics already reported as missing from ``_ModelRegistry``, so that
+        # warning fires once each rather than once per dropped event.
+        self._unregistered_topics_warned: Set[str] = set()
 
     def _spawn(self, coro) -> asyncio.Task:
         """``asyncio.create_task`` plus retain-and-discard bookkeeping."""
@@ -299,6 +323,49 @@ class EventBus:
                 f"No running event loop for coordinator event on topic {topic}, skipping"
             )
 
+    def _remember_local_row(self, event: Event, topic: str):
+        """Cache a locally-published row so a later cross-instance DELETE for
+        it can still be enriched.
+
+        Without this the change detector only ever learns about rows from
+        *other* instances, so a row created here is never in our own cache --
+        and when another instance deletes it, the DELETE arrives with nothing
+        but an id and there is no longer a row to re-read. Create on A, delete
+        on B, and A gets a payload it cannot act on. That is the common path,
+        not an edge case, so warm the cache from writes we serve ourselves.
+
+        It does not remove the id-only shape (a restart, a dropped event or an
+        LRU eviction all still produce it) -- consumers must keep handling it.
+        It just stops the most frequent cause.
+
+        Side effect worth knowing about: ``changed_fields`` on a later
+        cross-instance event is now diffed against the last state this
+        instance saw rather than against the startup snapshot, so the handlers
+        gated on it (``"state"``, ``"labels"``, ``"deleted_at"``) see fewer
+        missed transitions.
+
+        Both gates below exist because this cache is only ever *read* from the
+        id-only branch of :meth:`_process_coordinator_event`. Writing entries
+        no reader can reach is not free: it pins up to ``maxsize`` detached
+        rows per topic, and on an append-only table with monotonic ids the
+        LRU never hits at all, so it is pure churn.
+        """
+        # No cross-instance path, so no id-only payload will ever arrive to
+        # be enriched. Single-node is the default deployment; do not make it
+        # pay for a distributed-mode optimisation.
+        if self._coordinator is None or not self._coordinator.is_distributed:
+            return
+        # Unregistered topics return before the lookup in every mode.
+        if get_model_for_topic(topic) is None:
+            return
+        if event.id is None or isinstance(event.data, dict) or event.data is None:
+            return
+        detector = get_change_detector(topic)
+        if event.type == EventType.DELETED:
+            detector.remove(event.id)
+        else:
+            detector.put(event.id, event.data)
+
     async def _process_coordinator_event(self, event: Event, topic: str):
         """
         Process event from coordinator.
@@ -323,6 +390,7 @@ class EventBus:
             logger.trace(
                 f"Routing non-ID-only event for topic {topic}: data type={type(event.data).__name__}, keys={list(event.data.keys()) if isinstance(event.data, dict) else 'N/A'}, id={event.id}"
             )
+            self._remember_local_row(event, topic)
             self._route_event(event, topic)
             return
 
@@ -336,8 +404,23 @@ class EventBus:
         try:
             model_class = get_model_for_topic(topic)
             if model_class is None:
-                # Unknown topic, skip to avoid sending incomplete data
-                logger.debug(f"Skipping event for topic {topic}: no model class found.")
+                # Unregistered topic: every cross-instance event on it is
+                # dropped here, so its subscribers only ever see writes this
+                # instance served. That is a silent, total loss of one topic's
+                # distributed delivery, and the registry is a hand-maintained
+                # allowlist -- the way this goes wrong is a topic gaining a
+                # subscriber without gaining an entry, which debug-level hides.
+                # Once per topic, not per event: the affected topics include
+                # high-frequency ones, and the second line says nothing new.
+                if topic not in self._unregistered_topics_warned:
+                    self._unregistered_topics_warned.add(topic)
+                    logger.warning(
+                        f"Dropping cross-instance events for topic {topic}: not "
+                        f"registered in _ModelRegistry, so they cannot be "
+                        f"enriched. Subscribers on this topic will not see "
+                        f"writes served by other instances. Further drops on "
+                        f"this topic are not logged."
+                    )
                 return
 
             # Use ChangeDetector to detect changes and manage cache
@@ -433,14 +516,28 @@ class EventBus:
         unwind. Without this, ``_pending_tasks`` would retain those tasks —
         and through them the subscriber + its 1024 queued events — forever.
         """
+        removed = False
         if topic in self.subscribers:
             try:
                 self.subscribers[topic].remove(subscriber)
+                removed = True
             except ValueError:
                 # Defensive: tolerate double-unsubscribe.
                 pass
             if not self.subscribers[topic]:
                 del self.subscribers[topic]
+        # Fold this subscriber's counts into the bus-level accumulator so
+        # bus_events_total keeps the departed subscriber's contribution
+        # instead of dropping it. Only on the first (successful) removal, so
+        # a double-unsubscribe can't double-count. list() copies in case an
+        # in-flight enqueue is still bumping the dict.
+        if removed:
+            source = subscriber.source or ""
+            for (kind, event_type_name), count in list(subscriber.event_counts.items()):
+                key = (topic, source, kind.value, event_type_name)
+                self.retired_event_counts[key] = (
+                    self.retired_event_counts.get(key, 0) + count
+                )
         subscriber.close()
 
     async def publish(self, topic: str, event: Event):

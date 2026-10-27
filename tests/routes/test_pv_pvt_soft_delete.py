@@ -23,6 +23,7 @@ from gpustack.schemas.gpu_instance_persistent_volume_types import (
     GPUInstancePersistentVolumeType,
     GPUInstancePersistentVolumeTypeSpec,
 )
+from gpustack.schemas.gpu_instances import GPUInstance
 from gpustack.schemas.principals import PrincipalType
 
 # Bypass tenant scoping: a SYSTEM principal passes assert_org_owned_writable.
@@ -39,6 +40,9 @@ async def session():
     async with engine.begin() as conn:
         await conn.run_sync(GPUInstancePersistentVolumeType.__table__.create)
         await conn.run_sync(GPUInstancePersistentVolume.__table__.create)
+        # The PV delete route checks GPUInstance holders before stamping the
+        # delete phase, so the table must exist even for holder-less cases.
+        await conn.run_sync(GPUInstance.__table__.create)
     # Mirror the app session (gpustack.server.db): expire_on_commit=False is
     # required for async SQLAlchemy so a post-commit flush doesn't try to
     # lazily reload expired attributes synchronously.

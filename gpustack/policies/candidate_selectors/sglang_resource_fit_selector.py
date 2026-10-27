@@ -1,9 +1,10 @@
 import logging
 from collections import defaultdict
-from typing import List, Optional, Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 from transformers.utils import strtobool
 
 from gpustack.policies.base import ModelInstanceScheduleCandidate
+from gpustack.policies.resource_view import ResourceView
 from gpustack.policies.candidate_selectors.base_candidate_selector import (
     EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
     EVENT_ACTION_AUTO_SINGLE_GPU,
@@ -26,13 +27,12 @@ from gpustack.policies.utils import (
     ram_not_enough,
     sort_workers_by_gpu_count,
     estimate_diffusion_model_vram,
-    get_worker_allocatable_resource,
     sort_gpu_indexes_by_allocatable_rate,
 )
 from gpustack.schemas.models import (
+    ModelInstance,
     ComputedResourceClaim,
     Model,
-    ModelInstance,
     ModelInstanceSubordinateWorker,
     CategoryEnum,
 )
@@ -54,8 +54,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         cfg: Config,
         model: Model,
         model_instances: List[ModelInstance],
+        *,
+        resource_view: ResourceView,
     ):
-        super().__init__(cfg, model, model_instances)
+        super().__init__(cfg, model, model_instances, resource_view=resource_view)
 
         self._vram_claim = 0
         self._ram_claim = 0
@@ -75,6 +77,19 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         self._largest_multi_gpu_vram: int = 0
         self._largest_multi_gpu_total = 0
         self._largest_multi_gpu_utilization_satisfied_count = 0
+        # What one member would actually reserve on a card it lands on, as
+        # opposed to what the model's weights need. For an engine that takes a
+        # fraction of the whole card (vLLM's `--gpu-memory-utilization`, SGLang's
+        # `--mem-fraction-static`) the two differ by an order of magnitude: a
+        # 0.6B model whose weights want 3.68 GiB still books 86% of a 48 GiB card.
+        # Reporting the weights figure as "what this member costs" told an
+        # operator their group needed 7 GiB on a cluster of 48 GiB cards, which
+        # reads as room to spare.
+        #
+        # Recorded while scanning cards rather than taken off a candidate,
+        # because the refusal path has no candidate -- that is the whole reason
+        # it needs this.
+        self._reserved_vram: int = 0
         self._unsatisfied_gpu_messages: Dict[str, List[int]] = {}
         self._is_diffusion = CategoryEnum.IMAGE in self._model.categories
 
@@ -101,13 +116,13 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         model: Model,
     ) -> Tuple[Optional[int], Optional[List[str]]]:
         tp = find_int_parameter(
-            model.backend_parameters, ["tp-size", "tensor-parallel-size"]
+            model.backend_parameters, ["tp-size", "tensor-parallel-size", "tp"]
         )
         pp = find_int_parameter(
             model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
         )
         dp = find_int_parameter(
-            model.backend_parameters, ["dp-size", "data-parallel-size"]
+            model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
         )
         dp_attention = find_bool_parameter(
             model.backend_parameters, ["enable-dp-attention"]
@@ -146,7 +161,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         model = self._model
         self._tp_size = (
             find_int_parameter(
-                model.backend_parameters, ["tp-size", "tensor-parallel-size"]
+                model.backend_parameters, ["tp-size", "tensor-parallel-size", "tp"]
             )
             or 1
         )
@@ -170,7 +185,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         )
         self._dp_size = (
             find_int_parameter(
-                model.backend_parameters, ["dp-size", "data-parallel-size"]
+                model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
             )
             or 1
         )
@@ -357,7 +372,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     if self._param_mem_fraction_static > 0
                     else MemFractionStaticCalculator(
                         self._model,
-                        self._model_instances,
+                        self._resource_view,
                         self._model_params,
                         gpu_type,
                         self._selected_gpu_indexes_by_gpu_type_and_worker,
@@ -462,10 +477,14 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             if allocatable_vram > largest_single_gpu_vram:
                 largest_single_gpu_vram = allocatable_vram
                 largest_single_gpu_utilization = allocatable_gpu_utilization
+            fraction = self._mem_fraction_static_by_gpu_type.get(gpu_type)
+            if fraction and not self._is_diffusion:
+                self._reserved_vram = max(
+                    self._reserved_vram, int(gpu.memory.total * fraction)
+                )
+
             exceeds_vram = self._vram_claim > gpu.memory.total * (
-                self._mem_fraction_static_by_gpu_type.get(gpu_type)
-                if not self._is_diffusion
-                else 1
+                fraction if not self._is_diffusion else 1
             )
             exceeds_memory_utilization = (
                 not self._is_diffusion
@@ -555,9 +574,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         # SGLang performs VRAM balancing checks. We group all GPUs based on available VRAM capacity
         gpu_group = group_worker_gpu_by_memory(
             [worker],
-            model_instances=self._model_instances,
             ram_claim=self._ram_claim,
             gpu_type=gpu_type,
+            resource_view=self._resource_view,
         )
 
         for info in gpu_group:
@@ -626,6 +645,11 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     break
 
             if found_candidate:
+                # Same reason as the single-GPU scan above: `get_resource_claim`
+                # quotes this in a group's refusal, and a multi-GPU member
+                # without it falls back to the weights estimate — smaller than
+                # what the engine seizes, by a factor of the card count.
+                self._reserved_vram = max(self._reserved_vram, vram_sum)
                 return [
                     ModelInstanceScheduleCandidate(
                         worker=worker,
@@ -646,7 +670,24 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         ):
             event_msg_list.append(message)
 
-        if len(event_msg_list) == 0:
+        # Nothing was measured: no worker offered a GPU set this branch could
+        # size, so the counters are still at their initial zero. Printing them
+        # says "this cluster has 0 of 0 GPUs and 0.00 GiB", which reads as an
+        # empty fleet and contradicts the filter lines above it ("Matched 1/2
+        # workers by READY status"). An absence of measurement has to say so.
+        #
+        # Diffusion is exempt: its sentence is built from the per-GPU claim
+        # rather than from these counters, so it says something true whether
+        # or not any worker was sized.
+        if (
+            len(event_msg_list) == 0
+            and not self._is_diffusion
+            and self._largest_multi_gpu_total == 0
+        ):
+            event_msg_list.append(
+                "No worker offered a GPU set that could be sized for this model."
+            )
+        elif len(event_msg_list) == 0:
             event_msg = (
                 f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram):.2f} GiB allocatable VRAM."
                 if not self._is_diffusion
@@ -696,9 +737,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         for gpu_type, workers_of_type in workers_by_gpu_type.items():
             gpu_group = group_worker_gpu_by_memory(
                 workers_of_type,
-                model_instances=self._model_instances,
                 ram_claim=self._ram_claim,
                 gpu_type=gpu_type,
+                resource_view=self._resource_view,
             )
 
             for gpu_list in gpu_group:
@@ -908,7 +949,6 @@ def _create_candidate(
 
 class MemFractionStaticCalculator:
     _model: Model
-    _model_instances: List[ModelInstance]
     _gpu_type: Optional[str]
     _chunked_prefill_size: Optional[int]
     _cuda_graph_max_bs: Optional[int]
@@ -927,13 +967,13 @@ class MemFractionStaticCalculator:
     def __init__(
         self,
         model: Model,
-        model_instances: List[ModelInstance],
+        resource_view: ResourceView,
         model_params: ModelParameters,
         gpu_type: str,
         selected_gpu_indexes_by_gpu_type_and_worker: Dict[str, Dict[int, List[int]]],
     ) -> None:
+        self._resource_view = resource_view
         self._model = model
-        self._model_instances = model_instances
         self._model_params = model_params
         self._gpu_type = gpu_type
         self._selected_gpu_indexes_by_gpu_type_and_worker = (
@@ -954,7 +994,7 @@ class MemFractionStaticCalculator:
         )
         self._tp_size = (
             find_int_parameter(
-                model.backend_parameters, ["tp-size", "tensor-parallel-size"]
+                model.backend_parameters, ["tp-size", "tensor-parallel-size", "tp"]
             )
             or 1
         )
@@ -966,7 +1006,7 @@ class MemFractionStaticCalculator:
         )
         self._dp_size = (
             find_int_parameter(
-                model.backend_parameters, ["dp-size", "data-parallel-size"]
+                model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
             )
             or 1
         )
@@ -999,8 +1039,40 @@ class MemFractionStaticCalculator:
         Args:
             workers: List of workers used to determine GPU memory characteristics, the input workers should only contain same type GPUs.
         """
+        # The same-type precondition above, enforced rather than trusted.
+        # Every branch below reads the fleet as one kind of machine: `_is_npu`
+        # answers `any(...)`, so a single Ascend worker in the list sends
+        # NVIDIA cards down the NPU thresholds, and `_get_min_gpu_sum` takes a
+        # minimum across the whole list, so the smallest card sizes the
+        # largest. Neither fails — together they return a plausible wrong
+        # fraction, and a wrong `mem_fraction_static` is an OOM at startup or
+        # VRAM left unused, discovered nowhere near here.
+        #
+        # Today's only caller groups by GPU type first. This is what keeps that
+        # true for the next one, and it degrades rather than raises: 0 is the
+        # value this field is initialised with and the one `_cal_effective_vram`
+        # reads as «no adjustment», so a violated precondition costs SGLang's
+        # own default instead of a scheduling pass.
+        gpu_types = {
+            gpu.type
+            for worker in workers
+            for gpu in ((worker.status and worker.status.gpu_devices) or [])
+        }
+        if len(gpu_types) > 1:
+            logger.warning(
+                "mem_fraction_static was asked for across more than one GPU "
+                "type (%s); leaving it unset rather than sizing every card by "
+                "one of them.",
+                ", ".join(sorted(str(t) for t in gpu_types)),
+            )
+            return 0
+
+        # Not dead despite the caller consulting `_param_mem_fraction_static`
+        # first: that gate is `> 0`, so an explicit `--mem-fraction-static=0`
+        # arrives here. Returning None then divided by None in
+        # `_cal_effective_vram`.
         if find_parameter(self._model.backend_parameters, ["mem-fraction-static"]):
-            return
+            return 0
 
         is_npu = self._is_npu(workers)
         gpu_mem_bytes = self._get_min_gpu_sum(workers)
@@ -1225,8 +1297,8 @@ class MemFractionStaticCalculator:
                 ).get(worker.name)
 
                 if self._model.gpu_selector.gpus_per_replica:
-                    allocatable = get_worker_allocatable_resource(
-                        self._model_instances, worker, self._gpu_type
+                    allocatable = self._resource_view.allocatable(
+                        worker, self._gpu_type
                     )
                     sorted_gpu_indexes = [
                         idx

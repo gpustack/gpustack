@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.exc import IntegrityError
 from starlette.responses import StreamingResponse
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     ConflictException,
@@ -30,6 +31,10 @@ from gpustack.schemas import (
     GPUInstancePersistentVolumeTypePhase,
 )
 from gpustack.schemas.principals import platform_principal_id
+from gpustack.routes.gpu_instances_helper import (
+    display_name_label,
+    order_by_display_label,
+)
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 
@@ -57,7 +62,10 @@ async def get_gpu_instance_persistent_volume_types(
     """
     fuzzy_fields: dict = {}
     if search:
+        # The Name column renders ``display_name || name``, so searching only
+        # ``name`` hid rows behind the label the list actually shows (#6104).
         fuzzy_fields["name"] = search
+        fuzzy_fields["display_name"] = search
 
     extra_conditions: list = []
     filter_func = lambda row: is_visible(row, ctx)  # noqa: E731
@@ -85,10 +93,12 @@ async def get_gpu_instance_persistent_volume_types(
 
     if params.watch:
         return StreamingResponse(
-            GPUInstancePersistentVolumeType.streaming(
+            tenant_streaming(
+                GPUInstancePersistentVolumeType,
+                ctx,
                 fields={},
                 fuzzy_fields=fuzzy_fields,
-                filter_func=filter_func,
+                visibility_filter=filter_func,
             ),
             media_type="text/event-stream",
         )
@@ -98,7 +108,9 @@ async def get_gpu_instance_persistent_volume_types(
             session=session,
             fields={},
             fuzzy_fields=fuzzy_fields,
-            order_by=params.order_by,
+            order_by=order_by_display_label(
+                params.order_by, display_name_label(GPUInstancePersistentVolumeType)
+            ),
             page=params.page,
             per_page=params.perPage,
             extra_conditions=extra_conditions,

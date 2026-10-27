@@ -1,0 +1,104 @@
+# Not a shipped artifact. This verifies the one step in pack/Dockerfile that a
+# host build cannot reach: that the documentation lands where
+# gpustack.routes.ui looks for it inside an *installed* package, and that the
+# mount then answers. Getting that path wrong is silent — the console works, and
+# only /help/ is missing.
+#
+# What it deliberately does not cover: the accelerator base images, and the docs
+# stage itself. The site here is the one hack/build-docs.sh already produced and
+# gated on the host.
+#
+# Run `make verify-docs` to build the docs and wheel, then run this check.
+# A minimal UI fixture is created below if the wheel has no downloaded UI;
+# this check verifies documentation serving, not the console build.
+#
+# A successful build is the pass: the assertions run during it.
+
+ARG PYTHON_VERSION=3.11
+
+FROM python:${PYTHON_VERSION}-slim
+
+# The wheel arrives through a named build context because .dockerignore keeps
+# dist/ out of the default one — correctly so, since the real image builds its own
+# wheel from the source it mounts.
+COPY --from=wheel *.whl /tmp/
+
+# --no-deps because this image serves static files rather than running GPUStack.
+# The mount under test needs fastapi and starlette; pulling the whole runtime
+# tree would turn a one-minute check into a long one.
+RUN <<EOF
+    set -eu
+
+    pip install --no-cache-dir --no-deps /tmp/*.whl
+    pip install --no-cache-dir fastapi httpx
+    rm -rf /tmp/*.whl
+EOF
+
+# The same placement idiom as pack/Dockerfile, which is the point of the check.
+RUN --mount=type=bind,from=help,source=.,target=/tmp/help <<EOF
+    set -eu
+
+    cp -a /tmp/help "$(python3 -c 'import importlib.util; print(next(iter(importlib.util.find_spec("gpustack").submodule_search_locations)))')/help"
+EOF
+
+RUN <<EOF python3
+from html.parser import HTMLParser
+from pathlib import Path
+from urllib.parse import urljoin, urlsplit
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from gpustack.routes import ui
+
+ui_dir = Path(ui.PACKAGE_DIR) / "ui"
+if not ui_dir.exists():
+    for name in ("css", "js", "static"):
+        (ui_dir / name).mkdir(parents=True)
+    (ui_dir / "index.html").write_text("<html>UI fixture</html>")
+
+app = FastAPI()
+ui.register(app)
+client = TestClient(app)
+
+for root in ("/help/", "/help/zh/", "/help/ja/", "/help/ru/", "/help/tr/"):
+    for suffix in ("", "installation/air-gapped/", "search/search_index.json"):
+        path = root + suffix
+        status = client.get(path).status_code
+        assert status == 200, f"{path} answered {status}"
+    assert client.get(root + "missing/deep/page/").status_code == 404
+    assert client.get(root + "CNAME").status_code == 404
+    response = client.get(root + "search/search_index.json", headers={"accept-encoding": "gzip"})
+    assert response.headers["content-encoding"] == "gzip"
+
+class PageAssets(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.urls = []
+
+    def handle_starttag(self, tag, attributes):
+        attributes = dict(attributes)
+        assert attributes.get("data-md-component") != "source", "GitHub widget enabled"
+        assert "github-button" not in attributes.get("class", "").split()
+        if tag in ("script", "img") and attributes.get("src"):
+            self.urls.append(attributes["src"])
+        if tag == "link" and attributes.get("rel") in ("stylesheet", "icon"):
+            self.urls.append(attributes["href"])
+
+paths = (
+    root + suffix
+    for root in ("/help/", "/help/zh/", "/help/ja/", "/help/ru/", "/help/tr/")
+    for suffix in ("overview/", "installation/air-gapped/", "missing/deep/page/")
+)
+for path in paths:
+    parser = PageAssets()
+    parser.feed(client.get(path).text)
+    assert parser.urls, f"No assets found in {path}"
+    for url in parser.urls:
+        resolved = urljoin(f"http://testserver{path}", url)
+        assert urlsplit(resolved).netloc == "testserver", resolved
+        assert urlsplit(resolved).path.startswith("/help/"), resolved
+        assert client.get(resolved).status_code == 200, resolved
+
+print("/help/ is served from the installed package")
+EOF

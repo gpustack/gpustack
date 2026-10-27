@@ -290,3 +290,34 @@ async def test_add_rate_limited_increments_failures_and_delays():
 
     q.forget(("a",))
     assert q.failures(("a",)) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_burst_without_a_window_converges_in_two_passes():
+    """What a queue with no debounce actually guarantees.
+
+    The first event of a burst is dispatched at once, so its handler reads a
+    picture the burst is still changing. Everything arriving while it runs
+    coalesces into one follow-up that `done()` re-queues, and that one reads
+    the settled state. Two passes, not one — which is the reading
+    `ModelController`'s docstring has to give, since it leaves the window off
+    so that every model is not delayed for one role-bearing model's sake.
+    """
+    q = WorkQueue()
+
+    q.add(_ev("m", obj="first"))
+    first = await q.get()
+    assert first.object == "first", "dispatched before the burst finishes"
+
+    # The rest of the burst, while the first pass is still in flight.
+    for obj in ("second", "third", "fourth"):
+        q.add(_ev("m", obj=obj))
+    assert len(q) == 1, "one key in flight is one key, however many events"
+
+    q.done(first.keys)
+
+    settled = await q.get()
+    assert settled.object == "fourth", "the follow-up reads the last state"
+    q.done(settled.keys)
+
+    assert len(q) == 0, "and the burst is finished in two passes"

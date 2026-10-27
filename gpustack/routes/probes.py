@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from gpustack import __version__, __git_commit__
+from gpustack.extension import resolve_version_info
 
 router = APIRouter()
 
@@ -16,4 +16,5 @@ async def readyz():
 
 @router.get("/version")
 async def version():
-    return {"version": __version__, "git_commit": __git_commit__}
+    version, git_commit = resolve_version_info()
+    return {"version": version, "git_commit": git_commit}

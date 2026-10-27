@@ -1,5 +1,8 @@
 import asyncio
 import re
+from typing import List, Optional, Tuple
+from urllib.parse import urlsplit
+
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from prometheus_client.registry import Collector
 from prometheus_client.core import (
@@ -10,24 +13,37 @@ import uvicorn
 from gpustack.config.config import Config
 from gpustack.exporter.bus_metrics import BusMetricsCollector
 from gpustack.logging import setup_logging
+from gpustack.schemas.cache_providers import DEFAULT_METRICS_PORT_NAME
+from gpustack.schemas.cache_services import (
+    CacheService,
+    CacheServiceInstance,
+    CacheServiceStateEnum,
+)
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.clusters import Cluster
-from gpustack.schemas.models import Model
+from gpustack.schemas.models import (
+    CategoryEnum,
+    Model,
+    shared_cache_service_ids_by_role,
+)
 from gpustack.schemas.workers import Worker, WorkerStateEnum
+from gpustack.server.cache_provider_catalog import get_cache_providers
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
+from gpustack.utils.grafana import counted_role
 from gpustack.utils.name import metric_name
 import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 from fastapi import FastAPI, Response
 
-
 logger = logging.getLogger(__name__)
 
 # Prometheus label name pattern
 # https://prometheus.io/docs/concepts/data_model/#metric-names-and-labels
 label_name_pattern = r'^[a-zA-Z_:][a-zA-Z0-9_:]*$'
+
+DEFAULT_METRICS_PATH = "/metrics"
 
 
 class MetricExporter(Collector):
@@ -42,8 +58,17 @@ class MetricExporter(Collector):
 
     async def generate_metrics_cache(self):
         while True:
-            async with async_session() as session:
-                self._cache_metrics = await self._collect_metrics(session)
+            try:
+                async with async_session() as session:
+                    self._cache_metrics = await self._collect_metrics(session)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A transient DB error here (e.g. a pool-exhaustion timeout)
+                # must not escape the loop -- an unhandled exception propagates
+                # through the server's asyncio.gather and takes the whole
+                # process down. Keep the last cache, log, and retry next tick.
+                logger.exception("Failed to refresh metrics cache")
             await asyncio.sleep(3)
 
     async def _collect_metrics(self, session: AsyncSession):
@@ -100,6 +125,53 @@ class MetricExporter(Collector):
             labels=model_instance_labels,
         )
 
+        # Which deployments attach to which shared cache service: the
+        # relation joins engine-side series (labeled by model) with
+        # cache-service series (labeled by service) in dashboards.
+        cache_service_attached_model = GaugeMetricFamily(
+            metric_name("cache_service_attached_model"),
+            "Model attached to a shared cache service",
+            labels=cluster_labels
+            + ["cache_service_id", "cache_service_name", "model_id", "model_name"],
+        )
+        # Degraded attachment is the expensive silent failure of shared
+        # caching (the engine runs, hit rate is just forever zero), so
+        # it gets a first-class signal: 0 = running without the cache.
+        model_instance_cache_attached = GaugeMetricFamily(
+            metric_name("model_instance_cache_attached"),
+            "Whether a shared-cache instance runs with its cache injected "
+            "and the recorded endpoint still served (0 = degraded: "
+            "started without the shared KV cache, or the cache has since "
+            "gone away)",
+            labels=model_instance_labels,
+        )
+
+        # Disaggregation. Under PD a replica count says nothing about whether
+        # the deployment works: a group can be fully staffed, answering every
+        # request, and quietly recomputing every prefill because no KV ever
+        # crosses. These are the series that make that visible.
+        model_role_desired = GaugeMetricFamily(
+            metric_name("model_role_desired_instances"),
+            "Desired instances of one role of the model",
+            labels=model_labels + ["role"],
+        )
+        model_role_ready = GaugeMetricFamily(
+            metric_name("model_role_ready_instances"),
+            "Ready instances of one role of the model. Compared against the "
+            "desired series this is the ready ratio versus the configured "
+            "ratio (a 3P1D running as 3P0D still reports three replicas up)",
+            labels=model_labels + ["role"],
+        )
+        # Which side of a pair counts KV transfers is a property of the
+        # connector -- NIXL pulls so decode counts, SGLang pushes so prefill
+        # does -- and reading the wrong side reports "no KV ever moved" on a
+        # healthy group. The catalog has always known it; exporting it is what
+        # lets a dashboard derive it per model instead of asking the reader,
+        # who has no way to know which way their connector moves bytes.
+        pd_mode_info = InfoMetricFamily(
+            metric_name("pd_mode"), "Disaggregation mode of the model"
+        )
+
         metrics = [
             cluster_info,
             cluster_status,
@@ -111,7 +183,21 @@ class MetricExporter(Collector):
             model_instance_status,
             model_instance_restart_count,
             model_instance_latest_restart_time,
+            cache_service_attached_model,
+            model_instance_cache_attached,
+            model_role_desired,
+            model_role_ready,
+            pd_mode_info,
         ]
+
+        cache_service_names = {
+            service.id: service.name
+            for service in await CacheService.all_by_fields(
+                session,
+                fields={},
+                extra_conditions=[CacheService.deleted_at.is_(None)],
+            )
+        }
 
         # cluster metrics
         cluster_id_to_name = {}
@@ -186,9 +272,26 @@ class MetricExporter(Collector):
                     model.name,
                 ]
 
+                # NOTE: Model.categories is a list, but Prometheus labels are
+                # scalar. GPUStack currently treats the first entry as the
+                # primary category for metrics, so secondary categories are not
+                # exposed in gpustack:model_info. This keeps one model_info
+                # series per model for model_id joins.
+                category = (
+                    model.categories[0]
+                    if model.categories
+                    else CategoryEnum.UNKNOWN.value
+                )
+
                 model_info.add_metric(
                     model_labels
-                    + ["runtime", "runtime_version", "source", "source_key"],
+                    + [
+                        "runtime",
+                        "runtime_version",
+                        "source",
+                        "source_key",
+                        "category",
+                    ],
                     {
                         "cluster_id": str(cluster.id),
                         "cluster_name": cluster.name,
@@ -198,6 +301,7 @@ class MetricExporter(Collector):
                         "runtime_version": model.backend_version or "unknown",
                         "source": model.source,
                         "source_key": model.model_source_key,
+                        "category": category,
                     },
                 )
 
@@ -210,6 +314,52 @@ class MetricExporter(Collector):
                     model_label_values,
                     model.ready_replicas,
                 )
+
+                for role_name, status in (
+                    getattr(model, "role_status", None) or {}
+                ).items():
+                    model_role_desired.add_metric(
+                        model_label_values + [role_name], status.desired
+                    )
+                    model_role_ready.add_metric(
+                        model_label_values + [role_name], status.ready
+                    )
+
+                disaggregation = getattr(model, "disaggregation", None)
+                if disaggregation:
+                    mode = disaggregation.mode
+                    pd_mode_info.add_metric(
+                        model_labels + ["mode", "kv_counted_role"],
+                        {
+                            "cluster_id": str(cluster.id),
+                            "cluster_name": cluster.name,
+                            "model_id": str(model.id),
+                            "model_name": model.name,
+                            "mode": getattr(mode, "value", None) or str(mode),
+                            # Falls back to `decode` for a mode the catalog
+                            # cannot answer for -- `custom` above all, where
+                            # the connector is the user's own. One series per
+                            # group either way: an absent series would leave
+                            # the dashboard's variable empty and blank every
+                            # transfer panel, which reads as a broken group.
+                            "kv_counted_role": counted_role(model),
+                        },
+                    )
+
+                cache_services_by_role = shared_cache_service_ids_by_role(model)
+                for service_id in sorted(
+                    set(cache_services_by_role.values()) & cache_service_names.keys()
+                ):
+                    cache_service_attached_model.add_metric(
+                        cluster_label_values
+                        + [
+                            str(service_id),
+                            cache_service_names[service_id],
+                            str(model.id),
+                            model.name,
+                        ],
+                        1,
+                    )
 
                 # instance metrics
                 instances = model.instances
@@ -239,6 +389,19 @@ class MetricExporter(Collector):
                             else 0
                         ),
                     )
+                    if getattr(mi, "role", None) in cache_services_by_role:
+                        cache_config = getattr(mi, "cache_config", None)
+                        attached = bool(
+                            cache_config
+                            and cache_config.injected
+                            # endpoint_live tracks the present; None means
+                            # never evaluated and reads as live
+                            and cache_config.endpoint_live is not False
+                        )
+                        model_instance_cache_attached.add_metric(
+                            mi_label_values,
+                            1 if attached else 0,
+                        )
 
         # return all metrics
         return metrics
@@ -266,45 +429,6 @@ class MetricExporter(Collector):
             async def metrics_proxy_targets(session: SessionDep):
                 return await _metrics_targets(session, is_proxy=True)
 
-            async def _metrics_targets(session: AsyncSession, is_proxy: bool):
-
-                targets = []
-                worker_list = await Worker.all(
-                    session=session, options=[selectinload(Worker.cluster)]
-                )
-                cluster_workers = {}
-                for worker in worker_list:
-                    preferred_address = (
-                        worker.advertise_address if not is_proxy else worker.ip
-                    )
-                    if (
-                        worker.state == WorkerStateEnum.READY
-                        and worker.metrics_port
-                        and worker.metrics_port > 0
-                        and (
-                            is_proxy
-                            == (worker.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL)
-                        )
-                    ):
-                        key = (worker.cluster_id, worker.cluster.name)
-                        if key not in cluster_workers:
-                            cluster_workers[key] = []
-                        cluster_workers[key].append(
-                            f"{preferred_address}:{worker.metrics_port}"
-                        )
-                for (cluster_id, cluster_name), endpoints in cluster_workers.items():
-                    targets.append(
-                        {
-                            "labels": {
-                                "cluster_id": str(cluster_id),
-                                "cluster_name": cluster_name,
-                            },
-                            "targets": endpoints,
-                        }
-                    )
-
-                return targets
-
             config = uvicorn.Config(
                 app,
                 host="0.0.0.0",
@@ -319,3 +443,239 @@ class MetricExporter(Collector):
             await server.serve()
         except Exception as e:
             logger.error(f"Failed to start metric exporter: {e}")
+
+
+async def _metrics_targets(session: AsyncSession, is_proxy: bool):
+    """Prometheus HTTP SD target list. The direct list (is_proxy=False)
+    holds targets the Prometheus server reaches on its own network; the
+    proxy list holds targets behind the server's tunnel proxy."""
+    targets = []
+    worker_list = await Worker.all(
+        session=session, options=[selectinload(Worker.cluster)]
+    )
+    cluster_workers = {}
+    for worker in worker_list:
+        preferred_address = worker.advertise_address if not is_proxy else worker.ip
+        if (
+            worker.state == WorkerStateEnum.READY
+            and worker.metrics_port
+            and worker.metrics_port > 0
+            and (is_proxy == (worker.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL))
+        ):
+            key = (worker.cluster_id, worker.cluster.name)
+            if key not in cluster_workers:
+                cluster_workers[key] = []
+            cluster_workers[key].append(f"{preferred_address}:{worker.metrics_port}")
+    for (cluster_id, cluster_name), endpoints in cluster_workers.items():
+        targets.append(
+            {
+                "labels": {
+                    "cluster_id": str(cluster_id),
+                    "cluster_name": cluster_name,
+                },
+                "targets": endpoints,
+            }
+        )
+
+    targets.extend(await _cache_service_targets(session, worker_list, is_proxy))
+
+    return targets
+
+
+def _normalize_metrics_path(path: Optional[str]) -> str:
+    path = path or DEFAULT_METRICS_PATH
+    if not path.startswith("/"):
+        path = "/" + path
+    return path
+
+
+async def _cache_service_targets(
+    session: AsyncSession, workers: List[Worker], is_proxy: bool
+) -> List[dict]:
+    """HTTP SD target groups for running cache services whose provider
+    declares a metrics endpoint. A service is scraped per running
+    instance on the instance's worker, so each instance follows its own
+    worker's proxy split."""
+    services = await CacheService.all_by_fields(
+        session,
+        fields={"state": CacheServiceStateEnum.RUNNING},
+        extra_conditions=[CacheService.deleted_at.is_(None)],
+    )
+    if not services:
+        return []
+
+    workers_by_id = {worker.id: worker for worker in workers}
+    clusters = await Cluster.all(session)
+    cluster_names = {cluster.id: cluster.name for cluster in clusters}
+
+    instances_by_service: dict = {}
+    instances = await CacheServiceInstance.all_by_fields(
+        session, fields={"state": CacheServiceStateEnum.RUNNING}
+    )
+    for instance in instances:
+        instances_by_service.setdefault(instance.cache_service_id, []).append(instance)
+
+    # One read per poll: this endpoint is Prometheus HTTP service discovery,
+    # scraped on a schedule, and the catalog is the same for every service in
+    # the list.
+    providers = {
+        provider.name.lower(): provider
+        for provider in await get_cache_providers(session)
+    }
+
+    groups = []
+    for service in services:
+        provider = providers.get((service.provider_name or "").lower())
+        # Fields flagged metrics_target carry extra scrape endpoints (e.g.
+        # an L2 storage cluster's exporter); they are independent of the
+        # provider's own metrics declaration.
+        if not is_proxy:
+            groups.extend(
+                _extra_metrics_target_groups(service, provider, cluster_names)
+            )
+        metrics = provider.metrics_for(service.provider_version) if provider else None
+        if metrics is None:
+            continue
+        provider_path = _normalize_metrics_path(metrics.path)
+
+        # Only the component that exposes the declared exposition is
+        # scraped, on the port it names for it (a master, say, whose
+        # stores serve no Prometheus endpoint). Single-component
+        # providers scrape their sole ("") component.
+        scraped = {
+            name: component.metrics_port
+            for name, component in (provider.components.items() if provider else [])
+            if component.metrics_port
+        } or {"": DEFAULT_METRICS_PORT_NAME}
+        groups.extend(
+            _managed_cache_service_groups(
+                service,
+                [
+                    (instance, scraped[instance.component or ""])
+                    for instance in instances_by_service.get(service.id, [])
+                    if (instance.component or "") in scraped
+                ],
+                workers_by_id,
+                is_proxy,
+                provider_path,
+                cluster_names,
+            )
+        )
+    return groups
+
+
+def _parse_scrape_address(value) -> Optional[Tuple[str, str, str]]:
+    """(host:port, metrics path, scheme) parsed from a metrics_target
+    field value: a full URL, or host:port with an optional path. The port
+    defaults per scheme when omitted.
+    Non-HTTP schemes yield None — Prometheus cannot scrape them."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if "//" not in raw:
+        raw = f"http://{raw}"
+    parsed = urlsplit(raw)
+    if not parsed.hostname:
+        return None
+    scheme = parsed.scheme or "http"
+    if scheme not in ("http", "https"):
+        return None
+    port = parsed.port or (443 if scheme == "https" else 80)
+    return (
+        f"{parsed.hostname}:{port}",
+        _normalize_metrics_path(parsed.path),
+        scheme,
+    )
+
+
+def _extra_metrics_target_groups(
+    service: CacheService,
+    provider,
+    cluster_names: dict,
+) -> List[dict]:
+    """Target groups from provider fields flagged metrics_target: extra
+    Prometheus endpoints (e.g. an L2 storage cluster's exporter) the user
+    filled into the service config. They live outside the workers'
+    networks, so they only appear on the direct target list. Targets fed
+    by an L2 backend field carry a cache_l2_backend label."""
+    if provider is None:
+        return []
+    groups: List[dict] = []
+
+    def add_target(value, extra_labels: dict):
+        resolved = _parse_scrape_address(value)
+        if resolved is None:
+            return
+        target, path, scheme = resolved
+        labels = _cache_service_labels(service, cluster_names)
+        labels.update(extra_labels)
+        if path != DEFAULT_METRICS_PATH:
+            labels["__metrics_path__"] = path
+        if scheme != "http":
+            labels["__scheme__"] = scheme
+        groups.append({"labels": labels, "targets": [target]})
+
+    storages = (service.config.l2_storages if service.config else None) or []
+    for storage in storages:
+        backend = provider.l2_backends.get(storage.backend)
+        if backend is None:
+            continue
+        for field in backend.fields:
+            if field.metrics_target and (storage.params or {}).get(field.name):
+                add_target(
+                    storage.params[field.name],
+                    {"cache_l2_backend": storage.backend},
+                )
+
+    return groups
+
+
+def _managed_cache_service_groups(
+    service: CacheService,
+    instances: List[Tuple[CacheServiceInstance, str]],
+    workers_by_id: dict,
+    is_proxy: bool,
+    provider_path: str,
+    cluster_names: dict,
+) -> List[dict]:
+    """One target group per running instance with an allocated metrics
+    port, each paired with the name of the port its component serves the
+    exposition on. Each group carries worker_name and
+    cache_service_instance_id labels so per-instance series stay
+    distinguishable."""
+    groups = []
+    for instance, metrics_port_name in instances:
+        metrics_port = (instance.ports or {}).get(metrics_port_name)
+        if not metrics_port or metrics_port <= 0:
+            continue
+        worker = workers_by_id.get(instance.worker_id)
+        if worker is None:
+            continue
+        if is_proxy != (worker.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL):
+            continue
+        address = worker.advertise_address if not is_proxy else worker.ip
+        if not address:
+            continue
+        labels = _cache_service_labels(service, cluster_names)
+        labels["worker_name"] = worker.name
+        labels["cache_service_instance_id"] = str(instance.id)
+        if provider_path != DEFAULT_METRICS_PATH:
+            labels["__metrics_path__"] = provider_path
+        groups.append(
+            {
+                "labels": labels,
+                "targets": [f"{address}:{metrics_port}"],
+            }
+        )
+    return groups
+
+
+def _cache_service_labels(service: CacheService, cluster_names: dict) -> dict:
+    return {
+        "cluster_id": str(service.cluster_id),
+        "cluster_name": cluster_names.get(service.cluster_id, "unknown"),
+        "cache_service_id": str(service.id),
+        "cache_service_name": service.name,
+        "provider": service.provider_name,
+        "gpustack_target_type": "cache-service",
+    }

@@ -1,3 +1,4 @@
+{{- if .Values.server.enabled }}
 apiVersion: v1
 data:
 {{ include "server_config" . | indent 2 }}
@@ -7,3 +8,4 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
 {{ include "chart_labels" . | indent 4 }}
+{{- end }}

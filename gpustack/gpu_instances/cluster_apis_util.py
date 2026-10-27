@@ -150,6 +150,14 @@ def principal_namespace_identifier(principal: Principal) -> str:
     return principal.name
 
 
+DEFAULT_SYSTEM_NAMESPACE = "gpustack-system"
+"""Namespace a cluster's own GPUStack components (operator, workers) live in
+when its ``k8s_options.namespace`` is unset — the same fallback the manifest
+renderer applies, mirrored here because the CRD client resolves the namespace
+of system-scoped resources without going through a render.
+"""
+
+
 def get_namespace_name(
     principal_identifier: Optional[str] = None,
 ) -> str:

@@ -1,6 +1,5 @@
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.engine.reflection import Inspector
 
 
 def is_opengauss(conn) -> bool:
@@ -28,10 +27,21 @@ def column_exists(table_name, column_name) -> bool:
     Returns:
         bool: True if the column exists, False otherwise.
     """
-    conn = op.get_bind()
-    inspector = Inspector.from_engine(conn)
+    inspector = sa.inspect(op.get_bind())
     columns = [col["name"] for col in inspector.get_columns(table_name)]
     return column_name in columns
+
+
+def index_exists(table_name, index_name) -> bool:
+    """Check if an index exists on a table.
+    Args:
+        table_name (str): The name of the table.
+        index_name (str): The name of the index.
+    Returns:
+        bool: True if the index exists, False otherwise.
+    """
+    inspector = sa.inspect(op.get_bind())
+    return any(ix["name"] == index_name for ix in inspector.get_indexes(table_name))
 
 
 def table_exists(table_name) -> bool:
@@ -41,6 +51,5 @@ def table_exists(table_name) -> bool:
     Returns:
         bool: True if the table exists, False otherwise.
     """
-    conn = op.get_bind()
-    inspector = Inspector.from_engine(conn)
+    inspector = sa.inspect(op.get_bind())
     return table_name in inspector.get_table_names()

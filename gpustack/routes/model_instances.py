@@ -1,11 +1,17 @@
 import asyncio
 import json
-from typing import List, Optional, Tuple
+import sys
+from contextlib import aclosing, suppress
+from typing import AsyncIterator, List, Optional, Tuple
 import aiohttp
 from fastapi import APIRouter, Request, status, HTTPException
-from fastapi.responses import PlainTextResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import (
+    StreamingResponse,
+    RedirectResponse,
+)
 from urllib.parse import urlencode
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.server.services import ModelInstanceService
@@ -19,10 +25,7 @@ from gpustack.api.exceptions import (
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
 from gpustack.api.tenant import (
-    bypass_tenant_filter,
     assert_resource_visible,
-    cluster_scoped_system,
-    scoped_cluster_row_visible,
     tenant_list_conditions,
 )
 from gpustack.server.db import async_session
@@ -43,6 +46,8 @@ from gpustack.schemas.models import (
 from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.config.config import get_global_config
 from gpustack.utils.grafana import resolve_grafana_base_url
+from gpustack.utils.export_limits import attachment_headers, sanitize_filename
+from gpustack.utils.tabular_export import stream_zip
 
 router = APIRouter()
 
@@ -59,7 +64,11 @@ def _is_vllm_ray_subordinate(model_instance: ModelInstance) -> bool:
     model = model_instance.model
     backend_parameters = model.backend_parameters if model else None
     backend_version = model.backend_version if model else None
-    return resolve_executor_backend(backend_parameters, backend_version) == "ray"
+    image_name = model.image_name if model else None
+    return (
+        resolve_executor_backend(backend_parameters, backend_version, image_name)
+        == "ray"
+    )
 
 
 def _default_display_name(model_instance: ModelInstance, is_main_worker: bool) -> str:
@@ -121,27 +130,13 @@ async def get_model_instances(
     if state:
         fields["state"] = state
 
-    # System principals (workers, cluster service accounts) and admin in
-    # "All" mode must see every Org's instances regardless of their
-    # ``principal_id`` — otherwise a worker's awatch stream
-    # would silently filter out instances scheduled to it on clusters
-    # outside its Personal Org.
-    if ctx.current_principal_id is not None and not bypass_tenant_filter(ctx):
-        fields["owner_principal_id"] = ctx.current_principal_id
-
     if params.watch:
-        # Cluster-bound service accounts (worker / cluster bootstrap)
-        # only stream instances of their own cluster.
-        filter_func = (
-            (lambda data: scoped_cluster_row_visible(ctx, data))
-            if cluster_scoped_system(ctx)
-            else None
-        )
         return StreamingResponse(
-            ModelInstance.streaming(
+            tenant_streaming(
+                ModelInstance,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=filter_func,
             ),
             media_type="text/event-stream",
         )
@@ -208,10 +203,16 @@ async def get_model_instance_dashboard(
     return RedirectResponse(url=dashboard_url, status_code=302)
 
 
-async def fetch_model_instance(session, id):
+async def fetch_model_instance(session, ctx, id):
     model_instance = await ModelInstance.one_by_id_with_model_files(session, id)
-    if not model_instance:
-        raise NotFoundException(message="Model instance not found")
+    # Check visibility before the worker-assignment check so a missing
+    # instance and a cross-tenant instance return the same "not found"
+    # response instead of a distinguishable "not assigned to a worker" one.
+    assert_resource_visible(
+        ctx,
+        model_instance,
+        not_found_message="Model instance not found",
+    )
     if not model_instance.worker_id:
         raise NotFoundException(message="Model instance not assigned to a worker")
     return model_instance
@@ -227,84 +228,70 @@ async def fetch_worker(session, worker_id):
 @router.get("/{id}/logs")
 async def get_serving_logs(  # noqa: C901
     request: Request,
-    session: SessionDep,
+    ctx: TenantContextDep,
     id: int,
     log_options: LogOptionsDep,
     worker_id: Optional[int] = None,
     container_name: Optional[str] = None,
 ):
-    model_instance = await fetch_model_instance(session, id)
+    # Inline session released after the initial lookups so a long-lived
+    # follow-log stream doesn't hold a database connection for its duration.
+    async with async_session() as session:
+        model_instance = await fetch_model_instance(session, ctx, id)
 
-    # Reverse-map: convert UI display name back to internal container name.
-    if container_name:
-        is_main = (worker_id or model_instance.worker_id) == model_instance.worker_id
-        container_name = _unmap_container_display_name(
-            container_name, model_instance, is_main
+        # Reverse-map: convert UI display name back to internal container name.
+        if container_name:
+            is_main = (
+                worker_id or model_instance.worker_id
+            ) == model_instance.worker_id
+            container_name = _unmap_container_display_name(
+                container_name, model_instance, is_main
+            )
+
+        # Build valid worker IDs (main worker + subordinate workers for distributed instances)
+        valid_worker_ids = {model_instance.worker_id}
+        if (
+            model_instance.distributed_servers
+            and model_instance.distributed_servers.subordinate_workers
+        ):
+            valid_worker_ids.update(
+                sw.worker_id
+                for sw in model_instance.distributed_servers.subordinate_workers
+            )
+
+        # Determine target worker ID
+        target_worker_id = worker_id or model_instance.worker_id
+        if target_worker_id not in valid_worker_ids:
+            raise NotFoundException(
+                message=f"Worker {target_worker_id} not found for model instance {id}"
+            )
+
+        worker = await fetch_worker(session, target_worker_id)
+
+        params = _build_serve_log_params(
+            model_instance,
+            tail=log_options.tail,
+            follow=log_options.follow,
+            previous=log_options.previous,
+            container_name=container_name,
+            offset=log_options.offset,
+            limit=log_options.limit,
         )
-
-    # Build valid worker IDs (main worker + subordinate workers for distributed instances)
-    valid_worker_ids = {model_instance.worker_id}
-    if (
-        model_instance.distributed_servers
-        and model_instance.distributed_servers.subordinate_workers
-    ):
-        valid_worker_ids.update(
-            sw.worker_id
-            for sw in model_instance.distributed_servers.subordinate_workers
-        )
-
-    # Determine target worker ID
-    target_worker_id = worker_id or model_instance.worker_id
-    if target_worker_id not in valid_worker_ids:
-        raise NotFoundException(
-            message=f"Worker {target_worker_id} not found for model instance {id}"
-        )
-
-    worker = await fetch_worker(session, target_worker_id)
-
-    params = {
-        "tail": log_options.tail,
-        "follow": log_options.follow,
-        "model_instance_name": model_instance.name,
-        "previous": log_options.previous,
-    }
-    if container_name:
-        params["container_name"] = container_name
-    if (
-        model_instance.state != ModelInstanceStateEnum.RUNNING
-        and model_instance.model_files
-        and model_instance.model_files[0].state != ModelFileStateEnum.READY
-    ):
-        params["model_file_id"] = model_instance.model_files[0].id
 
     timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
 
-    if log_options.follow:
-
-        def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
-            msg = (
-                str(e)
-                if not isinstance(e, TimeoutError)
-                else f"Log stream timed out ({t.total} seconds). Please reopen the log page."
-            )
-            return f"\x1b[999;1H{msg}\n", status.HTTP_500_INTERNAL_SERVER_ERROR
-
-        return StreamingResponseWithStatusCode(
-            stream_to_worker(
-                worker=worker,
-                method="GET",
-                path=f"serveLogs/{model_instance.id}",
-                proxy_client=request.app.state.http_client,
-                no_proxy_client=request.app.state.http_client_no_proxy,
-                params=params,
-                timeout=timeout,
-                on_exception=on_exception,
-                raw=True,
-            ),
-            media_type="application/octet-stream",
+    def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
+        msg = (
+            f"Unable to read logs: {type(e).__name__}"
+            if not isinstance(e, TimeoutError)
+            else f"Log stream timed out ({t.total} seconds). Please reopen the log page."
         )
-    else:
-        resp, body = await request_to_worker(
+        return f"\x1b[999;1H{msg}\n", status.HTTP_500_INTERNAL_SERVER_ERROR
+
+    # Both modes stream. Reading the whole body first would hold an entire
+    # serving log in the server process, and these run to gigabytes.
+    return StreamingResponseWithStatusCode(
+        stream_to_worker(
             worker=worker,
             method="GET",
             path=f"serveLogs/{model_instance.id}",
@@ -312,10 +299,411 @@ async def get_serving_logs(  # noqa: C901
             no_proxy_client=request.app.state.http_client_no_proxy,
             params=params,
             timeout=timeout,
+            on_exception=on_exception,
+            raw=True,
+        ),
+        media_type="application/octet-stream",
+    )
+
+
+@router.get(
+    "/{id}/logs/download",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Plain text for one log stream, a zip archive for several.",
+            "content": {"text/plain": {}, "application/zip": {}},
+        }
+    },
+)
+async def download_serving_logs(
+    request: Request,
+    ctx: TenantContextDep,
+    id: int,
+):
+    """Download a model instance's complete current logs as a file.
+
+    Collects every worker (main + subordinates) and every container per worker
+    (the default main workload plus Ray-style sidecars). A single log stream
+    downloads as a plain-text .log; multiple streams as a flat zip with one file
+    per worker/container. Always the full current logs (no tail/follow/previous).
+    Both shapes stream, so neither a log nor the archive is ever buffered whole.
+    """
+    # Session released before streaming so a download doesn't hold a connection.
+    async with async_session() as session:
+        model_instance = await fetch_model_instance(session, ctx, id)
+        targets = await resolve_instance_log_worker_targets(session, model_instance)
+
+    # Discover every (worker, container) log stream once (one options call/worker).
+    streams = await _plan_log_streams(request, model_instance, targets)
+
+    # A dead end has to fail before streaming fixes the status. Only structural
+    # ones qualify: a failed discovery still falls back to the main workload.
+    if all(stream["worker"] is None for stream in streams):
+        detail = "; ".join(
+            f"{stream['worker_label']}: {stream['error']}" for stream in streams
         )
-        return PlainTextResponse(
-            content=body.decode() if body else "", status_code=resp.status
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch logs from all workers: {detail}",
         )
+
+    if len(streams) == 1:
+        return await _stream_single_worker_log(request, model_instance, streams[0])
+    return _stream_zipped_worker_logs(request, model_instance, streams)
+
+
+async def _stream_single_worker_log(
+    request: Request,
+    model_instance: ModelInstance,
+    stream: dict,
+) -> StreamingResponse:
+    """Stream one worker/container's logs straight through, without buffering.
+
+    A stream the worker can measure is served with a Content-Length, which is
+    what turns a browser's download into a progress bar instead of a growing
+    byte count. The worker measures it on the same look at the files that its
+    reads are pinned to, so output arriving meanwhile cannot move it.
+    """
+    filename = sanitize_filename(
+        f"{model_instance.name or model_instance.id}.log", "logs"
+    )
+    headers = attachment_headers(filename)
+    length, chunks = await _worker_log_download(request, model_instance, stream)
+    if length is not None:
+        headers["Content-Length"] = str(length)
+        chunks = _exact_length_chunks(chunks, length)
+    return StreamingResponse(
+        chunks,
+        media_type="text/plain; charset=utf-8",
+        headers=headers,
+    )
+
+
+def _stream_zipped_worker_logs(
+    request: Request,
+    model_instance: ModelInstance,
+    streams: List[dict],
+) -> StreamingResponse:
+    """Stream a flat zip with one member per log; peak memory is one chunk."""
+    zip_name = sanitize_filename(
+        f"{model_instance.name or model_instance.id}.logs.zip", "logs"
+    )
+    return StreamingResponse(
+        stream_zip(_zip_members(request, model_instance, streams)),
+        media_type="application/zip",
+        headers=attachment_headers(zip_name),
+    )
+
+
+async def _zip_members(
+    request: Request,
+    model_instance: ModelInstance,
+    streams: List[dict],
+) -> AsyncIterator[Tuple[str, AsyncIterator[bytes]]]:
+    """Name each stream, suffixing a repeated worker/container label."""
+    seen: set[str] = set()
+    for stream in streams:
+        label = f"{stream['worker_label']}.{stream['container_display']}"
+        name = sanitize_filename(f"{label}.log", "logs")
+        index = 1
+        while name in seen:
+            name = sanitize_filename(f"{label}.{index}.log", "logs")
+            index += 1
+        seen.add(name)
+        yield name, _worker_log_chunks(request, model_instance, stream)
+
+
+async def _worker_log_download(
+    request: Request,
+    model_instance: ModelInstance,
+    stream: dict,
+) -> Tuple[Optional[int], AsyncIterator[bytes]]:
+    """Start one stream's download, learning its length if the worker states it.
+
+    The whole stream is asked for as one line range. The worker answers with
+    its exact length on X-Log-Total-Bytes, measured when it planned the reads
+    the body comes from. A length measured any earlier, in a separate call,
+    would promise the files as they were then: a main log that grew meanwhile
+    pushes the newest container lines past the end. An older worker ignores
+    the range and sends the whole log, without a length.
+
+    Args:
+        request: The incoming request, for its HTTP clients.
+        model_instance: The instance being downloaded.
+        stream: One stream descriptor from _plan_log_streams.
+
+    Returns:
+        The length, or None when there is none to promise, and the body. With a
+        length, a transfer failing midway raises, so the body stops short of
+        what was promised; without one, the failure ends the file as a line.
+    """
+    # Nothing to ask, or a note of our own goes first: no length either way.
+    if stream["worker"] is None or stream["error"]:
+        return None, _worker_log_chunks(request, model_instance, stream)
+    upstream = _stream_worker_log(
+        request, model_instance, stream, offset=0, limit=_WHOLE_STREAM_LINES
+    )
+    try:
+        chunk, headers, status_code = await anext(upstream)
+    except Exception as e:
+        return None, _chunks_of(f"Failed to fetch logs: {e}\n".encode())
+    payload = chunk if isinstance(chunk, bytes) else chunk.encode()
+    if status_code >= 400:
+        failure = f"Failed to fetch logs: HTTP {status_code}: ".encode() + payload
+        with suppress(Exception):
+            await upstream.aclose()
+        return None, _chunks_of(failure)
+    declared = {name.lower(): value for name, value in headers.items()}.get(
+        "x-log-total-bytes"
+    )
+    length = (
+        int(declared)
+        if declared and declared.isascii() and declared.isdigit()
+        else None
+    )
+    return length, _download_body(payload, upstream, label_failure=length is None)
+
+
+async def _download_body(
+    first: bytes, upstream: AsyncIterator, label_failure: bool
+) -> AsyncIterator[bytes]:
+    if first:
+        yield first
+    try:
+        async for chunk, _, _ in upstream:
+            yield chunk if isinstance(chunk, bytes) else chunk.encode()
+    except Exception as e:
+        if not label_failure:
+            raise
+        yield f"\nFailed to fetch logs: {e}\n".encode()
+
+
+async def _chunks_of(*chunks: bytes) -> AsyncIterator[bytes]:
+    for chunk in chunks:
+        yield chunk
+
+
+def _stream_worker_log(
+    request: Request,
+    model_instance: ModelInstance,
+    stream: dict,
+    offset: Optional[int] = None,
+    limit: int = 1000,
+):
+    """The worker's (chunk, headers, status) stream of one log, for a download."""
+    return stream_to_worker(
+        worker=stream["worker"],
+        method="GET",
+        path=f"serveLogs/{model_instance.id}",
+        proxy_client=request.app.state.http_client,
+        no_proxy_client=request.app.state.http_client_no_proxy,
+        params=_build_serve_log_params(
+            model_instance,
+            container_name=stream["container_internal"],
+            offset=offset,
+            limit=limit,
+        ),
+        timeout=aiohttp.ClientTimeout(
+            total=None, sock_connect=5, sock_read=_LOG_DOWNLOAD_IDLE_TIMEOUT
+        ),
+        raw=True,
+    )
+
+
+async def _worker_log_chunks(
+    request: Request,
+    model_instance: ModelInstance,
+    stream: dict,
+) -> AsyncIterator[bytes]:
+    """One stream's complete logs; its own failures become file content."""
+    worker = stream["worker"]
+    if worker is None:
+        yield f"Failed to fetch logs: {stream['error']}\n".encode()
+        return
+
+    # Discovery failed but the fallback still reads the main workload. Say so,
+    # or a sidecar log missing from the archive looks like it never existed.
+    if stream["error"]:
+        yield (
+            f"Note: container discovery failed ({stream['error']}); "
+            "this log covers the main workload only.\n"
+        ).encode()
+
+    try:
+        async with aclosing(
+            _stream_worker_log(request, model_instance, stream)
+        ) as upstream:
+            async for chunk, _, status_code in upstream:
+                payload = chunk if isinstance(chunk, bytes) else chunk.encode()
+                # Label an error body so it can't be read as real log output.
+                if status_code >= 400:
+                    with suppress(Exception):
+                        await upstream.aclose()
+                    yield f"Failed to fetch logs: HTTP {status_code}: ".encode() + payload
+                    return
+                yield payload
+    except Exception as e:
+        yield f"\nFailed to fetch logs: {e}\n".encode()
+
+
+def _build_serve_log_params(
+    model_instance: ModelInstance,
+    tail: int = -1,
+    follow: bool = False,
+    previous: bool = False,
+    container_name: Optional[str] = None,
+    offset: Optional[int] = None,
+    limit: int = 1000,
+) -> dict:
+    """Proxy params for one container's logs; defaults to a full, non-follow read."""
+    params = {
+        "tail": tail,
+        "follow": follow,
+        "model_instance_name": model_instance.name,
+        "previous": previous,
+    }
+    if container_name:
+        params["container_name"] = container_name
+    if offset is not None:
+        params["offset"] = offset
+        params["limit"] = limit
+    model_file_id = _downloading_model_file_id(model_instance)
+    if model_file_id is not None:
+        params["model_file_id"] = model_file_id
+    return params
+
+
+# A download has no deadline: a log the size cap does not bound legitimately
+# takes longer than any total timeout worth setting. What replaces it is a
+# liveness check -- this long without a byte and the transfer is dead, not slow.
+_LOG_DOWNLOAD_IDLE_TIMEOUT = 120
+
+_DOWNLOAD_SHORTFALL_NOTE = b"\n... the log changed while it was downloading ...\n"
+
+# Past this much missing, the transfer failed rather than the log moved, and
+# padding out the rest would hand the client a whole-looking file of filler.
+_MAX_SHORTFALL_PADDING = 64 * 1024
+
+# The line limit that asks for a whole stream: a range has no other way to say
+# it runs to the end.
+_WHOLE_STREAM_LINES = sys.maxsize
+
+
+def _downloading_model_file_id(model_instance: ModelInstance) -> Optional[int]:
+    """The model file whose download log belongs in this instance's logs.
+
+    Args:
+        model_instance: The instance being read.
+
+    Returns:
+        The model file id, or None once the weights are in place and the
+        download log has nothing left to say.
+    """
+    if (
+        model_instance.state != ModelInstanceStateEnum.RUNNING
+        and model_instance.model_files
+        and model_instance.model_files[0].state != ModelFileStateEnum.READY
+    ):
+        return model_instance.model_files[0].id
+    return None
+
+
+async def _exact_length_chunks(chunks: AsyncIterator[bytes], expected: int):
+    """Hold the body to the length Content-Length promised, within reason.
+
+    The reads are pinned to the length, so the body can only fall short of it:
+    a file the reads had not reached yet was cut or rewritten under them. That
+    is a log that changed, not a broken connection, which is what a client
+    reads a short body as. A shortfall too large to be movement is a transfer
+    that failed, and there the broken connection is the honest answer -- as it
+    is for a transfer that raises.
+
+    Args:
+        chunks: The stream's bytes.
+        expected: The length already promised to the client.
+
+    Yields:
+        Exactly `expected` bytes, unless the stream fell so far short that the
+        body is better left incomplete.
+    """
+    written = 0
+    async for chunk in chunks:
+        if written + len(chunk) > expected:
+            chunk = chunk[: expected - written]
+        if chunk:
+            yield chunk
+            written += len(chunk)
+        if written >= expected:
+            return
+    shortfall = expected - written
+    if 0 < shortfall <= _MAX_SHORTFALL_PADDING:
+        note = _DOWNLOAD_SHORTFALL_NOTE[:shortfall]
+        yield note + b" " * (shortfall - len(note))
+
+
+async def _discover_worker_containers(
+    request: Request, worker: Worker, model_instance_id: int
+) -> Tuple[List[str], Optional[str]]:
+    """Internal container names for one worker, plus any discovery error.
+
+    A failed discovery still falls back to ["default"] (the main workload logs).
+    """
+    try:
+        payload = await fetch_serve_log_options_from_worker(
+            request, worker, model_instance_id
+        )
+    except Exception as e:
+        return ["default"], str(e)
+    current = next((entry for entry in payload.restarts if not entry.previous), None)
+    containers = current.containers if current else []
+    return list(containers) or ["default"], None
+
+
+async def _plan_log_streams(
+    request: Request,
+    model_instance: ModelInstance,
+    targets: List[Tuple[int, str, Optional[Worker]]],
+) -> List[dict]:
+    """Discover every (worker, container) log stream, one options call per worker.
+
+    Returns flat stream descriptors {"worker_label", "worker", "container_internal",
+    "container_display", "error"}. A worker missing from the DB still yields one
+    placeholder stream so its absence is reported instead of silently dropped.
+    """
+
+    async def per_worker(target: Tuple[int, str, Optional[Worker]]) -> List[dict]:
+        worker_id, worker_name, worker = target
+        label = worker_name or f"worker-{worker_id}"
+        if worker is None:
+            return [
+                {
+                    "worker_label": label,
+                    "worker": None,
+                    "container_internal": "default",
+                    "container_display": "default",
+                    "error": "Worker not found in database",
+                }
+            ]
+        is_main = worker_id == model_instance.worker_id
+        containers, error = await _discover_worker_containers(
+            request, worker, model_instance.id
+        )
+        return [
+            {
+                "worker_label": label,
+                "worker": worker,
+                "container_internal": container_internal,
+                "container_display": _map_container_display_name(
+                    container_internal, model_instance, is_main
+                ),
+                "error": error,
+            }
+            for container_internal in containers
+        ]
+
+    grouped = await asyncio.gather(*[per_worker(t) for t in targets])
+    return [stream for group in grouped for stream in group]
 
 
 async def resolve_instance_log_worker_targets(
@@ -387,10 +775,11 @@ async def fetch_serve_log_options_from_worker(
 async def get_model_instance_log_options(
     request: Request,
     session: SessionDep,
+    ctx: TenantContextDep,
     id: int,
 ):
     """Return per-worker restart_count values that exist on disk for this model instance."""
-    model_instance = await fetch_model_instance(session, id)
+    model_instance = await fetch_model_instance(session, ctx, id)
     targets = await resolve_instance_log_worker_targets(session, model_instance)
 
     async def fetch_one(
@@ -473,6 +862,44 @@ async def create_model_instance(
     return model_instance
 
 
+def _preserve_download_state(
+    instance: ModelInstance, update: ModelInstanceUpdate
+) -> None:
+    """Preserve controller-owned download results across worker state reports."""
+    for field in (
+        "download_progress",
+        "draft_model_download_progress",
+        "resolved_path",
+        "draft_model_resolved_path",
+        "mounted_loras",
+    ):
+        setattr(update, field, getattr(instance, field))
+    if instance.state in (
+        ModelInstanceStateEnum.STARTING,
+        ModelInstanceStateEnum.RUNNING,
+        ModelInstanceStateEnum.ERROR,
+    ) and update.state in (
+        ModelInstanceStateEnum.INITIALIZING,
+        ModelInstanceStateEnum.DOWNLOADING,
+    ):
+        # A download snapshot must not undo completion or erase a failure.
+        # Runtime updates and explicit restarts (SCHEDULED) remain valid transitions.
+        update.state = instance.state
+        update.state_message = instance.state_message
+    if not update.distributed_servers:
+        return
+    stored_progress = {
+        worker.worker_id: worker.download_progress
+        for worker in (
+            instance.distributed_servers.subordinate_workers or []
+            if instance.distributed_servers
+            else []
+        )
+    }
+    for worker in update.distributed_servers.subordinate_workers or []:
+        worker.download_progress = stored_progress.get(worker.worker_id)
+
+
 @router.put("/{id}", response_model=ModelInstancePublic)
 async def update_model_instance(
     session: SessionDep,
@@ -488,6 +915,7 @@ async def update_model_instance(
     )
 
     try:
+        _preserve_download_state(model_instance, model_instance_in)
         await ModelInstanceService(session).update(model_instance, model_instance_in)
     except Exception as e:
         raise InternalServerErrorException(

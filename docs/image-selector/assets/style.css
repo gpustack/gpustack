@@ -73,6 +73,8 @@ header {
     align-items: center;
     gap: 16px;
     flex-shrink: 0;
+    color: inherit;
+    text-decoration: none;
 }
 
 .logo-wide {

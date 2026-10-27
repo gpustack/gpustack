@@ -1,0 +1,946 @@
+"""Cache-service semantic metrics endpoint.
+
+The provider catalog declares what each provider's metrics mean; the
+endpoint translates those declarations into PromQL scoped by a
+server-injected service-label selector and returns chartable semantic
+series. The router mounts Org-owner-only; the handler asserts the role
+itself, so the gate holds independent of mount policy. Missing
+observability degrades to available=False instead of erroring, so the
+UI can hide the charts with a reason.
+"""
+
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from gpustack.server.cache_provider_catalog import asset_providers
+from gpustack.api.exceptions import (
+    BadRequestException,
+    ForbiddenException,
+    NotFoundException,
+)
+from gpustack.api.tenant import TenantContext
+from gpustack.routes import cache_services as cache_services_route
+from gpustack.routes import models as models_route
+from gpustack.schemas.cache_providers import (
+    CacheProviderMetrics,
+    CacheProviderMetricValue,
+)
+from gpustack.schemas.cache_services import CacheServiceAttachedMetrics
+from gpustack.schemas.models import ExtendedKVCacheConfig, RoleSpec
+from gpustack.schemas.principals import OrgRole, PrincipalType
+from gpustack.server import cache_service_metrics as metrics_module
+from gpustack.server import prometheus_query
+from gpustack.server.cache_service_metrics import (
+    build_aggregate_query,
+    build_metric_query,
+    collect_cache_service_metrics,
+    collect_model_cache_metrics,
+    parse_window,
+)
+
+ORG_PRINCIPAL = 42
+
+
+@pytest.fixture(autouse=True)
+def catalog_lookup(monkeypatch):
+    """The catalog is a table, and these tests hand the handler a mock session.
+    Default to what this installation carries; a test needing a declaration of
+    its own installs it over this."""
+
+    async def lookup(_session, name=None):
+        wanted = (name or "").lower()
+        return next(
+            (
+                provider
+                for provider in asset_providers()
+                if provider.name.lower() == wanted
+            ),
+            None,
+        )
+
+    for target in (
+        "gpustack.routes.cache_services.get_cache_provider",
+        "gpustack.routes.models.get_cache_provider",
+    ):
+        monkeypatch.setattr(target, lookup)
+
+
+def _ctx(org_role=None, is_platform_admin=False) -> TenantContext:
+    user = MagicMock()
+    user.kind = PrincipalType.USER
+    return TenantContext(
+        user=user,
+        is_platform_admin=is_platform_admin,
+        current_principal_id=ORG_PRINCIPAL,
+        org_role=org_role,
+    )
+
+
+def _request():
+    # the route reads request.app.state.http_client_no_proxy with a
+    # getattr fallback, so bare namespaces suffice
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+
+
+def _service(**overrides):
+    fields = dict(
+        id=5,
+        name="lmcache-svc",
+        provider_name="LMCache",
+        provider_version="v0.5.4",
+        cluster_id=1,
+        owner_principal_id=ORG_PRINCIPAL,
+        deleted_at=None,
+    )
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def _declaration() -> CacheProviderMetrics:
+    return CacheProviderMetrics(
+        mappings={
+            "hit_rate": CacheProviderMetricValue(
+                ratio={
+                    "numerator": "hit_total",
+                    "denominator": "requested_total",
+                }
+            ),
+            "l1_usage_bytes": CacheProviderMetricValue(gauge="l1_usage_bytes"),
+        },
+        throughput={
+            "l2_store": CacheProviderMetricValue(histogram_avg="l2_store_tp"),
+        },
+    )
+
+
+def test_parse_window():
+    assert parse_window("30m") == 1800
+    assert parse_window("6h") == 6 * 3600
+    assert parse_window("7d") == 7 * 86400
+    for invalid in ("", "1s", "10x", "1m", "8d", "0h"):
+        with pytest.raises(ValueError):
+            parse_window(invalid)
+
+
+def test_build_metric_query_forms():
+    selector = '{cache_service_id="5"}'
+    assert (
+        build_metric_query(
+            CacheProviderMetricValue(gauge="l1_usage_bytes"), selector, "60s"
+        )
+        == 'l1_usage_bytes{cache_service_id="5"}'
+    )
+    assert build_metric_query(
+        CacheProviderMetricValue(ratio={"numerator": "hit", "denominator": "req"}),
+        selector,
+        "60s",
+    ) == (
+        'increase(hit{cache_service_id="5"}[60s])'
+        ' / increase(req{cache_service_id="5"}[60s])'
+    )
+    assert build_metric_query(
+        CacheProviderMetricValue(
+            gauge_ratio={"numerator": "allocated", "denominator": "capacity"}
+        ),
+        selector,
+        "60s",
+    ) == ('allocated{cache_service_id="5"} / capacity{cache_service_id="5"}')
+    assert build_metric_query(
+        CacheProviderMetricValue(histogram_avg="tp"), selector, "60s"
+    ) == (
+        'increase(tp_sum{cache_service_id="5"}[60s])'
+        ' / increase(tp_count{cache_service_id="5"}[60s])'
+    )
+    assert build_metric_query(
+        CacheProviderMetricValue(rate="lookup_total"), selector, "60s"
+    ) == ('rate(lookup_total{cache_service_id="5"}[60s])')
+    assert build_metric_query(CacheProviderMetricValue(), selector, "60s") is None
+
+
+def test_metric_rule_declaration_validation():
+    """A rule sets at most one extraction form (the builder would
+    otherwise silently pick one of several), and aggregate only
+    modifies the gauge form."""
+    with pytest.raises(ValueError):
+        CacheProviderMetricValue(gauge="a", rate="b")
+    with pytest.raises(ValueError):
+        CacheProviderMetricValue(
+            ratio={"numerator": "a", "denominator": "b"}, aggregate="sum"
+        )
+    with pytest.raises(ValueError):
+        CacheProviderMetricValue(gauge="a", aggregate="max")
+    assert CacheProviderMetricValue(gauge="a", aggregate="avg").aggregate == "avg"
+
+
+def test_build_aggregate_query_forms():
+    """Service-level forms: ratio/histogram operands sum before dividing
+    (traffic-weighted), gauges combine by their declared aggregate."""
+    selector = '{cache_service_id="5"}'
+    assert build_aggregate_query(
+        CacheProviderMetricValue(gauge="l1_usage_bytes"), selector, "60s"
+    ) == ('sum(l1_usage_bytes{cache_service_id="5"})')
+    assert build_aggregate_query(
+        CacheProviderMetricValue(gauge="l1_usage_ratio", aggregate="avg"),
+        selector,
+        "60s",
+    ) == ('avg(l1_usage_ratio{cache_service_id="5"})')
+    assert build_aggregate_query(
+        CacheProviderMetricValue(ratio={"numerator": "hit", "denominator": "req"}),
+        selector,
+        "60s",
+    ) == (
+        'sum(increase(hit{cache_service_id="5"}[60s]))'
+        ' / sum(increase(req{cache_service_id="5"}[60s]))'
+    )
+    assert build_aggregate_query(
+        CacheProviderMetricValue(histogram_avg="tp"), selector, "60s"
+    ) == (
+        'sum(increase(tp_sum{cache_service_id="5"}[60s]))'
+        ' / sum(increase(tp_count{cache_service_id="5"}[60s]))'
+    )
+    assert build_aggregate_query(
+        CacheProviderMetricValue(rate="lookup_total"), selector, "60s"
+    ) == ('sum(rate(lookup_total{cache_service_id="5"}[60s]))')
+
+
+class _FakeResponse:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status = status
+
+    async def text(self):
+        # a non-dict payload stands in for a non-JSON body (e.g. a
+        # gateway error page)
+        if isinstance(self._payload, str):
+            return self._payload
+        return json.dumps(self._payload)
+
+
+class _FakeAsyncCtx:
+    def __init__(self, value):
+        self._value = value
+
+    async def __aenter__(self):
+        return self._value
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class _FakeHTTPClient:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self._status = status
+        self.requests = []
+
+    def get(self, url, params=None, timeout=None):
+        self.requests.append((url, params))
+        return _FakeAsyncCtx(_FakeResponse(self._payload, status=self._status))
+
+    async def close(self):
+        pass
+
+
+def _patch_prometheus(monkeypatch, client, url="http://127.0.0.1:19090"):
+    monkeypatch.setattr(metrics_module, "_prometheus_url", lambda: url)
+    monkeypatch.setattr(
+        metrics_module.aiohttp,
+        "ClientSession",
+        lambda *args, **kwargs: client,
+    )
+
+
+@pytest.mark.asyncio
+async def test_collect_returns_semantic_series(monkeypatch):
+    payload = {
+        "status": "success",
+        "data": {
+            "result": [
+                {
+                    "metric": {
+                        "worker_name": "w1",
+                        "cache_service_instance_id": "11",
+                        "l2_name": "fs_native",
+                        "job": "scrape-plumbing",
+                        "instance": "10.0.0.5:9188",
+                    },
+                    # an idle counter ratio evaluates 0/0 = NaN: charted
+                    # as a gap, never as a bogus number
+                    "values": [[1000, "0.5"], [1030, "NaN"]],
+                }
+            ]
+        },
+    }
+    client = _FakeHTTPClient(payload)
+    _patch_prometheus(monkeypatch, client)
+
+    result = await collect_cache_service_metrics(_declaration(), 5, 3600)
+
+    assert result.available is True
+    assert set(result.mappings) == {"hit_rate", "l1_usage_bytes"}
+    assert set(result.throughput) == {"l2_store"}
+    chart = result.mappings["hit_rate"]
+    # both granularities chart: the aggregate default view and the
+    # per-instance breakdown
+    assert chart.aggregate and chart.instances
+    series = chart.instances[0]
+    # scrape plumbing labels are filtered; identity labels stay,
+    # including the per-adapter l2_name that keeps multi-adapter
+    # usage series apart
+    assert series.labels == {
+        "worker_name": "w1",
+        "cache_service_instance_id": "11",
+        "l2_name": "fs_native",
+    }
+    assert series.points == [[1000.0, 0.5], [1030.0, None]]
+    # every query carries the server-injected service selector
+    queries = [params["query"] for _, params in client.requests]
+    assert all('cache_service_id="5"' in q for q in queries)
+    assert any(q.startswith("sum(increase(hit_total") for q in queries)
+
+
+@pytest.mark.asyncio
+async def test_collect_filters_by_worker_names(monkeypatch):
+    """A worker filter lands inside the PromQL selector (regex-escaped),
+    so the aggregate over the subset stays weighted by the selected
+    instances' traffic."""
+    payload = {"status": "success", "data": {"result": []}}
+    client = _FakeHTTPClient(payload)
+    _patch_prometheus(monkeypatch, client)
+
+    await collect_cache_service_metrics(
+        _declaration(), 5, 3600, worker_names=["worker-1", "w2.node", 'x"y']
+    )
+
+    for _, params in client.requests:
+        # two escaping layers: RE2 metacharacters, then the PromQL
+        # string literal (whose lexer rejects unknown escapes like a
+        # lone \-)
+        assert r'worker_name=~"w2\\.node|worker\\-1|x\"y"' in params["query"]
+
+
+@pytest.mark.asyncio
+async def test_collect_without_observability(monkeypatch):
+    monkeypatch.setattr(metrics_module, "_prometheus_url", lambda: None)
+    result = await collect_cache_service_metrics(_declaration(), 5, 3600)
+    assert result.available is False
+    assert "No Prometheus is reachable" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_collect_queries_the_configured_prometheus(monkeypatch):
+    """A deployment that delegates observability to its own stack keeps
+    these charts: the queries go to the configured Prometheus, and an
+    external one is addressed at its bare `/api/v1` — the `/prometheus`
+    route prefix belongs to the embedded one only, and sending it to an
+    external server 404s into what looks like "no data"."""
+    payload = {"status": "success", "data": {"result": []}}
+    client = _FakeHTTPClient(payload)
+    monkeypatch.setattr(
+        prometheus_query,
+        "get_global_config",
+        lambda: SimpleNamespace(
+            get_builtin_prometheus_url=lambda: "http://127.0.0.1:19090"
+        ),
+    )
+
+    _patch_prometheus(monkeypatch, client, url="http://prometheus.example:9090")
+    await collect_cache_service_metrics(_declaration(), 5, 3600)
+    assert client.requests
+    for url, _ in client.requests:
+        assert url.startswith("http://prometheus.example:9090/api/v1/")
+
+    client.requests.clear()
+    _patch_prometheus(monkeypatch, client, url="http://127.0.0.1:19090")
+    await collect_cache_service_metrics(_declaration(), 5, 3600)
+    assert client.requests
+    for url, _ in client.requests:
+        assert url.startswith("http://127.0.0.1:19090/prometheus/api/v1/")
+
+
+@pytest.mark.asyncio
+async def test_collect_without_declaration():
+    result = await collect_cache_service_metrics(None, 5, 3600)
+    assert result.available is False
+    assert "declares no metrics" in result.reason
+
+    result = await collect_cache_service_metrics(
+        CacheProviderMetrics(path="/metrics"), 5, 3600
+    )
+    assert result.available is False
+
+
+@pytest.mark.asyncio
+async def test_collect_single_query_timeout_keeps_other_charts(monkeypatch):
+    """A per-query timeout is one chart's failure like any other — a
+    heavy query hitting its timeout must not blank the page."""
+    import asyncio as _asyncio
+
+    class _SlowOneClient(_FakeHTTPClient):
+        def get(self, url, params=None, timeout=None):
+            self.requests.append((url, params))
+            if "l1_usage_bytes" in params["query"]:
+                raise _asyncio.TimeoutError()
+            return _FakeAsyncCtx(_FakeResponse(self._payload))
+
+    payload = {
+        "status": "success",
+        "data": {"result": [{"metric": {}, "values": [[1000, "1"]]}]},
+    }
+    client = _SlowOneClient(payload)
+    _patch_prometheus(monkeypatch, client)
+
+    result = await collect_cache_service_metrics(_declaration(), 5, 3600)
+
+    assert result.available is True
+    assert result.mappings["l1_usage_bytes"].aggregate == []
+    assert result.mappings["hit_rate"].instances[0].points == [[1000.0, 1.0]]
+
+
+@pytest.mark.asyncio
+async def test_collect_all_queries_failing_degrades_with_reason(monkeypatch):
+    """Failure isolation is for partial failures; every query failing
+    (e.g. a gateway error page on each) is one systematic cause and
+    degrades the collection with a reason instead of presenting a wall
+    of silently empty charts."""
+    client = _FakeHTTPClient("<html>Bad Gateway</html>", status=502)
+    _patch_prometheus(monkeypatch, client)
+
+    result = await collect_cache_service_metrics(_declaration(), 5, 3600)
+
+    assert result.available is False
+    assert "502" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_collect_prometheus_unreachable(monkeypatch):
+    class _RefusingClient(_FakeHTTPClient):
+        def get(self, url, params=None, timeout=None):
+            raise metrics_module.aiohttp.ClientError("connection refused")
+
+    _patch_prometheus(monkeypatch, _RefusingClient(None))
+    result = await collect_cache_service_metrics(_declaration(), 5, 3600)
+    assert result.available is False
+    assert "unreachable" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_collect_single_query_failure_keeps_other_charts(monkeypatch):
+    """One failing query (e.g. a bad declaration entry) yields an empty
+    list for its key without blanking the other charts."""
+
+    class _MixedClient(_FakeHTTPClient):
+        def get(self, url, params=None, timeout=None):
+            self.requests.append((url, params))
+            if "l1_usage_bytes" in params["query"]:
+                return _FakeAsyncCtx(
+                    _FakeResponse({"status": "error", "error": "bad query"}, status=400)
+                )
+            return _FakeAsyncCtx(_FakeResponse(self._payload))
+
+    payload = {
+        "status": "success",
+        "data": {"result": [{"metric": {}, "values": [[1000, "1"]]}]},
+    }
+    client = _MixedClient(payload)
+    _patch_prometheus(monkeypatch, client)
+
+    result = await collect_cache_service_metrics(_declaration(), 5, 3600)
+    assert result.available is True
+    assert result.mappings["l1_usage_bytes"].aggregate == []
+    assert result.mappings["l1_usage_bytes"].instances == []
+    assert result.mappings["hit_rate"].instances[0].points == [[1000.0, 1.0]]
+
+
+@pytest.mark.asyncio
+async def test_metrics_endpoint_requires_org_owner(monkeypatch):
+    """The handler itself rejects members and admits Org owners and
+    platform admins, independent of the router's owner-only mount."""
+    with (
+        patch(
+            "gpustack.routes.cache_services.CacheService.one_by_id",
+            AsyncMock(return_value=_service()),
+        ),
+        patch(
+            "gpustack.routes.cache_services.Model.all_by_fields",
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        with pytest.raises(ForbiddenException):
+            await cache_services_route.get_cache_service_metrics(
+                request=_request(),
+                session=MagicMock(),
+                ctx=_ctx(org_role=OrgRole.MEMBER),
+                id=5,
+            )
+
+        collected = AsyncMock(
+            return_value=metrics_module.CacheServiceMetricsPublic(available=True)
+        )
+        monkeypatch.setattr(
+            cache_services_route, "collect_cache_service_metrics", collected
+        )
+        result = await cache_services_route.get_cache_service_metrics(
+            request=_request(),
+            session=MagicMock(),
+            ctx=_ctx(org_role=OrgRole.OWNER),
+            id=5,
+        )
+        assert result.available is True
+
+        result = await cache_services_route.get_cache_service_metrics(
+            request=_request(),
+            session=MagicMock(),
+            ctx=_ctx(is_platform_admin=True),
+            id=5,
+        )
+        assert result.available is True
+        # the window parses server-side; the declaration drives queries
+        assert collected.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_collect_attached_buffers_both_counters(monkeypatch):
+    """The two counter queries land atomically: hits arriving while
+    queries fail must not leave rows claiming hits out of zero
+    lookups — the failed round leaves every row empty."""
+
+    class _HalfFailingClient(_FakeHTTPClient):
+        def get(self, url, params=None, timeout=None):
+            self.requests.append((url, params))
+            if "queries_total" in (params or {}).get("query", ""):
+                return _FakeAsyncCtx(_FakeResponse("<html>boom</html>", status=502))
+            return _FakeAsyncCtx(_FakeResponse(self._payload))
+
+    payload = {
+        "status": "success",
+        "data": {
+            "result": [
+                {
+                    "metric": {"model_instance_name": "qwen-abc12"},
+                    "value": [1000, "80"],
+                }
+            ]
+        },
+    }
+    client = _HalfFailingClient(payload)
+    _patch_prometheus(monkeypatch, client)
+
+    attached = [
+        CacheServiceAttachedMetrics(model_id=3, model_instance_name="qwen-abc12")
+    ]
+    result = await collect_cache_service_metrics(
+        _declaration(), 5, 3600, cluster_id=1, attached=attached
+    )
+
+    entry = result.attached[0]
+    assert entry.hit_tokens is None
+    assert entry.queried_tokens is None
+    assert entry.hit_rate is None
+
+
+@pytest.mark.asyncio
+async def test_metrics_endpoint_caps_worker_filter():
+    with (
+        patch(
+            "gpustack.routes.cache_services.CacheService.one_by_id",
+            AsyncMock(return_value=_service()),
+        ),
+        patch(
+            "gpustack.routes.cache_services.Model.all_by_fields",
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        with pytest.raises(BadRequestException):
+            await cache_services_route.get_cache_service_metrics(
+                request=_request(),
+                session=MagicMock(),
+                ctx=_ctx(org_role=OrgRole.OWNER),
+                id=5,
+                workers=",".join(f"w{i}" for i in range(101)),
+            )
+
+
+@pytest.mark.asyncio
+async def test_metrics_endpoint_rejects_bad_window():
+    with patch(
+        "gpustack.routes.cache_services.CacheService.one_by_id",
+        AsyncMock(return_value=_service()),
+    ):
+        with pytest.raises(BadRequestException):
+            await cache_services_route.get_cache_service_metrics(
+                request=_request(),
+                session=MagicMock(),
+                ctx=_ctx(org_role=OrgRole.OWNER),
+                id=5,
+                window="99x",
+            )
+
+
+@pytest.mark.asyncio
+async def test_collect_attached_engine_hit_accounting(monkeypatch):
+    """The database enumerates the attached instances (the row set);
+    metrics only fill their numbers — an instance whose engine exports
+    no counters keeps None values instead of vanishing, and the queries
+    use the unified metric names the worker exposes on the scraped
+    /metrics (raw vllm:* names live on the unscraped /metrics/raw)."""
+
+    class _AttachedClient(_FakeHTTPClient):
+        def get(self, url, params=None, timeout=None):
+            self.requests.append((url, params))
+            if url.endswith("/api/v1/query"):
+                counter_value = (
+                    "80" if "external_prefix_cache_hits" in params["query"] else "100"
+                )
+                return _FakeAsyncCtx(
+                    _FakeResponse(
+                        {
+                            "status": "success",
+                            "data": {
+                                "result": [
+                                    {
+                                        "metric": {
+                                            "model_instance_name": "qwen-abc12",
+                                        },
+                                        "value": [1000, counter_value],
+                                    }
+                                ]
+                            },
+                        }
+                    )
+                )
+            return _FakeAsyncCtx(_FakeResponse(self._payload))
+
+    payload = {
+        "status": "success",
+        "data": {"result": [{"metric": {}, "values": [[1000, "1"]]}]},
+    }
+    client = _AttachedClient(payload)
+    _patch_prometheus(monkeypatch, client)
+
+    attached = [
+        CacheServiceAttachedMetrics(
+            model_id=3,
+            model_name="qwen",
+            model_instance_name="qwen-abc12",
+            worker_name="worker-1",
+        ),
+        # a second instance with no exported counters (e.g. SGLang, or
+        # not yet scraped): the row survives with empty values
+        CacheServiceAttachedMetrics(
+            model_id=4, model_name="glm", model_instance_name="glm-def34"
+        ),
+    ]
+    result = await collect_cache_service_metrics(
+        _declaration(), 5, 3600, cluster_id=1, attached=attached
+    )
+
+    assert result.available is True
+    assert len(result.attached) == 2
+    entry = result.attached[0]
+    assert entry.model_instance_name == "qwen-abc12"
+    assert entry.worker_name == "worker-1"
+    assert entry.hit_tokens == 80.0
+    assert entry.queried_tokens == 100.0
+    assert entry.hit_rate == 0.8
+    silent = result.attached[1]
+    assert silent.model_instance_name == "glm-def34"
+    assert silent.hit_tokens is None
+    assert silent.hit_rate is None
+    # unified names, scoped to the cluster and the attached model ids
+    instant_queries = [
+        params["query"]
+        for url, params in client.requests
+        if url.endswith("/api/v1/query")
+    ]
+    assert instant_queries
+    for query in instant_queries:
+        # the scraped series carry the client-appended _total suffix
+        assert query.startswith(
+            "sum by (model_instance_name) (increase(gpustack:external_prefix_cache_"
+        )
+        assert "_total{" in query
+        assert 'cluster_id="1"' in query
+        assert 'model_id=~"3|4"' in query
+
+
+@pytest.mark.asyncio
+async def test_model_cache_metrics_reads_the_same_accounting(monkeypatch):
+    """The deployment-side view fills the same engine counters, scoped to
+    one model's instances."""
+    payload = {
+        "status": "success",
+        "data": {
+            "result": [
+                {"metric": {"model_instance_name": "qwen-abc12"}, "value": [1000, "60"]}
+            ]
+        },
+    }
+    client = _FakeHTTPClient(payload)
+    _patch_prometheus(monkeypatch, client)
+
+    attached = [
+        CacheServiceAttachedMetrics(
+            model_id=3, model_name="qwen", model_instance_name="qwen-abc12"
+        ),
+        CacheServiceAttachedMetrics(
+            model_id=3, model_name="qwen", model_instance_name="qwen-def34"
+        ),
+    ]
+    result = await collect_model_cache_metrics(1, attached, 3600)
+
+    assert result.available is True
+    assert result.window == 3600
+    assert result.instances[0].hit_rate == 1.0
+    # an instance the counters never named keeps its row, empty
+    assert result.instances[1].hit_rate is None
+    for _, params in client.requests:
+        assert 'cluster_id="1"' in params["query"]
+        assert 'model_id=~"3"' in params["query"]
+
+
+@pytest.mark.asyncio
+async def test_model_cache_metrics_without_observability(monkeypatch):
+    monkeypatch.setattr(metrics_module, "_prometheus_url", lambda: None)
+    result = await collect_model_cache_metrics(
+        1, [CacheServiceAttachedMetrics(model_id=3)], 3600
+    )
+    assert result.available is False
+    assert "Prometheus" in result.reason
+    # the rows the caller enumerated survive the missing numbers
+    assert len(result.instances) == 1
+
+
+@pytest.mark.asyncio
+async def test_model_cache_metrics_endpoint_follows_deployment_visibility(monkeypatch):
+    """Reading what the shared cache does for one's own deployment is
+    gated on the deployment, not on the cache service's owner-only
+    telemetry; a deployment that uses no shared cache says so instead of
+    querying."""
+    instances = [SimpleNamespace(name="qwen-abc12", worker_name="worker-1")]
+    shared = SimpleNamespace(
+        id=3,
+        name="qwen",
+        cluster_id=1,
+        owner_principal_id=ORG_PRINCIPAL,
+        deleted_at=None,
+        instances=instances,
+        extended_kv_cache=ExtendedKVCacheConfig(
+            enabled=True, mode="shared", cache_service_id=5
+        ),
+    )
+    collected = AsyncMock(
+        return_value=metrics_module.ModelCacheMetricsPublic(available=True)
+    )
+    monkeypatch.setattr(models_route, "collect_model_cache_metrics", collected)
+    with patch(
+        "gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=shared)
+    ):
+        result = await models_route.get_model_cache_metrics(
+            request=_request(),
+            session=MagicMock(),
+            ctx=_ctx(org_role=OrgRole.MEMBER),
+            id=3,
+        )
+    assert result.available is True
+    assert collected.await_args.args[0] == 1
+    assert collected.await_args.args[1][0].model_instance_name == "qwen-abc12"
+
+    local = SimpleNamespace(
+        id=4,
+        name="glm",
+        cluster_id=1,
+        owner_principal_id=ORG_PRINCIPAL,
+        deleted_at=None,
+        instances=[],
+        extended_kv_cache=SimpleNamespace(is_shared=lambda: False),
+    )
+    with patch("gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=local)):
+        result = await models_route.get_model_cache_metrics(
+            request=_request(),
+            session=MagicMock(),
+            ctx=_ctx(org_role=OrgRole.MEMBER),
+            id=4,
+        )
+    assert result.available is False
+    assert "shared cache service" in result.reason
+    assert collected.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_model_cache_metrics_route_gates_on_the_deployment(monkeypatch):
+    """The route reads a deployment's own hit accounting, so it answers
+    to the deployment's visibility: another Org's model is not found, not
+    merely empty. A caller reading its own deployment is not reading the
+    cache service's telemetry, which stays the service owner's."""
+    model = SimpleNamespace(
+        id=7,
+        name="qwen",
+        cluster_id=1,
+        owner_principal_id=999,
+        instances=[],
+        extended_kv_cache=None,
+    )
+    monkeypatch.setattr(models_route.Model, "one_by_id", AsyncMock(return_value=model))
+
+    with pytest.raises(NotFoundException):
+        await models_route.get_model_cache_metrics(
+            request=MagicMock(), session=MagicMock(), ctx=_ctx(OrgRole.MEMBER), id=7
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_cache_metrics_route_rejects_an_unparsable_window(monkeypatch):
+    model = SimpleNamespace(
+        id=7,
+        name="qwen",
+        cluster_id=1,
+        owner_principal_id=None,
+        instances=[],
+        extended_kv_cache=None,
+    )
+    monkeypatch.setattr(models_route.Model, "one_by_id", AsyncMock(return_value=model))
+
+    with pytest.raises(BadRequestException):
+        await models_route.get_model_cache_metrics(
+            request=MagicMock(),
+            session=MagicMock(),
+            ctx=_ctx(is_platform_admin=True),
+            id=7,
+            window="last tuesday",
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_cache_metrics_route_says_when_there_is_no_shared_cache(
+    monkeypatch,
+):
+    """A deployment that attaches no cache service has nothing to read:
+    the view says so rather than returning an empty-but-available one,
+    which would read as a cache that never hits."""
+    model = SimpleNamespace(
+        id=7,
+        name="qwen",
+        cluster_id=1,
+        owner_principal_id=None,
+        instances=[],
+        extended_kv_cache=None,
+    )
+    monkeypatch.setattr(models_route.Model, "one_by_id", AsyncMock(return_value=model))
+
+    result = await models_route.get_model_cache_metrics(
+        request=MagicMock(),
+        session=MagicMock(),
+        ctx=_ctx(is_platform_admin=True),
+        id=7,
+    )
+
+    assert result.available is False
+    assert "shared cache" in result.reason
+
+
+def _cache_config(service_id):
+    if service_id is None:
+        return None
+    return ExtendedKVCacheConfig(
+        enabled=service_id != 0, mode="shared", cache_service_id=service_id
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model_cache,prefill_cache,decode_cache,service_roles,model_roles",
+    [
+        (None, 5, None, ["prefill"], ["prefill"]),
+        (0, 5, None, ["prefill"], ["prefill"]),
+        (5, None, 0, ["prefill"], ["prefill"]),
+        (None, 5, 6, ["prefill"], ["decode", "prefill"]),
+        (5, None, None, ["decode", "prefill"], ["decode", "prefill"]),
+        (5, 0, 0, [], []),
+        (5, 6, 6, [], ["decode", "prefill"]),
+    ],
+)
+@pytest.mark.parametrize("workers", [None, "worker-prefill"])
+async def test_cache_metrics_select_instances_by_effective_role(
+    monkeypatch,
+    model_cache,
+    prefill_cache,
+    decode_cache,
+    service_roles,
+    model_roles,
+    workers,
+):
+    model = SimpleNamespace(
+        id=3,
+        name="qwen-pd",
+        cluster_id=1,
+        owner_principal_id=ORG_PRINCIPAL,
+        deleted_at=None,
+        extended_kv_cache=_cache_config(model_cache),
+        roles=[
+            RoleSpec(name="prefill", extended_kv_cache=_cache_config(prefill_cache)),
+            RoleSpec(name="decode", extended_kv_cache=_cache_config(decode_cache)),
+            RoleSpec(name="router"),
+        ],
+        instances=[
+            SimpleNamespace(
+                model_id=3, name=f"qwen-{role}", role=role, worker_name=f"worker-{role}"
+            )
+            for role in ("router", "prefill", "decode", "removed-role")
+        ],
+    )
+    models_query = AsyncMock(return_value=[model])
+    monkeypatch.setattr(cache_services_route.Model, "all_by_fields", models_query)
+    monkeypatch.setattr(
+        cache_services_route.CacheService,
+        "one_by_id",
+        AsyncMock(return_value=_service()),
+    )
+    monkeypatch.setattr(
+        cache_services_route.ModelInstance,
+        "all_by_fields",
+        AsyncMock(return_value=model.instances),
+    )
+    service_collector = AsyncMock()
+    monkeypatch.setattr(
+        cache_services_route, "collect_cache_service_metrics", service_collector
+    )
+    await cache_services_route.get_cache_service_metrics(
+        _request(), MagicMock(), _ctx(OrgRole.OWNER), 5, workers=workers
+    )
+    rows = service_collector.await_args.kwargs["attached"]
+    assert [row.model_instance_name for row in rows] == [
+        f"qwen-{role}"
+        for role in service_roles
+        if workers is None or workers == f"worker-{role}"
+    ]
+    query = models_query.await_args.kwargs
+    assert query["fields"] == {"cluster_id": 1}
+    assert any(
+        "models.owner_principal_id" in str(condition)
+        and ORG_PRINCIPAL in condition.compile().params.values()
+        for condition in query["extra_conditions"]
+    )
+
+    references = await cache_services_route._models_referencing_cache_service(
+        MagicMock(), _service()
+    )
+    assert [item.id for item in references] == ([3] if service_roles else [])
+    assert models_query.await_args.args[1] == {"owner_principal_id": ORG_PRINCIPAL}
+
+    monkeypatch.setattr(models_route.Model, "one_by_id", AsyncMock(return_value=model))
+    model_collector = AsyncMock()
+    monkeypatch.setattr(models_route, "collect_model_cache_metrics", model_collector)
+    result = await models_route.get_model_cache_metrics(
+        _request(), MagicMock(), _ctx(OrgRole.MEMBER), 3
+    )
+    if model_roles:
+        assert [
+            row.model_instance_name for row in model_collector.await_args.args[1]
+        ] == [f"qwen-{role}" for role in model_roles]
+    else:
+        assert result.available is False
+        model_collector.assert_not_awaited()

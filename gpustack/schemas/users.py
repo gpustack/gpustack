@@ -48,6 +48,7 @@ from gpustack.schemas.principals import (  # noqa: F401  re-exports
     Principal,
     PrincipalType,
 )
+from gpustack.security import PASSWORD_SPECIAL_CHARACTERS
 
 # ``User`` aliases the unified :class:`Principal` so that code which
 # constructs / queries the user-shaped surface continues to work
@@ -74,9 +75,28 @@ def _validate_password(value: str) -> str:
         raise ValueError('Password must contain at least one lowercase letter')
     if not re.search(r'[0-9]', value):
         raise ValueError('Password must contain at least one digit')
-    if not re.search(r'[!@#$%^&*_+]', value):
-        raise ValueError('Password must contain at least one special character')
+    # Membership test rather than a regex character class: the set contains
+    # ``^`` and ``.``, which change meaning inside ``[...]`` depending on
+    # position, so building the class from the constant would be a silent
+    # footgun the next time a character is added.
+    if not any(char in PASSWORD_SPECIAL_CHARACTERS for char in value):
+        raise ValueError(
+            'Password must contain at least one special character '
+            f'({" ".join(PASSWORD_SPECIAL_CHARACTERS)})'
+        )
     return value
+
+
+def _validate_optional_password(value: Optional[str]) -> Optional[str]:
+    """Validate a password field that doubles as "don't touch the password".
+
+    The write paths key off ``if user_in.password``, so an empty string means
+    the caller is not setting a password -- it has to collapse to ``None``
+    rather than be measured against a policy meant for real passwords.
+    """
+    if not value:
+        return None
+    return _validate_password(value)
 
 
 class UserBase(SQLModel):
@@ -128,13 +148,21 @@ class UserCreate(UserBase):
 
     @field_validator('password')
     def validate_password(cls, value):
-        if value is None:
-            return value
-        return _validate_password(value)
+        return _validate_optional_password(value)
 
 
 class UserUpdate(UserBase):
     password: Optional[str] = None
+
+    # ``update_user`` feeds this straight into ``set_password``, exactly as
+    # ``create_user`` does, so it has to carry the same policy: without the
+    # validator here an admin could set a password through
+    # ``PUT /users/{id}`` that ``POST /users`` would refuse, and ``/login``
+    # would honour it.
+    @field_validator('password')
+    def validate_password(cls, value):
+        return _validate_optional_password(value)
+
     # Overrides ``UserBase.source`` on two axes.
     #
     # Default ``None`` (vs. ``UserBase``'s ``"Local"``): an omitted
@@ -173,9 +201,7 @@ class UserSelfUpdate(SQLModel):
 
     @field_validator('password')
     def validate_password(cls, value):
-        if value is None:
-            return value
-        return _validate_password(value)
+        return _validate_optional_password(value)
 
 
 class UpdatePassword(SQLModel):

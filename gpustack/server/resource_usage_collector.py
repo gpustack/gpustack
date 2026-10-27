@@ -2,21 +2,43 @@
 
 Each instance's currently-open metered window is tracked in memory:
 ``phase_to_metered`` opens it, ``phase_left_metered`` / ``deleted`` closes
-it. Settling a window writes its elapsed seconds (split across UTC midnights)
-into the single ``instance.uptime`` meter — one row per (instance, day).
-``quantity`` is wall-clock seconds (whole-machine SKU, NOT × card
-count); ``sku_count`` is carried as a column (GPU card count, 1 for CPU) so
-GPU-Hours can be derived as SUM(quantity × sku_count).
+it. Settling a window writes its elapsed seconds (split across UTC hours)
+into the single ``instance.uptime`` meter — one row per (instance, hour, billed
+shape). ``quantity`` is wall-clock seconds (whole-machine SKU, NOT × card
+count); ``sku_count`` is carried as a column (accelerator card count — possibly
+fractional for a sliced card — or base-flavor unit count for CPU) so GPU-Hours
+can be derived as SUM(quantity × sku_count).
 
-A periodic tick keeps "today so far" fresh for instances that stay metered
+A periodic tick keeps "this hour so far" fresh for instances that stay metered
 for hours/days without a phase transition.
+
+Where the billed shape comes from
+---------------------------------
+``sku`` is the running instance type's identity snapshot
+(``gpu_instances.type_snapshot`` -> ``gpu_instance_types.snapshot``) verbatim: a
+real reference key, not a derived string. The type row it points at also
+supplies ``definition_snapshot``, the display name, and the hardware facets in
+``dimensions``. The row is looked up ignoring ``deleted_at`` — a type can be
+retired while instances still run on it, which is exactly why the projection
+soft-deletes.
+
+``sku_count`` is the *sellable capacity share* the request occupies: a whole
+card is 1, a soft slice is its VRAM percentage, and a hardware partition is its
+``memoryMib`` over the card's VRAM (see ``utils.resource_usage``). A partition
+whose share cannot be established yet is NOT settled — falling back to a whole
+card would silently overcharge — so the window is retried on later ticks.
+
+Legacy fallback: instances created before ``type_snapshot`` existed have it
+NULL and it cannot be backfilled, so those fall back to the ``description``
+descriptor blob and then to the raw type name, tagging
+``dimensions.sku_source`` either way.
 
 Idempotency / recovery
 -----------------------
 Each rollup row carries a ``settled_until`` high-water mark. A settlement only
-adds the slice of a day-segment *after* the row's ``settled_until``, so
+adds the slice of an hour-segment *after* the row's ``settled_until``, so
 re-processing the same window (event replay, tick overlap, restart, stop→start
-within a day) never double-counts — the durable cursor lives on the row, not
+within an hour) never double-counts — the durable cursor lives on the row, not
 only in memory.
 """
 
@@ -25,6 +47,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict, Optional
 from sqlalchemy import func
 from sqlmodel import select
@@ -33,6 +56,7 @@ from gpustack import envs
 from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolume,
 )
+from gpustack.schemas.gpu_instance_types import GPUInstanceType
 from gpustack.schemas.metered_usage import (
     METER_INSTANCE_UPTIME,
     UNIT_SECONDS,
@@ -49,6 +73,9 @@ from gpustack.schemas.resource_events import (
 from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
 from gpustack.utils.resource_usage import (
+    SLICE_MODE_PROFILE,
+    SLICE_MODE_WHOLE,
+    WHOLE_CARD_MILLI,
     instance_sku,
     iter_utc_hour_segments,
     parse_accelerator_count,
@@ -56,11 +83,37 @@ from gpustack.utils.resource_usage import (
     parse_gpu_type,
     parse_quantity_to_mib,
     parse_quantity_to_millicores,
+    profile_memory_mib,
+    slice_mode_of,
+    slice_share_milli,
+    sliced_sku_count,
 )
 
 logger = logging.getLogger(__name__)
 
 _INSTANCE_RESOURCE_TYPES = (RESOURCE_TYPE_GPU_INSTANCE, RESOURCE_TYPE_CPU_INSTANCE)
+
+# ``dimensions.sku_source`` — which source produced ``sku`` / the hardware
+# facets. Anything other than ``type_snapshot`` means the authoritative catalog
+# row was unavailable and the row is degraded; it is logged when it happens.
+SKU_SOURCE_TYPE_SNAPSHOT = "type_snapshot"
+SKU_SOURCE_DESCRIPTION = "description"
+SKU_SOURCE_TYPE_NAME = "type_name"
+
+# How many ticks an incomplete type lookup is retried before it is treated as a
+# standing problem rather than a pending backfill. ``status.detail`` is filled in
+# asynchronously by the operator (an instance can reach a metered phase before it
+# lands), so some retrying is required; a bound is what makes a real
+# misconfiguration surface instead of being retried in silence forever.
+#
+# What the bound does at that point depends on whether the window is billable —
+# see ``_give_up_or_retry``. It is NOT a deadline for billing: sizing it against
+# ``METERED_USAGE_SEAL_GRACE_SECONDS`` (past which the earliest hours can no
+# longer be recovered) was considered and is wrong, because giving up on a window
+# with no ``sku_count`` costs its WHOLE life, not the hours already sealed. The
+# number therefore only has to be long enough that a slow-but-working backfill is
+# not reported as a fault: 20 ticks is ~100 minutes at the default tick.
+_TYPE_LOOKUP_MAX_ATTEMPTS = 20
 
 
 def _utc_now() -> datetime:
@@ -115,11 +168,46 @@ class _OpenWindow:
     window_start: datetime
     sku: str
     gpu_count: int
-    # Unit multiplier billed for this instance: GPU card count for GPU
-    # instances, base-flavor unit count (e.g. 2 for a 2c4g instance on a 1c2g
-    # flavor) for CPU instances. Stored as ``metered_usage.sku_count``.
-    sku_count: int
+    # Unit multiplier billed for this instance: accelerator card count for GPU
+    # instances — fractional when the cards are sliced — base-flavor unit count
+    # (e.g. 2 for a 2c4g instance on a 1c2g flavor) for CPU instances. Stored as
+    # ``metered_usage.sku_count``. ``None`` means "not established yet" (a
+    # hardware partition whose share is still unresolvable): such a window is
+    # NOT settled, because defaulting to a whole card would overcharge up to 8x.
+    sku_count: Optional[Decimal]
     dimensions: Dict[str, Any]
+
+    # —— Instance type identity ——
+    # ``type_snapshot`` is the authoritative reference into ``gpu_instance_types``
+    # and is what ``sku`` carries. NULL for pre-v2.3.0 instances (unbackfillable),
+    # which is the one case the legacy fallbacks exist for.
+    type_snapshot: Optional[str] = field(default=None)
+    definition_snapshot: Optional[str] = field(default=None)
+    instance_type_name: Optional[str] = field(default=None)
+
+    # —— Accelerator slicing request ——
+    slice_mode: str = field(default=SLICE_MODE_WHOLE)
+    partitioned_profile: Optional[str] = field(default=None)
+    # Per-card billed share in thousandths; ``None`` until resolvable (profile
+    # mode needs the type's ``memoryMib`` + card VRAM, both on ``status.detail``,
+    # which the operator backfills asynchronously).
+    share_milli: Optional[int] = field(default=None)
+
+    # —— Type-lookup state (not persisted) ——
+    # True while the type row still owes us something (row not found yet, or its
+    # ``status.detail`` not backfilled). ``_tick_once`` retries, bounded by
+    # ``_TYPE_LOOKUP_MAX_ATTEMPTS`` once the window is billable at all;
+    # ``_upsert_bucket`` rewrites dimensions from the latest window every time, so
+    # an open row catches up automatically.
+    needs_type_lookup: bool = field(default=False)
+    type_lookup_attempts: int = field(default=0)
+    # Log-once latches. Both of these conditions are re-evaluated on every tick
+    # (300s), so logging them per evaluation produced an unbounded stream of
+    # identical lines — which buries the one line that carried information. They
+    # are logged on the state CHANGE instead: entering the state, and leaving it.
+    lookup_bound_logged: bool = field(default=False)
+    deferral_logged: bool = field(default=False)
+
     settled_through: Optional[datetime] = field(default=None)
 
 
@@ -158,24 +246,39 @@ def _resolve_sku_count(
     mem_mib: int,
     unit_cpu_milli: Optional[int],
     unit_memory_mib: Optional[int],
-) -> int:
+    share_milli: Optional[int] = WHOLE_CARD_MILLI,
+) -> Optional[Decimal]:
     """Unit multiplier billed for an instance (``metered_usage.sku_count``).
 
-    GPU instances bill per accelerator card (``gpu_count``). CPU instances bill
-    per base-flavor unit: a 2c4g instance on a 1c2g flavor is 2 units. Derive it
-    from the instance totals over the flavor's per-unit spec, preferring CPU and
-    falling back to memory, then to 1 when the unit spec is unknown (legacy
-    flavors with no ``unitResources`` descriptor)."""
+    GPU instances bill per accelerator card, scaled by the per-card sellable
+    share (``share_milli``, 1000 = whole card) so a sliced card bills a
+    fraction. ``share_milli=None`` means the share is not established yet and
+    the caller must not settle — returns ``None`` rather than silently rounding
+    a slice up to a whole card.
+
+    CPU instances bill per base-flavor unit: a 2c4g instance on a 1c2g flavor is
+    2 units. Derive it from the instance totals over the flavor's per-unit spec,
+    preferring CPU and falling back to memory, then to 1 when the unit spec is
+    unknown (legacy flavors with no ``unitResources`` descriptor)."""
     if gpu_count and gpu_count > 0:
-        return gpu_count
+        if share_milli is None:
+            return None
+        return sliced_sku_count(gpu_count, share_milli)
     for total, unit in ((cpu_milli, unit_cpu_milli), (mem_mib, unit_memory_mib)):
         if total and unit and unit > 0:
-            return max(1, round(total / unit))
-    return 1
+            return Decimal(max(1, round(total / unit)))
+    return Decimal(1)
 
 
-def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
-    """Build an ``_OpenWindow`` from a ``phase_to_metered`` event row."""
+def _open_window_from_event(  # noqa: C901
+    evt: ResourceEvent,
+) -> Optional[_OpenWindow]:
+    """Build an ``_OpenWindow`` from a ``phase_to_metered`` event row.
+
+    Pure (no DB): everything derivable from the event snapshot alone. The
+    catalog-backed facets and a hardware partition's billed share need the
+    instance type row, which ``_resolve_instance_type`` fills in afterwards.
+    """
     if evt.resource_id is None:
         return None
     snap = _snapshot_dict(evt.spec_snapshot)
@@ -203,6 +306,8 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
         )
         return None
 
+    type_snapshot = snap.get("type_snapshot") or None
+
     gpu_type, _ = parse_gpu_type(instance_type)
     gpu_count = parse_accelerator_count(resources.get("accelerator"))
     cpu_milli = parse_quantity_to_millicores(resources.get("cpu"))
@@ -221,15 +326,59 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
     descriptor = parse_gpu_descriptor(snap.get("description"))
     vram_mib = descriptor.get("vram_mib", 0)
 
+    # Accelerator slicing request. ``memory_percentage == 0`` means slicing is
+    # disabled (exclusive whole card), so it maps to "whole", not "zero share".
+    sliced_memory_pct = resources.get(
+        "accelerator_sliced_memory_percentage"
+    ) or resources.get("acceleratorSlicedMemoryPercentage")
+    sliced_cores_pct = resources.get(
+        "accelerator_sliced_cores_percentage"
+    ) or resources.get("acceleratorSlicedCoresPercentage")
+    partitioned_profile = resources.get(
+        "accelerator_partitioned_profile"
+    ) or resources.get("acceleratorPartitionedProfile")
+    slice_mode = slice_mode_of(sliced_memory_pct, partitioned_profile)
+    # A partition's share needs the type row's ``memoryMib`` + card VRAM, so it
+    # stays unresolved here and is filled by ``_resolve_instance_type``.
+    share_milli = (
+        None
+        if slice_mode == SLICE_MODE_PROFILE
+        else slice_share_milli(memory_percentage=sliced_memory_pct)
+    )
+
     dimensions = {
-        "gpu_type": gpu_type,
+        # Zero cards is a fact about the request, so it is stated rather than
+        # omitted — unlike the facets below, which describe a card.
         "gpu_count": gpu_count,
-        "vram_mib": vram_mib,
         "cpu_milli": cpu_milli,
         "memory_mib": mem_mib,
         "ephemeral_mib": ephemeral_mib,
         "local_storage_mib": local_storage_mib,
     }
+    # Card facets, only where there is a card. On a CPU instance every one of
+    # them was noise or worse: ``gpu_type`` held the regex's leftovers from a
+    # CPU flavor name (``-generic-linux``), ``vram_mib`` was 0, and
+    # ``slice_mode: whole`` / ``slice_share_milli: 1000`` claimed a whole card
+    # was held exclusively — of nothing. Absent reads as "not applicable";
+    # a zero reads as a measurement.
+    if gpu_count > 0:
+        # Overwritten by ``_resolve_instance_type`` with the accurate
+        # ``spec.accelerator_group``; this regex over the type name is the
+        # fallback for instances predating ``type_snapshot``.
+        dimensions["gpu_type"] = gpu_type
+        if vram_mib:
+            dimensions["vram_mib"] = vram_mib
+        dimensions["slice_mode"] = slice_mode
+        # Slicing facets, so a bill can be audited without re-deriving the
+        # share: ``slice_share_milli`` × card count must reproduce ``sku_count``.
+        if sliced_memory_pct:
+            dimensions["sliced_memory_percentage"] = sliced_memory_pct
+        if sliced_cores_pct:
+            dimensions["sliced_cores_percentage"] = sliced_cores_pct
+        if partitioned_profile:
+            dimensions["partitioned_profile"] = partitioned_profile
+        if share_milli is not None:
+            dimensions["slice_share_milli"] = share_milli
     # Persistent data disk is a reference to a separate PV resource (only its
     # name is in the instance spec) — store the name so the breakdown can
     # resolve its provisioned capacity for the Disk → Persistent row.
@@ -248,7 +397,20 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
         mem_mib,
         descriptor.get("unit_cpu_milli"),
         descriptor.get("unit_memory_mib"),
+        share_milli,
     )
+
+    # ``sku`` is the type snapshot verbatim — no transformation, so a metered row
+    # joins straight onto ``gpu_instance_types.snapshot``. Only a pre-v2.3.0
+    # instance (NULL, unbackfillable) falls back to the legacy name-based sku,
+    # and that is recorded on the row.
+    if type_snapshot:
+        sku = type_snapshot
+    else:
+        sku = instance_sku(instance_type, gpu_type, gpu_count, cpu_milli, mem_mib)
+        dimensions["sku_source"] = (
+            SKU_SOURCE_DESCRIPTION if descriptor else SKU_SOURCE_TYPE_NAME
+        )
 
     return _OpenWindow(
         resource_id=evt.resource_id,
@@ -265,10 +427,292 @@ def _open_window_from_event(evt: ResourceEvent) -> Optional[_OpenWindow]:
         cluster_id=evt.cluster_id,
         cluster_name=evt.cluster_name,
         window_start=_naive_utc(evt.occurred_at),
-        sku=instance_sku(instance_type, gpu_type, gpu_count, cpu_milli, mem_mib),
+        sku=sku,
         gpu_count=gpu_count,
         sku_count=sku_count,
         dimensions=dimensions,
+        type_snapshot=type_snapshot,
+        instance_type_name=instance_type,
+        slice_mode=slice_mode,
+        partitioned_profile=partitioned_profile,
+        share_milli=share_milli,
+        # A type snapshot always warrants a catalog lookup (it carries the
+        # definition snapshot and the authoritative hardware facets); without one
+        # there is nothing to look up.
+        needs_type_lookup=bool(type_snapshot),
+    )
+
+
+def _detail_of(row: GPUInstanceType) -> Any:
+    """The type's observed hardware descriptor (``status.detail``), or ``None``.
+
+    ``status`` is declared with ``pydantic_column_type``, so it arrives as the
+    validated model — recursively, so ``detail`` and everything under it are
+    models too (verified on a cold session and on a tuple select, i.e. not the
+    identity map handing back what was written). Every writer assigns a validated
+    ``GPUInstanceTypeStatusPublic`` as well. So the walk below reads attributes,
+    with no dict form to accommodate.
+    """
+    status = row.status
+    return getattr(status, "detail", None) if status is not None else None
+
+
+def _detail_attr(detail: Any, name: str) -> Any:
+    """One attribute off a nested detail model, tolerating an absent parent.
+
+    The nesting is optional at every level (``exclude_none`` responses, and a
+    type that reports no slicing at all), so this exists to keep the chain in
+    :func:`_resolve_profile_share` from needing a guard per hop.
+    """
+    return getattr(detail, name, None) if detail is not None else None
+
+
+async def _resolve_instance_type(session, window: "_OpenWindow") -> None:  # noqa: C901
+    """Fill the window's identity + hardware facets from the instance type row.
+
+    This is the authoritative replacement for parsing the user-writable
+    ``description`` blob: ``type_snapshot`` is a real reference, resolved against
+    the unique ``gpu_instance_types.snapshot`` index in one hit.
+
+    ``deleted_at`` is deliberately NOT filtered: a type can be retired while
+    instances still run on it, and keeping the soft-deleted row resolvable is the
+    whole reason the projection soft-deletes instead of hard-deleting.
+
+    Resolves, when available:
+
+    ==========================================  ==================================
+    ``definition_snapshot`` / type name         the row's own columns
+    ``dimensions.gpu_type``                     ``spec.accelerator_group``
+    ``dimensions.unit_cpu_milli`` / ``…mib``    ``spec.unit_resources``
+    ``dimensions.product`` / ``manufacturer`` / ``family``   ``status.detail.*``
+    card VRAM + a partition's ``memoryMib``     ``status.detail.*``
+    ==========================================  ==================================
+
+    ``status.detail`` is backfilled asynchronously by the operator, so an
+    instance can reach a metered phase before it exists. ``needs_type_lookup``
+    stays set until everything this window needs has landed; ``_tick_once``
+    retries (bounded) and ``_upsert_bucket`` rewrites dimensions from the latest
+    window, so an open row catches up on its own.
+    """
+    if not window.type_snapshot:
+        window.needs_type_lookup = False
+        return
+    window.type_lookup_attempts += 1
+    row = (
+        await session.exec(
+            select(GPUInstanceType).where(
+                GPUInstanceType.snapshot == window.type_snapshot
+            )
+        )
+    ).first()
+    if row is None:
+        # The catalog has not projected this type yet (or the deployment has no
+        # operator at all, in which case the table stays empty forever). Keep the
+        # legacy-derived facets and retry; the sku is already correct either way,
+        # since it IS the snapshot.
+        # Mark the row so a hash sku sitting next to legacy-derived facets is
+        # recognizable as degraded rather than looking like corrupt data.
+        window.dimensions["type_unresolved"] = True
+        _give_up_or_retry(
+            window,
+            f"instance type {window.type_snapshot} not found in the catalog",
+        )
+        return
+    window.dimensions.pop("type_unresolved", None)
+
+    window.instance_type_name = row.name or window.instance_type_name
+    # Fall back to computing it when the column predates this row (upgrade: the
+    # migration adds it NULL and only active rows get backfilled by the watch
+    # re-LIST; a soft-deleted row is never re-LISTed). It is a pure function of
+    # (name, spec), so the derived value equals the persisted one.
+    window.definition_snapshot = (
+        row.definition_snapshot or row.compute_definition_snapshot()
+    )
+    window.dimensions["sku_source"] = SKU_SOURCE_TYPE_SNAPSHOT
+
+    spec = row.spec
+    if spec is not None:
+        # An accelerated type's ``unit_resources`` describes "the resources that
+        # come with one card", so folding a card-less request into a unit count
+        # is meaningless. Refuse to meter it rather than emit a number nobody can
+        # defend on an invoice.
+        if getattr(spec, "acceleratable", False) and window.gpu_count <= 0:
+            window.needs_type_lookup = False
+            window.sku_count = None
+            logger.error(
+                "resource_usage_collector: refusing to meter resource_id=%s — it "
+                "requests 0 accelerators on the accelerated instance type %s, so "
+                "there is no defensible unit to bill",
+                window.resource_id,
+                row.name,
+            )
+            return
+        # ``accelerator_group`` (e.g. ``nvidia-a10g``) is the accurate card-pool
+        # key and is byte-stable across operator versions — unlike the regex over
+        # the type name, which mangles both naming schemes.
+        if getattr(spec, "accelerator_group", None):
+            window.dimensions["gpu_type"] = spec.accelerator_group
+        unit = getattr(spec, "unit_resources", None)
+        if unit is not None:
+            unit_cpu = parse_quantity_to_millicores(getattr(unit, "cpu", None))
+            unit_ram = parse_quantity_to_mib(getattr(unit, "ram", None))
+            if unit_cpu:
+                window.dimensions["unit_cpu_milli"] = unit_cpu
+            if unit_ram:
+                window.dimensions["unit_memory_mib"] = unit_ram
+
+    detail = _detail_of(row)
+    card_memory_mib = parse_quantity_to_mib(_detail_attr(detail, "memory"))
+    for key in ("product", "manufacturer", "family"):
+        value = _detail_attr(detail, key)
+        if value:
+            window.dimensions[key] = value
+    if card_memory_mib and window.slice_mode != SLICE_MODE_PROFILE:
+        # Whole card / soft slice: the VRAM shown is what this instance occupies,
+        # not the whole card — a 25% slice of an 80G card reads 20G.
+        window.dimensions["vram_mib"] = (
+            card_memory_mib * (window.share_milli or WHOLE_CARD_MILLI)
+        ) // WHOLE_CARD_MILLI
+
+    if window.slice_mode == SLICE_MODE_PROFILE:
+        _resolve_profile_share(window, detail, card_memory_mib)
+        if window.share_milli is None:
+            return
+        if card_memory_mib:
+            window.dimensions["vram_mib"] = (
+                card_memory_mib * window.share_milli // WHOLE_CARD_MILLI
+            )
+        window.dimensions["slice_share_milli"] = window.share_milli
+
+    _refresh_sku_count(window)
+
+    # ``status.detail`` is backfilled asynchronously (a MODIFIED event, not the
+    # initial ADDED), so an instance can be metered before it lands. A whole-card
+    # or soft-sliced request is already BILLABLE without it — its share does not
+    # depend on the hardware — but the display facets (product / card VRAM /
+    # manufacturer) are missing, so keep retrying until they arrive rather than
+    # declaring the lookup done. ``_upsert_bucket`` rewrites dimensions from the
+    # latest window on every settle, so an already-open row catches up with no
+    # history rewrite.
+    #
+    # Card-less requests are exempt, because ``card_memory_mib`` reads
+    # ``status.detail.memory`` — the ACCELERATOR's VRAM. A CPU-only type has no
+    # such field to fill (``GPUInstanceTypeCPU`` does not define one), so waiting
+    # on it is waiting for something that never arrives: every CPU instance then
+    # burned 20 catalog lookups and 20 warnings across ~100 minutes before giving
+    # up on a type that had in fact resolved completely on the first attempt.
+    if window.gpu_count > 0 and not card_memory_mib:
+        _give_up_or_retry(
+            window,
+            f"instance type {row.name} has no status.detail yet "
+            "(display facets incomplete; metering is unaffected)",
+            fatal=False,
+        )
+        return
+    window.needs_type_lookup = False
+
+
+def _resolve_profile_share(
+    window: "_OpenWindow", detail: Any, card_memory_mib: int
+) -> None:
+    """Resolve a hardware-partition request's per-card share from the type's
+    aggregated profile list. Leaves ``share_milli`` ``None`` (so the window is
+    not settled) when the profile or the card VRAM is not yet resolvable."""
+    sliced = _detail_attr(detail, "sliced_detail")
+    physical = _detail_attr(sliced, "physical")
+    profiles = _detail_attr(physical, "profiles")
+    mib = profile_memory_mib(profiles, window.partitioned_profile)
+    share = slice_share_milli(
+        partitioned_profile=window.partitioned_profile,
+        profile_memory_mib=mib,
+        card_memory_mib=card_memory_mib,
+    )
+    if share is None:
+        _give_up_or_retry(
+            window,
+            f"partition profile {window.partitioned_profile!r} of instance type "
+            f"{window.type_snapshot} has no resolvable memoryMib "
+            f"(profile_mib={mib}, card_mib={card_memory_mib})",
+        )
+        return
+    window.share_milli = share
+
+
+def _refresh_sku_count(window: "_OpenWindow") -> None:
+    """Recompute ``sku_count`` after the type row supplied the missing inputs
+    (partition share, or a CPU flavor's real ``unitResources``)."""
+    window.sku_count = _resolve_sku_count(
+        window.gpu_count,
+        window.dimensions.get("cpu_milli") or 0,
+        window.dimensions.get("memory_mib") or 0,
+        window.dimensions.get("unit_cpu_milli"),
+        window.dimensions.get("unit_memory_mib"),
+        window.share_milli,
+    )
+
+
+def _give_up_or_retry(
+    window: "_OpenWindow", reason: str, *, fatal: bool = True
+) -> None:
+    """Log an unresolved type lookup, and stop retrying only where that is safe.
+
+    Never invents a ``sku_count``: billing a partition as a whole card is an
+    up-to-8x overcharge. The ``sku`` is unaffected — it is the snapshot itself,
+    which is known without the lookup.
+
+    The bound applies to a window that is ALREADY BILLABLE. There it is what it
+    was designed to be: a ceiling on how long a row may go on looking incomplete
+    while its display facets are chased. ``fatal=False`` marks exactly those
+    cases, so exhausting the retries is a warning, not an error.
+
+    It deliberately does NOT apply to a window with no ``sku_count``. Such a
+    window cannot be settled at all, and nothing outside this function will ever
+    set one — so clearing ``needs_type_lookup`` there does not stop chasing a
+    cosmetic field, it drops the instance out of the usage report for the rest of
+    its life, leaving one log line as the only trace. A missing row is far harder
+    to notice than a wrong number. Retrying instead costs one catalog query per
+    tick and keeps the elapsed time recoverable: ``window_start`` and the row's
+    ``settled_until`` both stay put, so whatever has not sealed yet is still
+    billed once the share resolves.
+
+    Logging follows the state change, not the tick. Every attempt used to log,
+    which put 20 identical lines per instance in the log — and would now be
+    unbounded. Instead: one line when the retry starts, one when the bound is
+    reached (which is where a real misconfiguration surfaces — the reason the
+    bound was introduced), then silence.
+    """
+    if window.type_lookup_attempts < _TYPE_LOOKUP_MAX_ATTEMPTS:
+        if window.type_lookup_attempts <= 1:
+            logger.warning(
+                "resource_usage_collector: instance type not fully resolved for "
+                "resource_id=%s — %s. Retrying every tick.",
+                window.resource_id,
+                reason,
+            )
+        return
+    if window.sku_count is None:
+        if not window.lookup_bound_logged:
+            window.lookup_bound_logged = True
+            logger.error(
+                "resource_usage_collector: resource_id=%s is NOT being metered "
+                "after %d attempts — %s. Still retrying, and its elapsed time is "
+                "held; but hours already sealed cannot be recovered, so this needs "
+                "attention rather than time.",
+                window.resource_id,
+                window.type_lookup_attempts,
+                reason,
+            )
+        return
+    window.needs_type_lookup = False
+    logger.log(
+        logging.ERROR if fatal else logging.WARNING,
+        "resource_usage_collector: giving up resolving the instance type for "
+        "resource_id=%s after %d attempts — %s. Billing is unaffected "
+        "(sku_count=%s); only the display facets stay incomplete.",
+        window.resource_id,
+        window.type_lookup_attempts,
+        reason,
+        window.sku_count,
     )
 
 
@@ -367,6 +811,7 @@ class ResourceUsageCollector:
                     if e.event_type == EVENT_TYPE_PHASE_TO_METERED:
                         window = _open_window_from_event(e)
                         if window is not None:
+                            await _resolve_instance_type(session, window)
                             await _resolve_persistent_mib(session, window)
                             self._open[rid] = window
                 if self._open:
@@ -436,10 +881,14 @@ class ResourceUsageCollector:
             if evt.event_type == EVENT_TYPE_PHASE_TO_METERED:
                 window = _open_window_from_event(evt)
                 if window is not None:
-                    # Snapshot the persistent-volume size while the PV still
-                    # exists (only for instances that reference one).
-                    if window.dimensions.get("persistent_name"):
+                    # Resolve the instance type (sku facets + the billed share)
+                    # and snapshot the persistent-volume size while the PV still
+                    # exists — one session for both.
+                    if window.needs_type_lookup or window.dimensions.get(
+                        "persistent_name"
+                    ):
                         async with async_session() as session:
+                            await _resolve_instance_type(session, window)
                             await _resolve_persistent_mib(session, window)
                     # Replace any stale window (missed close during a crash);
                     # the per-row settled_until absorbs the older time safely.
@@ -470,6 +919,7 @@ class ResourceUsageCollector:
     async def _tick_once(self) -> None:
         async with self._lock:
             now = _utc_now()
+            await self._retry_type_lookups()
             for resource_id, window in list(self._open.items()):
                 try:
                     await self._settle_locked(window, now)
@@ -481,6 +931,32 @@ class ResourceUsageCollector:
         # Seal fully-elapsed buckets *after* settling, so a still-running
         # instance's current hour is written before it becomes eligible.
         await self._seal_due(now)
+
+    async def _retry_type_lookups(self) -> None:
+        """Re-resolve windows whose instance type was not fully readable yet.
+
+        The operator backfills ``status.detail`` asynchronously, so an instance
+        can enter a metered phase before the card VRAM / partition profiles are
+        known. Retrying here (rather than at open time only) is what lets those
+        windows start being billed as soon as the data lands — ``_upsert_bucket``
+        rewrites dimensions from the latest window, so an already-open row picks
+        up the corrected facets without any history rewrite.
+
+        Bounded by ``_TYPE_LOOKUP_MAX_ATTEMPTS`` only for a window that is already
+        settleable — there the bound caps how long a cosmetic field is chased. A
+        window with no ``sku_count`` is retried indefinitely, because giving up on
+        it would drop the instance out of the usage report for the rest of its
+        life (see ``_give_up_or_retry``). Caller holds ``self._lock``.
+        """
+        pending = [w for w in self._open.values() if w.needs_type_lookup]
+        if not pending:
+            return
+        try:
+            async with async_session() as session:
+                for window in pending:
+                    await _resolve_instance_type(session, window)
+        except Exception:
+            logger.exception("resource_usage_collector: type lookup retry failed")
 
     async def _seal_due(self, now: datetime) -> None:
         try:
@@ -505,7 +981,47 @@ class ResourceUsageCollector:
         All hour-segments of one settle share a single session/transaction —
         a long backfill (e.g. restart after days down) is one commit, not one
         per hour. The per-row ``settled_until`` clamp keeps it idempotent if
-        the transaction is retried."""
+        the transaction is retried.
+
+        A window with no established ``sku_count`` is skipped entirely: that
+        means a hardware partition whose share is still unresolvable (or a
+        card-less request on an accelerated type), and there is no safe default —
+        billing it as a whole card overcharges up to 8x.
+
+        Its seconds are held rather than dropped: ``window_start`` and the row's
+        ``settled_until`` both stay put, so the first settle after the share
+        resolves picks up whatever has NOT sealed by then. Which is worth stating
+        plainly rather than as a footnote: the seal grace is 15 minutes by default,
+        so a deferral lasting longer than that — the common case, since it waits on
+        an operator backfill — permanently loses its earliest hours. A deferral is
+        a problem to fix, not a state to live in; ``_give_up_or_retry`` escalates
+        it to ERROR once the retry bound passes.
+
+        Logged on the state change only (entering the deferral, and recovering
+        from it). This is evaluated on every tick, so per-evaluation logging was
+        288 identical lines a day per stuck instance, with no new information in
+        any of them."""
+        if window.sku_count is None:
+            if not window.deferral_logged:
+                window.deferral_logged = True
+                logger.warning(
+                    "resource_usage_collector: deferring settlement for "
+                    "resource_id=%s — the billed share is not established yet "
+                    "(slice_mode=%s, profile=%s). Its elapsed time is held until "
+                    "the share resolves.",
+                    window.resource_id,
+                    window.slice_mode,
+                    window.partitioned_profile,
+                )
+            return
+        if window.deferral_logged:
+            window.deferral_logged = False
+            logger.info(
+                "resource_usage_collector: resource_id=%s is settleable again "
+                "(sku_count=%s); billing its held time now",
+                window.resource_id,
+                window.sku_count,
+            )
         start = window.window_start
         if window.settled_through is not None and window.settled_through > start:
             start = window.settled_through
@@ -531,24 +1047,36 @@ class ResourceUsageCollector:
         seg_start: datetime,
         seg_end: datetime,
     ) -> None:
+        # Match the full natural key, INCLUDING the billed shape: a mid-hour
+        # reconfiguration (4 cards -> 1, 25% -> 50%, or a switch to another
+        # instance type) must land in its own row so each segment is priced by the
+        # shape that was actually running, instead of the whole hour inheriting
+        # whichever shape settled last.
         row = (
             await session.exec(
                 select(MeteredUsage).where(
                     MeteredUsage.meter_key == METER_INSTANCE_UPTIME,
                     MeteredUsage.resource_id == window.resource_id,
                     MeteredUsage.bucket_start == bucket_start,
+                    MeteredUsage.sku == window.sku,
+                    MeteredUsage.sku_count == window.sku_count,
                 )
             )
         ).first()
 
         # Clamp to the row's high-water mark — only count time after what's
-        # already settled for this hour. Makes replay / overlap idempotent.
+        # already settled for this hour AND this shape. Makes replay / overlap
+        # idempotent. Two shapes in one hour never overlap in time (a
+        # reconfiguration goes through a non-metered Stopped phase), so clamping
+        # them independently stays correct.
         prior = _naive_utc(row.settled_until) if row is not None else None
         add_seconds = _clamped_seconds(seg_start, seg_end, prior)
 
         if row is not None:
             # Sealed buckets are final — a late segment landing here would
-            # corrupt an already-metered row, so drop it (and surface it).
+            # corrupt an already-metered row, so drop it (and surface it). This
+            # check MUST stay ahead of every mutation below: it is what makes
+            # pre-upgrade history immune to any new logic.
             if row.sealed_at is not None:
                 if add_seconds > 0:
                     logger.warning(
@@ -562,8 +1090,11 @@ class ResourceUsageCollector:
             if add_seconds > 0:
                 row.quantity += add_seconds
                 row.settled_until = seg_end
-            # Refresh display snapshots from the latest window so renames /
-            # spec changes show up without rewriting history.
+            # Refresh DISPLAY snapshots from the latest window so renames show up
+            # without rewriting history. ``sku`` / ``sku_count`` are deliberately
+            # NOT refreshed here — they are pricing inputs, not display fields,
+            # and they are part of the row's identity now: a different shape
+            # matched no row above and got its own row instead.
             row.resource_name = window.resource_name or row.resource_name
             if window.resource_display_name is not None:
                 row.resource_display_name = window.resource_display_name
@@ -577,8 +1108,12 @@ class ResourceUsageCollector:
                 row.creator_name = window.creator_name
             if window.cluster_name is not None:
                 row.cluster_name = window.cluster_name
-            row.sku = window.sku or row.sku
-            row.sku_count = window.sku_count
+            if window.instance_type_name is not None:
+                row.instance_type_name = window.instance_type_name
+            if window.definition_snapshot is not None:
+                row.definition_snapshot = window.definition_snapshot
+            # dimensions IS refreshed: it is the display blob, and this is how an
+            # open row picks up facets the operator backfilled late.
             row.dimensions = window.dimensions
             session.add(row)
             return
@@ -603,6 +1138,8 @@ class ResourceUsageCollector:
                 resource_display_name=window.resource_display_name,
                 sku=window.sku,
                 sku_count=window.sku_count,
+                definition_snapshot=window.definition_snapshot,
+                instance_type_name=window.instance_type_name,
                 dimensions=window.dimensions,
                 bucket_start=bucket_start,
                 quantity=add_seconds,

@@ -13,10 +13,19 @@ Build the list of DaemonSets to render. Each entry carries:
 */}}
 {{- $workers := list }}
 
-{{- /* CPU DaemonSet — always rendered first, owns the legacy name. */}}
+{{- /*
+CPU DaemonSet — rendered first, and the only one that takes the unsuffixed
+legacy name. Switched off for a cluster whose CPU nodes carry the control plane
+(or anything else that must not gain a worker); the vendor DaemonSets below keep
+their `-<vendor>` suffix either way, so turning it off never promotes one of
+them onto this name — a rename that would make a vendor DaemonSet adopt the CPU
+one's pods and reschedule a whole runtime for a nodeSelector change.
+*/}}
+{{- if include "gpustack.workerCPUEnabled" . }}
 {{- $cpuLabel := dict "feature.gpustack.ai/acceleratable" "false" }}
 {{- $cpuSel := mergeOverwrite (deepCopy $base) $cpuLabel }}
 {{- $workers = append $workers (dict "name" "cpu" "dsName" $dsBasename "runtime" "" "nodeSelector" $cpuSel) }}
+{{- end }}
 
 {{- /* GPU vendor DaemonSets — all get suffixed names. */}}
 {{- range $vendor := $vendors }}
@@ -30,7 +39,12 @@ Build the list of DaemonSets to render. Each entry carries:
   {{- $workers = append $workers (dict "name" $vendor "dsName" (printf "%s-%s" $dsBasename $vendor) "runtime" $vendor "nodeSelector" $merged) }}
 {{- end }}
 
-{{- $multiVendor := gt (len $workers) 1 }}
+{{- /*
+Shared with worker-service.yaml, which selects on the labels this flag renders:
+computing it here from `len $workers` instead would disagree with that Service
+the moment the CPU DaemonSet is off and a single vendor is on.
+*/}}
+{{- $multiVendor := include "gpustack.multiVendorMode" . }}
 
 {{- range $idx, $w := $workers }}
 {{- if $idx }}
@@ -62,13 +76,22 @@ spec:
         gpustack.io/runtime: {{ $w.name }}
         {{- end }}
     spec:
+      # Disable Kubernetes service-link env injection. Kubernetes injects a
+      # <SVCNAME>_PORT=tcp://... env var (name uppercased, '-' -> '_') for every
+      # Service in the namespace; a GPUSTACK_-prefixed name would collide with
+      # GPUStack's GPUSTACK_-prefixed config defaults and crash-loop prerun
+      # (e.g. a worker Service named gpustack-worker -> GPUSTACK_WORKER_PORT).
+      # GPUStack sets every env it needs explicitly and resolves peers via DNS,
+      # so it never relies on these link vars. KUBERNETES_SERVICE_HOST and
+      # KUBERNETES_SERVICE_PORT are exempt from this flag and keep working.
+      enableServiceLinks: false
       {{- with (include "image_pull_secrets" $ | trim) }}
       {{- nindent 6 . }}
       {{- end }}
       containers:
         - env:
             - name: GPUSTACK_SERVER_URL
-              value: http://{{ $.Release.Name }}-server.{{ $.Release.Namespace }}.svc:{{ $.Values.server.apiPort }}
+              value: {{ include "gpustack.workerServerURL" $ | quote }}
             - name: GPUSTACK_WORKER_NAME
               valueFrom:
                 fieldRef:
@@ -99,9 +122,28 @@ spec:
             - name: ROCM_SMI_LIB_PATH
               value: /opt/hyhal/lib
             {{- end }}
+            {{- if eq $w.runtime "nvidia" }}
+            {{- /*
+              The NVIDIA container runtime hides the driver's MIG capability subtree from any
+              container that does not declare it manages MIG, and the management library
+              authorizes every partition-scoped call by opening a file under that subtree.
+              Without this declaration a MIG instance carved outside this Pod is not visible to
+              it at all, and a partition-scoped call fails with NO_PERMISSION. The worker only
+              reads MIG devices — the operator's device manager creates and destroys them — so
+              MONITOR is the half it needs; CONFIG is declared anyway to stay byte-aligned with
+              the operator's own chart, which keys both on the manufacturer for the same reason.
+              Both are read by the runtime hook, which needs the NVIDIA_VISIBLE_DEVICES the CDI
+              spec injects and the runtimeClassName set below.
+              https://github.com/NVIDIA/nvidia-container-toolkit/blob/main/cmd/nvidia-container-runtime/README.md#mig-devices
+            */}}
+            - name: NVIDIA_MIG_CONFIG_DEVICES
+              value: "all"
+            - name: NVIDIA_MIG_MONITOR_DEVICES
+              value: "all"
+            {{- end }}
           envFrom:
             - secretRef:
-                name: registration-token
+                name: {{ include "gpustack.registrationTokenSecretName" $ }}
                 optional: false
             - configMapRef:
                 name: worker-config
@@ -129,6 +171,9 @@ spec:
             - name: gpustack-amd-driver
               mountPath: /opt/rocm
               readOnly: true
+            - name: gpustack-amd-driver-lib
+              mountPath: /opt/rocm/lib
+              readOnly: true
             {{- end }}
             {{- if eq $w.runtime "ascend" }}
             - name: gpustack-ascend-driver
@@ -144,6 +189,9 @@ spec:
               readOnly: true
             - name: gpustack-hygon-toolkit
               mountPath: /opt/dtk
+              readOnly: true
+            - name: gpustack-hygon-mig-config
+              mountPath: /etc/dmi_mig_config
               readOnly: true
             {{- end }}
             {{- if eq $w.runtime "metax" }}
@@ -217,6 +265,12 @@ spec:
           hostPath:
             path: /opt/rocm
             type: DirectoryOrCreate
+        # Separate source: /opt/rocm/lib may be a symlink (e.g. to
+        # /etc/alternatives) that would dangle inside the container.
+        - name: gpustack-amd-driver-lib
+          hostPath:
+            path: /opt/rocm/lib
+            type: DirectoryOrCreate
         {{- end }}
         {{- if eq $w.runtime "ascend" }}
         - name: gpustack-ascend-driver
@@ -236,6 +290,10 @@ spec:
         - name: gpustack-hygon-toolkit
           hostPath:
             path: /opt/dtk
+            type: DirectoryOrCreate
+        - name: gpustack-hygon-mig-config
+          hostPath:
+            path: /etc/dmi_mig_config
             type: DirectoryOrCreate
         {{- end }}
         {{- if eq $w.runtime "metax" }}

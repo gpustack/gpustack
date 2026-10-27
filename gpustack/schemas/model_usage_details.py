@@ -91,6 +91,37 @@ class ModelUsageDetails(SQLModel, BaseModelMixin, table=True):
     completed_at: Optional[datetime] = Field(
         default=None, sa_column=Column(UTCDateTime(), nullable=True)
     )
+    # Milliseconds from request entry to the first response body *chunk*, as
+    # reported by the proxy. Streaming only — the non-streaming path never
+    # sees intermediate chunks. Deliberately the same figure the client is
+    # handed as ``usage.time_to_first_token_ms`` rather than a stricter
+    # time-to-first-token: for OpenAI the first chunk is usually a role-only
+    # delta, so this runs a few milliseconds optimistic, and two numbers under
+    # one name that disagree would be worse.
+    #
+    # There is no ``duration_ms`` beside it on purpose: the duration is
+    # ``completed_at - started_at``, both of which are already here, and a
+    # third number could only be one that disagrees with them.
+    ttft_ms: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    # Envoy's ``x-request-id``, which is what makes it the right column to key
+    # an audit lookup on: it exists for every tracked request whatever the
+    # endpoint or outcome, and it is the value the Envoy access log already
+    # carries, so one id quoted by a user resolves in both places. The gateway
+    # echoes it downstream under ``X-GPUStack-Request-Id`` so the user has it
+    # to quote.
+    #
+    # Indexed, never constrained unique. It identifies a *downstream* request
+    # while a row is written per filter-chain run, and a fallback pass is an
+    # internal redirect of the same downstream request — so two rows can
+    # legitimately carry one value.
+    request_id: Optional[str] = Field(default=None, index=True)
+    # The model's own id for this response (``chatcmpl-…``, ``resp_…``,
+    # ``msg_…``, ``embd-…``), taken verbatim from whatever the upstream put
+    # there. This is the id a caller reads off an SDK response, and the only
+    # one a third-party provider can be asked about. NULL when the upstream
+    # mints none, when the endpoint returns no JSON at all (TTS, image), and
+    # when no response arrived.
+    upstream_response_id: Optional[str] = Field(default=None)
 
     model_config = ConfigDict(protected_namespaces=())
 
@@ -159,5 +190,11 @@ class ModelUsageDetailsArchive(SQLModel, BaseModelMixin, table=True):
     completed_at: Optional[datetime] = Field(
         default=None, sa_column=Column(UTCDateTime(), nullable=True)
     )
+    ttft_ms: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    # Indexed here as well as on the hot table. An id a user quotes is most
+    # often one from a request old enough to have been archived, so a lookup
+    # that only worked before archival would be the wrong half of the feature.
+    request_id: Optional[str] = Field(default=None, index=True)
+    upstream_response_id: Optional[str] = Field(default=None)
 
     model_config = ConfigDict(protected_namespaces=())

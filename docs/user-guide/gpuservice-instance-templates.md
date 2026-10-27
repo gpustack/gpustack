@@ -10,7 +10,7 @@ Navigate to the `GPU Service` > `Instance Templates` page to browse all availabl
 
 ![Screenshot: Instance Templates list](../assets/gpuservice/instance-templates/list.png)
 
-You can filter templates by name or vendor.
+You can filter templates by display name or name — either value a card may show — or by vendor.
 
 ## Adding a Template
 
@@ -36,6 +36,14 @@ A template lets you specify the following properties:
 - **Environment Variables**: The environment variables set in the container.
 
 After filling in the required fields, click `Save` to create the template.
+
+## Generated Value Placeholders
+
+When creating an instance, GPUStack resolves `{{generated_*}}` placeholders found in the startup command and in port access parameters, generating one value per instance and persisting it in the instance spec — so the value stays the same across instance stop/start. Currently supported:
+
+- `{{generated_token}}`: a random 32-character hex token. For example, the built-in JupyterLab templates use `--ServerApp.token={{generated_token}}` as the startup command and carry the same placeholder in the JUPYTER port's access parameters, so the web access link shown in the `Connect` column includes the token as a `?token=` query parameter for automatic login.
+
+Placeholders and port access parameters can be set through the API (`spec.command` and `spec.ports[].accessParams`); the template form does not expose them yet.
 
 ## Editing a Template
 

@@ -3,7 +3,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from sqlalchemy import true
@@ -26,6 +26,7 @@ from gpustack.schemas.model_routes import (
     ModelRoutesPublic,
     ModelRouteTarget,
     ModelRouteTargetUpdateItem,
+    ModelRouteUpdate,
     MyModel,
     TargetStateEnum,
 )
@@ -230,6 +231,9 @@ async def test_get_model_routes_stream_applies_state_filter(monkeypatch):
     monkeypatch.setattr(MyModel, "streaming", fake_streaming)
 
     await model_routes._get_model_routes(
+        ctx=TenantContext(
+            user=None, is_platform_admin=True, current_principal_id=None, org_role=None
+        ),
         params=ModelRouteListParams(page=1, perPage=24, watch=True),
         state=ModelStateFilterEnum.READY,
         target_class=MyModel,
@@ -309,6 +313,25 @@ def test_model_route_create_rejects_slashed_name():
     ``<owner>/<name>`` shape the read path synthesizes."""
     with pytest.raises(ValueError, match="must start with a letter"):
         ModelRouteCreate(name="org1/qwen3-0.6b", targets=[])
+
+
+def test_provider_target_accepts_slashed_model_name():
+    target = ModelRouteTargetUpdateItem(
+        provider_id=10,
+        overridden_model_name="kimi/kimi-k3",
+        weight=1,
+    )
+
+    assert target.overridden_model_name == "kimi/kimi-k3"
+
+
+def test_local_model_target_rejects_slashed_overridden_model_name():
+    with pytest.raises(ValueError, match="local-model target must start"):
+        ModelRouteTargetUpdateItem(
+            model_id=5,
+            overridden_model_name="base/lora",
+            weight=1,
+        )
 
 
 def test_model_route_public_accepts_enriched_slashed_name():
@@ -649,7 +672,7 @@ async def test_get_model_routes_admin_act_as_watch_applies_grant_filter(monkeypa
     async def fake_fetch_granted_route_ids(ctx):
         return {17}
 
-    def fake_streaming(fields=None, fuzzy_fields=None, filter_func=None):
+    def fake_streaming(fields=None, fuzzy_fields=None, filter_func=None, **kwargs):
         captured["fields"] = fields
         captured["filter_func"] = filter_func
 
@@ -843,7 +866,10 @@ def _capture_target_updates(monkeypatch):
         captured.append(source)
         for key, value in (source or {}).items():
             setattr(self, key, value)
-        return self
+        # ActiveRecord.update() mutates the instance in place and has no
+        # return value; mirroring that keeps the helper honest about what the
+        # callers can rely on.
+        return None
 
     monkeypatch.setattr(ModelRouteTarget, "update", fake_update)
     return captured
@@ -915,6 +941,180 @@ async def test_update_targets_provider_to_model_clears_provider_id(monkeypatch):
     assert source["provider_id"] is None
     assert source["model_id"] == 5
     assert source["state"] == TargetStateEnum.UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_update_model_route_notifies_created_model_targets(monkeypatch):
+    # batch_handle_targets creates new targets on PUT; creation carries
+    # no UPDATED event of its own, so the handler must enqueue the
+    # ai-proxy reconcile for the created model-backed entries after the
+    # commit — same as the create and add-targets paths.
+    route = SimpleNamespace(
+        id=1,
+        name="r1",
+        targets=1,
+        owner_principal_id=None,
+        deleted_at=None,
+        meta=None,
+    )
+    notify_ai_proxy = AsyncMock()
+    monkeypatch.setattr(model_routes, "notify_model_ai_proxy_change", notify_ai_proxy)
+    monkeypatch.setattr(model_routes, "assert_resource_visible", lambda *a, **k: None)
+    monkeypatch.setattr(
+        model_routes, "revoke_model_access_cache", AsyncMock(return_value=None)
+    )
+
+    async def fake_one_by_fields(session, fields, **kw):
+        return None
+
+    async def fake_one_by_id(session=None, id=None, **kw):
+        return route
+
+    async def fake_batch_handle_targets(**kw):
+        return 2, []
+
+    async def fake_dispatch(action, route_, plugins, session):
+        return None
+
+    monkeypatch.setattr(ModelRoute, "one_by_fields", fake_one_by_fields)
+    monkeypatch.setattr(ModelRoute, "one_by_id", fake_one_by_id)
+    monkeypatch.setattr(model_routes, "batch_handle_targets", fake_batch_handle_targets)
+    monkeypatch.setattr(model_routes, "dispatch_route_hooks", fake_dispatch)
+    monkeypatch.setattr(
+        model_routes.ModelRouteService, "update", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        model_routes, "_route_with_fresh_lb_mode", AsyncMock(return_value=route)
+    )
+
+    result = await model_routes.update_model_route(
+        id=1,
+        session=MagicMock(commit=AsyncMock()),
+        ctx=MagicMock(),
+        input=ModelRouteUpdate(
+            name="r1",
+            targets=[
+                ModelRouteTargetUpdateItem(id=1, model_id=5, weight=2),
+                ModelRouteTargetUpdateItem(model_id=6, weight=1),
+            ],
+        ),
+    )
+    assert result is route
+    # the created entry (no id) is the only one notified
+    called = notify_ai_proxy.await_args
+    assert called.args[1] == {6}
+
+
+@pytest.mark.asyncio
+async def test_batch_rejects_mixed_weights(monkeypatch):
+    """A write that would leave some targets weighted and others not is
+    rejected at the API on the post-write ROW state: LB cannot render
+    that shape, and letting it through would only record lb_mode
+    "invalid" asynchronously after a 200."""
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        model_id=5,
+        weight=100,
+        state=TargetStateEnum.ACTIVE,
+    )
+    created = ModelRouteTarget(
+        id=2,
+        name="r1-fghij",
+        route_name="r1",
+        route_id=1,
+        model_id=6,
+        weight=0,
+        state=TargetStateEnum.ACTIVE,
+    )
+
+    async def fake_all_by_field(session=None, field=None, value=None, **kw):
+        # the row state once the batch's writes are staged
+        return [existing, created]
+
+    async def fake_validate_targets(**kwargs):
+        return None
+
+    async def fake_update_model_route_targets(**kwargs):
+        return [existing]
+
+    async def fake_create_model_route_targets(**kwargs):
+        return [created]
+
+    monkeypatch.setattr(ModelRouteTarget, "all_by_field", fake_all_by_field)
+    monkeypatch.setattr(model_routes, "validate_targets", fake_validate_targets)
+    monkeypatch.setattr(model_routes, "dispatch_target_hooks", AsyncMock())
+    monkeypatch.setattr(ModelRouteTarget, "delete", AsyncMock())
+    monkeypatch.setattr(
+        model_routes,
+        "update_model_route_targets",
+        fake_update_model_route_targets,
+    )
+    monkeypatch.setattr(
+        model_routes,
+        "create_model_route_targets",
+        fake_create_model_route_targets,
+    )
+
+    with pytest.raises(InvalidException):
+        await model_routes.batch_handle_targets(
+            session=MagicMock(),
+            route_id=1,
+            route_name="r1",
+            targets=[
+                ModelRouteTargetUpdateItem(id=1, model_id=5, weight=100),
+                ModelRouteTargetUpdateItem(model_id=6, weight=0),
+            ],
+        )
+
+    # an explicit weight on the new entry resolves the mix
+    created.weight = 1
+    _, _ = await model_routes.batch_handle_targets(
+        session=MagicMock(),
+        route_id=1,
+        route_name="r1",
+        targets=[
+            ModelRouteTargetUpdateItem(id=1, model_id=5, weight=100),
+            ModelRouteTargetUpdateItem(model_id=6, weight=1),
+        ],
+    )
+
+
+def test_strip_plugin_meta_keys_hoists_lb_mode_everywhere():
+    # The list response hoists lb_mode but must not drop the user-owned
+    # meta keys (the column existed on the list endpoint before); only
+    # the plugin-owned keys are hidden, same contract as the detail
+    # path.
+    item = SimpleNamespace(
+        meta={"lb": {"enabled": True}, "note": "user", "lb_mode": "weighted"}
+    )
+    model_routes._strip_plugin_meta_keys([item])
+    assert item.lb_mode == "weighted"
+    assert item.meta == {"note": "user"}
+
+
+def test_merge_meta_update_preserves_plugin_keys_and_clears():
+    # An explicit meta update — even a None "clear everything" — keeps
+    # the plugin-owned keys (policy sections and derived state alike)
+    # from the stored row: responses hide them, so a round-tripped or
+    # clearing request cannot delete a policy, and a forged derived
+    # value never reaches the row.
+    existing = {"lb": {"enabled": True}, "note": "old", "lb_mode": "weighted"}
+    assert model_routes._merge_meta_update(existing, {"note": "new"}) == {
+        "note": "new",
+        "lb": {"enabled": True},
+        "lb_mode": "weighted",
+    }
+    assert model_routes._merge_meta_update(existing, None) == {
+        "lb": {"enabled": True},
+        "lb_mode": "weighted",
+    }
+    assert model_routes._merge_meta_update(None, {"lb_mode": "weighted"}) == {}
+    assert model_routes._merge_meta_update(None, {"lb_mode": "scoring", "a": 1}) == {
+        "a": 1
+    }
 
 
 @pytest.mark.asyncio
@@ -1040,3 +1240,99 @@ async def test_update_targets_keeps_omitted_fields(monkeypatch):
     assert source["weight"] == 9
     # overridden_model_name was not sent, so it is preserved.
     assert source["overridden_model_name"] == "base:lora"
+
+
+@pytest.mark.asyncio
+async def test_update_targets_returns_targets_when_update_returns_none(monkeypatch):
+    """The batch helper returns the updated targets themselves; the return value
+    of ``update()`` carries nothing that callers may rely on."""
+    captured = _capture_target_updates(monkeypatch)
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        model_id=5,
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+
+    result = await model_routes.update_model_route_targets(
+        session=MagicMock(),
+        targets=[ModelRouteTargetUpdateItem(id=1, model_id=5, weight=2)],
+        existing_target_map={1: existing},
+    )
+
+    assert len(captured) == 1
+    assert result == [existing]
+
+
+@pytest.mark.asyncio
+async def test_add_targets_refreshes_real_targets_only(monkeypatch):
+    """A batch that updates an existing target and adds a new one is answered
+    with both, and the handler refreshes exactly those two objects."""
+    route = SimpleNamespace(
+        id=1, name="r1", targets=2, owner_principal_id=None, deleted_at=None
+    )
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        model_id=5,
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+    created = ModelRouteTarget(
+        id=2,
+        name="r1-fghij",
+        route_name="r1",
+        route_id=1,
+        model_id=6,
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+    _capture_target_updates(monkeypatch)
+    notify_ai_proxy = AsyncMock()
+    monkeypatch.setattr(model_routes, "notify_model_ai_proxy_change", notify_ai_proxy)
+    session = MagicMock(commit=AsyncMock(), refresh=AsyncMock())
+
+    async def fake_all_by_field(session=None, field=None, value=None, **kwargs):
+        return [existing]
+
+    async def fake_validate_targets(**kwargs):
+        return None
+
+    async def fake_create_model_route_targets(**kwargs):
+        return [created]
+
+    async def fake_one_by_id(**kwargs):
+        return route
+
+    monkeypatch.setattr(ModelRouteTarget, "all_by_field", fake_all_by_field)
+    monkeypatch.setattr(model_routes, "validate_targets", fake_validate_targets)
+    monkeypatch.setattr(
+        model_routes, "create_model_route_targets", fake_create_model_route_targets
+    )
+    monkeypatch.setattr(ModelRoute, "one_by_id", fake_one_by_id)
+    monkeypatch.setattr(model_routes, "assert_resource_visible", lambda *a, **k: None)
+    monkeypatch.setattr(
+        model_routes.ModelRouteService, "update", AsyncMock(return_value=None)
+    )
+
+    result = await model_routes.add_model_route_targets(
+        id=1,
+        session=session,
+        ctx=MagicMock(),
+        targets=[
+            ModelRouteTargetUpdateItem(id=1, model_id=5, weight=2),
+            ModelRouteTargetUpdateItem(model_id=6, weight=1),
+        ],
+    )
+
+    assert result == [existing, created]
+    assert session.refresh.await_args_list == [call(existing), call(created)]
+    # Target creation carries no UPDATED event of its own, so the
+    # handler enqueues the ai-proxy reconcile for the created
+    # model-backed entries only (the id=1 entry is an update).
+    notify_ai_proxy.assert_awaited_once_with(session, {6})

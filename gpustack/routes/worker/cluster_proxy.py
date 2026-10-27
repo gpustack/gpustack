@@ -9,12 +9,13 @@ from typing import Optional, Tuple
 import aiohttp
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from urllib.parse import unquote
 
 from gpustack.api.auth import worker_auth
 from gpustack.api.exceptions import (
+    InvalidException,
     InternalServerErrorException,
 )
-
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
@@ -47,6 +48,12 @@ _REQUEST_HEADER_SKIP = {
 _RESPONSE_HEADER_SKIP = {
     "transfer-encoding",
     "content-length",
+    # aiohttp auto-decompresses the upstream body (auto_decompress=True), so the
+    # bytes we forward are already plain text. Drop Content-Encoding to avoid
+    # advertising a gzip body that no longer exists — otherwise the server-side
+    # aiohttp client tries to gunzip plain text and fails with
+    # "Can not decode content-encoding: gzip" (zlib incorrect header check).
+    "content-encoding",
     "connection",
     "keep-alive",
     "proxy-authenticate",
@@ -62,6 +69,22 @@ _session_lock = asyncio.Lock()
 
 def _read_token() -> str:
     return TOKEN_PATH.read_text().strip()
+
+
+def _assert_plain_api_path(path: str) -> None:
+    """Defense in depth: the server authorizes a canonicalized path, but this
+    endpoint is also reachable by anything holding a worker token, so reject
+    traversal-shaped tails here too rather than letting the URL library
+    resolve them against the in-cluster API server."""
+    decoded = unquote(path)
+    if (
+        any(c in decoded for c in "%\\?#")
+        or any(ord(c) <= 0x20 or ord(c) == 0x7F for c in decoded)
+        or any(seg in (".", "..") for seg in decoded.split("/"))
+    ):
+        raise InvalidException(
+            message="Cluster proxy request path is not a plain Kubernetes API path"
+        )
 
 
 @functools.lru_cache(maxsize=1)
@@ -138,6 +161,7 @@ async def cluster_proxy(path: str, request: Request):
     authenticating the original caller; this endpoint trusts the worker
     bearer token (see worker_auth dependency).
     """
+    _assert_plain_api_path(path)
     base_url, _ = _resolve_kube_target()
     target_url = f"{base_url}/{path}"
 
@@ -172,13 +196,15 @@ async def cluster_proxy(path: str, request: Request):
                 yield chunk
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            logger.warning(
-                "cluster-proxy stream interrupted for %s %s: %s",
-                request.method,
-                target_url,
-                e,
-            )
+        except Exception:
+            # The status code and headers were already committed to the
+            # caller from the upstream's initial response, so a mid-body
+            # failure can no longer be turned into a non-200. Re-raise
+            # instead of returning normally: letting the generator complete
+            # cleanly here made StreamingResponse close out the body as if
+            # it had ended successfully, so the caller received a truncated
+            # payload under a 200 with no indication anything went wrong.
+            raise
         finally:
             resp.release()
 

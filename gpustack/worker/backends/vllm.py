@@ -22,6 +22,7 @@ from gpustack.schemas.models import (
     SpeculativeAlgorithmEnum,
     SpeculativeConfig,
     ModelInstanceDeploymentMetadata,
+    get_backend,
     is_audio_model,
     is_omni_model,
 )
@@ -37,11 +38,17 @@ from gpustack.utils.command import (
 )
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.unit import byte_to_gib
+from gpustack.utils.vllm_kv_cache import ascend_local_kv_cache_unsupported_reason
 from gpustack.utils.vllm_topology import (
     MultinodeShape,
     MultinodeUserParallelism,
     parse_user_parallelism,
     validate_multinode_topology,
+)
+from gpustack.worker.kv_transfer import (
+    TOP_LEVEL_ONLY_KEYS,
+    compose_kv_transfer_config,
+    descriptor_in,
 )
 from gpustack.worker.backends.base import (
     InferenceServer,
@@ -56,6 +63,25 @@ logger = logging.getLogger(__name__)
 # vLLM only accepts a fixed set of values for --max-lora-rank; a rank in between
 # must be rounded up to the next allowed value.
 _VLLM_LORA_RANK_CHOICES = (8, 16, 32, 64, 128, 256, 320, 512)
+
+
+def _top_level_only_keys(model) -> Tuple[str, ...]:
+    """Settings this engine reads only off a top-level connector descriptor.
+
+    Declared in `pd-modes.yaml` under `composed_cache.top_level_only` and read
+    here rather than inside the composer, which stays a pure function over
+    descriptors. A catalog that cannot be reached is not a reason to fail a
+    launch: the composition still happens, just without lifting anything, which
+    is the behaviour of every release before the declaration existed.
+    """
+    try:
+        from gpustack.server.pd_mode_catalog import get_composed_cache
+
+        declared = get_composed_cache(get_backend(model))
+    except Exception as e:  # noqa: BLE001 - catalog is advisory here
+        logger.debug("Could not read the composed-cache declaration: %s", e)
+        return TOP_LEVEL_ONLY_KEYS
+    return tuple(declared.top_level_only) if declared else TOP_LEVEL_ONLY_KEYS
 
 
 def _round_up_vllm_lora_rank(rank: int) -> int:
@@ -248,11 +274,14 @@ class VLLMServer(InferenceServer):
             ],
             resources=resources,
             mounts=mounts,
+            files=self._get_configured_files(),
             ports=ports,
         )
 
         executor_backend = resolve_executor_backend(
-            self._model.backend_parameters, self._model.backend_version
+            self._model.backend_parameters,
+            self._model.backend_version,
+            self._model.image_name,
         )
 
         # Adjust run container for distributed follower (Ray path only).
@@ -324,6 +353,7 @@ class VLLMServer(InferenceServer):
                 envs=sidecar_envs,
                 resources=run_container.resources,
                 mounts=run_container.mounts,
+                files=run_container.files,
                 ports=ray_ports,
             )
 
@@ -340,6 +370,11 @@ class VLLMServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
             host_network=True,
+            # Host IPC only when a shared cache service is attached: its
+            # CUDA-IPC transfer path imports the engine's KV buffers by IPC
+            # handle. Everything else keeps the private /dev/shm sized by
+            # shm_size.
+            host_ipc=self._host_ipc_enabled(),
             shm_size=int(container_config.shm_size_gib * (1 << 30)),
             containers=(
                 [run_container]
@@ -378,7 +413,7 @@ class VLLMServer(InferenceServer):
         env["RUNAI_STREAMER_LOG_LEVEL"] = env.pop("RUNAI_STREAMER_LOG_LEVEL", "INFO")
 
         # Persist the torch compile cache so repeated starts don't recompile.
-        self._set_cache_env(env)
+        self._set_cache_env(env, "VLLM_CACHE_ROOT", "vllm")
 
         # Apply LMCache environment variables if extended KV cache is enabled
         self._set_lmcache_env(env)
@@ -393,28 +428,6 @@ class VLLMServer(InferenceServer):
 
         return env
 
-    def _set_cache_env(self, env: Dict[str, str]):
-        """
-        Point VLLM_CACHE_ROOT at a persistent directory under gpustack's data dir
-        so the torch compile cache survives container restarts. The directory is
-        inherited by the inference container via gpustack-runtime's mirrored
-        deployment (worker's data-dir mount is replicated to the vLLM container).
-        """
-        if "VLLM_CACHE_ROOT" in env:
-            return
-        if not self._config or not self._config.cache_dir:
-            return
-        cache_dir = os.path.join(self._config.cache_dir, "vllm")
-        try:
-            os.makedirs(cache_dir, exist_ok=True)
-        except OSError as e:
-            logger.warning(
-                f"Failed to create vLLM cache dir {cache_dir}: {e}. "
-                "Torch compile cache will not be persisted."
-            )
-            return
-        env["VLLM_CACHE_ROOT"] = cache_dir
-
     def _set_lmcache_env(self, env: Dict[str, str]):
         """
         Set up LMCache environment variables if extended KV cache is enabled.
@@ -423,17 +436,57 @@ class VLLMServer(InferenceServer):
         if not (extended_kv_cache and extended_kv_cache.enabled):
             return
 
+        if extended_kv_cache.is_shared():
+            # Shared mode: connector env resolved server-side is snapshotted
+            # onto the instance; local CPU cache sizing does not apply.
+            cache_config = self._model_instance.cache_config
+            if cache_config and cache_config.injected:
+                env.update(cache_config.env or {})
+            else:
+                reason = (
+                    f" Reason: {cache_config.reason}"
+                    if cache_config and cache_config.reason
+                    else ""
+                )
+                logger.warning(f"Starting without shared KV cache.{reason}")
+            return
+
+        vendor, _, _ = self._get_device_info()
+        if vendor == manufacturer_to_backend(ManufacturerEnum.ASCEND):
+            # Ascend runs the connector vllm-ascend ships rather than LMCache,
+            # and takes its sizing from --kv-transfer-config; LMCache reads
+            # none of these variables there.
+            return
+
         if extended_kv_cache.chunk_size and extended_kv_cache.chunk_size > 0:
             env["LMCACHE_CHUNK_SIZE"] = str(extended_kv_cache.chunk_size)
 
+        ram_bytes = self._resolve_local_kv_cache_bytes()
+        if ram_bytes:
+            gib = byte_to_gib(ram_bytes)
+            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(
+                int(gib) if gib.is_integer() else gib
+            )
+
+    def _resolve_local_kv_cache_bytes(self) -> Optional[int]:
+        """Host RAM the local KV cache may occupy on this worker, in bytes.
+
+        The explicitly configured size wins; otherwise the ratio applies to
+        the instance's VRAM claim on this worker. ``None`` when the deployment
+        sets neither. Mirrors what the scheduler reserved for the instance
+        here (``get_computed_ram_claim``), which is a per-worker figure.
+        """
+        extended_kv_cache = self._model.extended_kv_cache
+        if not extended_kv_cache:
+            return None
+
         if extended_kv_cache.ram_size and extended_kv_cache.ram_size > 0:
-            # Explicitly specified RAM size for KV cache
-            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(extended_kv_cache.ram_size)
-        elif extended_kv_cache.ram_ratio and extended_kv_cache.ram_ratio > 0:
-            # Calculate RAM size based on ratio of total VRAM claim
-            vram_claim = self._get_total_vram_claim()
-            ram_size = int(vram_claim * extended_kv_cache.ram_ratio)
-            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(byte_to_gib(ram_size))
+            return extended_kv_cache.ram_size * 1024**3
+
+        if extended_kv_cache.ram_ratio and extended_kv_cache.ram_ratio > 0:
+            return int(self._get_total_vram_claim() * extended_kv_cache.ram_ratio)
+
+        return None
 
     def _resolve_multinode_shape(
         self,
@@ -466,7 +519,9 @@ class VLLMServer(InferenceServer):
 
         ports = self._model_instance.ports or []
         executor_backend = resolve_executor_backend(
-            self._model.backend_parameters, self._model.backend_version
+            self._model.backend_parameters,
+            self._model.backend_version,
+            self._model.image_name,
         )
         if executor_backend == "mp":
             # VLLM_DP_MASTER_PORT belongs to the DP coordinator path
@@ -479,10 +534,11 @@ class VLLMServer(InferenceServer):
             )
             if shape in ("dp_only", "nested") and ports:
                 env["VLLM_DP_MASTER_PORT"] = str(ports[-1])
-            # Pin vLLM's internal init port to a reserved one so get_open_port()
-            # can't grab a kernel-stealable ephemeral port (#5657). Needs the
-            # runner patch that makes get_open_port() honor VLLM_PORT.
-            if len(ports) > 3:
+            # Only dp_only needs a reserved start port for vLLM's TCPStore
+            # (#5657); with nnodes > 1 that port comes from --master-port, and a
+            # shared start port makes cross-node WorkerProcs racing for their
+            # XPUB socket collide (#6019).
+            if shape == "dp_only" and len(ports) > 3:
                 env["VLLM_PORT"] = str(ports[3])
         else:
             if ports:
@@ -585,7 +641,7 @@ class VLLMServer(InferenceServer):
         if not computed_resource_claim:
             return vram
 
-        for _, vram_claim in computed_resource_claim.vram.items():
+        for vram_claim in (computed_resource_claim.vram or {}).values():
             vram += vram_claim
 
         return vram
@@ -622,6 +678,7 @@ class VLLMServer(InferenceServer):
                 ctx.is_distributed,
                 ctx.deployment_metadata,
                 self._model.backend_version,
+                self._model.image_name,
             )
         )
         arguments.extend(self._get_speculative_arguments())
@@ -637,7 +694,8 @@ class VLLMServer(InferenceServer):
         )
         arguments.extend(self._build_ray_distributed_arguments(ctx))
         arguments.extend(self._build_mp_multinode_arguments(ctx))
-        arguments.extend(self._build_extended_kv_cache_arguments(ctx))
+        cache_args = self._build_extended_kv_cache_arguments(ctx)
+        arguments.extend(cache_args)
         arguments.extend(self._build_ascend_310p_arguments(ctx))
 
         extend_vllm_mounted_lora_arguments(
@@ -658,6 +716,17 @@ class VLLMServer(InferenceServer):
             ("--served-model-name", self._model_instance.model_name),
         )
 
+        # Compose after cache injection and user parameters have contributed
+        # their descriptors, so the engine receives one --kv-transfer-config.
+        # Both PD roles put the PD connector first and the cache second. Passing
+        # the cache descriptor identifies its origin independently of flag order.
+        arguments = compose_kv_transfer_config(
+            arguments,
+            getattr(self._model_instance, "role", None),
+            cache_first=descriptor_in(cache_args),
+            top_level_only=_top_level_only_keys(self._model),
+        )
+
         injected = self._get_injected_backend_parameters(
             arguments, user_backend_parameters, entrypoint
         )
@@ -671,7 +740,9 @@ class VLLMServer(InferenceServer):
         deployment_metadata: Optional[ModelInstanceDeploymentMetadata],
     ) -> _VLLMArgsContext:
         executor_backend = resolve_executor_backend(
-            self._model.backend_parameters, self._model.backend_version
+            self._model.backend_parameters,
+            self._model.backend_version,
+            self._model.image_name,
         )
         topology: Optional[MultinodeTopology] = None
         if (
@@ -748,7 +819,9 @@ class VLLMServer(InferenceServer):
         shapes based on the resolved topology:
 
         - ``dp_only``  → ``--data-parallel-*`` only; vLLM treats every node as
-          a DP engine head (no PP/TP spans nodes).
+          a DP engine head (no PP/TP spans nodes). Only followers carry
+          ``--data-parallel-start-rank``; on the leader it would select hybrid
+          LB instead of internal LB.
         - ``mp_only``  → ``--nnodes`` + ``--node-rank`` only; a single DP rank
           is spread across all nodes for cross-node TP/PP.
         - ``nested``   → both sets; vLLM derives node role internally via
@@ -784,9 +857,16 @@ class VLLMServer(InferenceServer):
         dp_rpc_port = str(self._model_instance.ports[1])
         master_port = str(self._model_instance.ports[2])
         if topology.shape == "dp_only":
+            # Since vLLM 0.28, --data-parallel-start-rank on the leader reads as
+            # an opt-in to hybrid LB, which then rejects the headless followers.
+            # The leader's DP rank is implicitly 0, so only followers send it.
+            if topology.start_rank > 0:
+                extend_args_no_exist(
+                    arguments,
+                    ("--data-parallel-start-rank", str(topology.start_rank)),
+                )
             extend_args_no_exist(
                 arguments,
-                ("--data-parallel-start-rank", str(topology.start_rank)),
                 ("--data-parallel-address", leader_ip),
                 ("--data-parallel-rpc-port", dp_rpc_port),
             )
@@ -824,19 +904,115 @@ class VLLMServer(InferenceServer):
         if not (extended and extended.enabled):
             return []
 
-        vendor, _, _ = self._get_device_info()
+        if extended.is_shared():
+            # Shared mode: accelerator support is the provider catalog's
+            # call — the server-side resolver picks the integration by the
+            # worker's framework and snapshots the outcome, so the worker
+            # applies the snapshot verbatim. Without an injected snapshot
+            # the instance starts degraded (no shared cache), so no
+            # connector args apply.
+            cache_config = self._model_instance.cache_config
+            if cache_config and cache_config.injected:
+                return list(cache_config.args or [])
+            return []
+
+        # Local mode wires an in-process offload connector, and which one
+        # depends on the accelerator: LMCache has no CANN build in the runner
+        # images, so Ascend goes through the connector vllm-ascend ships.
+        vendor, _, arch_family = self._get_device_info()
+        if vendor == manufacturer_to_backend(ManufacturerEnum.ASCEND):
+            return self._build_ascend_local_kv_cache_arguments(arch_family)
+
         if vendor not in {
             manufacturer_to_backend(ManufacturerEnum.NVIDIA),
             manufacturer_to_backend(ManufacturerEnum.AMD),
         }:
             logger.warning(
-                "Extended KV cache for vLLM is only supported on NVIDIA and AMD GPUs. Skipping LMCache configuration."
+                "Local extended KV cache for vLLM is only supported on NVIDIA, AMD and Ascend devices. Skipping KV cache offload configuration."
             )
             return []
 
         return [
             "--kv-transfer-config",
             '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}',
+        ]
+
+    def _build_ascend_local_kv_cache_arguments(
+        self, arch_family: Optional[str]
+    ) -> List[str]:
+        """Wire vllm-ascend's NPU-native CPU offload connector.
+
+        ``SimpleCPUOffloadConnector`` resolves to the NPU worker that
+        vllm-ascend registers over the upstream CUDA one, so local mode on
+        Ascend offloads KV blocks to host memory the way it does elsewhere —
+        the same deployment fields, a different engine-native mechanism, as
+        on SGLang with its hierarchical cache.
+
+        The capacity goes in as a per-rank budget. Its sibling
+        ``cpu_bytes_to_use`` is deployment-wide and the connector divides that
+        by ``world_size``, which counts TP x PP x PCP and leaves data
+        parallelism out: under ``--data-parallel-size N`` every DP engine
+        would reserve a full share and the host would hold N times the cache
+        the scheduler reserved for it. Dividing the worker's own budget by the
+        cards it was given keeps the sizing independent of the engine's
+        parallelism, and equal to what ``get_computed_ram_claim`` set aside.
+        """
+        version = self._model.backend_version
+        reason = ascend_local_kv_cache_unsupported_reason(arch_family, version)
+        if reason:
+            if not getattr(
+                self._model, "disaggregation", None
+            ) or ascend_local_kv_cache_unsupported_reason(arch_family, None):
+                logger.warning(f"{reason} Skipping KV cache offload configuration.")
+                return []
+            from packaging.version import InvalidVersion, Version
+
+            try:
+                parsed = Version(version)
+            except InvalidVersion:
+                parsed = None
+            if parsed and not (
+                parsed.local or parsed.is_prerelease or self._model.image_name
+            ):
+                logger.warning(
+                    "%s PD engine-version ranges are advisory; attempting requested KV cache offload configuration.",
+                    reason,
+                )
+            else:
+                logger.info(
+                    "PD KV cache offload compatibility is unverified for the custom "
+                    "image or non-release build. Built-in version check: %s "
+                    "Attempting requested KV cache offload configuration.",
+                    reason,
+                )
+
+        extra_config = {}
+        ram_bytes = self._resolve_local_kv_cache_bytes()
+        if ram_bytes:
+            ranks = len(self._get_selected_gpu_devices()) or 1
+            extra_config["cpu_bytes_to_use_per_rank"] = ram_bytes // ranks
+
+        extended = self._model.extended_kv_cache
+        if extended.chunk_size and extended.chunk_size > 0:
+            # The connector carries no chunking of its own: it stores whole KV
+            # blocks and reads its block sizes off the engine. Mapping the
+            # chunk size onto --block-size would retune the engine's paging
+            # rather than the cache, and vllm-ascend overrides it anyway
+            # whenever prefix caching is on — the mode this connector requires.
+            logger.warning(
+                "Cache chunk size does not apply to extended KV cache on Ascend. Ignoring it."
+            )
+
+        return [
+            "--kv-transfer-config",
+            json.dumps(
+                {
+                    "kv_connector": "SimpleCPUOffloadConnector",
+                    "kv_role": "kv_both",
+                    "kv_connector_extra_config": extra_config,
+                },
+                separators=(",", ":"),
+            ),
         ]
 
     def _build_ascend_310p_arguments(self, ctx: _VLLMArgsContext) -> List[str]:
@@ -1031,11 +1207,13 @@ def get_auto_parallelism_arguments(
     is_distributed: bool,
     deployment_metadata: Optional[ModelInstanceDeploymentMetadata] = None,
     backend_version: Optional[str] = None,
+    image_name: Optional[str] = None,
 ) -> List[str]:
     if (
         is_distributed
         and deployment_metadata is not None
-        and resolve_executor_backend(backend_parameters, backend_version) == "mp"
+        and resolve_executor_backend(backend_parameters, backend_version, image_name)
+        == "mp"
     ):
         # MP multi-node: derive shape-specific defaults for tp/pp/dp/dpl
         # so the cluster works out-of-the-box; subordinate workers receive
@@ -1074,7 +1252,7 @@ def get_auto_parallelism_arguments(
 
     if is_distributed:
         # distributed across multiple workers (Ray sidecar path)
-        (tp, pp) = cal_distributed_parallelism_arguments(model_instance)
+        tp, pp = cal_distributed_parallelism_arguments(model_instance)
         return [
             "--tensor-parallel-size",
             str(tp),

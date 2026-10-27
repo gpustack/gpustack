@@ -6,11 +6,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from gpustack.config import Config
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
 from gpustack.schemas.models import (
+    ModelInstance,
     BackendEnum,
     CategoryEnum,
     ComputedResourceClaim,
     Model,
-    ModelInstance,
     ModelInstanceSubordinateWorker,
     is_omni_model,
 )
@@ -22,13 +22,17 @@ from gpustack.utils.gpu import (
     group_gpu_ids_by_worker,
     group_gpu_indexes_by_gpu_type_and_worker,
 )
-from gpustack.policies.base import Allocatable, ModelInstanceScheduleCandidate
+from gpustack.policies.resource_view import ResourceView
+from gpustack.policies.base import (
+    Allocatable,
+    MemberResourceClaim,
+    ModelInstanceScheduleCandidate,
+)
 from gpustack.policies.utils import (
     ListMessageBuilder,
     get_computed_ram_claim,
     get_model_num_attention_heads,
     get_model_vision_num_attention_heads,
-    get_worker_allocatable_resource,
     get_worker_model_instances,
     should_skip_gpu_count_check,
     sort_gpu_indexes_by_allocatable_rate,
@@ -194,10 +198,13 @@ class ScheduleCandidatesSelector(ABC):
         config: Config,
         model: Model,
         model_instances: List[ModelInstance],
+        *,
+        resource_view: ResourceView,
     ):
         self._config = config
         self._model = model
         self._model_instances = model_instances
+        self._resource_view = resource_view
         self._model_params = ModelParameters()
         self._num_attention_heads = 0
         self._vision_num_attention_heads = 0
@@ -214,6 +221,35 @@ class ScheduleCandidatesSelector(ABC):
         :return: A list of diagnostic messages.
         """
         pass
+
+    def get_resource_claim(self) -> Optional[MemberResourceClaim]:
+        """What one instance of this model costs, as this selector priced it.
+
+        Only meaningful after ``select_candidates`` has run -- that is where the
+        resource-fit selectors compute the claim -- and it is the *same* number
+        their refusal quotes, not a second estimate of it.
+
+        The **reservation**, not the weights: an engine that takes a fraction
+        of the whole card books far more than the model needs, and the figure
+        a reader acts on is the one that will be held. Falls back to the
+        weights claim for a selector that reserves exactly what it needs.
+
+        ``None`` when this selector does not price a deployment as one pair of
+        totals: GGUF sizes per layer and per GPU, so there is no single figure
+        to hand back, and a caller must be able to say nothing rather than show
+        a zero it invented. No backend that can be disaggregated is in that
+        group today (see ``PD_BACKENDS``), which is why the group refusal path
+        is the only caller.
+
+        :return: The per-instance VRAM and RAM claim, or None.
+        """
+        vram = getattr(self, "_reserved_vram", None) or getattr(
+            self, "_vram_claim", None
+        )
+        ram = getattr(self, "_ram_claim", None)
+        if vram is None and ram is None:
+            return None
+        return MemberResourceClaim(vram=int(vram or 0), ram=int(ram or 0))
 
     @abstractmethod
     async def select_candidates(
@@ -315,9 +351,7 @@ class ScheduleCandidatesSelector(ABC):
         if allocatable is not None:
             return allocatable
 
-        allocatable = get_worker_allocatable_resource(
-            self._model_instances, worker, gpu_type
-        )
+        allocatable = self._resource_view.allocatable(worker, gpu_type)
         self._workers_allocatable_resource_by_gpu_type.setdefault(
             gpu_type, {}
         ).setdefault(worker.id, allocatable)

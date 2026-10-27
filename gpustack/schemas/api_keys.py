@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import ClassVar, Optional, List, TYPE_CHECKING
 from sqlalchemy import Column, ForeignKey, Integer, UniqueConstraint
 from sqlmodel import Field, SQLModel, Text, JSON, Relationship
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import ListParams, PaginatedList, UTCDateTime
@@ -56,6 +57,24 @@ class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     access_key: str = Field(unique=True, index=True)
     hashed_secret_key: str = Field(unique=True)
+    # Second verifier for the *same* plaintext, ``sha256$<salt>$<hash>``, issued
+    # only for secrets this server generated (see
+    # ``security.secret_key_digest_eligible``). Both columns are permanent and
+    # neither is legacy: this one is the hot-path verifier, ``hashed_secret_key``
+    # keeps its argon2 value forever as the fallback — which is also what lets an
+    # older version verify every key after a downgrade.
+    #
+    # HARD CONSTRAINT: the two columns must always derive from one plaintext.
+    # Authentication treats a digest mismatch as an authoritative rejection and
+    # does *not* retry against argon2, so anything that writes one column must
+    # write both, or set this one back to NULL. Today every writer is a creation
+    # path and there is no rotation path; a future rotation feature — or a manual
+    # DB fix — that touches ``hashed_secret_key`` alone would lock the key out.
+    #
+    # Populated at creation for eligible keys. NULL means either a row that
+    # predates the column, which the first successful argon2 verification
+    # backfills, or a key that is not eligible for a digest at all.
+    secret_key_digest: Optional[str] = Field(default=None, nullable=True)
     user_id: int = Field(foreign_key='principals.id', nullable=False)
     # ``owner_principal_id`` is the tenant the key acts as. Nullable
     # because an admin-created "All" mode key (no Org context) must
@@ -85,6 +104,35 @@ class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
     @property
     def user_name(self) -> Optional[str]:
         return self.user.name if self.user else None
+
+    async def delete(self, session: AsyncSession, soft=False, auto_commit=True):
+        """Delete the key and drop its cached authentication lookup.
+
+        ``APIKeyService.get_by_access_key`` is cached process-globally for
+        ``SERVER_CACHE_TTL_SECONDS``, so a delete that doesn't invalidate it
+        leaves the credential authenticating on ``/token-auth``'s fallback path
+        for the rest of the TTL. Invalidating here rather than only in
+        ``APIKeyService.delete`` means any caller reaching for the row's own
+        ``delete`` converges too, instead of the guarantee depending on going
+        through the service.
+
+        ``auto_commit=False`` is the caller's to finish. The entry is left alone
+        in that case, because dropping it while the row is still live to every
+        other session invites a concurrent read to put it straight back -- and
+        the stale value would then outlive the commit by a full TTL, which is
+        worse than not dropping it. Such a caller owns the invalidation too, and
+        has to do it after its own commit.
+        """
+        # Imported here because the service layer imports this module.
+        from gpustack.server.cache import build_cache_key, delete_cache_by_key
+        from gpustack.server.services import APIKeyService
+
+        result = await super().delete(session, soft=soft, auto_commit=auto_commit)
+        if auto_commit:
+            await delete_cache_by_key(
+                _key=build_cache_key(APIKeyService.get_by_access_key, self.access_key)
+            )
+        return result
 
 
 class ApiKeyListParams(ListParams):

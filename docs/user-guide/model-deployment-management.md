@@ -75,6 +75,10 @@ For more details, please refer to the [Inference Backends](built-in-inference-ba
 
 Select a backend version. The version availability depend on the selected backend. This option is useful for ensuring compatibility or taking advantage of features introduced in specific backend versions.
 
+For a built-in vLLM or SGLang backend, set `image_name` in the deployment configuration to use a container image that is not in the runner catalog. Leave `backend_version` unset: a custom image and a backend version cannot be selected together. When a vLLM deployment uses a custom image, distributed execution defaults to `mp`. If the image includes Ray and you want to use it, set `--distributed-executor-backend=ray` in `backend_parameters`.
+
+For a built-in vLLM or SGLang backend, `run_command` supplies initial startup arguments without the executable; GPUStack still adds its managed arguments, including the serving host and port. For a custom backend, `run_command` specifies the full command, including the executable. See [Using Custom Inference Backends](../tutorials/using-custom-backends.md) for an example.
+
 ## Edit Model Deployment
 
 1. Find the model deployment you want to edit on the deployment list page.
@@ -88,7 +92,7 @@ Select a backend version. The version availability depend on the selected backen
 
 ## Stop Model Deployment
 
-Stopping a model deployment will delete all model instances and release the resources. It is equivalent to scaling down the model to zero replicas.
+Stopping a model deployment sets its replica target to zero, deletes its instances, and releases resources. For deployments with scheduled scaling enabled, it also sets `scaling_schedule.paused` to suspend schedule execution. The enabled setting, baseline, and rules are preserved. Edits and rollbacks that keep the schedule enabled preserve its pause state; ordinary deployments use replica scaling without any pause state.
 
 1. Find the model deployment you want to stop on the deployment list page.
 2. Click the ellipsis button in the `Operations` column, then select `Stop`.
@@ -96,7 +100,9 @@ Stopping a model deployment will delete all model instances and release the reso
 
 ## Start Model Deployment
 
-Starting a model deployment is equivalent to scaling up the model to one replica.
+With scheduled scaling enabled, starting clears `scaling_schedule.paused` and GPUStack evaluates the schedule at the current time, without replaying missed windows. The replica target can remain zero outside active windows when the baseline is zero; the deployment is waiting for its schedule rather than paused. The action is labeled `Resume Schedule` for these deployments.
+
+Without an enabled schedule, starting sets the replica target to one. Disabling scheduled scaling is a separate configuration choice. Editing the replica count directly in the list switches to manual scaling after confirmation.
 
 1. Find the model deployment you want to start on the deployment list page.
 2. Click the ellipsis button in the `Operations` column, then select `Start`.
@@ -106,6 +112,154 @@ Starting a model deployment is equivalent to scaling up the model to one replica
 1. Find the model deployment you want to delete on the deployment list page.
 2. Click the ellipsis button in the `Operations` column, then select `Delete`.
 3. Confirm the deletion.
+
+## Export and Import Deployments
+
+Export deployments to a YAML file that holds their full configuration, and import that file to create them again. Typical uses: back up before an upgrade or migration, restore after reinstalling GPUStack, keep deployment configuration under version control, share a deployment template with your team, or reproduce the same deployments on another cluster.
+
+### Export Deployments
+
+1. Find the model deployment you want to export on the deployment list page.
+2. Click the ellipsis button in the `Operations` column, then select `Export YAML`.
+3. To export several deployments at once, select them first, then choose `Export YAML` from the batch actions dropdown above the list.
+
+The browser downloads a YAML file named `<deployment-name>.yaml` for a single deployment, or `gpustack-deployments-<timestamp>.yaml` for several.
+
+The file holds one deployment per YAML document, separated by `---`. Each one is the request body that created the deployment, plus the cluster it belongs to, minus the fields the server generates:
+
+```yaml
+# Exported from GPUStack v2.3.0 at 2026-09-07T10:00:00Z
+name: qwen3-8b
+cluster_name: production
+source: huggingface
+huggingface_repo_id: Qwen/Qwen3-8B
+replicas: 2
+placement_strategy: binpack
+worker_selector:
+  zone: a
+gpu_selector:
+  gpu_ids:
+  - worker-1:cuda:0
+  gpus_per_replica: 1
+backend: vLLM
+backend_version: 0.11.0
+backend_parameters:
+- --max-model-len=32768
+env:
+  HF_TOKEN: hf_xxx
+enable_model_route: true
+---
+name: bge-m3
+cluster_name: staging
+source: huggingface
+huggingface_repo_id: BAAI/bge-m3
+replicas: 1
+```
+
+Because each deployment starts at the left margin, you can copy one out of the file, or write one by hand, without re-indenting it. Importing also accepts a file written as a single YAML list, which is how earlier GPUStack releases exported.
+
+#### Field Reference
+
+Every field in the file is something you set on the deploy form. Below is what each one is called in either place, in the order an exported file writes them. What a field means is documented where that setting is, linked from the right-hand column.
+
+| Field | On the deploy form |
+| --- | --- |
+| `name` | `Name` |
+| `cluster_name` | `Cluster`, written as the cluster's name rather than its ID |
+| `source` | `Source` |
+| `huggingface_repo_id`, `huggingface_filename` | `Repo ID` and `File Name`, for a Hugging Face model |
+| `model_scope_model_id`, `model_scope_file_path` | `Repo ID` and `File Name`, for a ModelScope model |
+| `local_path` | `Model Path`, for a local path model |
+| `replicas` | `Replicas` |
+| `categories` | [`Model Category`](#model-category) |
+| `placement_strategy` | `Scheduling` → [`Auto`](#auto), the placement strategy |
+| `cpu_offloading` | [`Allow CPU Offloading`](#allow-cpu-offloading) |
+| `distributed_inference_across_workers` | [`Allow Distributed Inference Across Workers`](#allow-distributed-inference-across-workers) |
+| `worker_selector` | `Scheduling` → [`Manual`](#manual) → `Selector` |
+| `gpu_selector` | `Scheduling` → `Specify GPU` |
+| `gpu_type_selector` | `Scheduling` → `Specify GPU Type` |
+| `backend` | [`Backend`](#backend) |
+| `backend_version` | [`Backend Version`](#backend-version) |
+| `backend_parameters` | [`Backend Parameters`](#backend-parameters) |
+| `image_name` | A container image for a built-in or custom backend; mutually exclusive with `backend_version` for built-in backends |
+| `run_command` | Initial arguments for built-in vLLM or SGLang, or the full command for a custom backend |
+| `native_anthropic_api` | `Native Anthropic API` |
+| `env` | [`Environment Variables`](#environment-variables) |
+| `restart_on_error` | [`Auto-Restart On Error`](#auto-restart-on-error) |
+| `extended_kv_cache` | [`Extended KV Cache`](#extended-kv-cache) |
+| `speculative_config` | `Performance` → speculative decoding |
+| `scaling_schedule` | `Scheduled Scaling` |
+| `generic_proxy` | [`Enable Generic Proxy`](#enable-generic-proxy) |
+| `lora_list` | [`LoRA Adapters`](#lora-adapters) |
+| `enable_model_route` | `Enable Model Route`, which the form offers only while creating a deployment |
+
+The last group of fields — `gpu_selector`, `gpu_type_selector`, `extended_kv_cache`, `speculative_config`, `scaling_schedule` and `lora_list` — hold a block rather than a single value, and the shape of that block is not written out here. Configure the setting on a deployment, export it, and copy the block from the file: that is both quicker than transcribing it and the only way to be sure of it.
+
+`description` and `distributable` are carried through the file but have no control on the form.
+
+What the file leaves out: IDs, timestamps, runtime state such as ready replicas and pause state, metadata derived by the scheduler, the owning organization, the access policy, and LoRA runtime paths. With scheduled scaling enabled, the exported replica count is the configured baseline rather than the current window target. The server regenerates runtime state on import; overwriting an existing deployment with an enabled paused schedule preserves its pause state.
+
+Selecting deployments from several clusters at once is fine: each entry records its own `cluster_name`, so one file describes them all and imports back whole. The cluster is written by name rather than by ID, so a file still restores correctly into a GPUStack that numbers its clusters differently — as a reinstall does.
+
+A file covers one organization, however many of its clusters. Deployment names are unique within an organization rather than across them, so a selection spanning organizations — which only a platform admin viewing `All` can make — is refused; export each organization on its own.
+
+Where a deployment ran is never exported. A deployment scheduled automatically has no `gpu_selector` in the file at all, so importing it schedules it afresh against whatever the target cluster has available. GPUs you picked yourself are your intent rather than a scheduling result, so they are exported as written — see the note on importing into a different cluster below.
+
+!!! warning
+
+    Environment variables are exported exactly as you entered them and may contain credentials such as `HF_TOKEN`. Do not commit an exported file to a public repository; remove or replace sensitive values before sharing it.
+
+### Import Deployments
+
+1. Click the `Deploy Model` button, then select `YAML File` in the dropdown.
+2. Choose a `.yaml` file. The file is the starting point — nothing is read from a cluster first — and the deployments it names are looked up to fill the read-only side of the diff. Choosing a second file replaces the first outright, edits and all.
+3. Decide where the deployments go. `Follow the file`, which is how the drawer starts, lands each entry in the cluster its own `cluster_name` names — that is what restores a backup spanning several clusters in one import. An entry that names no cluster falls back to the one its deployment is already in. Pick a specific cluster instead and every entry goes there, whatever the file says.
+4. Review the diff. The left-hand side is the deployment as GPUStack holds it, the right-hand side is what would be imported. The list beside them starts with the whole document and then indexes each deployment in it, marked `Create`, `Update` or `Unchanged`, with a count of the fields an `Update` would change; pick an entry to edit that deployment on its own, or the first row to edit all of them at once.
+5. Fix anything the list flags in red. The reason is shown above the diff, and the document is checked again as you edit it — shortly after you stop typing, or straight away when you leave the editor.
+6. Click `Import`. If the plan replaces any existing deployment, confirm it once — the dialog names every deployment that would be replaced. Everything is written at once; if any one entry fails, nothing from the file is written.
+
+`Import` stays disabled while the document would write nothing. Re-importing an untouched export is exactly that: every entry reads as `Unchanged`, and only what you change from it is an import.
+
+The file itself is never uploaded: only the text in the editor travels with the import request.
+
+The following rules apply when importing:
+
+- **Overwriting is deliberate and narrow.** An entry whose name matches an existing deployment replaces it only if you confirm the replacement when you import, and only if that deployment is **stopped**. Stopped means both scaled to zero replicas and no instances left running — scaling down returns immediately but the instances take a moment to shut down, so an import right after may ask you to wait. Deployment names are unique across your whole organization, so the name in an entry always identifies exactly one deployment, in whichever cluster it happens to run.
+- **The cluster is an ordinary field of the entry.** Change `cluster_name` in the editor, or pick a different cluster for the import, and the overwrite moves the deployment there. Because an overwrite only reaches a **stopped** deployment, there are no instances to migrate: the next ones are placed in whichever cluster it names by then. Remember to update `gpu_selector` and `worker_selector` to match the new cluster, or remove them.
+- **An overwrite replaces the deployment, it does not merge into it.** The file is the desired state, so a field you delete from it goes back to its default. Removing the `gpu_selector` block is how you return a deployment to automatic scheduling. Entries the plan marks `Unchanged` are not written at all.
+- **Model routes follow `enable_model_route`.** Setting it to `false` on an overwrite deletes the route that deployment created, along with its LoRA child routes. Removing a LoRA adapter from the file deletes that adapter's route on its own, with the rest left alone. Either way, if a route being deleted also serves another deployment, the entry is rejected instead — detach the other targets first.
+- **Replicas come from the file.** Edit `replicas` in the editor when the target environment is a different size from the one the file came from. With hand-picked GPUs, check that `gpu_selector` still holds enough of them for the new count, exactly as you would when editing the deployment. With scheduled scaling enabled the count sets `scaling_schedule.baseline_replicas`, since the schedule owns the replica count.
+- A field GPUStack does not recognize is rejected rather than silently dropped. This usually means the file came from a newer GPUStack release; remove the field named in the error and retry.
+- **A cluster this GPUStack does not have is named, not guessed at.** Importing a file from another installation, where the clusters are called something else, flags each entry whose `cluster_name` is unknown. Either rename it to a cluster that exists here, or pick a specific cluster to put everything in. An entry that names no cluster at all, for a deployment that does not exist yet, is flagged the same way — there is nowhere to put it.
+- **The file says which organization it lands in.** A platform admin viewing `All` has no organization selected, so `Follow the file` reads one off the clusters the file names. A file naming clusters from two organizations, or none this GPUStack has, is refused rather than defaulting anywhere — pick a specific cluster for the import, or switch to the organization first.
+- When an entry lands in a different cluster from the one it was exported from, `gpu_ids` under `gpu_selector` and `worker_selector` still refer to the GPUs and workers of the original cluster. Change them to values from the new cluster, or remove them to let the scheduler place the deployment; otherwise the import fails because the GPUs cannot be found.
+
+## Deployment Revision History
+
+GPUStack records a configuration revision when you create a model deployment or change its deployment settings, including updates imported from YAML. Saving the same configuration, pausing or resuming scheduled scaling, restarting instances, and automatic changes such as scheduled scaling do not create revisions. Existing deployments receive an initial snapshot when their history is first opened or their configuration is first updated; earlier configurations cannot be recovered.
+
+1. Find the deployment in the model deployment list.
+2. Open its `Operations` menu and select `Revision history`.
+3. Select a revision to compare it with its immediate predecessor in a read-only YAML diff. For example, selecting `v2` shows `v1` on the left and `v2` on the right. The latest revision remains available for inspection. An initial revision, or one whose predecessor has been deleted or pruned, shows its full configuration instead.
+4. Click the `Roll back to this revision` action on an older revision’s row. The same drawer switches to a preview titled `Roll back <name> to vN`, comparing the current deployment configuration with that revision. The revision list is hidden while reviewing the rollback. Click `Back to history` to return to your previous selection and page. To apply the configuration, click `Roll back` directly in the preview; no additional confirmation dialog is shown. The latest revision has no rollback action. Rollback is disabled when the configurations match. The server validates the configuration using the same rules as a normal edit. A successful rollback that changes configuration creates a new revision.
+
+Rollback restores deployment settings, including backend configuration, environment variables, placement, replicas, scheduled scaling, and LoRA adapters. It preserves the deployment's name, description, organization, cluster, access policy, and revision retention setting. Independent model route settings are not restored; derived LoRA routes follow the restored adapters.
+
+If a saved snapshot lacks a field, rollback preserves that field's current value. The rollback preview includes the preserved value so it matches the configuration that will be submitted. An explicit `null` in the saved snapshot still clears the field. Incompatible configuration schema changes require a history migration.
+
+Revision views use the same configuration formatting as YAML import and export: unset model fields are omitted and fields follow schema order. Explicit values such as `false`, `0`, and empty overrides remain visible. Clearing a setting appears as removing its line from the diff. This formatting only affects the displayed configuration; rollback uses the complete saved snapshot.
+
+The preview has a `Restart on rollback` checkbox, selected by default, on the left of the footer alongside the action buttons. After saving the restored configuration, the UI requests a deployment restart to recreate its instances. Clear the checkbox to save without restarting; a yellow notice appears when the configuration changes require recreating instances. Once the rollback and any requested restart succeed, the drawer closes and the deployment list refreshes. If the configuration is saved but restarting fails, the drawer stays open, reports both outcomes, and provides `Retry restart`, which does not repeat the rollback. A successful retry also closes the drawer and refreshes the list. Calling the rollback API directly only restores configuration.
+
+The latest revision identifies the newest saved configuration, not a guarantee that all running instances use it. Restarting is asynchronous and does not provide a zero-downtime transition. Configuration validity is checked when you submit the rollback, so a preview can still fail to apply if referenced resources or supported settings have changed.
+
+### Revision Retention
+
+Deployments retain **10** older revisions in addition to the latest one by default. The deployment form does not expose this setting. Advanced users can adjust `revision_history_limit` through the API. Set it to **0** to keep only the latest revision. Lowering the limit immediately removes excess history, starting with the oldest entries, without creating a configuration revision.
+
+The history drawer does not offer individual revision deletion; automatic cleanup follows the deployment's retention limit. The API allows deleting older revisions, but the latest revision cannot be deleted. Deleting the deployment removes all its revisions. Removed revisions cannot be recovered.
+
+History has the same organization and access restrictions as editing the deployment and is unavailable to worker and cluster SYSTEM principals. Environment variables are stored with their original values, so an older revision may retain credentials until that revision is deleted or automatically pruned.
 
 ## View Model Instance
 
@@ -137,22 +291,24 @@ GPUStack provides the following configuration options to optimize model inferenc
 
 ### Extended KV Cache
 
-You can enable extended KV cache to offload the KV cache to CPU memory or remote storage. This feature is particularly useful for setups with limited GPU memory requiring long context lengths. Under the hood, GPUStack leverages [LMCache](https://github.com/LMCache/LMCache) to provide this functionality.
+You can enable extended KV cache to offload the KV cache to CPU memory or remote storage. This feature is particularly useful for setups with limited GPU memory requiring long context lengths. Under the hood, GPUStack configures the KV cache offloading that the selected backend and framework support, such as [LMCache](https://github.com/LMCache/LMCache) or HiCache.
 
 Available options:
 
 - **RAM-to-VRAM Ratio**: The ratio of system RAM to GPU VRAM used for KV cache. For example, 2.0 means the cache in RAM can be twice as large as the GPU VRAM.
 - **Maximum RAM Size**: The maximum size of the KV cache stored in system memory (GiB). If set, this value overrides `RAM-to-VRAM Ratio`.
-- **Size of Cache Chunks**: Number of tokens per KV cache chunk.
+- **Size of Cache Chunks**: Number of tokens per KV cache chunk. Not applicable to vLLM on CANN, where the connector offloads whole KV blocks and reuses them at the engine's block size.
 
 This feature works for certain backends and frameworks only.
 
 #### Compatibility Matrix
 
-| Backend | Framework  |
-| ------- | ---------- |
-| vLLM    | CUDA, ROCm |
-| SGLang  | CUDA, ROCm |
+| Backend | Framework        |
+| ------- | ---------------- |
+| vLLM    | CUDA, ROCm, CANN |
+| SGLang  | CUDA, ROCm, CANN |
+
+With vLLM on CANN, extended KV cache requires vLLM Ascend v0.21.0 or later and is not available on Atlas 300I Duo (310P).
 
 ## Scheduling Configuration
 

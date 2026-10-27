@@ -21,7 +21,7 @@
       }
     ]
   },
-  "description": "Monitoring Inference Server",
+  "description": "Monitoring Inference Server.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -44,7 +44,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -104,10 +104,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P1809F7CD0C75ACF3"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(gpustack:model_desired_instances{cluster_name=\"$cluster_name\", model_name=\"$model_name\"})",
+          "expr": "sum(max by(cluster_id, cluster_name, model_id, model_name) (gpustack:model_desired_instances{cluster_name=\"$cluster_name\", model_name=\"$model_name\"}))",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -120,7 +120,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -180,10 +180,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P1809F7CD0C75ACF3"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(gpustack:model_running_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
+          "expr": "sum(max by(cluster_id, cluster_name, model_id, model_name) (gpustack:model_running_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}))",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -196,7 +196,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -271,10 +271,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P1809F7CD0C75ACF3"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(gpustack:model_desired_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}) - sum(gpustack:model_running_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
+          "expr": "sum(max by(cluster_id, cluster_name, model_id, model_name) (gpustack:model_desired_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})) - sum(max by(cluster_id, cluster_name, model_id, model_name) (gpustack:model_running_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}))",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -287,7 +287,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -347,7 +347,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P1809F7CD0C75ACF3"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "sum(gpustack:num_requests_running{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
@@ -363,7 +363,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -438,7 +438,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P1809F7CD0C75ACF3"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "sum(gpustack:num_requests_waiting{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
@@ -454,7 +454,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -508,7 +508,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}",
+          "expr": "max by(cluster_id, cluster_name, model_id, model_name, runtime, runtime_version, source, source_key, category) (gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -521,7 +521,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -577,7 +577,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}",
+          "expr": "max by(cluster_id, cluster_name, model_id, model_name, runtime, runtime_version, source, source_key, category) (gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -590,7 +590,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -661,7 +661,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}",
+          "expr": "max by(cluster_id, cluster_name, model_id, model_name, runtime, runtime_version, source, source_key, category) (gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -674,7 +674,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -763,7 +763,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}",
+          "expr": "max by(cluster_id, cluster_name, model_id, model_name, runtime, runtime_version, source, source_key, category) (gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -789,7 +789,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Total request per minute.",
       "fieldConfig": {
@@ -888,7 +888,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of tokens generation per second for current model",
       "fieldConfig": {
@@ -975,7 +975,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -996,9 +996,9 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
-      "description": "End to end request latency measured in seconds.",
+      "description": "End to end request latency measured in seconds.\n\nQuantiles are computed per rate window: requests slower than the rest only move the Pn line if they make up more than (1 - n) of that window's traffic. Use the heatmap on the right to locate the tail.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1084,7 +1084,24 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "disableTextWrap": false,
+          "editorMode": "builder",
+          "expr": "histogram_quantile(0.999, sum by(le, model_instance_name) (rate(gpustack:e2e_request_latency_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "fullMetaSearch": false,
+          "hide": false,
+          "includeNullMetadata": false,
+          "instant": false,
+          "legendFormat": "P99.9({{model_instance_name}})",
+          "range": true,
+          "refId": "A",
+          "useBackend": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1094,13 +1111,13 @@
           "instant": false,
           "legendFormat": "P99({{model_instance_name}})",
           "range": true,
-          "refId": "A",
+          "refId": "B",
           "useBackend": false
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1111,13 +1128,13 @@
           "instant": false,
           "legendFormat": "P95({{model_instance_name}})",
           "range": true,
-          "refId": "B",
+          "refId": "C",
           "useBackend": false
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1128,13 +1145,13 @@
           "instant": false,
           "legendFormat": "P90({{model_instance_name}})",
           "range": true,
-          "refId": "C",
+          "refId": "D",
           "useBackend": false
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1145,13 +1162,13 @@
           "instant": false,
           "legendFormat": "P50({{model_instance_name}})",
           "range": true,
-          "refId": "D",
+          "refId": "E",
           "useBackend": false
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "rate(gpustack:e2e_request_latency_seconds_sum{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:e2e_request_latency_seconds_count{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
@@ -1159,7 +1176,7 @@
           "instant": false,
           "legendFormat": "Average({{model_instance_name}})",
           "range": true,
-          "refId": "E"
+          "refId": "F"
         }
       ],
       "title": "End-to-End Request Latency",
@@ -1241,7 +1258,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1275,7 +1292,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of requests in RUNNING, WAITING, and SWAPPED state",
       "fieldConfig": {
@@ -1363,7 +1380,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1379,7 +1396,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1396,7 +1413,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1417,7 +1434,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Total number of tokens processed per second, combining prompt and generation tokens.",
       "fieldConfig": {
@@ -1504,7 +1521,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -1520,7 +1537,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -1541,9 +1558,9 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
-      "description": "P50, P90, P95, and P99 TTFT latency in seconds.",
+      "description": "P50, P90, P95, P99, and P99.9 TTFT latency in seconds.\n\nQuantiles are computed per rate window: requests slower than the rest only move the Pn line if they make up more than (1 - n) of that window's traffic. A handful of 60s requests among a few hundred fast ones stays invisible on P99 even though users clearly feel it. Use the heatmap on the right to locate the tail, and widen the time range with care - a longer $__rate_interval dilutes rare spikes further.\n\nMeasured by the inference engine, so it excludes gateway, proxy and network time; client-observed TTFT is always greater than or equal to this.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1629,7 +1646,24 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "disableTextWrap": false,
+          "editorMode": "builder",
+          "expr": "histogram_quantile(0.999, sum by(le, model_instance_name) (rate(gpustack:time_to_first_token_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "fullMetaSearch": false,
+          "hide": false,
+          "includeNullMetadata": false,
+          "instant": false,
+          "legendFormat": "P99.9({{model_instance_name}})",
+          "range": true,
+          "refId": "A",
+          "useBackend": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1640,13 +1674,13 @@
           "instant": false,
           "legendFormat": "P99({{model_instance_name}})",
           "range": true,
-          "refId": "A",
+          "refId": "B",
           "useBackend": false
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1656,13 +1690,13 @@
           "instant": false,
           "legendFormat": "P95({{model_instance_name}})",
           "range": true,
-          "refId": "B",
+          "refId": "C",
           "useBackend": false
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1673,13 +1707,13 @@
           "instant": false,
           "legendFormat": "P90({{model_instance_name}})",
           "range": true,
-          "refId": "C",
+          "refId": "D",
           "useBackend": false
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1690,13 +1724,13 @@
           "instant": false,
           "legendFormat": "P50({{model_instance_name}})",
           "range": true,
-          "refId": "D",
+          "refId": "E",
           "useBackend": false
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "rate(gpustack:time_to_first_token_seconds_sum{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:time_to_first_token_seconds_count{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
@@ -1704,7 +1738,7 @@
           "instant": false,
           "legendFormat": "Average({{model_instance_name}})",
           "range": true,
-          "refId": "E"
+          "refId": "F"
         }
       ],
       "title": "Time To First Token Latency",
@@ -1712,8 +1746,103 @@
     },
     {
       "datasource": {
+        "default": true,
+        "type": "prometheus"
+      },
+      "description": "Request count per TTFT bucket over time. Unlike the quantile lines, every slow request shows up here however rare it is, which makes this the panel to use when users report waits the Pn lines do not show.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 42
+      },
+      "id": 51,
+      "maxDataPoints": 30,
+      "options": {
+        "calculate": false,
+        "calculation": {
+          "yBuckets": {
+            "scale": {
+              "type": "linear"
+            }
+          }
+        },
+        "cellGap": 1,
+        "cellValues": {},
+        "color": {
+          "exponent": 0.5,
+          "fill": "dark-orange",
+          "mode": "scheme",
+          "reverse": false,
+          "scale": "exponential",
+          "scheme": "Spectral",
+          "steps": 64
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        },
+        "filterValues": {
+          "le": 1e-09
+        },
+        "legend": {
+          "show": true
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "tooltip": {
+          "mode": "single",
+          "showColorScale": true,
+          "yHistogram": false
+        },
+        "yAxis": {
+          "axisPlacement": "left",
+          "reverse": false,
+          "unit": "secs"
+        }
+      },
+      "pluginVersion": "12.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "disableTextWrap": false,
+          "editorMode": "builder",
+          "expr": "sum by(le) (increase(gpustack:time_to_first_token_seconds_bucket{cluster_name=\"$cluster_name\",model_name=~\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval]))",
+          "format": "heatmap",
+          "fullMetaSearch": false,
+          "includeNullMetadata": true,
+          "instant": false,
+          "legendFormat": "{{le}}",
+          "range": true,
+          "refId": "A",
+          "useBackend": false
+        }
+      ],
+      "title": "Time To First Token Latency Heatmap",
+      "type": "heatmap"
+    },
+    {
+      "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Inter token latency in seconds.\n\n**Supported backends:** vLLM, SGLang. MindIE does not expose this metric, so \"No data\" is expected when the runtime is MindIE (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -1776,8 +1905,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 42
+        "x": 0,
+        "y": 50
       },
       "id": 39,
       "options": {
@@ -1801,7 +1930,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1817,7 +1946,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1834,7 +1963,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1851,7 +1980,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -1868,7 +1997,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "rate(gpustack:inter_token_latency_seconds_sum{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:inter_token_latency_seconds_count{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
@@ -1885,7 +2014,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Percentage of used cache blocks by LLM Serving Runtime.",
       "fieldConfig": {
@@ -1949,7 +2078,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 58
+        "y": 66
       },
       "id": 4,
       "options": {
@@ -1973,7 +2102,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "gpustack:kv_cache_usage_ratio{cluster_name=\"$cluster_name\",model_name=~\"$model_name\",model_instance_name=~\"$model_instance_name\"}",
@@ -2052,7 +2181,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 58
+        "y": 66
       },
       "id": 38,
       "options": {
@@ -2076,7 +2205,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -2092,7 +2221,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "rate(gpustack:prefix_cache_hits_total{cluster_name=\"$cluster_name\",model_name=~\"$model_name\",model_instance_name=~\"$model_instance_name\"}[1m]) / rate(gpustack:prefix_cache_queries_total{cluster_name=\"$cluster_name\",model_name=~\"$model_name\",model_instance_name=~\"$model_instance_name\"}[1m])",
@@ -2109,7 +2238,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Heatmap of request prompt length\n\n**Supported backends:** vLLM, MindIE. SGLang does not expose this metric, so \"No data\" is expected when the runtime is SGLang (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -2131,7 +2260,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 66
+        "y": 74
       },
       "id": 12,
       "options": {
@@ -2180,7 +2309,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2201,7 +2330,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Heatmap of request generation length\n\n**Supported backends:** vLLM, MindIE. SGLang does not expose this metric, so \"No data\" is expected when the runtime is SGLang (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -2223,7 +2352,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 66
+        "y": 74
       },
       "id": 13,
       "options": {
@@ -2272,7 +2401,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2293,7 +2422,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Per output token latency in seconds.\n\n**Supported backends:** vLLM, MindIE. SGLang does not expose this metric, so \"No data\" is expected when the runtime is SGLang (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -2356,7 +2485,7 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
+        "x": 12,
         "y": 50
       },
       "id": 10,
@@ -2381,7 +2510,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2397,7 +2526,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2414,7 +2543,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2431,7 +2560,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2448,7 +2577,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "rate(gpustack:time_per_output_token_seconds_sum{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:time_per_output_token_seconds_count{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
@@ -2465,7 +2594,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of finished requests by their finish reason: either an EOS token was generated or the max sequence length was reached.\n\n**Supported backends:** vLLM, MindIE. SGLang does not expose this metric, so \"No data\" is expected when the runtime is SGLang (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -2528,7 +2657,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 74
+        "y": 82
       },
       "id": 11,
       "options": {
@@ -2552,7 +2681,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2573,7 +2702,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of prompt tokens and cached prompt tokens served per second.",
       "fieldConfig": {
@@ -2660,7 +2789,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -2676,7 +2805,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -2692,7 +2821,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -2709,7 +2838,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -2730,7 +2859,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Time spent waiting in the request queue.\n\n**Supported backends:** vLLM, SGLang. MindIE does not expose this metric, so \"No data\" is expected when the runtime is MindIE (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -2793,8 +2922,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 82
+        "x": 12,
+        "y": 58
       },
       "id": 43,
       "options": {
@@ -2818,7 +2947,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2835,7 +2964,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2851,7 +2980,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2868,7 +2997,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2885,7 +3014,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "rate(gpustack:request_queue_time_seconds_sum{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:request_queue_time_seconds_count{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
@@ -2902,7 +3031,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Time spent in the prefill phase.\n\n**Supported backends:** vLLM only. Other runtimes do not expose this metric, so \"No data\" is expected for them (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -2965,8 +3094,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 74
+        "x": 0,
+        "y": 90
       },
       "id": 44,
       "options": {
@@ -2990,7 +3119,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -3007,7 +3136,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -3023,7 +3152,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -3040,7 +3169,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -3057,7 +3186,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "rate(gpustack:request_prefill_time_seconds_sum{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:request_prefill_time_seconds_count{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
@@ -3074,7 +3203,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Time spent in the decode phase.\n\n**Supported backends:** vLLM only. Other runtimes do not expose this metric, so \"No data\" is expected for them (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -3138,7 +3267,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 82
+        "y": 90
       },
       "id": 45,
       "options": {
@@ -3162,7 +3291,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -3178,7 +3307,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -3195,7 +3324,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -3212,7 +3341,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -3229,7 +3358,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
           "expr": "rate(gpustack:request_decode_time_seconds_sum{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:request_decode_time_seconds_count{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
@@ -3248,6 +3377,7 @@
         "default": true,
         "type": "prometheus"
       },
+      "description": "Average speculative decoding acceptance rate.\n\n**Supported backends:** vLLM, SGLang. MindIE does not expose this metric, so \"No data\" is expected when the runtime is MindIE (see Runtime in the Summary row).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3309,7 +3439,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 90
+        "y": 98
       },
       "id": 46,
       "options": {
@@ -3333,7 +3463,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -3349,7 +3479,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -3364,13 +3494,12 @@
         }
       ],
       "title": "Spec Decode Accept Rate",
-      "type": "timeseries",
-      "description": "Average speculative decoding acceptance rate.\n\n**Supported backends:** vLLM, SGLang. MindIE does not expose this metric, so \"No data\" is expected when the runtime is MindIE (see Runtime in the Summary row)."
+      "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Heatmap of requested number of parallel completions per request.\n\n**Supported backends:** vLLM only. Other runtimes do not expose this metric, so \"No data\" is expected for them (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -3392,7 +3521,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 90
+        "y": 98
       },
       "id": 48,
       "options": {
@@ -3441,7 +3570,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -3462,7 +3591,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Heatmap of requested max_tokens per request.\n\n**Supported backends:** vLLM only. Other runtimes do not expose this metric, so \"No data\" is expected for them (see Runtime in the Summary row).",
       "fieldConfig": {
@@ -3483,8 +3612,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 98
+        "x": 12,
+        "y": 82
       },
       "id": 49,
       "options": {
@@ -3533,7 +3662,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -3554,7 +3683,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of generation tokens processed per second.",
       "fieldConfig": {
@@ -3641,7 +3770,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -3657,7 +3786,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -3678,7 +3807,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Cumulative number of preemptions from the engine, shown as events per second.",
       "fieldConfig": {
@@ -3741,8 +3870,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 50
+        "x": 0,
+        "y": 58
       },
       "id": 50,
       "options": {
@@ -3767,7 +3896,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -3783,7 +3912,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "Prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -3800,6 +3929,214 @@
       ],
       "title": "Request Preemptions",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Estimated TFLOP/s per GPU. Divide by the accelerator's peak dense FLOP/s for the MFU percentage — the dashboard cannot do that for you, because the peak is a property of the hardware rather than of the series.\n\nThis is the prefill-side question: processing a prompt is compute bound, so how close it runs to peak is how well the engine is batching. Generation is memory bound and will sit far below peak here no matter how healthy it is — judge that on the bandwidth panel beside this one.\n\nOn a disaggregated deployment read this per role instead, on the PD dashboard: measured on a live 1P1D, prefill ran at 6.9 FLOP per byte against decode's 0.82, so one figure over both describes neither.\n\n**Supported backends:** vLLM and SGLang, both only with `--enable-mfu-metrics` in the model's backend parameters. It is off by default on both, and the two behave differently when it is off: SGLang does not register the counters, so this panel is empty; vLLM registers them anyway and leaves them at exactly 0, so a flat zero line means the flag is missing, not that the GPUs are idle. Measured 2026-09-21 on four live vLLM engines: all three families present, all at 0.0.\n\nAveraged across instances, never summed: the counter is already per GPU, so a sum divided by one device's peak is meaningless. vLLM's own multi-engine logger declines to aggregate these for the same reason.\n\nSource: `gpustack:estimated_flops_per_gpu`",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 106
+      },
+      "id": 52,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "disableTextWrap": false,
+          "editorMode": "code",
+          "expr": "avg by (model_instance_name) (rate(gpustack:estimated_flops_per_gpu_total{cluster_name=\"$cluster_name\", model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])) / 1e12",
+          "fullMetaSearch": false,
+          "includeNullMetadata": false,
+          "instant": false,
+          "legendFormat": "TFLOP/s/GPU {{model_instance_name}}",
+          "range": true,
+          "refId": "A",
+          "useBackend": false
+        }
+      ],
+      "title": "Compute Throughput per GPU (MFU)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Estimated bytes per second moved to and from HBM per GPU — read plus write. Divide by the accelerator's HBM bandwidth for the MBU percentage.\n\nThis is the one that usually caps token generation. Every output token re-reads the KV cache, so a serving engine saturates bandwidth long before it saturates FLOPs; when this approaches the device's bandwidth, more replicas is the remaining lever.\n\n**Supported backends:** vLLM and SGLang, both only with `--enable-mfu-metrics` in the model's backend parameters. It is off by default on both, and the two behave differently when it is off: SGLang does not register the counters, so this panel is empty; vLLM registers them anyway and leaves them at exactly 0, so a flat zero line means the flag is missing, not that the GPUs are idle. Measured 2026-09-21 on four live vLLM engines: all three families present, all at 0.0.\n\nAveraged across instances, never summed: the counter is already per GPU, so a sum divided by one device's peak is meaningless. vLLM's own multi-engine logger declines to aggregate these for the same reason.\n\nSource: `gpustack:estimated_{read,write}_bytes_per_gpu`",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 106
+      },
+      "id": 53,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "disableTextWrap": false,
+          "editorMode": "code",
+          "expr": "avg by (model_instance_name) (rate(gpustack:estimated_read_bytes_per_gpu_total{cluster_name=\"$cluster_name\", model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])) + avg by (model_instance_name) (rate(gpustack:estimated_write_bytes_per_gpu_total{cluster_name=\"$cluster_name\", model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval]))",
+          "fullMetaSearch": false,
+          "includeNullMetadata": false,
+          "instant": false,
+          "legendFormat": "{{model_instance_name}}",
+          "range": true,
+          "refId": "A",
+          "useBackend": false
+        }
+      ],
+      "title": "Memory Bandwidth per GPU (MBU)",
+      "type": "timeseries"
     }
   ],
   "preload": false,
@@ -3810,16 +4147,30 @@
     "list": [
       {
         "current": {
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
+      },
+      {
+        "current": {
           "text": "",
           "value": ""
         },
-        "definition": "query_result(gpustack:cluster_info)",
+        "definition": "query_result(max by(cluster_id, cluster_name, provider) (gpustack:cluster_info) and on(cluster_id) gpustack:worker_info)",
         "label": "Cluster",
         "name": "cluster_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "query_result(gpustack:cluster_info)",
+          "query": "query_result(max by(cluster_id, cluster_name, provider) (gpustack:cluster_info) and on(cluster_id) gpustack:worker_info)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -3831,13 +4182,13 @@
           "text": "",
           "value": ""
         },
-        "definition": "query_result(gpustack:model_info{cluster_name=\"$cluster_name\"})",
+        "definition": "query_result(max by(cluster_id, cluster_name, model_id, model_name, runtime, runtime_version, source, source_key, category) (gpustack:model_info{cluster_name=\"$cluster_name\"}))",
         "label": "Model",
         "name": "model_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "query_result(gpustack:model_info{cluster_name=\"$cluster_name\"})",
+          "query": "query_result(max by(cluster_id, cluster_name, model_id, model_name, runtime, runtime_version, source, source_key, category) (gpustack:model_info{cluster_name=\"$cluster_name\"}))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -3850,14 +4201,14 @@
           "text": "All",
           "value": "$__all"
         },
-        "definition": "query_result(gpustack:model_instance_status{model_name=\"$model_name\", cluster_name=\"$cluster_name\"})",
+        "definition": "query_result(max by(cluster_id, cluster_name, worker_id, worker_name, model_id, model_name, model_instance_name, state) (gpustack:model_instance_status{model_name=\"$model_name\", cluster_name=\"$cluster_name\"}))",
         "includeAll": true,
         "label": "Model Instance",
         "name": "model_instance_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "query_result(gpustack:model_instance_status{model_name=\"$model_name\", cluster_name=\"$cluster_name\"})",
+          "query": "query_result(max by(cluster_id, cluster_name, worker_id, worker_name, model_id, model_name, model_instance_name, state) (gpustack:model_instance_status{model_name=\"$model_name\", cluster_name=\"$cluster_name\"}))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,

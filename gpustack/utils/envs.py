@@ -105,7 +105,8 @@ def sanitize_env(env: Dict[str, str]) -> Dict[str, str]:
 
 def filter_env_vars(env_dict: dict) -> dict:
     """
-    Filter out environment variables that should not be passed to the model instance or container.
+    Filter out environment variables that should not be passed to the model
+    instance or container.
     """
     return {
         k: v
@@ -128,6 +129,13 @@ def filter_env_vars(env_dict: dict) -> dict:
                     "_VISIBLE_DEVICES",
                     "_DISABLE_REQUIRE",
                     "_DRIVER_CAPABILITIES",
+                    # MIG capability declarations authorize the NVIDIA runtime
+                    # hook to expose the MIG subtree, but only in a privileged
+                    # container. The worker declares them; inheriting them into
+                    # a model pod makes the runtime's CDI modifier reject the
+                    # pod outright.
+                    "_MIG_CONFIG_DEVICES",
+                    "_MIG_MONITOR_DEVICES",
                     "_PATH",
                     "_HOME",
                 )

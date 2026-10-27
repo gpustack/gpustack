@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
+from gpustack.policies.resource_view import ResourceView
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
@@ -16,15 +17,14 @@ from gpustack.policies.candidate_selectors.base_candidate_selector import (
 from gpustack.policies.event_recorder.recorder import EventCollector
 from gpustack.policies.utils import (
     estimate_lora_weights_bytes,
-    get_worker_allocatable_resource,
     ListMessageBuilder,
     get_local_model_weight_size,
 )
 from gpustack.scheduler.model_registry import is_multimodal_model
 from gpustack.schemas.models import (
+    ModelInstance,
     ComputedResourceClaim,
     Model,
-    ModelInstance,
     SourceEnum,
     ModelInstanceSubordinateWorker,
 )
@@ -51,8 +51,10 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         config: Config,
         model: Model,
         model_instances: List[ModelInstance],
+        *,
+        resource_view: ResourceView,
     ):
-        super().__init__(config, model, model_instances)
+        super().__init__(config, model, model_instances, resource_view=resource_view)
 
         # Diagnostic message to be set to the model instance.
         self._diagnostic_messages: List[str] = []
@@ -938,7 +940,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         if worker.id in self.__worker_alloc_idx:
             return self.__worker_alloc_idx[worker.id]
 
-        worker_alloc = get_worker_allocatable_resource(self._model_instances, worker)
+        worker_alloc = self._resource_view.allocatable(worker)
         if not worker_alloc:
             logger.warning(f"Worker {worker.name} has no allocatable resources.")
             worker_alloc = Allocatable(ram=0, vram={0: 0})

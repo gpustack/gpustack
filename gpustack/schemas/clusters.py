@@ -180,8 +180,20 @@ class GpuInstanceOptions(BaseModel):
     for this cluster — leaving the field unset opts the cluster out, so
     no separate boolean flag is needed.
 
-    Not wired into manifest rendering yet; persisted so the operator /
-    future render paths can pick it up without another schema change.
+    Each knob mirrors a gpustack-operator ``Setting`` of the same name and is
+    **tri-state**: ``None`` means GPUStack does not manage that setting and the
+    cluster's own value is left alone, which is a different instruction from an
+    explicit ``True`` or ``False``. The operator catalog is also administered by
+    ``kubectl``, so an unmanaged knob must never be asserted.
+
+    Every default stays ``None``. The column persists with ``exclude_none`` /
+    ``exclude_unset`` / ``exclude_defaults`` (see ``ClusterUpdate.k8s_options``),
+    so a non-``None`` default would be stripped back out of the JSON and read
+    back as unmanaged. That same serialization is why an all-unset
+    ``GpuInstanceOptions()`` still lands as a *present* ``{}`` rather than
+    ``null`` — and its presence is the cluster-purpose signal
+    (:func:`is_gpu_service_k8s_options`), so a knob-less GPU Service cluster
+    must never serialize itself into a Model Service one.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -190,7 +202,33 @@ class GpuInstanceOptions(BaseModel):
         alias="gpuInstancesAccessStaticAddress",
         description=(
             "Static address surfaced to the operator for accessing GPU "
-            "instances in this cluster (e.g. LoadBalancer VIP)."
+            "instances in this cluster (e.g. LoadBalancer VIP). Mirrors the "
+            "operator's ``instance-access-static-address`` setting (operator "
+            "default: blank, i.e. the address is generated from host IPs). "
+            "Keeps its legacy name: renaming it to match the operator would "
+            "break the payload for every existing client."
+        ),
+    )
+    gpu_instance_type_derived_from_node: Optional[bool] = PydanticField(
+        default=None,
+        alias="gpuInstanceTypeDerivedFromNode",
+        description=(
+            "Whether the operator auto-derives InstanceTypes (and their backing "
+            "ClusterQueues) from node hardware. Mirrors the operator's "
+            "``instance-type-derived-from-node`` setting (operator default: "
+            "true). Unset means GPUStack does not manage it and the cluster's "
+            "own value stands."
+        ),
+    )
+    gpu_instance_type_mixed_on_node: Optional[bool] = PydanticField(
+        default=None,
+        alias="gpuInstanceTypeMixedOnNode",
+        description=(
+            "Whether one node may surface both an accelerated and a CPU-only "
+            "InstanceType. Mirrors the operator's "
+            "``instance-type-mixed-on-node`` setting (operator default: true). "
+            "Unset means GPUStack does not manage it and the cluster's own "
+            "value stands."
         ),
     )
 
@@ -210,6 +248,208 @@ class OperatorOptions(BaseModel):
             "container. Keys are env var names, values are literal strings."
         ),
     )
+
+
+class GatherStrategyEnum(str, Enum):
+    """What to do when a group does not fit inside one domain of a layer.
+
+    Read as a *failure* policy, not a placement one: the group scheduler
+    already places into the tightest domain that fits. ``PreferGather`` lets it
+    keep widening until the cluster root; ``MustGather`` stops it at a declared
+    layer and refuses the deployment instead of quietly delivering a slower
+    one.
+    """
+
+    MUST_GATHER = "MustGather"
+    PREFER_GATHER = "PreferGather"
+
+
+class TopologyLayer(BaseModel):
+    """One declared layer between the cluster and the worker.
+
+    ``label_keys`` is any-of rather than a single key because the same physical
+    layer is spelled differently by every vendor and cloud, and a fleet that
+    mixes them should not have to be relabelled before topology works at all.
+    The first key present wins.
+
+    **Three fields for three jobs**, because one field could not hold them:
+    ``id`` is what other records point at, ``name`` is the canonical word and
+    the i18n lookup key, ``display_name`` is whatever the operator decided to
+    call it. Collapsing the first two is what left an operator unable to rename
+    a layer at all; collapsing the last two would mean a rename either breaks
+    every reference or is not a rename.
+
+    A row therefore reads on its own: which id, what it is, what they call it.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    id: str = PydanticField(
+        description=(
+            "Stable identity, fixed at creation and never changed. "
+            "`builtin-NNNNNN` for a vocabulary rung, `custom-<6 hex>` for one "
+            "the operator added. Referenced by `parentLayer` and by "
+            "`Model.gather.layer`, which is why renaming writes `displayName` "
+            "instead of touching this."
+        )
+    )
+    name: str = PydanticField(
+        description=(
+            "Canonical name: the vocabulary slug for a built-in rung, the "
+            "operator's original wording for a custom one. Set once at "
+            "creation and never rewritten — it is the i18n lookup key, so a "
+            "*translated* value here would freeze the row into whichever UI "
+            "language last saved it."
+        )
+    )
+    display_name: Optional[str] = PydanticField(
+        default=None,
+        alias="displayName",
+        description=(
+            "What the operator renamed this layer to. Unset means never "
+            "renamed, which is the only way to say so — the effective label "
+            "is `displayName or t(name)`. Shown verbatim, never translated: "
+            "these are the operator's words, not ours."
+        ),
+    )
+    label_keys: List[str] = PydanticField(
+        default_factory=list,
+        alias="labelKeys",
+        description=(
+            "Worker label keys for this layer, tried in order; the first one "
+            "present wins. A worker matching none of them is unclassified, "
+            "which costs placement resolution but never schedulability."
+        ),
+    )
+    parent_layer: Optional[str] = PydanticField(
+        default=None,
+        alias="parentLayer",
+        description=(
+            "The id of the layer above this one. Left unset on the topmost "
+            "layer, which hangs off the implicit cluster root. Stored as a "
+            "chain rather than an ordered list so inserting a layer does not "
+            "renumber the layers below it — these ids are referenced from "
+            "saved model configurations."
+        ),
+    )
+    disabled: bool = PydanticField(
+        default=False,
+        description=(
+            "Built-in rungs only: the operator does not want to group by this "
+            "layer even though workers carry its label. Distinct from a layer "
+            "nobody filled in, which is a fact about the data and comes back "
+            "the moment someone writes the label; this is a decision and "
+            "does not. A custom layer is deleted rather than disabled."
+        ),
+    )
+
+
+class ClusterTopology(BaseModel):
+    """How far apart this cluster's workers are, for the group scheduler.
+
+    **One chain, root to leaf.** The built-in rungs are zone, rack and the
+    host; anything else the fabric has — an NVLink/HCCS/UB domain, a blade, a
+    cage — is a custom layer the operator inserts where it belongs.
+
+    An accelerator domain is a rung on this chain, not a scope beside it: on
+    every shipping generation its boundary is a run of contiguous cabinets,
+    which orders against a rack like anything else does.
+
+    The built-in rungs are a fixed vocabulary (see
+    `topology.vocabulary`); a cluster fills in values, it does not
+    declare them. `layers` is therefore empty in the common case. A non-empty
+    list is the Advanced panel's work: an entry named after a vocabulary field
+    replaces that field's label keys, and any other entry is a custom layer
+    placed by its `parent_layer`.
+
+    Only the root and the leaf are built in. The leaf takes the worker's name
+    rather than a label, so a cluster that declares nothing still gets a usable
+    tree and still offers the tightest gather choice — every failure in this
+    structure costs resolution, never schedulability.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    layers: List[TopologyLayer] = PydanticField(
+        default_factory=list,
+        description=(
+            "Key overrides for vocabulary fields and custom layers, as a "
+            "parent chain. Empty means the vocabulary as-is (zone, rack)."
+        ),
+    )
+    # A cluster declares its shape here and nothing else: gather is per
+    # deployment. `MustGather` is a failure policy, so a cluster-wide default
+    # would be an operator pre-setting a rejection condition whose reason the
+    # deployer never sees, while the deploy form already derives its tiers from
+    # this declaration — the fabric knowledge reaches the deployer either way.
+
+
+# Value paths the server derives from the cluster's registration, and which a
+# caller therefore cannot set: each one decides what the deployment *is* rather
+# than how it is configured. Overriding `worker.serverURL` points the workers at
+# a different server than the one that issued the token; `server.enabled` adds a
+# second control plane to a cluster that registered with one; `image.tag` breaks
+# the pairing between the worker image and the templates that render it, which is
+# how an install ends up with an operator and a worker of different generations.
+# Every path that names an image is here, and for one reason: the chart composes
+# an image as `{global.hub}/{image.repository}:{image.tag}`, so leaving any part
+# of that writable would redirect what the release deploys while the parts that
+# are protected still read as issued. The operator's tree is included because the
+# registration manifest's Job runs `operatorImage` directly — an overlay moving
+# only the chart's copy would put the installer and the operator it installs on
+# different images, which is what requiring a tag on that field exists to stop.
+# `gpustack-operator.worker.image` is here for the same reason and not as an
+# afterthought: the operator chart resolves it *over* its chart-level image, so
+# protecting only the latter is a fence with a gate in it.
+#
+# The three name overrides are the other invariant this list carries. Adoption is
+# by name — the chart calls its sub-chart `operator` precisely so its objects
+# land on the names the pre-chart manifest used — so renaming them leaves the old
+# operator running, unowned, beside a new one, and leaves this manifest's cleanup
+# deleting objects that no longer exist. That is the line: a path is here when it
+# breaks how a cluster is adopted or which image it runs, not merely because it
+# can be set to something unwise. `worker.disableApplications` is unwise and is
+# not here; the operator chart documents what narrowing it costs.
+SERVER_OWNED_VALUE_PATHS = frozenset(
+    {
+        "appliedRevision",
+        "global.hub",
+        "gpustack-operator.fullnameOverride",
+        "gpustack-operator.global.imageNamespace",
+        "gpustack-operator.global.imageRegistry",
+        "gpustack-operator.image.repository",
+        "gpustack-operator.image.tag",
+        "gpustack-operator.nameOverride",
+        "gpustack-operator.namespaceOverride",
+        "gpustack-operator.worker.image",
+        "higress-core.enabled",
+        "image.repository",
+        "image.tag",
+        "imagePullSecret.create",
+        "registrationTokenSecretName",
+        "server.enabled",
+        "worker.enabled",
+        "worker.serverURL",
+    }
+)
+
+
+def _value_path_set(values: Dict[str, Any], path: str) -> bool:
+    """Whether ``path`` ("a.b.c") is claimed by ``values``.
+
+    True for the path itself, and for anything standing where the path would
+    have to go: ``{"image": "repo:tag"}`` claims ``image.repository`` as surely
+    as ``{"image": {"repository": ...}}`` does — the server can no longer put
+    its own value there. Refusing only the exact path would accept that one and
+    fail later, while merging, on a value the cluster record has already stored.
+    """
+    cursor: Any = values
+    for segment in path.split("."):
+        if not isinstance(cursor, dict):
+            # A scalar (or list) sits on the way to the path: it occupies it.
+            return True
+        if segment not in cursor:
+            return False
+        cursor = cursor[segment]
+    return True
 
 
 class K8sOptions(BaseModel):
@@ -245,8 +485,10 @@ class K8sOptions(BaseModel):
         alias="volumeMounts",
         description=(
             "Pod spec volumes and volumeMounts applied to every worker "
-            "DaemonSet. The first entry is reserved for the gpustack data "
-            "dir; the route layer enforces that invariant."
+            "DaemonSet. The first entry is reserved for the gpustack data dir "
+            "and is required whenever k8s_options is submitted; the server owns "
+            "every field of it but the hostPath it points at, overwriting the "
+            "name, mountPath and readOnly it is sent with."
         ),
     )
     operator_image: Optional[str] = PydanticField(
@@ -254,7 +496,16 @@ class K8sOptions(BaseModel):
         alias="operatorImage",
         description=(
             "Override for the gpustack-operator container image. Falls back "
-            "to the server's GPUSTACK_OPERATOR_IMAGE / built-in default when unset."
+            "to the server's GPUSTACK_OPERATOR_IMAGE / built-in default when unset.\n\n"
+            "This image is also what the registration manifest's bootstrap Job "
+            "runs, so it has to carry the tools that Job needs — bash, helm, "
+            "kubectl, jq, curl and sha256sum — which the operator's own image "
+            "does. A stripped-down replacement fails in the cluster, naming the "
+            "missing one.\n\n"
+            "A tag is required when this is set: the same reference is read by "
+            "the Job, which needs a concrete image, and by the chart, whose "
+            "operator tag otherwise falls back to its own pin — one field "
+            "resolving to two different images."
         ),
     )
     gpu_instance_options: Optional[GpuInstanceOptions] = PydanticField(
@@ -277,6 +528,187 @@ class K8sOptions(BaseModel):
         alias="operator",
         description="Operator-specific deployment options for the cluster.",
     )
+    helm_values: Optional[Dict[str, Any]] = PydanticField(
+        default=None,
+        alias="helmValues",
+        description=(
+            "Values passed to the GPUStack chart the registration manifest "
+            "installs, merged over the ones the server derives from this "
+            "cluster. Keys are the chart's own, verbatim — see its values.yaml "
+            "and, for anything under `gpustack-operator`, the operator chart's.\n\n"
+            "Nothing is mirrored into a GPUStack-shaped schema here on purpose: "
+            "the chart and its sub-charts carry a large surface that moves with "
+            "their releases, and a field-by-field copy would have to be kept in "
+            "lockstep with it forever.\n\n"
+            "A cluster that already runs Kueue, for example, skips installing a "
+            "second one with "
+            '`{"gpustack-operator": {"kueue": {"enabled": false}}}`. Note what '
+            "that means: the operator still requires Kueue and Node Feature "
+            "Discovery to derive the scheduling chain and waits for their CRDs at "
+            "startup, so switching one off that is not actually present leaves "
+            "the operator unable to start. Switching off one this release "
+            "installed removes it — Kueue's CRDs come from its chart, and every "
+            "Workload and ClusterQueue goes with them.\n\n"
+            "Merging is per key and depth-first; a list replaces rather than "
+            "extends. The paths that decide what this deployment *is* are the "
+            f"server's and are refused here: {', '.join(sorted(SERVER_OWNED_VALUE_PATHS))}."
+        ),
+    )
+
+    @field_validator("helm_values")
+    def validate_helm_values(cls, v):
+        if not v:
+            return v
+        refused = sorted(
+            path for path in SERVER_OWNED_VALUE_PATHS if _value_path_set(v, path)
+        )
+        if refused:
+            raise ValueError(
+                f"{', '.join(refused)} cannot be set here: the server derives "
+                "them from this cluster's registration, and overriding them "
+                "would produce a release that does not match the cluster it was "
+                "issued for"
+            )
+        return v
+
+
+def is_gpu_service_k8s_options(k8s_options: Any) -> bool:
+    """Whether a ``k8s_options`` value opts the cluster in to GPU Service.
+
+    A cluster carries no purpose column: ``k8s_options.gpu_instance_options``
+    being set *is* the signal — present means GPU Service, absent means Model
+    Service. This is the single home for that test; the route layer
+    (``routes/clusters.py``) and the gateway subscription
+    (``gpu_instances/gateway.py``) both delegate here, so the two halves of the
+    product can never disagree about what a cluster is for.
+
+    Runs once per cluster on every list/watch tick, so we look at the raw shape
+    instead of re-running ``K8sOptions.model_validate`` — a full nested parse on
+    the hot path would also propagate any future schema drift as a
+    request-level ``ValidationError``. The dict branch tolerates both serialized
+    key forms (snake from ``model_dump``, camel from API/UI submissions).
+
+    Presence, not validity, is what is read: a dict carrying an unparseable
+    ``gpu_instance_options`` value still counts as GPU Service. Nothing writes
+    such a row — the column is only ever written from a validated model — and
+    answering by presence keeps a malformed row from raising on a watch tick.
+    Any other shape reads as Model Service, so a cluster whose purpose cannot be
+    established is excluded from GPU Service rather than included.
+    """
+    if isinstance(k8s_options, K8sOptions):
+        return k8s_options.gpu_instance_options is not None
+    if isinstance(k8s_options, dict):
+        return (
+            k8s_options.get("gpu_instance_options") is not None
+            or k8s_options.get("gpuInstanceOptions") is not None
+        )
+    return False
+
+
+def is_gpu_service_cluster(cluster: "Cluster") -> bool:
+    """Whether the cluster is registered for GPU Service rather than Model Service.
+
+    The cluster-shaped entry point onto :func:`is_gpu_service_k8s_options`,
+    which carries the invariant and the reason for the shape.
+    """
+    return is_gpu_service_k8s_options(cluster.k8s_options)
+
+
+# The gpustack data dir volume mount is reserved and server-owned: it lives at
+# index 0 of ``volume_mounts``, the worker container always reads/writes its
+# data dir at DATA_DIR_MOUNT_PATH, and the entry always carries the reserved
+# name. Only the *host* path is the caller's to choose.
+#
+# Index 0 is the single locating rule, shared with the UI, which renders that
+# row with its name / mountPath / readOnly / source type locked and only the
+# host path editable. Nothing here searches the list for the data dir: one
+# definition of "which entry is it", asserted in both halves of the product.
+DATA_DIR_MOUNT_NAME = "gpustack-data-dir"
+DATA_DIR_MOUNT_PATH = "/var/lib/gpustack"
+# Host path the worker DaemonSet hardcoded before the mount became
+# configurable (v2.2.0). Clusters created back then hold their data here, so
+# it has to stay the default or an upgraded cluster would silently start over
+# on a fresh directory.
+DEFAULT_DATA_DIR_HOST_PATH = "/var/lib/gpustack"
+
+
+def claims_data_dir(volume_mount: K8sVolumeMount) -> bool:
+    """Whether a mount claims the reserved data dir, by name or mount path.
+
+    A *check*, not a locator: the data dir is always index 0. This answers two
+    questions about a submission — does the entry in the reserved slot actually
+    look like the data dir (rather than an unrelated mount the caller happened
+    to send first, which must not be silently rewritten into the data dir), and
+    is some other entry trying to claim the reserved name or path.
+    """
+    return (
+        volume_mount.name == DATA_DIR_MOUNT_NAME
+        or volume_mount.mount_path == DATA_DIR_MOUNT_PATH
+    )
+
+
+def mount_host_path(volume_mount: Optional[K8sVolumeMount]) -> Optional[str]:
+    """The host path a mount points at, or None if it isn't a hostPath mount."""
+    if volume_mount is None or volume_mount.volume_source is None:
+        return None
+    if volume_mount.volume_source.host_path is None:
+        return None
+    return volume_mount.volume_source.host_path.path or None
+
+
+def build_data_dir_mount(host_path: Optional[str] = None) -> K8sVolumeMount:
+    """The canonical data-dir mount for a host path."""
+    return K8sVolumeMount(
+        name=DATA_DIR_MOUNT_NAME,
+        mount_path=DATA_DIR_MOUNT_PATH,
+        read_only=False,
+        volume_source=VolumeSource(
+            host_path=HostPathVolumeSource(
+                path=host_path or DEFAULT_DATA_DIR_HOST_PATH,
+                type="DirectoryOrCreate",
+            )
+        ),
+    )
+
+
+def ensure_data_dir_mount(
+    volume_mounts: Optional[List[K8sVolumeMount]],
+) -> List[K8sVolumeMount]:
+    """Return the list with the reserved slot filled, defaulting the host path.
+
+    An empty list means the row predates the mount being configurable
+    (``volume_mounts`` did not exist before v2.2.0, and every write since then
+    goes through :func:`normalize_data_dir_mount`, so a non-empty list always
+    holds the data dir at index 0). This is the *render*-side backstop for such
+    a row: the DaemonSet template has no fallback of its own, so without this
+    it would render with no persistent data dir — worker data lost on every pod
+    restart, with nobody to report it to. A list that is already populated is
+    passed through untouched; rewriting stored values is the persist path's job.
+    """
+    mounts = list(volume_mounts or [])
+    if mounts:
+        return mounts
+    return [build_data_dir_mount()]
+
+
+def normalize_data_dir_mount(k8s_options: "K8sOptions") -> None:
+    """Rewrite the reserved slot of ``k8s_options.volume_mounts`` in place.
+
+    Index 0 is replaced with the canonical mount carrying its own host path:
+    name, mountPath, readOnly and the hostPath type are the server's, so
+    whatever the caller sent for them is dropped. The rest of the list is left
+    exactly as submitted — the caller's own mounts, in the caller's order.
+
+    Callers validate the slot first (the route layer refuses a submission whose
+    index 0 is missing, is not the data dir, or is not a hostPath mount), so an
+    absent host path falls back to :data:`DEFAULT_DATA_DIR_HOST_PATH` rather
+    than being an error here.
+    """
+    mounts = k8s_options.volume_mounts or []
+    k8s_options.volume_mounts = [
+        build_data_dir_mount(mount_host_path(mounts[0]) if mounts else None),
+        *mounts[1:],
+    ]
 
 
 class CloudOptions(BaseModel):
@@ -287,8 +719,15 @@ class WorkerPoolCreate(WorkerPoolUpdate):
     instance_type: str
     os_image: str
     image_name: str
+    # ``default_factory``, not ``default={}``: a default is not validated, so
+    # an omitted ``cloud_options`` stayed a raw dict on the model and every
+    # ``model_dump`` of it -- the create routes dump the input to build the row
+    # -- warned ``PydanticSerializationUnexpectedValue``. Both routes already
+    # coerce a falsy value to ``CloudOptions()`` before it reaches the column,
+    # so what is stored does not change.
     cloud_options: Optional[CloudOptions] = Field(
-        default={}, sa_column=Column(pydantic_column_type(CloudOptions))
+        default_factory=CloudOptions,
+        sa_column=Column(pydantic_column_type(CloudOptions)),
     )
     zone: Optional[str] = None
     # instance_spec is for UI to store the instance_type's extended specifications for display.
@@ -378,6 +817,7 @@ class ClusterProvider(Enum):
     Docker = "Docker"
     Kubernetes = "Kubernetes"
     DigitalOcean = "DigitalOcean"
+    Shuihua = "Shuihua"
 
 
 class CloudCredentialBase(SQLModel):
@@ -482,6 +922,45 @@ class ClusterUpdate(SQLModel):
             )
         ),
     )
+    # Per-cluster, because "how far apart are two workers" is a property of the
+    # fleet and a worker belongs to exactly one cluster. Stored alongside
+    # `k8s_options` and handled identically.
+    topology: Optional[ClusterTopology] = Field(
+        default=None,
+        sa_column=Column(
+            pydantic_column_type(
+                ClusterTopology,
+                exclude_none=True,
+                exclude_unset=True,
+                exclude_defaults=True,
+            )
+        ),
+    )
+
+    @field_validator("topology")
+    def validate_topology(cls, v: Optional[ClusterTopology]):
+        """Refuse a declaration that cannot become a tree.
+
+        Only the declaration is validated, never the data: a custom layer
+        naming a parent that does not exist, or taking a vocabulary id as its
+        name, means the operator's intent is unknowable, while a worker missing
+        a label is a normal state the tree already has a place for. Rejecting
+        the second would make labelling a precondition for saving, which is
+        exactly backwards — values are filled in *after*, using the tree to see
+        who is still missing.
+        """
+        if v is None:
+            return v
+
+        from gpustack.topology.tree import TopologyError
+        from gpustack.topology.vocabulary import validate_declaration
+
+        try:
+            validate_declaration(v)
+        except TopologyError as e:
+            raise ValueError(str(e)) from e
+
+        return v
 
     @field_validator("server_url")
     def validate_server_url(cls, v: Optional[str]) -> Optional[str]:

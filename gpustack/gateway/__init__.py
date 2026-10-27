@@ -7,7 +7,7 @@ import yaml
 import copy
 from functools import partial
 from typing import Any, Dict, Tuple, List, Optional, Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import Configuration
 from kubernetes_asyncio.config.kube_config import KubeConfigLoader, KubeConfigMerger
@@ -17,7 +17,11 @@ from kubernetes_asyncio.config.incluster_config import (
     SERVICE_CERT_FILENAME,
 )
 from kubernetes_asyncio.client.rest import ApiException
-from gpustack.api.auth import GATEWAY_AUTH_TOKEN_HEADER
+from gpustack.api.auth import (
+    GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
+    GATEWAY_ASSERTED_KEY_REF_HEADER,
+    GATEWAY_AUTH_TOKEN_HEADER,
+)
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack import envs
@@ -33,8 +37,8 @@ from gpustack.gateway.utils import (
     default_mcp_bridge_name,
     openai_model_prefixes,
     anthropic_model_exact,
+    apply_ai_proxy_override,
     gpustack_ai_proxy_name,
-    gpustack_model_mapper_name,
     gpustack_generic_proxy_router_name,
     mcp_ingress_equal,
     get_default_mcpbridge_ref,
@@ -42,16 +46,24 @@ from gpustack.gateway.utils import (
     router_header_key,
     gpustack_original_path_header,
     gpustack_fallback_path_header,
-    model_route_ingress_prefix,
+    gateway_tls_annotations,
 )
-from gpustack.gateway.plugins import (
-    get_plugin_url_with_name_and_version,
+from gpustack.gateway.ext_auth import (
+    ext_auth_init_spec_diff,
+    ext_auth_resource_name,
+    ext_auth_spec,
 )
-from gpustack.security import AUTH_CACHE_HEADER
+from gpustack.gateway.plugins import plugin_entry, plugin_spec_overrides
+from gpustack.routes.plugins import route_plugins
 
 logger = logging.getLogger(__name__)
 
 mcp_registry_port = 80
+
+# The caller identity every Higress plugin agrees on by constant, ext-auth
+# included. Named here because two plugins below have to spell it identically:
+# one strips whatever the client sent, the other reads whatever survives.
+consumer_header = "x-mse-consumer"
 
 supported_openai_routes = [
     route for v in openai_model_prefixes for route in v.flattened_prefixes()
@@ -146,6 +158,29 @@ def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
     return registry
 
 
+def _redis_registry_from_config(
+    cfg: Config, gateway_namespace: Optional[str]
+) -> Optional[McpBridgeRegistry]:
+    """The redis registry to register for ``--redis-url``, or None.
+
+    Gated on the same validation the plugin config path applies
+    (_redis_config_from_url): a credentialed or TLS url publishes
+    neither the redis block nor the registry, so the two writers never
+    disagree about whether the url is usable. None also covers an unset
+    url, which the caller reads as "prune any registry left behind"."""
+    from gpustack.routes.plugins.lb.gateway import (
+        _redis_config_from_url,
+        redis_registry_from_url,
+    )
+
+    redis_url = getattr(cfg, "redis_url", None)
+    if not redis_url:
+        return None
+    if _redis_config_from_url(redis_url, namespace=gateway_namespace) is None:
+        return None
+    return redis_registry_from_url(redis_url, namespace=gateway_namespace)
+
+
 async def ensure_mcp_resources(cfg: Config, api_client: k8s_client.ApiClient):
     api = gw_client.NetworkingHigressIoV1Api(api_client)
     # use default name for embedded mode
@@ -161,11 +196,17 @@ async def ensure_mcp_resources(cfg: Config, api_client: k8s_client.ApiClient):
         else:
             raise
     target_registry = get_gpustack_higress_registry(cfg=cfg)
+    # The redis service the LB plugin's redis block points at, from
+    # --redis-url. Registered alongside the higress registry so the
+    # WasmPlugin config (a service name, not a raw host) always has a
+    # cluster behind it.
+    redis_registry = _redis_registry_from_config(cfg, gateway_namespace)
+    registries_to_upsert = [r for r in (target_registry, redis_registry) if r]
     try:
         if not default_bridge:
             bridge = McpBridge(
                 metadata={"name": "default", "namespace": gateway_namespace},
-                spec=McpBridgeSpec(registries=[target_registry]),
+                spec=McpBridgeSpec(registries=registries_to_upsert),
             )
             await api.create_mcpbridge(namespace=gateway_namespace, body=bridge)
         else:
@@ -175,24 +216,34 @@ async def ensure_mcp_resources(cfg: Config, api_client: k8s_client.ApiClient):
                 if default_bridge.spec and default_bridge.spec.registries
                 else []
             )
-            if not any(r.name == target_registry.name for r in registries):
-                if default_bridge.spec is None:
-                    default_bridge.spec = McpBridgeSpec()
-                registries.append(target_registry)
-                default_bridge.spec.registries = registries
-                should_update = True
-            else:
-                registry = next(r for r in registries if r.name == target_registry.name)
-                if (
-                    registry.type != target_registry.type
-                    or registry.domain != target_registry.domain
-                    or registry.port != target_registry.port
-                    or registry.protocol != target_registry.protocol
+            for upsert in registries_to_upsert:
+                existing = next((r for r in registries if r.name == upsert.name), None)
+                if existing is None:
+                    if default_bridge.spec is None:
+                        default_bridge.spec = McpBridgeSpec()
+                    registries.append(upsert)
+                    default_bridge.spec.registries = registries
+                    should_update = True
+                elif (
+                    existing.type != upsert.type
+                    or existing.domain != upsert.domain
+                    or existing.port != upsert.port
+                    or existing.protocol != upsert.protocol
                 ):
-                    registry.type = target_registry.type
-                    registry.domain = target_registry.domain
-                    registry.port = target_registry.port
-                    registry.protocol = target_registry.protocol
+                    existing.type = upsert.type
+                    existing.domain = upsert.domain
+                    existing.port = upsert.port
+                    existing.protocol = upsert.protocol
+                    should_update = True
+            if redis_registry is None:
+                # A redis_url that was unset or became unusable must not
+                # leave its registry behind: nothing references it, and
+                # the stale gateway config outlives the feature.
+                from gpustack.routes.plugins.lb.gateway import REDIS_REGISTRY_NAME
+
+                remaining = [r for r in registries if r.name != REDIS_REGISTRY_NAME]
+                if len(remaining) != len(registries):
+                    default_bridge.spec.registries = remaining
                     should_update = True
             if should_update:
                 await api.edit_mcpbridge(
@@ -242,6 +293,7 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
             annotations={
                 "higress.io/destination": f"{registry.get_service_name_with_port()}",
                 "higress.io/ignore-path-case": "false",
+                **gateway_tls_annotations(),
             },
             labels=managed_labels,
         ),
@@ -274,119 +326,75 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
             )
 
 
-def get_match_rules(
-    match_type: Literal["whitelist", "blacklist"],
-    paths: List[Tuple[str, str]],
-) -> Dict[str, Any]:
-    match_list = [
-        {
-            "match_rule_path": pair[0],
-            "match_rule_type": pair[1],
-        }
-        for pair in paths
-    ]
-    return {
-        "match_list": match_list,
-        "match_type": match_type,
-    }
-
-
 def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
-    resource_name = "gpustack-llm-ext-auth"
-    registry = get_gpustack_higress_registry(cfg=cfg)
+    """The static base of the ext-auth CR.
 
-    # auth every path on the matched route
-    default_match_rule = get_match_rules(
-        match_type="blacklist",
-        paths=[("/", "prefix")],
+    Scoped to gpustack's own inference routes by route-name prefix, so
+    unrelated traffic on a shared Higress gateway is never authenticated:
+    model-route ingresses are named ``ai-route-route-<id>.internal`` (plus
+    ``.fallback.``), nothing else matches, and non-matching routes pass
+    through untouched.
+
+    The key tables and the per-route rules are absent here and filled in by
+    :class:`~gpustack.server.gateway_auth_reconciler.GatewayAuthReconciler`;
+    see :func:`gpustack.gateway.ext_auth.ext_auth_init_spec_diff` for how they
+    survive this rewrite on restart.
+    """
+    return ext_auth_resource_name, ext_auth_spec(
+        cfg=cfg, registry=get_gpustack_higress_registry(cfg=cfg)
     )
 
-    http_service = {
-        "authorization_request": {
-            "allowed_headers": [
-                {"exact": "X-Real-IP"},
-                {"exact": "X-Forwarded-For"},
-                {"exact": "x-higress-llm-model"},
-                {"exact": "x-api-key"},
-                {"exact": "cookie"},
-                {"exact": AUTH_CACHE_HEADER},
-                {"exact": GATEWAY_AUTH_TOKEN_HEADER},
-            ],
-            "headers_to_add": {
-                GATEWAY_AUTH_TOKEN_HEADER: cfg.get_derived_gateway_token(),
-            },
-        },
-        "authorization_response": {
-            "allowed_upstream_headers": [
-                {"exact": "X-Mse-Consumer"},
-                {"exact": "Authorization"},
-                {"exact": "cookie"},
-                {"exact": AUTH_CACHE_HEADER},
-            ]
-        },
-        "endpoint": {
-            "path": "/token-auth",
-            "request_method": "GET",
-            "service_name": registry.get_service_name(),
-            "service_port": registry.port,
-        },
-        "endpoint_mode": "forward_auth",
-        "timeout": envs.HIGRESS_EXT_AUTH_TIMEOUT_MS,
-    }
-    # Scope ext-auth to gpustack's own inference routes by route-name prefix,
-    # so unrelated traffic on a shared Higress gateway is never authenticated.
+
+# Manifest name, which is also the ``gateway_plugin`` key -- distinct from the
+# ``gpustack-ai-statistics`` resource it is deployed as. Kept beside the model
+# that consumes it, as ext_auth.py does with its own.
+ai_statistics_plugin_name = "ai-statistics"
+
+
+class AiStatisticsOverride(BaseModel):
+    """``gateway_plugin["ai-statistics"].config``.
+
+    ``attributes`` is not settable: the ``consumer`` attribute is what carries
+    caller identity into the access log, and this plugin is the only thing that
+    writes it there.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Bodies of these content types are parsed for token usage. ``audio/pcm`` is
+    # rejected below rather than declared away, so the error names the value.
     #
-    # gpustack model-route ingresses are named ``ai-route-route-<id>.internal``
-    # (and ``ai-route-route-<id>.fallback.internal`` for fallbacks), both of
-    # which share the ``ai-route-route-`` prefix. Other routes -- the gpustack
-    # control-plane mirror ingress, and any other tenant sharing the gateway --
-    # do not match this prefix, so the ext-auth matcher returns nil for them and
-    # the request passes through unauthenticated. This replaces the previous
-    # "global blacklist + ingress whitelist" shape and needs no hostname.
-    #
-    # Higress route names carry a ``<namespace>/`` prefix when the gpustack
-    # ingresses live in a different namespace than the gateway; mirror the
-    # ``service_namespace_prefix`` convention used elsewhere so the match still
-    # works cross-namespace (otherwise the prefix would not match and inference
-    # APIs would be left unauthenticated under FAIL_OPEN).
-    namespace = cfg.get_namespace()
-    service_namespace_prefix = (
-        f"{namespace}/" if namespace and namespace != cfg.gateway_namespace else ""
+    # Defaults to the deprecated GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES
+    # when that is set: dropping it silently would stop metering a content type
+    # somebody had added, which surfaces as a wrong bill rather than an error.
+    enable_content_types: List[str] = Field(
+        default_factory=envs.deprecated_ai_statistics_content_types
     )
-    route_prefix = f"{service_namespace_prefix}{model_route_ingress_prefix}"
 
-    expected_spec = WasmPluginSpec(
-        defaultConfig={
-            "_rules_": [
-                {
-                    "_match_route_prefix_": [route_prefix],
-                    "http_service": http_service,
-                    **default_match_rule,
-                }
-            ],
-        },
-        defaultConfigDisable=False,
-        failStrategy="FAIL_OPEN",
-        phase="AUTHN",
-        priority=360,
-        url=get_plugin_url_with_name_and_version(
-            name="ext-auth", version="2.0.0", cfg=cfg
-        ),
-    )
-    return resource_name, expected_spec
+
+def ai_statistics_override(cfg: Config) -> AiStatisticsOverride:
+    entry = plugin_entry(ai_statistics_plugin_name, cfg)
+    if entry is None or not entry.config:
+        return AiStatisticsOverride()
+    try:
+        return AiStatisticsOverride.model_validate(entry.config)
+    except ValidationError as e:
+        raise ValueError(
+            f"Invalid gateway_plugin.{ai_statistics_plugin_name}.config: {e}"
+        ) from e
 
 
 def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-ai-statistics"
     expected_spec = WasmPluginSpec(
         defaultConfig={
-            "enable_content_types": envs.GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES,
+            "enable_content_types": ai_statistics_override(cfg).enable_content_types,
             "attributes": [
                 {
                     "apply_to_log": True,
                     "apply_to_span": False,
                     "key": "consumer",
-                    "value": "x-mse-consumer",
+                    "value": consumer_header,
                     "value_source": "request_header",
                 }
             ],
@@ -397,9 +405,7 @@ def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         matchRules=[],
         phase="UNSPECIFIED_PHASE",
         priority=900,
-        url=get_plugin_url_with_name_and_version(
-            name="ai-statistics", version="2.0.0", cfg=cfg
-        ),
+        **plugin_spec_overrides(ai_statistics_plugin_name, cfg=cfg),
     )
     return resource_name, expected_spec
 
@@ -421,25 +427,9 @@ def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         matchRules=[],
         phase="AUTHN",
         priority=90,
-        url=get_plugin_url_with_name_and_version(
-            name="gpustack-set-header-pre-route", version="1.0.0", cfg=cfg
-        ),
+        **plugin_spec_overrides("gpustack-set-header-pre-route", cfg=cfg),
     )
     return resource_name, expected_spec
-
-
-def model_mapper_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
-    return gpustack_model_mapper_name, WasmPluginSpec(
-        phase="AUTHN",
-        priority=800,
-        url=get_plugin_url_with_name_and_version(
-            name="gpustack-model-mapper", version="1.0.0", cfg=cfg
-        ),
-        defaultConfigDisable=False,
-        defaultConfig={"modelMapping": {}},
-        matchRules=[],
-        failStrategy="FAIL_OPEN",
-    )
 
 
 class HeaderRule(BaseModel):
@@ -473,6 +463,29 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     expected_spec = WasmPluginSpec(
         defaultConfig={
             "reqRules": [
+                # Strip everything a client must not be able to say about
+                # itself. Runs at priority 810, ahead of ext-auth at 360 in the
+                # same AUTHN phase, so removal always precedes injection of the
+                # trusted values.
+                #
+                # The two identity headers are as load-bearing as the gateway
+                # token: the server skips authentication entirely when it sees
+                # them behind a valid gateway token, so a client that could set
+                # one would be able to name any access_key -- and with
+                # authentication moved to the edge there is no second gate
+                # behind this one.
+                #
+                # ``x-mse-consumer`` is stripped here rather than left to
+                # ext-auth because ext-auth only reaches its own removal on
+                # routes it owns -- its route gate returns first for everything
+                # else. This plugin has no such gate, so it covers the routes
+                # ext-auth declines: the control-plane mirror ingress, and any
+                # other tenant on a shared gateway. Without it a client could
+                # name itself on those routes and be believed, because
+                # ai-statistics and token-usage read this header globally and
+                # write it into the access log and the usage records. Stripping
+                # it globally is safe precisely because ext-auth runs later and
+                # replaces it with an authoritative value where it applies.
                 transform_header(
                     "remove",
                     HeaderRule(
@@ -480,6 +493,15 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     ),
                     HeaderRule(
                         key=router_header_key,
+                    ),
+                    HeaderRule(
+                        key=GATEWAY_ASSERTED_ACCESS_KEY_HEADER,
+                    ),
+                    HeaderRule(
+                        key=GATEWAY_ASSERTED_KEY_REF_HEADER,
+                    ),
+                    HeaderRule(
+                        key=consumer_header,
                     ),
                 ),
                 transform_header(
@@ -529,9 +551,7 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         matchRules=[],
         phase="AUTHN",
         priority=810,
-        url=get_plugin_url_with_name_and_version(
-            name="transformer", version="2.0.0", cfg=cfg
-        ),
+        **plugin_spec_overrides("transformer", cfg=cfg),
     )
     return resource_name, expected_spec
 
@@ -608,9 +628,7 @@ def generic_proxy_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         matchRules=[],
         phase="AUTHN",
         priority=900,
-        url=get_plugin_url_with_name_and_version(
-            name="gpustack-generic-proxy-router", version="1.0.0", cfg=cfg
-        ),
+        **plugin_spec_overrides("gpustack-generic-proxy-router", cfg=cfg),
     )
     return resource_name, expected_spec
 
@@ -635,26 +653,30 @@ def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         matchRules=[],
         phase="UNSPECIFIED_PHASE",
         priority=400,
-        url=get_plugin_url_with_name_and_version(
-            name="gpustack-token-usage", version="1.1.0", cfg=cfg
-        ),
+        **plugin_spec_overrides("gpustack-token-usage", cfg=cfg),
     )
     return resource_name, expected_spec
 
 
 def ai_proxy_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
+    """The create-only foundation of the ai-proxy CR.
+
+    ``defaultConfig`` starts as just the operator's whitelisted settings (see
+    ``AiProxyOverride``): the runtime reconciler owns ``providers`` and the
+    match rules, and ``spec_replace(create_only=True)`` keeps this startup
+    pass from ever overwriting them.
+    """
     resource_name = gpustack_ai_proxy_name
+    default_config = apply_ai_proxy_override({}, cfg)
     expected_spec = WasmPluginSpec(
-        defaultConfig={},
+        defaultConfig=default_config,
         defaultConfigDisable=False,
         failStrategy="FAIL_OPEN",
         imagePullPolicy="UNSPECIFIED_POLICY",
         matchRules=[],
         priority=100,
         phase="UNSPECIFIED_PHASE",
-        url=get_plugin_url_with_name_and_version(
-            name="ai-proxy", version="2.0.0", cfg=cfg
-        ),
+        **plugin_spec_overrides("gpustack-ai-proxy", cfg=cfg),
     )
     return resource_name, expected_spec
 
@@ -816,12 +838,87 @@ def generic_proxy_router_spec_diff(
     return expected_spec.model_copy(update={"defaultConfig": merged_default_config})
 
 
-def validate_ai_statistics_plugin_content_types():
-    for content_type in envs.GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES:
+def validate_ai_statistics_plugin_content_types(cfg: Config):
+    for content_type in ai_statistics_override(cfg).enable_content_types:
         if content_type == "audio/pcm":
             raise ValueError(
                 "audio/pcm content type is not supported in ai statistics plugin"
             )
+
+
+def _spec_diff_for(
+    plugin_name: str,
+    plugin_spec: WasmPluginSpec,
+    route_plugin_diffs: Dict[str, Any],
+) -> Any:
+    """Pick the diff policy for one WasmPlugin publication. Route
+    plugins carry their own; the built-ins are keyed by resource name."""
+    if plugin_name == gpustack_generic_proxy_router_name:
+        return partial(generic_proxy_router_spec_diff, expected_spec=plugin_spec)
+    if plugin_name == ext_auth_resource_name:
+        # Hybrid resource: the static base is rewritten from cfg on
+        # every start, the key tables and route rules are carried
+        # over from the live CR because the database owns them.
+        return partial(ext_auth_init_spec_diff, expected_spec=plugin_spec)
+    if plugin_name in route_plugin_diffs:
+        entry = route_plugin_diffs[plugin_name]
+        if entry.spec_diff is not None:
+            if entry.create_only:
+                logger.warning(
+                    "Route gateway entry '%s' carries both spec_diff and "
+                    "create_only; create_only is ignored",
+                    plugin_name,
+                )
+            return entry.spec_diff
+        return partial(
+            spec_replace,
+            expected_spec=plugin_spec,
+            create_only=entry.create_only,
+        )
+    create_only = plugin_name in [
+        gpustack_ai_proxy_name,
+    ]
+    return partial(spec_replace, expected_spec=plugin_spec, create_only=create_only)
+
+
+def _append_route_plugin_entries(
+    cfg: Config, plugin_list: List[Tuple[str, WasmPluginSpec]]
+) -> Dict[str, Any]:
+    """Route plugins append their own WasmPlugin CRs to the same
+    publication pass. They carry their own diff policy (an init pass
+    that leaves the route-driven sections of the live CR alone is what
+    keeps this static pass and the plugin's reconciler from fighting
+    over one resource); only when a plugin provides none does the
+    default replace apply. Returns the name-to-entry map the diff
+    selection in ``initialize_gateway`` consults.
+
+    A route plugin may take over a CR name the built-in list already
+    carries — the LB context role keeps ``gpustack-model-mapper`` for
+    its in-place upgrade. The route plugin's entry wins and the
+    built-in's is dropped, so one name is published exactly once and
+    ownership is unambiguous."""
+    route_plugin_diffs: Dict[str, Any] = {}
+    entry_owners: Dict[str, str] = {}
+    for route_plugin in route_plugins():
+        for entry in route_plugin.gateway_entries(cfg):
+            owner = entry_owners.get(entry.name)
+            if owner is not None:
+                # Same conflict policy as register_route_plugin's
+                # duplicate-name check: two plugins writing one CR is a
+                # packaging bug, and last-registered-wins would hide it.
+                raise ValueError(
+                    f"Route plugins '{owner}' and '{route_plugin.name}' both "
+                    f"declare the gateway entry '{entry.name}'"
+                )
+            entry_owners[entry.name] = route_plugin.name
+            route_plugin_diffs[entry.name] = entry
+    if route_plugin_diffs:
+        plugin_list[:] = [
+            (name, spec) for name, spec in plugin_list if name not in route_plugin_diffs
+        ]
+        for entry in route_plugin_diffs.values():
+            plugin_list.append((entry.name, entry.spec))
+    return route_plugin_diffs
 
 
 def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
@@ -834,18 +931,63 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
         GatewayModeEnum.external,
         GatewayModeEnum.incluster,
     ]:
-        validate_ai_statistics_plugin_content_types()
+        validate_ai_statistics_plugin_content_types(cfg=cfg)
+        if cfg.gateway_mode == GatewayModeEnum.incluster:
+            # In-cluster the anchor Ingress belongs to the helm chart, so this
+            # server never writes the annotations and the generated routes
+            # mirror whatever the chart set. Honoring the variables here would
+            # fight the chart for ownership; ignoring them quietly would leave a
+            # floor that was asked for and never applied. Not validated either,
+            # for the same reason they are not used -- refusing to start over a
+            # value this mode has no use for helps nobody. The chart validates
+            # its own keys as it renders them.
+            ignored = {
+                name: value
+                for name, value in (
+                    (
+                        "GPUSTACK_GATEWAY_TLS_MIN_PROTOCOL_VERSION",
+                        envs.GATEWAY_TLS_MIN_PROTOCOL_VERSION,
+                    ),
+                    (
+                        "GPUSTACK_GATEWAY_TLS_MAX_PROTOCOL_VERSION",
+                        envs.GATEWAY_TLS_MAX_PROTOCOL_VERSION,
+                    ),
+                )
+                if value
+            }
+            if ignored:
+                logger.warning(
+                    "Ignoring %s: in-cluster mode takes the gateway's TLS "
+                    "protocol bounds from the %s ingress, which the helm chart "
+                    "owns. Set server.ingress.tls.minProtocolVersion / "
+                    "maxProtocolVersion in the chart instead.",
+                    ", ".join(f"{k}={v}" for k, v in sorted(ignored.items())),
+                    envs.GATEWAY_MIRROR_INGRESS_NAME,
+                )
+        else:
+            # Raises here, before a single Ingress is written, on a TLS version
+            # Higress would reject -- which it would do by keeping its own TLS
+            # 1.0 floor and logging one line in a container nobody is watching.
+            # Logged when set for the same reason: an enforced floor should be
+            # visible in the server's own log, not only inferable from a
+            # handshake failure.
+            tls_annotations = gateway_tls_annotations()
+            if tls_annotations:
+                logger.info(
+                    "Gateway ingresses will be annotated with %s",
+                    ", ".join(f"{k}={v}" for k, v in sorted(tls_annotations.items())),
+                )
         plugin_list: List[Tuple[str, WasmPluginSpec]] = [
             ext_auth_plugin(cfg=cfg),
             ai_statistics_plugin(cfg=cfg),
             generic_proxy_router_plugin(cfg=cfg),
             ai_proxy_plugin(cfg=cfg),
             model_pre_route_plugin(cfg=cfg),
-            model_mapper_plugin(cfg=cfg),
         ]
         if cfg.server_role() != Config.ServerRole.WORKER:
             plugin_list.append(transformer_plugin(cfg=cfg))
             plugin_list.append(token_usage_plugin(cfg=cfg))
+        route_plugin_diffs = _append_route_plugin_entries(cfg, plugin_list)
 
         async def prepare():
             api_client = k8s_client.ApiClient(
@@ -857,26 +999,29 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
                 await ensure_gateway_timeout(cfg=cfg, api_client=api_client)
                 await ensure_ingress_resources(cfg=cfg, api_client=api_client)
             for plugin_name, plugin_spec in plugin_list:
-                if plugin_name == gpustack_generic_proxy_router_name:
-                    spec_diff_func = partial(
-                        generic_proxy_router_spec_diff, expected_spec=plugin_spec
-                    )
-                else:
-                    create_only = plugin_name in [
-                        gpustack_ai_proxy_name,
-                        gpustack_model_mapper_name,
-                    ]
-                    spec_diff_func = partial(
-                        spec_replace,
-                        expected_spec=plugin_spec,
-                        create_only=create_only,
-                    )
+                spec_diff_func = _spec_diff_for(
+                    plugin_name, plugin_spec, route_plugin_diffs
+                )
                 await ensure_wasm_plugin(
                     api=gw_client.ExtensionsHigressIoV1Api(api_client),
                     name=plugin_name,
                     namespace=cfg.gateway_namespace,
                     spec_diff=spec_diff_func,
                 )
+            # Envoy starts loading these the moment Higress pushes the ECDS
+            # resource, which is now -- and where a module is fetched over
+            # HTTP, that is while the server serving it is still several
+            # startup steps from binding its port. Logging the URLs is what
+            # makes that visible at all; verify_published_plugin_modules
+            # checks them once the API is up.
+            logger.info(
+                "Published %d WasmPlugin resources in namespace %s: %s",
+                len(plugin_list),
+                cfg.gateway_namespace,
+                ", ".join(
+                    f"{name}={spec.url}" for name, spec in plugin_list if spec.url
+                ),
+            )
 
         try:
             asyncio.run(prepare())

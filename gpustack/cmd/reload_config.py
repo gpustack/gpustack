@@ -4,7 +4,7 @@ import sys
 import requests
 from typing import Dict, Any
 
-from gpustack import __version__, __git_commit__
+from gpustack.extension import resolve_version_info
 from gpustack.api.auth import SESSION_COOKIE_NAME
 from gpustack.cmd.local_auth import (
     add_local_auth_arguments,
@@ -101,49 +101,57 @@ def setup_reload_config_cmd(subparsers: argparse._SubParsersAction):
 
 def run(args):
     try:
-        logger.info("Starting configuration reload...")
-        logger.info(f"GPUStack version: {__version__} ({__git_commit__})")
         if handle_list_mode(args):
             return
 
-        cfg = parse_args_with_filter(args, {})
-        payload = {}
-        for field in WHITELIST_CONFIG_FIELDS:
-            if hasattr(cfg, field):
-                value = getattr(cfg, field)
-                if value is not None:
-                    payload[field] = value
-
+        config_data = get_filtered_config_data(args, {})
+        cfg = Config(**config_data)
         setup_logging(cfg.debug)
+        logger.info("Starting configuration reload...")
+        version, git_commit = resolve_version_info()
+        logger.info(f"GPUStack version: {version} ({git_commit})")
+
+        payload = build_runtime_update_payload(cfg, config_data)
+        if not payload:
+            logger.info(
+                "No whitelisted configuration changes supplied; nothing to reload."
+            )
+            return
+
         apply_runtime_updates(payload, args)
-        display_config_summary(cfg)
+        display_config_summary(payload)
 
     except Exception as e:
         logger.error(f"Failed to reload configuration: {e}")
         sys.exit(1)
 
 
-def display_config_summary(cfg):
+def build_runtime_update_payload(
+    cfg: Config, config_data: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Return the whitelisted fields explicitly supplied to reload-config."""
+    return {
+        field: getattr(cfg, field)
+        for field in WHITELIST_CONFIG_FIELDS.intersection(config_data)
+        if getattr(cfg, field) is not None
+    }
+
+
+def display_config_summary(payload: Dict[str, Any]):
     """Display a summary of the reloaded configuration - only show whitelisted fields."""
     logger.info("=== Configuration Reload Summary ===")
 
-    for field in WHITELIST_CONFIG_FIELDS:
-        if hasattr(cfg, field):
-            value = getattr(cfg, field)
-            if value is not None:
-                logger.info(f"- reload: {field} = {value}")
+    for field, value in payload.items():
+        logger.info(f"- reload: {field} = {value}")
     logger.info("Configuration successfully reloaded.")
 
     logger.info("=====================================")
 
 
-def parse_args_with_filter(args: argparse.Namespace, filtered_changes: Dict[str, Any]):
-    """
-    Parse arguments with filtered configuration changes.
-
-    This function reuses the logic from start.py but applies whitelist filtering.
-    """
-
+def get_filtered_config_data(
+    args: argparse.Namespace, filtered_changes: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Collect the whitelisted fields provided through reload-config inputs."""
     config_data = {}
 
     # Handle config file if provided
@@ -165,10 +173,7 @@ def parse_args_with_filter(args: argparse.Namespace, filtered_changes: Dict[str,
     for key, value in filtered_changes.items():
         config_data[key] = value
 
-    # Create config with filtered data - only use the filtered config data
-    # Don't call set_common_options/set_server_options/set_worker_options
-    # as they would re-apply all command line arguments including blocked ones
-    return Config(**config_data)
+    return config_data
 
 
 def resolve_scope_headers(args: argparse.Namespace) -> Dict[str, Dict[str, str]]:

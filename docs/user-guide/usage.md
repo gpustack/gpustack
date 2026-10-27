@@ -142,8 +142,9 @@ Filters: **date range**, **resource type** (GPU Instance / Storage), **event typ
 
 All dates and times on the Usage page — trend buckets, **Last Active**, and resource-event
 times — are shown in a single configurable **rollup timezone**, so every tab lines up on the same
-calendar boundaries. It is controlled by the `GPUSTACK_USAGE_ROLLUP_TIMEZONE` server environment
-variable and defaults to the server's OS local timezone. See
+calendar boundaries. It is controlled by the `GPUSTACK_TIMEZONE` server environment
+variable (the legacy `GPUSTACK_USAGE_ROLLUP_TIMEZONE` still works as a deprecated alias) and
+defaults to the server's OS local timezone. See
 [Environment Variables](../environment-variables.md#usage-tracking-configuration) for details,
 including the note on Daylight Saving Time.
 

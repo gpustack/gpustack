@@ -8,8 +8,11 @@ from gpustack.schemas.inference_backend import (
     InferenceBackend,
     VersionConfig,
 )
+from gpustack.schemas.runner_source import (
+    RunnerOverrideEntry,
+    merged_service_runners,
+)
 from gpustack.server.db import async_session
-from gpustack_runner import list_service_runners
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime.detector import ManufacturerEnum
 
@@ -44,7 +47,16 @@ class BackendFrameworkFilter(WorkerFilter):
             for gpu in worker.status.gpu_devices:
                 variant = None
                 if gpu.vendor == ManufacturerEnum.ASCEND and gpu.arch_family:
-                    variant = get_ascend_cann_variant(gpu.arch_family).lower()
+                    cann_variant = get_ascend_cann_variant(gpu.arch_family)
+                    if cann_variant:
+                        variant = cann_variant.lower()
+                    else:
+                        # No variant matches any CANN runner, while _resolve_image
+                        # falls back to the 910b image.
+                        logger.warning(
+                            f"Worker {worker.name}: unrecognized Ascend SoC {gpu.arch_family}, "
+                            f"matching runners without a CANN variant"
+                        )
                 query_conditions.add(
                     (gpu.type, gpu.runtime_version, self.model.backend_version, variant)
                 )
@@ -87,6 +99,7 @@ class BackendFrameworkFilter(WorkerFilter):
     async def _has_supported_runners(
         self,
         inference_backends: List[InferenceBackend],
+        overrides: List[RunnerOverrideEntry],
         gpu_type: str,
         backend_version: Optional[str],
         variant: Optional[str],
@@ -138,7 +151,7 @@ class BackendFrameworkFilter(WorkerFilter):
         if backend_version:
             kwargs["service_version"] = backend_version
 
-        runners_list = list_service_runners(**kwargs)
+        runners_list = merged_service_runners(overrides, **kwargs)
         if runners_list and len(runners_list) > 0:
             return True
 
@@ -161,11 +174,14 @@ class BackendFrameworkFilter(WorkerFilter):
             )
             return workers, []
 
-        if self.model.backend == BackendEnum.CUSTOM:
+        # A custom image is supplied by the user and absent from the runner
+        # catalog, so there is no runner entry to match it against.
+        if self.model.backend == BackendEnum.CUSTOM or self.model.image_name:
             return workers, []
 
         async with async_session() as session:
             inference_backends = await InferenceBackend.all(session)
+            overrides = await RunnerOverrideEntry.all(session)
 
         filtered_workers = []
         filtered_messages = []
@@ -187,6 +203,7 @@ class BackendFrameworkFilter(WorkerFilter):
                 # Get supported runners for this GPU configuration
                 is_supported = await self._has_supported_runners(
                     inference_backends,
+                    overrides,
                     gpu_type,
                     backend_version,
                     variant,

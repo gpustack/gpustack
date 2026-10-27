@@ -35,18 +35,18 @@ gpustack start [OPTIONS]
 ### Common Options
 
 | <div style="width:180px">Flag</div>         | <div style="width:100px">Default</div> | Description                                                                                                                           |
-| ------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+|---------------------------------------------|----------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
 | `--advertise-address` value                 | (empty)                                | The IP address to expose for external access.<br/>If not set, the system will auto-detect a suitable local IP address.                |
 | `--config-file` value                       | (empty)                                | Path to the YAML config file.                                                                                                         |
 | `-d` value, `--debug` value                 | `False`                                | To enable debug mode, the short flag -d is not supported in Windows because this flag is reserved by PowerShell for CommonParameters. |
 | `--data-dir` value                          | (empty)                                | Directory to store data. Default is OS specific.                                                                                      |
 | `--cache-dir` value                         | (empty)                                | Directory to store cache (e.g., model files). Defaults to <data-dir>/cache.                                                           |
-| `--huggingface-token` value                 | (empty)                                | User Access Token to authenticate to the Hugging Face Hub. Can also be configured via the `HF_TOKEN` environment variable.            |
+| `--huggingface-token` value                 | (empty)                                | User Access Token to authenticate to the Hugging Face Hub. Can also be configured via the `HF_TOKEN` environment variable.                                                                            |
+| `--insecure-tls`                            | `False`                                | Skip TLS verification on GPUStack's own HTTPS connections (worker to server, server to external-auth IdP). For trusted networks where the server certificate cannot be verified otherwise.                                                                                                                                                                                                              |
 | `--bin-dir` value                           | (empty)                                | Directory to store additional binaries, e.g., versioned backend executables.                                                          |
 | `--pipx-path` value                         | (empty)                                | Path to the pipx executable, used to install versioned backends.                                                                      |
-| `--system-default-container-registry` value | `docker.io`                            | Default container registry for GPUStack to pull system and inference images.                                                          |
-| `--image-name-override` value               | (empty)                                | Override the default image name for the GPUStack container.                                                                           |
-| `--image-repo` value                        | `gpustack/gpustack`                    | Override the default image repository for the GPUStack container.                                                                     |
+| `--system-default-container-registry` value | `docker.io`                            | Default container registry for GPUStack to pull system and inference images.<br/>Keep all GPUStack business images under the `gpustack` namespace; if a multi-level namespace is required, keep `gpustack` as the last level, e.g. `awesome.com/amazing-group/amazing-subgroup/gpustack`. Then set this flag (or the server/worker `system_default_container_registry` config key, or the `GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY` environment variable) to the parent path, e.g. `awesome.com/amazing-group/amazing-subgroup`.<br/>If the images cannot stay under the `gpustack` namespace (e.g. `gpustack-ai`), adjust `--image-repo` and `--benchmark-image-repo` accordingly. |
+| `--image-repo` value                        | `gpustack/gpustack`                    | Override the default image repository for the GPUStack container. Do not include the tag in the value; GPUStack appends the version tag automatically.<br/>If the image `gpustack/gpustack:<tag>` lives outside the `gpustack` namespace, e.g. `awesome.com/amazing-group/amazing-subgroup/gpustack-ai/gpustack:<tag>`, first point `--system-default-container-registry=awesome.com/amazing-group/amazing-subgroup` to the registry with the parent namespace, then set this flag (or the server/worker `image_repo` config key, or the `GPUSTACK_IMAGE_REPO` environment variable) to `gpustack-ai/gpustack`. |
 | `--gateway-mode` value                      | `auto`                                 | Gateway running mode. Options: embedded, in-cluster, external, disabled, or auto (default).                                           |
 | `--gateway-kubeconfig` value                | (empty)                                | Path to the kubeconfig file for gateway. Only useful for external gateway-mode.                                                       |
 | `--gateway-namespace` value                 | `higress-system`                       | The namespace where the gateway component is deployed.                                                                                |
@@ -56,7 +56,7 @@ gpustack start [OPTIONS]
 ### Server Options
 
 | <div style="width:180px">Flag</div>              | <div style="width:100px">Default</div>           | Description                                                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|--------------------------------------------------|--------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--port` value                                   | `80`                                             | Port to bind the server to.                                                                                                                                                                                                                                                                                                                   |
 | `--tls-port` value                               | `443`                                            | Port to bind the TLS server to.                                                                                                                                                                                                                                                                                                               |
 | `--api-port` value                               | `30080`                                          | Port to bind the GPUStack API server to.                                                                                                                                                                                                                                                                                                      |
@@ -67,11 +67,14 @@ gpustack start [OPTIONS]
 | `--disable-worker`                               | (empty)                                          | (DEPRECATED) Disable the embedded worker for the GPUStack server. New installations will not have the embedded worker by default. Use '--enable-worker' to enable the embedded worker if needed. If neither flag is set, for backward compatibility, the embedded worker will be enabled by default for legacy installations prior to v2.0.1. |
 | `--enable-worker`                                | `False`                                          | Enable the embedded worker for the GPUStack server.                                                                                                                                                                                                                                                                                           |
 | `--bootstrap-password` value                     | Auto-generated.                                  | Initial password for the default admin user.                                                                                                                                                                                                                                                                                                  |
-| `--database-url` value                           | Embedded PostgreSQL.                             | URL of the database. Supports PostgreSQL 13.0+, MySQL 8.0.36+, and compatible databases such as openGauss (postgresql:// scheme) and OceanBase (mysql:// scheme). Example: postgresql://username:password@host:port/dbname or mysql://username:password@host:port/dbname                                                                                                                                                                           |
+| `--database-url` value                           | Embedded PostgreSQL.                             | URL of the database. Supports PostgreSQL 13.0+, MySQL 8.0.36+, and compatible databases such as openGauss (postgresql:// scheme) and OceanBase (mysql:// scheme). Example: postgresql://username:password@host:port/dbname or mysql://username:password@host:port/dbname                                                                      |
+| `--redis-url` value                              | None                                             | URL of an external Redis for features that need shared, fast state (the LB plugin's shared-state backend). Format: `redis://host[:port][/db]`. Credentials are refused (they would be materialized in the gateway CR) and TLS (`rediss://`) is not supported.                                                                                |
 | `--ssl-keyfile` value                            | (empty)                                          | Path to the SSL key file.                                                                                                                                                                                                                                                                                                                     |
 | `--ssl-certfile` value                           | (empty)                                          | Path to the SSL certificate file.                                                                                                                                                                                                                                                                                                             |
+| `--ssl-ca-certfile` value                        | (empty)                                          | Path to the PEM CA bundle workers use to verify the GPUStack server. Required when the server certificate is signed by a private CA.                                                                                                                                                                                                      |
 | `--force-auth-localhost`                         | (unset)                                          | (Deprecated, no-op) Localhost callers are always authenticated; retained for backwards compatibility and will be removed in a future release.                                                                                                                                                                                                 |
 | `--disable-update-check`                         | `False`                                          | Disable update check.                                                                                                                                                                                                                                                                                                                         |
+| `--ota-server-url` value                         | (empty)                                          | URL of the OTA server the official content sources are read from — the index and the files sit directly under it, e.g. https://ota.example.com/gpustack. Defaults to the public OTA server; point it at a copy of your own when that one is unreachable from your network, or to serve an internal deployment from your own repository. It covers all three kinds of content at once, they stay `Official` and keep auto-updating, and `Reset to Official Source` in the UI returns to it. See [OTA Content Updates](../user-guide/ota-content-updates.md). |
 | `--disable-openapi-docs`                         | `False`                                          | Disable autogenerated OpenAPI documentation endpoints (Swagger UI at /docs, ReDoc at /redoc, and the raw spec at /openapi.json).                                                                                                                                                                                                              |
 | `--model-catalog-file` value                     | (empty)                                          | Path or URL to the model catalog file.                                                                                                                                                                                                                                                                                                        |
 | `--enable-cors`                                  | `False`                                          | Enable Cross-Origin Resource Sharing (CORS) on the server.                                                                                                                                                                                                                                                                                    |
@@ -102,54 +105,60 @@ gpustack start [OPTIONS]
 | `--cas-username-attribute` value                 | (empty)                                          | CAS XML attribute name to use as the GPUStack username. Defaults to the CAS `cas:user` element when unset.                                                                                                                                                                                                                                    |
 | `--cas-full-name-attribute` value                | (empty)                                          | CAS XML attribute name to use as the user's full name.                                                                                                                                                                                                                                                                                        |
 | `--cas-avatar-attribute` value                   | (empty)                                          | CAS XML attribute name to use as the user's avatar URL.                                                                                                                                                                                                                                                                                       |
+| `--external-auth-provider-name` value            | (empty)                                          | Name of the identity provider shown on the login page's SSO button, e.g., `Okta`. Defaults to the protocol name (OIDC/SAML/CAS) when unset.                                                                                                                                                                                                   |
 | `--external-auth-name` value                     | (empty)                                          | Mapping of external authentication user information to username, e.g., preferred_username.                                                                                                                                                                                                                                                    |
 | `--external-auth-full-name` value                | (empty)                                          | Mapping of external authentication user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`.                                                                                                                                                                                             |
 | `--external-auth-avatar-url` value               | (empty)                                          | Mapping of external authentication user information to user's avatar URL.                                                                                                                                                                                                                                                                     |
 | `--external-auth-default-inactive`               | `False`                                          | True if new users should be deactivated by default.                                                                                                                                                                                                                                                                                           |
 | `--external-auth-insecure-skip-tls-verify`       | `False`                                          | Skip TLS verification for the external-auth IdP handshake (OIDC/CAS). For testing against self-signed IdPs only; never use in production.                                                                                                                                                                                                     |
 | `--server-external-url` value                    | (empty)                                          | The external server URL for worker registration. This option is required when provisioning workers via cloud providers, ensuring that workers can connect to the server correctly.                                                                                                                                                            |
-| `--trusted-hosts` value                          | (empty)                                          | Host names allowed in the `X-Forwarded-Host` header behind a reverse proxy. Use `*` to trust any host. When unset, derived from `--server-external-url`.                                                                                                                                                                                      |
+| `--trusted-hosts` value                          | (empty)                                          | Allowlist for `the X-Forwarded-Host` header behind a reverse proxy. When unset, derived from `--server-external-url`. If both are unset, it defaults to `*` to trust any host (not recommended unless the server is only reachable via a trusted proxy).                                                                                      |
 | `--saml-sp-attribute-prefix` value               | (empty)                                          | SAML Service Provider attribute prefix, used for fetching attributes specified by --external-auth-\*.                                                                                                                                                                                                                                         |
 | `--gateway-concurrency` value                    | `16`                                             | Number of concurrent connections for the embedded gateway.                                                                                                                                                                                                                                                                                    |
 | `--disable-builtin-observability`                | `False`                                          | Disable embedded Grafana and Prometheus services.                                                                                                                                                                                                                                                                                             |
 | `--builtin-prometheus-port` value                | `19090`                                          | Port for the embedded Prometheus service.                                                                                                                                                                                                                                                                                                     |
 | `--builtin-grafana-port` value                   | `13000`                                          | Port for the embedded Grafana service.                                                                                                                                                                                                                                                                                                        |
+| `--prometheus-url` value                         | (empty)                                          | Base URL of an external Prometheus to query. When unset, the embedded one is used if it is enabled. Set this to keep metric-backed features (model and PD dashboards, bandwidth self-check) working on a deployment that delegates observability to its own stack.                                                                             |
 | `--grafana-url` value                            | (empty)                                          | Grafana base URL for dashboard redirects and proxying. Must be browser-reachable (not a container-only hostname). If set, embedded Grafana and Prometheus will be disabled. Only required for external Grafana.                                                                                                                               |
 | `--grafana-worker-dashboard-uid` value           | (empty)                                          | Grafana dashboard UID for worker dashboard redirects.                                                                                                                                                                                                                                                                                         |
 | `--grafana-model-dashboard-uid` value            | (empty)                                          | Grafana dashboard UID for model dashboard redirects.                                                                                                                                                                                                                                                                                          |
 
 ### Worker Options
 
-| <div style="width:180px">Flag</div>      | <div style="width:100px">Default</div> | Description                                                                                                                                                                                     |
-| ---------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-t` value, `--token` value              | Auto-generated.                        | Shared secret used to register worker.                                                                                                                                                          |
-| `-s` value, `--server-url` value         | (empty)                                | Server to connect to.                                                                                                                                                                           |
-| `--worker-name` value                    | (empty)                                | Name of the worker node. Use the hostname by default.                                                                                                                                           |
-| `--worker-ip` value                      | (empty)                                | IP address of the worker node. Auto-detected by default.                                                                                                                                        |
-| `--disable-worker-metrics`               | `False`                                | Disable metrics.                                                                                                                                                                                |
-| `--worker-metrics-port` value            | `10151`                                | Port to expose metrics.                                                                                                                                                                         |
-| `--worker-port` value                    | `10150`                                | Port to bind the worker to. Use a consistent value for all workers.                                                                                                                             |
-| `--service-port-range` value             | `40000-40063`                          | Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                                             |
-| `--ray-port-range` value                 | `41000-41999`                          | Port range for Ray services(vLLM distributed deployment using), specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                |
-| `--log-dir` value                        | (empty)                                | Directory to store logs.                                                                                                                                                                        |
-| `--system-reserved` value                | (empty)                                | The system reserves resources for the worker during scheduling, measured in GiB. By default, no resources are reserved, Example: '{\"ram\": 2, \"vram\": 1}'.                                   |
-| `--enable-hf-transfer`                   | `False`                                | [Deprecated] hf_transfer support was removed in huggingface_hub v1.0; this flag is a no-op. hf_xet is now the default downloader.                                                               |
-| `--enable-hf-xet`                        | `False`                                | [Deprecated] Enable downloading model files using Hugging Face Xet.                                                                                                                             |
-| `--worker-ifname` value                  | (empty)                                | Network interface name of the worker node. Auto-detected by default.                                                                                                                            |
-| `--proxy-mode` value                     | (empty)                                | Proxy mode for accessing model instances: `direct`, `worker`, or `tunnel` (worker dials out to the server; for workers behind firewall/NAT). Default `direct` embedded, `worker` standalone.    |
-| `--benchmark-image-repo` value           | `gpustack/benchmark-runner`            | Override the default benchmark image repo for the GPUStack benchmark container.                                                                                                                 |
-| `--benchmark-dir` value                  | `<data-dir>/benchmarks`                | Directory to store benchmark results.                                                                                                                                                           |
-| `--benchmark-max-duration-seconds` value | (empty)                                | Max duration for a benchmark before timeout. Disabled when empty.                                                                                                                               |
+| <div style="width:180px">Flag</div>      | <div style="width:100px">Default</div> | Description                                                                                                                                                                                  |
+|------------------------------------------|----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `-t` value, `--token` value              | Auto-generated.                        | Shared secret used to register worker.                                                                                                                                                       |
+| `-s` value, `--server-url` value         | (empty)                                | Server to connect to.                                                                                                                                                                        |
+| `--worker-name` value                    | (empty)                                | Name of the worker node. Use the hostname by default.                                                                                                                                        |
+| `--worker-ip` value                      | (empty)                                | IP address of the worker node. Auto-detected by default.                                                                                                                                     |
+| `--disable-worker-metrics`               | `False`                                | Disable metrics.                                                                                                                                                                             |
+| `--worker-metrics-port` value            | `10151`                                | Port to expose metrics.                                                                                                                                                                      |
+| `--worker-port` value                    | `10150`                                | Port to bind the worker to. Use a consistent value for all workers.                                                                                                                          |
+| `--service-port-range` value             | `40000-40063`                          | Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                                          |
+| `--ray-port-range` value                 | `41000-41999`                          | Port range for Ray services(vLLM distributed deployment using), specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                             |
+| `--log-dir` value                        | (empty)                                | Directory to store logs.                                                                                                                                                                     |
+| `--system-reserved` value                | (empty)                                | The system reserves resources for the worker during scheduling, measured in GiB. By default, no resources are reserved, Example: '{\"ram\": 2, \"vram\": 1}'.                                |
+| `--enable-hf-transfer`                   | `False`                                | [Deprecated] hf_transfer support was removed in huggingface_hub v1.0; this flag is a no-op. hf_xet is now the default downloader.                                                            |
+| `--enable-hf-xet`                        | `False`                                | [Deprecated] Enable downloading model files using Hugging Face Xet.                                                                                                                          |
+| `--worker-ifname` value                  | (empty)                                | Network interface name of the worker node. Auto-detected by default.                                                                                                                         |
+| `--kv-transfer-ifname` value                      | (empty)                                | Network interface carrying KV-cache traffic for disaggregated (prefill/decode) deployments. Auto-detected when the host has exactly one routable interface; required when it has several, since picking the wrong one makes the engine advertise an address its peer cannot reach. |
+| `--proxy-mode` value                     | (empty)                                | Proxy mode for accessing model instances: `direct`, `worker`, or `tunnel` (worker dials out to the server; for workers behind firewall/NAT). Default `direct` embedded, `worker` standalone. |
+| `--benchmark-image-repo` value           | `gpustack/benchmark-runner`            | Override the default benchmark image repo for the GPUStack benchmark container. Unlike `--image-repo`, this value is used as-is, so include the tag.<br/>If the image `gpustack/benchmark-runner:<tag>` lives outside the `gpustack` namespace, e.g. `awesome.com/amazing-group/amazing-subgroup/gpustack-ai/benchmark-runner:<tag>`, first point `--system-default-container-registry=awesome.com/amazing-group/amazing-subgroup` to the registry with the parent namespace, then set this flag (or the worker `benchmark_image_repo` config key, or the `GPUSTACK_BENCHMARK_IMAGE_REPO` environment variable) to `gpustack-ai/benchmark-runner:<tag>`. |
+| `--benchmark-dir` value                  | `<data-dir>/benchmarks`                | Directory to store benchmark results.                                                                                                                                                        |
+| `--benchmark-max-duration-seconds` value | (empty)                                | Max duration for a benchmark before timeout. Disabled when empty.                                                                                                                            |
 
 ### Available Environment Variables
 
-Most command line parameters can also be set via environment variables with the `GPUSTACK_` prefix and in uppercase format (e.g., `--data-dir` can be set via `GPUSTACK_DATA_DIR`).
+Most command line parameters can also be set via environment variables with the `GPUSTACK_` prefix and in uppercase
+format (e.g., `--data-dir` can be set via `GPUSTACK_DATA_DIR`).
 
-For environment variables beyond the command-line parameters mentioned above, please refer to the [environment variables documentation](../environment-variables.md).
+For environment variables beyond the command-line parameters mentioned above, please refer to
+the [environment variables documentation](../environment-variables.md).
 
 ## Config File
 
-You can configure start options using a YAML-format config file when starting GPUStack server or worker. Here is a complete example:
+You can configure start options using a YAML-format config file when starting GPUStack server or worker. Here is a
+complete example:
 
 ```yaml
 # Common Options
@@ -161,6 +170,7 @@ benchmark_dir: /path/to/benchmark_dir
 benchmark_image_repo: gpustack/benchmark-runner
 token: your_token
 huggingface_token: your_huggingface_token
+insecure_tls: false
 
 # Server Options
 port: 80
@@ -174,14 +184,15 @@ database_url: postgresql://username:password@host:port/dbname
 # database_url: mysql://username:password@host:port/dbname
 ssl_keyfile: /path/to/keyfile
 ssl_certfile: /path/to/certfile
+ssl_ca_certfile: /path/to/ca-bundle.pem
 disable_update_check: false
 disable_openapi_docs: false
 model_catalog_file: /path_or_url/to/model_catalog_file
 enable_cors: false
 allow_credentials: false
-allow_origins: ["*"]
-allow_methods: ["GET", "POST"]
-allow_headers: ["Authorization", "Content-Type", "X-API-Key"]
+allow_origins: [ "*" ]
+allow_methods: [ "GET", "POST" ]
+allow_headers: [ "Authorization", "Content-Type", "X-API-Key" ]
 oidc_issuer: https://your_oidc_issuer
 oidc_client_id: your_oidc_client_id
 oidc_client_secret: your_oidc_client_secret
@@ -197,14 +208,54 @@ saml_security: '{"wantAssertionsSigned": true, "wantMessagesSigned": true}'
 cas_server_url: https://your_cas_server_url
 cas_username_attribute: uid
 cas_full_name_attribute: displayName
+external_auth_provider_name: Okta
 external_auth_name: email
 external_auth_full_name: name
 external_auth_avatar_url: picture
 server_external_url: http://your_gpustack_server_url_for_external_access
-trusted_hosts: ["your_reverse_proxy_hostname"]
+trusted_hosts: [ "your_reverse_proxy_hostname" ]
 disable_builtin_observability: false
 builtin_prometheus_port: 19090
 builtin_grafana_port: 13000
+# Per-plugin overrides for the API gateway, keyed by the plugin's manifest name
+# -- which for several of them is not the name of the WasmPlugin resource they
+# are deployed as (`transformer` is deployed as `gpustack-header-transformer`,
+# `ai-statistics` as `gpustack-ai-statistics`). Keying by the wrong one matches
+# nothing, silently.
+#
+# `url` / `sha256` / `image_pull_policy` say where Envoy pulls the module from,
+# replacing the address derived from the bundled plugin manifest. `config` is
+# the plugin's own settings and is validated against what that plugin accepts,
+# so a field it does not declare fails startup rather than being ignored.
+gateway_plugin:
+  gpustack-ext-auth:
+    config:
+      local_auth:
+        # Whether the gateway authenticates API keys itself. Turned off, every
+        # credential is forwarded to the server instead, as it was before.
+        enabled: true
+      authz:
+        # How long the gateway waits for the server to authorize a request.
+        # Sized for a loaded server rather than a healthy one: a server that is
+        # down refuses the connection and is detected at once, so this governs
+        # only the case of one too busy to answer yet -- where waiting is what
+        # keeps a load spike from being read as an outage.
+        timeout: 30000
+      # Let a caller the gateway authenticated itself through while the server
+      # is unreachable -- a rolling upgrade included. Authorization is skipped
+      # for the duration; unknown keys and anonymous callers are still refused.
+      failure_mode_allow_authenticated: true
+  ai-statistics:
+    config:
+      enable_content_types: [ application/json, text/event-stream ]
+  # Fields are the plugin's own camelCase config keys; only whitelisted ones
+  # are accepted, so a field the server does not vouch for fails startup
+  # instead of being forwarded.
+  gpustack-ai-proxy:
+    config:
+      # Reject tool-call messages that arrive without the assistant message
+      # that initiated them ("strict"), or the plugin's default ("off").
+      toolCallValidation: strict
 
 # Worker Options
 server_url: http://your_gpustack_server_url

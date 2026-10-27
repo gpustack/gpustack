@@ -50,9 +50,14 @@ async def test_bus_metrics_collector_reflects_subscriber_state():
 
         metrics = list(BusMetricsCollector().collect())
 
-        # 2 subscribers under our topic.
-        sample = _sample_for(metrics, "gpustack:bus_subscribers", {"topic": topic})
-        assert sample.value == 2
+        # 1 subscriber per (topic, source) — the metric is now source-scoped.
+        for source in ("test_a", "test_b"):
+            sample = _sample_for(
+                metrics,
+                "gpustack:bus_subscribers",
+                {"topic": topic, "source": source},
+            )
+            assert sample.value == 1
 
         # sub_a — RECEIVED total = 3.
         sample = _sample_for(
@@ -170,6 +175,118 @@ async def test_bus_metrics_collector_reflects_subscriber_state():
     finally:
         event_bus.unsubscribe(topic, sub_a)
         event_bus.unsubscribe(topic, sub_b)
+
+
+@pytest.mark.asyncio
+async def test_subscribers_sharing_source_collapse_to_one_series():
+    """#5902: multiple subscribers with the same (topic, source) — e.g. one
+    per open source="streaming" watch stream — must aggregate into a single
+    series instead of emitting duplicate label sets.
+    """
+    topic = "_test_bus_metrics_collapse"
+    # Three streaming subscribers on the same topic, mirroring three open
+    # watch connections.
+    subs = [event_bus.subscribe(topic, source="streaming") for _ in range(3)]
+
+    try:
+        # Give each a different queue depth so max-aggregation is observable.
+        await subs[0].enqueue(Event(type=EventType.CREATED, data={"id": 1}, id=1))
+        await subs[1].enqueue(Event(type=EventType.CREATED, data={"id": 1}, id=1))
+        await subs[1].enqueue(Event(type=EventType.CREATED, data={"id": 2}, id=2))
+        # subs[2] left empty.
+
+        metrics = list(BusMetricsCollector().collect())
+
+        label = {"topic": topic, "source": "streaming"}
+
+        # Exactly one series per metric for this label set — no duplicates.
+        for metric_name in (
+            "gpustack:bus_subscribers",
+            "gpustack:bus_queue_depth",
+            "gpustack:bus_queue_capacity",
+            "gpustack:bus_queue_full",
+            "gpustack:bus_queue_saturation_ratio",
+            "gpustack:bus_subscriber_latest_keys",
+        ):
+            matching = [
+                s
+                for s in _all_samples(metrics, metric_name)
+                if all(s.labels.get(k) == v for k, v in label.items())
+            ]
+            assert len(matching) == 1, (
+                f"{metric_name} emitted {len(matching)} series for {label}, "
+                "expected 1 (duplicate label sets)"
+            )
+
+        # bus_subscribers = 3 collapsed subscribers.
+        assert _sample_for(metrics, "gpustack:bus_subscribers", label).value == 3
+        # queue_depth = max across subscribers (subs[1] has 2 queued).
+        assert _sample_for(metrics, "gpustack:bus_queue_depth", label).value == 2
+        # bus_events CREATED ENQUEUED summed across all three (1 + 2 + 0 = 3).
+        assert (
+            _sample_for(
+                metrics,
+                "gpustack:bus_events",
+                {
+                    **label,
+                    "kind": EventCountKind.ENQUEUED.value,
+                    "event_type": EventType.CREATED.name,
+                },
+            ).value
+            == 3
+        )
+    finally:
+        for sub in subs:
+            event_bus.unsubscribe(topic, sub)
+
+
+@pytest.mark.asyncio
+async def test_bus_events_total_stays_monotonic_across_unsubscribe():
+    """A departing subscriber's counts must not drop the summed counter.
+
+    Short-lived source="streaming" subscribers unsubscribe when their watch
+    stream closes; folding their counts into the bus-level accumulator keeps
+    bus_events_total monotonic so rate()/increase() stay correct.
+    """
+    topic = "_test_bus_metrics_monotonic"
+    sub_a = event_bus.subscribe(topic, source="streaming")
+    sub_b = event_bus.subscribe(topic, source="streaming")
+    sub_c = None
+
+    def enqueued_total():
+        return _sample_for(
+            list(BusMetricsCollector().collect()),
+            "gpustack:bus_events",
+            {
+                "topic": topic,
+                "source": "streaming",
+                "kind": EventCountKind.ENQUEUED.value,
+                "event_type": EventType.CREATED.name,
+            },
+        ).value
+
+    try:
+        await sub_a.enqueue(Event(type=EventType.CREATED, data={"id": 1}, id=1))
+        await sub_a.enqueue(Event(type=EventType.CREATED, data={"id": 2}, id=2))
+        await sub_b.enqueue(Event(type=EventType.CREATED, data={"id": 3}, id=3))
+
+        before = enqueued_total()
+        assert before == 3  # 2 from sub_a + 1 from sub_b
+
+        # Closing one stream must not lower the counter.
+        event_bus.unsubscribe(topic, sub_a)
+        after = enqueued_total()
+        assert after == before == 3
+
+        # A new stream keeps accumulating on top of the retired total.
+        sub_c = event_bus.subscribe(topic, source="streaming")
+        await sub_c.enqueue(Event(type=EventType.CREATED, data={"id": 4}, id=4))
+        assert enqueued_total() == 4
+    finally:
+        for sub in (sub_a, sub_b, sub_c):
+            if sub is not None:
+                event_bus.unsubscribe(topic, sub)
+        event_bus.retired_event_counts.clear()
 
 
 @pytest.mark.asyncio

@@ -47,20 +47,57 @@ def _snapshot_for(user, *, organization_id=None):
     )
 
 
+def _snapshot_with_api_key(user, api_key, *, organization_id=None):
+    """Run ``_build_metric_snapshot`` for a model-less api_key metric.
+    Mirrors gateway traffic authenticated by an API key."""
+    metric = ModelUsageMetrics(
+        model="qwen3-0.6b",
+        user_id=getattr(user, "id", None),
+        access_key=api_key.access_key,
+        organization_id=organization_id,
+    )
+    user_by_id = {} if user is None else {user.id: user}
+    return _build_metric_snapshot(
+        metric,
+        {},  # model_by_id
+        {},  # provider_by_id
+        user_by_id,
+        {api_key.access_key: api_key},  # api_key_by_access_key
+        {},  # cluster_names_by_id
+        {},  # route_name_by_id
+        {},  # route_owner_by_id
+    )
+
+
+def _api_key(owner_principal_id, *, access_key="ak", id=3, is_custom=False):
+    return SimpleNamespace(
+        id=id,
+        name="key",
+        access_key=access_key,
+        is_custom=is_custom,
+        owner_principal_id=owner_principal_id,
+    )
+
+
 def test_consumer_fallback_regular_user_attributes_to_self():
     user = SimpleNamespace(id=5, name="carol", kind=PrincipalType.USER, is_admin=False)
     snapshot = _snapshot_for(user)
     assert snapshot["consumer_principal_id"] == 5
 
 
-def test_consumer_fallback_admin_attributes_to_platform_org():
-    user = SimpleNamespace(id=1, name="admin", kind=PrincipalType.USER, is_admin=True)
+def test_consumer_fallback_admin_attributes_to_self():
+    # No-Org admin (OSS admin / Enterprise "All" scope) with no api_key and no
+    # Org header attributes usage to their own personal domain — NOT the
+    # platform Org. Use an id distinct from ``platform_principal_id()`` so the
+    # assertion can't pass by coincidence.
+    user = SimpleNamespace(id=7, name="admin", kind=PrincipalType.USER, is_admin=True)
+    assert platform_principal_id() != 7
     snapshot = _snapshot_for(user)
-    assert snapshot["consumer_principal_id"] == platform_principal_id()
+    assert snapshot["consumer_principal_id"] == 7
 
 
 def test_consumer_org_header_wins_over_fallback():
-    # Enterprise path: organization_id present → fallback must not run.
+    # Enterprise cookie path: organization_id present → fallback must not run.
     user = SimpleNamespace(id=5, name="carol", kind=PrincipalType.USER, is_admin=False)
     snapshot = _snapshot_for(user, organization_id="42")
     assert snapshot["consumer_principal_id"] == 42
@@ -72,6 +109,37 @@ def test_consumer_fallback_skips_system_caller():
     )
     snapshot = _snapshot_for(user)
     assert "consumer_principal_id" not in snapshot
+
+
+def test_consumer_api_key_owner_pins_consumer():
+    # A key with a non-NULL owner pins the consumer to that tenant (an Org
+    # or a personal principal), regardless of who the calling user is.
+    user = SimpleNamespace(id=5, name="carol", kind=PrincipalType.USER, is_admin=False)
+    snapshot = _snapshot_with_api_key(user, _api_key(owner_principal_id=42))
+    assert snapshot["consumer_principal_id"] == 42
+
+
+def test_consumer_api_key_null_owner_attributes_to_self():
+    # An admin "All"-mode key has ``owner_principal_id = NULL``. The usage must
+    # fall through to the caller's personal domain instead of landing NULL,
+    # while the api_key metadata is still recorded.
+    user = SimpleNamespace(id=7, name="admin", kind=PrincipalType.USER, is_admin=True)
+    snapshot = _snapshot_with_api_key(user, _api_key(owner_principal_id=None))
+    assert snapshot["consumer_principal_id"] == 7
+    assert snapshot["api_key_id"] == 3
+    assert snapshot["access_key"] == "ak"
+
+
+def test_consumer_api_key_path_ignores_org_header():
+    # FK safety: the gateway / api_key path must never trust the raw
+    # X-Organization-Id header (unvalidated there). A NULL-owner key with a
+    # header present still attributes to the caller's personal domain, not the
+    # header value.
+    user = SimpleNamespace(id=7, name="admin", kind=PrincipalType.USER, is_admin=True)
+    snapshot = _snapshot_with_api_key(
+        user, _api_key(owner_principal_id=None), organization_id="999"
+    )
+    assert snapshot["consumer_principal_id"] == 7
 
 
 @pytest.fixture(autouse=True)

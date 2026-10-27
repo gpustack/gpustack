@@ -1,3 +1,4 @@
+from gpustack.policies.resource_view import ResourceView
 from types import SimpleNamespace
 from typing import Dict, List
 from unittest.mock import AsyncMock, patch
@@ -176,6 +177,7 @@ async def test_candidate_score_chain_spread_locality():
         model,
         model_instances,
         max_score=envs.SCHEDULER_SCALE_UP_PLACEMENT_MAX_SCORE,
+        resource_view=ResourceView(model_instances),
     )
 
     mock_session = AsyncMock()
@@ -235,19 +237,22 @@ async def test_candidate_score_chain_binpack_and_locality():
     )
 
     placement_scorer = PlacementScorer(
-        model, [], max_score=envs.SCHEDULER_SCALE_UP_PLACEMENT_MAX_SCORE
+        model,
+        [],
+        max_score=envs.SCHEDULER_SCALE_UP_PLACEMENT_MAX_SCORE,
+        resource_view=ResourceView([]),
     )
 
     mock_session = AsyncMock()
     mock_async_session = AsyncMock()
     mock_async_session.__aenter__.return_value = mock_session
 
-    def allocatable_side_effect(_, worker, gpu_type=None):
+    def allocatable_side_effect(worker, gpu_type=None):
         return Allocatable(ram=0, vram={0: 100})
 
     with (
         patch(
-            "gpustack.policies.scorers.placement_scorer.get_worker_allocatable_resource",
+            "gpustack.policies.resource_view.ResourceView.allocatable",
             side_effect=allocatable_side_effect,
         ),
         patch(
@@ -297,21 +302,24 @@ async def test_candidate_score_chain_binpack_locality_changes_pick():
     )
 
     placement_scorer = PlacementScorer(
-        model, [], max_score=envs.SCHEDULER_SCALE_UP_PLACEMENT_MAX_SCORE
+        model,
+        [],
+        max_score=envs.SCHEDULER_SCALE_UP_PLACEMENT_MAX_SCORE,
+        resource_view=ResourceView([]),
     )
 
     mock_session = AsyncMock()
     mock_async_session = AsyncMock()
     mock_async_session.__aenter__.return_value = mock_session
 
-    def allocatable_side_effect(_, worker, gpu_type=None):
+    def allocatable_side_effect(worker, gpu_type=None):
         if worker.id == worker1.id:
             return Allocatable(ram=0, vram={0: 100})
         return Allocatable(ram=0, vram={0: 110})
 
     with (
         patch(
-            "gpustack.policies.scorers.placement_scorer.get_worker_allocatable_resource",
+            "gpustack.policies.resource_view.ResourceView.allocatable",
             side_effect=allocatable_side_effect,
         ),
         patch(
@@ -425,7 +433,7 @@ async def test_instance_score_chain_with_real_scorers():
     mock_async_session = AsyncMock()
     mock_async_session.__aenter__.return_value = mock_session
 
-    def allocatable_side_effect(_, worker, gpu_type=None):
+    def allocatable_side_effect(worker, gpu_type=None):
         if worker.id == worker1.id:
             return Allocatable(ram=1000, vram={})
         return Allocatable(ram=2000, vram={})
@@ -436,7 +444,7 @@ async def test_instance_score_chain_with_real_scorers():
             return_value=mock_async_session,
         ),
         patch(
-            "gpustack.policies.scorers.placement_scorer.get_worker_allocatable_resource",
+            "gpustack.policies.resource_view.ResourceView.allocatable",
             side_effect=allocatable_side_effect,
         ),
         patch(
@@ -463,6 +471,7 @@ async def test_instance_score_chain_with_real_scorers():
             instances,
             scale_type=ScaleTypeEnum.SCALE_DOWN,
             max_score=envs.SCHEDULER_SCALE_DOWN_PLACEMENT_MAX_SCORE,
+            resource_view=ResourceView(instances),
         )
 
         chain_scores = await ModelInstanceScoreChain(

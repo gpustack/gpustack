@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import or_
 from starlette.responses import StreamingResponse
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     NotFoundException,
     InternalServerErrorException,
@@ -59,7 +60,10 @@ async def get_gpu_instance_templates(
 
     fuzzy_fields: dict = {}
     if search:
+        # The card renders ``display_name || name``, so searching only ``name``
+        # hid rows behind the label the list actually shows (#6104).
         fuzzy_fields["name"] = search
+        fuzzy_fields["display_name"] = search
 
     extra_conditions = manageable_conditions(ctx) if mine else visible_conditions(ctx)
 
@@ -70,10 +74,12 @@ async def get_gpu_instance_templates(
             else (lambda tmpl: is_visible(tmpl, ctx))
         )
         return StreamingResponse(
-            GPUInstanceTemplate.streaming(
+            tenant_streaming(
+                GPUInstanceTemplate,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=filter_func,
+                visibility_filter=filter_func,
             ),
             media_type="text/event-stream",
         )

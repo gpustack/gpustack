@@ -1,0 +1,106 @@
+site_name: GPUStack
+site_description: GPUStack — платформа с открытым исходным кодом для управления GPU-кластерами и эффективного развертывания моделей ИИ.
+theme_translations:
+  Switch to light mode: Переключить на светлую тему
+  Switch to dark mode: Переключить на тёмную тему
+  Switch to system preference: Использовать системную тему
+nav_translations:
+  Home: Главная
+  Overview: Обзор
+  Quickstart: Краткое руководство
+  Installation: Установка
+  Requirements: Требования
+  Installation via Docker: Установка через Docker
+  Installation via Helm: Установка через Helm
+  Air-Gapped Installation: Установка в изолированной среде
+  Uninstallation: Удаление
+  Upgrade: Обновление
+  Upgrade via Docker: Обновление через Docker
+  Upgrade via Helm: Обновление через Helm
+  Upgrade a Cluster Deployment: Обновление развертывания кластера
+  Migration: Миграция
+  User Guide: Руководство пользователя
+  Playground: Песочница
+  Chat: Чат
+  Image: Изображение
+  Audio: Аудио
+  Embedding: Эмбеддинги
+  Rerank: Переранжирование
+  Model Catalog: Каталог моделей
+  Model Deployment Management: Управление развертыванием модели
+  PD Disaggregation: Разделение prefill и decode
+  Model Route Management: Управление маршрутами моделей
+  Model Provider Management: Управление провайдерами моделей
+  Inference Backend Management: Управление движками инференса
+  Built-in Inference Backends: Встроенные движки инференса
+  Cache Service Management: Управление службой кэширования
+  OTA Content Updates: OTA-обновления контента
+  Compatibility Check: Проверка совместимости
+  Model File management: Управление файлами модели
+  Cluster Management: Управление кластером
+  GPU Service: Сервис GPU
+  GPU Instances: Экземпляры GPU
+  Instance Types: Типы экземпляров
+  Instance Templates: Шаблоны экземпляров
+  Storage: Хранилища
+  Storage Types: Типы хранилищ
+  SSH Public Keys: Открытые ключи SSH
+  Cloud Credential Management: Управление облачными учетными данными
+  API Key Management: Управление ключами API
+  User Management: Управление пользователями
+  Usage: Использование
+  Single Sign-On (SSO) Authentication: Аутентификация с помощью единого входа (SSO)
+  Observability: Наблюдаемость
+  Benchmarking: Бенчмаркинг
+  Using Models: Использование моделей
+  Using Large Language Models: Использование больших языковых моделей
+  Using Vision Language Models: Использование визуально-языковых моделей
+  Using Embedding Models: Использование эмбеддинг-моделей
+  Using Reranker Models: Использование моделей переранжирования
+  Using Image Generation Models: Использование моделей генерации изображений
+  Using Audio Models: Использование аудиомоделей
+  Tutorials: Практические руководства
+  Integrations: Интеграции
+  Inference APIs: API инференса
+  Integrate with Claude Code: Интеграция с Claude Code
+  Integrate with Dify: Интеграция с Dify
+  Integrate with RAGFlow: Интеграция с RAGFlow
+  Integrate with Cherry Studio: Интеграция с Cherry Studio
+  Integrate with OpenClaw: Интеграция с OpenClaw
+  Integrate with n8n: Интеграция с n8n
+  Integrate with MaxKB: Интеграция с MaxKB
+  Integrate with NewAPI: Интеграция с NewAPI
+  Integrate with LiteLLM: Интеграция с LiteLLM
+  Running DeepSeek R1 671B with Distributed vLLM: Запуск DeepSeek R1 671B с распределенной vLLM
+  Running Distributed vLLM with the MultiProcessing Backend: Запуск распределённого vLLM с бэкендом MultiProcessing
+  Running DeepSeek R1 671B with Distributed Ascend Mindie: Запуск DeepSeek R1 671B с распределённым Ascend MindIE
+  Inference On CPUs: Инференс на CPU
+  Inference with Tool Calling: Инференс с вызовом инструментов
+  Using Custom Inference Backend: Использование собственного движка инференса
+  Adding a GPU Cluster Using DigitalOcean: Добавление кластера графических процессоров с помощью DigitalOcean
+  Adding a GPU Cluster Using Shuihua: Добавление кластера графических процессоров с помощью Shuihua.
+  Adding a GPU Cluster Using Kubernetes: Добавление кластера графических процессоров с помощью Kubernetes
+  Managing Model Routes: Управление маршрутами моделей
+  Routing with LB Policies: Маршрутизация с политиками балансировки нагрузки
+  Serving Models with LoRA Adapters: Обслуживание моделей с адаптерами LoRA
+  Architecture: Архитектура
+  Scheduler: Планировщик
+  Troubleshooting: Устранение неполадок
+  FAQ: Часто задаваемые вопросы
+  API Reference: Справочник по API
+  CLI Reference: Справочник по интерфейсу командной строки
+  Start: Старт
+  Download Tools: Загрузка инструментов
+  Reload Config: Перезагрузка конфигурации
+  List Images: Список образов
+  Save Images: Сохранение образов
+  Load Images: Загрузка образов
+  Copy Images: Копирование образов
+  Environment Variables: Переменные среды
+  Inference Performance Lab: Лаборатория производительности вывода
+  Optimizing Throughput: Оптимизация пропускной способности
+  Optimizing Latency: Оптимизация задержки
+  References: Справочные материалы
+  The Impact of Quantization on vLLM Inference Performance: Влияние квантования на производительность вывода vLLM
+  Evaluating LMCache Prefill Acceleration in vLLM: Оценка ускорения предварительного заполнения LMCache в vLLM
+  Container Image Selector: Выбор образа контейнера

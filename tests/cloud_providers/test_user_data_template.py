@@ -95,6 +95,41 @@ def test_userdata_template_setup_driver():
     assert any("nvidia-ctk runtime configure" in cmd for cmd in data["runcmd"])
 
 
+def test_userdata_template_ssh_authorized_keys():
+    template = UserDataTemplate(
+        server_url="http://test-server",
+        token="test-token",
+        image_name="gpustack/test:latest",
+        worker_name="test-worker",
+    )
+    template.distribution = "ubuntu"
+    template.add_ssh_authorized_keys("ssh-ed25519 AAAA first")
+    # Duplicates and blanks are dropped, new keys are appended.
+    template.add_ssh_authorized_keys(
+        "ssh-ed25519 AAAA first", "", "ssh-ed25519 BBBB second"
+    )
+    data = yaml.safe_load(template.format())
+    assert data["ssh_authorized_keys"] == [
+        "ssh-ed25519 AAAA first",
+        "ssh-ed25519 BBBB second",
+    ]
+
+
+def test_userdata_template_no_ssh_authorized_keys():
+    template = UserDataTemplate(
+        server_url="http://test-server",
+        token="test-token",
+        image_name="gpustack/test:latest",
+        worker_name="test-worker",
+    )
+    template.distribution = "ubuntu"
+    # Providers that let their API attach the key never add one here, and must
+    # not get an empty ssh_authorized_keys in the rendered document.
+    template.add_ssh_authorized_keys(None)
+    data = yaml.safe_load(template.format())
+    assert "ssh_authorized_keys" not in data
+
+
 def test_userdata_template_secret_configs():
     template = UserDataTemplate(
         server_url="http://test-server",

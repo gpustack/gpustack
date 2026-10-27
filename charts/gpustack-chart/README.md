@@ -88,16 +88,18 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | Parameter                                | Default                           | Description                                                               |
 | ---------------------------------------- | --------------------------------- | ------------------------------------------------------------------------- |
 | debug                                    | false                             | Enable debug mode                                                         |
-| registrationToken                        | null                              | Registration token; auto-generated if null, reused across upgrades        |
+| registrationToken                        | null                              | Registration token; auto-generated if null, reused across upgrades. Required when `server.enabled` is false |
+| registrationTokenSecretName              | ""                                | Reference an existing Secret holding `GPUSTACK_TOKEN` instead of creating one |
 | defaultDataDir                           | /var/lib/gpustack                 | Host data directory path for worker nodes                                 |
 | enableWorkers                            | true                              | Enable worker nodes                                                       |
 | clusterDomain                            | cluster.local                     | Kubernetes cluster service domain suffix                                  |
-| global.hub                               | docker.io                         | Container registry host; override for private registry                    |
+| global.hub                               | docker.io                         | Container registry host for every image in the release; see private-registry note |
 | global.nodeSelector                      | {}                                | Default nodeSelector for every component; replaced by server/worker value |
 | image.repository                         | gpustack/gpustack                 | Image repo with namespace; see note below                                 |
-| image.tag                                | null                              | Image tag, defaults to chart's appVersion                                 |
+| image.tag                                | null                              | Image tag; **required** — published charts carry it, a checkout must state it |
 | image.pullPolicy                         | IfNotPresent                      | Image pull policy                                                         |
 | global.imagePullSecrets                  | [gpustack-image-pull-secret]      | List of `{name}` refs on every pod; replace to use existing Secrets       |
+| imagePullSecret.create                   | true                              | Create the canonical pull Secret; false references it without creating     |
 | imagePullSecret.credentials.registry     | docker.io                         | Registry host used when the chart creates a docker-registry Secret        |
 | imagePullSecret.credentials.username     | null                              | Registry username; creates Secret when set with password                  |
 | imagePullSecret.credentials.password     | null                              | Registry password; creates Secret when set with username                  |
@@ -133,7 +135,8 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | higressPlugins.image.repository          | gpustack/higress-plugins          | Image repo with namespace; see note below                                 |
 | higressPlugins.image.tag                 | "0.2.3.post5"                     | Higress plugins image tag; CI overrides from uv.lock at package time      |
 | higressPlugins.image.pullPolicy          | IfNotPresent                      | Higress plugins image pull policy                                         |
-| worker.gpuVendors                        | [nvidia]                          | List of GPU vendors; `[]` disables worker DaemonSet                       |
+| worker.gpuVendors                        | [nvidia]                          | List of GPU vendors; `[]` renders the CPU worker DaemonSet only           |
+| worker.cpuEnabled                        | true                              | Render the CPU worker DaemonSet; `false` requires a GPU vendor            |
 | worker.nodeSelector                      | {}                                | Base worker nodeSelector; replaces `global.nodeSelector` when non-empty   |
 | worker.port                              | 10150                             | Worker service port                                                       |
 | worker.metricsPort                       | 10151                             | Worker metrics port                                                       |
@@ -148,7 +151,7 @@ To customize parameters, use `--set key=value` or `-f your-values.yaml` during i
 
 ### Multi-vendor Worker Deployment
 
-When `worker.gpuVendors` lists one or more vendors, the chart renders a per-vendor DaemonSet (`<release>-worker-<vendor>`) for each, alongside the always-present CPU DaemonSet (`<release>-worker`). Each vendor DS gets the per-vendor driver mounts, `runtimeClassName`, and an automatic PCI-presence nodeSelector label (e.g. `feature.node.kubernetes.io/pci-10de.present: "true"` for NVIDIA) based on the vendor's PCI ID. Whenever at least one GPU vendor is listed, all worker pods additionally get a required `podAntiAffinity` (topologyKey=hostname, namespaceSelector={}) so two workers can't share a node — protects the `hostNetwork: true` ports from collision across namespaces.
+When `worker.gpuVendors` lists one or more vendors, the chart renders a per-vendor DaemonSet (`<release>-worker-<vendor>`) for each, alongside the CPU DaemonSet (`<release>-worker`) unless `worker.cpuEnabled` is false. Each vendor DS gets the per-vendor driver mounts, `runtimeClassName`, and an automatic PCI-presence nodeSelector label (e.g. `feature.node.kubernetes.io/pci-10de.present: "true"` for NVIDIA) based on the vendor's PCI ID. Whenever at least one GPU vendor is listed, all worker pods additionally get a required `podAntiAffinity` (topologyKey=hostname, namespaceSelector={}) so two workers can't share a node — protects the `hostNetwork: true` ports from collision across namespaces.
 
 > **Prerequisite:** The PCI-presence labels are advertised by [Node Feature Discovery (NFD)](https://kubernetes-sigs.github.io/node-feature-discovery/). NFD must be installed in the cluster for worker pods to schedule onto GPU nodes. Without NFD, no nodes will carry the required labels and all worker pods will remain Pending.
 
@@ -161,6 +164,15 @@ worker:
     - amd
 ```
 
+The CPU DaemonSet covers the nodes no GPU runtime claims, via the nodeSelector `feature.gpustack.ai/acceleratable: "false"`. Set `worker.cpuEnabled: false` to leave those nodes alone — typically when the control plane shares the cluster with its GPU nodes and must not gain workers. `worker.gpuVendors` must then name at least one vendor; otherwise the release would render no worker DaemonSet at all and the install is refused. The vendor DaemonSets keep their `-<vendor>` suffix either way, so switching the CPU one off never promotes one of them onto the unsuffixed `<release>-worker` name.
+
+```yaml
+worker:
+  cpuEnabled: false
+  gpuVendors:
+    - nvidia
+```
+
 ### NodeSelector Scoping
 
 `global.nodeSelector` is the chart-wide default. Component-level values override it as follows:
@@ -171,14 +183,23 @@ worker:
 
 ### Pulling Images From a Private Registry
 
-To pull all images (gpustack server/worker, higress-plugins, and the bundled higress-core gateway/controller/pilot) from a mirrored private registry, override `global.hub`:
+To pull all images (gpustack server/worker, higress-plugins, the bundled higress-core gateway/controller/pilot, and the gpustack-operator with the Kueue / NFD / CSI charts under it) from a mirrored private registry, override `global.hub`:
 
 ```bash
 helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
   --set global.hub=myregistry.example.com
 ```
 
-This relies on Helm's global-values propagation: `global.hub` is shared with the `higress-core` sub-chart automatically, so a single setting covers every image. The `image.repository` values include the namespace (e.g. `gpustack/gpustack`), so `global.hub` only needs the registry host.
+One value covers every image. `higress-core` reads `global.hub` natively (the Istio convention it inherits), and the `gpustack-operator` chart — along with the Kueue / NFD / CSI charts vendored under it — accepts it as an alias for the `global.imageRegistry` its own tree uses.
+
+The `image.repository` values include the namespace (e.g. `gpustack/gpustack`), so `global.hub` only needs the registry host. Mirrors that flatten namespaces are not covered by it: those need the per-image `repository` values overridden individually.
+
+> `global.hub` reaches the `gpustack-operator` sub-chart tree through an alias that chart added in **0.8.7**. When this chart is pinned to an older operator — check the dependency version in `Chart.yaml` — a mirrored install with `worker.enabled=true` needs one more value, or the operator, Kueue, NFD and the CSI drivers keep pulling from Docker Hub:
+>
+> ```bash
+>   --set gpustack-operator.global.imageRegistry=myregistry.example.com
+> ```
+
 
 The chart passes `global.hub` as `GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY` to the server, ensuring that inference engine images (e.g. vLLM, llama.cpp backends) are also pulled from the same registry.
 

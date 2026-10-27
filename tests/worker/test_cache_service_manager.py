@@ -1,0 +1,3041 @@
+import logging
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import ANY, MagicMock, patch
+
+import pytest
+
+from gpustack.api.exceptions import NotFoundException
+from gpustack.schemas.cache_providers import (
+    CacheProvider,
+    CacheProviderComponent,
+    CacheProviderField,
+    CacheProviderHealthCheck,
+    CacheProviderL2Backend,
+    CacheProviderL2Field,
+    CacheProviderVersionConfig,
+)
+from gpustack.schemas.cache_services import (
+    CacheService,
+    CacheServiceConfig,
+    CacheServiceInstance,
+    CacheServiceL2Storage,
+    CacheServiceStateEnum,
+)
+from gpustack.server.bus import Event, EventType
+from gpustack.worker.cache_provider_manager import CacheProviderManager
+from gpustack.worker.cache_service_manager import (
+    MAX_CONSECUTIVE_RESTARTS,
+    CacheServiceManager,
+)
+from gpustack_runtime.deployer import (
+    ContainerRestartPolicyEnum,
+    WorkloadStatusStateEnum,
+)
+
+
+@pytest.fixture(autouse=True)
+def runtime_boundaries(tmp_path):
+    global _LOG_DIR
+    _LOG_DIR = str(tmp_path)
+    with (
+        patch("gpustack.worker.cache_service_logs.CacheServiceLogManager.ensure"),
+        patch(
+            "gpustack.worker.cache_service_logs.CacheServiceLogManager.archive",
+            return_value=True,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.socket.create_connection",
+            side_effect=OSError("not ready"),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.httpx.get",
+            return_value=SimpleNamespace(status_code=503),
+        ),
+    ):
+        yield
+
+
+def _build_manager(worker_id: int = 1):
+    clientset = MagicMock()
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[])
+    clientset.cache_services.get.return_value = _new_cache_service()
+    cfg = SimpleNamespace(
+        service_port_range="40000-41000",
+        system_default_container_registry=None,
+        # Empty as in a real deployment: the address is detected by the
+        # worker and this field is only a user override.
+        worker_ip=None,
+        log_dir=_LOG_DIR,
+        debug=False,
+    )
+    # A catalog stub: the declarations come from the server, and each test
+    # states the one its instance launches from.
+    provider_catalog = MagicMock(spec=CacheProviderManager)
+    provider_catalog.loaded = True
+    provider_catalog.get.return_value = None
+    # (declaration, whether the catalog it was looked up in could be read) —
+    # the two a miss can mean.
+    provider_catalog.lookup.return_value = (None, True)
+    # Nothing newer to be had unless a test says so: the re-read runs only when
+    # the declaration on hand cannot serve the service.
+    provider_catalog.reread.return_value = None
+    manager = CacheServiceManager(
+        lambda: worker_id, lambda: "10.0.0.1", lambda: clientset, cfg, provider_catalog
+    )
+    return manager, clientset
+
+
+def _new_cache_service(**overrides) -> CacheService:
+    """The parent cache service carrying provider and rendering config."""
+    fields = dict(
+        id=5,
+        name="shared-kv",
+        provider_name="mooncake",
+        provider_version=None,
+        cluster_id=1,
+        worker_id=1,
+        state=CacheServiceStateEnum.PENDING,
+        config=CacheServiceConfig(
+            fields={"ram_size": 8, "chunk_size": 256}, env={"FOO": "bar"}
+        ),
+    )
+    fields.update(overrides)
+    return CacheService(**fields)
+
+
+def _new_instance(**overrides) -> CacheServiceInstance:
+    fields = dict(
+        id=11,
+        name="mooncake-svc-a1b2c",
+        cache_service_id=5,
+        worker_id=1,
+        cluster_id=1,
+        state=CacheServiceStateEnum.PENDING,
+    )
+    fields.update(overrides)
+    return CacheServiceInstance(**fields)
+
+
+INSTANCE_WORKLOAD_NAME = "mooncake-svc-a1b2c"
+
+
+def _new_provider(**overrides) -> CacheProvider:
+    fields = dict(
+        name="mooncake",
+        supported_modes=["managed"],
+        default_version="v1",
+        versions={
+            "v1": CacheProviderVersionConfig(
+                image="registry.example.com/mooncake/server:v1",
+                run_command=(
+                    "cache-server --host {{host}} --port {{port}} "
+                    "--ram {{ram_size}} --metrics-port {{metrics_port}}"
+                ),
+                env={"CHUNK_SIZE": "{{chunk_size}}", "RAM_SIZE": "{{ram_size}}"},
+            )
+        },
+        health_check=CacheProviderHealthCheck(scheme="tcp"),
+        fields=[
+            CacheProviderField(name="ram_size", type="number", required=True),
+            CacheProviderField(name="chunk_size", type="number"),
+        ],
+    )
+    fields.update(overrides)
+    return CacheProvider(**fields)
+
+
+def _l2_provider(**overrides) -> CacheProvider:
+    fields = dict(
+        l2_adapter_flag="--l2-adapter",
+        l2_backends={
+            "fs": CacheProviderL2Backend(
+                fields=[
+                    CacheProviderL2Field(name="base_path", required=True),
+                    CacheProviderL2Field(name="use_odirect", type="boolean"),
+                ]
+            ),
+            "resp": CacheProviderL2Backend(
+                fields=[
+                    CacheProviderL2Field(name="host", required=True),
+                    CacheProviderL2Field(name="port", type="number", required=True),
+                    CacheProviderL2Field(
+                        name="username", env_name="LMCACHE_RESP_USERNAME"
+                    ),
+                    CacheProviderL2Field(
+                        name="password",
+                        type="password",
+                        env_name="LMCACHE_RESP_PASSWORD",
+                    ),
+                    CacheProviderL2Field(name="max_capacity_gb", type="number"),
+                ]
+            ),
+        },
+    )
+    fields.update(overrides)
+    return _new_provider(**fields)
+
+
+def _run_start(
+    manager, clientset, cache_service, provider, instance=None, update_applied=True
+):
+    """Drive _start_cache_service_instance with the standard workload/port
+    patches; returns the run_provisioning and _update_cache_service_instance
+    mocks. ``update_applied`` is what the patched write-back reports."""
+    instance = instance or _new_instance()
+    clientset.cache_services.get.return_value = cache_service
+    ports = iter([40001, 40002])
+    with (
+        patch.object(
+            manager._provider_catalog, "lookup", return_value=(provider, True)
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band",
+            side_effect=lambda **kwargs: next(ports),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.transform_workload_plan",
+            side_effect=lambda cfg, plan, fallback: plan,
+        ),
+        patch("gpustack.worker.cache_service_manager.delete_workload"),
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning", return_value=0
+        ) as create,
+        patch.object(
+            manager, "_update_cache_service_instance", return_value=update_applied
+        ) as update,
+    ):
+        manager._start_cache_service_instance(instance)
+    return create, update
+
+
+# ---------------------------------------------------------------------------
+# Event routing
+# ---------------------------------------------------------------------------
+
+
+def test_event_for_other_worker_is_ignored():
+    manager, _ = _build_manager(worker_id=1)
+    instance = _new_instance(worker_id=2)
+
+    with (
+        patch.object(manager, "_start_cache_service_instance") as start,
+        patch.object(manager, "_stop_cache_service_instance") as stop,
+    ):
+        manager._handle_cache_service_instance_event(
+            Event(type=EventType.CREATED, data=instance)
+        )
+        manager._handle_cache_service_instance_event(
+            Event(type=EventType.DELETED, data=instance)
+        )
+
+    start.assert_not_called()
+    stop.assert_not_called()
+
+
+def test_pending_event_triggers_start():
+    manager, _ = _build_manager(worker_id=1)
+    instance = _new_instance(state=CacheServiceStateEnum.PENDING)
+
+    with patch.object(manager, "_start_cache_service_instance") as start:
+        manager._handle_cache_service_instance_event(
+            Event(type=EventType.CREATED, data=instance)
+        )
+
+    start.assert_called_once()
+    assert start.call_args[0][0].id == instance.id
+
+
+def test_non_pending_event_does_not_start():
+    manager, _ = _build_manager(worker_id=1)
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING)
+
+    with patch.object(manager, "_start_cache_service_instance") as start:
+        manager._handle_cache_service_instance_event(
+            Event(type=EventType.UPDATED, data=instance)
+        )
+
+    start.assert_not_called()
+
+
+def test_deleted_event_triggers_stop():
+    manager, _ = _build_manager(worker_id=1)
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING)
+
+    with patch.object(manager, "_stop_cache_service_instance") as stop:
+        manager._handle_cache_service_instance_event(
+            Event(type=EventType.DELETED, data=instance)
+        )
+
+    stop.assert_called_once()
+    assert stop.call_args[0][0].id == instance.id
+
+
+# ---------------------------------------------------------------------------
+# Start
+# ---------------------------------------------------------------------------
+
+
+def test_gpu_resources_attaches_all_devices_on_gpu_backend():
+    """The cache server needs a CUDA context on the node's GPUs to open the
+    engines' IPC handles, so every device is exposed."""
+    manager, _ = _build_manager(worker_id=1)
+    with patch(
+        "gpustack.worker.cache_service_manager.detect_backend",
+        return_value="cuda",
+    ):
+        resources = manager._gpu_resources()
+
+    assert resources == {"nvidia.com/devices": "all"}
+
+
+def test_gpu_resources_empty_without_accelerator():
+    """A CPU-only worker exposes no devices; the server runs CPU-only and
+    the transfer falls back to the host-copy path."""
+    manager, _ = _build_manager(worker_id=1)
+    with patch(
+        "gpustack.worker.cache_service_manager.detect_backend",
+        return_value=[],
+    ):
+        resources = manager._gpu_resources()
+
+    assert resources == {}
+
+
+def test_start_instance_attaches_gpu_resources_to_container():
+    manager, clientset = _build_manager(worker_id=1)
+    with patch(
+        "gpustack.worker.cache_service_manager.detect_backend",
+        return_value="cuda",
+    ):
+        create, _ = _run_start(
+            manager, clientset, _new_cache_service(), _new_provider()
+        )
+
+    container = create.call_args[0][0].containers[0]
+    assert container.resources == {"nvidia.com/devices": "all"}
+
+
+@pytest.mark.parametrize("restart_on_error", [False, True, None])
+def test_start_instance_leaves_container_restarts_to_manager(restart_on_error):
+    manager, clientset = _build_manager(worker_id=1)
+    create, _ = _run_start(
+        manager,
+        clientset,
+        _new_cache_service(restart_on_error=restart_on_error),
+        _new_provider(),
+    )
+
+    create.assert_called_once()
+    container = create.call_args[0][0].containers[0]
+    assert container.restart_policy == ContainerRestartPolicyEnum.NEVER
+
+
+def test_start_instance_creates_workload_and_patches_starting():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance()
+    clientset.cache_services.get.return_value = _new_cache_service(
+        config=CacheServiceConfig(fields={"ram_size": 8}, env={"FOO": "bar"})
+    )
+
+    # get_free_band mutates the shared unavailable-ports set, so snapshot
+    # the set contents at each call.
+    port_calls = []
+
+    def fake_get_free_band(port_range, unavailable_ports):
+        port_calls.append((port_range, set(unavailable_ports)))
+        return 40001 if len(port_calls) == 1 else 40002
+
+    with (
+        patch.object(
+            manager._provider_catalog,
+            "lookup",
+            return_value=(_new_provider(), True),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band",
+            side_effect=fake_get_free_band,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.transform_workload_plan",
+            side_effect=lambda cfg, plan, fallback: plan,
+        ),
+        patch("gpustack.worker.cache_service_manager.delete_workload"),
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning", return_value=0
+        ) as create,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager._start_cache_service_instance(instance)
+
+    # The parent service supplies provider, version, and rendering config.
+    clientset.cache_services.get.assert_called_once_with(id=5)
+
+    # Two ports allocated: the service port first, then the metrics port
+    # with the service port excluded.
+    assert port_calls == [
+        ("40000-41000", set()),
+        ("40000-41000", {40001}),
+    ]
+
+    plan = create.call_args[0][0]
+    assert plan.name == INSTANCE_WORKLOAD_NAME
+    assert plan.host_network is True
+    assert plan.labels == {
+        "type": "cache-service",
+        "cache-service-id": "5",
+        "cache-service-instance-id": "11",
+    }
+
+    container = plan.containers[0]
+    assert container.name == "default"
+    # Explicit registry in the provider image is preserved as-is.
+    assert container.image == "registry.example.com/mooncake/server:v1"
+    assert container.execution.command == [
+        "cache-server",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "40001",
+        "--ram",
+        "8",
+        "--metrics-port",
+        "40002",
+    ]
+    envs = {e.name: e.value for e in container.envs}
+    # Provider template rendered; entries rendering empty (chunk_size unset)
+    # dropped; service env merged on top.
+    assert envs == {"RAM_SIZE": "8", "FOO": "bar"}
+
+    update.assert_any_call(
+        instance.id,
+        state=CacheServiceStateEnum.STARTING,
+        healthy=False,
+        state_message="",
+    )
+    update.assert_any_call(
+        instance.id,
+        ports={"port": 40001, "metrics": 40002},
+        port=40001,
+    )
+    assert manager._assigned_ports[instance.id] == (40001, 40002)
+
+
+def test_start_instance_removes_stale_workload_first():
+    """Start deletes any workload left from a previous run of the same
+    instance (crash, manual restart) before creating the new one, so restart
+    and first start share one code path."""
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance()
+    manager._assigned_ports[instance.id] = (40009, 40010)
+
+    call_order = []
+    ports = iter([40001, 40002])
+
+    with (
+        patch.object(
+            manager._provider_catalog,
+            "lookup",
+            return_value=(_new_provider(), True),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band",
+            side_effect=lambda **kwargs: next(ports),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.transform_workload_plan",
+            side_effect=lambda cfg, plan, fallback: plan,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.delete_workload",
+            side_effect=lambda name, **kwargs: call_order.append(("delete", name)),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning",
+            side_effect=lambda plan, *args, **kwargs: (
+                call_order.append(("create", plan.name)) or 0
+            ),
+        ),
+        patch.object(manager, "_update_cache_service_instance"),
+    ):
+        manager._start_cache_service_instance(instance)
+
+    assert call_order == [
+        ("delete", INSTANCE_WORKLOAD_NAME),
+        ("create", INSTANCE_WORKLOAD_NAME),
+    ]
+    # The stale tracked port pair was released; a fresh pair was assigned.
+    assert manager._assigned_ports[instance.id] == (40001, 40002)
+
+
+def test_start_instance_tolerates_missing_stale_workload():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance()
+
+    with (
+        patch.object(
+            manager._provider_catalog,
+            "lookup",
+            return_value=(_new_provider(), True),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band",
+            return_value=40001,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.transform_workload_plan",
+            side_effect=lambda cfg, plan, fallback: plan,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.delete_workload",
+            side_effect=RuntimeError("not found"),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning", return_value=0
+        ) as create,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager._start_cache_service_instance(instance)
+
+    create.assert_called_once()
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.STARTING
+
+
+def test_start_instance_drops_flags_with_empty_rendered_values():
+    """A template flag whose placeholder resolves to None must not reach the
+    command line as a dangling flag."""
+    manager, clientset = _build_manager(worker_id=1)
+    provider = _new_provider(
+        versions={
+            "v1": CacheProviderVersionConfig(
+                image="registry.example.com/mooncake/server:v1",
+                run_command=(
+                    "cache-server --host {{host}} --port {{port}} "
+                    "--ram {{ram_size}} --chunk-size {{chunk_size}}"
+                ),
+            )
+        },
+    )
+    instance = _new_instance()
+    clientset.cache_services.get.return_value = _new_cache_service(
+        config=CacheServiceConfig(fields={"ram_size": 8})
+    )
+
+    with (
+        patch.object(
+            manager._provider_catalog, "lookup", return_value=(provider, True)
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band",
+            return_value=40001,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.transform_workload_plan",
+            side_effect=lambda cfg, plan, fallback: plan,
+        ),
+        patch("gpustack.worker.cache_service_manager.delete_workload"),
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning", return_value=0
+        ) as create,
+        patch.object(manager, "_update_cache_service_instance"),
+    ):
+        manager._start_cache_service_instance(instance)
+
+    command = create.call_args[0][0].containers[0].execution.command
+    assert command == [
+        "cache-server",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "40001",
+        "--ram",
+        "8",
+    ]
+
+
+def test_start_instance_merges_user_parameters_over_template():
+    """User parameters replace conflicting template flags and are appended
+    verbatim otherwise."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8},
+            parameters={"": ["--ram=16", "--eviction-policy=LRU"]},
+        )
+    )
+
+    create, _ = _run_start(manager, clientset, cache_service, _new_provider())
+
+    command = create.call_args[0][0].containers[0].execution.command
+    assert command == [
+        "cache-server",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "40001",
+        "--metrics-port",
+        "40002",
+        "--ram=16",
+        "--eviction-policy=LRU",
+    ]
+
+
+def _two_component_provider() -> CacheProvider:
+    """A master serving the endpoint plus an env-driven store replica."""
+    return _new_provider(
+        components={
+            "master": CacheProviderComponent(
+                topology="replicas",
+                attach_endpoint=True,
+                run_command=(
+                    "mooncake_master --rpc_address {{worker_ip}} " "--rpc_port {{port}}"
+                ),
+            ),
+            "store": CacheProviderComponent(
+                topology="replicas",
+                depends_on="master",
+                run_command="python3 -m mooncake.mooncake_store_service",
+                env={"MOONCAKE_MASTER": "{{component.master.address}}"},
+            ),
+        }
+    )
+
+
+def test_user_parameters_reach_the_component_they_are_filed_under():
+    """Free-form parameters extend the argv of the component they name
+    and no other: each role runs its own binary, whose parser would
+    reject another's flags. Service env, namespaced by its consumer,
+    reaches every component instead."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8},
+            parameters={
+                "master": ["--default_kv_lease_ttl=60000"],
+                "store": ["--transfer_timeout=30"],
+            },
+            env={"MC_TCP_ENABLE_CONNECTION_POOL": "1"},
+        )
+    )
+    provider = _two_component_provider()
+
+    create, _ = _run_start(
+        manager,
+        clientset,
+        cache_service,
+        provider,
+        instance=_new_instance(component="master"),
+    )
+    master_exec = create.call_args[0][0].containers[0].execution
+    assert master_exec.command == [
+        "mooncake_master",
+        "--rpc_address",
+        "10.0.0.1",
+        "--rpc_port",
+        "40001",
+        "--default_kv_lease_ttl=60000",
+    ]
+
+    create, _ = _run_start(
+        manager,
+        clientset,
+        cache_service,
+        provider,
+        instance=_new_instance(
+            component="store",
+            component_addresses={"master": "10.0.0.1:40001"},
+        ),
+    )
+    store_container = create.call_args[0][0].containers[0]
+    assert store_container.execution.command == [
+        "python3",
+        "-m",
+        "mooncake.mooncake_store_service",
+        "--transfer_timeout=30",
+    ]
+    store_env = {e.name: e.value for e in store_container.envs}
+    assert store_env["MOONCAKE_MASTER"] == "10.0.0.1:40001"
+    assert store_env["MC_TCP_ENABLE_CONNECTION_POOL"] == "1"
+
+
+def test_l2_storage_reaches_only_the_attach_component():
+    """The L2 tiers belong to the component holding the cache. A
+    dependent component runs a different binary that rejects the adapter
+    flag outright, and its credentials have no business in that
+    container's env either."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8},
+            l2_storages=[
+                CacheServiceL2Storage(
+                    backend="fs",
+                    params={"base_path": "/data/l2"},
+                )
+            ],
+        )
+    )
+    provider = _l2_provider(components=_two_component_provider().components)
+
+    create, _ = _run_start(
+        manager,
+        clientset,
+        cache_service,
+        provider,
+        instance=_new_instance(component="master"),
+    )
+    assert create.call_args[0][0].containers[0].execution.command[-2:] == [
+        "--l2-adapter",
+        '{"type":"fs","base_path":"/data/l2"}',
+    ]
+
+    create, _ = _run_start(
+        manager,
+        clientset,
+        cache_service,
+        provider,
+        instance=_new_instance(
+            component="store",
+            component_addresses={"master": "10.0.0.1:40001"},
+        ),
+    )
+    store_container = create.call_args[0][0].containers[0]
+    assert "--l2-adapter" not in store_container.execution.command
+
+
+def test_start_instance_resolves_runtime_image():
+    """A version's runtime_images picks the node's accelerator build —
+    a CUDA 12 node gets the cu129 image; the plain image serves nodes
+    whose runtime has no entry (and accelerator-less workers)."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(fields={"ram_size": 8})
+    )
+    provider = _new_provider()
+    provider.versions["v1"].runtime_images = {
+        "cuda": {
+            "13": "registry.example.com/mooncake/server:v1",
+            "12": "registry.example.com/mooncake/server:v1-cu129",
+        }
+    }
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.detect_backend",
+            return_value="cuda",
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.detect_devices",
+            return_value=[SimpleNamespace(runtime_version="12.8")],
+        ),
+    ):
+        create, _ = _run_start(manager, clientset, cache_service, provider)
+
+    container = create.call_args[0][0].containers[0]
+    assert container.image == "registry.example.com/mooncake/server:v1-cu129"
+
+
+@pytest.mark.parametrize(
+    "socs, expected",
+    [
+        (["Ascend910B4"], "910b"),
+        # The generation a node reports is the answer even when another
+        # device on it reports one this build does not know. Not the
+        # default, which is what an unanswered node falls back to — this
+        # node answered.
+        (["AscendSomethingNew", "Ascend950PR"], "950"),
+        (["Ascend950PR", "Ascend950PR"], "950"),
+        # No device names a generation this build knows, so the node takes
+        # the one the inference path defaults such a node to — being served
+        # another generation's build is what that default is for, and going
+        # unresolved would read as an accelerator with no image at all.
+        (["AscendSomethingNew"], "910b"),
+        ([None], "910b"),
+    ],
+)
+def test_the_ascend_generation_a_node_is_served(socs, expected):
+    manager, _ = _build_manager(worker_id=1)
+    devices = [
+        SimpleNamespace(
+            runtime_version="8.0",
+            appendix={"arch_family": soc} if soc else {},
+        )
+        for soc in socs
+    ]
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.detect_backend",
+            return_value="cann",
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.detect_devices",
+            return_value=devices,
+        ),
+    ):
+        backend, _, variant = manager._detect_runtime()
+
+    assert (backend, variant) == ("cann", expected)
+
+
+def test_an_unreadable_device_still_names_a_generation():
+    """A probe that raises says nothing about the node, and a node left
+    without a generation has no per-generation image to run."""
+    manager, _ = _build_manager(worker_id=1)
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.detect_backend",
+            return_value="cann",
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.detect_devices",
+            side_effect=RuntimeError("driver not loaded"),
+        ),
+    ):
+        backend, _, variant = manager._detect_runtime()
+
+    assert (backend, variant) == ("cann", "910b")
+
+
+def test_start_instance_fails_fast_on_unsupported_accelerator():
+    """A node whose accelerator has no runtime_images entry must error
+    with the cause before any container exists — the plain image targets
+    another accelerator family and would only crash-loop."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(fields={"ram_size": 8})
+    )
+    provider = _new_provider()
+    provider.versions["v1"].runtime_images = {
+        "cuda": {"13": "registry.example.com/mooncake/server:v1"}
+    }
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.detect_backend",
+            return_value="cann",
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.detect_devices",
+            return_value=[SimpleNamespace(runtime_version="8.0")],
+        ),
+    ):
+        create, update = _run_start(manager, clientset, cache_service, provider)
+
+    create.assert_not_called()
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR
+    # Named down to the generation, which is what the images are keyed by.
+    # This device reports no SoC, so it takes the generation the inference
+    # path defaults such a node to rather than going unresolved.
+    assert "no image for cann-910b workers" in update.call_args[1]["state_message"]
+
+
+def _field_provider(**overrides):
+    return _new_provider(
+        fields=[
+            CacheProviderField(
+                name="eviction_policy",
+                default="LRU",
+                options=["LRU", "IsolatedLRU", "noop"],
+            ),
+            CacheProviderField(name="eviction_ratio", type="number", default=0.2),
+            CacheProviderField(name="optional_knob"),
+        ],
+        versions={
+            "v1": CacheProviderVersionConfig(
+                image="registry.example.com/mooncake/server:v1",
+                run_command=(
+                    "cache-server --host {{host}} --port {{port}} "
+                    "--ram {{ram_size}} "
+                    "--eviction-policy {{eviction_policy}} "
+                    "--eviction-ratio {{eviction_ratio}} "
+                    "--optional-knob {{optional_knob}}"
+                ),
+            )
+        },
+        **overrides,
+    )
+
+
+def test_start_instance_renders_field_defaults():
+    """Declared fields fill their template placeholders: defaults render
+    without any user configuration (the eviction policy is required
+    upstream), and a default-less unset field drops its flag entirely."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(fields={"ram_size": 8})
+    )
+
+    create, _ = _run_start(manager, clientset, cache_service, _field_provider())
+
+    command = create.call_args[0][0].containers[0].execution.command
+    assert command[command.index("--eviction-policy") + 1] == "LRU"
+    assert command[command.index("--eviction-ratio") + 1] == "0.2"
+    assert "--optional-knob" not in command
+
+
+def test_start_instance_field_values_and_parameter_override():
+    """config.fields values replace the defaults, and a hand-written
+    parameter still overrides the flag a field renders into."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8, "eviction_ratio": 0.5},
+            parameters={"": ["--eviction-policy=noop"]},
+        )
+    )
+
+    create, _ = _run_start(manager, clientset, cache_service, _field_provider())
+
+    command = create.call_args[0][0].containers[0].execution.command
+    assert command[command.index("--eviction-ratio") + 1] == "0.5"
+    joined = " ".join(command)
+    assert "noop" in joined
+    assert "LRU" not in joined
+
+
+def test_start_instance_custom_version_uses_service_image():
+    """The reserved "custom" version runs the user-supplied image while the
+    default version's run command and env templates still render."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        provider_version="custom",
+        config=CacheServiceConfig(
+            fields={"ram_size": 8, "chunk_size": 256}, image="myteam/cache-server:dev"
+        ),
+    )
+
+    create, update = _run_start(
+        manager, clientset, cache_service, _new_provider(custom_version=True)
+    )
+
+    container = create.call_args[0][0].containers[0]
+    assert container.image == "myteam/cache-server:dev"
+    assert container.execution.command == [
+        "cache-server",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "40001",
+        "--ram",
+        "8",
+        "--metrics-port",
+        "40002",
+    ]
+    envs = {e.name: e.value for e in container.envs}
+    assert envs == {"CHUNK_SIZE": "256", "RAM_SIZE": "8"}
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.STARTING
+
+
+def test_start_instance_custom_version_applies_registry_override():
+    manager, clientset = _build_manager(worker_id=1)
+    manager._config.system_default_container_registry = "registry.corp.local"
+    cache_service = _new_cache_service(
+        provider_version="custom",
+        config=CacheServiceConfig(
+            fields={"ram_size": 8}, image="myteam/cache-server:dev"
+        ),
+    )
+
+    create, _ = _run_start(
+        manager, clientset, cache_service, _new_provider(custom_version=True)
+    )
+
+    container = create.call_args[0][0].containers[0]
+    assert container.image == "registry.corp.local/myteam/cache-server:dev"
+
+
+def test_start_instance_custom_version_missing_image_sets_error():
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        provider_version="custom",
+        config=CacheServiceConfig(fields={"ram_size": 8}),
+    )
+
+    create, update = _run_start(
+        manager, clientset, cache_service, _new_provider(custom_version=True)
+    )
+
+    create.assert_not_called()
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR
+    assert "config.image is required" in update.call_args[1]["state_message"]
+
+
+def test_start_instance_custom_version_without_provider_support_sets_error():
+    """Route validation rejects the custom version on a provider that does
+    not opt in; the worker still refuses defensively."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        provider_version="custom",
+        config=CacheServiceConfig(
+            fields={"ram_size": 8}, image="myteam/cache-server:dev"
+        ),
+    )
+
+    create, update = _run_start(manager, clientset, cache_service, _new_provider())
+
+    create.assert_not_called()
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR
+    assert "does not allow the custom version" in update.call_args[1]["state_message"]
+
+
+def test_start_instance_custom_version_without_default_version_sets_error():
+    """The custom version borrows the default version's templates, so a
+    provider whose declared versions hold no resolvable default cannot
+    serve it."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        provider_version="custom",
+        config=CacheServiceConfig(
+            fields={"ram_size": 8}, image="myteam/cache-server:dev"
+        ),
+    )
+    provider = _new_provider(custom_version=True, default_version=None)
+
+    create, update = _run_start(manager, clientset, cache_service, provider)
+
+    create.assert_not_called()
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR
+    assert "default version" in update.call_args[1]["state_message"]
+
+
+def test_start_instance_custom_version_without_declared_versions():
+    """A provider publishing no image declares no version at all: the
+    service's own image runs on the provider-level launch arguments."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        provider_version="custom",
+        config=CacheServiceConfig(
+            fields={"ram_size": 8}, image="myteam/cache-server:dev"
+        ),
+    )
+    provider = _new_provider(
+        custom_version=True,
+        default_version=None,
+        versions={},
+        default_run_args="--host {{host}} --port {{port}} --ram {{ram_size}}",
+    )
+
+    create, update = _run_start(manager, clientset, cache_service, provider)
+
+    container = create.call_args[0][0].containers[0]
+    assert container.image == "myteam/cache-server:dev"
+    # run_args keeps the image's own entrypoint, so the rendered template
+    # lands in the args slot with the platform placeholders filled.
+    assert container.execution.command is None
+    assert container.execution.args == [
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "40001",
+        "--ram",
+        "8",
+    ]
+    assert update.call_args[1]["state"] != CacheServiceStateEnum.ERROR
+
+
+def test_start_instance_renders_fs_l2_adapter():
+    """A single L2 storage entry renders as one flag carrying the adapter
+    JSON, with the backend key as "type" and booleans as JSON booleans."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8},
+            l2_storages=[
+                CacheServiceL2Storage(
+                    backend="fs",
+                    params={"base_path": "/data/l2", "use_odirect": True},
+                )
+            ],
+        )
+    )
+
+    create, update = _run_start(manager, clientset, cache_service, _l2_provider())
+
+    command = create.call_args[0][0].containers[0].execution.command
+    assert command[-2:] == [
+        "--l2-adapter",
+        '{"type":"fs","base_path":"/data/l2","use_odirect":true}',
+    ]
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.STARTING
+
+
+def test_start_instance_resp_l2_credentials_go_to_env():
+    """resp credentials are delivered via env (the server falls back to
+    LMCACHE_RESP_* when they are absent from the JSON) so secrets never
+    reach the command line; number fields render as JSON integers when
+    integral."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8},
+            env={"FOO": "bar"},
+            l2_storages=[
+                CacheServiceL2Storage(
+                    backend="resp",
+                    params={
+                        "host": "10.0.0.8",
+                        # JSON round-trips may deliver integral numbers as floats.
+                        "port": 6379.0,
+                        "username": "cache",
+                        "password": "s3cret",
+                        "max_capacity_gb": 100,
+                    },
+                )
+            ],
+        )
+    )
+
+    create, _ = _run_start(manager, clientset, cache_service, _l2_provider())
+
+    container = create.call_args[0][0].containers[0]
+    command = container.execution.command
+    assert command[-2:] == [
+        "--l2-adapter",
+        '{"type":"resp","host":"10.0.0.8","port":6379,"max_capacity_gb":100}',
+    ]
+    assert "s3cret" not in " ".join(command)
+    envs = {e.name: e.value for e in container.envs}
+    assert envs["LMCACHE_RESP_USERNAME"] == "cache"
+    assert envs["LMCACHE_RESP_PASSWORD"] == "s3cret"
+    assert envs["FOO"] == "bar"
+
+
+def test_start_instance_without_l2_storage_omits_flag():
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(fields={"ram_size": 8})
+    )
+
+    create, _ = _run_start(manager, clientset, cache_service, _l2_provider())
+
+    command = create.call_args[0][0].containers[0].execution.command
+    assert "--l2-adapter" not in command
+
+
+def test_start_instance_xdfs_l2_backend_omits_adapter_flag():
+    """MeshFusion Store owns its L2 setup and must not receive LMCache's
+    generic --l2-adapter JSON argument."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            ram_size=8,
+            l2_storages=[
+                CacheServiceL2Storage(
+                    backend="xdfs",
+                    adapter_flag_enabled=False,
+                )
+            ],
+        )
+    )
+    provider = _l2_provider(
+        l2_backends={
+            **_l2_provider().l2_backends,
+            "xdfs": CacheProviderL2Backend(
+                fields=[CacheProviderL2Field(name="tenant_id", required=True)],
+                adapter_flag_optional=True,
+                adapter_flag_default=False,
+            ),
+        }
+    )
+
+    create, update = _run_start(manager, clientset, cache_service, provider)
+
+    command = create.call_args[0][0].containers[0].execution.command
+    assert "--l2-adapter" not in command
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.STARTING
+
+    cache_service.config.l2_storages[0].adapter_flag_enabled = True
+    cache_service.config.l2_storages[0].params = {"tenant_id": "nixl"}
+    create, _ = _run_start(manager, clientset, cache_service, provider)
+    command = create.call_args[0][0].containers[0].execution.command
+    assert command[-2:] == [
+        "--l2-adapter",
+        '{"type":"xdfs","tenant_id":"nixl"}',
+    ]
+
+
+def test_start_instance_renders_l2_cascade_in_declared_order():
+    """Each L2 entry renders as its own flag occurrence, kept in list order:
+    the cache server reads from the earliest tier that hits and writes to
+    all of them. Env-delivered fields of all entries merge into the
+    container env."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8},
+            l2_storages=[
+                CacheServiceL2Storage(backend="fs", params={"base_path": "/data/ssd"}),
+                CacheServiceL2Storage(
+                    backend="resp",
+                    params={"host": "10.0.0.8", "port": 6379, "password": "s3cret"},
+                ),
+            ],
+        )
+    )
+
+    create, _ = _run_start(manager, clientset, cache_service, _l2_provider())
+
+    container = create.call_args[0][0].containers[0]
+    command = container.execution.command
+    assert command[-4:] == [
+        "--l2-adapter",
+        '{"type":"fs","base_path":"/data/ssd"}',
+        "--l2-adapter",
+        '{"type":"resp","host":"10.0.0.8","port":6379}',
+    ]
+    envs = {e.name: e.value for e in container.envs}
+    assert envs["LMCACHE_RESP_PASSWORD"] == "s3cret"
+
+
+def test_start_instance_allows_repeated_l2_backend_without_env_fields():
+    """A backend whose fields all ride in the adapter JSON may appear in
+    several cascade tiers (e.g. SSD and HDD paths of the fs backend)."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8},
+            l2_storages=[
+                CacheServiceL2Storage(backend="fs", params={"base_path": "/data/ssd"}),
+                CacheServiceL2Storage(backend="fs", params={"base_path": "/data/hdd"}),
+            ],
+        )
+    )
+
+    create, update = _run_start(manager, clientset, cache_service, _l2_provider())
+
+    command = create.call_args[0][0].containers[0].execution.command
+    assert command[-4:] == [
+        "--l2-adapter",
+        '{"type":"fs","base_path":"/data/ssd"}',
+        "--l2-adapter",
+        '{"type":"fs","base_path":"/data/hdd"}',
+    ]
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.STARTING
+
+
+def test_start_instance_l2_env_collision_sets_error():
+    """Env vars are process-global, so two entries delivering a value
+    through the same env var cannot start; the instance lands in ERROR."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8},
+            l2_storages=[
+                CacheServiceL2Storage(
+                    backend="resp",
+                    params={"host": "10.0.0.8", "port": 6379, "password": "one"},
+                ),
+                CacheServiceL2Storage(
+                    backend="resp",
+                    params={"host": "10.0.0.9", "port": 6380, "password": "two"},
+                ),
+            ],
+        )
+    )
+
+    create, update = _run_start(manager, clientset, cache_service, _l2_provider())
+
+    create.assert_not_called()
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR
+    assert "LMCACHE_RESP_PASSWORD" in update.call_args[1]["state_message"]
+
+
+def test_start_instance_l2_hand_written_adapters_append_after(caplog):
+    """Hand-written --l2-adapter occurrences in config.parameters are the
+    escape hatch for adapter types the declaration doesn't cover: they stay
+    on the command line, appended after the structured entries so the
+    UI-visible order keeps the higher read priority."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8},
+            parameters={"": ["--l2-adapter", '{"type":"s3","bucket":"kv-spill"}']},
+            l2_storages=[
+                CacheServiceL2Storage(backend="fs", params={"base_path": "/data/l2"}),
+                CacheServiceL2Storage(backend="fs", params={"base_path": "/data/hdd"}),
+            ],
+        )
+    )
+
+    with caplog.at_level(logging.INFO):
+        create, _ = _run_start(manager, clientset, cache_service, _l2_provider())
+
+    command = create.call_args[0][0].containers[0].execution.command
+    assert command.count("--l2-adapter") == 3
+    assert command[-6:] == [
+        "--l2-adapter",
+        '{"type":"fs","base_path":"/data/l2"}',
+        "--l2-adapter",
+        '{"type":"fs","base_path":"/data/hdd"}',
+        "--l2-adapter",
+        '{"type":"s3","bucket":"kv-spill"}',
+    ]
+    assert "appending those adapters after the structured entries" in caplog.text
+
+
+def test_start_instance_unknown_l2_backend_sets_error():
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8},
+            l2_storages=[CacheServiceL2Storage(backend="s3", params={})],
+        )
+    )
+
+    create, update = _run_start(manager, clientset, cache_service, _l2_provider())
+
+    create.assert_not_called()
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR
+    assert "'s3'" in update.call_args[1]["state_message"]
+
+
+def test_start_instance_l2_without_provider_support_sets_error():
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8},
+            l2_storages=[
+                CacheServiceL2Storage(backend="fs", params={"base_path": "/data/l2"})
+            ],
+        )
+    )
+
+    # Keep the backend declaration so this exercises the provider-level
+    # "no adapter flag" branch rather than the unknown-backend validation.
+    provider = _new_provider(
+        l2_backends={
+            "fs": CacheProviderL2Backend(
+                fields=[CacheProviderL2Field(name="base_path", required=True)]
+            )
+        }
+    )
+    create, update = _run_start(manager, clientset, cache_service, provider)
+
+    create.assert_not_called()
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR
+    assert "does not support L2 storage" in update.call_args[1]["state_message"]
+
+
+def test_start_instance_parent_service_missing_sets_error():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance()
+    clientset.cache_services.get.side_effect = NotFoundException(
+        message="Cache service not found"
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning", return_value=0
+        ) as create,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager._start_cache_service_instance(instance)
+
+    create.assert_not_called()
+    update.assert_called_once()
+    assert update.call_args[0][0] == instance.id
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR
+    assert "not found" in update.call_args[1]["state_message"]
+
+
+def test_start_instance_unknown_provider_sets_error():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance()
+    clientset.cache_services.get.return_value = _new_cache_service(
+        provider_name="nonexistent"
+    )
+
+    with (
+        patch.object(manager._provider_catalog, "lookup", return_value=(None, True)),
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning", return_value=0
+        ) as create,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager._start_cache_service_instance(instance)
+
+    create.assert_not_called()
+    update.assert_any_call(
+        instance.id,
+        state=CacheServiceStateEnum.ERROR,
+        state_message="Unknown cache provider: nonexistent",
+    )
+
+
+def test_health_probe_abstains_when_the_catalog_cannot_be_read():
+    """The declaration says which port to reach and how. Without it, an
+    instance whose component binds anything but the default port would be
+    called unreachable for want of a catalog this worker could not fetch — a
+    connectivity problem reported as a dead cache server."""
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING)
+    manager._provider_catalog.lookup.return_value = (None, False)
+
+    assert manager._probe_ready(instance, "mooncake") is None
+
+
+def test_start_instance_rereads_a_catalog_that_predates_the_service():
+    """A name that is present does not mean the declaration behind it is
+    current — the packaged catalog carries a placeholder under the same name as
+    the document an admin pastes. What says the copy is stale is the service
+    asking it for a version it does not carry."""
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance()
+    stale = _new_provider()
+    stale.versions = {}
+    cache_service = _new_cache_service()
+    clientset.cache_services.get.return_value = cache_service
+    manager._provider_catalog.lookup.return_value = (stale, True)
+    manager._provider_catalog.reread.return_value = _new_provider()
+    ports = iter([40001, 40002])
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band",
+            side_effect=lambda **kwargs: next(ports),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning", return_value=0
+        ) as create,
+        patch("gpustack.worker.cache_service_manager.delete_workload"),
+        patch.object(manager, "_update_cache_service_instance", return_value=True),
+    ):
+        manager._start_cache_service_instance(instance)
+
+    manager._provider_catalog.reread.assert_called_once_with(
+        cache_service.provider_name
+    )
+    create.assert_called_once()
+
+
+def test_start_instance_unknown_version_sets_error():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance()
+    clientset.cache_services.get.return_value = _new_cache_service(
+        provider_version="v9"
+    )
+
+    with (
+        patch.object(
+            manager._provider_catalog,
+            "lookup",
+            return_value=(_new_provider(), True),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning", return_value=0
+        ) as create,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager._start_cache_service_instance(instance)
+
+    create.assert_not_called()
+    update.assert_called_once()
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR
+    assert "v9" in update.call_args[1]["state_message"]
+
+
+def test_start_instance_failure_sets_error_and_releases_port():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance()
+
+    with (
+        patch.object(
+            manager._provider_catalog,
+            "lookup",
+            return_value=(_new_provider(), True),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band",
+            return_value=40001,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.transform_workload_plan",
+            side_effect=lambda cfg, plan, fallback: plan,
+        ),
+        patch("gpustack.worker.cache_service_manager.delete_workload"),
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning",
+            side_effect=RuntimeError("boom"),
+        ),
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager._start_cache_service_instance(instance)
+
+    update.assert_any_call(
+        instance.id,
+        state=CacheServiceStateEnum.ERROR,
+        state_message="boom",
+    )
+    assert instance.id not in manager._assigned_ports
+
+
+def test_start_instance_releases_the_in_flight_claim():
+    """Both outcomes clear the claim, so the next start (event or sync) is
+    not blocked by a completed one."""
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance()
+    manager._starting.add(instance.id)
+
+    _run_start(manager, clientset, _new_cache_service(), _new_provider(), instance)
+
+    assert instance.id not in manager._starting
+
+
+def test_start_instance_requires_state_writeback_before_provisioning():
+    """A launch without a recorded STARTING state cannot create a container."""
+    manager, clientset = _build_manager(worker_id=1)
+    create, _ = _run_start(
+        manager, clientset, _new_cache_service(), _new_provider(), update_applied=False
+    )
+    create.assert_not_called()
+
+
+def test_starting_instance_is_not_restarted_while_provisioning():
+    manager, clientset = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.STARTING)
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+    manager._claim_start(instance.id)
+    with patch.object(manager, "_sync_single_cache_service_instance_state") as sync:
+        manager.sync_cache_service_instances_state()
+    sync.assert_not_called()
+
+
+def test_runtime_image_pull_message_is_visible_while_initializing():
+    manager, _ = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.STARTING)
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(
+                state=WorkloadStatusStateEnum.PENDING,
+                state_message="Pulling cache image",
+            ),
+        ),
+        patch.object(manager, "_update_cache_service_instance") as update,
+        patch.object(manager, "_probe_ready") as probe,
+    ):
+        manager._sync_single_cache_service_instance_state(
+            instance, _new_cache_service()
+        )
+    update.assert_called_once_with(instance.id, state_message="Pulling cache image")
+    probe.assert_not_called()
+
+
+def test_start_log_failure_releases_the_in_flight_claim():
+    manager, _ = _build_manager()
+    manager._provider_catalog.lookup.return_value = (_new_provider(), True)
+    instance = _new_instance()
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.CappedLogWriter",
+            side_effect=OSError("read-only filesystem"),
+        ),
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager._start_cache_service_instance(instance)
+    assert instance.id not in manager._starting
+    assert update.call_args.kwargs["state"] == CacheServiceStateEnum.ERROR
+
+
+def test_capacity_changes_require_a_new_reservation():
+    manager, clientset = _build_manager()
+    provider = _new_provider(resource_profile={"ram_gib": "{{ram_size}}"})
+    instance = _new_instance(computed_resource_claim={"ram": 4 * 1024**3})
+    create, update = _run_start(
+        manager, clientset, _new_cache_service(), provider, instance
+    )
+    create.assert_not_called()
+    assert update.call_args.kwargs["state"] == CacheServiceStateEnum.ERROR
+    assert "reservation" in update.call_args.kwargs["state_message"]
+
+
+def test_launch_records_starting_and_ports_before_provisioning():
+    manager, clientset = _build_manager()
+    instance = _new_instance()
+    calls = []
+
+    def provision(plan, path, cancelled, **kwargs):
+        assert calls[0]["state"] == CacheServiceStateEnum.STARTING
+        assert calls[-1]["ports"]
+        return 0
+
+    manager._provider_catalog.lookup.return_value = (_new_provider(), True)
+    with (
+        patch.object(
+            manager,
+            "_update_cache_service_instance",
+            side_effect=lambda id, **kw: (calls.append(kw) or True),
+        ),
+        patch("gpustack.worker.cache_service_manager.delete_workload"),
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning",
+            side_effect=provision,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band",
+            side_effect=[40001, 40002],
+        ),
+        patch.object(manager, "_sync_single_cache_service_instance_state") as probe,
+    ):
+        manager._start_cache_service_instance(instance)
+    probe.assert_called_once()
+    assert calls[-1] == {"state": CacheServiceStateEnum.STARTING, "state_message": ""}
+
+
+def test_deletion_during_provisioning_cancels_and_cleans_up_without_writeback():
+    manager, clientset = _build_manager()
+    instance = _new_instance()
+    manager._provider_catalog.lookup.return_value = (_new_provider(), True)
+    writes_at_delete = []
+
+    def provision(plan, path, cancelled, **kwargs):
+        manager._stop_cache_service_instance(instance)
+        writes_at_delete.append(update.call_count)
+        assert cancelled.is_set()
+        assert instance.id in manager._assigned_ports
+        assert instance.id in manager._cache_service_instance_by_instance_id
+        assert instance.id in manager._starting
+        return None
+
+    with (
+        patch.object(
+            manager, "_update_cache_service_instance", return_value=True
+        ) as update,
+        patch("gpustack.worker.cache_service_manager.delete_workload") as delete,
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning",
+            side_effect=provision,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band",
+            side_effect=[40001, 40002],
+        ),
+    ):
+        manager._start_cache_service_instance(instance)
+    assert update.call_count == writes_at_delete[0]
+    assert delete.call_count == 3
+    assert instance.id not in manager._starting
+    assert instance.id not in manager._start_tokens
+    assert instance.id not in manager._assigned_ports
+    assert instance.id not in manager._cache_service_instance_by_instance_id
+
+
+@pytest.mark.parametrize("operation", ["get", "update"])
+def test_update_instance_reports_failed_writeback_without_raising(operation):
+    manager, clientset = _build_manager(worker_id=1)
+    clientset.cache_service_instances.get.return_value = _new_instance()
+    getattr(clientset.cache_service_instances, operation).side_effect = RuntimeError(
+        "boom"
+    )
+
+    assert (
+        manager._update_cache_service_instance(11, state=CacheServiceStateEnum.RUNNING)
+        is False
+    )
+
+
+def test_allocate_ports_excludes_ports_of_sibling_instances():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(id=12, cache_service_id=6)
+    sibling = _new_instance(
+        id=13,
+        cache_service_id=7,
+        state=CacheServiceStateEnum.RUNNING,
+        # Every port a sibling holds is held just as firmly, whatever the
+        # component called it.
+        ports={"port": 40001, "metrics": 40011, "p2p": 40021},
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[sibling]
+    )
+
+    # get_free_band mutates the shared unavailable-ports set, so snapshot
+    # the set contents at each call.
+    port_calls = []
+
+    def fake_get_free_band(port_range, unavailable_ports):
+        port_calls.append((port_range, set(unavailable_ports)))
+        return 40002 if len(port_calls) == 1 else 40003
+
+    with patch(
+        "gpustack.worker.cache_service_manager.network.get_free_band",
+        side_effect=fake_get_free_band,
+    ):
+        ports = manager._allocate_ports(instance, ["port", "metrics"])
+
+    assert ports == {"port": 40002, "metrics": 40003}
+    # Every port of the sibling is excluded; the metrics-port pick also
+    # excludes the service port picked just before it. Siblings are listed
+    # for this worker only.
+    assert clientset.cache_service_instances.list.call_args[1]["params"] == {
+        "worker_id": 1,
+        "page": -1,
+    }
+    assert port_calls == [
+        ("40000-41000", {40001, 40011, 40021}),
+        ("40000-41000", {40001, 40011, 40021, 40002}),
+    ]
+    assert manager._assigned_ports[instance.id] == (40002, 40003)
+
+
+def test_allocate_ports_serves_the_names_a_component_declares():
+    """Every name the component declares gets a port, each excluded from
+    the picks after it, and all recorded for reuse."""
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(id=12, cache_service_id=6)
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
+    picks = iter([40002, 40003, 40004])
+    seen = []
+
+    def fake_get_free_band(port_range, unavailable_ports):
+        seen.append(set(unavailable_ports))
+        return next(picks)
+
+    with patch(
+        "gpustack.worker.cache_service_manager.network.get_free_band",
+        side_effect=fake_get_free_band,
+    ):
+        ports = manager._allocate_ports(instance, ["port", "metrics", "p2p"])
+
+    assert ports == {"port": 40002, "metrics": 40003, "p2p": 40004}
+    assert seen[-1] == {40002, 40003}
+    assert manager._assigned_ports[instance.id] == (40002, 40003, 40004)
+
+
+def test_allocate_ports_reuses_a_recorded_declared_port():
+    """Peers hold the advertised port, so a restart keeps it rather than
+    republishing a new one."""
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(
+        id=12,
+        cache_service_id=6,
+        ports={"port": 40001, "metrics": 40002, "p2p": 40003},
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
+
+    with patch(
+        "gpustack.worker.cache_service_manager.network.is_port_available",
+        return_value=True,
+    ):
+        ports = manager._allocate_ports(instance, ["port", "metrics", "p2p"])
+
+    assert ports == {"port": 40001, "metrics": 40002, "p2p": 40003}
+
+
+def test_allocate_ports_keeps_the_held_ones_when_a_port_is_added():
+    """A component that gains a port keeps the ones it already holds:
+    engines carry the address in snapshots nothing refreshes and peers
+    dial what was published, so only the new name takes a fresh port."""
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(
+        id=12, cache_service_id=6, ports={"port": 40001, "metrics": 40002}
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.network.is_port_available",
+            return_value=True,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band",
+            return_value=40005,
+        ),
+    ):
+        ports = manager._allocate_ports(instance, ["port", "metrics", "p2p"])
+
+    assert ports == {"port": 40001, "metrics": 40002, "p2p": 40005}
+
+
+def test_allocate_ports_replaces_only_the_one_it_cannot_keep():
+    """A recorded port another process took is the only one repicked;
+    holding the rest is what keeps an instance reachable where it said."""
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(
+        id=12, cache_service_id=6, ports={"port": 40001, "metrics": 40002}
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.network.is_port_available",
+            side_effect=lambda port: port != 40002,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band",
+            return_value=40009,
+        ),
+    ):
+        ports = manager._allocate_ports(instance, ["port", "metrics"])
+
+    assert ports == {"port": 40001, "metrics": 40009}
+
+
+# ---------------------------------------------------------------------------
+# State sync
+# ---------------------------------------------------------------------------
+
+
+def test_sync_workload_failed_restarts_with_incremented_count():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(
+        state=CacheServiceStateEnum.STARTING, ports={"port": 40001}
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
+        ),
+        patch("gpustack.worker.cache_service_manager.delete_workload") as delete,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    delete.assert_called_once_with(INSTANCE_WORKLOAD_NAME)
+    update.assert_called_once_with(
+        instance.id,
+        state=CacheServiceStateEnum.PENDING,
+        restart_count=1,
+        last_restart_time=ANY,
+        state_message=(
+            f"Cache server exited; restarting (attempt 1/{MAX_CONSECUTIVE_RESTARTS})."
+        ),
+        healthy=False,
+    )
+
+
+def test_sync_workload_failed_with_restart_on_error_disabled_parks_in_error():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING, port=40001)
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+    # restart_on_error lives on the parent service and applies to all of
+    # its instances.
+    clientset.cache_services.get.return_value = _new_cache_service(
+        restart_on_error=False
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
+        ),
+        patch("gpustack.worker.cache_service_manager.delete_workload") as delete,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    # No restart attempt: the dead workload is left for inspection and the
+    # instance is parked in ERROR for manual handling.
+    delete.assert_not_called()
+    update.assert_called_once_with(
+        instance.id,
+        state=CacheServiceStateEnum.ERROR,
+        state_message=(
+            "Cache server exited. Automatic restart is disabled "
+            "for this service; restart it manually."
+        ),
+        healthy=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "state", [CacheServiceStateEnum.RUNNING, CacheServiceStateEnum.UNREACHABLE]
+)
+def test_sync_workload_missing_restarts_and_tolerates_absent_workload(state):
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(state=state, port=40001)
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.delete_workload",
+            side_effect=RuntimeError("not found"),
+        ),
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    update.assert_called_once()
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.PENDING
+    assert update.call_args[1]["restart_count"] == 1
+
+
+def test_sync_crash_within_backoff_window_is_deferred():
+    manager, clientset = _build_manager(worker_id=1)
+    # restart_count=1 -> backoff delay of 60 seconds; the last restart was
+    # only 5 seconds ago, so this round must not touch the instance.
+    instance = _new_instance(
+        state=CacheServiceStateEnum.STARTING,
+        ports={"port": 40001},
+        restart_count=1,
+        last_restart_time=datetime.now(timezone.utc) - timedelta(seconds=5),
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=None,
+        ),
+        patch("gpustack.worker.cache_service_manager.delete_workload") as delete,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    delete.assert_not_called()
+    update.assert_not_called()
+
+
+def test_sync_crash_after_backoff_window_restarts():
+    manager, clientset = _build_manager(worker_id=1)
+    # restart_count=1 -> backoff delay of 60 seconds; 120 seconds have
+    # passed, so the restart proceeds with the incremented attempt.
+    instance = _new_instance(
+        state=CacheServiceStateEnum.STARTING,
+        ports={"port": 40001},
+        restart_count=1,
+        last_restart_time=datetime.now(timezone.utc) - timedelta(seconds=120),
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=None,
+        ),
+        patch("gpustack.worker.cache_service_manager.delete_workload"),
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    update.assert_called_once()
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.PENDING
+    assert update.call_args[1]["restart_count"] == 2
+
+
+def test_sync_crash_after_max_restarts_parks_in_error():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(
+        state=CacheServiceStateEnum.STARTING,
+        ports={"port": 40001},
+        restart_count=MAX_CONSECUTIVE_RESTARTS,
+        last_restart_time=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=None,
+        ),
+        patch("gpustack.worker.cache_service_manager.delete_workload") as delete,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    delete.assert_not_called()
+    update.assert_called_once()
+    assert update.call_args[1]["state"] == CacheServiceStateEnum.ERROR
+    assert "logs" in update.call_args[1]["state_message"]
+
+
+def test_sync_ready_probe_resets_restart_count_after_stable_window():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(
+        state=CacheServiceStateEnum.RUNNING,
+        ports={"port": 40001},
+        healthy=True,
+        restart_count=3,
+        last_restart_time=datetime.now(timezone.utc) - timedelta(minutes=11),
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(
+            manager._provider_catalog,
+            "lookup",
+            return_value=(_new_provider(), True),
+        ),
+        patch("gpustack.worker.cache_service_manager.socket.create_connection"),
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    update.assert_called_once_with(instance.id, restart_count=0)
+
+
+def test_sync_ready_probe_keeps_restart_count_within_stable_window():
+    """The consecutive-restart budget must survive a crash-after-ready loop:
+    an instance that just came back must not have its count cleared yet."""
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(
+        state=CacheServiceStateEnum.RUNNING,
+        ports={"port": 40001},
+        healthy=True,
+        restart_count=3,
+        last_restart_time=datetime.now(timezone.utc) - timedelta(minutes=2),
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(
+            manager._provider_catalog,
+            "lookup",
+            return_value=(_new_provider(), True),
+        ),
+        patch("gpustack.worker.cache_service_manager.socket.create_connection"),
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    update.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "state", [CacheServiceStateEnum.STARTING, CacheServiceStateEnum.UNREACHABLE]
+)
+def test_sync_ready_tcp_probe_marks_running_healthy(state):
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(state=state, ports={"port": 40001})
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(
+            manager._provider_catalog,
+            "lookup",
+            return_value=(_new_provider(), True),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.socket.create_connection"
+        ) as connect,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    connect.assert_called_once_with(("127.0.0.1", 40001), timeout=ANY)
+    update.assert_called_once_with(
+        instance.id,
+        state=CacheServiceStateEnum.RUNNING,
+        healthy=True,
+        last_check_at=ANY,
+        state_message="",
+    )
+
+
+def test_sync_probe_failure_after_running_marks_unreachable():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(
+        state=CacheServiceStateEnum.RUNNING, port=40001, healthy=True
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(
+            manager._provider_catalog,
+            "lookup",
+            return_value=(_new_provider(), True),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.socket.create_connection",
+            side_effect=OSError("connection refused"),
+        ),
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    update.assert_called_once_with(
+        instance.id,
+        state=CacheServiceStateEnum.UNREACHABLE,
+        healthy=False,
+        last_check_at=ANY,
+    )
+
+
+def test_sync_probe_failure_while_starting_is_left_alone():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(
+        state=CacheServiceStateEnum.STARTING, ports={"port": 40001}
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(
+            manager._provider_catalog,
+            "lookup",
+            return_value=(_new_provider(), True),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.socket.create_connection",
+            side_effect=OSError("connection refused"),
+        ),
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    update.assert_not_called()
+
+
+def test_sync_skips_instances_of_other_workers_and_states():
+    manager, clientset = _build_manager(worker_id=1)
+    other_worker = _new_instance(
+        id=18, state=CacheServiceStateEnum.RUNNING, worker_id=2, port=40001
+    )
+    parked = _new_instance(id=19, state=CacheServiceStateEnum.ERROR)
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[other_worker, parked]
+    )
+
+    with (
+        patch("gpustack.worker.cache_service_manager.get_workload") as get_wl,
+        patch.object(manager, "_update_cache_service_instance") as update,
+        patch.object(manager, "_start_cache_service_instance") as start,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    get_wl.assert_not_called()
+    update.assert_not_called()
+    start.assert_not_called()
+
+
+def test_sync_starts_instance_stuck_in_pending():
+    """A start that never took effect (lost event, dropped state write-back)
+    is re-driven by the sync pass, so a PENDING instance cannot sit forever
+    next to a container nothing points at."""
+    manager, clientset = _build_manager(worker_id=1)
+    stale = _new_instance(
+        state=CacheServiceStateEnum.PENDING,
+        updated_at=datetime.now(timezone.utc) - timedelta(seconds=90),
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[stale])
+
+    with patch.object(manager, "_start_cache_service_instance") as start:
+        manager.sync_cache_service_instances_state()
+
+    start.assert_called_once()
+    assert start.call_args[0][0].id == stale.id
+
+
+def test_sync_leaves_freshly_pending_instance_to_the_event_path():
+    manager, clientset = _build_manager(worker_id=1)
+    fresh = _new_instance(
+        state=CacheServiceStateEnum.PENDING,
+        updated_at=datetime.now(timezone.utc),
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[fresh])
+
+    with patch.object(manager, "_start_cache_service_instance") as start:
+        manager.sync_cache_service_instances_state()
+
+    start.assert_not_called()
+
+
+def test_sync_retries_a_stuck_pending_instance_on_the_grace_cadence():
+    """A start whose write-back never lands leaves the row PENDING with an
+    unchanged updated_at; the retry must not recreate the container on every
+    sync pass."""
+    manager, clientset = _build_manager(worker_id=1)
+    stale = _new_instance(
+        state=CacheServiceStateEnum.PENDING,
+        updated_at=datetime.now(timezone.utc) - timedelta(seconds=90),
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[stale])
+
+    # The stand-in clears the in-flight claim like the real start's finally
+    # does, so the second pass is held back by the retry cadence alone.
+    with patch.object(
+        manager,
+        "_start_cache_service_instance",
+        side_effect=lambda instance: manager._release_start(instance.id),
+    ) as start:
+        manager.sync_cache_service_instances_state()
+        manager.sync_cache_service_instances_state()
+
+    start.assert_called_once()
+
+
+def test_sync_does_not_duplicate_a_start_in_flight():
+    """A start still pulling the provider image keeps the instance PENDING
+    for minutes; the sync pass must not launch a second one."""
+    manager, clientset = _build_manager(worker_id=1)
+    stale = _new_instance(
+        state=CacheServiceStateEnum.PENDING,
+        updated_at=datetime.now(timezone.utc) - timedelta(seconds=90),
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[stale])
+    manager._starting.add(stale.id)
+
+    with patch.object(manager, "_start_cache_service_instance") as start:
+        manager.sync_cache_service_instances_state()
+
+    start.assert_not_called()
+
+
+def test_sync_fetches_shared_parent_service_once_per_pass():
+    """Sibling instances of a per-node service share one parent lookup per
+    sync pass instead of one API call each."""
+    manager, clientset = _build_manager(worker_id=1)
+    instances = [
+        _new_instance(id=11, state=CacheServiceStateEnum.RUNNING, port=40001),
+        _new_instance(id=12, state=CacheServiceStateEnum.RUNNING, port=40003),
+    ]
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=instances
+    )
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(
+            manager._provider_catalog,
+            "lookup",
+            return_value=(_new_provider(), True),
+        ),
+        patch("gpustack.worker.cache_service_manager.socket.create_connection"),
+        patch.object(manager, "_update_cache_service_instance"),
+    ):
+        manager.sync_cache_service_instances_state()
+
+    clientset.cache_services.get.assert_called_once_with(id=5)
+
+
+def test_sync_skips_instance_when_parent_service_missing():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING, port=40001)
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+    clientset.cache_services.get.side_effect = NotFoundException(
+        message="Cache service not found"
+    )
+
+    with (
+        patch("gpustack.worker.cache_service_manager.get_workload") as get_wl,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager.sync_cache_service_instances_state()
+
+    get_wl.assert_not_called()
+    update.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Stop
+# ---------------------------------------------------------------------------
+
+
+def test_stop_instance_deletes_workload_and_frees_port():
+    manager, _ = _build_manager(worker_id=1)
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING)
+    manager._assigned_ports[instance.id] = (40001, 40002)
+
+    with patch("gpustack.worker.cache_service_manager.delete_workload") as delete:
+        manager._stop_cache_service_instance(instance)
+
+    delete.assert_called_once_with(INSTANCE_WORKLOAD_NAME)
+    assert instance.id not in manager._assigned_ports
+
+
+def test_stop_instance_tolerates_missing_workload():
+    manager, _ = _build_manager(worker_id=1)
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING)
+
+    with patch(
+        "gpustack.worker.cache_service_manager.delete_workload",
+        side_effect=RuntimeError("not found"),
+    ):
+        manager._stop_cache_service_instance(instance)
+
+
+def test_stop_cancels_a_start_claimed_during_workload_deletion():
+    manager, _ = _build_manager(worker_id=1)
+    instance = _new_instance(state=CacheServiceStateEnum.PENDING)
+
+    def delete(_name):
+        assert manager._claim_start(instance.id)
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.delete_workload", side_effect=delete
+        ),
+        patch.object(manager._logs, "remove") as remove_logs,
+    ):
+        manager._stop_cache_service_instance(instance)
+
+    assert manager._start_tokens[instance.id].is_set()
+    remove_logs.assert_not_called()
+
+
+def test_sync_skips_state_reconciliation_while_a_start_is_in_flight():
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(state=CacheServiceStateEnum.STARTING)
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+    manager._claim_start(instance.id)
+
+    with patch.object(manager, "_sync_single_cache_service_instance_state") as sync:
+        manager.sync_cache_service_instances_state()
+
+    sync.assert_not_called()
+
+
+def test_start_instance_without_run_command_runs_image_entrypoint():
+    """A version without a run command keeps the image's own entrypoint:
+    the container's command slot stays empty — filling it would replace
+    the entrypoint with the parameters — and everything GPUStack adds
+    rides as arguments appended to it."""
+    manager, clientset = _build_manager(worker_id=1)
+    provider = _new_provider(
+        versions={
+            "v1": CacheProviderVersionConfig(
+                image="registry.example.com/mooncake/server:v1"
+            )
+        }
+    )
+
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(fields={"ram_size": 8})
+    )
+    create, _ = _run_start(manager, clientset, cache_service, provider)
+    execution = create.call_args[0][0].containers[0].execution
+    assert execution.command is None
+    assert not execution.args
+
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8}, parameters={"": ["--host", "0.0.0.0"]}
+        )
+    )
+    create, _ = _run_start(manager, clientset, cache_service, provider)
+    execution = create.call_args[0][0].containers[0].execution
+    assert execution.command is None
+    assert execution.args == ["--host", "0.0.0.0"]
+
+
+def test_start_instance_with_run_args_keeps_the_image_entrypoint():
+    """A version declaring run_args launches through the image's own
+    entrypoint — which may do setup around the cache server — so the
+    provider's templated flags reach it as arguments instead of replacing
+    it, and the user parameters merge into that same vector."""
+    manager, clientset = _build_manager(worker_id=1)
+    provider = _new_provider(
+        versions={
+            "v1": CacheProviderVersionConfig(
+                image="registry.example.com/mooncake/server:v1",
+                run_args="--host {{host}} --port {{port}} --ram {{ram_size}}",
+            )
+        }
+    )
+
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8}, parameters={"": ["--ram", "16"]}
+        )
+    )
+    create, _ = _run_start(manager, clientset, cache_service, provider)
+    execution = create.call_args[0][0].containers[0].execution
+    assert execution.command is None
+    assert execution.args[:2] == ["--host", "0.0.0.0"]
+    # A user parameter still overrides the declared flag it repeats.
+    assert "--ram" in execution.args
+    assert execution.args[execution.args.index("--ram") + 1] == "16"
+
+
+def test_start_instance_without_run_command_carries_l2_adapter_as_arguments():
+    """The L2 adapter flag reaches an entrypoint-carrying image the same
+    way user parameters do — as appended arguments — so a provider whose
+    image starts itself still gets its storage tiers configured."""
+    manager, clientset = _build_manager(worker_id=1)
+    provider = _l2_provider(
+        versions={
+            "v1": CacheProviderVersionConfig(
+                image="registry.example.com/mooncake/server:v1"
+            )
+        }
+    )
+
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8},
+            l2_storages=[
+                CacheServiceL2Storage(backend="fs", params={"base_path": "/mnt/kv"})
+            ],
+        )
+    )
+    create, _ = _run_start(manager, clientset, cache_service, provider)
+    execution = create.call_args[0][0].containers[0].execution
+    assert execution.command is None
+    assert execution.args == [
+        "--l2-adapter",
+        '{"type":"fs","base_path":"/mnt/kv"}',
+    ]
+
+
+def test_start_instance_host_ipc_override(monkeypatch):
+    """Host IPC defaults on for cache servers (the CUDA-IPC path needs
+    it) but honors the service env and the worker-global GPUSTACK_HOST_IPC
+    escape hatch — e.g. PodSecurity-baseline clusters reject hostIPC pods
+    and the CPU host-copy path works without it."""
+    manager, clientset = _build_manager(worker_id=1)
+
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(fields={"ram_size": 8})
+    )
+    create, _ = _run_start(manager, clientset, cache_service, _new_provider())
+    assert create.call_args[0][0].host_ipc is True
+
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(
+            fields={"ram_size": 8}, env={"GPUSTACK_HOST_IPC": "0"}
+        )
+    )
+    create, _ = _run_start(manager, clientset, cache_service, _new_provider())
+    assert create.call_args[0][0].host_ipc is False
+
+    from gpustack import envs as gpustack_envs
+
+    monkeypatch.setattr(gpustack_envs, "HOST_IPC", "false")
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(fields={"ram_size": 8})
+    )
+    create, _ = _run_start(manager, clientset, cache_service, _new_provider())
+    assert create.call_args[0][0].host_ipc is False
+
+
+def test_start_instance_reuses_recorded_ports():
+    """A restart keeps the instance's recorded ports when they are still
+    free: engines attached to this cache server carry them in snapshots
+    nothing refreshes, so changed ports would strand every running
+    deployment on a dead endpoint."""
+    manager, clientset = _build_manager(worker_id=1)
+    instance = _new_instance(ports={"port": 40005, "metrics": 40015})
+    cache_service = _new_cache_service(
+        config=CacheServiceConfig(fields={"ram_size": 8})
+    )
+    clientset.cache_services.get.return_value = cache_service
+    with (
+        patch.object(
+            manager._provider_catalog,
+            "lookup",
+            return_value=(_new_provider(), True),
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.is_port_available",
+            return_value=True,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band"
+        ) as get_free_band,
+        patch(
+            "gpustack.worker.cache_service_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.transform_workload_plan",
+            side_effect=lambda cfg, plan, fallback: plan,
+        ),
+        patch("gpustack.worker.cache_service_manager.delete_workload"),
+        patch("gpustack.worker.cache_service_manager.run_provisioning", return_value=0),
+        patch.object(manager, "_update_cache_service_instance", return_value=True),
+    ):
+        manager._start_cache_service_instance(instance)
+
+    get_free_band.assert_not_called()
+    assert manager._assigned_ports[instance.id] == (40005, 40015)
+
+
+def test_probe_targets_metrics_port_for_http_health_check(monkeypatch):
+    """A health check declaring target "metrics" probes the metrics port
+    (LMCache's /healthcheck lives on the HTTP frontend, not the ZMQ
+    control port)."""
+    manager, _ = _build_manager(worker_id=1)
+    instance = _new_instance(ports={"port": 40001, "metrics": 40011})
+    provider = _new_provider(
+        health_check=CacheProviderHealthCheck(
+            scheme="http", path="/healthcheck", target="metrics"
+        )
+    )
+    with (
+        patch.object(
+            manager._provider_catalog, "lookup", return_value=(provider, True)
+        ),
+        patch("gpustack.worker.cache_service_manager.httpx.get") as http_get,
+    ):
+        http_get.return_value = SimpleNamespace(status_code=200)
+        assert manager._probe_ready(instance, "mooncake") is True
+
+    assert http_get.call_args[0][0] == "http://127.0.0.1:40011/healthcheck"
+
+
+def test_a_custom_version_uses_the_providers_default_command():
+    """A custom version brings its own image, and takes the command that the
+    provider's default version declares."""
+    manager, clientset = _build_manager(worker_id=1)
+    cache_service = _new_cache_service(
+        provider_version="custom",
+        config=CacheServiceConfig(
+            fields={"ram_size": 8, "chunk_size": 256}, image="i:1"
+        ),
+    )
+
+    create, _ = _run_start(
+        manager, clientset, cache_service, _new_provider(custom_version=True)
+    )
+
+    assert create.call_args[0][0].containers[0].execution.command[0] == "cache-server"
+
+
+def test_host_ipc_follows_the_component_s_gpu_access():
+    """Importing a KV buffer by IPC handle needs a CUDA context on the
+    same device, so a component that mounts no GPU is given no host IPC
+    namespace either — asking for a privilege it cannot use is what keeps
+    a pool out of clusters that refuse hostIPC. An explicit setting still
+    wins, in both directions."""
+    cache_service = _new_cache_service(config=CacheServiceConfig(fields={}))
+    server = CacheProviderComponent(run_command="server")
+    registry = CacheProviderComponent(run_command="registry", gpu_access=False)
+
+    assert CacheServiceManager._host_ipc_enabled(cache_service, server) is True
+    assert CacheServiceManager._host_ipc_enabled(cache_service, registry) is False
+    # single-component providers declare no component and keep the default
+    assert CacheServiceManager._host_ipc_enabled(cache_service, None) is True
+
+    asked = _new_cache_service(
+        config=CacheServiceConfig(fields={}, env={"GPUSTACK_HOST_IPC": "true"})
+    )
+    assert CacheServiceManager._host_ipc_enabled(asked, registry) is True
+
+
+def test_declared_data_dirs_are_created_before_the_container_starts(tmp_path):
+    """A server told to keep data somewhere expects the directory to
+    exist — it dies rather than creating one — and a path whose
+    placeholders have no value belongs to a configuration that is off."""
+    target = tmp_path / "cache" / "mooncake" / "offload"
+    component = CacheProviderComponent(
+        run_command="store",
+        data_dirs=["{{ssd_offload_path}}"],
+    )
+
+    CacheServiceManager._prepare_data_dirs(component, {"ssd_offload_path": str(target)})
+    assert target.is_dir()
+
+    # an existing directory is left alone, keeping what it already holds
+    (target / "bucket-0").write_text("cached")
+    CacheServiceManager._prepare_data_dirs(component, {"ssd_offload_path": str(target)})
+    assert (target / "bucket-0").read_text() == "cached"
+
+    # off: nothing to create, and nothing to fail on
+    CacheServiceManager._prepare_data_dirs(component, {"ssd_offload_path": ""})
+
+    blocked = tmp_path / "file"
+    blocked.write_text("not a directory")
+    with pytest.raises(ValueError, match="Failed to create data directory"):
+        CacheServiceManager._prepare_data_dirs(
+            component, {"ssd_offload_path": str(blocked / "offload")}
+        )
+
+    # a single-component provider declares none
+    CacheServiceManager._prepare_data_dirs(None, {})
+
+
+def test_runtime_update_preserves_current_values_and_excludes_server_fields():
+    manager, clientset = _build_manager()
+    current = _new_instance(
+        state=CacheServiceStateEnum.RUNNING,
+        ports={"service": 40001},
+        port=40001,
+        healthy=False,
+        state_message="unreachable",
+        restart_count=2,
+        last_restart_time=datetime.now(timezone.utc),
+        computed_resource_claim={"ram": 1024},
+        component_addresses={"master": "10.0.0.2:40000"},
+        spec_digest="server-owned",
+    )
+    clientset.cache_service_instances.get.return_value = current
+    assert manager._update_cache_service_instance(11, healthy=True, state_message=None)
+    clientset.cache_service_instances.get.assert_called_once_with(id=11)
+    update = clientset.cache_service_instances.update.call_args.kwargs["model_update"]
+    assert update.model_dump() == {
+        "ports": {"service": 40001},
+        "port": 40001,
+        "state": CacheServiceStateEnum.RUNNING,
+        "state_message": None,
+        "healthy": True,
+        "last_check_at": None,
+        "restart_count": 2,
+        "last_restart_time": current.last_restart_time,
+    }
+
+
+def test_sync_prefers_watch_cache_and_checks_runtime_before_health_interval():
+    manager, clientset = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING, healthy=True)
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(
+        items=[instance]
+    )
+    with (
+        patch("gpustack.worker.cache_service_manager.get_workload") as workload,
+        patch.object(manager, "_probe_ready", return_value=True) as probe,
+        patch.object(manager, "_restart_crashed_cache_service_instance") as restart,
+    ):
+        workload.return_value = SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING)
+        manager.sync_cache_service_instances_state()
+        manager.sync_cache_service_instances_state()
+        assert probe.call_count == 1
+        workload.return_value = None
+        manager.sync_cache_service_instances_state()
+        restart.assert_called_once()
+    assert workload.call_count == 3
+    for call in clientset.cache_service_instances.list.call_args_list:
+        assert call.kwargs == {"params": {"worker_id": 1}}
+
+
+@pytest.mark.parametrize("still_assigned", [True, False])
+def test_sync_confirms_missing_watch_rows_before_cleaning_logs(still_assigned):
+    manager, clientset = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.ERROR)
+    path = manager._logs.prepare(instance)
+    path.write_text("startup\n")
+    clientset.cache_service_instances.list.side_effect = [
+        SimpleNamespace(items=[]),
+        SimpleNamespace(items=[instance] if still_assigned else []),
+    ]
+    manager.sync_cache_service_instances_state()
+    assert path.exists() is still_assigned
+    assert clientset.cache_service_instances.list.call_args.kwargs == {
+        "params": {"worker_id": 1, "page": -1},
+        "use_cache": False,
+    }
+
+
+def test_failed_authoritative_read_preserves_logs():
+    manager, clientset = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING)
+    manager._handle_cache_service_instance_event(
+        Event(type=EventType.CREATED, data=instance)
+    )
+    path = manager._logs.prepare(instance)
+    path.write_text("startup\n")
+    clientset.cache_service_instances.list.side_effect = [
+        SimpleNamespace(items=[]),
+        RuntimeError("server unavailable"),
+    ]
+    with patch("gpustack.worker.cache_service_manager.delete_workload") as delete:
+        with pytest.raises(RuntimeError, match="server unavailable"):
+            manager.sync_cache_service_instances_state()
+    delete.assert_not_called()
+    assert path.exists()
+
+
+def test_busy_log_writer_keeps_launch_pending_for_retry():
+    from gpustack.worker.cache_service_logs import LogWriterBusyError
+
+    manager, _ = _build_manager()
+    manager._provider_catalog.lookup.return_value = (_new_provider(), True)
+    instance = _new_instance()
+    with (
+        patch.object(manager._logs, "prepare", side_effect=LogWriterBusyError()),
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager._start_cache_service_instance(instance)
+    update.assert_not_called()
+    assert instance.id not in manager._starting
+
+
+def test_archive_lookup_failure_releases_start_claim():
+    manager, _ = _build_manager()
+    manager._provider_catalog.lookup.return_value = (_new_provider(), True)
+    instance = _new_instance()
+    with (
+        patch.object(
+            manager._logs, "prepare", side_effect=OSError("permission denied")
+        ),
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager._start_cache_service_instance(instance)
+    assert instance.id not in manager._starting
+    assert update.call_args.kwargs["state"] == CacheServiceStateEnum.ERROR
+
+
+def test_confirmed_missing_instance_stops_container_on_state_sync():
+    manager, clientset = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING)
+    manager._handle_cache_service_instance_event(
+        Event(type=EventType.CREATED, data=instance)
+    )
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
+    with patch("gpustack.worker.cache_service_manager.delete_workload") as delete:
+        manager.sync_cache_service_instances_state()
+    delete.assert_called_once_with(INSTANCE_WORKLOAD_NAME)
+    assert instance.id not in manager._cache_service_instance_by_instance_id
+    assert clientset.cache_service_instances.list.call_args.kwargs["use_cache"] is False
+
+
+def test_reconnect_snapshot_does_not_stop_assigned_container():
+    manager, clientset = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING)
+    manager._handle_cache_service_instance_event(
+        Event(type=EventType.CREATED, data=instance)
+    )
+    clientset.cache_service_instances.list.side_effect = [
+        SimpleNamespace(items=[]),
+        SimpleNamespace(items=[instance]),
+    ]
+    with patch("gpustack.worker.cache_service_manager.delete_workload") as delete:
+        manager.sync_cache_service_instances_state()
+    delete.assert_not_called()
+    assert instance.id in manager._cache_service_instance_by_instance_id
+
+
+def test_failed_deletion_is_retried_by_state_sync():
+    manager, clientset = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING)
+    manager._assigned_ports[instance.id] = (40001,)
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
+    with patch(
+        "gpustack.worker.cache_service_manager.delete_workload",
+        side_effect=[RuntimeError("runtime unavailable"), None],
+    ) as delete:
+        manager._handle_cache_service_instance_event(
+            Event(type=EventType.DELETED, data=instance)
+        )
+        assert instance.id in manager._cache_service_instance_by_instance_id
+        assert instance.id in manager._assigned_ports
+        manager.sync_cache_service_instances_state()
+    assert delete.call_count == 2
+    assert instance.id not in manager._assigned_ports
+    assert instance.id not in manager._cache_service_instance_by_instance_id
+
+
+def test_cancelled_provisioning_cleanup_failure_is_retried_by_state_sync():
+    manager, clientset = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.STARTING)
+    manager._cache_service_instance_by_instance_id[instance.id] = instance
+    manager._assigned_ports[instance.id] = (40001, 40002)
+    assert manager._claim_start(instance.id)
+    cancelled = manager._start_tokens[instance.id]
+    cancelled.set()
+    clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
+
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.delete_workload",
+            side_effect=[RuntimeError("runtime unavailable"), None],
+        ) as delete,
+        patch.object(manager._logs, "remove") as remove_logs,
+    ):
+        manager._finish_start(instance, cancelled)
+
+        assert manager._assigned_ports[instance.id] == (40001, 40002)
+        assert manager._cache_service_instance_by_instance_id[instance.id] is instance
+        assert instance.id not in manager._starting
+        assert instance.id not in manager._start_tokens
+        remove_logs.assert_not_called()
+
+        manager.sync_cache_service_instances_state()
+
+    assert delete.call_count == 2
+    assert instance.id not in manager._assigned_ports
+    assert instance.id not in manager._cache_service_instance_by_instance_id
+    remove_logs.assert_called_once_with(instance.id)
+
+
+@pytest.mark.parametrize("failure", ["provider", "claim"])
+def test_invalid_launch_does_not_stop_existing_container_or_log_writer(failure):
+    manager, _ = _build_manager()
+    instance = _new_instance()
+    if failure == "claim":
+        manager._provider_catalog.lookup.return_value = (
+            _new_provider(resource_profile={"ram_gib": "{{ram_size}}"}),
+            True,
+        )
+    with (
+        patch.object(manager._logs, "stop", return_value=False) as stop,
+        patch("gpustack.worker.cache_service_manager.delete_workload") as delete,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager._start_cache_service_instance(instance)
+    stop.assert_not_called()
+    delete.assert_not_called()
+    assert update.call_args.kwargs["state"] == CacheServiceStateEnum.ERROR
+
+
+def test_health_check_record_created_during_listing_is_preserved():
+    manager, clientset = _build_manager()
+    now = datetime.now(timezone.utc)
+    stale = _new_instance(id=12)
+    manager._cache_service_instance_by_instance_id[stale.id] = stale
+    manager._last_health_check[stale.id] = now
+
+    def list_instances(**kwargs):
+        # A start completes after the sync pass snapshots local ownership.
+        with manager._start_lock:
+            manager._cache_service_instance_by_instance_id[11] = _new_instance()
+            manager._last_health_check[11] = now
+        return SimpleNamespace(items=[])
+
+    clientset.cache_service_instances.list.side_effect = list_instances
+    with patch.object(manager, "_cleanup_unassigned_instance"):
+        manager.sync_cache_service_instances_state()
+    assert manager._last_health_check == {11: now}
+
+
+@pytest.mark.parametrize("watch_started", [False, True])
+def test_sync_covers_all_instances_with_or_without_an_initialized_watch(watch_started):
+    from gpustack.client.generated_cache_service_instance_client import (
+        CacheServiceInstanceClient,
+    )
+    from gpustack.schemas.cache_services import CacheServiceInstancePublic
+
+    manager, clientset = _build_manager()
+    now = datetime.now(timezone.utc)
+    instances = [
+        CacheServiceInstancePublic.model_validate(
+            _new_instance(
+                id=index,
+                state=CacheServiceStateEnum.RUNNING,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        for index in range(1, 102)
+    ]
+    http_client = MagicMock()
+    get = http_client.get_httpx_client.return_value.get
+    get.return_value.status_code = 200
+    get.return_value.json.return_value = {
+        "items": [instance.model_dump(mode="json") for instance in instances],
+        "pagination": {"page": 1, "perPage": 101, "total": 101, "totalPage": 1},
+    }
+    client = CacheServiceInstanceClient(http_client)
+    client._watch_started = watch_started
+    if watch_started:
+        client._cache = {instance.id: instance for instance in instances}
+    clientset.cache_service_instances = client
+    with patch.object(manager, "_sync_single_cache_service_instance_state") as sync:
+        manager.sync_cache_service_instances_state()
+    assert {call.args[0].id for call in sync.call_args_list} == set(range(1, 102))
+    if watch_started:
+        get.assert_not_called()
+    else:
+        get.assert_called_once_with(
+            "/cache-service-instances", params={"worker_id": 1, "page": -1}
+        )
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("archived", [False, True])
+def test_exited_container_logs_are_archived_before_restart_or_error(restart, archived):
+    manager, _ = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.STARTING)
+    service = _new_cache_service(restart_on_error=restart)
+    calls = []
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.FAILED),
+        ),
+        patch.object(
+            manager._logs,
+            "archive",
+            side_effect=lambda *args: calls.append("archive") or archived,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.delete_workload",
+            side_effect=lambda *args: calls.append("delete"),
+        ),
+        patch.object(
+            manager,
+            "_update_cache_service_instance",
+            side_effect=lambda *args, **kwargs: calls.append(kwargs["state"]),
+        ),
+    ):
+        manager._sync_single_cache_service_instance_state(instance, service)
+    expected = ["archive"]
+    if archived:
+        expected += (
+            ["delete", CacheServiceStateEnum.PENDING]
+            if restart
+            else [CacheServiceStateEnum.ERROR]
+        )
+    assert calls == expected
+
+
+def test_missing_reservation_waits_for_controller_backfill_then_starts():
+    from gpustack.schemas.cache_services import cache_service_spec_digest
+
+    manager, clientset = _build_manager()
+    service = _new_cache_service()
+    provider = _new_provider(resource_profile={"ram_gib": "{{ram_size}}"})
+    instance = _new_instance(spec_digest=cache_service_spec_digest(service))
+    create, update = _run_start(manager, clientset, service, provider, instance)
+    create.assert_not_called()
+    assert update.call_args.kwargs["state"] == CacheServiceStateEnum.PENDING
+    instance.computed_resource_claim = {"ram": 8 * 1024**3}
+    create, update = _run_start(manager, clientset, service, provider, instance)
+    create.assert_called_once()
+    assert update.call_args.kwargs["state"] == CacheServiceStateEnum.STARTING
+
+
+def test_failed_provisioning_archives_and_removes_partial_workload():
+    manager, _ = _build_manager()
+    instance = _new_instance()
+    manager._provider_catalog.lookup.return_value = (_new_provider(), True)
+    calls = []
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.run_provisioning",
+            side_effect=lambda *args, **kwargs: calls.append("provision") or 1,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.delete_workload",
+            side_effect=lambda *args: calls.append("delete"),
+        ),
+        patch.object(
+            manager._logs,
+            "archive",
+            side_effect=lambda *args: calls.append("archive") or True,
+        ),
+        patch(
+            "gpustack.worker.cache_service_manager.network.get_free_band",
+            side_effect=[40001, 40002],
+        ),
+        patch.object(
+            manager, "_update_cache_service_instance", return_value=True
+        ) as update,
+    ):
+        manager._start_cache_service_instance(instance)
+    assert calls == ["delete", "provision", "archive", "delete"]
+    assert update.call_args.kwargs["state"] == CacheServiceStateEnum.ERROR
+    assert instance.id not in manager._assigned_ports
+
+
+def test_failed_workload_without_loggable_container_can_restart():
+    manager, _ = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.STARTING)
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(
+                state=WorkloadStatusStateEnum.FAILED, loggable=[]
+            ),
+        ),
+        patch.object(manager._logs, "archive") as archive,
+        patch.object(manager, "_restart_crashed_cache_service_instance") as restart,
+    ):
+        manager._sync_single_cache_service_instance_state(
+            instance, _new_cache_service()
+        )
+    archive.assert_not_called()
+    restart.assert_called_once()
+
+
+@pytest.mark.parametrize("restart", [True, False])
+def test_unhealthy_container_recovery_does_not_wait_for_a_quiet_log_writer(restart):
+    manager, _ = _build_manager()
+    instance = _new_instance(state=CacheServiceStateEnum.RUNNING)
+    with (
+        patch(
+            "gpustack.worker.cache_service_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.UNHEALTHY),
+        ),
+        patch.object(manager._logs, "stop", return_value=False) as stop,
+        patch.object(manager._logs, "archive", return_value=False) as archive,
+        patch("gpustack.worker.cache_service_manager.delete_workload") as delete,
+        patch.object(manager, "_update_cache_service_instance") as update,
+    ):
+        manager._sync_single_cache_service_instance_state(
+            instance, _new_cache_service(restart_on_error=restart)
+        )
+    archive.assert_not_called()
+    if restart:
+        stop.assert_called_once_with(instance.id)
+        delete.assert_called_once_with(INSTANCE_WORKLOAD_NAME)
+        assert update.call_args.kwargs["state"] == CacheServiceStateEnum.PENDING
+    else:
+        delete.assert_not_called()
+        assert update.call_args.kwargs["state"] == CacheServiceStateEnum.ERROR

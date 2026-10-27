@@ -3,14 +3,56 @@ import sys
 import sysconfig
 from os.path import dirname, abspath, join
 import shutil
-from typing import List, Literal, Optional, Tuple, Union
+from typing import Any, List, Literal, Optional, Sequence, Tuple, Union
 import shlex
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
-
 _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on", "t", "y"})
 _FALSY_VALUES = frozenset({"0", "false", "no", "off", "f", "n"})
+
+REDACTED = "***"
+
+# Flags whose value is a credential GPUStack injects itself, rather than
+# something an operator typed. Only these are redacted: blanket-matching on
+# substrings like "token" would also hit knobs whose value is a number an
+# operator needs to see in the log (``--token-timeout``, ``--max-tokens``).
+_SENSITIVE_PARAMETER_KEYS = frozenset({"--progress-auth"})
+
+
+def sanitize_args(args: Sequence[Any]) -> List[str]:
+    """Redact credential values in an argv list so it can be logged.
+
+    The counterpart of ``sanitize_env``: same reason -- a log line that anyone
+    who can read worker logs can read must not carry a secret -- for the other
+    carrier. ``--progress-auth`` is the worker token, so the container command
+    line printed at workload creation would otherwise hand it out verbatim.
+
+    Handles both ``--flag value`` and ``--flag=value``. Elements are stringified
+    on the way out, since ``_build_command_args`` does not stringify every value
+    it appends. This only covers the log;
+    the container still receives the real value, and it remains visible in the
+    workload spec (``docker inspect`` / ``kubectl describe``).
+    """
+    sanitized: List[str] = []
+    redact_next = False
+    for arg in args:
+        text = str(arg)
+        if redact_next:
+            sanitized.append(REDACTED)
+            redact_next = False
+            continue
+        key, sep, _ = text.partition("=")
+        if key in _SENSITIVE_PARAMETER_KEYS:
+            if sep:
+                sanitized.append(f"{key}={REDACTED}")
+            else:
+                # Value is the next element; redact it on the following pass.
+                sanitized.append(text)
+                redact_next = True
+            continue
+        sanitized.append(text)
+    return sanitized
 
 
 def is_command_available(command_name):
@@ -71,12 +113,55 @@ def find_parameter(parameters: List[str], param_names: List[str]) -> Optional[st
     return None
 
 
+def find_last_parameter(parameters: List[str], param_names: List[str]) -> Optional[str]:
+    """
+    Return the value of the *last* parameter whose key is in ``param_names`` --
+    the one argparse would end up with.
+
+    A second reader rather than a change of mind about :func:`find_parameter`,
+    whose first-wins answer three dozen call sites already depend on. The
+    difference only shows when one argv names the same key twice, and there the
+    two answers disagree about which value the process runs: argparse keeps the
+    last, so ``--dtype auto --dtype float16`` runs float16 while the first-wins
+    read reports ``auto``.
+
+    That gap is harmless where a value is being *read* and load-bearing where
+    two argvs are being *compared*: a pairing check that compares values
+    neither engine will run can equally miss a real divergence and invent one.
+    """
+    if parameters is None:
+        return None
+    found = None
+    for key, value in _iter_param_pairs(parameters):
+        if key in param_names and value is not None:
+            found = value
+    return found
+
+
 def find_int_parameter(parameters: List[str], param_names: List[str]) -> Optional[int]:
     """
     Find specified integer parameter by name from the parameters.
     Return the integer value of the parameter if found, otherwise return None.
     """
     value = find_parameter(parameters, param_names)
+    if value is not None:
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def find_last_int_parameter(
+    parameters: List[str], param_names: List[str]
+) -> Optional[int]:
+    """
+    :func:`find_last_parameter` for an integer-valued key. ``None`` when the
+    key is absent or its last value is not an integer -- the same fail-quiet
+    :func:`find_int_parameter` takes, since a value the engine will reject is
+    not a value to draw conclusions from.
+    """
+    value = find_last_parameter(parameters, param_names)
     if value is not None:
         try:
             return int(value)
@@ -165,6 +250,111 @@ def extend_args_no_exist(
             # Single flag without value
             if arg not in arguments:
                 arguments.append(arg)
+
+
+def drop_empty_flag_values(arguments: List[str]) -> List[str]:
+    """
+    Remove flags whose value is an empty string from an argv token list.
+
+    Handles the token shapes produced by rendering optional template
+    placeholders that resolve to nothing:
+
+    - a ``("--flag", "")`` pair is dropped entirely
+    - a ``"--flag="`` token (empty inline value) is dropped
+    - a standalone ``""`` token (empty positional) is dropped
+
+    Bare flags followed by another flag (e.g. ``--verbose``) are kept.
+    """
+    result: List[str] = []
+    i = 0
+    n = len(arguments)
+    while i < n:
+        token = arguments[i]
+        if is_parameter_key(token):
+            key, sep, value = token.partition("=")
+            if sep and not value:
+                i += 1
+                continue
+            if not sep and i + 1 < n and arguments[i + 1] == "":
+                i += 2
+                continue
+        elif token == "":
+            i += 1
+            continue
+        result.append(token)
+        i += 1
+    return result
+
+
+def merge_flag_arguments(base: List[str], overrides: List[str]) -> List[str]:
+    """
+    Merge user-supplied flag overrides into a base argv token list.
+
+    Every flag named in ``overrides`` (recognized in both ``--key value`` and
+    ``--key=value`` forms) is first removed from ``base`` together with its
+    value tokens, then the override tokens are appended verbatim, so the
+    user-specified form is what reaches the command line.
+
+    Flag arity is unknowable from an argv alone, so every consecutive
+    non-flag token after a removed flag is treated as its value. This
+    requires positional arguments to precede the first flag in ``base``
+    (the docker-CMD convention catalog run commands follow); a positional
+    trailing a bare flag would be consumed with the flag's removal.
+    """
+    override_keys = {
+        token.partition("=")[0].lstrip("-")
+        for token in overrides
+        if is_parameter_key(token)
+    }
+
+    result: List[str] = []
+    i = 0
+    n = len(base)
+    while i < n:
+        token = base[i]
+        if is_parameter_key(token):
+            key, sep, _ = token.partition("=")
+            if key.lstrip("-") in override_keys:
+                i += 1
+                if not sep:
+                    # Skip the flag's value tokens (multi-value flags carry
+                    # several consecutive non-key tokens).
+                    while i < n and not is_parameter_key(base[i]):
+                        i += 1
+                continue
+        result.append(token)
+        i += 1
+
+    result.extend(overrides)
+    return result
+
+
+def extract_flag_arguments(args: List[str], flag: str) -> Tuple[List[str], List[str]]:
+    """
+    Split an argv token list into (remaining, extracted) around every
+    occurrence of ``flag`` (recognized in both ``--key value`` and
+    ``--key=value`` forms), preserving each list's original order.
+    """
+    flag_key = flag.lstrip("-").partition("=")[0]
+    remaining: List[str] = []
+    extracted: List[str] = []
+    i = 0
+    n = len(args)
+    while i < n:
+        token = args[i]
+        if is_parameter_key(token):
+            key, sep, _ = token.partition("=")
+            if key.lstrip("-") == flag_key:
+                extracted.append(token)
+                i += 1
+                if not sep:
+                    while i < n and not is_parameter_key(args[i]):
+                        extracted.append(args[i])
+                        i += 1
+                continue
+        remaining.append(token)
+        i += 1
+    return remaining, extracted
 
 
 def format_backend_parameters(parameters: Optional[List[str]]) -> List[str]:
@@ -413,18 +603,23 @@ ExecutorBackend = Literal["ray", "mp"]
 _VLLM_RAY_DROPPED_FROM_DEFAULTS = "0.18.0"
 
 
-def should_default_to_ray(backend_version: Optional[str]) -> bool:
+def should_default_to_ray(
+    backend_version: Optional[str], image_name: Optional[str] = None
+) -> bool:
     """
     Whether GPUStack should default to the Ray executor backend when the user
     does not explicitly choose one.
 
-    gpustack-runner images bundle Ray themselves regardless of vLLM version,
-    so Ray is always available there. The only case where Ray may be absent
-    is user-supplied custom images — identified by a ``-custom`` suffix in
-    ``backend_version`` — running vLLM >= 0.18.0, where upstream dropped Ray
-    from default dependencies. In that case we default to ``mp`` to avoid a
-    startup failure.
+    gpustack-runner images bundle Ray themselves regardless of vLLM version, so
+    Ray is always available there. The only case where Ray may be absent is a
+    user-supplied image, which reaches us two ways: pinned on the deployment as
+    ``image_name``, or carried by a backend version keyed with a ``-custom``
+    suffix. A pinned image takes priority because a version cannot establish
+    whether that image bundles Ray. Without a pinned image, a ``-custom``
+    version below vLLM 0.18.0 is assumed to bundle Ray; newer versions are not.
     """
+    if image_name:
+        return False
     if not backend_version or "-custom" not in backend_version:
         return True
     try:
@@ -436,6 +631,7 @@ def should_default_to_ray(backend_version: Optional[str]) -> bool:
 def resolve_executor_backend(
     backend_parameters: Optional[List[str]],
     backend_version: Optional[str],
+    image_name: Optional[str] = None,
 ) -> ExecutorBackend:
     """
     Resolve the dispatch branch for vLLM distributed execution.
@@ -447,11 +643,11 @@ def resolve_executor_backend(
     1. User-supplied ``--distributed-executor-backend`` wins. Any explicit value
        other than ``"mp"`` is routed to the ray branch — GPUStack does not inject
        its own MP topology arguments and leaves the choice to vLLM.
-    2. Otherwise the default depends on ``backend_version`` via
-       :func:`should_default_to_ray`.
+    2. Otherwise the default depends on whether the runtime is user-supplied,
+       via :func:`should_default_to_ray`.
     """
     user_value = find_parameter(backend_parameters, ["distributed-executor-backend"])
     if user_value is not None:
         return "mp" if user_value == "mp" else "ray"
 
-    return "ray" if should_default_to_ray(backend_version) else "mp"
+    return "ray" if should_default_to_ray(backend_version, image_name) else "mp"

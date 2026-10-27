@@ -1,4 +1,5 @@
 import json
+import logging
 import types
 
 import pytest
@@ -9,14 +10,28 @@ from gpustack.schemas.inference_backend import (
     VersionConfig,
     VersionConfigDict,
 )
-from gpustack.schemas.models import BackendEnum
+from gpustack.schemas.cache_services import CacheConfigSnapshot
+from gpustack.schemas.models import (
+    BackendEnum,
+    ExtendedKVCacheConfig,
+    KVCacheModeEnum,
+    SpeculativeConfig,
+)
 from gpustack.utils.config import apply_registry_override_to_image
-from gpustack.worker.backends.base import InferenceServer, read_lora_max_rank
+from gpustack.envs import ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY_ENV as _KNOB
+from gpustack.worker.backends.base import (
+    InferenceServer,
+    is_ascend,
+    is_ascend_310p,
+    read_lora_max_rank,
+    _parse_image_cuda_version,
+)
 from gpustack.worker.backends.custom import CustomServer
 from gpustack.worker.backends.sglang import (
     SGLangServer,
     extend_sglang_mounted_lora_arguments,
     get_access_log_arguments as get_sglang_access_log_arguments,
+    get_auto_parallelism_arguments as get_sglang_auto_parallelism_arguments,
     get_cache_report_arguments as get_sglang_cache_report_arguments,
 )
 from gpustack.worker.backends.vllm import (
@@ -462,28 +477,452 @@ def test_sglang_cache_report_arguments(backend_parameters, backend_version, expe
     )
 
 
-def test_vllm_set_cache_env_defaults_to_config_cache_dir(tmp_path):
-    backend = VLLMServer.__new__(VLLMServer)
+@pytest.mark.parametrize(
+    "backend_version, expected_error, expected_message",
+    [
+        (None, RuntimeError, "workload setup reached"),
+        ("0.5.4", ValueError, "do not support Diffusion models"),
+        ("0.5.4-custom", RuntimeError, "workload setup reached"),
+        ("0.5.6", RuntimeError, "workload setup reached"),
+    ],
+)
+def test_sglang_diffusion_checks_only_known_backend_versions(
+    backend_version, expected_error, expected_message
+):
+    backend = SGLangServer.__new__(SGLangServer)
+    backend.is_diffusion = True
+    backend._model = types.SimpleNamespace(
+        backend_version=backend_version, image_name=None
+    )
+
+    def reach_workload_setup(*args):
+        raise RuntimeError("workload setup reached")
+
+    backend._override_entrypoint = reach_workload_setup
+
+    with pytest.raises(expected_error, match=expected_message):
+        backend._create_workload(None, None, None, [], {}, "sglang/nightly")
+
+
+@pytest.mark.parametrize(
+    "backend_version, supports_bounds",
+    [
+        ("0.5.9", True),
+        ("0.5.10rc0", True),
+        ("0.5.10", False),
+        ("0.5.21", False),
+        pytest.param(None, False, id="unknown"),
+        pytest.param("custom", False, id="unparseable"),
+    ],
+)
+@pytest.mark.parametrize(
+    "min_length, max_length",
+    [(1, 10), (2, 4), (2, None), (None, 4), (None, None), (0, 0)],
+    ids=[
+        "ui-defaults",
+        "both-bounds",
+        "min-only",
+        "max-only",
+        "unbounded",
+        "zero-bounds",
+    ],
+)
+def test_sglang_ngram_match_length_arguments(
+    backend_version, supports_bounds, min_length, max_length, caplog
+):
+    backend = SGLangServer.__new__(SGLangServer)
+    backend._model = types.SimpleNamespace(
+        backend_version=backend_version,
+        backend_parameters=[],
+        speculative_config=SpeculativeConfig(
+            enabled=True,
+            algorithm="ngram",
+            num_draft_tokens=8,
+            ngram_min_match_length=min_length,
+            ngram_max_match_length=max_length,
+        ),
+    )
+    backend._pretrained_config = types.SimpleNamespace(architectures=[])
+
+    expected = [
+        "--speculative-algorithm",
+        "NGRAM",
+        "--speculative-num-draft-tokens",
+        "8",
+    ]
+    if supports_bounds and max_length:
+        expected.extend(["--speculative-ngram-max-match-window-size", str(max_length)])
+    if supports_bounds and min_length:
+        expected.extend(["--speculative-ngram-min-match-window-size", str(min_length)])
+    expected.extend(["--speculative-num-steps", "5", "--speculative-eagle-topk", "4"])
+    with caplog.at_level(logging.WARNING, logger="gpustack.worker.backends.sglang"):
+        assert backend._get_speculative_arguments() == expected
+
+    if (min_length or max_length) and not supports_bounds:
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert record.levelno == logging.WARNING
+        message = record.getMessage()
+        assert f"ngram_min_match_length={min_length}" in message
+        assert f"ngram_max_match_length={max_length}" in message
+        assert "--speculative-ngram-min-match-window-size" in message
+        assert "--speculative-ngram-max-match-window-size" in message
+        assert f"backend version: {backend_version or 'unknown'}" in message
+        assert "SGLang's own n-gram defaults" in message
+    else:
+        assert not caplog.records
+
+
+CACHE_ENV_BACKENDS = [
+    (VLLMServer, "VLLM_CACHE_ROOT", "vllm"),
+    (SGLangServer, "SGLANG_CACHE_DIR", "sglang"),
+]
+
+
+@pytest.mark.parametrize("backend_class, variable, subdirectory", CACHE_ENV_BACKENDS)
+def test_set_cache_env_defaults_to_config_cache_dir(
+    tmp_path, backend_class, variable, subdirectory
+):
+    backend = backend_class.__new__(backend_class)
     backend._config = types.SimpleNamespace(cache_dir=str(tmp_path))
 
     env = {}
-    backend._set_cache_env(env)
+    backend._set_cache_env(env, variable, subdirectory)
 
-    expected = tmp_path / "vllm"
-    assert env["VLLM_CACHE_ROOT"] == str(expected)
+    expected = tmp_path / subdirectory
+    assert env[variable] == str(expected)
     assert expected.is_dir()
 
+    # Without a config there is nothing to point at.
+    backend._config = None
+    env = {}
+    backend._set_cache_env(env, variable, subdirectory)
+    assert env == {}
 
-def test_vllm_set_cache_env_respects_user_override(tmp_path):
-    backend = VLLMServer.__new__(VLLMServer)
+
+@pytest.mark.parametrize("backend_class, variable, subdirectory", CACHE_ENV_BACKENDS)
+def test_set_cache_env_respects_user_override(
+    tmp_path, backend_class, variable, subdirectory
+):
+    backend = backend_class.__new__(backend_class)
     backend._config = types.SimpleNamespace(cache_dir=str(tmp_path))
 
-    env = {"VLLM_CACHE_ROOT": "/custom/cache"}
-    backend._set_cache_env(env)
+    env = {variable: "/custom/cache"}
+    backend._set_cache_env(env, variable, subdirectory)
 
-    assert env["VLLM_CACHE_ROOT"] == "/custom/cache"
+    assert env[variable] == "/custom/cache"
     # Default cache dir should not be created when the user overrode it.
-    assert not (tmp_path / "vllm").exists()
+    assert not (tmp_path / subdirectory).exists()
+
+
+def _vllm_backend_with_kv_cache(
+    extended_kv_cache,
+    cache_config=None,
+    device_info=("cuda", None, None),
+    backend_version=None,
+    vram_claim=0,
+    gpu_count=1,
+):
+    backend = VLLMServer.__new__(VLLMServer)
+    backend._model = types.SimpleNamespace(
+        extended_kv_cache=extended_kv_cache,
+        backend_version=backend_version,
+        image_name=None,
+    )
+    backend._model_instance = types.SimpleNamespace(cache_config=cache_config)
+    backend._get_device_info = lambda: device_info
+    backend._get_total_vram_claim = lambda: vram_claim
+    backend._get_selected_gpu_devices = lambda: [
+        types.SimpleNamespace(index=i) for i in range(gpu_count)
+    ]
+    return backend
+
+
+def _vllm_backend_claiming(worker_id, instance_worker_id, vram, subordinates=()):
+    """A backend reading its VRAM claim off the instance record, from the
+    perspective of one of the workers the instance is placed on."""
+    backend = VLLMServer.__new__(VLLMServer)
+    backend._worker = types.SimpleNamespace(id=worker_id)
+    backend._model_instance = types.SimpleNamespace(
+        worker_id=instance_worker_id,
+        computed_resource_claim=types.SimpleNamespace(vram=vram),
+        distributed_servers=types.SimpleNamespace(
+            subordinate_workers=[
+                types.SimpleNamespace(
+                    worker_id=sub_worker_id,
+                    computed_resource_claim=types.SimpleNamespace(vram=sub_vram),
+                )
+                for sub_worker_id, sub_vram in subordinates
+            ]
+        ),
+    )
+    return backend
+
+
+def _shared_kv_cache_config():
+    return ExtendedKVCacheConfig(
+        enabled=True,
+        mode=KVCacheModeEnum.SHARED,
+        cache_service_id=3,
+        ram_size=8,
+        chunk_size=256,
+    )
+
+
+def test_vllm_shared_kv_cache_injected_applies_snapshot_env_and_args():
+    snapshot = CacheConfigSnapshot(
+        cache_service_id=3,
+        env={"MOONCAKE_CONFIG_PATH": "/etc/mooncake.json"},
+        args=["--kv-transfer-config", '{"kv_connector":"MooncakeConnector"}'],
+        injected=True,
+    )
+    backend = _vllm_backend_with_kv_cache(
+        _shared_kv_cache_config(), cache_config=snapshot
+    )
+
+    env = {}
+    backend._set_lmcache_env(env)
+    # Snapshot env is applied verbatim; local CPU cache sizing does not fire.
+    assert env == {"MOONCAKE_CONFIG_PATH": "/etc/mooncake.json"}
+    assert "LMCACHE_MAX_LOCAL_CPU_SIZE" not in env
+    assert "LMCACHE_CHUNK_SIZE" not in env
+
+    # The snapshot is applied verbatim — provider-specific knowledge
+    # (e.g. LMCache's --shutdown-timeout) lives in the catalog args.
+    assert backend._build_extended_kv_cache_arguments(None) == [
+        "--kv-transfer-config",
+        '{"kv_connector":"MooncakeConnector"}',
+    ]
+
+
+@pytest.mark.parametrize(
+    "cache_config",
+    [
+        None,
+        CacheConfigSnapshot(
+            cache_service_id=3, injected=False, reason="Cache service is not running."
+        ),
+    ],
+)
+def test_vllm_shared_kv_cache_not_injected_starts_without_cache(cache_config):
+    backend = _vllm_backend_with_kv_cache(
+        _shared_kv_cache_config(), cache_config=cache_config
+    )
+
+    env = {}
+    backend._set_lmcache_env(env)
+    assert env == {}
+
+    assert backend._build_extended_kv_cache_arguments(None) == []
+
+
+def test_vllm_shared_kv_cache_has_no_worker_vendor_gate():
+    """Shared mode applies the snapshot on any accelerator: the catalog's
+    framework-scoped integrations are the single accelerator gate (an
+    unsupported framework never gets an injected snapshot), so the worker
+    must not second-guess it and drop half the injection."""
+    snapshot = CacheConfigSnapshot(
+        cache_service_id=3,
+        env={"PYTHONHASHSEED": "0"},
+        args=["--kv-transfer-config", '{"kv_connector":"LMCacheMPConnector"}'],
+        injected=True,
+    )
+    backend = _vllm_backend_with_kv_cache(
+        _shared_kv_cache_config(), cache_config=snapshot
+    )
+    backend._get_device_info = lambda: ("cann", None, None)
+
+    env = {}
+    backend._set_lmcache_env(env)
+    assert env == {"PYTHONHASHSEED": "0"}
+    assert backend._build_extended_kv_cache_arguments(None) == [
+        "--kv-transfer-config",
+        '{"kv_connector":"LMCacheMPConnector"}',
+    ]
+
+
+def test_vllm_legacy_local_kv_cache_behavior_unchanged():
+    # A config without an explicit mode is local: LMCache env sizing and the
+    # LMCache connector args apply as before.
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_size=4, chunk_size=256)
+    )
+
+    env = {}
+    backend._set_lmcache_env(env)
+    assert env == {
+        "LMCACHE_CHUNK_SIZE": "256",
+        "LMCACHE_MAX_LOCAL_CPU_SIZE": "4",
+    }
+
+    assert backend._build_extended_kv_cache_arguments(None) == [
+        "--kv-transfer-config",
+        '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}',
+    ]
+
+
+def test_vllm_local_kv_cache_ram_ratio_sizes_from_vram_claim():
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_ratio=1.5),
+        vram_claim=8 * 1024**3,
+    )
+
+    env = {}
+    backend._set_lmcache_env(env)
+    assert env == {"LMCACHE_MAX_LOCAL_CPU_SIZE": "12"}
+
+
+def test_vllm_ascend_local_kv_cache_wires_npu_offload_connector():
+    """Ascend has no LMCache build, so local mode carries its sizing in
+    vllm-ascend's own connector instead of the LMCache variables. The
+    configured size is the worker's, so 4 GiB over 2 cards is 2 GiB a rank."""
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_size=4, chunk_size=256),
+        device_info=("cann", None, "Ascend910B3"),
+        backend_version="0.23.0",
+        gpu_count=2,
+    )
+
+    env = {}
+    backend._set_lmcache_env(env)
+    assert env == {}
+
+    assert backend._build_extended_kv_cache_arguments(None) == [
+        "--kv-transfer-config",
+        '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both",'
+        '"kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":2147483648}}',
+    ]
+
+
+def test_vllm_ascend_local_kv_cache_ram_ratio_sizes_from_vram_claim():
+    """The ratio scales this worker's claim, and the per-rank share carries
+    it independently of the engine's parallelism."""
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_ratio=2.0),
+        device_info=("cann", None, "Ascend910B3"),
+        backend_version="0.23.0",
+        vram_claim=6 * 1024**3,
+        gpu_count=4,
+    )
+
+    assert backend._build_extended_kv_cache_arguments(None) == [
+        "--kv-transfer-config",
+        '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both",'
+        '"kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":3221225472}}',
+    ]
+
+
+def test_vllm_ascend_local_kv_cache_without_a_size_leaves_the_capacity_default():
+    """Neither size nor ratio: the connector still runs, on its own default,
+    the way LMCache does on the CUDA path."""
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_ratio=None, ram_size=None),
+        device_info=("cann", None, "Ascend910B3"),
+        backend_version="0.23.0",
+    )
+
+    assert backend._build_extended_kv_cache_arguments(None) == [
+        "--kv-transfer-config",
+        '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both",'
+        '"kv_connector_extra_config":{}}',
+    ]
+
+
+@pytest.mark.parametrize("worker_id", [1, 2])
+def test_vllm_total_vram_claim_is_the_claim_of_the_worker_reading_it(worker_id):
+    backend = _vllm_backend_claiming(
+        worker_id=worker_id,
+        instance_worker_id=1,
+        vram={0: 4 * 1024**3, 1: 4 * 1024**3},
+        subordinates=[(2, {0: 2 * 1024**3})],
+    )
+
+    expected = 8 * 1024**3 if worker_id == 1 else 2 * 1024**3
+    assert backend._get_total_vram_claim() == expected
+
+
+def test_vllm_total_vram_claim_tolerates_a_claim_without_vram():
+    """computed_resource_claim.vram is optional; a deployment sized by
+    ram_size must not trip over an instance that has none."""
+    backend = _vllm_backend_claiming(worker_id=1, instance_worker_id=1, vram=None)
+
+    assert backend._get_total_vram_claim() == 0
+
+
+@pytest.mark.parametrize(
+    "device_info, backend_version",
+    [
+        # 310P carries no KV offload component in the runner image.
+        (("cann", None, "Ascend310P3"), "0.23.0"),
+        # The NPU connector predates neither: it lands in vLLM Ascend 0.21.0.
+        (("cann", None, "Ascend910B3"), "0.20.0"),
+    ],
+)
+def test_vllm_ascend_local_kv_cache_unsupported_target_injects_nothing(
+    device_info, backend_version
+):
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_size=4),
+        device_info=device_info,
+        backend_version=backend_version,
+    )
+
+    env = {}
+    backend._set_lmcache_env(env)
+    assert env == {}
+
+    assert backend._build_extended_kv_cache_arguments(None) == []
+
+
+def test_vllm_local_kv_cache_on_other_vendor_injects_nothing():
+    backend = _vllm_backend_with_kv_cache(
+        ExtendedKVCacheConfig(enabled=True, ram_size=4),
+        device_info=("musa", None, None),
+    )
+
+    assert backend._build_extended_kv_cache_arguments(None) == []
+
+
+def test_sglang_shared_kv_cache_disables_hicache_arguments():
+    backend = SGLangServer.__new__(SGLangServer)
+    backend._model = types.SimpleNamespace(extended_kv_cache=_shared_kv_cache_config())
+
+    assert backend._get_hicache_arguments() == []
+
+
+def test_sglang_local_kv_cache_hicache_arguments_unchanged():
+    backend = SGLangServer.__new__(SGLangServer)
+    backend._model = types.SimpleNamespace(
+        extended_kv_cache=ExtendedKVCacheConfig(
+            enabled=True, ram_size=8, chunk_size=64, ram_ratio=None
+        )
+    )
+
+    assert backend._get_hicache_arguments() == [
+        "--enable-hierarchical-cache",
+        "--page-size",
+        "64",
+        "--hicache-size",
+        "8",
+    ]
+
+
+def test_sglang_local_kv_cache_has_no_accelerator_gate():
+    """SGLang's hierarchical cache is engine-native on every framework it
+    ships for — on CANN it picks the Ascend IO backend and memory layout
+    itself — so the flags carry no accelerator condition, unlike the vLLM
+    connectors."""
+    backend = SGLangServer.__new__(SGLangServer)
+    backend._model = types.SimpleNamespace(
+        extended_kv_cache=ExtendedKVCacheConfig(enabled=True, ram_ratio=3.0)
+    )
+    backend._get_device_info = lambda: ("cann", None, "Ascend910B3")
+
+    assert backend._get_hicache_arguments() == [
+        "--enable-hierarchical-cache",
+        "--hicache-ratio",
+        "3.0",
+    ]
 
 
 def test_vllm_command_args_include_late_system_flags_as_injected():
@@ -503,6 +942,7 @@ def test_vllm_command_args_include_late_system_flags_as_injected():
         backend=BackendEnum.VLLM,
         backend_parameters=[],
         backend_version=None,
+        image_name=None,
         categories=[],
         extended_kv_cache=None,
         speculative_config=None,
@@ -550,6 +990,7 @@ def test_vllm_command_args_exclude_user_backend_parameters_from_injected():
         backend=BackendEnum.VLLM,
         backend_parameters=["--host", "0.0.0.0", "--temperature", "0.2"],
         backend_version=None,
+        image_name=None,
         categories=[],
         extended_kv_cache=None,
         speculative_config=None,
@@ -568,13 +1009,36 @@ def test_vllm_command_args_exclude_user_backend_parameters_from_injected():
     assert injected == ["--port", "4000", "--served-model-name", "llm"]
 
 
-def test_sglang_command_args_include_model_and_late_system_flags_as_injected():
+@pytest.mark.parametrize(
+    "run_command, served_model_args",
+    [
+        (None, []),
+        ("--model-path {{model_path}}", []),
+        (
+            "--model-path {{model_path}} --served-model-name custom-name",
+            ["--served-model-name", "custom-name"],
+        ),
+        (
+            "--model-path {{model_path}} --served-model-name=custom-name",
+            ["--served-model-name=custom-name"],
+        ),
+    ],
+)
+def test_sglang_command_args_include_model_and_late_system_flags_as_injected(
+    run_command, served_model_args
+):
     backend = SGLangServer.__new__(SGLangServer)
-    backend.inference_backend = None
+    backend.inference_backend = InferenceBackend(
+        backend_name=BackendEnum.SGLANG,
+        default_version="0.5.21",
+        version_configs={},
+    )
     backend._model_path = "/models/llm"
     backend._worker = types.SimpleNamespace(ip="192.168.50.10")
     backend._model_instance = types.SimpleNamespace(
         gpu_indexes=[],
+        model_name="llm-deployment",
+        port=4000,
         ports=[4000],
         computed_resource_claim=None,
         mounted_loras=None,
@@ -582,6 +1046,7 @@ def test_sglang_command_args_include_model_and_late_system_flags_as_injected():
     backend._model = types.SimpleNamespace(
         backend_parameters=[],
         backend_version=None,
+        run_command=run_command,
         env={"GPUSTACK_DISABLE_METRICS": "1"},
         extended_kv_cache=None,
         speculative_config=None,
@@ -591,23 +1056,41 @@ def test_sglang_command_args_include_model_and_late_system_flags_as_injected():
     backend._get_speculative_arguments = lambda: []
     backend._get_hicache_arguments = lambda: []
     backend._get_selected_gpu_devices = lambda: [
-        types.SimpleNamespace(vendor="NVIDIA", arch_family=None)
+        types.SimpleNamespace(index=0, vendor="NVIDIA", arch_family=None)
     ]
 
-    _, injected = backend._build_command_args(
+    arguments, injected = backend._build_command_args(
         port=4000,
         is_distributed=False,
         is_distributed_leader=False,
     )
 
-    assert injected == [
+    expected = [
         "--model-path",
         "/models/llm",
+        *served_model_args,
         "--host",
         "192.168.50.10",
         "--port",
         "4000",
     ]
+    if not served_model_args:
+        expected.extend(["--served-model-name", "llm-deployment"])
+
+    assert arguments == expected
+    assert injected == expected
+
+
+@pytest.mark.parametrize("alias", ["tp", "dp"])
+def test_sglang_short_alias_prevents_conflicting_auto_parallelism_arguments(alias):
+    model_instance = types.SimpleNamespace(gpu_indexes=[0, 1])
+
+    assert (
+        get_sglang_auto_parallelism_arguments(
+            [f"--{alias}", "2"], model_instance, is_distributed=False
+        )
+        == []
+    )
 
 
 def test_vox_box_command_args_return_injected_parameters():
@@ -1090,7 +1573,10 @@ def test_resolve_image_fallback_matches_host_major(
             _make_versioned_runner("12.8", "gpustack/runner:cuda12.8-vllm0.10.2"),
         ]
     )
-    monkeypatch.setattr(base_module, "list_backend_runners", lambda **_: [runner])
+    # merged_backend_runners takes the override rows positionally, then the filters.
+    monkeypatch.setattr(
+        base_module, "merged_backend_runners", lambda *_, **__: [runner]
+    )
 
     server = VLLMServer.__new__(VLLMServer)
     server._model = types.SimpleNamespace(
@@ -1098,6 +1584,899 @@ def test_resolve_image_fallback_matches_host_major(
     )
     server.inference_backend = None
     server._get_device_info = lambda: ("cuda", runtime_version, None)
+    # The real fetch needs a clientset, and its failure is fatal by design.
+    server._fetch_runner_overrides = lambda: []
 
     image_name, _ = server._resolve_image()
     assert image_name == expected_image
+
+
+@pytest.mark.parametrize(
+    "backend_version, expected_service_version, expected_with_deprecated",
+    [
+        # Auto: no version filter, deprecated runners stay hidden.
+        (None, None, False),
+        # Blank version is stored by legacy/migrated data and API clients. It is
+        # shown as "Auto" in the UI and has to resolve like None, not like an
+        # exact version filter that matches no runner.
+        ("", None, False),
+        # An explicit version is still passed through verbatim.
+        ("0.10.2", "0.10.2", True),
+    ],
+)
+def test_resolve_image_treats_blank_backend_version_as_auto(
+    backend_version, expected_service_version, expected_with_deprecated, monkeypatch
+):
+    import gpustack.worker.backends.base as base_module
+
+    captured = {}
+
+    # merged_backend_runners takes the override rows positionally, then the filters.
+    def fake_merged_backend_runners(_overrides, **kwargs):
+        captured.update(kwargs)
+        return [
+            types.SimpleNamespace(
+                versions=[
+                    _make_versioned_runner(
+                        "13.0", "gpustack/runner:cuda13.0-vllm0.10.2"
+                    )
+                ]
+            )
+        ]
+
+    monkeypatch.setattr(
+        base_module, "merged_backend_runners", fake_merged_backend_runners
+    )
+
+    server = VLLMServer.__new__(VLLMServer)
+    server._model = types.SimpleNamespace(
+        image_name=None, backend="vllm", backend_version=backend_version
+    )
+    server.inference_backend = None
+    server._get_device_info = lambda: ("cuda", "13.0", None)
+    # The real fetch needs a clientset, and its failure is fatal by design.
+    server._fetch_runner_overrides = lambda: []
+
+    image_name, _ = server._resolve_image()
+
+    assert image_name == "gpustack/runner:cuda13.0-vllm0.10.2"
+    assert captured["service_version"] == expected_service_version
+    assert captured["with_deprecated"] is expected_with_deprecated
+
+
+class _StubServer(InferenceServer):
+    """Concrete InferenceServer so base methods can be exercised in isolation."""
+
+    def start(self):  # pragma: no cover - not used by these tests
+        raise NotImplementedError
+
+
+@pytest.mark.parametrize(
+    "image,expected",
+    [
+        ("gpustack/runner:cuda12.9-vllm0.10.2", "12.9"),
+        (
+            "registry.example.com/gpustack/runner:cuda12.8-vllm0.10.2-linux-amd64",
+            "12.8",
+        ),
+        (
+            "registry.example.com/cuda11.8/gpustack/runner:cuda12.8-vllm0.10.2-linux-amd64",
+            "12.8",
+        ),
+        ("gpustack/runner:cuda13.0-sglang0.4", "13.0"),
+        ("gpustack/runner:rocm6.2-vllm0.10.2", None),
+        ("myregistry/custom-vllm:latest", None),
+        ("", None),
+    ],
+)
+def test_parse_image_cuda_version(image, expected):
+    assert _parse_image_cuda_version(image) == expected
+
+
+def _make_cuda_compat_server(host_cuda, image, backend="cuda", model_env=None):
+    server = _StubServer.__new__(_StubServer)
+    server._model = types.SimpleNamespace(env=model_env)
+    server._get_device_info = lambda: (backend, host_cuda, None)
+    server._resolve_image = lambda: (image, None)
+    return server
+
+
+@pytest.mark.parametrize(
+    "host_cuda,image,backend,expected",
+    [
+        # Image minor higher than host driver, same major -> route through MVC.
+        ("12.8", "gpustack/runner:cuda12.9-vllm0.10.2", "cuda", True),
+        # Equal minor: cuda-compat is never activated, nothing to do.
+        ("12.8", "gpustack/runner:cuda12.8-vllm0.10.2", "cuda", False),
+        # Host newer than image: plain backward compatibility, nothing to do.
+        ("12.8", "gpustack/runner:cuda12.6-vllm0.10.2", "cuda", False),
+        # Cross major is not MVC-safe; must not trigger.
+        ("12.8", "gpustack/runner:cuda13.0-vllm0.10.2", "cuda", False),
+        # Non-CUDA vendor.
+        ("6.2", "gpustack/runner:rocm6.3-vllm0.10.2", "rocm", False),
+        # Host CUDA version undetected.
+        (None, "gpustack/runner:cuda12.9-vllm0.10.2", "cuda", False),
+        # Custom image whose tag does not encode a CUDA version.
+        ("12.8", "myregistry/custom:latest", "cuda", False),
+    ],
+)
+def test_should_disable_cuda_compat(monkeypatch, host_cuda, image, backend, expected):
+    # This case matrix exercises the version condition; force the opt-in switch on.
+    monkeypatch.setattr("gpustack.envs.ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY", True)
+    server = _make_cuda_compat_server(host_cuda, image, backend)
+    assert server._should_disable_cuda_compat() is expected
+
+
+@pytest.mark.parametrize(
+    "global_enabled,model_env,expected",
+    [
+        # Enabled globally, no model override -> triggers.
+        (True, None, True),
+        # Disabled globally (the default), no model override -> off.
+        (False, None, False),
+        # Model-level override wins over the global default (opt in this model).
+        (False, {_KNOB: "true"}, True),
+        # Model-level override wins over the global default (opt out this model).
+        (True, {_KNOB: "false"}, False),
+    ],
+)
+def test_cuda_compat_switch_is_multi_level(
+    monkeypatch, global_enabled, model_env, expected
+):
+    # Host/image are fixed to a triggering pair so only the switch varies.
+    monkeypatch.setattr(
+        "gpustack.envs.ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY", global_enabled
+    )
+    server = _make_cuda_compat_server(
+        "12.8",
+        "gpustack/runner:cuda12.9-vllm0.10.2",
+        model_env=model_env,
+    )
+    assert server._should_disable_cuda_compat() is expected
+
+
+def _make_host_ipc_server(cache_config=None, model_env=None):
+    server = _StubServer.__new__(_StubServer)
+    server._model = types.SimpleNamespace(env=model_env)
+    server._model_instance = types.SimpleNamespace(cache_config=cache_config)
+    return server
+
+
+@pytest.mark.parametrize(
+    "cache_config,model_env,global_env,expected",
+    [
+        # No shared cache attached -> private /dev/shm (shm_size applies).
+        (None, None, None, False),
+        # Attached and injected -> host IPC for the CUDA-IPC transfer path.
+        (types.SimpleNamespace(injected=True), None, None, True),
+        # Attached but degraded (not injected) -> nothing to transfer.
+        (types.SimpleNamespace(injected=False), None, None, False),
+        # Model env overrides the derivation either way.
+        (
+            types.SimpleNamespace(injected=True),
+            {"GPUSTACK_HOST_IPC": "false"},
+            None,
+            False,
+        ),
+        (None, {"GPUSTACK_HOST_IPC": "true"}, None, True),
+        # Global env overrides the derivation (e.g. PodSecurity clusters)
+        # but yields to the model env.
+        (types.SimpleNamespace(injected=True), None, "false", False),
+        (None, {"GPUSTACK_HOST_IPC": "true"}, "false", True),
+    ],
+)
+def test_host_ipc_follows_cache_attachment(
+    monkeypatch, cache_config, model_env, global_env, expected
+):
+    monkeypatch.setattr("gpustack.envs.HOST_IPC", global_env)
+    server = _make_host_ipc_server(cache_config=cache_config, model_env=model_env)
+    assert server._host_ipc_enabled() is expected
+
+
+def _script_server(should_disable_compat, cache_files=None):
+    server = _StubServer.__new__(_StubServer)
+    server._should_disable_cuda_compat = lambda: should_disable_compat
+    server._model_instance = types.SimpleNamespace(
+        cache_config=(
+            CacheConfigSnapshot(cache_service_id=5, injected=True, files=cache_files)
+            if cache_files
+            else None
+        )
+    )
+    return server
+
+
+def test_serving_command_script_bakes_in_compat_removal():
+    script = _script_server(True)._get_serving_command_script({})
+    assert script is not None
+    assert "rm -rf /usr/local/cuda/compat" in script
+    assert "ldconfig" in script
+    # Non-root containers can't remove compat; the script warns instead of failing silently.
+    assert "Warning: failed to remove /usr/local/cuda/compat" in script
+    assert script.rstrip().endswith('exec "$@"')
+
+
+def test_serving_command_script_writes_cache_injection_files():
+    """A shared cache connector that reads a config file (e.g. Mooncake's
+    MOONCAKE_CONFIG_PATH JSON) gets it written by the serving script
+    before the engine starts, verbatim via a quoted heredoc."""
+    files = {"/tmp/gpustack-mooncake.json": '{"mode": "standalone-store"}'}
+    script = _script_server(False, cache_files=files)._get_serving_command_script({})
+    assert script is not None
+    assert "cat > '/tmp/gpustack-mooncake.json' <<'GPUSTACK_CACHE_FILE_EOF'" in script
+    assert '{"mode": "standalone-store"}' in script
+    assert script.rstrip().endswith('exec "$@"')
+
+
+def test_serving_command_script_none_without_triggers():
+    assert _script_server(False)._get_serving_command_script({}) is None
+    # Explicit opt-out wins even when compat removal was requested.
+    assert (
+        _script_server(True)._get_serving_command_script(
+            {"GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED": "1"}
+        )
+        is None
+    )
+
+
+def test_serving_command_script_pypi_has_no_compat_block():
+    script = _script_server(False)._get_serving_command_script(
+        {"PYPI_PACKAGES_INSTALL": "some-package"}
+    )
+    assert script is not None
+    assert "PYPI_PACKAGES_INSTALL" in script
+    assert "/usr/local/cuda/compat" not in script
+
+
+def test_configured_env_injects_disable_require_only(monkeypatch):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    server = _StubServer.__new__(_StubServer)
+    server._model = types.SimpleNamespace(env=None)
+    server._should_disable_cuda_compat = lambda: True
+
+    env = server._get_configured_env()
+
+    assert env["NVIDIA_DISABLE_REQUIRE"] == "1"
+    assert "GPUSTACK_DISABLE_CUDA_COMPAT" not in env
+
+
+def test_configured_env_respects_user_override(monkeypatch):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    server = _StubServer.__new__(_StubServer)
+    # User explicitly pins NVIDIA_DISABLE_REQUIRE; we must not clobber it.
+    server._model = types.SimpleNamespace(env={"NVIDIA_DISABLE_REQUIRE": "0"})
+    server._should_disable_cuda_compat = lambda: True
+
+    env = server._get_configured_env()
+
+    assert env["NVIDIA_DISABLE_REQUIRE"] == "0"
+
+
+def test_configured_env_no_injection_when_not_triggered(monkeypatch):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    server = _StubServer.__new__(_StubServer)
+    server._model = types.SimpleNamespace(env=None)
+    server._should_disable_cuda_compat = lambda: False
+
+    env = server._get_configured_env()
+
+    assert "NVIDIA_DISABLE_REQUIRE" not in env
+
+
+def _gpu(vendor: str, arch_family=None):
+    return types.SimpleNamespace(vendor=vendor, arch_family=arch_family)
+
+
+@pytest.mark.parametrize(
+    "name, devices, expected",
+    [
+        # The regression this guards: `all()` is vacuously true over nothing,
+        # so a model instance that named no device -- one scheduled by GPU
+        # type rather than by device index -- used to be served as Ascend
+        # 310P, and got `--enforce-eager --dtype float16` injected on top of
+        # whatever accelerator it actually landed on.
+        ("no device selected", [], False),
+        ("single 310P", [_gpu("ascend", "Ascend310P1")], True),
+        (
+            "several 310P",
+            [_gpu("ascend", "Ascend310P1"), _gpu("ascend", "Ascend310P3")],
+            True,
+        ),
+        ("Ascend but not 310P", [_gpu("ascend", "Ascend910B4")], False),
+        ("NVIDIA", [_gpu("nvidia")], False),
+        (
+            "310P mixed with another Ascend generation",
+            [_gpu("ascend", "Ascend310P1"), _gpu("ascend", "Ascend910B4")],
+            False,
+        ),
+    ],
+)
+def test_is_ascend_310p(name, devices, expected):
+    actual = is_ascend_310p(devices)
+    assert actual == expected, f"case {name} expected {expected}, but got {actual}"
+
+
+@pytest.mark.parametrize(
+    "name, devices, expected",
+    [
+        ("no device selected", [], False),
+        ("single Ascend", [_gpu("ascend", "Ascend910B4")], True),
+        (
+            "several Ascend",
+            [_gpu("ascend", "Ascend910B4"), _gpu("ascend", "Ascend310P1")],
+            True,
+        ),
+        ("NVIDIA", [_gpu("nvidia")], False),
+        (
+            "Ascend mixed with NVIDIA",
+            [_gpu("ascend", "Ascend910B4"), _gpu("nvidia")],
+            False,
+        ),
+    ],
+)
+def test_is_ascend(name, devices, expected):
+    actual = is_ascend(devices)
+    assert actual == expected, f"case {name} expected {expected}, but got {actual}"
+
+
+def _make_versioned_args_server(run_command=None, backend_version=None):
+    server = _StubServer.__new__(_StubServer)
+    server._model = types.SimpleNamespace(
+        run_command=run_command,
+        backend_version=backend_version,
+        env=None,
+    )
+    server._model_path = "/models/qwen"
+    server._model_instance = types.SimpleNamespace(port=8000, model_name="qwen")
+    server._worker = types.SimpleNamespace(ip="10.0.0.1")
+    server._get_selected_gpu_devices = lambda: [
+        types.SimpleNamespace(index=1),
+        types.SimpleNamespace(index=0),
+    ]
+    backend = InferenceBackend(
+        backend_name=BackendEnum.VLLM,
+        default_version="0.11.0",
+        version_configs={},
+    )
+    backend.version_configs = VersionConfigDict(
+        root={
+            "0.11.0": VersionConfig(
+                image_name="runner:0.11.0", built_in_frameworks=["cuda"]
+            ),
+            "0.11.0-custom": VersionConfig(
+                image_name="own:0.11.0",
+                run_command="--from-version {{model_path}} --port {{port}}",
+            ),
+        }
+    )
+    server.inference_backend = backend
+    return server
+
+
+def test_a_run_command_on_the_model_replaces_the_initial_arguments():
+    """The model's own run_command wins over both the backend's default
+    arguments and a version config's command, and its placeholders resolve.
+
+    vLLM and SGLang supply the executable through the container entrypoint, so
+    a run_command for them carries arguments only.
+    """
+    default_args = ["--model", "/models/qwen", "--port", "8000"]
+
+    # No custom command anywhere: the backend keeps its own arguments.
+    server = _make_versioned_args_server()
+    assert server.build_versioned_command_args(default_args) == default_args
+
+    # A model command applies without a backend_version to hang it on.
+    server = _make_versioned_args_server(
+        run_command="--model {{model_path}} --port {{port}} --host {{worker_ip}} --gpus {{gpu_ids}}"
+    )
+    assert server.build_versioned_command_args(default_args) == [
+        "--model",
+        "/models/qwen",
+        "--port",
+        "8000",
+        "--host",
+        "10.0.0.1",
+        "--gpus",
+        "0,1",
+    ]
+
+    # A version config command is shared by every deployment on that version,
+    # so the model's own command outranks it.
+    server = _make_versioned_args_server(
+        run_command="--from-model {{model_path}}",
+        backend_version="0.11.0-custom",
+    )
+    assert server.build_versioned_command_args(default_args) == [
+        "--from-model",
+        "/models/qwen",
+    ]
+
+    # Without a model command that version config still applies.
+    server = _make_versioned_args_server(backend_version="0.11.0-custom")
+    assert server.build_versioned_command_args(default_args) == [
+        "--from-version",
+        "/models/qwen",
+        "--port",
+        "8000",
+    ]
+
+
+# --- the two writers of --kv-transfer-config meet in the built command ------ #
+
+
+def _vllm_backend_for_composition(role, cache_args, pd_args):
+    """A vLLM server whose two connector producers both contribute.
+
+    Built around `_build_command_args` rather than the composer, because the
+    bug this guards was in neither of them: the composition ran at a point
+    where only one producer had contributed, so it was a no-op and both flags
+    reached the container. Testing the composer alone cannot see that.
+    """
+    backend = VLLMServer.__new__(VLLMServer)
+    backend.inference_backend = None
+    backend._model_path = "/models/llm"
+    backend._worker = types.SimpleNamespace(ip="192.168.50.10")
+    backend._model_instance = types.SimpleNamespace(
+        model_name="llm",
+        gpu_indexes=[],
+        ports=[4000],
+        computed_resource_claim=None,
+        mounted_loras=None,
+        cache_config=None,
+        role=role,
+    )
+    backend._model = types.SimpleNamespace(
+        name="llm",
+        backend=BackendEnum.VLLM,
+        backend_parameters=[],
+        backend_version=None,
+        image_name=None,
+        categories=[],
+        extended_kv_cache=None,
+        speculative_config=None,
+    )
+    backend._derive_max_model_len = lambda: None
+    backend._get_speculative_arguments = lambda: []
+    backend._get_selected_gpu_devices = lambda: [
+        types.SimpleNamespace(vendor="NVIDIA", arch_family=None)
+    ]
+    # The cache contributes with the engine arguments; the PD connector
+    # arrives much later, with the user's parameters. That gap is the point.
+    backend._build_extended_kv_cache_arguments = lambda ctx: list(cache_args)
+    backend._flatten_backend_param = lambda: list(pd_args)
+    return backend
+
+
+_CACHE_JSON = '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both"}'
+_PD_JSON = '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
+
+
+def _composed(arguments):
+    assert arguments.count("--kv-transfer-config") == 1, "one flag, one value"
+    value = json.loads(arguments[arguments.index("--kv-transfer-config") + 1])
+    assert value["kv_connector"] == "MultiConnector"
+    return [c["kv_connector"] for c in value["kv_connector_extra_config"]["connectors"]]
+
+
+def test_a_prefill_command_asks_the_pd_connector_before_cache():
+    backend = _vllm_backend_for_composition(
+        "prefill",
+        ["--kv-transfer-config", _CACHE_JSON],
+        ["--kv-transfer-config", _PD_JSON],
+    )
+
+    arguments, _ = backend._build_command_args(port=4000, is_distributed=False)
+
+    assert _composed(arguments) == ["NixlConnector", "LMCacheMPConnector"]
+
+
+def test_a_decode_command_asks_its_own_connector_first():
+    backend = _vllm_backend_for_composition(
+        "decode",
+        ["--kv-transfer-config", _CACHE_JSON],
+        ["--kv-transfer-config", _PD_JSON],
+    )
+
+    arguments, _ = backend._build_command_args(port=4000, is_distributed=False)
+
+    assert _composed(arguments) == ["NixlConnector", "LMCacheMPConnector"]
+
+
+@pytest.mark.parametrize(
+    "cache_args,pd_args",
+    [
+        (["--kv-transfer-config", _CACHE_JSON], []),
+        ([], ["--kv-transfer-config", _PD_JSON]),
+        ([], []),
+    ],
+)
+def test_a_single_writer_leaves_the_command_alone(cache_args, pd_args):
+    """This runs on every vLLM launch, so the un-composed cases must not move."""
+    backend = _vllm_backend_for_composition("prefill", cache_args, pd_args)
+
+    arguments, _ = backend._build_command_args(port=4000, is_distributed=False)
+
+    assert (
+        arguments.count("--kv-transfer-config")
+        == len(cache_args) // 2 + len(pd_args) // 2
+    )
+    assert "MultiConnector" not in " ".join(arguments)
+
+
+def _router_server(monkeypatch, engine_backend, captured=None):
+    """A server as it exists mid-launch for a managed router.
+
+    `_model` is already projected to the custom backend — that is what makes it
+    launch a command instead of an engine — while `_model_spec` still holds the
+    group's engine and version. The backend row it was handed is None, because
+    `custom` has no row.
+    """
+    import gpustack.worker.backends.base as base_module
+
+    def fake_merged(*_, **kwargs):
+        if captured is not None:
+            captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(base_module, "merged_backend_runners", fake_merged)
+
+    server = VLLMServer.__new__(VLLMServer)
+    server._model = types.SimpleNamespace(
+        image_name=None, backend="custom", backend_version=None
+    )
+    server._model_spec = types.SimpleNamespace(
+        image_name=None,
+        backend="vLLM",
+        backend_version="0.20.2-ascend-pd-custom",
+        owner_principal_id=None,
+    )
+    server.inference_backend = None
+    server._get_device_info = lambda: ("cann", "9.0", "910b")
+    server._fetch_runner_overrides = lambda: []
+    server._engine_inference_backend = lambda spec: engine_backend
+    return server
+
+
+def test_resolve_image_for_a_router_reads_the_engine_spec_not_its_own_model(
+    monkeypatch,
+):
+    """The custom version's image lives only on the engine's backend row.
+
+    Resolving against the router's own projected model asks for a `custom`
+    service at no version, which matches neither the row nor the runner
+    catalog: the unresolved `{{runner_image}}` reaches docker as an invalid
+    reference.
+    """
+    asked = []
+
+    engine_backend = types.SimpleNamespace(
+        backend_name="vLLM",
+        get_image_name=lambda version: (
+            asked.append(version),
+            ("gpustack/runner:cann9.0-910b-vllm0.20.2-router", version),
+        )[1],
+    )
+    server = _router_server(monkeypatch, engine_backend)
+
+    image_name, version = server._resolve_image(
+        backend="cann",
+        spec=server._model_spec,
+        inference_backend=engine_backend,
+    )
+
+    assert image_name == "gpustack/runner:cann9.0-910b-vllm0.20.2-router"
+    assert version == "0.20.2-ascend-pd-custom"
+    assert asked == ["0.20.2-ascend-pd-custom"]
+
+
+def test_resolve_image_queries_the_runner_catalog_for_the_engine_service(
+    monkeypatch,
+):
+    """The spec has to reach the catalog query too, not just the backend row.
+
+    A group whose engine version *is* in the catalog never touches the row, so
+    the fallback path has to be looking up `vllm` — `custom` is not a runner
+    service and matches nothing.
+    """
+    captured = {}
+    server = _router_server(monkeypatch, None, captured=captured)
+
+    server._resolve_image(
+        backend="cann",
+        spec=server._model_spec,
+        inference_backend=None,
+    )
+
+    assert captured["service"] == "vllm"
+    assert captured["service_version"] == "0.20.2-ascend-pd-custom"
+
+
+def test_resolve_image_without_a_spec_still_reads_this_server(monkeypatch):
+    """The override is opt-in: every other backend's call must be unchanged."""
+    captured = {}
+    server = _router_server(monkeypatch, None, captured=captured)
+
+    server._resolve_image()
+
+    assert captured["service"] == "custom"
+
+
+def test_resolve_image_honours_an_explicit_none_backend_row(monkeypatch):
+    """`None` means "this model has no row", not "use mine".
+
+    Told to use the server's own row instead, a router would resolve the
+    image of whatever backend it was handed — which for the fallback custom
+    row is the router's own command, not the engine's image.
+    """
+    own_row = types.SimpleNamespace(
+        backend_name="custom",
+        get_image_name=lambda version: ("wrong/image:from-the-routers-own-row", "x"),
+    )
+    server = _router_server(monkeypatch, None)
+    server.inference_backend = own_row
+
+    image_name, _ = server._resolve_image(
+        spec=server._model_spec, inference_backend=None
+    )
+
+    assert image_name is None
+
+
+def _rendered_router(**overrides):
+    fields = {
+        "image_name": "gpustack/runner:x",
+        "run_command": "vllm-router",
+        "env": {},
+    }
+    fields.update(overrides)
+    return types.SimpleNamespace(**fields)
+
+
+@pytest.mark.parametrize(
+    "overrides, expected_fragment",
+    [
+        ({"image_name": "{{runner_image}}"}, "image_name={{runner_image}}"),
+        ({"run_command": "vllm-router --prefill {{peers}}"}, "{{peers}}"),
+        (
+            {"env": {"UCX_NET_DEVICES": "{{net_device}}"}},
+            "UCX_NET_DEVICES={{net_device}}",
+        ),
+    ],
+)
+def test_refuse_unrendered_router_names_the_value(overrides, expected_fragment):
+    from gpustack.worker.backends.base import _refuse_unrendered_router
+    from gpustack.worker.pd_injection import PDInjectionError
+
+    instance = types.SimpleNamespace(name="qwen3-pd-router-abc12")
+
+    with pytest.raises(PDInjectionError) as excinfo:
+        _refuse_unrendered_router(_rendered_router(**overrides), instance)
+
+    assert expected_fragment in str(excinfo.value)
+    assert "qwen3-pd-router-abc12" in str(excinfo.value)
+
+
+def test_refuse_unrendered_router_passes_a_fully_rendered_router():
+    from gpustack.worker.backends.base import _refuse_unrendered_router
+
+    _refuse_unrendered_router(
+        _rendered_router(
+            image_name="quay.io/gpustack/runner:cann9.0-910b-vllm0.20.2-router",
+            run_command="vllm-router --prefill http://192.168.13.3:40056",
+            env={"UCX_NET_DEVICES": "bond1"},
+        ),
+        types.SimpleNamespace(name="qwen3-pd-router-abc12"),
+    )
+
+
+_PD_CONNECTOR = '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
+
+
+def _backend_reporting_injected_parameters(parameter_format):
+    """An `InferenceServer` with just enough on it to answer the report call."""
+    backend = VLLMServer.__new__(VLLMServer)
+    backend.inference_backend = (
+        types.SimpleNamespace(parameter_format=parameter_format)
+        if parameter_format is not None
+        else None
+    )
+    backend._pd_arguments = lambda: ["--kv-transfer-config", _PD_CONNECTOR]
+    return backend
+
+
+@pytest.mark.parametrize(
+    "parameter_format, user_parameters",
+    [
+        (
+            ParameterFormatEnum.EQUAL,
+            [f"--kv-transfer-config={_PD_CONNECTOR}", "--max-model-len=8192"],
+        ),
+        (
+            None,
+            ["--kv-transfer-config", _PD_CONNECTOR, "--max-model-len", "8192"],
+        ),
+    ],
+)
+def test_the_pd_connector_is_reported_as_injected_in_either_parameter_format(
+    parameter_format, user_parameters
+):
+    """The connector GPUStack added is never attributed to the user.
+
+    The role's arguments ride in front of the user's through
+    `_flatten_backend_param`, which also reshapes the whole stream to the
+    backend's `parameter_format` — so what comes back here is the prefix in
+    that shape, and the report has to recognise it in either one.
+    """
+    backend = _backend_reporting_injected_parameters(parameter_format)
+    arguments = ["vllm", "serve", "/models/llm"] + user_parameters + ["--port", "4000"]
+
+    injected = backend._get_injected_backend_parameters(arguments, user_parameters)
+
+    assert "--kv-transfer-config" in " ".join(injected)
+    assert "--max-model-len" not in " ".join(injected)
+
+
+@pytest.mark.parametrize("legacy_snapshot", [False, True])
+@pytest.mark.parametrize(
+    "should_disable_compat,env,expect_script",
+    [
+        (False, {}, False),
+        (True, {}, True),
+        (True, {"GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED": "1"}, False),
+    ],
+)
+def test_cache_package_metadata_cannot_guard_engine_start(
+    legacy_snapshot, should_disable_compat, env, expect_script
+):
+    snapshot_data = {
+        "cache_service_id": 5,
+        "injected": True,
+        "files": {},
+        "required_packages": {"lmcache": ">=99999"},
+    }
+    server = _script_server(should_disable_compat)
+    server._model_instance.cache_config = (
+        types.SimpleNamespace(**snapshot_data)
+        if legacy_snapshot
+        else CacheConfigSnapshot.model_validate(snapshot_data)
+    )
+
+    script = server._get_serving_command_script(env)
+
+    if expect_script:
+        assert "rm -rf /usr/local/cuda/compat" in script
+        assert "GPUSTACK_CACHE_PACKAGES_EOF" not in script
+        assert "PD cache requires" not in script
+    else:
+        assert script is None
+
+
+@pytest.mark.parametrize("version", ["0.25.3", "0.26.0", "0.25.3-custom", None])
+def test_local_nixl_explicit_engine_versions_can_start(version):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    backend = _vllm_backend_with_kv_cache(ExtendedKVCacheConfig(enabled=True))
+    backend._model.disaggregation = DisaggregationSpec(mode="vllm-nixl")
+    backend._model.backend_version = version
+    assert backend._build_extended_kv_cache_arguments(None)
+
+
+@pytest.mark.parametrize("version", ["0.20.2", "0.23.0", "0.20.2-custom"])
+def test_local_ascend_pd_keeps_requested_cache_outside_engine_range(version):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    backend = _vllm_backend_with_kv_cache(ExtendedKVCacheConfig(enabled=True))
+    backend._model.disaggregation = DisaggregationSpec(mode="vllm-ascend-mooncake")
+    backend._model.backend_version = version
+    args = backend._build_ascend_local_kv_cache_arguments("Ascend910B3")
+    assert "SimpleCPUOffloadConnector" in args[1]
+
+
+@pytest.mark.parametrize(
+    "version,image,warning,informational",
+    [
+        ("0.20.2", None, True, False),
+        ("0.20.2-custom", None, False, True),
+        ("0.20.2+custom", None, False, True),
+        ("0.20.2rc1", None, False, True),
+        ("0.20.2", "custom/ascend:latest", False, True),
+        ("0.23.0", None, False, False),
+    ],
+)
+def test_ascend_pd_old_builtin_cache_version_is_advisory(
+    version, image, warning, informational, caplog
+):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    backend = _vllm_backend_with_kv_cache(ExtendedKVCacheConfig(enabled=True))
+    backend._model.disaggregation = DisaggregationSpec(mode="vllm-ascend-mooncake")
+    backend._model.backend_version = version
+    backend._model.image_name = image
+    caplog.set_level(logging.INFO)
+    assert backend._build_ascend_local_kv_cache_arguments("Ascend910B3")
+    assert ("PD engine-version ranges are advisory" in caplog.text) is warning
+    assert (
+        "PD KV cache offload compatibility is unverified" in caplog.text
+    ) is informational
+    if informational:
+        assert all(record.levelno == logging.INFO for record in caplog.records)
+
+
+def test_ascend_pd_unsupported_device_still_disables_cache(caplog):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    backend = _vllm_backend_with_kv_cache(ExtendedKVCacheConfig(enabled=True))
+    backend._model.disaggregation = DisaggregationSpec(mode="vllm-ascend-mooncake")
+    backend._model.backend_version = "0.20.2"
+    assert backend._build_ascend_local_kv_cache_arguments("Ascend310P3") == []
+    assert "310P" in caplog.text
+
+
+def test_managed_router_records_the_same_peers_it_renders(monkeypatch):
+    from unittest.mock import MagicMock
+    from gpustack.schemas.models import (
+        DisaggregationSpec,
+        Model,
+        ModelInstance,
+        PortBand,
+        RoleSpec,
+        SourceEnum,
+    )
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+    import gpustack.worker.pd_router as renderer
+
+    model = Model(
+        name="m",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/repo",
+        disaggregation=DisaggregationSpec(mode="vllm-mooncake"),
+        roles=[RoleSpec(name="router")],
+    )
+    peer = types.SimpleNamespace(
+        id=1,
+        model_id=1,
+        role="prefill",
+        group_id="g",
+        worker_id=7,
+        port=8000,
+        state="running",
+        named_ports={"bootstrap": PortBand(base=9000)},
+        draining_since=None,
+        restart_count=2,
+        last_restart_time=None,
+    )
+    draining = types.SimpleNamespace(**{**vars(peer), "id": 2, "draining_since": "now"})
+    server = _StubServer.__new__(_StubServer)
+    server._model_instance = ModelInstance(
+        name="router",
+        model_id=1,
+        model_name="m",
+        source=SourceEnum.HUGGING_FACE,
+        role="router",
+        group_id="g",
+        id=3,
+    )
+    server._clientset = MagicMock()
+    server._clientset.model_instances.list.return_value.items = [peer, draining]
+    server._clientset.workers.get.return_value = types.SimpleNamespace(ip="10.0.0.1")
+    server._template_variables = MagicMock(return_value={})
+    server._pd_template_variables = MagicMock(return_value={})
+    server._update_model_instance = MagicMock()
+    apply = MagicMock(
+        return_value=types.SimpleNamespace(run_command="router", image_name="image")
+    )
+    monkeypatch.setattr(renderer, "apply_managed_router", apply)
+    server._apply_managed_router(model)
+    assert apply.call_args.kwargs["peers"] == {
+        "prefill": [renderer.PeerAddress("10.0.0.1", 8000, {"bootstrap": 9000})]
+    }
+    server._update_model_instance.assert_called_once_with(
+        3, router_peer_snapshot=router_peer_snapshot([peer], "g", {7: "10.0.0.1"})
+    )

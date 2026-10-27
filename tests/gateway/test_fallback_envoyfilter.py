@@ -127,6 +127,7 @@ def test_transformer_plugin_fallback_path_req_rules():
     # redirect the EnvoyFilter injects x-gpustack-fallback-path=%REQ(...)% which this
     # plugin renames back to :path — so the ordering below is load-bearing.
     cfg = MagicMock()
+    cfg.gateway_plugin = {}
     cfg.gateway_plugin_server_url = "http://127.0.0.1"
     _, spec = transformer_plugin(cfg)
     rules = spec.defaultConfig["reqRules"]

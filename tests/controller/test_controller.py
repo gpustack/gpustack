@@ -81,6 +81,14 @@ async def test_find_scale_down_candidates():
 
     with (
         patch(
+            'gpustack.server.controllers.async_session',
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.schemas.cache_services.CacheServiceInstance.all_by_fields',
+            return_value=[],
+        ),
+        patch(
             'gpustack.schemas.models.ModelInstance.all_by_field',
             return_value=mis,
         ),
@@ -139,3 +147,59 @@ def compare_candidates(candidates: List[ModelInstanceScore], expected_candidates
 
         if "score" in expected:
             assert str(candidate.score)[:5] == str(expected["score"])[:5]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cache_ram, expected_score", [(0, 20 / 90 * 100), (40, 40)])
+async def test_scale_down_scoring_includes_cache_reservations(
+    cache_ram, expected_score
+):
+    from types import SimpleNamespace
+    from gpustack.schemas.models import PlacementStrategyEnum
+
+    model = new_model(1, "model", huggingface_repo_id="test/model", cluster_id=1)
+    model.placement_strategy = PlacementStrategyEnum.BINPACK
+    instance = new_model_instance(
+        1,
+        "instance",
+        model.id,
+        worker_id=1,
+        computed_resource_claim=ComputedResourceClaim(ram=20, vram={}),
+    )
+    worker = SimpleNamespace(
+        id=1,
+        name="worker",
+        system_reserved=SimpleNamespace(ram=10, vram=0),
+        status=SimpleNamespace(
+            memory=SimpleNamespace(total=100, is_unified_memory=False),
+            gpu_devices=[],
+        ),
+    )
+    cache = SimpleNamespace(worker_id=1, computed_resource_claim={"ram": cache_ram})
+    with (
+        patch(
+            'gpustack.server.controllers.async_session',
+            return_value=mock_async_session(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=mock_async_session(),
+        ),
+        patch('gpustack.schemas.workers.Worker.all', return_value=[worker]),
+        patch(
+            'gpustack.schemas.cache_services.CacheServiceInstance.all_by_fields',
+            return_value=[cache],
+        ) as read,
+    ):
+        result = await find_scale_down_candidates(
+            [instance],
+            model,
+            status_max_score=0,
+            offload_max_score=0,
+            placement_max_score=100,
+            pairing_max_score=0,
+        )
+
+    assert len(result) == 1
+    assert result[0].score == pytest.approx(expected_score)
+    assert read.call_args.args[1] == {"cluster_id": 1}

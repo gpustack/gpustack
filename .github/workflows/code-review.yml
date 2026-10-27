@@ -1,0 +1,44 @@
+# This workflow runs AI code review on pull requests by calling the reusable workflow in
+# gpustack/.github. Trigger gating and the concurrency group are owned by that reusable
+# workflow now, so this file only owns the "on:" triggers (required because GitHub has no
+# way to invoke a workflow_call workflow without a concrete event trigger living here),
+# the "permissions:" grant (GITHUB_TOKEN cannot be granted more than this declares), and
+# this repository's review configuration: the secrets mapping and the LLM inputs below
+# (endpoint/model/thinking/reasoning-effort from org variables).
+#
+# Aligned with upstream:
+# https://github.com/alibaba/open-code-review/blob/main/examples/github_actions/ocr-review.yml
+
+name: Code Review
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  # Use pull_request_target instead of pull_request so that secrets are
+  # available even for PRs from forks. This is safe because the reusable
+  # workflow only reads the diff and does not execute any code from the PR.
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+jobs:
+  review:
+    uses: gpustack/.github/.github/workflows/code-review.yml@main
+    with:
+      # This repository's review backing: the org-level LLM endpoint/model
+      # (OCR appends /chat/completions to the base URL), thinking mode, and
+      # reasoning effort.
+      llm-url: "${{ vars.CI_GPUSTACK_CODEREVIEW_LLM_URL }}"
+      llm-model: "${{ vars.CI_GPUSTACK_CODEREVIEW_LLM_MODEL }}"
+      llm-thinking: "${{ vars.CI_GPUSTACK_CODEREVIEW_LLM_THINKING }}"
+      llm-reasoning-effort: "${{ vars.CI_GPUSTACK_CODEREVIEW_LLM_REASONING_EFFORT }}"
+      llm-temperature: "${{ vars.CI_GPUSTACK_CODEREVIEW_LLM_TEMPERATURE }}"
+      llm-top-p: "${{ vars.CI_GPUSTACK_CODEREVIEW_LLM_TOP_P }}"
+      llm-thinking-clear: "${{ vars.CI_GPUSTACK_CODEREVIEW_LLM_THINKING_CLEAR }}"
+    secrets:
+      llm-auth-token: ${{ secrets.CI_GPUSTACK_CODEREVIEW_LLM_AUTH_TOKEN }}
+      app-id: ${{ secrets.CI_GPUSTACK_CODEREVIEW_APP_ID }}
+      app-private-key: ${{ secrets.CI_GPUSTACK_CODEREVIEW_APP_PRIVATE_KEY }}

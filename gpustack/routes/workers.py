@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Response, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
 
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -19,14 +20,12 @@ from gpustack.api.exceptions import (
     ForbiddenException,
     InvalidException,
 )
+from gpustack.api.auth import is_server_token_principal
 from gpustack.config.config import get_global_config
 from gpustack.api.tenant import (
-    bypass_tenant_filter,
     assert_resource_visible,
     assert_org_owned_writable,
     tenant_list_conditions,
-    cluster_scoped_system,
-    scoped_cluster_row_visible,
 )
 from gpustack.server.deps import (
     SessionDep,
@@ -45,6 +44,7 @@ from gpustack.schemas.workers import (
     WorkerListParams,
     WorkerPublic,
     WorkerUpdate,
+    WorkerLabelsUpdate,
     WorkersPublic,
     Worker,
     WorkerRegistrationPublic,
@@ -54,16 +54,28 @@ from gpustack.schemas.workers import (
 from gpustack.server.bus import Event, EventType
 from gpustack.server.worker_allocated_cache import (
     get_worker_allocated,
+    get_workers_allocated,
     vram_allocated_for_index,
 )
-from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
+from gpustack.schemas.clusters import (
+    Cluster,
+    ClusterProvider,
+    Credential,
+    ClusterStateEnum,
+)
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.config import (
     SensitivePredefinedConfig,
     PredefinedConfigNoDefaults,
 )
-from gpustack.security import get_secret_hash, API_KEY_PREFIX
+from gpustack.security import (
+    generate_access_key,
+    generate_secret_key,
+    get_secret_hash,
+    new_secret_key_digest,
+    API_KEY_PREFIX,
+)
 from gpustack.server.services import WorkerService
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
 from gpustack.utils.grafana import resolve_grafana_base_url
@@ -152,28 +164,6 @@ async def _inject_allocated_into_event(event: Event):
         device.memory.allocated = vram_allocated_for_index(vram, device.index)
 
 
-def _make_worker_visibility_filter(ctx):
-    """Return a row-level visibility predicate mirroring the SQL filter
-    produced by ``tenant_list_conditions``: cluster-scoped SYSTEM accounts
-    are narrowed to their own cluster, everyone else is owner-only."""
-
-    def _visible(w) -> bool:
-        if cluster_scoped_system(ctx):
-            return scoped_cluster_row_visible(ctx, w)
-        if bypass_tenant_filter(ctx):
-            return True
-        org_id = getattr(w, "owner_principal_id", None)
-        if (
-            ctx.current_principal_id is not None
-            and org_id is not None
-            and org_id == ctx.current_principal_id
-        ):
-            return True
-        return False
-
-    return _visible
-
-
 def _build_worker_list_filters(name, uuid, cluster_id, search):
     fuzzy_fields = {"name": search} if search else {}
     fields = {}
@@ -216,14 +206,14 @@ async def get_workers(
     # tenant filtering scopes the list to the caller's own Org — a shared
     # cluster does not expose the owner's workers to the grantee.
     extra_conditions = tenant_list_conditions(ctx, Worker)
-    visible = _make_worker_visibility_filter(ctx)
 
     if params.watch:
         return StreamingResponse(
-            Worker.streaming(
+            tenant_streaming(
+                Worker,
+                ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                filter_func=visible,
                 event_transform=_inject_allocated_into_event,
             ),
             media_type="text/event-stream",
@@ -244,15 +234,52 @@ async def get_workers(
             order_by=_normalize_worker_order_by(params.order_by),
         )
         me_id = user.worker.id if user.worker else None
+        allocations = await get_workers_allocated(
+            worker.id for worker in worker_list.items
+        )
         public_list = [
             to_worker_public(
                 worker,
                 me_id == worker.id,
-                await _lookup_allocated(worker.id),
+                (allocations[worker.id].ram, allocations[worker.id].vram),
             )
             for worker in worker_list.items
         ]
         return WorkersPublic(items=public_list, pagination=worker_list.pagination)
+
+
+@router.post("/labels", status_code=204)
+async def update_worker_labels(
+    ctx: TenantContextDep,
+    session: SessionDep,
+    body: WorkerLabelsUpdate,
+) -> Response:
+    """Add or overwrite label keys on all targets in one transaction."""
+    worker_ids = sorted(set(body.worker_ids))
+    service = WorkerService(session)
+    workers = await service.get_workers_for_update(
+        worker_ids, extra_conditions=tenant_list_conditions(ctx, Worker)
+    )
+    by_id = {worker.id: worker for worker in workers}
+    for worker_id in worker_ids:
+        worker = by_id.get(worker_id)
+        assert_resource_visible(ctx, worker, not_found_message="worker not found")
+        assert_org_owned_writable(ctx, worker, resource_label="worker")
+
+    changed = []
+    for worker in workers:
+        labels = {**(worker.labels or {}), **body.labels}
+        if labels != (worker.labels or {}):
+            worker.labels = labels
+            changed.append(worker)
+    if changed:
+        try:
+            await service.batch_update(changed)
+        except Exception as e:
+            raise InternalServerErrorException(
+                message="Failed to update worker labels"
+            ) from e
+    return Response(status_code=204)
 
 
 @router.get("/{id}", response_model=WorkerPublic)
@@ -318,6 +345,24 @@ def update_worker_data(
         ):
             incoming_data["maintenance"] = existing.maintenance
 
+        # A worker reports external_id by reading $data_dir/external_id, which
+        # its cloud-init writes from the instance metadata service. Shuihua has
+        # no such service, so its workers always report None and this full-dump
+        # merge would erase the id provisioning recorded — after which deleting
+        # the worker takes the hard-delete path, never tells the provider, and
+        # leaks the instance.
+        #
+        # Scoped to this one provider deliberately: everywhere else the
+        # reported value stays authoritative, which is what stops a worker
+        # booted from a cloned OS image from inheriting another worker's
+        # identity.
+        if (
+            cluster is not None
+            and cluster.provider == ClusterProvider.Shuihua
+            and incoming_data.get("external_id") is None
+        ):
+            incoming_data["external_id"] = existing.external_id
+
         to_create_worker = Worker.model_validate(
             {
                 **existing.model_dump(),
@@ -327,6 +372,12 @@ def update_worker_data(
                     **worker_in.labels,
                 },
                 "cluster_id": existing.cluster_id,
+                # worker_uuid is server-assigned identity and the route
+                # ownership key in the proxy plane. A re-registration may
+                # look a record up by it, but the reported value must never
+                # be written back: overwriting it would let one worker
+                # adopt another worker's registrations.
+                "worker_uuid": existing.worker_uuid,
                 # Re-sync from cluster in case org ownership changed.
                 "owner_principal_id": (
                     cluster.owner_principal_id
@@ -431,6 +482,30 @@ def get_existing_worker(
     return None
 
 
+def check_existing_worker_ownership(user: Principal, existing_worker: Optional[Worker]):
+    """A re-registration may only update the caller's own worker record.
+
+    ``get_existing_worker`` matches caller-supplied keys (external_id,
+    worker_uuid, name + the self-reported existence-check label); none of
+    them proves the matched record belongs to the caller, so a worker
+    credential could otherwise adopt -- and overwrite -- any record it can
+    name. Platform admins, server tokens and cluster credentials keep
+    cross-worker authority (their scope was resolved beforehand).
+    """
+    if existing_worker is None:
+        return
+    if user.is_admin or is_server_token_principal(user):
+        return
+    if user.worker is None:
+        # Cluster-scoped credential, allowed for this cluster's workers by
+        # _resolve_create_worker_cluster_id.
+        return
+    if existing_worker.id != user.worker.id:
+        raise ForbiddenException(
+            message="Cannot re-register a worker record other than your own"
+        )
+
+
 def check_worker_name_conflict(
     name: str, workers: List[Worker], existing_id: Optional[int] = None
 ):
@@ -519,11 +594,27 @@ def retry_create_unique_worker_uuid(workers: List[Worker]) -> str:
     )
 
 
-def _resolve_create_worker_cluster_id(user, worker_in: WorkerCreate) -> int:
-    # Fall back to the caller's cluster when the request body omits it.
-    # For a SYSTEM principal that's the cluster bootstrap account, its
-    # ``cluster`` is the back-populated relationship via
-    # ``Cluster.system_principal_id`` (selectinload'd by the auth flow).
+def _resolve_create_worker_cluster_id(user: Principal, worker_in: WorkerCreate) -> int:
+    if not (user.is_admin or is_server_token_principal(user)):
+        if user.kind != PrincipalType.SYSTEM:
+            raise ForbiddenException(message="Only platform admin can register workers")
+        # Registration credentials are limited to the cluster that owns them.
+        # An unlinked SYSTEM account does not carry platform-wide authority.
+        scoped_cluster_id = None
+        if user.worker is not None:
+            scoped_cluster_id = user.worker.cluster_id
+        elif user.cluster is not None:
+            scoped_cluster_id = user.cluster.id
+        if scoped_cluster_id is None:
+            raise ForbiddenException(
+                message="Missing cluster scope for worker registration"
+            )
+        if worker_in.cluster_id not in (None, scoped_cluster_id):
+            raise ForbiddenException(
+                message="Cannot register workers in another cluster"
+            )
+        return scoped_cluster_id
+
     fallback = user.cluster.id if user.cluster is not None else None
     cluster_id = worker_in.cluster_id if worker_in.cluster_id is not None else fallback
     if cluster_id is None:
@@ -612,18 +703,12 @@ async def _persist_worker_registration(
 
 @router.post("", response_model=WorkerRegistrationPublic)
 async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
-    # Worker registration runs through two paths: (1) v1_base_router with
-    # a human session — admin-only, since spinning up workers is a
-    # platform-level action; (2) cluster_client_router with the cluster
-    # service-account token (``user.kind == SYSTEM``). Allow both, deny
-    # the rest.
-    if not (user.is_admin or user.kind == PrincipalType.SYSTEM):
-        raise ForbiddenException(message="Only platform admin can register workers")
+    cluster_id = _resolve_create_worker_cluster_id(user, worker_in)
     async with create_worker_semaphore:
         async with async_session() as session:
-            cluster_id = _resolve_create_worker_cluster_id(user, worker_in)
             all_workers = await Worker.all_by_fields(session, {"deleted_at": None})
             existing_worker = get_existing_worker(cluster_id, worker_in, all_workers)
+            check_existing_worker_ownership(user, existing_worker)
             check_worker_name_conflict(
                 worker_in.name,
                 all_workers,
@@ -646,8 +731,8 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
             worker_config = _build_worker_config_dict(cluster)
 
             hashed_suffix = secrets.token_hex(6)
-            access_key = secrets.token_hex(8)
-            secret_key = secrets.token_hex(16)
+            access_key = generate_access_key()
+            secret_key = generate_secret_key()
             new_token = f"{API_KEY_PREFIX}_{access_key}_{secret_key}"
 
             new_worker = update_worker_data(
@@ -656,6 +741,7 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                 # following args are only used when creating a new worker
                 provider=cluster.provider,
                 cluster=cluster,
+                cluster_id=cluster_id,
                 token=new_token,
             )
             if new_worker.worker_uuid == "":
@@ -678,6 +764,9 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                     name=f'{system_name_prefix}-{hashed_suffix}',
                     access_key=access_key,
                     hashed_secret_key=get_secret_hash(secret_key),
+                    secret_key_digest=new_secret_key_digest(
+                        secret_key=secret_key, is_custom=False, access_key=access_key
+                    ),
                 )
                 if existing_api_key is None
                 else None
@@ -736,7 +825,14 @@ async def update_worker(
 
 @router.delete("/{id}")
 async def delete_worker(ctx: TenantContextDep, session: SessionDep, id: int):
-    worker = await Worker.one_by_id(session, id)
+    # ``Worker.system_principal`` is a ``cascade="delete"`` relationship
+    # declared ``lazy="noload"``; ``_handle_cascade_delete`` reads it off the
+    # instance, so it must be eager loaded or the worker's bootstrap SYSTEM
+    # principal is left dangling (the FK is inverted — ``ON DELETE SET NULL``
+    # only fires the other direction, so the DB can't clean it up).
+    worker = await Worker.one_by_id(
+        session, id, options=[selectinload(Worker.system_principal)]
+    )
     if worker is not None and worker.deleted_at is not None:
         worker = None
     assert_resource_visible(ctx, worker, not_found_message="worker not found")
@@ -762,7 +858,14 @@ async def create_worker_status(user: CurrentUserDep, input: WorkerStatusStored):
     # in-memory worker holding an untyped dict, which triggers
     # PydanticSerializationUnexpectedValue warnings when it is later serialized for
     # watch events / the API response (issue #5751).
-    input_dict = {key: getattr(input, key) for key in input.model_fields_set}
+    # worker_uuid is identity assigned by the server at registration; the
+    # worker client echoes it back on every status sync. Accept the field
+    # for compatibility but never let a status report rewrite it.
+    input_dict = {
+        key: getattr(input, key)
+        for key in input.model_fields_set
+        if key != "worker_uuid"
+    }
     input_dict["heartbeat_time"] = heartbeat_time
 
     # Add worker status to buffer for batch update

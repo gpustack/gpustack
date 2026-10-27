@@ -6,14 +6,18 @@ from urllib.parse import urlparse
 from pathlib import Path
 from fastapi import APIRouter
 import requests
-import yaml
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.schemas.model_sets import (
-    Catalog,
     ModelSet,
     DraftModel,
     ModelSetPublic,
     ModelSpec,
+)
+from gpustack.schemas.catalog_source import (
+    CatalogModelEntry,
+    KIND_DRAFT,
+    KIND_MODEL_SET,
 )
 from gpustack.utils import file
 from gpustack.utils.compat_importlib import pkg_resources
@@ -22,63 +26,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-
-model_catalog: Catalog = None
-model_set_specs: Dict[int, List[ModelSpec]] = {}
-model_set_specs_by_key: Dict[str, ModelSpec] = {}
-
-
-def get_model_sets() -> List[ModelSet]:
-    return model_catalog.model_sets if model_catalog else []
-
-
-def get_catalog_draft_models() -> List[DraftModel]:
-    return model_catalog.draft_models if model_catalog else []
-
-
-def get_model_set_specs() -> Dict[int, List[ModelSpec]]:
-    return model_set_specs
-
-
-def convert_to_public(model_sets: List[ModelSet]) -> List[ModelSetPublic]:
-    return [
-        ModelSetPublic(**model_set.model_dump(exclude={"templates"}))
-        for model_set in model_sets
-    ]
-
-
-def init_model_catalog(model_catalog_file: Optional[str] = None):
-    model_sets: List[ModelSet] = []
-    try:
-        if model_catalog_file is None:
-            model_catalog_file = get_builtin_model_catalog_file()
-
-        raw_data = None
-        parsed_url = urlparse(model_catalog_file)
-        if parsed_url.scheme in ("http", "https"):
-            response = requests.get(model_catalog_file)
-            response.raise_for_status()
-            raw_data = yaml.safe_load(response.text)
-        else:
-            with open(model_catalog_file, "r") as f:
-                raw_data = yaml.safe_load(f)
-
-        global model_catalog
-        model_catalog = Catalog(**raw_data)
-        logger.debug(
-            f"Loaded {len(model_catalog.model_sets)} model sets from model catalog: {model_catalog_file}"
-        )
-        model_sets = model_catalog.model_sets
-
-        # Use index as the id for each model set
-        for idx, model_set in enumerate(model_sets):
-            model_set.id = idx + 1
-
-        model_sets = sort_model_sets(model_sets)
-        model_catalog.model_sets = convert_to_public(model_sets)
-        init_model_set_specs(model_sets)
-    except Exception as e:
-        raise Exception(f"Failed to load model catalog: {e}")
+# Bounded because this read is on the start-up path, and on every leader start.
+_CATALOG_FETCH_TIMEOUT = 30
 
 
 def sort_model_sets(model_sets: List[ModelSet]) -> List[ModelSet]:
@@ -94,17 +43,70 @@ def sort_model_sets(model_sets: List[ModelSet]) -> List[ModelSet]:
     )
 
 
-def init_model_set_specs(model_sets: List[ModelSet]):
-    global model_set_specs, model_set_specs_by_key
-    model_set_specs = {}
-    for model_set in model_sets:
-        model_set_specs[model_set.id] = model_set.specs
+# ---- DB-backed catalog accessors ----
+# The catalog is materialized into CatalogModelEntry by CatalogSourceController
+# (from managed CatalogSource rows). These accessors read that table; the
+# catalog is small (hundreds of rows) so loading + Python filtering per request
+# is cheap and mirrors the previous in-memory behavior.
 
-        # Initialize specs by key for quick lookup.
-        # Later specs override earlier ones to prioritize standard specs.
+
+def _entry_to_model_set(entry: CatalogModelEntry) -> ModelSet:
+    """Reconstruct a ModelSet (specs inline) from an entry, with its stable id."""
+    model_set = ModelSet(**entry.payload)
+    model_set.id = entry.id
+    return model_set
+
+
+def _entry_to_public(entry: CatalogModelEntry) -> ModelSetPublic:
+    """Public model set (no specs) with the stable id and source stamp."""
+    data = {
+        **entry.payload,
+        "id": entry.id,
+        "source_name": entry.source_name,
+        "source_type": entry.source_type,
+    }
+    return ModelSetPublic(**data)
+
+
+async def _model_set_entries(session: AsyncSession) -> List[CatalogModelEntry]:
+    return await CatalogModelEntry.all_by_fields(session, {"kind": KIND_MODEL_SET})
+
+
+async def get_model_sets(session: AsyncSession) -> List[ModelSetPublic]:
+    """All catalog model sets as public objects, in catalog display order."""
+    entries = await _model_set_entries(session)
+    return sort_model_sets([_entry_to_public(entry) for entry in entries])
+
+
+async def get_model_set_specs(session: AsyncSession, id: int) -> List[ModelSpec]:
+    """The specs of one model set, or [] when the id is not a model set."""
+    entry = await CatalogModelEntry.one_by_id(session, id)
+    if entry is None or entry.kind != KIND_MODEL_SET:
+        return []
+    return ModelSet(**entry.payload).specs
+
+
+async def get_catalog_draft_models(session: AsyncSession) -> List[DraftModel]:
+    entries = await CatalogModelEntry.all_by_fields(session, {"kind": KIND_DRAFT})
+    return [DraftModel(**entry.payload) for entry in entries]
+
+
+async def get_catalog_spec_by_source_key(
+    session: AsyncSession, model_source_key: str
+) -> Optional[ModelSpec]:
+    """The catalog spec matching a model_source_key.
+
+    Within a set (specs reversed) and across sets in display order, the first
+    match wins — prioritizing standard specs, matching the old in-memory lookup.
+    """
+    model_sets = sort_model_sets(
+        [_entry_to_model_set(entry) for entry in await _model_set_entries(session)]
+    )
+    by_key: Dict[str, ModelSpec] = {}
+    for model_set in model_sets:
         for spec in reversed(model_set.specs):
-            if not model_set_specs_by_key.get(spec.model_source_key):
-                model_set_specs_by_key[spec.model_source_key] = spec
+            by_key.setdefault(spec.model_source_key, spec)
+    return by_key.get(model_source_key)
 
 
 def prepare_chat_templates(data_dir: str):
@@ -115,6 +117,25 @@ def prepare_chat_templates(data_dir: str):
         return
 
     file.copy_with_owner(source_dir, target_dir)
+
+
+def read_builtin_catalog_text(model_catalog_file: Optional[str] = None) -> str:
+    """Read the raw catalog YAML text from a local file or URL.
+
+    An explicit ``model_catalog_file`` (path or URL) wins, else the packaged
+    file with HF/ModelScope variant detection. Blocking I/O (and the variant
+    network probe) — the leader seed calls it via ``asyncio.to_thread``.
+    """
+    if model_catalog_file is None:
+        model_catalog_file = get_builtin_model_catalog_file()
+
+    parsed_url = urlparse(model_catalog_file)
+    if parsed_url.scheme in ("http", "https"):
+        response = requests.get(model_catalog_file, timeout=_CATALOG_FETCH_TIMEOUT)
+        response.raise_for_status()
+        return response.text
+    with open(model_catalog_file, "r") as f:
+        return f.read()
 
 
 def get_builtin_model_catalog_file() -> str:

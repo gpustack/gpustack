@@ -28,6 +28,11 @@ class LocalCoordinator(Coordinator):
         super().__init__(config, **kwargs)
         self._started = False
 
+    @property
+    def is_distributed(self) -> bool:
+        """No other instance to receive events from, so no id-only payloads."""
+        return False
+
     async def start(self):
         """Start the local coordinator (no-op)."""
         self._started = True

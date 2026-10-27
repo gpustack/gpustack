@@ -1,0 +1,107 @@
+# Japanese labels for the shared documentation navigation and theme.
+site_name: GPUStack
+site_description: GPUStack は、AI モデルを効率的にデプロイして実行するためのオープンソース GPU クラスター管理プラットフォームです。
+theme_translations:
+  Switch to light mode: ライトモードに切り替え
+  Switch to dark mode: ダークモードに切り替え
+  Switch to system preference: システム設定に合わせる
+nav_translations:
+  Home: ホーム
+  Overview: 概要
+  Quickstart: クイックスタート
+  Installation: インストール
+  Requirements: システム要件
+  Installation via Docker: Docker によるインストール
+  Installation via Helm: Helm によるインストール
+  Air-Gapped Installation: オフライン環境へのインストール
+  Uninstallation: アンインストール
+  Upgrade: アップグレード
+  Upgrade via Docker: Docker によるアップグレード
+  Upgrade via Helm: Helm によるアップグレード
+  Upgrade a Cluster Deployment: クラスターデプロイのアップグレード
+  Migration: 移行
+  User Guide: ユーザーガイド
+  Playground: プレイグラウンド
+  Chat: チャット
+  Image: 画像
+  Audio: 音声
+  Embedding: 埋め込み
+  Rerank: リランキング
+  Model Catalog: モデルカタログ
+  Model Deployment Management: モデルデプロイ管理
+  PD Disaggregation: プリフィルとデコードの分離
+  Model Route Management: モデルルート管理
+  Model Provider Management: モデルプロバイダー管理
+  Inference Backend Management: 推論バックエンド管理
+  Built-in Inference Backends: 組み込み推論バックエンド
+  Cache Service Management: キャッシュサービス管理
+  OTA Content Updates: OTA コンテンツ更新
+  Compatibility Check: 互換性チェック
+  Model File management: モデルファイル管理
+  Cluster Management: クラスター管理
+  GPU Service: GPU サービス
+  GPU Instances: GPU インスタンス
+  Instance Types: インスタンスタイプ
+  Instance Templates: インスタンステンプレート
+  Storage: ストレージ
+  Storage Types: ストレージタイプ
+  SSH Public Keys: SSH 公開鍵
+  Cloud Credential Management: クラウド認証情報管理
+  API Key Management: API キー管理
+  User Management: ユーザー管理
+  Usage: 使用量
+  Single Sign-On (SSO) Authentication: シングルサインオン（SSO）認証
+  Observability: オブザーバビリティ
+  Benchmarking: ベンチマーク
+  Using Models: モデルの利用
+  Using Large Language Models: 大規模言語モデルの利用
+  Using Vision Language Models: 視覚言語モデルの利用
+  Using Embedding Models: 埋め込みモデルの利用
+  Using Reranker Models: リランカーモデルの利用
+  Using Image Generation Models: 画像生成モデルの利用
+  Using Audio Models: 音声モデルの利用
+  Tutorials: チュートリアル
+  Integrations: 外部ツールとの連携
+  Inference APIs: 推論 API
+  Integrate with Claude Code: Claude Code との連携
+  Integrate with Dify: Dify との連携
+  Integrate with RAGFlow: RAGFlow との連携
+  Integrate with Cherry Studio: Cherry Studio との連携
+  Integrate with OpenClaw: OpenClaw との連携
+  Integrate with n8n: n8n との連携
+  Integrate with MaxKB: MaxKB との連携
+  Integrate with NewAPI: NewAPI との連携
+  Integrate with LiteLLM: LiteLLM との連携
+  Running DeepSeek R1 671B with Distributed vLLM: 分散 vLLM による DeepSeek R1 671B の実行
+  Running Distributed vLLM with the MultiProcessing Backend: MultiProcessing バックエンドによる分散 vLLM の実行
+  Running DeepSeek R1 671B with Distributed Ascend Mindie: 分散 Ascend MindIE による DeepSeek R1 671B の実行
+  Inference On CPUs: CPU 上での推論
+  Inference with Tool Calling: ツール呼び出しによる推論
+  Using Custom Inference Backend: カスタム推論バックエンドの利用
+  Adding a GPU Cluster Using DigitalOcean: DigitalOcean を使用した GPU クラスターの追加
+  Adding a GPU Cluster Using Shuihua: Shuihua を使用した GPU クラスターの追加
+  Adding a GPU Cluster Using Kubernetes: Kubernetes を使用した GPU クラスターの追加
+  Managing Model Routes: モデルルートの管理
+  Routing with LB Policies: ロードバランシングポリシーによるルーティング
+  Serving Models with LoRA Adapters: LoRA アダプターを使用したモデルの提供
+  Architecture: アーキテクチャ
+  Scheduler: スケジューラー
+  Troubleshooting: トラブルシューティング
+  FAQ: よくある質問
+  API Reference: API リファレンス
+  CLI Reference: CLI リファレンス
+  Start: 起動
+  Download Tools: ツールのダウンロード
+  Reload Config: 設定の再読み込み
+  List Images: イメージの一覧表示
+  Save Images: イメージの保存
+  Load Images: イメージの読み込み
+  Copy Images: イメージのコピー
+  Environment Variables: 環境変数
+  Inference Performance Lab: 推論パフォーマンスラボ
+  Optimizing Throughput: スループットの最適化
+  Optimizing Latency: レイテンシーの最適化
+  References: 参考資料
+  The Impact of Quantization on vLLM Inference Performance: vLLM 推論パフォーマンスに対する量子化の影響
+  Evaluating LMCache Prefill Acceleration in vLLM: vLLM における LMCache のプリフィル高速化の評価
+  Container Image Selector: コンテナーイメージセレクター

@@ -5,9 +5,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
+from gpustack.policies.resource_view import ResourceView
 from gpustack.policies.base import (
     Allocatable,
-    Allocated,
 )
 from gpustack.scheduler.calculator import calculate_local_model_weight_size
 from gpustack.schemas.model_files import ModelFileStateEnum
@@ -40,113 +40,6 @@ class WorkerGPUInfo(BaseModel):
     worker_name: str
     gpu_device: GPUDeviceStatus
     allocatable_vram: int  # in bytes
-
-
-def compute_worker_allocated(
-    all_model_instances: List[ModelInstance],
-    worker_id: int,
-    gpu_type: Optional[str] = None,
-) -> Allocated:
-    """Aggregate (ram, {gpu_index: vram}) for ``worker_id`` from current
-    ModelInstance assignments — main worker + distributed subordinates.
-
-    The single source of truth for "what's scheduled on this worker", used
-    by the scheduler (via :func:`get_worker_allocatable_resource`), the
-    workers REST API, and the worker-side collector. Mirrors the K8s
-    scheduler pattern of deriving Allocated from current workload→node
-    bindings rather than from anything the node self-reports.
-
-    For the main worker, both ram and per-GPU vram are counted. For
-    distributed subordinate workers, only vram is counted — the rpc-server
-    side doesn't consume the model's RAM.
-    """
-    allocated = Allocated(ram=0, vram={})
-
-    def add_vram(claim):
-        for gpu_index, vram in (claim.vram or {}).items():
-            allocated.vram[gpu_index] = allocated.vram.get(gpu_index, 0) + vram
-
-    for mi in all_model_instances:
-        if mi.worker_id == worker_id and (
-            gpu_type is None or mi.gpu_type is None or mi.gpu_type == gpu_type
-        ):
-            claim = mi.computed_resource_claim
-            if claim is not None:
-                allocated.ram += claim.ram or 0
-                if mi.gpu_indexes:
-                    add_vram(claim)
-
-        if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
-            for sw in mi.distributed_servers.subordinate_workers:
-                if sw.worker_id != worker_id:
-                    continue
-                if sw.computed_resource_claim and (
-                    gpu_type is None or mi.gpu_type == gpu_type
-                ):
-                    add_vram(sw.computed_resource_claim)
-
-    return allocated
-
-
-def get_worker_allocatable_resource(
-    all_model_instances: List[ModelInstance],
-    worker: Worker,
-    gpu_type: Optional[str] = None,
-) -> Allocatable:
-    """
-    Get the worker with the latest allocatable resources, if gpu_type is provided, only consider the GPUs of that type.
-    """
-
-    is_unified_memory = worker.status.memory.is_unified_memory
-    model_instances = get_worker_model_instances(all_model_instances, worker)
-    allocated = compute_worker_allocated(model_instances, worker.id, gpu_type)
-
-    allocatable = Allocatable(ram=0, vram={})
-    if worker.status.gpu_devices:
-        for _, gpu in enumerate(worker.status.gpu_devices):
-            gpu_index = gpu.index
-
-            if (
-                gpu.memory is None
-                or gpu.memory.total is None
-                or (gpu_type is not None and gpu.type != gpu_type)
-            ):
-                continue
-            allocatable_vram = max(
-                (
-                    gpu.memory.total
-                    - allocated.vram.get(gpu_index, 0)
-                    - worker.system_reserved.vram
-                ),
-                0,
-            )
-            allocatable.vram[gpu_index] = allocatable_vram
-
-    allocatable.ram = max(
-        (worker.status.memory.total - allocated.ram - worker.system_reserved.ram), 0
-    )
-
-    if is_unified_memory:
-        allocatable.ram = max(
-            allocatable.ram
-            - worker.system_reserved.vram
-            - sum(allocated.vram.values()),
-            0,
-        )
-
-        # For UMA, we need to set the gpu memory to the minimum of
-        # the calculated with max allow gpu memory and the allocatable memory.
-        if allocatable.vram:
-            allocatable.vram[0] = min(allocatable.ram, allocatable.vram[0])
-
-    logger.debug(
-        f"Worker {worker.name} gpu_type {gpu_type}, "
-        f"reserved memory: {worker.system_reserved.ram}, "
-        f"reserved gpu memory: {worker.system_reserved.vram}, "
-        f"allocatable memory: {allocatable.ram}, "
-        f"allocatable gpu memory: {allocatable.vram}"
-    )
-    return allocatable
 
 
 def group_gpu_devices_by_memory(
@@ -252,6 +145,78 @@ def group_workers_by_gpu_type(workers: List[Worker]) -> Dict[str, List[Worker]]:
             gpu_type_to_workers.setdefault(gpu_type, []).append(w)
 
     return gpu_type_to_workers
+
+
+def worker_largest_gpu_memory(worker: Worker) -> Optional[int]:
+    """The total memory of the biggest GPU a worker reports.
+
+    Reads `total` rather than what is free, because that is the figure a
+    member's VRAM reservation is a fraction of: two cards of one model are the
+    same kind of card whether one of them is busy or idle. The biggest card
+    stands for the worker because the candidate selectors take cards in
+    descending order of allocatable memory, so it is the first one a member
+    lands on.
+
+    Args:
+        worker: The worker whose GPU telemetry to read.
+
+    Returns:
+        The biggest GPU's total memory in bytes, or None when the worker
+        reports no GPU with a readable total.
+    """
+    status = getattr(worker, "status", None)
+    devices = getattr(status, "gpu_devices", None) if status else None
+    totals = [
+        gpu.memory.total
+        for gpu in devices or []
+        if getattr(gpu, "memory", None) and getattr(gpu.memory, "total", None)
+    ]
+    return max(totals) if totals else None
+
+
+def group_workers_by_gpu_memory_size(
+    workers: List[Worker], tolerance: float = 0.9
+) -> List[List[Worker]]:
+    """Band workers whose biggest GPU is the same size.
+
+    Two cards count as one size when the smaller is at least `tolerance` of the
+    bigger, which absorbs the few hundred MiB between boards of one model: a
+    48 GiB card reporting 47.4 GiB is not a different kind of card.
+
+    Workers reporting no GPU total are left out of the result altogether. Their
+    size is not known, and an unknown is not a size to band them under.
+
+    Args:
+        workers: The workers to band.
+        tolerance: How much smaller a band's smallest card may be than its
+            biggest, as a fraction of the biggest.
+
+    Returns:
+        Bands ordered by size, smallest first; within a band the workers are
+        ordered by size and then by id, so an unchanged fleet bands the same
+        way twice.
+    """
+    sized = []
+    for worker in workers:
+        size = worker_largest_gpu_memory(worker)
+        if size:
+            sized.append((size, getattr(worker, "id", 0) or 0, worker))
+    if not sized:
+        return []
+    sized.sort(key=lambda entry: (entry[0], entry[1]))
+
+    bands: List[List[Worker]] = []
+    current: List[Worker] = []
+    smallest = 0
+    for size, _worker_id, worker in sized:
+        if current and smallest < size * tolerance:
+            bands.append(current)
+            current = []
+        if not current:
+            smallest = size
+        current.append(worker)
+    bands.append(current)
+    return bands
 
 
 def get_vram_claim_from_model_env(model: Model) -> Optional[int]:
@@ -707,7 +672,7 @@ async def get_local_model_weight_size(
 
 def group_worker_gpu_by_memory(
     workers: List[Worker],
-    model_instances: List[ModelInstance],
+    resource_view: ResourceView,
     ram_claim: int = 0,
     gpu_type: Optional[str] = None,
 ) -> List[List[WorkerGPUInfo]]:
@@ -717,7 +682,7 @@ def group_worker_gpu_by_memory(
     the allocatable memory of other GPUs in the same group.
 
     Args:
-        engine: Database engine for calculating allocatable resources
+        resource_view: Resource view for this scheduling pass
         workers: List of workers containing GPU devices
         ram_claim: RAM claim in bytes to filter out workers that do not have enough RAM
 
@@ -743,7 +708,7 @@ def group_worker_gpu_by_memory(
             continue
 
         # Get allocatable resources for this worker
-        allocatable = get_worker_allocatable_resource(model_instances, worker, gpu_type)
+        allocatable = resource_view.allocatable(worker, gpu_type)
 
         if ram_not_enough(ram_claim, allocatable):
             continue
@@ -818,15 +783,20 @@ def ram_not_enough(ram_claim: int, allocatable: Allocatable) -> bool:
 def get_model_ram_claim(model: Model) -> int:
     """
     Get the RAM requirement for the model in bytes.
+
+    Only a LOCAL extended KV cache reserves host RAM here -- see
+    :func:`get_computed_ram_claim` for why "shared" must not.
     """
     extended_kv_cache = model.extended_kv_cache
     if (
         extended_kv_cache
-        and extended_kv_cache.enabled
+        and extended_kv_cache.is_local()
         and extended_kv_cache.ram_size
         and extended_kv_cache.ram_size > 0
     ):
-        # When extended kv cache is enabled, reserve the ram for KV cache.
+        # The in-process cache lives in the engine's own address space, so
+        # the deployment claims it. Shared mode claims nothing: the cache
+        # is the cache server's, sized by the service's own capacity.
         return extended_kv_cache.ram_size * 1024**3
     return 0
 
@@ -838,15 +808,22 @@ def get_computed_ram_claim(
     Get the computed RAM claim for the model based on the provided model and vram_claim.
     The priority is as follows:
     1. If static_ram is provided, use it.
-    2. If RAM size for extended KV cache is available, use it.
-    3. If RAM ratio for extended KV cache is set and vram_claim is available, calculate RAM as ram_ratio * total_vram_claim.
+    2. If RAM size for a LOCAL extended KV cache is available, use it.
+    3. If RAM ratio for a LOCAL extended KV cache is set and vram_claim is available,
+       calculate RAM as ram_ratio * total_vram_claim.
     4. If neither is available, return None.
+
+    Only the in-process mode claims here. A deployment attached to a cache
+    service holds no CPU cache of its own — the worker skips the sizing
+    entirely and the cache lives in the cache server's container, under the
+    service's own capacity — so claiming for it would reserve host RAM
+    nothing uses, once per attached deployment.
     """
     if static_ram:
         return static_ram
 
     ext = model.extended_kv_cache
-    if not ext or not ext.enabled:
+    if not ext or not ext.is_local():
         return None
 
     claim = None

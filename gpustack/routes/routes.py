@@ -1,10 +1,14 @@
 import os
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from gpustack.routes import (
     api_keys,
     auth,
+    cache_providers,
+    cacerts,
+    cache_service_instances,
+    cache_services,
     cluster_access,
     config,
     dashboard,
@@ -19,11 +23,16 @@ from gpustack.routes import (
     model_evaluations,
     model_files,
     model_instances,
+    model_instance_ports,
+    model_revisions,
     model_sets,
     organization_members,
     organizations,
+    ota_sources,
+    pd_modes,
     probes,
     proxy,
+    source_probe,
     update,
     user_groups,
     users,
@@ -35,6 +44,7 @@ from gpustack.routes import (
     cloud_credentials,
     worker_pools,
     clusters,
+    cluster_topology,
     token,
     benchmarks,
     benchmark_profiles,
@@ -46,6 +56,7 @@ from gpustack.routes import (
     gpu_instance_persistent_volume_types,
     gpu_instance_persistent_volumes,
     gpu_instance_types,
+    gpu_instance_type_flavors,
     gpu_instances,
 )
 
@@ -137,6 +148,12 @@ v1_base_router.include_router(
 # and friends, so platform-only operations (e.g. set-default) still
 # require is_admin inside the handler.
 v1_base_router.include_router(clusters.router, prefix="/clusters", tags=["Clusters"])
+# Same prefix, separate module: the topology preview is read-only and answers a
+# question about a declaration that has not been saved, which shares nothing
+# with cluster CRUD beyond the id in the path.
+v1_base_router.include_router(
+    cluster_topology.router, prefix="/clusters", tags=["Clusters"]
+)
 v1_base_router.include_router(
     cloud_credentials.router,
     prefix="/cloud-credentials",
@@ -145,8 +162,8 @@ v1_base_router.include_router(
 v1_base_router.include_router(
     worker_pools.router, prefix="/worker-pools", tags=["Worker Pools"]
 )
-# Workers are visible to anyone who can see their cluster; mutations gated
-# by an explicit is_admin check inside each handler.
+# Worker reads are tenant-scoped. Mutations, including batch labels, enforce
+# visibility and organization ownership inside their handlers.
 v1_base_router.include_router(workers.router, prefix="/workers", tags=["Workers"])
 
 cluster_client_router = APIRouter()
@@ -178,6 +195,18 @@ model_routers = [
         "router": model_files.router,
         "prefix": "/model-files",
         "tags": ["Model Files"],
+        "dependencies": _org_owner_only,
+    },
+    {
+        "router": cache_services.router,
+        "prefix": "/cache-services",
+        "tags": ["Cache Services"],
+        "dependencies": _org_owner_only,
+    },
+    {
+        "router": cache_service_instances.router,
+        "prefix": "/cache-service-instances",
+        "tags": ["Cache Service Instances"],
         "dependencies": _org_owner_only,
     },
     {
@@ -224,6 +253,11 @@ model_routers = [
         "tags": ["GPU Instance Types"],
     },
     {
+        "router": gpu_instance_type_flavors.router,
+        "prefix": "/gpu-instance-type-flavors",
+        "tags": ["GPU Instance Type Flavors"],
+    },
+    {
         "router": gpu_instances.router,
         "prefix": "/gpu-instances",
         "tags": ["GPU Instances"],
@@ -231,6 +265,11 @@ model_routers = [
 ]
 # worker client have full access to model and model instances
 worker_client_router = APIRouter()
+worker_client_router.include_router(
+    model_instance_ports.router,
+    prefix="/model-instances",
+    include_in_schema=False,
+)
 for model_router in model_routers:
     worker_client_router.include_router(**model_router)
 # ready only access to workers
@@ -258,6 +297,13 @@ worker_client_router.add_api_route(
     methods=["POST"],
     include_in_schema=False,
 )
+worker_client_router.add_api_route(
+    path="/runner-override-entries",
+    endpoint=inference_backend.get_runner_override_entries,
+    methods=["GET"],
+    response_model=inference_backend.RunnerOverrideEntriesPublic,
+    tags=["Inference Backend"],
+)
 worker_client_router.include_router(
     inference_backend.router, prefix="/inference-backends", tags=["Inference Backend"]
 )
@@ -265,6 +311,12 @@ worker_client_router.include_router(
 # Tenant-aware routers: any logged-in user can hit them; the handlers
 # filter by TenantContext (owner_principal_id / cluster visibility).
 tenant_routers = model_routers + [
+    {
+        "router": model_revisions.router,
+        "prefix": "/models",
+        "tags": ["Models"],
+        "dependencies": _org_owner_only,
+    },
     {"router": gpu_devices.router, "prefix": "/gpu-devices", "tags": ["GPU Devices"]},
     {
         "router": model_provider.router,
@@ -291,6 +343,16 @@ tenant_routers = model_routers + [
         "router": draft_models.router,
         "prefix": "/draft-models",
         "tags": ["Draft Models"],
+    },
+    {
+        "router": cache_providers.router,
+        "prefix": "/cache-providers",
+        "tags": ["Cache Providers"],
+    },
+    {
+        "router": pd_modes.router,
+        "prefix": "/pd-modes",
+        "tags": ["PD Modes"],
     },
     # Inference backends are platform-wide (admin curates) but every Org
     # owner/manager needs to read them to pick a backend at deploy time.
@@ -337,6 +399,21 @@ admin_routers = [
         "prefix": "/organizations",
         "tags": ["Organizations"],
         "include_in_schema": _EXTENDED_API_IN_SCHEMA,
+    },
+    # The OTA content family: per-kind source configuration, and the probe that
+    # reports on it. Top-level rather than hanging off each consumer — see
+    # ``routes/ota_sources.py``. Versioned, because both responses mirror the
+    # source rows rather than the server itself, unlike the unversioned /debug
+    # and /update.
+    {
+        "router": ota_sources.router,
+        "prefix": "/ota-sources",
+        "tags": ["OTA Sources"],
+    },
+    {
+        "router": source_probe.router,
+        "prefix": "/source-probe",
+        "tags": ["Source Probe"],
     },
 ]
 
@@ -418,8 +495,79 @@ inference_router.include_router(
     tags=["Rerank"],
 )
 
+
+async def mark_internal_inference(request: Request):
+    """Marks a request as coming from the benchmark proxy, not from a client.
+
+    The OpenAI handler gates on the caller's accessible model names, which a
+    load generator has none of: it authenticates with the worker token, which
+    is a cluster credential rather than anyone's account. The exemption lives
+    on this prefix rather than inside the check so it cannot be reached from
+    `/v1` -- a request that did not come through here never has the flag.
+
+    **This is not where the tenant boundary is drawn, and narrowing it here
+    buys nothing.** The worker token is a cross-tenant credential by design:
+    `bypass_tenant_filter` returns True for every `kind=SYSTEM` principal
+    because, as it says, such a principal "needs to read every tenant's
+    resources to do their job". The same token already passes
+    `model_allowed_for_user` on plain `/v1` for any route in the fleet --
+    `get_user_accessible_model_names` hands a SYSTEM principal every
+    `ModelRoute` there is -- and `worker_client_router` grants it more than
+    that besides. So binding this flag to a running benchmark would constrain
+    a path that is strictly narrower than the ones already open to the same
+    credential, and it cannot be free: `benchmarks` carries one index, unique
+    on `name`, so every such check is a table scan on the load generator's
+    own request path, charged to the latency the run exists to measure. If
+    the worker token's reach is ever narrowed, this is one of the places that
+    has to be revisited -- but then the boundary belongs at the credential,
+    not here.
+    """
+    request.state.internal_inference = True
+
+
+# Compatibility endpoint for benchmark containers still running during a
+# rolling upgrade. Their target is fixed in their command line until they
+# finish. Keep worker authentication while those containers drain; new route
+# benchmarks use the gateway entrance recorded in their snapshot.
+benchmark_proxy_router = APIRouter(
+    dependencies=[Depends(get_worker_principal), Depends(mark_internal_inference)]
+)
+
+
+@benchmark_proxy_router.get("/health", include_in_schema=False)
+async def benchmark_proxy_health():
+    """What the load generator probes before it starts.
+
+    guidellm validates a backend by GETting `{target}/health` with the auth
+    headers, and treats a non-200 as "cannot reach or configure this backend"
+    -- so without this the whole run dies before its first request. Serving it
+    on the prefix rather than switching the check off keeps the probe worth
+    making: reaching this handler proves both that the proxy is up and that
+    the worker token authenticates, which is the failure it would otherwise
+    discover as a wall of 401s mid-ramp.
+    """
+    return {"status": "ok"}
+
+
+benchmark_proxy_router.include_router(
+    openai.get_api_router(),
+    prefix="/v1",
+    responses=openai_api_error_responses,
+    tags=["Benchmark inference proxy"],
+)
+
+api_router.include_router(
+    benchmark_proxy_router,
+    prefix=f"{versioned_prefix}/benchmark-proxy",
+)
+
 # Following routes should not check api scope as it is publicly accessible and used for authentication by external services.
 api_router.include_router(probes.router, tags=["Probes"])
+# Workers retrieve this public-key material before they can authenticate. The
+# registration command's checksum gates what an unverified download may install.
+api_router.include_router(
+    cacerts.router, prefix=versioned_prefix, tags=["TLS"], include_in_schema=False
+)
 api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 api_router.include_router(
     router=token.router,

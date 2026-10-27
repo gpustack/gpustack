@@ -37,18 +37,24 @@ from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
 from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.security import (
+    generate_access_key,
+    generate_secret_key,
     generate_secure_password,
     get_secret_hash,
+    migrated_token_key_pair,
+    new_secret_key_digest,
     API_KEY_PREFIX,
 )
 from gpustack.server.app import create_app
+from gpustack.extension import plugin_needs_instantiation
 from gpustack.server.passwords import set_password
 from gpustack.server.services import provision_bootstrap_admin_orgs
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.config import registration
-from gpustack.server.catalog import init_model_catalog
+from gpustack.server.pd_mode_catalog import load_pd_modes
 from gpustack.server.controllers import (
+    CacheServiceController,
     ModelController,
     ModelFileController,
     ModelInstanceController,
@@ -56,6 +62,9 @@ from gpustack.server.controllers import (
     ClusterController,
     WorkerPoolController,
     InferenceBackendController,
+    RunnerSourceController,
+    CacheProviderSourceController,
+    CatalogSourceController,
     ModelRouteController,
     ModelRouteTargetController,
     ModelProviderController,
@@ -64,16 +73,22 @@ from gpustack.gpu_instances.controllers import (
     GPUInstanceController,
     GPUInstancePersistentVolumeController,
     GPUInstancePersistentVolumeTypeController,
+    GPUInstanceTypeController,
 )
+from gpustack.schemas.catalog_source import normalize_catalog_yaml
+from gpustack.server.catalog import read_builtin_catalog_text
 from gpustack.server.db import async_session
+from gpustack.server.gateway_auth_reconciler import GatewayAuthReconciler
 from gpustack.server.lora_model_routes import (
     cleanup_orphan_lora_routes,
     create_lora_model_routes,
 )
 from gpustack.utils.lora_model_source import normalized_lora_list
+from gpustack.utils.file import write_credential_file
 from gpustack.server.init_db import init_db, get_query_count
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
+from gpustack.server.sources.probe import SourceRefresher
 from gpustack.server.update_check import UpdateChecker
 from gpustack.server.worker_status_buffer import flush_worker_status_to_db
 from gpustack.server.metrics_collector import flush_gateway_metrics_to_db
@@ -87,6 +102,8 @@ from gpustack.schemas.metered_usage import MeteredUsage, MeteredUsageArchive
 from gpustack.schemas.resource_events import ResourceEvent, ResourceEventArchive
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
+from gpustack.server.scaling_scheduler import ScalingScheduler
+from gpustack.utils.platform import is_inside_kubernetes
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
@@ -95,6 +112,7 @@ from gpustack.gateway.utils import (
     model_route_ingress_prefix,
     model_route_ingress_name,
     fallback_ingress_name,
+    route_rule_ingress_names,
     cleanup_ingresses,
     cleanup_model_mapper,
     cleanup_fallback_filters,
@@ -104,6 +122,7 @@ from gpustack.gateway.utils import (
     resolve_instance_address_from_model_header,
 )
 from gpustack.gateway import get_async_k8s_config
+from gpustack.gateway.plugins import verify_published_plugin_modules
 from gpustack.envs import (
     GATEWAY_PORT_CHECK_INTERVAL,
     GATEWAY_PORT_CHECK_RETRY_COUNT,
@@ -111,13 +130,18 @@ from gpustack.envs import (
 )
 from gpustack.server.coordinator import LocalCoordinator
 from gpustack.server.coordinator.cache import preload_cache
-from gpustack.server.coordinator.models import get_model_for_topic
+from gpustack.server.coordinator.models import (
+    external_topics,
+    get_model_for_topic,
+    register_topic,
+)
 from gpustack.server import bus
 from gpustack.server import cache as cache_module
 from alembic import command
 from alembic.config import Config as AlembicConfig
 
-from gpustack.websocket_proxy.proxy_server import HTTPSProxyServer
+from gpustack.websocket_proxy.proxy_server import HTTPSProxyServer, StallPolicy
+from gpustack.utils.stall import stall_error_json, stall_error_sse
 from gpustack.api.auth import (
     authenticate_worker_by_request_headers,
 )
@@ -125,6 +149,9 @@ from gpustack.api.auth import (
 from gpustack.gpu_instances import gateway_client
 from gpustack.gpu_instances.gateway import (
     reconcile_gpustack_operator_subscription,
+)
+from gpustack.gpu_instances.settings import (
+    reconcile_gpustack_operator_settings,
 )
 
 logger = logging.getLogger(__name__)
@@ -238,13 +265,16 @@ class Server:
         # Coordination components
         self._coordinator = None
         self._leader_election_task = None
+        self._leader_ai_proxy_cleanup_task = None
 
     @property
     def all_processes(self):
         return self._before_healthy_sub_processes + self._after_healthy_sub_processes
 
     def _create_async_task(self, coro):
-        self._async_tasks.append(asyncio.create_task(coro))
+        task = asyncio.create_task(coro)
+        self._async_tasks.append(task)
+        return task
 
     @property
     def config(self):
@@ -264,7 +294,13 @@ class Server:
         self._run_migrations()
         await self._prepare_data()
 
-        init_model_catalog(self._config.model_catalog_file)
+        self._validate_configured_model_catalog()
+        # Validate the PD-mode catalog here rather than on first lookup: a
+        # mode name or engine set that disagrees with the schema would
+        # otherwise surface as a table miss at deploy time, injecting
+        # nothing and coming up looking healthy.
+        load_pd_modes()
+
         # it's safe to determine server_role after migration
         if self._config.server_role() == Config.ServerRole.BOTH:
             self._after_healthy_sub_processes.append(self._worker_process)
@@ -334,8 +370,35 @@ class Server:
 
         server = uvicorn.Server(config)
         self._create_async_task(server.serve())
+        self._create_async_task(self._check_gateway_startup(server))
 
         await asyncio.gather(*self._async_tasks)
+
+    async def _check_gateway_startup(self, server: uvicorn.Server):
+        """Confirm the gateway can load its modules and did come up.
+
+        Reports, never raises: this runs alongside a server that is already
+        serving and must not be the reason one fails to start. What it finds
+        is a gateway problem, and the log is the only place it surfaces --
+        Envoy failing this way is silent.
+        """
+        if self._config.gateway_mode == GatewayModeEnum.disabled:
+            return
+        try:
+            # ``server.started`` flips once uvicorn is accepting, which is
+            # when a module served by this process becomes fetchable. It never
+            # flips if the bind fails, so give the loop its own way out rather
+            # than leaving it to the cancellation that follows.
+            while not server.started:
+                if server.should_exit:
+                    return
+                await asyncio.sleep(0.05)
+            await verify_published_plugin_modules(self._config)
+            await self._wait_for_gateway_ready()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Gateway startup check failed to complete: {e}")
 
     def _start_default_registry_checker(self):
         registration.determine_default_registry(
@@ -376,6 +439,26 @@ class Server:
             await self._init_data(session)
 
         logger.debug("Data initialization completed.")
+
+    def _validate_configured_model_catalog(self):
+        """Reject a ``--model-catalog-file`` this server cannot read or parse.
+
+        The leader seeds the catalog source from it, but a controller task that
+        raises dies without taking the server down — a typo'd path would surface as
+        an empty Model Catalog and one ERROR line. Read here, where a start-up
+        failure still stops the process. Only an explicit file is fatal.
+        """
+        if not self._config.model_catalog_file:
+            return
+        try:
+            normalize_catalog_yaml(
+                read_builtin_catalog_text(self._config.model_catalog_file)
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load the configured model catalog "
+                f"{self._config.model_catalog_file}: {e}"
+            ) from e
 
     def _start_scheduler(self):
         """Start the scheduler and return the task."""
@@ -418,6 +501,21 @@ class Server:
         inference_backend_controller = InferenceBackendController()
         tasks.append(asyncio.create_task(inference_backend_controller.start()))
 
+        catalog_source_controller = CatalogSourceController(self._config)
+        tasks.append(asyncio.create_task(catalog_source_controller.start()))
+
+        cache_provider_source_controller = CacheProviderSourceController()
+        tasks.append(asyncio.create_task(cache_provider_source_controller.start()))
+
+        # The cache-provider catalog reads the materialized runner overrides,
+        # so it is rebuilt once they are written rather than when the source
+        # they come from changes: both controllers see that event, and nothing
+        # orders two subscribers.
+        runner_source_controller = RunnerSourceController(
+            on_materialized=cache_provider_source_controller.rebuild
+        )
+        tasks.append(asyncio.create_task(runner_source_controller.start()))
+
         gpu_instance_controller = GPUInstanceController(self._config)
         tasks.append(asyncio.create_task(gpu_instance_controller.start()))
 
@@ -428,6 +526,17 @@ class Server:
             self._config
         )
         tasks.append(asyncio.create_task(gpu_instance_pvt_controller.start()))
+
+        gpu_instance_type_controller = GPUInstanceTypeController(self._config)
+        tasks.append(asyncio.create_task(gpu_instance_type_controller.start()))
+
+        # Publishes the key tables the gateway authenticates against. Runs
+        # regardless of proxy mode, but no-ops when the gateway is disabled.
+        gateway_auth_reconciler = GatewayAuthReconciler(self._config)
+        tasks.append(asyncio.create_task(gateway_auth_reconciler.start()))
+
+        cache_service_controller = CacheServiceController(self._config)
+        tasks.append(asyncio.create_task(cache_service_controller.start()))
 
         logger.debug("Controllers started.")
         return tasks
@@ -465,6 +574,18 @@ class Server:
 
         logger.debug("GPUStack operator subscription started.")
 
+    def _start_gpustack_operator_settings(self):
+        """Converge the operator settings each GPU Service cluster is configured
+        with onto the cluster itself.
+
+        Leader-only, unlike the subscription above: that one feeds this server's
+        own operator subprocess, while this one writes into the cluster, and one
+        writer is enough.
+        """
+        self._create_async_task(reconcile_gpustack_operator_settings(self._config))
+
+        logger.debug("GPUStack operator settings reconciler started.")
+
     def _start_gateway_metrics_flusher(self):
         # Always start — both the gateway report endpoint and the in-process
         # ModelUsageMiddleware feed the same buffer, so the flusher must run
@@ -478,6 +599,12 @@ class Server:
         self._create_async_task(worker_instance_cleaner.start())
 
         logger.debug("Worker instance cleaner started.")
+
+    def _start_scaling_scheduler(self):
+        scaling_scheduler = ScalingScheduler()
+        self._create_async_task(scaling_scheduler.start())
+
+        logger.debug("Scaling scheduler started.")
 
     def _start_usage_details_archiver(self):
         # Construction can fail on schema drift between hot/archive tables or
@@ -564,6 +691,21 @@ class Server:
         update_checker = UpdateChecker(update_check_url=self._config.update_check_url)
         self._create_async_task(update_checker.start())
         logger.debug("Update checker started.")
+
+    def _start_source_probe(self):
+        """Start the source refresher (leader-only): each OFFICIAL slot tracks
+        what the OTA server publishes, and opted-in user URL sources auto-refresh.
+        Turning a kind off is per kind, on its OFFICIAL row's
+        ``auto_update_hours``.
+        """
+        source_refresher = SourceRefresher(
+            ota_server_url=self._config.ota_server_url,
+        )
+        # The status API and the manual trigger reach the refresher through app
+        # state; its absence tells them this server isn't the one refreshing.
+        self._app.state.source_probe = source_refresher
+        self._create_async_task(source_refresher.start())
+        logger.debug("Source refresher started.")
 
     async def _monitor_sub_processes(self):
         while self.all_processes:
@@ -658,6 +800,17 @@ class Server:
         self._create_async_task(wait_and_start_after_healthy())
 
     async def _wait_for_gateway_ready(self):
+        """Wait for the gateway to actually be listening, and say so if it is not.
+
+        Only ``embedded`` can be observed from here -- that is the one mode
+        where Envoy shares this network namespace.
+
+        Failure is reported, never raised: a gateway that never binds its port
+        is a total outage, but killing the server on top of it removes the
+        only process still able to explain why. Envoy gives no other signal --
+        a listener stuck warming just never appears -- so without this the
+        whole product is unreachable and nothing says so.
+        """
         if self._config.gateway_mode != GatewayModeEnum.embedded:
             return
         # http port is always started
@@ -665,8 +818,20 @@ class Server:
         if self._config.get_tls_secret_name() is not None:
             ports.append(self._config.tls_port)
         logger.info(f"Waiting for ports {ports} of GPUStack to be ready...")
-        # wait for gateway ready for about 60s
-        await self._check_ports_ready(*ports)
+        try:
+            # wait for gateway ready for about 60s
+            await self._check_ports_ready(*ports)
+        except Exception as e:
+            logger.error(
+                "Gateway port(s) %s never became ready after %ss: %s. Inspect "
+                "Envoy on the gateway: a listener reported in `warming_state` "
+                "by `curl localhost:15000/config_dump?resource=dynamic_"
+                "listeners` is waiting on a Wasm module it could not load.",
+                ports,
+                GATEWAY_PORT_CHECK_RETRY_COUNT * GATEWAY_PORT_CHECK_INTERVAL,
+                e,
+            )
+            return
         logger.info("GPUStack Server is ready.")
 
     @tenacity.retry(
@@ -807,8 +972,7 @@ class Server:
             else:
                 bootstrap_password = generate_secure_password()
                 try:
-                    with open(password_file, "w", encoding="utf-8") as file:
-                        file.write(bootstrap_password + "\n")
+                    write_credential_file(password_file, bootstrap_password + "\n")
                     logger.info(
                         "Generated initial admin password. "
                         f"You can get it from {password_file}"
@@ -870,10 +1034,21 @@ class Server:
                     "Default cluster user already has API keys, cannot migrate legacy token."
                 )
 
+            # Store the deployment token under the pair authentication
+            # resolves it to: its own access key when it is in the standard
+            # shape, the empty access key otherwise.
+            access_key, secret_key = migrated_token_key_pair(self._config.token)
             new_key = ApiKey(
                 name="Legacy Cluster Token",
-                access_key="",
-                hashed_secret_key=get_secret_hash(self._config.token),
+                access_key=access_key,
+                hashed_secret_key=get_secret_hash(secret_key),
+                # Routed through the guard for both shapes rather than assumed
+                # either way: an opaque deployment token never qualifies (its
+                # entropy is not ours to assume), while a standard-shaped one
+                # is a generated secret this database can vouch for.
+                secret_key_digest=new_secret_key_digest(
+                    secret_key=secret_key, is_custom=False, access_key=access_key
+                ),
                 user_id=default_cluster_principal.id,
                 user=default_cluster_principal,
             )
@@ -921,12 +1096,17 @@ class Server:
                     )
                     worker.system_principal_id = worker_principal.id
                     await worker.save(session=session, auto_commit=False)
-                    access_key = secrets.token_hex(8)
-                    secret_key = secrets.token_hex(16)
+                    access_key = generate_access_key()
+                    secret_key = generate_secret_key()
                     to_create_apikey = ApiKey(
                         name=worker_principal.name,
                         access_key=access_key,
                         hashed_secret_key=get_secret_hash(secret_key),
+                        secret_key_digest=new_secret_key_digest(
+                            secret_key=secret_key,
+                            is_custom=False,
+                            access_key=access_key,
+                        ),
                         user=worker_principal,
                         user_id=worker_principal.id,
                     )
@@ -962,12 +1142,15 @@ class Server:
         token = cluster.registration_token
         if not token:
             try:
-                access_key = secrets.token_hex(8)
-                secret_key = secrets.token_hex(16)
+                access_key = generate_access_key()
+                secret_key = generate_secret_key()
                 new_key = ApiKey(
                     name="Default Cluster Token",
                     access_key=access_key,
                     hashed_secret_key=get_secret_hash(secret_key),
+                    secret_key_digest=new_secret_key_digest(
+                        secret_key=secret_key, is_custom=False, access_key=access_key
+                    ),
                     user_id=cluster_principal.id,
                     user=cluster_principal,
                 )
@@ -1043,7 +1226,18 @@ class Server:
         )
         await cleanup_model_mapper(
             namespace=self.config.gateway_namespace,
-            expected_ingresses=expected_ingress_names,
+            # The mapper prune compares against the ingress names as the
+            # match rules store them: Higress qualifies a cross-namespace
+            # ingress with "<namespace>/", exactly as the route reconciler
+            # writes it. The bare names above are the K8s object names the
+            # Ingress/EnvoyFilter cleanups key on; feeding them here would
+            # strip every rewrite rule on each start of a deployment whose
+            # namespace differs from the gateway's.
+            expected_ingresses=route_rule_ingress_names(
+                [model_route.id for model_route in model_routes],
+                resource_namespace=self.config.get_namespace(),
+                gateway_namespace=self.config.gateway_namespace,
+            ),
             config=k8s_config,
         )
         await cleanup_fallback_filters(
@@ -1053,12 +1247,14 @@ class Server:
             reason="orphaned",
             k8s_config=k8s_config,
         )
-        await cleanup_ai_proxy_config(
-            namespace=self.config.gateway_namespace,
-            providers=providers,
-            routes=model_routes,
-            k8s_config=k8s_config,
-        )
+        # NOTE: cleanup_ai_proxy_config deliberately does NOT run here.
+        # It is version-semantic (it retires legacy per-route entries
+        # wholesale), and this pass runs on every server at startup,
+        # before leader election — a new-version standby executing it
+        # while an old-version leader still serves would strip that
+        # leader's routes of their ai-proxy rules. It runs from
+        # _start_leader_tasks instead, where leadership guarantees the
+        # control plane is already on this version.
         await cleanup_generic_proxy_router(
             routes=model_routes,
             k8s_config=k8s_config,
@@ -1071,6 +1267,50 @@ class Server:
             workers=workers,
             k8s_config=k8s_config,
         )
+
+    async def _cleanup_ai_proxy_config(self):
+        """Leader-only ai-proxy prune (see the note in
+        _cleanup_orphaned_gateway_data for why it does not run on every
+        server at startup). This pass is the ONLY thing retiring legacy
+        per-route entries, so a transient failure at leader startup must
+        not leave them stale forever: the prune is idempotent and
+        retried with bounded backoff."""
+        if self.config.gateway_mode == GatewayModeEnum.disabled:
+            return
+        delays = (5, 10, 30, 60, 120)
+        for attempt, delay in enumerate((*delays, None)):
+            try:
+                async with async_session() as session:
+                    providers = await ModelProvider.all_by_fields(
+                        session=session,
+                        fields={"deleted_at": None},
+                    )
+                    models = await Model.all_by_fields(
+                        session=session,
+                        fields={"deleted_at": None},
+                    )
+                await cleanup_ai_proxy_config(
+                    namespace=self.config.gateway_namespace,
+                    providers=providers,
+                    models=models,
+                    k8s_config=get_async_k8s_config(cfg=self.config),
+                    cfg=self.config,
+                )
+                return
+            except Exception:
+                if delay is None:
+                    logger.exception(
+                        "Leader ai-proxy cleanup failed after all retries; "
+                        "legacy entries stay until the next leader restart"
+                    )
+                    return
+                logger.warning(
+                    "Leader ai-proxy cleanup failed (attempt %d), retrying in %ss",
+                    attempt + 1,
+                    delay,
+                    exc_info=True,
+                )
+                await asyncio.sleep(delay)
 
     def _should_create_default_cluster(self) -> bool:
         # only server or both will get into this logic
@@ -1148,10 +1388,38 @@ class Server:
                 headers, validate_proxy=None
             ),
             header_router=resolve_instance_address_from_model_header,
+            stall_policy=StallPolicy(
+                ttft_timeout=envs.PROXY_TTFT_TIMEOUT,
+                idle_timeout=envs.PROXY_STREAM_IDLE_TIMEOUT,
+                total_timeout=envs.PROXY_TIMEOUT,
+                error_body=stall_error_json(),
+                error_sse=stall_error_sse(),
+            ),
         )
         self._create_async_task(_proxy_server.start())
 
     def _start_extension_plugins(self, app: FastAPI) -> None:
+        # Static plugins: tasks come from the classmethod hook with
+        # the plugin's context (coordinator already injected —
+        # ``_init_coordinator`` runs before this).
+        #
+        # A collection failure refuses startup, matching the rest of
+        # the static hook family: these tasks join the main gather, so
+        # a task that dies while running aborts the server — a
+        # collection failure must be no less fatal.
+        for name, ctx in getattr(app.state, "plugin_contexts", {}).items():
+            if ctx.plugin_cls is None or plugin_needs_instantiation(ctx.plugin_cls):
+                continue
+            try:
+                for coro in ctx.plugin_cls.async_tasks(ctx):
+                    self._create_async_task(coro)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to start async tasks from extension plugin "
+                    f"'{name}': {e}"
+                ) from e
+
+        # Legacy instance plugins: unchanged.
         for plugin in getattr(app.state, "extension_plugins", []):
             try:
                 for coro in plugin.async_tasks():
@@ -1162,20 +1430,107 @@ class Server:
                     type(plugin).__name__,
                 )
 
+    def _start_extension_plugin_leader_tasks(self) -> None:
+        """Start ``Plugin.leader_async_tasks`` alongside the server's own
+        leader-only tasks (see ``_start_leader_tasks`` for the lifecycle).
+
+        Static plugins only: leader-only tasks are a new capability
+        and new capabilities land on the static shape — the legacy
+        instance shape is frozen, so a legacy plugin's same-named
+        instance method is not dispatched to.
+
+        A collection failure hard-exits the process: this runs from the
+        leader-election loop, whose broad ``except`` (there to tolerate
+        transient coordinator RPC errors) would swallow a re-raise —
+        leaving the leader serving without the plugin's single-writer
+        reconciler, its external state drifting with no re-attempt.
+        Exiting mirrors the lost-leadership fencing: the container
+        restarts and collection is retried. A task that dies while
+        running gets the same fencing through ``_leader_task_died``.
+
+        Uses ``self._app`` rather than taking an argument: unlike
+        ``_start_extension_plugins``, this runs from the leader-election
+        path, which has no app parameter.
+        """
+        for name, ctx in getattr(self._app.state, "plugin_contexts", {}).items():
+            if ctx.plugin_cls is None or plugin_needs_instantiation(ctx.plugin_cls):
+                continue
+            try:
+                for coro in ctx.plugin_cls.leader_async_tasks(ctx):
+                    task = self._create_async_task(coro)
+                    task.add_done_callback(self._leader_task_died)
+            except Exception:
+                logger.critical(
+                    "Failed to start leader async tasks from extension plugin "
+                    "%s, exiting for restart — the leader must run every "
+                    "plugin's single-writer reconcilers",
+                    name,
+                )
+                os._exit(1)
+
+    @staticmethod
+    def _leader_task_died(task: asyncio.Task) -> None:
+        """Fence a dead plugin leader task.
+
+        In distributed mode these tasks start on leadership acquisition —
+        after ``start()`` has already called ``asyncio.gather`` on its
+        snapshot of ``_async_tasks`` — so an unhandled exception in one
+        would otherwise die unobserved while the process keeps serving
+        and renewing leadership, blocking standby takeover. Exit for
+        restart instead: the leader must run every plugin's
+        single-writer reconciler.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.critical(
+                "Extension plugin leader task died: %r; exiting for restart — "
+                "the leader must run every plugin's single-writer reconcilers",
+                exc,
+            )
+            os._exit(1)
+
     async def _init_coordinator(self, app: FastAPI):
         """Pick a coordinator from extension plugins (if any) and start it.
 
-        Plugins attach a ``Coordinator`` to ``self.coordinator`` inside
-        their ``__init__(app, cfg)``. We scan ``app.state.extension_plugins``
-        after ``create_app`` has run and take the first non-None one. If
-        no plugin supplies one, we fall back to ``LocalCoordinator``.
+        Static plugins offer one through ``build_coordinator(ctx)``;
+        legacy instance plugins attach a ``Coordinator`` to
+        ``self.coordinator`` inside their ``__init__(app, cfg)``. Both
+        shapes are dispatched in one entry-point-ordered pass over the
+        plugin contexts, so the first non-None candidate wins regardless
+        of shape and the server owns its lifecycle. If no plugin
+        supplies one, we fall back to ``LocalCoordinator``.
+
+        A failing ``build_coordinator`` refuses startup: silently
+        falling through to another plugin or ``LocalCoordinator`` could
+        leave a multi-instance deployment without leader election and
+        cross-instance delivery while the servers still come up.
+
+        The chosen coordinator is injected into every plugin's context
+        before any task collection runs, so ``async_tasks`` /
+        ``leader_async_tasks`` hooks see ``ctx.coordinator`` populated.
         """
         coordinator = None
-        for plugin in getattr(app.state, "extension_plugins", []):
-            candidate = getattr(plugin, "coordinator", None)
+        for name, ctx in getattr(app.state, "plugin_contexts", {}).items():
+            if ctx.plugin_cls is not None and not plugin_needs_instantiation(
+                ctx.plugin_cls
+            ):
+                try:
+                    candidate = ctx.plugin_cls.build_coordinator(ctx)
+                except Exception as e:
+                    raise RuntimeError(
+                        "Failed to build coordinator from extension plugin "
+                        f"'{name}': {e}"
+                    ) from e
+            else:
+                # Legacy shape (or a hand-built context): the instance,
+                # if any, carries its coordinator as an attribute set in
+                # its constructor.
+                candidate = getattr(ctx.instance, "coordinator", None)
             if candidate is not None:
                 coordinator = candidate
-                logger.info(f"Coordinator provided by plugin: {type(plugin).__name__}")
+                logger.info(f"Coordinator provided by plugin: {name}")
                 break
 
         if coordinator is None:
@@ -1184,6 +1539,29 @@ class Server:
 
         self._coordinator = coordinator
         await self._coordinator.start()
+
+        for ctx in getattr(app.state, "plugin_contexts", {}).values():
+            ctx.coordinator = coordinator
+
+        # Register plugin-owned tables for cross-instance event delivery,
+        # before the bus starts. See ``register_topic`` and
+        # ``Plugin.event_topics``. Static plugins only, per the
+        # one-shape-per-plugin contract. A failure refuses startup: the
+        # plugin would otherwise run without cross-instance enrichment,
+        # and writes served by another instance would be dropped by the
+        # event bus.
+        for ctx in getattr(app.state, "plugin_contexts", {}).values():
+            if ctx.plugin_cls is None or plugin_needs_instantiation(ctx.plugin_cls):
+                continue
+            try:
+                topics = ctx.plugin_cls.event_topics()
+            except Exception as e:
+                raise RuntimeError(
+                    "Failed to register event topics from extension plugin "
+                    f"'{ctx.name}': {e}"
+                ) from e
+            for topic, model_class in topics.items():
+                register_topic(topic, model_class)
 
         # Set up bus and cache to use coordinator
         bus.set_coordinator(coordinator)
@@ -1204,7 +1582,7 @@ class Server:
             "modelroutetarget",
             "workerpool",
             "inferencebackend",
-        ]
+        ] + external_topics()
         async with async_session() as session:
             for topic in topics:
                 model_class = get_model_for_topic(topic)
@@ -1218,21 +1596,32 @@ class Server:
                     )
 
     async def _prepare_jwt_secret_key(self):
-        """Enforce that distributed deployments use an explicit JWT secret.
+        """Enforce that in-cluster distributed deployments use an explicit JWT secret.
 
         ``Config`` auto-generates a local ``jwt_secret_key`` file during init
         so early startup paths (e.g. ``initialize_gateway``) have a usable key.
-        That auto-generated value is safe only in single-node mode; distributed
-        instances must share the SAME secret or JWTs signed by one instance
-        won't verify on another. We rely on the ``_jwt_secret_key_user_provided``
-        flag (set from --jwt-secret-key / GPUSTACK_JWT_SECRET_KEY / config file)
-        rather than the current value, since the value is always populated by
-        the time this runs.
+        That auto-generated value is safe only when a single instance owns the
+        secret; distributed instances must share the SAME secret or JWTs signed
+        by one instance won't verify on another. We rely on the
+        ``_jwt_secret_key_user_provided`` flag (set from --jwt-secret-key /
+        GPUSTACK_JWT_SECRET_KEY / config file) rather than the current value,
+        since the value is always populated by the time this runs.
+
+        A single-container deployment (e.g. a plain ``docker run`` against an
+        external database) still selects a distributed coordinator, but it owns
+        the secret alone: the persisted ``<data_dir>/jwt_secret_key`` stays
+        stable across restarts on a mounted volume, so the auto-generated key is
+        safe and we don't force one. Only in-cluster deployments run instances
+        that each own an ephemeral ``data_dir``, so the explicit secret is
+        required there.
         """
         if self._config._jwt_secret_key_user_provided:
             return
 
         if isinstance(self._coordinator, LocalCoordinator):
+            return
+
+        if not is_inside_kubernetes():
             return
 
         raise RuntimeError(
@@ -1308,11 +1697,34 @@ class Server:
         # Controllers
         self._start_controllers()
 
+        # Extension plugins' leader-only tasks (reconcilers that need a
+        # single writer). Same lifecycle as the tasks above: started on
+        # leadership gain, and a deposed leader exits the process.
+        self._start_extension_plugin_leader_tasks()
+
+        # The ai-proxy cleanup is version-semantic (retiring legacy
+        # per-route entries wholesale): it must not run on a standby
+        # while an old-version leader may still serve. Leadership is
+        # the gate — by the time this node runs leader tasks, the
+        # control plane is on this version.
+        # The event loop holds only a weak reference to a bare task, and
+        # this pass (retry loop included) can sleep for minutes — keep a
+        # strong reference so it is neither garbage-collected mid-run nor
+        # lost track of for shutdown.
+        self._leader_ai_proxy_cleanup_task = asyncio.create_task(
+            self._cleanup_ai_proxy_config()
+        )
+
         # System Load Collector
         self._start_system_load_collector()
 
+        # Cache Service Metrics Collector
+
         # Update Checker
         self._start_update_checker()
+
+        # Official Source Probe
+        self._start_source_probe()
 
         # Worker Instance Cleaner
         self._start_worker_instance_cleaner()
@@ -1325,3 +1737,10 @@ class Server:
 
         # Worker Syncer (checks worker reachability and updates states)
         self._start_worker_syncer(self._app)
+
+        # Scaling Scheduler (drives model replicas on a cron timetable)
+        self._start_scaling_scheduler()
+
+        # Operator Settings (converges the operator settings GPU Service
+        # clusters are configured with)
+        self._start_gpustack_operator_settings()

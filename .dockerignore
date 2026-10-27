@@ -10,3 +10,7 @@ dist/
 .cache/
 .python-version
 .data
+
+# Offline docs are built in their own stage.
+gpustack/help/
+mkdocs.offline.generated.yml

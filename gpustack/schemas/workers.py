@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import ClassVar, Dict, Optional, Any, TYPE_CHECKING
 from typing_extensions import Annotated, deprecated
-from pydantic import ConfigDict, BaseModel, field_validator
+from pydantic import ConfigDict, BaseModel, PositiveInt, field_validator
 from urllib.parse import urlparse
 from sqlmodel import (
     Field,
@@ -50,7 +50,7 @@ class MemoryInfo(UtilizationInfo):
     # Not written by workers anymore — they neither know nor need to track
     # what's scheduled on them. Persisted DB values stay None going forward.
     # On the /v2/workers response this is populated server-side from current
-    # ModelInstance bindings; see policies.utils.compute_worker_allocated.
+    # ModelInstance bindings; see policies.resource_view.compute_worker_allocated.
     allocated: Annotated[
         Optional[int],
         deprecated(
@@ -151,9 +151,27 @@ class GPUDeviceStatus(GPUDeviceInfo):
     """
     Temperature of the GPU device in Celsius.
     """
+    power: Optional[float] = Field(default=None)
+    """
+    Power management limit of the GPU device in Watts.
+    """
+    power_used: Optional[float] = Field(default=None)
+    """
+    Current power consumption of the GPU device in Watts.
+    """
     network: Optional[GPUNetworkInfo] = Field(sa_column=Column(JSON), default=None)
     """
     Network information of the GPU device, mainly for Ascend devices.
+    """
+    topology_hints: Optional[Dict[str, str]] = Field(
+        sa_column=Column(JSON), default=None
+    )
+    """
+    Where this device sits beyond the host, as the device itself reports it:
+    today the NVLink domain it belongs to, keyed by topology label key
+    (`nvidia.com/gpu.clique`). Per device; the worker-level
+    `WorkerStatus.topology_facts` is derived from these and is what the
+    scheduler reads.
     """
 
 
@@ -274,6 +292,31 @@ class WorkerStatus(SystemInfo):
     rpc_servers: Optional[Dict[int, RPCServer]] = Field(
         sa_column=Column(JSON), default=None
     )
+    topology_facts: Optional[Dict[str, str]] = Field(
+        sa_column=Column(JSON), default=None
+    )
+    """
+    The worker's discovered position, keyed by topology label key: today the
+    NVLink domain its cards agree on. Read under `Worker.labels`, so a
+    hand-filled label always wins over a discovered fact.
+    """
+
+    kv_transfer_ifname: Optional[str] = None
+    """
+    What this worker was TOLD its KV-transfer NIC is -- `--kv-transfer-ifname`, verbatim,
+    and `None` when the operator set nothing.
+
+    Reported so the derivation can be told from the override. The rendered
+    `HCCL_SOCKET_IFNAME` on a running member equals `Worker.ifname` both when
+    the derivation supplies it (a control-plane recipe takes the management
+    NIC) and when an operator hand-fills the same name because a multi-NIC host
+    refuses to guess, so the rendered env alone cannot tell the two apart. Null
+    here with a non-null `ifname` there means derived; non-null means the
+    operator is still typing it in.
+
+    A worker-local setting, and deliberately not promoted to a cluster-wide
+    one: see `Config.kv_transfer_ifname` for why a NIC name must not be broadcast.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -321,6 +364,16 @@ class WorkerStatusStored(BaseModel):
 
 class WorkerStatusPublic(WorkerStatusStored):
     gateway_endpoint: Optional[str] = None
+
+
+class WorkerLabelsUpdate(BaseModel):
+    """Labels to add or overwrite on every selected worker.
+
+    Unspecified keys are preserved. An empty labels dictionary makes no changes.
+    """
+
+    worker_ids: List[PositiveInt] = Field(min_length=1)
+    labels: Dict[str, str]
 
 
 class WorkerUpdate(SQLModel):
@@ -401,18 +454,18 @@ class WorkerBase(WorkerCreate):
                 f"If the worker remains unresponsive for more than {reschedule_minutes:.1f} minutes, "
                 "the instances on this worker will be rescheduled automatically. "
                 "If this downtime is planned maintenance, please enable maintenance mode. "
-                "Otherwise, please <a href='https://docs.gpustack.ai/latest/troubleshooting/#view-gpustack-logs'>check the worker logs</a>."
+                "Otherwise, please <a href='/help/troubleshooting/#view-gpustack-logs'>check the worker logs</a>."
             )
             return
 
         if self.unreachable:
-            address = self.advertise_address or self.ip
+            address = self.get_dial_address()
             healthz_url = f"http://{address}:{self.port}/healthz"
             msg = (
                 "Server cannot access the "
                 f"worker's health check endpoint at {healthz_url}. "
                 "Please verify the port requirements in the "
-                "<a href='https://docs.gpustack.ai/latest/installation/requirements/#port-requirements'>documentation</a>"
+                "<a href='/help/installation/requirements/#port-requirements'>documentation</a>"
             )
             self.state = WorkerStateEnum.UNREACHABLE
             self.state_message = msg
@@ -460,6 +513,20 @@ class WorkerBase(WorkerCreate):
         if self.proxy_mode != ModelInstanceProxyModeEnum.TUNNEL:
             return None
         return self.proxy_address
+
+    def get_dial_address(self) -> Optional[str]:
+        """The host the SERVER dials to reach this worker directly.
+
+        ``ip`` is what the worker reported about itself, and on a cloud host
+        that is routinely an address only that host's own network can route --
+        a VPC address such as ``10.0.0.37``. ``advertise_address`` is the one
+        the worker was told to publish for outside access, so it wins whenever
+        it is set.
+
+        NOT the address for the tunnel path: there the request leaves from the
+        worker's own side, where ``ip`` is exactly what resolves.
+        """
+        return self.advertise_address or self.ip
 
 
 class Worker(WorkerBase, BaseModelMixin, table=True):

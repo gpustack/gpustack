@@ -1,3 +1,7 @@
+---
+template: overview.html
+---
+
 <br>
 
 <p align="center">
@@ -15,16 +19,11 @@
   </a>
 </p>
 
-<p align="center">
-  <script async defer src="https://buttons.github.io/buttons.js"></script>
-  <a class="github-button" href="https://github.com/gpustack/gpustack" data-show-count="true" data-size="large" aria-label="Star">Star</a>
-  <a class="github-button" href="https://github.com/gpustack/gpustack/subscription" data-icon="octicon-eye" data-size="large" aria-label="Watch">Watch</a>
-  <a class="github-button" href="https://github.com/gpustack/gpustack/fork" data-show-count="true" data-icon="octicon-repo-forked" data-size="large" aria-label="Fork">Fork</a>
-</p>
+<!-- github-buttons -->
 
-## Overview
+# Overview
 
-GPUStack is an open-source GPU cluster manager designed for efficient AI model deployment. It configures and orchestrates inference engines — vLLM, SGLang, TensorRT-LLM, or your own — to optimize performance across GPU clusters.
+GPUStack is an open-source GPU cluster manager for AI model serving and GPU instance provisioning. It configures and orchestrates inference engines — vLLM, SGLang, TensorRT-LLM, or your own — and lets you launch SSH-accessible GPU instances on demand.
 
 <div class="grid cards" markdown>
 
@@ -32,7 +31,7 @@ GPUStack is an open-source GPU cluster manager designed for efficient AI model d
 
     ---
 
-    Manages GPU clusters across multiple environments. This includes on-premises servers, Kubernetes clusters, and cloud providers.
+    Manages GPU clusters across on-premises servers, Kubernetes, and cloud providers. Supports GPU slicing for model deployments and GPU instances, with configurable VRAM and compute allocations.
 
 -   :material-engine-outline:{ .lg .middle .icon-green } __Pluggable Inference Engines__
 
@@ -40,17 +39,23 @@ GPUStack is an open-source GPU cluster manager designed for efficient AI model d
 
     Automatically configures high-performance inference engines such as vLLM, SGLang, and TensorRT-LLM. You can also add custom inference engines as needed.
 
--   :material-rocket-launch-outline:{ .lg .middle .icon-orange } __Day 0 Model Support__
+-   :material-speedometer:{ .lg .middle .icon-red } __Performance-Optimized Configurations__
 
     ---
 
-    GPUStack's pluggable engine architecture enables you to deploy new models on the day they are released.
+    Offers pre-tuned modes for low latency or high throughput. Supports prefill/decode disaggregation, platform-managed shared KV cache, and speculative decoding.
 
--   :material-speedometer:{ .lg .middle .icon-red } __Performance-Optimized__
+-   :material-chart-line:{ .lg .middle .icon-green } __Built-in Benchmarking__
 
     ---
 
-    Offers pre-tuned modes for low latency or high throughput. Supports extended KV cache (LMCache, HiCache) and speculative decoding (EAGLE3, MTP).
+    Sweeps concurrency or request-rate levels to compare throughput and latency, helping you select operating points that meet your performance goals.
+
+-   :material-server-outline:{ .lg .middle .icon-blue } __GPU Instances__
+
+    ---
+
+    Launches SSH-accessible GPU instances on demand for development, fine-tuning, and interactive workloads.
 
 -   :material-shield-check-outline:{ .lg .middle .icon-purple } __Enterprise-Grade Operations__
 
@@ -68,13 +73,19 @@ The figure below illustrates how a single GPUStack server can manage multiple GP
 
 ![gpustack-v2-architecture](assets/gpustack-v2-architecture.png)
 
+## Cluster Visibility at a Glance
+
+The GPU Cluster Topology view in [GPUStack Enterprise](https://gpustack.ai/enterprise/) provides a live, bird's-eye view of your entire fleet — every worker, GPU, and model deployment in one place, with real-time utilization, allocation, and health status.
+
+![gpustack-cluster-topology](assets/cluster-topology.png)
+
 ## Optimized Inference Performance
 
 GPUStack's automated engine selection and parameter optimization deliver strong inference performance out of the box. The following figure shows throughput improvements over default vLLM configurations:
 
-![a100-throughput-comparison](assets/a100-throughput-comparison.png)
+![h200-throughput-comparison](assets/h200-throughput-comparison.png)
 
-For detailed benchmarking methods and results, visit our [Inference Performance Lab](https://docs.gpustack.ai/latest/performance-lab/overview/).
+For detailed benchmarking methods and results, visit our [Inference Performance Lab](performance-lab/overview.md).
 
 ## Supported Accelerators
 

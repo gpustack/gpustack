@@ -104,5 +104,38 @@ def test_convert_to_kuberes_minimal_instance():
     assert "sshPublicKeys" not in body["spec"]
 
 
+def test_convert_to_kuberes_strips_access_params():
+    # accessParams is server-side presentation metadata for the UI; the
+    # operator CRD must never see it.
+    spec = GPUInstanceSpec(
+        type_="gpu",
+        image="busybox",
+        ports=[
+            GPUInstancePort(
+                name="JUPYTER",
+                port=8888,
+                access_params={"token": "abc123"},
+            ),
+            GPUInstancePort(port=22),
+        ],
+    )
+    inst = _gi(spec=spec)
+
+    # Round-trip: the field is stored and serializes under its camelCase alias.
+    assert spec.ports[0].access_params == {"token": "abc123"}
+    dumped = spec.model_dump(by_alias=True, exclude_none=True)
+    assert dumped["ports"][0]["accessParams"] == {"token": "abc123"}
+
+    body = inst.convert_to_kuberes()
+
+    ports = body["spec"]["ports"]
+    assert ports == [
+        {"name": "JUPYTER", "port": 8888, "protocol": "TCP"},
+        {"port": 22, "protocol": "TCP"},
+    ]
+    for port in ports:
+        assert "accessParams" not in port
+
+
 def test_kuberes_instance_id_label_key():
     assert KUBERES_INSTANCE_ID_LABEL == "gpustack.ai/instance-id"

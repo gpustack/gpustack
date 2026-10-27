@@ -4,16 +4,18 @@ GPUStack supports cloud credential management, allowing secure connections to ex
 
 ## Supported Providers
 
-Only the `DigitalOcean` provider is supported for now.
+`DigitalOcean` and `SHUIHUA FUTURE` are supported.
 
 ## Create Cloud Credential
 
 1. Go to the `Cloud Credentials` page.
-2. Click the `Add Cloud Credential` dropdown and select `DigitalOcean`.
+2. Click the `Add Cloud Credential` dropdown and select a provider.
 3. Fill in the following information:
 
    - `Name`: Unique credential name.
-   - `Access Token`: The API token generated on the DigitalOcean `Applications & API` page.
+   - The provider's secret, which is the only credential field either one needs:
+     - `DigitalOcean` — `Access Token`, the API token generated on the DigitalOcean `Applications & API` page. The token scope must be `Full Access`.
+     - `SHUIHUA FUTURE` — `API Key`, created on the [Shuihua console](https://hub.do.top/cn/signin) and prefixed with `amp_live_`.
    - `Description`: Additional information for the cloud credential.
 
 4. Click the `Save` button.

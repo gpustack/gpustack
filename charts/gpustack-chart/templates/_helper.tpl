@@ -1,4 +1,11 @@
 {{/* vim: set filetype=mustache: */}}
+{{/*
+NB: these two guards never run. Helm parses `_*.tpl` for its `define` blocks but
+does not render the file, so top-level actions here are dead code — verified by
+`helm template --set server.ingress.tls.cert=x` rendering cleanly. Moving them
+to templates/validate.yaml (where guards do run) would start rejecting
+configurations that install today, so it is left as a deliberate separate change.
+*/}}
 {{- if or (and .Values.server.ingress.tls.cert (not .Values.server.ingress.tls.key)) (and .Values.server.ingress.tls.key (not .Values.server.ingress.tls.cert)) }}
 {{ fail "Both server.ingress.tls.cert and server.ingress.tls.key must be set together or both be empty." }}
 {{- end }}
@@ -28,13 +35,38 @@ entries. Returns a JSON-encoded list so callers can `fromJsonArray` it.
 {{- end -}}
 
 {{/*
-True when the chart should render in multi-vendor mode (CPU DS + at least one
-GPU vendor DS, meaning 2+ DaemonSets total). Controls anti-affinity, component
-labels, and service selector.
+Whether the CPU worker DaemonSet is part of this release, as "true" or "".
+
+Read through this rather than off `.Values.worker.cpuEnabled` directly — the
+DaemonSet, the mode flag below and the guard in validate.yaml all do — for two
+reasons. They have to agree: a mode flag reading "labelled" while the DaemonSet
+renders the legacy name leaves the worker Service selecting labels no pod
+carries. And `nil` has to read as this chart's default (true) rather than as
+false, which plain truthiness would give: Helm drops a key set to null, so
+`worker: {cpuEnabled: }` in a partial values file would otherwise delete the CPU
+workers from a cluster that never asked for that. Compared as a lowercased
+string, so `--set-string worker.cpuEnabled=false` and a quoted `"False"` in a
+values file turn them off as an unquoted `false` does, rather than being
+non-empty strings that silently read as "on".
+*/}}
+{{- define "gpustack.workerCPUEnabled" -}}
+{{- if ne (lower (toString .Values.worker.cpuEnabled)) "false" -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+True when the chart should render in multi-vendor mode: component + runtime
+labels on every worker pod, a hostname anti-affinity between them, and a worker
+Service that selects on the component label.
+
+That is every case except the one where a single DaemonSet carries the
+unsuffixed legacy name `<release>-worker` — CPU only, which is what a Service
+selecting `app: <release>-worker` matches. At least one GPU vendor means a
+suffixed DaemonSet exists, and so does turning the CPU one off, which leaves
+nothing but suffixed names however few vendors are selected.
 */}}
 {{- define "gpustack.multiVendorMode" -}}
 {{- $vendors := include "gpustack.workerVendors" . | fromJsonArray -}}
-{{- if gt (len $vendors) 0 -}}true{{- end -}}
+{{- if or (gt (len $vendors) 0) (not (include "gpustack.workerCPUEnabled" .)) -}}true{{- end -}}
 {{- end -}}
 
 {{/*
@@ -102,14 +134,32 @@ output only.
 {{- end -}}
 
 
+{{/*
+Tag of this chart's own image.
+
+Required rather than defaulted to `v<appVersion>`: appVersion names the last
+release, and its image pins a gpustack-runtime that can be a whole generation
+away from the templates sitting next to it in a checkout. Pairing those two
+silently is how an install ends up with an operator that derives the Kueue
+scheduling chain one way and a worker that reads it another, surfacing as
+"Failed to find Kueue queue name on node ..." at deploy time rather than as a
+version error at install time. CI patches this value for every published chart,
+so only checkout installs have to state it — which is exactly the case that
+cannot be defaulted correctly.
+*/}}
 {{ define "gpustack.imageTag" -}}
-{{ default (printf "v%s" .Chart.AppVersion) .Values.image.tag -}}
+{{ required "image.tag is required: name the gpustack image to pair with these templates (e.g. --set image.tag=dev-<sha> from a checkout). Published charts carry it already." .Values.image.tag -}}
 {{ end -}}
 
 
 {{/*
 Resolve the registry + namespace prefix for images managed by this chart.
-Pulls from `.Values.global.hub`, trimming any trailing slash for safe printf.
+
+One key covers every image in the release, including the sub-charts': higress-core
+reads `global.hub` natively (the Istio convention it inherits), and the
+gpustack-operator chart accepts it as an alias for the `global.imageRegistry` its
+own tree uses. Anything else would leave a mirrored install pulling half its
+images from Docker Hub.
 */}}
 {{ define "gpustack.hub" -}}
 {{ trimSuffix "/" (required "global.hub is required" .Values.global.hub) -}}
@@ -144,6 +194,44 @@ GPUSTACK_WORKER_METRICS_PORT: "{{ .Values.worker.metricsPort }}"
 {{- range $key, $value := . }}
 {{ $key }}: "{{ $value }}"
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Name of the Secret carrying GPUSTACK_TOKEN.
+
+Setting `registrationTokenSecretName` points every consumer at a Secret this
+release does not own and does not create. Two cases need that:
+
+  - server and workers installed as two releases in one namespace. The Secret
+    name is not release-prefixed, so both releases would render the same object
+    and the second install would be refused for not owning it. The second
+    release references the first's Secret instead.
+  - a registration manifest that creates the Secret with kubectl and then hands
+    the install to Helm. Helm never owns it, so re-rendering cannot delete or
+    rotate the token.
+
+Left empty the chart creates and references `registration-token`, as before.
+*/}}
+{{ define "gpustack.registrationTokenSecretName" -}}
+{{ default "registration-token" .Values.registrationTokenSecretName -}}
+{{ end -}}
+
+{{/*
+Address the workers register with.
+
+`worker.serverURL` wins when set, so a worker-only install can point at a server
+outside this release. Otherwise the server deployed alongside it is addressed
+over its in-cluster Service — which only exists when `server.enabled` is true,
+hence the hard failure rather than a silently unreachable default.
+*/}}
+{{ define "gpustack.workerServerURL" -}}
+{{- if .Values.worker.serverURL -}}
+{{ .Values.worker.serverURL }}
+{{- else if .Values.server.enabled -}}
+{{ printf "http://%s-server.%s.svc:%v" .Release.Name .Release.Namespace .Values.server.apiPort }}
+{{- else -}}
+{{ fail "worker.serverURL is required when server.enabled is false: the workers have no in-release server to register with." }}
 {{- end -}}
 {{- end -}}
 
@@ -189,41 +277,78 @@ tls:
 {{- end -}}
 
 
+{{/*
+Normalize one TLS protocol version onto Higress' spelling, or fail the render.
+
+Refusing the install is the point. Higress fails *open* on a version string it
+cannot parse: the Ingress applies, the listener keeps its TLS 1.0 default, and
+the only trace is a line in the higress-controller log. A `TLSv1.4` or a
+`TLSv1_2` that rendered fine would leave the floor exactly where it was while
+looking like it had been raised.
+
+Underscores and case are normalized rather than rejected -- `TLSv1_2` is Envoy's
+own spelling and the likeliest thing to reach for. Mirrors
+`_normalized_tls_protocol_version` in gpustack/gateway/utils.py, which does the
+same for the environment variables the non-in-cluster modes use.
+
+Args: dict with `input` (the configured value) and `field` (its values path,
+used in the error message).
+*/}}
+{{- define "normalized_tls_protocol_version" -}}
+{{- $candidate := .input | toString | replace "_" "." | lower -}}
+{{- $match := "" -}}
+{{- range $supported := list "TLSv1.0" "TLSv1.1" "TLSv1.2" "TLSv1.3" -}}
+{{- if eq $candidate (lower $supported) -}}{{- $match = $supported -}}{{- end -}}
+{{- end -}}
+{{- if not $match -}}
+{{/* `.input | toString` before %q: %q on a bool or int renders as %!q(bool=false)
+or an escape sequence, which tells the operator nothing about what they typed. */}}
+{{- fail (printf "%s: %q is not a TLS version Higress accepts. Valid values are TLSv1.0, TLSv1.1, TLSv1.2, TLSv1.3 -- anything else is ignored by Higress, which keeps accepting TLS 1.0." .field (.input | toString)) -}}
+{{- end -}}
+{{- $match -}}
+{{- end -}}
+
+{{/*
+TLS protocol version bounds for this Ingress' listener, as Higress' annotations.
+
+Only rendered here. The Ingress this chart creates is the anchor GPUStack reads
+when it generates an Ingress per LLM route, so setting the bounds once here puts
+them on the whole gateway -- there is no second place to keep in step.
+*/}}
+{{- define "ingress_tls_protocol_annotations" -}}
+{{- $tls := .Values.server.ingress.tls -}}
+{{- $min := "" -}}
+{{- $max := "" -}}
+{{/* An explicit nil/empty test rather than `with`, which also treats `false`
+and `0` as unset. Those are not TLS versions, but letting them skip validation
+would render no annotation at all and leave the listener on TLS 1.0 -- the
+silent failure this block exists to prevent. Anything not null and not empty
+goes to the validator, which names it in the error. */}}
+{{- $rawMin := $tls.minProtocolVersion -}}
+{{- if and (not (kindIs "invalid" $rawMin)) (ne (toString $rawMin) "") -}}
+{{- $min = include "normalized_tls_protocol_version" (dict "input" $rawMin "field" "server.ingress.tls.minProtocolVersion") -}}
+{{- end -}}
+{{- $rawMax := $tls.maxProtocolVersion -}}
+{{- if and (not (kindIs "invalid" $rawMax)) (ne (toString $rawMax) "") -}}
+{{- $max = include "normalized_tls_protocol_version" (dict "input" $rawMax "field" "server.ingress.tls.maxProtocolVersion") -}}
+{{- end -}}
+{{/* Lexical order matches version order across these four, all same length and
+differing only in the last digit, so this needs no index lookup. */}}
+{{- if and $min $max (gt $min $max) -}}
+{{- fail (printf "server.ingress.tls.minProtocolVersion (%s) is higher than server.ingress.tls.maxProtocolVersion (%s); no TLS version would be accepted." $min $max) -}}
+{{- end -}}
+{{- with $min }}
+higress.io/tls-min-protocol-version: "{{ . }}"
+{{- end }}
+{{- with $max }}
+higress.io/tls-max-protocol-version: "{{ . }}"
+{{- end }}
+{{- end -}}
+
+
 {{- define "image_pull_secrets" -}}
 {{- with .Values.global.imagePullSecrets }}
 imagePullSecrets:
 {{- toYaml . | nindent 2 }}
 {{- end }}
-{{- end -}}
-
-
-{{/*
-Operator image tag. Requires operator.image.tag to be set (patched
-automatically by CI from gpustack/__init__.py __operator_version__).
-Fails explicitly when the tag is unset instead of falling back to a
-stale default.
-*/}}
-{{- define "gpustack.operatorImageTag" -}}
-{{- required "operator.image.tag is required (set it explicitly or rely on CI patching)" .Values.operator.image.tag -}}
-{{- end -}}
-
-
-{{/*
-Full operator image reference: {global.hub}/{operator.image.repository}:{tag}
-*/}}
-{{- define "gpustack.operatorImage" -}}
-{{ printf "%s/%s:%s" (include "gpustack.hub" .) .Values.operator.image.repository (include "gpustack.operatorImageTag" .) -}}
-{{- end -}}
-
-
-{{/*
-Effective nodeSelector for the operator pod.
-operator.nodeSelector REPLACES global.nodeSelector when non-empty.
-*/}}
-{{- define "gpustack.operatorNodeSelector" -}}
-{{- if .Values.operator.nodeSelector -}}
-{{ toYaml .Values.operator.nodeSelector }}
-{{- else if .Values.global.nodeSelector -}}
-{{ toYaml .Values.global.nodeSelector }}
-{{- end -}}
 {{- end -}}

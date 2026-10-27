@@ -4,10 +4,11 @@ import logging
 import copy
 import math
 from urllib.parse import urlparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from functools import partial
 from typing import (
     List,
+    Iterable,
     Optional,
     Tuple,
     Union,
@@ -20,7 +21,10 @@ from typing import (
 )
 from tenacity import retry, stop_after_attempt, wait_fixed
 from fastapi import HTTPException
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.datastructures import Headers
+from gpustack.config.config import Config
+from gpustack.gateway.plugins import plugin_entry
 from gpustack.gateway.labels_annotations import managed_labels, match_labels
 from gpustack.gateway import ai_proxy_types
 from gpustack.gateway.client.networking_higress_io_v1_api import (
@@ -42,6 +46,7 @@ from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
     get_ingress_fallback_envoyfilter,
 )
 from gpustack.schemas.models import (
+    Model,
     ModelInstance,
     ModelInstancePublic,
 )
@@ -59,6 +64,7 @@ from gpustack.schemas.clusters import Cluster
 from gpustack.utils.network import is_ipaddress
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException, V1IngressTLS
+from gpustack import envs
 from gpustack.envs import GATEWAY_MIRROR_INGRESS_NAME
 from gpustack.api.exceptions import NotFoundException
 from gpustack.websocket_proxy.message import ServerInfo, RegisteredClientInfo
@@ -73,6 +79,21 @@ model_ingress_prefix = "ai-route-model-"
 model_route_ingress_prefix = "ai-route-route-"
 provider_id_prefix = "provider-"
 model_id_prefix = "model-"
+# AI proxy provider id prefix for self-hosted deployments. One provider per
+# Model (deployment), shared by every ModelRoute pointing at it. Supersedes the
+# per-route ``ai-route-route-<route_id>`` ids, which the startup cleanup pass
+# retires wholesale.
+model_ai_proxy_provider_prefix = "gpustack-model-"
+# Legacy per-route provider ids happen to reuse the route ingress prefix — alias
+# it so call sites read as provider ids rather than as ingress names.
+legacy_model_route_provider_prefix = model_route_ingress_prefix
+# Provider ids the reconciler may garbage collect once no match rule references
+# them: the per-deployment ids it owns, plus the legacy per-route ids those
+# supersede.
+_collectable_provider_prefixes = (
+    model_ai_proxy_provider_prefix,
+    legacy_model_route_provider_prefix,
+)
 
 router_header_key = "X-GPUStack-Model-Instance"
 gpustack_original_path_header = "x-gpustack-original-path"
@@ -81,6 +102,57 @@ gpustack_fallback_path_header = "x-gpustack-fallback-path"
 # Type alias for destination tuples
 # Each tuple contains (weight: int, model_name: str, registry: McpBridgeRegistry)
 DestinationTupleList = List[Tuple[int, str, McpBridgeRegistry]]
+
+
+def is_lb_match_rule(rule) -> bool:
+    """Whether a matchRule's config carries the LB plugin's shape
+    (``candidates``). This is the LEGACY ownership signal: rules written
+    through the route-plugin rule collector carry an explicit owner
+    stamp (``x-gpustack-owner``) and are recycled by that, and only
+    rules without the stamp — written before the collector existed, or
+    by hand — fall back to this shape inference. It must stay in step
+    with the gpustack-lb plugin's config contract: the fallback rule of
+    the mapper sync (``modelMapping``-keyed) lists the main ingress just
+    like an LB rule does, so an ingress-based predicate can never tell
+    the two apart."""
+    config = getattr(rule, "config", None)
+    return isinstance(config, dict) and "candidates" in config
+
+
+@dataclass
+class ModelAIProxyGroup:
+    """AI proxy grouping for one deployment (Model).
+
+    The upstream services of a deployment are its model instances' registries,
+    or the remote cluster gateway registry when the deployment lives in
+    another cluster. They all accept the same credential — the registration
+    token of the deployment's cluster — so one provider per Model is both
+    necessary and sufficient, and it is shared by every route pointing at
+    that Model. Model names the deployment serves (LoRA aliases, overrides)
+    are not services: they are expressed on the mapper/lb CR, so they never
+    enter the group.
+
+    The match rule is service-only: a deployment's service names are globally
+    unique (``model-<id>-<inst>.<type>``), so one rule per Model selects its
+    provider on every path that can reach it — the main ingress, the fallback
+    ingress, and the LB plugin's request-time cluster selection alike (Envoy
+    resolves ``cluster_name`` lazily from the LB-written header, which is what
+    makes service matching work on cluster_header routes). Whether a target is
+    a fallback therefore adds nothing to the rule set.
+    """
+
+    model_id: int
+    api_tokens: List[str] = dataclass_field(default_factory=list)
+    service_names: Set[str] = dataclass_field(default_factory=set)
+    # Declared on the deployment (``Model.native_anthropic_api``). One answer
+    # per Model is not a simplification but a constraint: the provider entry is
+    # per Model, while the image -- and so the API surfaces actually served --
+    # is settled per instance, so a deployment spread over mismatched images
+    # has to answer once for all of them.
+    native_anthropic_api: bool = False
+
+    def provider_id(self) -> str:
+        return model_ai_proxy_provider_id(self.model_id)
 
 
 @dataclass
@@ -143,6 +215,14 @@ openai_model_prefixes: List[RoutePrefix] = [
         ]
     ),
     RoutePrefix(["/rerank"], additional_versions=["/v2"]),
+    # Synchronous video generation (vLLM-Omni / SGLang diffusion,
+    # multipart in, raw video bytes out). The gateway treats it as an
+    # OpenAI-style model route: the request body carries ``model``, so
+    # model-name resolution and mapping apply, while ai-proxy passes it
+    # through untouched (no ApiName is registered for it upstream, which
+    # also means neither the multipart body nor the binary response is
+    # ever buffered by the gateway).
+    RoutePrefix(["/videos/sync"]),
 ]
 
 anthropic_model_exact: List[RoutePrefix] = [
@@ -203,8 +283,18 @@ def model_mcp_bridge_name(cluster_id: int) -> str:
     return cluster_mcp_bridge_name(cluster_id)
 
 
-def model_route_cleanup_prefix(model_route_id: int) -> str:
-    return f"{model_route_ingress_prefix}{model_route_id}"
+def model_ai_proxy_provider_id(model_id: int) -> str:
+    """AI proxy provider id for a self-hosted deployment (Model)."""
+    return f"{model_ai_proxy_provider_prefix}{model_id}"
+
+
+def legacy_model_route_provider_id(model_route_id: int) -> str:
+    """AI proxy provider id written by versions that keyed providers per route.
+
+    Superseded by ``model_ai_proxy_provider_id`` and retired wholesale by the
+    startup cleanup pass (see cleanup_ai_proxy_config).
+    """
+    return f"{legacy_model_route_provider_prefix}{model_route_id}"
 
 
 def model_route_ingress_name(model_route_id: int) -> str:
@@ -216,6 +306,42 @@ def fallback_ingress_name(name: str) -> str:
     if len(split_name) == 1:
         return f"{name}.fallback"
     return f"{split_name[0]}.fallback.{split_name[1]}"
+
+
+def route_ingress_names_for_plugins(
+    model_route_id: int, resource_namespace: str, gateway_namespace: str
+) -> Tuple[str, str]:
+    """The (main, fallback) ingress names as WasmPlugin match rules store them.
+
+    Higress qualifies an ingress reference with ``<namespace>/`` when the ingress
+    lives outside the gateway's own namespace. The route reconciler and the
+    startup pruner must spell the names identically or they will not match.
+    """
+    prefix = "" if resource_namespace == gateway_namespace else f"{resource_namespace}/"
+    ingress_name = model_route_ingress_name(model_route_id)
+    return (
+        f"{prefix}{ingress_name}",
+        f"{prefix}{fallback_ingress_name(ingress_name)}",
+    )
+
+
+def route_rule_ingress_names(
+    route_ids: List[int], resource_namespace: str, gateway_namespace: str
+) -> List[str]:
+    """The expected ingress set for pruning mapper-CR match rules: main and
+    fallback names together, spelled exactly as the reconciler writes them
+    (see :func:`route_ingress_names_for_plugins`) so a live rule is never
+    judged orphaned for the namespace qualification alone."""
+    names: List[str] = []
+    for route_id in route_ids:
+        names.extend(
+            route_ingress_names_for_plugins(
+                model_route_id=route_id,
+                resource_namespace=resource_namespace,
+                gateway_namespace=gateway_namespace,
+            )
+        )
+    return names
 
 
 def model_ingress_name(model_id: int) -> str:
@@ -231,7 +357,7 @@ def model_prefix(model_id: int) -> str:
 
 
 def model_instance_prefix(
-    model_instance: Union[ModelInstance, ModelInstancePublic]
+    model_instance: Union[ModelInstance, ModelInstancePublic],
 ) -> str:
     return f"{model_prefix(model_instance.model_id)}{model_instance.id}"
 
@@ -357,6 +483,10 @@ def provider_registry_name(id: int) -> str:
     return f"{provider_id_prefix}{id}"
 
 
+def provider_proxy_name(id: int) -> str:
+    return f"{provider_registry_name(id)}-proxy"
+
+
 def provider_registry(provider: ModelProvider) -> Optional[McpBridgeRegistry]:
     provider_url = provider.config.get_base_url()
     if provider_url is None:
@@ -398,7 +528,7 @@ def provider_proxy(provider: ModelProvider) -> Optional[McpBridgeProxy]:
     # timeout in seconds
     connection_timeout = provider.proxy_timeout or 5
     return McpBridgeProxy(
-        name=f"{provider_registry_name(provider.id)}-proxy",
+        name=provider_proxy_name(provider.id),
         serverAddress=proxy_url.hostname,
         serverPort=port,
         type=scheme.upper(),
@@ -414,6 +544,18 @@ def provider_proxy_plugin_spec(
     match_rules = []
     sorted_providers: List[ModelProvider] = sorted(providers, key=lambda p: p.id)
     for provider in sorted_providers:
+        # Imported lazily: the plugin package's __init__ pulls the route
+        # plugin, which pulls this module -- a module-level import cycles.
+        from gpustack.routes.plugins.decision_service.providers import (
+            is_decision_config,
+        )
+
+        if is_decision_config(provider.config):
+            # A Jev decision service feeds the gpustack-lb-decision-service
+            # plugin's providers catalogue, not the inference proxy;
+            # riding the ai-proxy catalogue would deploy an unreachable
+            # provider and a matchRule on a service nobody selects.
+            continue
         registry = provider_registry(provider)
         if registry is None:
             continue
@@ -457,17 +599,23 @@ def diff_registries(
     existing: List[McpBridgeRegistry],
     desired: List[McpBridgeRegistry],
     to_delete_prefix: Optional[str] = None,
+    to_delete_names: Optional[List[str]] = None,
 ) -> Tuple[bool, List[McpBridgeRegistry]]:
     desired_map = {
         reg.name: idx for idx, reg in enumerate(desired) if reg.name is not None
     }
+    to_delete_name_set = set(to_delete_names or [])
     total_list = []
     need_update = False
     for registry in existing:
-        if registry.name not in desired_map:
-            # delete registries that are not in the current list
-            if to_delete_prefix is not None and registry.name.startswith(
-                to_delete_prefix
+        name = registry.name
+        if name not in desired_map:
+            # delete registries that match the delete prefix or an exact name.
+            # ``name`` is Optional[str]; a nameless entry matches nothing and
+            # is kept as unrelated.
+            if name is not None and (
+                (to_delete_prefix is not None and name.startswith(to_delete_prefix))
+                or name in to_delete_name_set
             ):
                 need_update = True
             else:
@@ -475,7 +623,7 @@ def diff_registries(
                 total_list.append(registry)
         else:
             # update existing registries
-            idx = desired_map.pop(registry.name)
+            idx = desired_map.pop(name)
             if registry != desired[idx]:
                 need_update = True
                 registry = desired[idx]
@@ -493,23 +641,31 @@ def diff_proxies(
     existing: List[McpBridgeProxy],
     desired: List[McpBridgeProxy],
     to_delete_prefix: Optional[str] = None,
+    to_delete_names: Optional[List[str]] = None,
 ) -> Tuple[bool, List[McpBridgeProxy]]:
     desired_map = {
         reg.name: idx for idx, reg in enumerate(desired) if reg.name is not None
     }
+    to_delete_name_set = set(to_delete_names or [])
     total_list = []
     need_update = False
     for proxy in existing:
-        if proxy.name not in desired_map:
-            # delete registries that are not in the current list
-            if to_delete_prefix is not None and proxy.name.startswith(to_delete_prefix):
+        name = proxy.name
+        if name not in desired_map:
+            # delete proxies that match the delete prefix or an exact name.
+            # ``name`` is Optional[str]; a nameless entry matches nothing and
+            # is kept as unrelated.
+            if name is not None and (
+                (to_delete_prefix is not None and name.startswith(to_delete_prefix))
+                or name in to_delete_name_set
+            ):
                 need_update = True
             else:
                 # keep unrelated proxies
                 total_list.append(proxy)
         else:
             # update existing proxies
-            idx = desired_map.pop(proxy.name)
+            idx = desired_map.pop(name)
             if proxy != desired[idx]:
                 need_update = True
                 proxy = desired[idx]
@@ -530,8 +686,10 @@ async def ensure_mcp_bridge(
     mcp_bridge_name: str,
     desired_registries: List[McpBridgeRegistry],
     to_delete_prefix: Optional[str] = None,
+    to_delete_names: Optional[List[str]] = None,
     desired_proxies: List[McpBridgeProxy] = None,
     to_delete_proxies_prefix: Optional[str] = None,
+    to_delete_proxies_names: Optional[List[str]] = None,
 ):
     existing_bridge = None
     try:
@@ -559,6 +717,7 @@ async def ensure_mcp_bridge(
             existing=existing_bridge.spec.registries or [],
             desired=desired_registries,
             to_delete_prefix=to_delete_prefix,
+            to_delete_names=to_delete_names,
         )
         proxy_need_update = False
         proxy_list = existing_bridge.spec.proxies or []
@@ -567,6 +726,7 @@ async def ensure_mcp_bridge(
                 existing=existing_bridge.spec.proxies or [],
                 desired=desired_proxies,
                 to_delete_prefix=to_delete_proxies_prefix,
+                to_delete_names=to_delete_proxies_names,
             )
 
         if registry_need_update or proxy_need_update:
@@ -584,6 +744,83 @@ async def ensure_mcp_bridge(
             )
 
 
+# Higress' spelling of the TLS version enum on an Ingress: dots, not the
+# underscores Envoy uses in the config these end up in. A value Higress cannot
+# parse fails *open* -- the Ingress still applies, the listener keeps Higress'
+# default floor of TLS 1.0, and the only trace is one line in the
+# higress-controller log -- so the value is checked here rather than passed
+# through and trusted.
+tls_min_protocol_version_annotation = "higress.io/tls-min-protocol-version"
+tls_max_protocol_version_annotation = "higress.io/tls-max-protocol-version"
+tls_protocol_version_annotations = (
+    tls_min_protocol_version_annotation,
+    tls_max_protocol_version_annotation,
+)
+# Weakest first, so a position in this tuple is also the comparison that
+# rejects an inverted min/max pair.
+supported_tls_protocol_versions = ("TLSv1.0", "TLSv1.1", "TLSv1.2", "TLSv1.3")
+
+
+def _normalized_tls_protocol_version(env_name: str, value: str) -> Optional[str]:
+    """Map a configured TLS version onto Higress' spelling, or raise.
+
+    Underscores are accepted because ``TLSv1_2`` is Envoy's own spelling and so
+    the likeliest thing to reach for; it is normalized rather than rejected.
+    """
+    if not value:
+        return None
+    candidate = value.strip().replace("_", ".").lower()
+    for supported in supported_tls_protocol_versions:
+        if candidate == supported.lower():
+            return supported
+    raise ValueError(
+        f"Invalid {env_name}: {value!r}. Valid values are "
+        f"{', '.join(supported_tls_protocol_versions)}."
+    )
+
+
+def gateway_tls_annotations() -> Dict[str, str]:
+    """TLS version bounds for the anchor Ingress, from the environment.
+
+    Only the anchor is configured this way. Every generated LLM-route Ingress
+    copies its bounds off the anchor instead
+    (:func:`mirror_from_anchor_ingress`), the same way it already copies the
+    hostname and the TLS secret -- so there is one place the bounds are set and
+    no way for the routes to drift from the entrypoint they share a listener
+    with.
+
+    Empty unless configured, leaving each deployment on whatever Higress
+    defaults to -- the behaviour deployments already have. Raises ValueError on
+    an unusable configuration, which callers let propagate: a floor that was
+    meant to be enforced and silently is not is worse than a startup failure.
+    """
+    minimum = _normalized_tls_protocol_version(
+        "GPUSTACK_GATEWAY_TLS_MIN_PROTOCOL_VERSION",
+        envs.GATEWAY_TLS_MIN_PROTOCOL_VERSION,
+    )
+    maximum = _normalized_tls_protocol_version(
+        "GPUSTACK_GATEWAY_TLS_MAX_PROTOCOL_VERSION",
+        envs.GATEWAY_TLS_MAX_PROTOCOL_VERSION,
+    )
+    if (
+        minimum is not None
+        and maximum is not None
+        and supported_tls_protocol_versions.index(minimum)
+        > supported_tls_protocol_versions.index(maximum)
+    ):
+        raise ValueError(
+            f"GPUSTACK_GATEWAY_TLS_MIN_PROTOCOL_VERSION ({minimum}) is higher "
+            f"than GPUSTACK_GATEWAY_TLS_MAX_PROTOCOL_VERSION ({maximum}); no "
+            "TLS version would be accepted."
+        )
+    annotations: Dict[str, str] = {}
+    if minimum is not None:
+        annotations[tls_min_protocol_version_annotation] = minimum
+    if maximum is not None:
+        annotations[tls_max_protocol_version_annotation] = maximum
+    return annotations
+
+
 def generate_model_ingress(
     ingress_name: str,
     namespace: str,
@@ -595,6 +832,7 @@ def generate_model_ingress(
     included_proxy_route: Optional[bool] = False,
     extra_annotations: Optional[Dict[str, str]] = None,
     ingress_class_name: str = "higress",
+    tls_protocol_annotations: Optional[Dict[str, str]] = None,
 ) -> k8s_client.V1Ingress:
     retry_policies = "error,timeout,http_503,http_502,non_idempotent"
     matcher_op = "exact"
@@ -605,6 +843,10 @@ def generate_model_ingress(
         "higress.io/proxy-next-upstream-tries": '2',
         "higress.io/proxy-next-upstream": retry_policies,
         **higress_http_header_matcher(matcher_op, "x-higress-llm-model", route_name),
+        # Copied off the anchor Ingress, not read from the environment: these
+        # routes share a TLS listener with it, so a bound set on one and not the
+        # other is a bound Higress may or may not end up applying.
+        **(tls_protocol_annotations or {}),
     }
     if extra_annotations is not None:
         annotations.update(extra_annotations)
@@ -665,9 +907,21 @@ def higress_metadata_equal(
         existing_metadata.annotations = {}
     if expected_metadata.annotations is None:
         expected_metadata.annotations = {}
-    for key in set(
+    compared_keys = set(
         k for k in expected_metadata.annotations if k.startswith("higress.io")
-    ):
+    )
+    # Compared even where the expected set has dropped them, so clearing the
+    # bounds takes the annotations back off the live object. Without this the
+    # object is judged equal, no write happens, and a floor stays in force after
+    # it was turned off -- the one direction that matters for a security
+    # setting.
+    #
+    # This only decides *whether* to rewrite. What a rewrite then keeps is the
+    # caller's business, and callers differ: ensure_model_ingress drops every
+    # higress.io annotation it did not expect, so nothing hand-added survives a
+    # rewrite there whatever triggered it.
+    compared_keys.update(tls_protocol_version_annotations)
+    for key in compared_keys:
         if existing_metadata.annotations.get(key) != expected_metadata.annotations.get(
             key
         ):
@@ -832,7 +1086,7 @@ async def ensure_model_ingress(
         included_generic_route (bool): Whether to include a generic '/' route for fallback traffic. Used in worker gateway.
         included_proxy_route (bool): Whether to include a proxy route for model traffic (e.g., /model/proxy/{model_name}). Used in server gateway.
     """
-    if event_type == EventType.DELETED:
+    if event_type == EventType.DELETED or not destinations:
         try:
             await networking_api.delete_namespaced_ingress(
                 name=ingress_name, namespace=namespace
@@ -862,11 +1116,12 @@ async def ensure_model_ingress(
             logger.error(f"Failed to get ingress {ingress_name}: {e}")
             return
         existing_ingress = None
-    hostname, tls = await mirror_hostname_tls_from_ingress(
+    anchor = await mirror_from_anchor_ingress(
         network_v1_client=networking_api,
         gateway_namespace=namespace,
         target_ingress_name=GATEWAY_MIRROR_INGRESS_NAME,
     )
+    hostname, tls = anchor.hostname, anchor.tls
     expected_ingress = generate_model_ingress(
         ingress_name=ingress_name,
         route_name=route_name,
@@ -878,6 +1133,7 @@ async def ensure_model_ingress(
         included_proxy_route=included_proxy_route,
         extra_annotations=extra_annotations,
         ingress_class_name=ingress_class_name,
+        tls_protocol_annotations=anchor.tls_protocol_annotations,
     )
 
     if existing_ingress is None:
@@ -941,6 +1197,11 @@ async def ensure_wasm_plugin(
             raise
     current_spec = getattr(current_plugin, 'spec', None)
     expected = spec_diff(copy.deepcopy(current_spec))
+    if expected is None:
+        # No owner can author this CR's spec (e.g. a capability whose
+        # module is unavailable): an absent CR stays absent rather than
+        # being created with an empty spec.
+        return
     if current_plugin is None:
         wasm_plugin_body = WasmPlugin(
             metadata={
@@ -1078,21 +1339,38 @@ async def ensure_model_mcp_bridge(
     return desired_registry
 
 
-async def mirror_hostname_tls_from_ingress(
+@dataclass
+class AnchorIngressSettings:
+    """What a generated LLM-route Ingress copies off the anchor Ingress.
+
+    The anchor is the entrypoint Ingress named by
+    ``GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME`` -- written by this server outside
+    in-cluster mode, by the helm chart within it. Everything here describes the
+    TLS listener the generated routes end up sharing with it, which is why it is
+    mirrored rather than configured twice.
+    """
+
+    hostname: Optional[str] = None
+    tls: Optional[List[V1IngressTLS]] = None
+    tls_protocol_annotations: Dict[str, str] = dataclass_field(default_factory=dict)
+
+
+async def mirror_from_anchor_ingress(
     network_v1_client: k8s_client.NetworkingV1Api,
     gateway_namespace: str,
     target_ingress_name: str,
-) -> Tuple[Optional[str], Optional[List[V1IngressTLS]]]:
+) -> AnchorIngressSettings:
     """
-    Mirror TLS settings from an existing ingress to be used in the gateway.
+    Read the listener settings a generated ingress has to match from the anchor.
 
     Parameters:
-        api_client (k8s_client.ApiClient): The Kubernetes API client.
+        network_v1_client (k8s_client.NetworkingV1Api): The Kubernetes networking API client.
         gateway_namespace (str): The namespace where the gateway ingress resides.
-        target_ingress_name (str): The name of the ingress to mirror TLS settings from.
+        target_ingress_name (str): The name of the anchor ingress to mirror from.
 
     Returns:
-        Tuple[Optional[str], Optional[List[V1IngressTLS]]]: A tuple containing the hostname and ingress TLS settings.
+        AnchorIngressSettings: hostname, TLS secret and TLS protocol bounds.
+        Empty when the anchor does not exist.
     """
     try:
         ingress: k8s_client.V1Ingress = await network_v1_client.read_namespaced_ingress(
@@ -1103,39 +1381,72 @@ async def mirror_hostname_tls_from_ingress(
             logger.warning(
                 f"Target ingress {target_ingress_name} not found in namespace {gateway_namespace} for TLS mirroring."
             )
-            return None, None
+            return AnchorIngressSettings()
         else:
             raise
 
-    tls = getattr(ingress.spec, 'tls', None)
+    # ``metadata`` and ``spec`` are both optional on V1Ingress. Anything the API
+    # server hands back has them, so this is not a case anyone should hit -- but
+    # reading through them unguarded means one malformed object raises inside
+    # every model-route reconcile instead of mirroring nothing, and the anchor is
+    # read on each one.
+    metadata = getattr(ingress, 'metadata', None)
+    spec = getattr(ingress, 'spec', None)
+    tls = getattr(spec, 'tls', None)
     hostname = None
-    for rule in ingress.spec.rules or []:
+    for rule in getattr(spec, 'rules', None) or []:
         if rule.host:
             hostname = rule.host
             break
-    return hostname, tls
+    anchor_annotations = getattr(metadata, 'annotations', None) or {}
+    tls_protocol_annotations = {
+        key: anchor_annotations[key]
+        for key in tls_protocol_version_annotations
+        if anchor_annotations.get(key)
+    }
+    return AnchorIngressSettings(
+        hostname=hostname,
+        tls=tls,
+        tls_protocol_annotations=tls_protocol_annotations,
+    )
 
 
 def get_expected_match_list(
     route_name: str,
     ingress_prefix: str,
     ingress_name: str,
-    model_name_to_registries: Dict[str, List[str]],
     fallback_model_name_to_registries: Dict[str, List[str]],
+    model_name_to_registries: Optional[Dict[str, List[str]]] = None,
 ) -> List[WasmPluginMatchRule]:
+    """Match rules the mapper sync owns: fallback traffic always, and —
+    only when ``model_name_to_registries`` is passed (the LB module is
+    unavailable, degraded mode) — the legacy main-path model rewrite.
+    With the LB module present the main-path rewrite is the LB rule's
+    job: its candidates carry one model name per cluster, which a
+    route-name-keyed ``modelMapping`` cannot express when a single
+    upstream serves several models and the rewrite must follow the LB
+    selection."""
     match_list: List[WasmPluginMatchRule] = []
     ingress_name = f"{ingress_prefix}{ingress_name}"
-    for model_name, service_names in model_name_to_registries.items():
-        config = {"modelMapping": {route_name: model_name}}
+    for model_name, service_names in (model_name_to_registries or {}).items():
+        if route_name == model_name:
+            # Skip self mapping
+            continue
+        # Degraded mode: the LB module is unavailable, so the legacy
+        # per-route main-path rewrite keeps the upstream model name
+        # correct until the plugins manifest is upgraded.
         match_list.append(
             WasmPluginMatchRule(
-                config=config,
+                config={"modelMapping": {route_name: model_name}},
                 ingress=[ingress_name],
                 configDisable=False,
                 service=service_names,
             )
         )
     for model_name, service_names in fallback_model_name_to_registries.items():
+        if route_name == model_name:
+            # Skip self mapping
+            continue
         # the fallback mapping should include both normal ingress and fallback ingress
         # as the normal ingress may not exist when only fallback model is set
         fallback_name = fallback_ingress_name(ingress_name)
@@ -1262,74 +1573,286 @@ async def ensure_fallback_filter(
             )
 
 
-def ai_proxy_openai_provider_config(id: str) -> Dict[str, Any]:
+# Anthropic capabilities added on top of the openai provider's own defaults.
+# Keys are the plugin's ``ApiName`` strings and their spelling is load-bearing:
+# ai-proxy matches them verbatim and drops keys it does not recognize without
+# complaining. Declaring them is what stops it converting an inbound
+# /v1/messages; the openai provider keeps its full default set either way,
+# which is why this is a top-up rather than a provider-type swap.
+_ai_proxy_anthropic_capabilities: Dict[str, str] = {
+    "anthropic/v1/messages": "/v1/messages",
+    "anthropic/v1/messages/count_tokens": "/v1/messages/count_tokens",
+}
+
+
+# Manifest name, which is also the ``gateway_plugin`` key -- the same name
+# ``plugin_spec_overrides`` resolves the module URL by. Kept beside the model
+# that consumes it, as gateway/__init__.py does with ai-statistics'.
+ai_proxy_plugin_name = "gpustack-ai-proxy"
+
+
+class AiProxyOverride(BaseModel):
+    """``gateway_plugin["gpustack-ai-proxy"].config``.
+
+    Shaped like the CR's ``defaultConfig`` so field paths transcribe straight
+    from the plugin's own Go config struct.
+
+    The whitelist is load-bearing, not convenience: ai-proxy's defaultConfig
+    carries ``providers`` with ``apiTokens``, so free-form passthrough would
+    let an operator hand the plugin upstream credentials or rewrite provider
+    selection without going through the management plane at all. Unknown
+    fields fail validation instead of being ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    # Whether ai-proxy rejects tool-call messages that arrive without the
+    # assistant message that initiated them. The plugin's default is ``off``;
+    # ``None`` here means "not configured", which leaves the key out of the
+    # CR entirely so the plugin default governs.
+    tool_call_validation: Optional[Literal["off", "strict"]] = Field(
+        default=None, alias="toolCallValidation"
+    )
+
+
+def ai_proxy_override(cfg: Optional[Config]) -> AiProxyOverride:
+    entry = plugin_entry(ai_proxy_plugin_name, cfg)
+    if entry is None or not entry.config:
+        return AiProxyOverride()
+    try:
+        return AiProxyOverride.model_validate(entry.config)
+    except ValidationError as e:
+        # Field locations only: the validation error's own text embeds the
+        # rejected input values, and a config that stumbled in carrying
+        # ``providers``/``apiTokens`` would then ride this message into the
+        # startup and controller logs.
+        locations = ", ".join(
+            ".".join(str(part) for part in error["loc"]) for error in e.errors()
+        )
+        raise ValueError(
+            f"Invalid gateway_plugin.{ai_proxy_plugin_name}.config: "
+            f"unsupported or misspelled field(s): {locations}"
+        ) from e
+
+
+def apply_ai_proxy_override(
+    default_config: Dict[str, Any], cfg: Optional[Config]
+) -> Dict[str, Any]:
+    """Write the operator's ai-proxy settings into a ``defaultConfig`` dict.
+
+    Called on every write path -- the init-time CR creation and the runtime
+    reconcilers -- so the CR reflects config.yaml on the next reconcile rather
+    than only after a restart. Match rules are left alone: the plugin copies
+    the global config into each rule before applying its overrides, so the
+    rule inherits the value written here.
+
+    ``cfg=None`` is deliberately a no-op that leaves the current keys alone,
+    not "unconfigured": several reconcilers write this CR, and one that cannot
+    see the server config must not strip what a sibling wrote from it. A real
+    Config whose entry is absent or empty *does* remove the key, so turning
+    the switch off returns the CR to the plugin's own default.
+    """
+    if cfg is None:
+        return default_config
+    override = ai_proxy_override(cfg)
+    if override.tool_call_validation is not None:
+        default_config["toolCallValidation"] = override.tool_call_validation
+    else:
+        default_config.pop("toolCallValidation", None)
+    return default_config
+
+
+def ai_proxy_model_provider_config(
+    id: str,
+    api_tokens: Optional[List[str]] = None,
+    native_anthropic_api: bool = False,
+) -> Dict[str, Any]:
+    """Build an openai-type provider entry for a self-hosted upstream.
+
+    ``api_tokens`` makes ai-proxy hold the upstream credential statically:
+    ``apiTokens`` has the highest priority in its openai provider, so the
+    credential no longer has to be injected per request by ``/token-auth``.
+    Left empty, ai-proxy falls back to reading the inbound ``Authorization``
+    header, which is the pre-existing behavior.
+
+    ``native_anthropic_api`` adds the Anthropic surfaces to ``capabilities``.
+    The provider type stays ``openai`` either way: it carries the widest default
+    capability set of any provider and never rejects an API it has no capability
+    for, where the ``vllm`` provider would trade ~20 of those defaults for two
+    and turn every unlisted API into a gateway error. A top-up on ``openai`` is
+    strictly additive; a type swap is not.
+    """
     return ai_proxy_types.AIProxyDefaultConfig(
         type=ModelProviderTypeEnum.OPENAI,
         id=id,
+        apiTokens=api_tokens or None,
+        capabilities=_ai_proxy_anthropic_capabilities if native_anthropic_api else None,
         failover=ai_proxy_types.FailoverConfig(enabled=False),
         retryOnFailure=ai_proxy_types.EnableState(enabled=False),
+        # ``exclude_unset`` keeps the nested configs down to the flags set here,
+        # matching the entries already in the CR; ``apiTokens`` is omitted by
+        # ``exclude_none`` alone.
     ).model_dump(exclude_none=True, exclude_unset=True)
+
+
+def model_ai_proxy_plugin_spec(
+    groups: Iterable[ModelAIProxyGroup],
+) -> Tuple[List[Dict[str, Any]], List[WasmPluginMatchRule]]:
+    """Build the providers and match rules of one reconcile, grouped by
+    deployment.
+
+    A rule is service-only and per deployment: services are globally unique
+    per deployment, so one rule selects the provider on every path that can
+    reach those services (main ingress, fallback ingress, LB-selected
+    cluster). Service lists are sorted so an unchanged deployment produces a
+    byte-identical CR and the reconciler's diff stays quiet.
+    """
+    providers: List[Dict[str, Any]] = []
+    match_rules: List[WasmPluginMatchRule] = []
+    for group in sorted(groups, key=lambda g: g.model_id):
+        if not group.service_names:
+            continue
+        provider_id = group.provider_id()
+        providers.append(
+            ai_proxy_model_provider_config(
+                provider_id,
+                api_tokens=group.api_tokens,
+                native_anthropic_api=group.native_anthropic_api,
+            )
+        )
+        match_rules.append(
+            WasmPluginMatchRule(
+                config={"activeProviderId": provider_id},
+                configDisable=False,
+                service=sorted(group.service_names),
+            )
+        )
+    return providers, match_rules
 
 
 def compare_and_append_default_proxy_config(
     existing_providers: List[Dict[str, Any]],
     expected_providers: List[Dict[str, Any]],
     operating_id_prefix: Optional[str] = None,
+    referenced_ids: Optional[Set[str]] = None,
 ) -> List[Dict[str, Any]]:
+    """Merge ``expected_providers`` into the existing list.
+
+    An existing entry is dropped when it is owned by this reconcile
+    (``operating_id_prefix``), when it is superseded by an expected entry with
+    the same id, or — for the ids under ``_collectable_provider_prefixes`` — when
+    ``referenced_ids`` says no remaining match rule points at it. That last rule
+    garbage collects a deployment's provider once the last route stops targeting
+    it, without any one route having to know about the others, and it retires a
+    legacy per-route provider in the same write that replaces its rule.
+    """
+    expected_ids = {
+        provider.get('id') for provider in expected_providers if provider.get('id')
+    }
     to_keep_config = []
     for provider in existing_providers:
         provider_id: Optional[str] = provider.get('id', None)
-        if (
-            provider_id is None
-            or operating_id_prefix is None
-            or not provider_id.startswith(operating_id_prefix)
-        ):
+        if provider_id is None:
             to_keep_config.append(provider)
             continue
+        if operating_id_prefix is not None and provider_id.startswith(
+            operating_id_prefix
+        ):
+            continue
+        if provider_id in expected_ids:
+            continue
+        if (
+            referenced_ids is not None
+            and provider_id.startswith(_collectable_provider_prefixes)
+            and provider_id not in referenced_ids
+        ):
+            continue
+        to_keep_config.append(provider)
     return_providers = expected_providers.copy()
     return_providers.extend(to_keep_config)
     return_providers.sort(key=lambda p: p.get("id", ""))
     return return_providers
 
 
+def _match_rule_provider_id(rule: WasmPluginMatchRule) -> Optional[str]:
+    # ``config`` is Optional on the CR model, so a hand-edited ``config: null``
+    # would otherwise raise on attribute access.
+    return (rule.config or {}).get("activeProviderId", None)
+
+
+def _match_rule_sort_key(rule: WasmPluginMatchRule) -> Tuple[str, str, str]:
+    return (
+        _match_rule_provider_id(rule) or "",
+        ",".join(rule.ingress or []),
+        ",".join(rule.service or []),
+    )
+
+
 def compare_and_append_proxy_match_rules(
     existing_rules: List[WasmPluginMatchRule],
     expected_rules: List[WasmPluginMatchRule],
     operating_id_prefix: Optional[str] = None,
+    owned_provider_ids: Optional[Set[str]] = None,
 ) -> List[WasmPluginMatchRule]:
+    """Merge ``expected_rules`` into the existing list.
+
+    Ownership can be expressed two ways: by provider id prefix (external model
+    providers, whose rules match on service only, are refreshed wholesale) or
+    by exact provider id (``owned_provider_ids`` — the deployment entries this
+    reconcile replaces, whatever form their previous rules took: the fresh
+    per-deployment service-only rule, or the older per-route ingress-keyed
+    one, which is how a legacy entry retires in the same write). Rules of
+    providers nobody owns are never touched.
+    """
     to_keep_config = []
+    owned = owned_provider_ids or set()
     for rule in existing_rules:
-        provider_id: Optional[str] = rule.config.get('activeProviderId', None)
+        provider_id: Optional[str] = _match_rule_provider_id(rule)
         if (
-            provider_id is None
-            or operating_id_prefix is None
-            or not provider_id.startswith(operating_id_prefix)
+            provider_id is not None
+            and operating_id_prefix is not None
+            and provider_id.startswith(operating_id_prefix)
         ):
-            to_keep_config.append(rule)
             continue
+        if provider_id is not None and provider_id in owned:
+            continue
+        to_keep_config.append(rule)
 
     return_rules = expected_rules.copy()
     return_rules.extend(to_keep_config)
-    return_rules.sort(key=lambda r: (r.config.get("activeProviderId", None) or ""))
+    return_rules.sort(key=_match_rule_sort_key)
     return return_rules
 
 
 async def cleanup_ai_proxy_config(
     providers: List[ModelProvider],
-    routes: List[ModelRoute],
+    models: List[Model],
     k8s_config: k8s_client.Configuration,
     namespace: str,
+    cfg: Optional[Config] = None,
 ):
-    prefixes_to_keep = {model_route_cleanup_prefix(route.id) for route in routes}
-    prefixes_to_keep.update(
-        {provider_registry_name(provider.id) for provider in providers}
-    )
+    """Prune the ai-proxy CR at startup, before the controllers replay routes.
 
-    def should_keep(provider_id: str) -> bool:
-        for prefix in prefixes_to_keep:
-            if provider_id.startswith(prefix):
-                return True
-        return False
+    Kept: one entry per live external provider and one per live
+    deployment. Dropped: everything else — including every legacy
+    per-route entry. The pass is leader-gated (see Server's
+    _start_leader_tasks): running it at all means this node holds
+    leadership, so the control plane is already on this server
+    version, which writes per-deployment entries only; the legacy
+    entries are retired here in one deterministic write rather than
+    racing per-route retirements against sibling reconciles. The
+    accepted cost is the window until the replay writes each
+    deployment's own entry — bounded by the upgrade's own recovery
+    time, since a deployment whose instances are still restarting has
+    no traffic to authorize anyway.
+    """
+    ids_to_keep = {model_ai_proxy_provider_id(model.id) for model in models}
+    ids_to_keep.update({provider_registry_name(provider.id) for provider in providers})
+
+    def should_keep_rule(
+        rule: WasmPluginMatchRule, kept_provider_ids: Set[str]
+    ) -> bool:
+        return _match_rule_provider_id(rule) in kept_provider_ids
 
     try:
         extensions_api = ExtensionsHigressIoV1Api(k8s_client.ApiClient(k8s_config))
@@ -1338,19 +1861,30 @@ async def cleanup_ai_proxy_config(
             name=gpustack_ai_proxy_name,
         )
         existing_plugin = WasmPlugin.model_validate(ai_proxy_data)
-        current_providers = existing_plugin.spec.defaultConfig.get("providers", [])
+        default_config = existing_plugin.spec.defaultConfig or {}
+        current_providers = default_config.get("providers", [])
         filtered_providers = [
-            p for p in current_providers if p.get("id") and should_keep(p.get("id"))
+            p for p in current_providers if p.get("id") and p.get("id") in ids_to_keep
         ]
-        existing_plugin.spec.defaultConfig["providers"] = filtered_providers
+        default_config["providers"] = filtered_providers
+        # The operator's whitelisted settings ride this write too, so removing
+        # one from config.yaml is recycled even if no model event reconciles
+        # the CR afterwards.
+        apply_ai_proxy_override(default_config, cfg)
+        existing_plugin.spec.defaultConfig = default_config
         filtered_provider_ids = {
             p.get("id") for p in filtered_providers if p.get("id") is not None
         }
-        filtered_rules = [
-            r
-            for r in existing_plugin.spec.matchRules or []
-            if r.config.get("activeProviderId") in filtered_provider_ids
-        ]
+        filtered_rules = []
+        for rule in existing_plugin.spec.matchRules or []:
+            if should_keep_rule(rule, filtered_provider_ids):
+                filtered_rules.append(rule)
+            else:
+                logger.info(
+                    f"Removing ai proxy rule with provider "
+                    f"{_match_rule_provider_id(rule)} and ingress {rule.ingress} "
+                    "as its route, deployment or provider no longer exists."
+                )
         existing_plugin.spec.matchRules = filtered_rules
         await extensions_api.edit_wasmplugin(
             namespace=namespace,
@@ -1496,19 +2030,33 @@ def ai_proxy_diff_spec(
     expected_providers: List[Dict[str, Any]],
     expected_match_rules: List[WasmPluginMatchRule],
     operating_id_prefix: Optional[str] = None,
+    owned_provider_ids: Optional[Set[str]] = None,
+    cfg: Optional[Config] = None,
 ) -> WasmPluginSpec:
     if current_spec is None:
         return current_spec
+    if current_spec.defaultConfig is None:
+        current_spec.defaultConfig = {}
+    match_rules = compare_and_append_proxy_match_rules(
+        existing_rules=current_spec.matchRules or [],
+        expected_rules=expected_match_rules,
+        operating_id_prefix=operating_id_prefix,
+        owned_provider_ids=owned_provider_ids,
+    )
+    # Providers are merged against the *resulting* rules so a deployment
+    # provider disappears together with the last rule referencing it.
     current_spec.defaultConfig["providers"] = compare_and_append_default_proxy_config(
         existing_providers=current_spec.defaultConfig.get("providers", []),
         expected_providers=expected_providers,
         operating_id_prefix=operating_id_prefix,
+        referenced_ids={
+            provider_id
+            for provider_id in map(_match_rule_provider_id, match_rules)
+            if provider_id
+        },
     )
-    current_spec.matchRules = compare_and_append_proxy_match_rules(
-        existing_rules=current_spec.matchRules or [],
-        expected_rules=expected_match_rules,
-        operating_id_prefix=operating_id_prefix,
-    )
+    apply_ai_proxy_override(current_spec.defaultConfig, cfg)
+    current_spec.matchRules = match_rules
     return current_spec
 
 

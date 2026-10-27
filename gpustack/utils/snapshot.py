@@ -13,9 +13,14 @@ from gpustack.utils.gpu import make_gpu_id
 
 
 def create_model_instance_snapshot(
-    model_instance: ModelInstance, model: Model
+    model_instance: ModelInstance,
+    model: Model,
+    cache_service_name: Optional[str] = None,
 ) -> ModelInstanceSnapshot:
-    """Create a snapshot of the model instance."""
+    """Create a snapshot of the model instance. ``cache_service_name``
+    names the attached shared cache service (resolved by the caller,
+    which holds the session): the config carries only the id, and the
+    snapshot keeps the name after the service is deleted."""
 
     subordinate_workers_snapshots: Optional[List[ModelInstanceRuntimeInfo]] = None
     if (
@@ -57,6 +62,7 @@ def create_model_instance_snapshot(
         ],
         computed_resource_claim=model_instance.computed_resource_claim,
         resolved_path=model_instance.resolved_path,
+        role=getattr(model_instance, "role", None),
         subordinate_workers=subordinate_workers_snapshots,
         backend=model_instance.backend,
         backend_version=model_instance.backend_version,
@@ -67,6 +73,7 @@ def create_model_instance_snapshot(
         image_name=model.image_name,
         run_command=model.run_command,
         extended_kv_cache=model.extended_kv_cache,
+        cache_service_name=cache_service_name,
         speculative_config=model.speculative_config,
     )
 

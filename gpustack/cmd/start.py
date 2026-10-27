@@ -9,16 +9,15 @@ from typing import Any, Dict
 
 import yaml
 
-from gpustack import __version__, __git_commit__
 from gpustack.config.config import set_global_config
-from gpustack.extension import Plugin, iter_plugin_classes
+from gpustack import envs
+from gpustack.extension import Plugin, iter_plugin_classes, resolve_version_info
 from gpustack.logging import setup_logging
 from gpustack.utils.envs import get_gpustack_env, get_gpustack_env_bool
 from gpustack.worker.worker import Worker
 from gpustack.config import Config
 from gpustack.server.server import Server
 from gpustack.gateway import initialize_gateway
-
 
 logger = logging.getLogger(__name__)
 
@@ -121,9 +120,15 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=os.getenv("HF_TOKEN"),
     )
     common_group.add_argument(
+        "--insecure-tls",
+        action=OptionalBoolAction,
+        help="Skip TLS verification on GPUStack's own HTTPS connections (worker to server, server to external-auth IdP). For trusted networks where the server certificate cannot be verified otherwise.",
+        default=get_gpustack_env_bool("INSECURE_TLS"),
+    )
+    common_group.add_argument(
         "--system-default-container-registry",
         type=str,
-        help="Default container registry for GPUStack to pull system and inference images. The default is 'docker.io'.",
+        help="Default container registry for GPUStack to pull system and inference images. The default is 'docker.io'. Keep all GPUStack business images under the 'gpustack' namespace; if a multi-level namespace is required, keep 'gpustack' as the last level (e.g. 'awesome.com/amazing-group/amazing-subgroup/gpustack') and set this to the parent path (e.g. 'awesome.com/amazing-group/amazing-subgroup'). If the images cannot stay under the 'gpustack' namespace (e.g. 'gpustack-ai'), adjust --image-repo and --benchmark-image-repo accordingly.",
         default=get_gpustack_env("SYSTEM_DEFAULT_CONTAINER_REGISTRY"),
     )
     common_group.add_argument(
@@ -135,13 +140,13 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     common_group.add_argument(
         "--image-repo",
         type=str,
-        help="Override the default image repository gpustack/gpustack for the GPUStack container.",
+        help="Override the default image repository gpustack/gpustack for the GPUStack container (do not include the tag; GPUStack appends the version tag automatically). If the image lives outside the 'gpustack' namespace (e.g. 'awesome.com/amazing-group/amazing-subgroup/gpustack-ai/gpustack:<tag>'), set --system-default-container-registry to the parent path (e.g. 'awesome.com/amazing-group/amazing-subgroup') first, then set this to 'gpustack-ai/gpustack'.",
         default=get_gpustack_env("IMAGE_REPO"),
     )
     common_group.add_argument(
         "--benchmark-image-repo",
         type=str,
-        help="Override the default benchmark image repository gpustack/benchmark-runner for the GPUStack benchmark container.",
+        help="Override the default benchmark image repository gpustack/benchmark-runner for the GPUStack benchmark container. Unlike --image-repo, this value is used as-is, so include the tag. If the image lives outside the 'gpustack' namespace (e.g. 'awesome.com/amazing-group/amazing-subgroup/gpustack-ai/benchmark-runner:<tag>'), set --system-default-container-registry to the parent path (e.g. 'awesome.com/amazing-group/amazing-subgroup') first, then set this to 'gpustack-ai/benchmark-runner:<tag>'.",
         default=get_gpustack_env("BENCHMARK_IMAGE_REPO"),
     )
     common_group.add_argument(
@@ -239,6 +244,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("SSL_CERTFILE"),
     )
     server_group.add_argument(
+        "--ssl-ca-certfile",
+        type=str,
+        help="Path to the CA bundle workers use to verify the server.",
+        default=get_gpustack_env("SSL_CA_CERTFILE"),
+    )
+    server_group.add_argument(
         "--force-auth-localhost",
         action=OptionalBoolAction,
         help="(DEPRECATED) No-op. Localhost callers are always authenticated; "
@@ -263,6 +274,28 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         type=str,
         help=argparse.SUPPRESS,
         default=get_gpustack_env("UPDATE_CHECK_URL"),
+    )
+    server_group.add_argument(
+        "--ota-server-url",
+        type=str,
+        help="URL of the OTA server the official content sources are read from — the "
+        "index and the documents sit directly under it, e.g. "
+        "https://ota.example.com/gpustack. Defaults to the public OTA server; point "
+        "it at a copy of your own when that one is unreachable.",
+        default=get_gpustack_env("OTA_SERVER_URL"),
+    )
+    server_group.add_argument(
+        "--redis-url",
+        type=str,
+        help=(
+            "Redis URL used by features that need shared, fast state "
+            "(e.g. the LB gateway plugin's shared-state backend). "
+            "Format: redis://host[:port][/db]. No credentials "
+            "(they would be materialized in the gateway CR) and no "
+            "TLS (rediss://): the LB plugin's redis client has no "
+            "TLS knob."
+        ),
+        default=get_gpustack_env("REDIS_URL"),
     )
     server_group.add_argument(
         "--model-catalog-file",
@@ -294,6 +327,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         help=argparse.SUPPRESS,
         default=get_gpustack_env("GATEWAY_INGRESS_CLASS"),
     )
+    server_group.add_argument(
+        "--shuihua-api-base-url",
+        type=str,
+        help=argparse.SUPPRESS,
+        default=get_gpustack_env("SHUIHUA_API_BASE_URL"),
+    )
 
     # Observability settings
     server_group.add_argument(
@@ -313,6 +352,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         type=int,
         help="Port for the embedded Grafana service. Default is 13000.",
         default=get_gpustack_env("BUILTIN_GRAFANA_PORT"),
+    )
+    server_group.add_argument(
+        "--prometheus-url",
+        type=str,
+        help="Base URL of an external Prometheus to query. When unset, the embedded one is used if it is enabled. Set this to keep the server's own metric queries (cache service and per-deployment cache charts) working on a deployment that delegates observability to its own stack.",
+        default=get_gpustack_env("PROMETHEUS_URL"),
     )
     server_group.add_argument(
         "--grafana-url",
@@ -364,7 +409,7 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     server_group.add_argument(
         "--trusted-hosts",
         action='append',
-        help='Host names allowed in the X-Forwarded-Host header when GPUStack is behind a reverse proxy. Specify the flag multiple times for multiple hosts. Use "*" to trust any forwarded host (legacy behavior, not recommended). When unset, the allowlist is derived from --server-external-url; if that is also unset, X-Forwarded-Host is ignored.',
+        help='Allowlist for the X-Forwarded-Host header behind a reverse proxy. Specify the flag multiple times for multiple hosts. When unset, derived from --server-external-url. If both are unset, it defaults to "*" to trust any host (not recommended unless the server is only reachable via a trusted proxy).',
     )
 
     # OIDC settings
@@ -513,6 +558,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
 
     # External Authentication settings
     server_group.add_argument(
+        "--external-auth-provider-name",
+        type=str,
+        help="Name of the identity provider shown on the login page's SSO button, e.g., 'Okta'. Applies to the enabled SSO provider. Defaults to the protocol name (OIDC/SAML/CAS) when unset. This is a display label, unlike --external-auth-name, which maps a claim/attribute to the username.",
+        default=get_gpustack_env("EXTERNAL_AUTH_PROVIDER_NAME"),
+    )
+    server_group.add_argument(
         "--external-auth-name",
         type=str,
         help="Mapping of external authentication user information to username, e.g., 'preferred_username'. For SAML, you must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress' or simplify with 'emailaddress' by '--saml-sp-attribute-prefix'.",
@@ -576,6 +627,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         type=str,
         help="Network interface name of the worker node. Auto-detected by default.",
         default=get_gpustack_env("WORKER_IFNAME"),
+    )
+    worker_group.add_argument(
+        "--kv-transfer-ifname",
+        type=str,
+        help="Network interface name carrying the KV transfer plane of disaggregated serving. Falls back to the auto-detected worker interface when this host has only one candidate interface; required on a multi-NIC host.",
+        default=get_gpustack_env("KV_TRANSFER_IFNAME"),
     )
     worker_group.add_argument(
         "--worker-name",
@@ -712,17 +769,31 @@ def _contribute_plugin_config(args: argparse.Namespace, config_data: dict):
             ) from e
 
 
+def export_insecure_tls_env(cfg: Config):
+    """Surface an ``--insecure-tls`` / config-file setting as the env variable.
+
+    This process already decided via the global config (see
+    ``make_ssl_context``), but spawned subprocesses -- the benchmark runner,
+    the embedded worker -- read ``GPUSTACK_INSECURE_TLS`` at import and have
+    no global config, so the switch has to reach them as env.
+    """
+    if cfg.insecure_tls:
+        os.environ[envs.INSECURE_TLS_ENV] = "true"
+
+
 def run(args: argparse.Namespace):
     try:
         cfg = parse_args(args)
+        export_insecure_tls_env(cfg)
         setup_logging(cfg.debug)
         debug_env_info()
         set_third_party_env(cfg=cfg)
-        start_tracemalloc_if_debug(cfg)
+        start_tracemalloc_if_enabled()
         initialize_gateway(cfg)
         multiprocessing.set_start_method('spawn')
 
-        logger.info(f"GPUStack version: {__version__} ({__git_commit__})")
+        version, git_commit = resolve_version_info()
+        logger.info(f"GPUStack version: {version} ({git_commit})")
 
         if cfg.server_url:
             run_worker(cfg)
@@ -750,6 +821,8 @@ def run_server(cfg: Config):
 
 
 def run_worker(cfg: Config):
+    # Spawned workers initialize process-local tracing before allocating state.
+    start_tracemalloc_if_enabled()
     set_global_config(cfg)
     worker = Worker(cfg)
     worker.start()
@@ -795,6 +868,7 @@ def set_common_options(args, config_data: dict):
         "bin_dir",
         "pipx_path",
         "huggingface_token",
+        "insecure_tls",
         "system_default_container_registry",
         "image_name_override",
         "image_repo",
@@ -821,15 +895,18 @@ def set_server_options(args, config_data: dict):
         "database_port",
         "disable_metrics",
         "database_url",
+        "redis_url",
         "disable_worker",
         "enable_worker",
         "bootstrap_password",
         "ssl_keyfile",
         "ssl_certfile",
+        "ssl_ca_certfile",
         "force_auth_localhost",
         "disable_update_check",
         "disable_openapi_docs",
         "update_check_url",
+        "ota_server_url",
         "model_catalog_file",
         "enable_cors",
         "allow_origins",
@@ -837,6 +914,7 @@ def set_server_options(args, config_data: dict):
         "allow_methods",
         "allow_headers",
         "trusted_hosts",
+        "external_auth_provider_name",
         "external_auth_name",
         "external_auth_full_name",
         "external_auth_avatar_url",
@@ -870,9 +948,11 @@ def set_server_options(args, config_data: dict):
         "gateway_concurrency",
         "gateway_plugin_server_url",
         "gateway_ingress_class",
+        "shuihua_api_base_url",
         "disable_builtin_observability",
         "builtin_prometheus_port",
         "builtin_grafana_port",
+        "prometheus_url",
         "grafana_url",
         "grafana_worker_dashboard_uid",
         "grafana_model_dashboard_uid",
@@ -888,6 +968,7 @@ def set_worker_options(args, config_data: dict):
         "server_url",
         "worker_ip",
         "worker_ifname",
+        "kv_transfer_ifname",
         "worker_name",
         "worker_port",
         "disable_worker_metrics",
@@ -913,12 +994,13 @@ def debug_env_info():
         logger.debug(f"Using HF_ENDPOINT: {hf_endpoint}")
 
 
-def start_tracemalloc_if_debug(cfg: Config):
-    if cfg.debug:
+def start_tracemalloc_if_enabled() -> None:
+    if envs.DEBUG_ENABLE_TRACEMALLOC:
         import tracemalloc
 
-        tracemalloc.start()
-        logger.debug("tracemalloc started for memory profiling")
+        if not tracemalloc.is_tracing():
+            tracemalloc.start()
+            logger.info("tracemalloc started for memory profiling")
 
 
 def set_third_party_env(cfg: Config):

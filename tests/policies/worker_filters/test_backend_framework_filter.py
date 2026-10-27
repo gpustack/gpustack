@@ -1,12 +1,15 @@
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
+from gpustack_runner.runner import Runner
 
 from gpustack.policies.worker_filters.backend_framework_filter import (
     BackendFrameworkFilter,
 )
 from gpustack.schemas.models import Model, BackendEnum
 from gpustack.schemas.inference_backend import InferenceBackend, VersionConfig
+from gpustack.schemas.runner_source import RunnerOverrideEntry
+from gpustack.schemas.source import SourceTypeEnum
 from tests.fixtures.workers.fixtures import (
     linux_nvidia_4_4080_16gx4,
     linux_cpu_1,
@@ -87,6 +90,7 @@ async def test_cuda_gpu_worker_passes():
     # Mock only the database query, not _has_supported_runners
     async def mock_session_exec(statement):
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = backend
         return mock_result
 
@@ -129,6 +133,7 @@ async def test_cuda_gpu_worker_with_specified_version_passes():
 
     async def mock_session_exec(statement):
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = backend
         return mock_result
 
@@ -170,6 +175,7 @@ async def test_cpu_only_worker_filtered_out():
 
     async def mock_session_exec(statement):
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = backend
         return mock_result
 
@@ -181,7 +187,7 @@ async def test_cpu_only_worker_filtered_out():
         mock_async_session.return_value.__aenter__.return_value = mock_session
 
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners',
             return_value=[],
         ):
             filtered_workers, messages = await filter_instance.filter(workers)
@@ -229,7 +235,7 @@ async def test_custom_backend_with_cpu_support():
         mock_async_session.return_value.__aenter__.return_value = mock_session
 
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners',
             return_value=[],
         ):
             filtered_workers, messages = await filter_instance.filter(workers)
@@ -271,6 +277,7 @@ async def test_mixed_gpu_types():
 
     async def mock_session_exec(statement):
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = backend
         return mock_result
 
@@ -311,6 +318,7 @@ async def test_version_mismatch():
 
     async def mock_session_exec(statement):
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = backend
         return mock_result
 
@@ -322,7 +330,7 @@ async def test_version_mismatch():
         mock_async_session.return_value.__aenter__.return_value = mock_session
 
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners',
             return_value=[],
         ):
             filtered_workers, messages = await filter_instance.filter(workers)
@@ -357,6 +365,7 @@ async def test_ascend_gpu_variant_handling():
 
     async def mock_session_exec(statement):
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = backend
         return mock_result
 
@@ -372,6 +381,63 @@ async def test_ascend_gpu_variant_handling():
         assert len(filtered_workers) == 1
         assert filtered_workers[0].name == "ascend_0"
         assert len(messages) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arch_family, expected_variant",
+    [
+        ("Ascend910B2", "910b"),
+        ("AscendUnknownSoC", None),
+    ],
+)
+async def test_ascend_soc_name_drives_cann_variant(arch_family, expected_variant):
+    """
+    Test 7b: The SoC name gates the runner query by CANN variant, and an
+    unmapped SoC keeps the worker schedulable instead of failing the filter.
+    """
+
+    def set_arch_family(worker):
+        for gpu in worker.status.gpu_devices:
+            gpu.arch_family = arch_family
+
+    model = create_model(backend="MindIE", backend_version=None)
+    workers = [linux_ascend_1_910b_64gx8(callback=set_arch_family)]
+
+    filter_instance = BackendFrameworkFilter(model)
+
+    async def mock_session_exec(statement):
+        # No version configs, so the check falls through to merged_service_runners.
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        mock_result.first.return_value = None
+        return mock_result
+
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
+        with patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners'
+        ) as mock_list:
+            mock_list.return_value = [{"version": "2.1.RC1", "backend": "cann"}]
+
+            filtered_workers, messages = await filter_instance.filter(workers)
+
+            assert len(filtered_workers) == 1
+            assert filtered_workers[0].name == "ascend_0"
+            assert len(messages) == 0
+
+            call_kwargs = mock_list.call_args[1]
+            assert call_kwargs["backend"] == "cann"
+            if expected_variant is None:
+                # Absent, not passed as None, so the query stays unfiltered.
+                assert "backend_variant" not in call_kwargs
+            else:
+                assert call_kwargs["backend_variant"] == expected_variant
 
 
 @pytest.mark.asyncio
@@ -403,6 +469,7 @@ async def test_empty_gpu_list_treated_as_cpu():
 
     async def mock_session_exec(statement):
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = backend
         return mock_result
 
@@ -414,7 +481,7 @@ async def test_empty_gpu_list_treated_as_cpu():
         mock_async_session.return_value.__aenter__.return_value = mock_session
 
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners',
             return_value=[],
         ):
             filtered_workers, messages = await filter_instance.filter(workers)
@@ -470,6 +537,7 @@ async def test_multiple_workers_filtering():
 
     async def mock_session_exec(statement):
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = backend
         return mock_result
 
@@ -536,6 +604,7 @@ async def test_auto_matching_mode():
 
     async def mock_session_exec(statement):
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = backend
         return mock_result
 
@@ -553,9 +622,9 @@ async def test_auto_matching_mode():
 
 
 @pytest.mark.asyncio
-async def test_has_supported_runners_with_list_service_runners():
+async def test_has_supported_runners_with_merged_service_runners():
     """
-    Test 13: Test _has_supported_runners method when using list_service_runners.
+    Test 13: Test _has_supported_runners method when using merged_service_runners.
     """
     model = create_model(backend="vLLM", backend_version=None)
     workers = [linux_nvidia_4_4080_16gx4()]
@@ -565,6 +634,7 @@ async def test_has_supported_runners_with_list_service_runners():
     async def mock_session_exec(statement):
         # Return None for backend (no version configs in database)
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = None
         return mock_result
 
@@ -575,9 +645,9 @@ async def test_has_supported_runners_with_list_service_runners():
         mock_session.exec = mock_session_exec
         mock_async_session.return_value.__aenter__.return_value = mock_session
 
-        # Mock list_service_runners to return a runner
+        # Mock merged_service_runners to return a runner
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners'
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners'
         ) as mock_list:
             mock_list.return_value = [
                 {
@@ -588,12 +658,12 @@ async def test_has_supported_runners_with_list_service_runners():
 
             filtered_workers, messages = await filter_instance.filter(workers)
 
-            # Worker should pass because list_service_runners returned a runner
+            # Worker should pass because merged_service_runners returned a runner
             assert len(filtered_workers) == 1
             assert filtered_workers[0].name == "host-4-4080"
             assert len(messages) == 0
 
-            # Verify list_service_runners was called with correct parameters
+            # Verify merged_service_runners was called with correct parameters
             mock_list.assert_called_once()
             call_kwargs = mock_list.call_args[1]
             assert call_kwargs["backend"] == "cuda"
@@ -638,7 +708,7 @@ async def test_cpu_worker_with_built_in_cpu_support():
         mock_async_session.return_value.__aenter__.return_value = mock_session
 
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners',
             return_value=[],
         ):
             filtered_workers, messages = await filter_instance.filter(workers)
@@ -672,6 +742,7 @@ async def test_low_cuda_runtime_no_longer_filtered():
     async def mock_session_exec(statement):
         # No version configs in database.
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = None
         return mock_result
 
@@ -683,7 +754,7 @@ async def test_low_cuda_runtime_no_longer_filtered():
         mock_async_session.return_value.__aenter__.return_value = mock_session
 
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners',
             return_value=[{"version": "0.13.0", "backend": "cuda"}],
         ) as mock_list:
             filtered_workers, messages = await filter_instance.filter(workers)
@@ -704,7 +775,7 @@ async def test_non_cuda_runtime_no_longer_gated():
     """
     issue #5674: runner selection is no longer gated by the detected runtime
     version for any GPU type, ROCm included — backend_version is not passed to
-    list_service_runners.
+    merged_service_runners.
     """
     model = create_model(backend="vLLM", backend_version=None)
 
@@ -721,6 +792,7 @@ async def test_non_cuda_runtime_no_longer_gated():
 
     async def mock_session_exec(statement):
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = None
         return mock_result
 
@@ -732,7 +804,7 @@ async def test_non_cuda_runtime_no_longer_gated():
         mock_async_session.return_value.__aenter__.return_value = mock_session
 
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners',
             return_value=[{"version": "0.11.0", "backend": "rocm"}],
         ) as mock_list:
             filtered_workers, messages = await filter_instance.filter(workers)
@@ -796,7 +868,7 @@ async def test_org_scoped_backend_version_visible_to_owner():
         mock_async_session.return_value.__aenter__.return_value = mock_session
 
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners',
             return_value=[],
         ):
             filtered_workers, messages = await filter_instance.filter(workers)
@@ -864,7 +936,7 @@ async def test_model_spec_without_owner_does_not_crash():
         mock_async_session.return_value.__aenter__.return_value = mock_session
 
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners',
             return_value=[],
         ):
             filtered_workers, messages = await filter_instance.filter(workers)
@@ -927,7 +999,7 @@ async def test_model_spec_with_stamped_owner_sees_org_version():
         mock_async_session.return_value.__aenter__.return_value = mock_session
 
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners',
             return_value=[],
         ):
             filtered_workers, messages = await filter_instance.filter(workers)
@@ -985,7 +1057,7 @@ async def test_org_scoped_backend_version_hidden_from_other_org():
         mock_async_session.return_value.__aenter__.return_value = mock_session
 
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            'gpustack.policies.worker_filters.backend_framework_filter.merged_service_runners',
             return_value=[],
         ):
             filtered_workers, messages = await filter_instance.filter(workers)
@@ -1033,6 +1105,7 @@ async def test_cpu_offloading_with_incompatible_gpu():
 
     async def mock_session_exec(statement):
         mock_result = MagicMock()
+        mock_result.all.return_value = []
         mock_result.first.return_value = backend
         return mock_result
 
@@ -1050,6 +1123,109 @@ async def test_cpu_offloading_with_incompatible_gpu():
         assert len(filtered_workers) == 1
         assert filtered_workers[0].name == "host-4-4080"
         assert len(messages) == 0
+
+
+def _packaged_runner(service_version: str) -> Runner:
+    return Runner(
+        backend="cuda",
+        backend_version="12.4",
+        original_backend_version="12.4",
+        backend_variant="",
+        service="vllm",
+        service_version=service_version,
+        platform="linux/amd64",
+        docker_image=f"packaged:{service_version}",
+        deprecated=False,
+    )
+
+
+def _override(source_type: SourceTypeEnum) -> RunnerOverrideEntry:
+    return RunnerOverrideEntry(
+        backend="cuda",
+        backend_version="12.4",
+        original_backend_version="12.4",
+        backend_variant="",
+        service="vllm",
+        service_version="0.12.0",
+        platform="linux/amd64",
+        docker_image="override:0.12.0",
+        deprecated=False,
+        source_name="custom",
+        source_type=source_type,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_type", [SourceTypeEnum.OFFICIAL, SourceTypeEnum.URL])
+async def test_a_remote_document_replaces_the_packaged_runner_catalog(source_type):
+    """The real merge, not a stand-in for it.
+
+    Every other case here patches ``merged_service_runners``, so none of them can
+    tell layering from replacement. A remote document carries the *whole* catalog
+    — the official slot as much as an admin's own — so a coordinate it omits is
+    really gone rather than falling through to the packaged one. That is what makes
+    a forgotten coordinate unschedulable, so the filter has to see it through the
+    merge itself.
+    """
+    # The override publishes 0.12.0 only; the packaged catalog is what carries the
+    # 0.11.0 this model pins.
+    model = create_model(backend="vLLM", backend_version="0.11.0")
+
+    async def filter_with(overrides):
+        with (
+            patch(
+                'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+            ),
+            patch.object(InferenceBackend, "all", AsyncMock(return_value=[])),
+            patch.object(RunnerOverrideEntry, "all", AsyncMock(return_value=overrides)),
+            patch(
+                'gpustack.schemas.runner_source.list_runners',
+                lambda **_: [_packaged_runner("0.11.0")],
+            ),
+        ):
+            return await BackendFrameworkFilter(model).filter(
+                [linux_nvidia_4_4080_16gx4()]
+            )
+
+    # No remote document in service: the packaged catalog serves, so 0.11.0 is
+    # available — without this the replacement below proves nothing.
+    workers, messages = await filter_with([])
+    assert len(workers) == 1 and not messages
+
+    workers, messages = await filter_with([_override(source_type)])
+    assert not workers and messages
+
+
+@pytest.mark.asyncio
+async def test_a_custom_image_bypasses_the_runner_catalog():
+    """A user-supplied image has no entry in the runner catalog, so the filter
+    has nothing to match it against and must let the worker through.
+
+    The same model without an image is the control: it is filtered out against
+    the same empty catalog, which is what makes the second assertion mean
+    anything.
+    """
+
+    async def filter_with(model):
+        with (
+            patch(
+                'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+            ),
+            patch.object(InferenceBackend, "all", AsyncMock(return_value=[])),
+            patch.object(RunnerOverrideEntry, "all", AsyncMock(return_value=[])),
+            patch('gpustack.schemas.runner_source.list_runners', lambda **_: []),
+        ):
+            return await BackendFrameworkFilter(model).filter(
+                [linux_nvidia_4_4080_16gx4()]
+            )
+
+    workers, messages = await filter_with(create_model(backend="vLLM"))
+    assert not workers and messages
+
+    workers, messages = await filter_with(
+        create_model(backend="vLLM", image_name="vllm/vllm-openai:nightly")
+    )
+    assert len(workers) == 1 and not messages
 
 
 if __name__ == "__main__":

@@ -1,9 +1,14 @@
 import asyncio
+import inspect
 import logging
 import threading
 import time
+import traceback
 import re
-from urllib.parse import urlparse, parse_qs, urlunparse
+from typing import Any, Dict, List, Set, Tuple
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+import asyncpg
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     create_async_engine,
@@ -45,6 +50,67 @@ logger = logging.getLogger(__name__)
 
 SLOW_QUERY_THRESHOLD_SECOND = 0.5
 
+# PostgreSQL SQLSTATE 25006, surfaced as "cannot execute <statement> in a
+# read-only transaction". A connection to a primary that a failover demoted to
+# a hot standby keeps serving reads, and keeps answering pool_pre_ping's
+# "SELECT 1", so nothing else marks it as unusable.
+READ_ONLY_SQL_TRANSACTION_SQLSTATE = "25006"
+
+# libpq calls the TLS mode "sslmode"; asyncpg accepts the same values under the
+# name "ssl".
+LIBPQ_TO_ASYNCPG_PARAMS = {"sslmode": "ssl"}
+
+# asyncpg.connect() parameters that cannot come from a URL query string: the URL
+# itself supplies the DSN, and the rest are Python objects or are built here.
+NON_URL_ASYNCPG_PARAMS = {
+    "dsn",
+    "loop",
+    "connection_class",
+    "record_class",
+    "server_settings",
+}
+
+# Accepted by SQLAlchemy's asyncpg dialect rather than by asyncpg.connect():
+# AsyncAdapt_asyncpg_dbapi.connect pops it before calling the driver, so it is
+# absent from asyncpg.connect's signature even though the driver chain takes it.
+# The dialect coerces it to int itself, so it can stay in the query string.
+# Setting it to 0 is the documented way to run through PgBouncer.
+DIALECT_ASYNCPG_PARAMS = {"prepared_statement_cache_size"}
+
+# asyncpg.connect() parameters that are not strings. Out of the query string the
+# dialect coerces only "port" and "prepared_statement_cache_size"; every other
+# value reaches asyncpg.connect() as the str the URL held it in, where a number
+# raises TypeError and a bool is worse than that -- bool("false") is True, so
+# "direct_tls=false" would switch direct TLS on. These are parsed here and go
+# through connect_args, which create_engine merges over the dialect's output.
+ASYNCPG_TYPED_PARAMS = {
+    "command_timeout": float,
+    "direct_tls": bool,
+    "max_cached_statement_lifetime": int,
+    "max_cacheable_statement_size": int,
+    "statement_cache_size": int,
+    "timeout": float,
+}
+
+# Query parameters SQLAlchemy's asyncpg dialect reads as a list: repeating
+# host=<host>:<port> is the multihost spelling its documentation uses. Every
+# other parameter names one setting, and a repeated one would reach
+# asyncpg.connect() as a tuple it rejects, so only its last value is kept, as
+# asyncpg's own DSN parser does.
+MULTI_VALUE_URL_PARAMS = {"host", "port"}
+
+# Spellings libpq accepts for a boolean connection parameter.
+BOOLEAN_PARAM_VALUES = {
+    "1": True,
+    "true": True,
+    "yes": True,
+    "on": True,
+    "0": False,
+    "false": False,
+    "no": False,
+    "off": False,
+}
+
 # Query counter for performance monitoring
 _query_counter = 0
 _query_counter_lock = threading.Lock()
@@ -71,6 +137,218 @@ async def init_db(db_url: str):
     await create_db_and_tables(db.engine)
 
 
+def is_read_only_transaction_error(exc: BaseException) -> bool:
+    """Report whether the error says the server refuses to accept writes.
+
+    Three places are checked because the SQLSTATE turns up in a different one
+    depending on where the error was caught. The ``handle_error`` event hands
+    over the driver exception itself, the asyncpg dialect keeps the underlying
+    exception as ``__cause__``, and anything catching SQLAlchemy's wrapped
+    ``DBAPIError`` finds it as ``orig``. Keying on the SQLSTATE rather than on
+    the exception class also covers PostgreSQL-compatible backends that raise
+    an error type of their own.
+    """
+    for candidate in (
+        exc,
+        getattr(exc, "__cause__", None),
+        getattr(exc, "orig", None),
+    ):
+        if getattr(candidate, "sqlstate", None) == READ_ONLY_SQL_TRANSACTION_SQLSTATE:
+            return True
+    return False
+
+
+def flag_readonly_error_as_disconnect(context):
+    """Report a read-only failure as a lost connection.
+
+    SQLAlchemy does not count SQLSTATE 25006 as a disconnect, and
+    ``pool_pre_ping`` cannot tell the difference either, because a demoted node
+    still answers "SELECT 1". Without this the pool keeps handing back
+    connections to the old primary after a failover and every write fails until
+    the process is restarted. Flagging the error as a disconnect invalidates the
+    whole pool generation, so the next checkout reaches the current primary.
+    """
+    if not is_read_only_transaction_error(context.original_exception):
+        return
+    logger.warning(
+        "Database refused a write with SQLSTATE %s (read-only transaction). "
+        "The server this connection is pinned to no longer accepts writes, "
+        "most likely after a failover; discarding the pooled connections so "
+        "the next query reconnects.",
+        READ_ONLY_SQL_TRANSACTION_SQLSTATE,
+    )
+    context.is_disconnect = True
+
+
+def supported_asyncpg_params() -> Set[str]:
+    """Connection parameters that survive the trip from a URL query string.
+
+    Returns:
+        The names asyncpg.connect() accepts, minus the ones that cannot come
+        from a URL, plus the ones SQLAlchemy's dialect consumes on its behalf.
+    """
+    return (
+        set(inspect.signature(asyncpg.connect).parameters) - NON_URL_ASYNCPG_PARAMS
+    ) | DIALECT_ASYNCPG_PARAMS
+
+
+def _pop_server_settings(
+    query_params: Dict[str, List[str]], opengauss: bool
+) -> Dict[str, str]:
+    """Take the parameters that belong in a SET rather than in the DSN.
+
+    libpq's ``options=-csearch_path=...`` has no asyncpg counterpart, so it
+    becomes a server setting instead. Any other ``options`` value is named in a
+    warning, since it is popped here and so never reaches the generic report on
+    parameters the driver cannot take.
+
+    Args:
+        query_params: Parsed query string; the keys consumed here are removed.
+        opengauss: True when the server is openGauss, which rejects
+            PostgreSQL's millisecond-scale idle transaction timeout.
+
+    Returns:
+        The settings to hand asyncpg as ``server_settings``.
+    """
+    server_settings: Dict[str, str] = {}
+    qoptions = query_params.pop('options', None)
+    if qoptions:
+        option = qoptions[-1]
+        if option.startswith('-csearch_path='):
+            server_settings['search_path'] = option[len('-csearch_path=') :]
+        else:
+            logger.warning(
+                "Ignoring database URL parameter options=%s: the only libpq "
+                "option translated here is -csearch_path=...",
+                option,
+            )
+    if not opengauss and envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS > 0:
+        server_settings['idle_in_transaction_session_timeout'] = str(
+            envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS * 1000
+        )
+    return server_settings
+
+
+def _pop_typed_connect_args(query_params: Dict[str, List[str]]) -> Dict[str, Any]:
+    """Take the parameters asyncpg wants as a number or a bool.
+
+    A value left in the query string arrives at asyncpg.connect() as a string,
+    which raises TypeError for the numeric ones and quietly reads as True for
+    the boolean one whatever it says. Parsing them here and passing them as
+    connect_args keeps their Python type, because create_engine applies
+    connect_args over whatever the dialect produced from the URL.
+
+    Args:
+        query_params: Parsed query string; the keys consumed here are removed.
+
+    Returns:
+        The parsed values, keyed by asyncpg parameter name. A value that does
+        not parse is reported and left out.
+    """
+    typed_args: Dict[str, Any] = {}
+    for name, param_type in ASYNCPG_TYPED_PARAMS.items():
+        values = query_params.pop(name, None)
+        if not values:
+            continue
+        raw = values[-1]
+        try:
+            if param_type is bool:
+                typed_args[name] = BOOLEAN_PARAM_VALUES[raw.lower()]
+            else:
+                typed_args[name] = param_type(raw)
+        except (KeyError, ValueError):
+            logger.warning(
+                "Ignoring database URL parameter %s=%s: asyncpg expects a %s.",
+                name,
+                raw,
+                param_type.__name__,
+            )
+    return typed_args
+
+
+def build_postgres_connect_args(
+    db_url: str, opengauss: bool
+) -> Tuple[str, Dict[str, Any]]:
+    """Translate a libpq-style PostgreSQL URL into asyncpg's spelling.
+
+    asyncpg does not accept every libpq connection parameter, and the ones it
+    does accept do not all survive a trip through a query string with the type
+    they need, so the query string cannot simply be handed over as-is. What has
+    an asyncpg equivalent is translated and passed on, and anything left over is
+    logged instead of being discarded without a trace.
+
+    ``target_session_attrs`` matters most here: in a replicated cluster it is
+    what keeps the server on a node that accepts writes, so it has to survive
+    this rewrite to be of any use at all.
+
+    Args:
+        db_url: The PostgreSQL URL as configured.
+        opengauss: True when the server is openGauss.
+
+    Returns:
+        The rewritten URL and the ``connect_args`` to pass to create_engine.
+    """
+    db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
+    parsed = urlparse(db_url)
+    query_params: Dict[str, List[str]] = {
+        name: values if name in MULTI_VALUE_URL_PARAMS else values[-1:]
+        for name, values in parse_qs(parsed.query, keep_blank_values=True).items()
+    }
+
+    server_settings = _pop_server_settings(query_params, opengauss)
+
+    # asyncpg raises ClientConfigurationError on an empty value rather than
+    # falling back to the default the way libpq does, so a blank cannot be
+    # forwarded. It is named rather than dropped in silence.
+    blank = sorted(name for name, values in query_params.items() if not any(values))
+    for name in blank:
+        del query_params[name]
+    if blank:
+        logger.warning(
+            "Ignoring database URL parameter(s) given without a value: %s",
+            ", ".join(blank),
+        )
+
+    for libpq_name, asyncpg_name in LIBPQ_TO_ASYNCPG_PARAMS.items():
+        values = query_params.pop(libpq_name, None)
+        if not values:
+            continue
+        if asyncpg_name in query_params:
+            logger.warning(
+                "Database URL sets both %s and %s, which are the same setting "
+                "under two names; using %s=%s.",
+                libpq_name,
+                asyncpg_name,
+                libpq_name,
+                values[-1],
+            )
+        query_params[asyncpg_name] = values
+
+    typed_args = _pop_typed_connect_args(query_params)
+
+    # Anything asyncpg accepts as a string stays in the query string:
+    # SQLAlchemy's asyncpg dialect turns those into connect keyword arguments,
+    # and it is also what splits a comma-separated host/port list into the form
+    # asyncpg wants, so a multi-host DSN keeps working. Parameters it would
+    # choke on are reported rather than dropped in silence.
+    supported = supported_asyncpg_params()
+    forwarded = {k: v for k, v in query_params.items() if k in supported}
+    ignored = sorted(set(query_params) - set(forwarded))
+    if ignored:
+        logger.warning(
+            "Ignoring database URL parameter(s) the asyncpg driver does not "
+            "accept: %s",
+            ", ".join(ignored),
+        )
+
+    connect_args: Dict[str, Any] = dict(typed_args)
+    if server_settings:
+        connect_args['server_settings'] = server_settings
+
+    db_url = urlunparse(parsed._replace(query=urlencode(forwarded, doseq=True)))
+    return db_url, connect_args
+
+
 async def init_db_engine(db_url: str):
     connect_args = {}
     if db_url.startswith("postgresql://"):
@@ -78,28 +356,7 @@ async def init_db_engine(db_url: str):
         # as PostgreSQL but rejects PG's millisecond-scale value for
         # ``idle_in_transaction_session_timeout``. Skip the setting on openGauss.
         opengauss = await is_opengauss(db_url)
-
-        db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
-        parsed = urlparse(db_url)
-        # rewrite the parameters to use asyncpg with custom database schema
-        query_params = parse_qs(parsed.query)
-        qoptions = query_params.pop('options', None)
-        schema_name = None
-        if qoptions is not None and len(qoptions) > 0:
-            option = qoptions[0]
-            if option.startswith('-csearch_path='):
-                schema_name = option[len('-csearch_path=') :]
-        server_settings = {}
-        if schema_name:
-            server_settings['search_path'] = schema_name
-        if not opengauss and envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS > 0:
-            server_settings['idle_in_transaction_session_timeout'] = str(
-                envs.DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS * 1000
-            )
-        if server_settings:
-            connect_args['server_settings'] = server_settings
-        new_parsed = parsed._replace(query={})
-        db_url = urlunparse(new_parsed)
+        db_url, connect_args = build_postgres_connect_args(db_url, opengauss)
 
     elif db_url.startswith("mysql://"):
         db_url = re.sub(r'^mysql://', 'mysql+asyncmy://', db_url)
@@ -112,6 +369,7 @@ async def init_db_engine(db_url: str):
         pool_size=envs.DB_POOL_SIZE,
         max_overflow=envs.DB_MAX_OVERFLOW,
         pool_timeout=envs.DB_POOL_TIMEOUT,
+        pool_recycle=envs.DB_POOL_RECYCLE if envs.DB_POOL_RECYCLE > 0 else -1,
         pool_pre_ping=True,
         connect_args=connect_args,
     )
@@ -180,6 +438,12 @@ def listen_events(engine: AsyncEngine):
         DDL(model_user_after_create_view_stmt(dialect_name)),
     )
 
+    if dialect_name == "postgresql":
+        # Retire pooled connections whose server stopped accepting writes.
+        event.listen(
+            engine.sync_engine, "handle_error", flag_readonly_error_as_disconnect
+        )
+
     if engine.dialect.name == "sqlite":
         event.listen(engine.sync_engine, "connect", setup_sqlite_pragmas)
         event.listen(engine.sync_engine, "close", ignore_cancel_on_close)
@@ -199,6 +463,37 @@ def listen_events(engine: AsyncEngine):
 def count_query(conn, cursor, statement, parameters, context, executemany):
     """Increment the global query counter for each query executed."""
     increment_query_count_sync()
+    _maybe_trace_sql(statement)
+
+
+# Distinct call sites already logged, so a query that fires thousands of times
+# is attributed once per caller rather than flooding the log.
+_traced_call_sites = set()
+
+
+def _maybe_trace_sql(statement: str):
+    """When GPUSTACK_DB_TRACE_SQL_SUBSTR matches ``statement``, log the Python
+    call stack once per distinct call site. Used to attribute a high-frequency
+    query seen in DB_ECHO to the code that issues it."""
+    substr = envs.DB_TRACE_SQL_SUBSTR
+    if not substr or substr not in statement:
+        return
+    stack = traceback.extract_stack()
+    frames = [
+        f
+        for f in stack
+        if "/gpustack/" in f.filename and "server/init_db.py" not in f.filename
+    ][-8:]
+    sig = tuple((f.filename, f.lineno) for f in frames)
+    if sig in _traced_call_sites:
+        return
+    _traced_call_sites.add(sig)
+    logger.info(
+        "[DB TRACE] matched %r; new call site:\n%s\nSQL: %s",
+        substr,
+        "".join(traceback.format_list(frames)),
+        statement,
+    )
 
 
 def setup_sqlite_pragmas(conn, record):

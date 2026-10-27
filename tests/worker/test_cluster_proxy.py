@@ -1,0 +1,222 @@
+import gzip
+import json
+from contextlib import asynccontextmanager
+
+import pytest
+from aiohttp import web
+from aiohttp.client_exceptions import ClientPayloadError
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+
+from gpustack.api.auth import worker_auth
+from gpustack.api.exceptions import InvalidException
+from gpustack.routes.worker import cluster_proxy
+
+
+@asynccontextmanager
+async def _fake_apiserver(payload: bytes):
+    """A stand-in for the kube-apiserver that gzips the response whenever the
+    client sends Accept-Encoding: gzip. This isolates the encoding-negotiation
+    behaviour the fix cares about; it deliberately does not model the real
+    apiserver's ~128 KiB size threshold (which is only why the bug reproduces on
+    large bodies in production, not something the proxy logic depends on).
+    Yields the http base URL."""
+
+    async def handler(request):
+        if "gzip" in request.headers.get("Accept-Encoding", ""):
+            return web.Response(
+                body=gzip.compress(payload),
+                headers={
+                    "Content-Encoding": "gzip",
+                    "Content-Type": "application/json",
+                },
+            )
+        return web.Response(body=payload, content_type="application/json")
+
+    app = web.Application()
+    app.router.add_route("*", "/{path:.*}", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    # AppRunner.addresses is the public way to read the bound (host, port) after
+    # binding to port 0; avoids depending on aiohttp internals.
+    port = runner.addresses[0][1]
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        await runner.cleanup()
+
+
+def _worker_app(monkeypatch, base_url: str) -> FastAPI:
+    # Bypass real pod ServiceAccount credentials / TLS. ssl_ctx=None means the
+    # connector does no TLS, which is correct for the http:// fake upstream.
+    monkeypatch.setattr(cluster_proxy, "_resolve_kube_target", lambda: (base_url, None))
+    monkeypatch.setattr(cluster_proxy, "_read_token", lambda: "test-token")
+
+    app = FastAPI()
+    app.include_router(cluster_proxy.router)
+    app.dependency_overrides[worker_auth] = lambda: None
+    return app
+
+
+@asynccontextmanager
+async def _worker_client(monkeypatch, base_url: str):
+    app = _worker_app(monkeypatch, base_url)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://worker") as client:
+        yield client
+    # Close the cached upstream aiohttp session created by the route.
+    session = getattr(app.state, "kube_api_session", None)
+    if session is not None and not session.closed:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_cluster_proxy_drops_content_encoding_on_gzip(monkeypatch):
+    """Regression for the gzip Content-Encoding mismatch: aiohttp
+    auto-decompresses the upstream body, so the worker must not keep advertising
+    Content-Encoding: gzip — otherwise the server-side aiohttp client fails with
+    'Can not decode content-encoding: gzip'."""
+    payload = json.dumps({"items": ["x" * 1000 for _ in range(500)]}).encode()
+
+    async with _fake_apiserver(payload) as base_url:
+        async with _worker_client(monkeypatch, base_url) as client:
+            resp = await client.get(
+                "/cluster-proxy/api/v1/namespaces/kube-system/secrets",
+                headers={"Accept-Encoding": "gzip"},
+            )
+
+    assert resp.status_code == 200
+    # Body was auto-decompressed by aiohttp, so gzip must not be advertised.
+    assert "content-encoding" not in {k.lower() for k in resp.headers}
+    # The forwarded body is the real decompressed JSON, not gzip bytes.
+    assert json.loads(resp.content) == json.loads(payload)
+
+
+@pytest.mark.asyncio
+async def test_cluster_proxy_uncompressed_passthrough(monkeypatch):
+    """Guard against over-fixing: an uncompressed (small) response must still be
+    forwarded verbatim."""
+    payload = json.dumps({"items": []}).encode()
+
+    async with _fake_apiserver(payload) as base_url:
+        async with _worker_client(monkeypatch, base_url) as client:
+            resp = await client.get(
+                "/cluster-proxy/api/v1/namespaces/kube-system/secrets",
+                # Force the (forwarded) upstream request to skip gzip; httpx
+                # otherwise injects Accept-Encoding: gzip by default.
+                headers={"Accept-Encoding": "identity"},
+            )
+
+    assert resp.status_code == 200
+    assert "content-encoding" not in {k.lower() for k in resp.headers}
+    assert json.loads(resp.content) == json.loads(payload)
+
+
+@asynccontextmanager
+async def _fake_apiserver_stream_then_fail(first_chunk: bytes):
+    """A stand-in kube-apiserver that writes one chunk of a streamed response
+    (mimicking a `?watch=true` long-lived call) and then aborts the connection
+    mid-body, e.g. a network blip or the apiserver process dying. Never sends a
+    second chunk and never completes normally."""
+
+    async def handler(request):
+        resp = web.StreamResponse(
+            headers={"Content-Type": "application/json"},
+        )
+        await resp.prepare(request)
+        await resp.write(first_chunk)
+        # Simulate the transport failing mid-stream: abort the connection
+        # instead of returning normally, so nothing terminates the body
+        # cleanly. aiohttp's client (used by the proxy) sees this as a
+        # mid-read failure on resp.content.iter_any(), not a clean EOF.
+        request.transport.abort()
+        return resp
+
+    app = web.Application()
+    app.router.add_route("*", "/{path:.*}", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = runner.addresses[0][1]
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_cluster_proxy_surfaces_error_when_upstream_stream_fails_mid_read(
+    monkeypatch,
+):
+    """Regression for #5939: streamer() must not swallow a mid-body transport
+    failure into a clean-looking end of stream. The status code and headers
+    are already committed to the caller by the time the body starts (they were
+    set from the upstream's initial 200 response), so the only way left to
+    signal "this body is incomplete" is to fail the ASGI response instead of
+    letting the generator return normally. Before the fix, this raises nothing
+    and the client observes a truncated body under a 200 with no indication
+    anything went wrong.
+
+    A bare `pytest.raises(Exception)` is wide enough to pass on an unrelated
+    failure (e.g. the fake apiserver never starting), so this also pins the
+    concrete exception type and spies on the chunks streamer() actually
+    yielded, to prove the failure happens after the first chunk, i.e. mid-body
+    as the test claims, not before any byte streamed."""
+    first_chunk = json.dumps({"items": ["ok"]}).encode() + b"\n"
+    yielded_chunks = []
+    real_streaming_response = cluster_proxy.StreamingResponse
+
+    def spying_streaming_response(content, *args, **kwargs):
+        async def spy():
+            async for chunk in content:
+                yielded_chunks.append(chunk)
+                yield chunk
+
+        return real_streaming_response(spy(), *args, **kwargs)
+
+    monkeypatch.setattr(cluster_proxy, "StreamingResponse", spying_streaming_response)
+
+    async with _fake_apiserver_stream_then_fail(first_chunk) as base_url:
+        async with _worker_client(monkeypatch, base_url) as client:
+            with pytest.raises(ClientPayloadError):
+                await client.get("/cluster-proxy/api/v1/namespaces/kube-system/pods")
+
+    assert yielded_chunks == [first_chunk]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # Literal and encoded dot segments: whatever decodes to a traversal
+        # attempt must be refused before the URL library can resolve it
+        # against the in-cluster API server. Tested against the guard
+        # directly because HTTP clients normalize dot segments themselves,
+        # so a raw traversal tail cannot be delivered through httpx.
+        "apis/worker.gpustack.ai/v1/namespaces/own/../kube-system/secrets",
+        "apis/worker.gpustack.ai/v1/namespaces/own/%2e%2e/kube-system/secrets",
+        "apis/worker.gpustack.ai/v1/namespaces/own/%252e%252e/kube-system/secrets",
+        "apis/worker.gpustack.ai/v1\x00/namespaces/own/secrets",
+        "apis\\worker.gpustack.ai\\v1",
+        # Decoded URL delimiters must not reach the forwarding URL library:
+        # after the decode round these carry a literal '#' or '?'.
+        "apis/worker.gpustack.ai/v1/instances%23/namespaces/gpustack-user-6",
+        "apis/worker.gpustack.ai/v1/instances%3fnamespaces=gpustack-user-6",
+        "apis/worker.gpustack.ai/v1/instances#/namespaces/gpustack-user-6",
+        "apis/worker.gpustack.ai/v1/instances?namespaces=gpustack-user-6",
+    ],
+)
+def test_traversal_shaped_paths_are_refused(path):
+    """Defense in depth on the worker: the endpoint trusts the worker token,
+    so it must not forward a traversal-shaped path even if a caller bypasses
+    the server-side canonicalization."""
+    with pytest.raises(InvalidException):
+        cluster_proxy._assert_plain_api_path(path)
+
+
+def test_plain_paths_pass_the_worker_guard():
+    cluster_proxy._assert_plain_api_path(
+        "apis/worker.gpustack.ai/v1/namespaces/own/gpuinstances"
+    )

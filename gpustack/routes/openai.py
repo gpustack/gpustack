@@ -26,7 +26,7 @@ from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.model_common import build_category_conditions
-from gpustack.schemas.models import Model
+from gpustack.schemas.models import Model, servable_instances
 from gpustack.schemas.model_routes import (
     ModelRoute,
     MyModel,
@@ -54,7 +54,6 @@ from gpustack.gateway.utils import (
     openai_model_prefixes,
     router_header_key,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +92,7 @@ def get_legacy_api_router() -> APIRouter:
 
 
 async def list_models(
+    request: Request,
     user: CurrentUserDep,
     session: SessionDep,
     ctx: TenantContextDep,
@@ -133,12 +133,14 @@ async def list_models(
 
     routes = (await session.exec(statement)).all()
     principal_by_id = await _prefetch_owner_principals(session, routes)
-    return SyncPage[OAIModel](
-        data=[
-            _route_to_oai_model(route, principal_by_id, with_meta) for route in routes
-        ],
-        object="list",
-    )
+    models = [
+        _route_to_oai_model(route, principal_by_id, with_meta) for route in routes
+    ]
+    api_key = getattr(request.state, "api_key", None)
+    if api_key is not None and api_key.allowed_model_names:
+        allowed_names = set(api_key.allowed_model_names)
+        models = [model for model in models if model.id in allowed_names]
+    return SyncPage[OAIModel](data=models, object="list")
 
 
 def _route_to_oai_model(
@@ -194,14 +196,22 @@ async def proxy_request_by_model(
     after the initial lookups, preventing long-lived streaming inference
     responses from holding a database connection.
     """
-    endpoint = re.sub(r"^/(v1|v1-openai)/", "", request.url.path)
+    endpoint = re.sub(r"^.*/(?:v1|v1-openai)/", "", request.url.path)
     model_name, stream, body_json, form_data = await parse_request_body(request)
 
     async with async_session() as session:
-        if not await UserService(session).model_allowed_for_user(
-            model_name=model_name,
-            user_id=user.id,
-            api_key=getattr(request.state, "api_key", None),
+        # The per-user access list is a USER question, and one caller is not a
+        # user: the benchmark proxy is entered with a worker token, by a load
+        # generator this server told a worker to start. Its own prefix carries
+        # the exemption (see `internal_inference` in routes.py) rather than the
+        # check learning about principal kinds -- so nothing about `/v1`'s gate
+        # changes, and the exemption cannot be reached from `/v1`.
+        if not getattr(request.state, "internal_inference", False) and not (
+            await UserService(session).model_allowed_for_user(
+                model_name=model_name,
+                user_id=user.id,
+                api_key=getattr(request.state, "api_key", None),
+            )
         ):
             raise NotFoundException(
                 message="Model not found",
@@ -212,8 +222,19 @@ async def proxy_request_by_model(
             await model_route_service.resolve_route_targets(model_name)
         )
         if not route_targets:
-            raise NotFoundException(
-                message="Model not found or no running instances available",
+            # resolve_route_targets filters on TargetStateEnum.ACTIVE, so an
+            # empty result means either no such route or every target sitting
+            # UNAVAILABLE because its model is not servable (any worker that
+            # misses /healthz does that to every model on it; a group with a
+            # role at zero ready members does it too). 404 would tell the
+            # caller a deployed model is gone and not to retry, so split them.
+            if await model_route_service.get_by_name(model_name) is None:
+                raise NotFoundException(
+                    message="Model not found",
+                    is_openai_exception=True,
+                )
+            raise ServiceUnavailableException(
+                message="No running instances available",
                 is_openai_exception=True,
             )
         request.state.stream = stream
@@ -242,7 +263,7 @@ async def proxy_request_by_model(
         mutate_request(request, model_name, body_json, form_data)
 
         instance = await get_running_instance(
-            session, model.id, target.overridden_model_name
+            session, model, target.overridden_model_name
         )
         worker: Worker = await WorkerService(session).get_by_id(instance.worker_id)
         if not worker:
@@ -487,7 +508,7 @@ def filter_headers(headers):
 
 async def get_running_instance(
     session: AsyncSession,
-    model_id: int,
+    model: Model,
     overridden_model_name: Optional[str] = None,
 ):
     """Pick a RUNNING instance, narrowing by ``mounted_loras`` when a
@@ -496,8 +517,14 @@ async def get_running_instance(
     and never hot-reloaded
     """
     running_instances = await ModelInstanceService(session).get_running_instances(
-        model_id
+        model.id
     )
+    # Narrow to the members that can answer a whole request. For a
+    # disaggregated group that is the router alone: balancing across the group
+    # does not fail, it answers most requests wrongly — a prefill returns after
+    # one token and a decode runs without the prefix its KV was meant to carry,
+    # both with a 200.
+    running_instances = servable_instances(model, running_instances)
     if not running_instances:
         raise ServiceUnavailableException(
             message="No running instances available",
