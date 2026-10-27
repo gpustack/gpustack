@@ -70,6 +70,7 @@ class MetricExporter(Collector):
         clientset_getter: Callable[[], ClientSet] = None,
         cache: dict = None,
     ):
+        self._config = cfg
         self._collector = collector
         self._worker_name_getter = worker_name_getter
         self._worker_id_getter = worker_id_getter
@@ -395,6 +396,11 @@ class MetricExporter(Collector):
             app = FastAPI(
                 title="GPUStack Worker Metrics Exporter",
                 response_model_exclude_unset=True,
+                docs_url=None if self._config.disable_openapi_docs else "/docs",
+                redoc_url=None if self._config.disable_openapi_docs else "/redoc",
+                openapi_url=(
+                    None if self._config.disable_openapi_docs else "/openapi.json"
+                ),
             )
 
             @app.get("/metrics")
