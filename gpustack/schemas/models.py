@@ -50,6 +50,7 @@ from gpustack.schemas.model_routes import (
     ModelRoute,
     ModelRouteTarget,
     AccessPolicyEnum,
+    validate_model_route_name,
 )
 from gpustack.schemas.principals import _platform_principal_id
 from gpustack.schemas.cache_services import CacheConfigSnapshot
@@ -1302,6 +1303,14 @@ class ModelListParams(ListParams):
 
 class ModelCreate(ModelBase):
     enable_model_route: Optional[bool] = Field(default=None)
+
+    @model_validator(mode="after")
+    def validate_auto_route_name(self):
+        # The automatic route copies the deployment name. Validate it at the
+        # request boundary, before creating the model or its related records.
+        if self.enable_model_route:
+            validate_model_route_name(self.name)
+        return self
 
 
 class ModelUpdate(ModelBase):
