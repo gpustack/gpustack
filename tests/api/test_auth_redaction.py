@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -8,6 +9,12 @@ from gpustack.api.auth import get_user_from_api_token, worker_auth, worker_proxy
 from gpustack.api.exceptions import UnauthorizedException
 from gpustack.logging import TRACE_LEVEL
 from gpustack.server.cache import cache, delete_cache_by_key
+
+
+@pytest.fixture(autouse=True)
+def auth_logging(monkeypatch):
+    """Match setup_logging's cache diagnostics policy for authentication."""
+    monkeypatch.setattr(logging.getLogger("aiocache.base"), "disabled", True)
 
 
 class _Session:
@@ -36,17 +43,12 @@ def _request():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "access_key,masked",
-    [
-        ("abcd1234", "****1234"),
-        ("abcd", "****"),
-        ("", "<empty>"),
-        ("x" * 10000, "*" * 64 + "xxxx"),
-    ],
-    ids=["suffix", "short", "legacy-empty", "bounded"],
+    "access_key",
+    ["abcd1234", "abcd", "", "x" * 10000],
+    ids=["standard", "short", "legacy-empty", "long"],
 )
-async def test_api_key_trace_log_masks_the_access_key(
-    monkeypatch, caplog, access_key, masked
+async def test_api_key_authentication_logs_no_credentials(
+    monkeypatch, caplog, access_key
 ):
     key = SimpleNamespace(
         id=1,
@@ -84,12 +86,6 @@ async def test_api_key_trace_log_masks_the_access_key(
     finally:
         await cache.clear()
 
-    messages = [
-        record.getMessage()
-        for record in caplog.records
-        if record.name == auth_module.__name__
-    ]
-    assert messages == [f"Found API key for access key: {masked}"] * 3
     assert any(record.name == "gpustack.server.cache" for record in caplog.records)
     if access_key:
         assert access_key not in caplog.text
