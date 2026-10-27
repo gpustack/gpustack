@@ -38,6 +38,7 @@ from gpustack.api.tenant import (
     cluster_visibility_conditions,
     assert_cluster_visible,
     assert_cluster_writable,
+    assert_resource_visible,
     validate_owner_principal,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
@@ -49,6 +50,8 @@ from gpustack.schemas.clusters import (
     ClusterListParams,
     ClusterUpdate,
     ClusterCreate,
+    ClusterCreateBase,
+    CloudCredential,
     ClusterPublic,
     ClustersPublic,
     Cluster,
@@ -99,6 +102,7 @@ from gpustack.config.config import (
 )
 from gpustack.utils.certificates import read_server_ca_bundle, server_ca_checksum
 from gpustack.utils.grafana import resolve_grafana_base_url
+from gpustack.cloud_providers.common import validate_cluster_credential
 from gpustack_runtime.detector import ManufacturerEnum
 
 logger = logging.getLogger(__name__)
@@ -499,6 +503,26 @@ def check_shuihua_requirements(
         )
 
 
+async def check_cluster_credential(
+    session: AsyncSession, ctx: TenantContext, cluster: ClusterCreateBase
+) -> None:
+    """Authorize the credential before persisting or updating a cluster."""
+    if cluster.credential_id is None and cluster.provider in (
+        ClusterProvider.Docker,
+        ClusterProvider.Kubernetes,
+    ):
+        return
+    credential = await CloudCredential.one_by_id(session, cluster.credential_id)
+    message = f"cloud credential {cluster.credential_id} not found"
+    if credential is None or credential.deleted_at is not None:
+        raise NotFoundException(message=message)
+    assert_resource_visible(ctx, credential, not_found_message=message)
+    try:
+        validate_cluster_credential(cluster, credential)
+    except ValueError as e:
+        raise InvalidException(message=str(e)) from e
+
+
 def create_update_check(
     provider: ClusterProvider,
     input: Union[ClusterCreate, ClusterUpdate],
@@ -724,6 +748,7 @@ async def create_cluster(
         )
 
     create_update_check(input.provider, input)
+    await check_cluster_credential(session, ctx, input)
     if input.provider == ClusterProvider.Kubernetes:
         enforce_data_dir_mounts(input)
     hoist_system_default_container_registry(input)
@@ -840,6 +865,7 @@ async def update_cluster(
             )
 
     create_update_check(cluster.provider, input, existing=cluster)
+    await check_cluster_credential(session, ctx, cluster)
     if cluster.provider == ClusterProvider.Kubernetes:
         enforce_data_dir_mounts(input)
         await check_cluster_purpose_switch(session, cluster, input)

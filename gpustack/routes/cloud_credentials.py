@@ -8,6 +8,7 @@ from gpustack.api.exceptions import (
     AlreadyExistsException,
     BadRequestException,
     InternalServerErrorException,
+    InvalidException,
     NotFoundException,
 )
 from gpustack.api.tenant import (
@@ -130,6 +131,16 @@ async def update(
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(message=f"cloud credential {id} not found")
     assert_org_owned_writable(ctx, existing, resource_label="cloud credential")
+
+    # Ownership and provider define the authorization of every bound cluster.
+    # Rotating the secret must preserve that relationship.
+    for field in ("owner_principal_id", "provider"):
+        if field in input.model_fields_set and getattr(input, field) != getattr(
+            existing, field
+        ):
+            raise InvalidException(
+                message=f"Cloud credential {field} cannot be changed"
+            )
 
     try:
         await CloudCredential.update(existing, session=session, source=input)

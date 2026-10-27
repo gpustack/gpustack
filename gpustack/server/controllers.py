@@ -199,6 +199,7 @@ from gpustack.cloud_providers.common import (
     get_client_from_provider,
     construct_cloud_instance,
     generate_ssh_key_pair,
+    validate_cluster_credential,
 )
 from gpustack.cloud_providers.abstract import (
     ProviderClientBase,
@@ -6561,14 +6562,15 @@ class WorkerProvisioningController:
             )
             if not worker:
                 return
-            credential: CloudCredential = await CloudCredential.one_by_id(
-                session, worker.cluster.credential_id
-            )
-            client = get_client_from_provider(
-                worker.cluster.provider,
-                credential=credential,
-            )
             try:
+                credential = await CloudCredential.one_by_id(
+                    session, worker.cluster.credential_id
+                )
+                validate_cluster_credential(worker.cluster, credential)
+                client = get_client_from_provider(
+                    worker.cluster.provider,
+                    credential=credential,
+                )
                 if worker.state == WorkerStateEnum.PENDING:
                     await self.check_server_external_url(worker.cluster.server_url)
                 if worker.state in [
