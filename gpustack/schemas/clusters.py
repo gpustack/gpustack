@@ -9,6 +9,7 @@ from pydantic import (
     field_validator,
     ConfigDict,
     PrivateAttr,
+    SecretStr,
     Field as PydanticField,
 )
 from sqlmodel import (
@@ -28,6 +29,7 @@ from typing import TYPE_CHECKING
 from gpustack.schemas.config import (
     SensitivePredefinedConfig,
     PredefinedConfigNoDefaults,
+    PredefinedConfigPublic,
 )
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import (
@@ -96,6 +98,11 @@ class ImageCredential(BaseModel):
         default=None,
         description="Registry password / access token. Stored as-is — handle as a secret.",
     )
+
+
+class ImageCredentialPublic(ImageCredential):
+    model_config = ConfigDict(from_attributes=True)
+    password: Optional[SecretStr] = None
 
 
 class HostPathVolumeSource(BaseModel):
@@ -570,6 +577,15 @@ class K8sOptions(BaseModel):
                 "issued for"
             )
         return v
+
+
+class K8sOptionsPublic(K8sOptions):
+    """Deployment settings with registry passwords masked for readers."""
+
+    model_config = ConfigDict(from_attributes=True)
+    image_credentials: Optional[List[ImageCredentialPublic]] = PydanticField(
+        default=None, alias="imageCredentials"
+    )
 
 
 def is_gpu_service_k8s_options(k8s_options: Any) -> bool:
@@ -1161,7 +1177,8 @@ class ClusterPublic(ClusterBase, PublicFields):
     ready_workers: int = Field(default=0)
     gpus: int = Field(default=0)
     models: int = Field(default=0)
-    worker_config: Optional[PredefinedConfigNoDefaults] = Field(default=None)
+    worker_config: Optional[PredefinedConfigPublic] = Field(default=None)
+    k8s_options: Optional[K8sOptionsPublic] = Field(default=None)
 
 
 ClustersPublic = PaginatedList[ClusterPublic]

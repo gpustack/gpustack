@@ -42,7 +42,7 @@ from gpustack.api.tenant import (
     validate_owner_principal,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.server.bus import event_field
+from gpustack.server.bus import Event, event_field
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.server.worker_request import stream_to_worker
@@ -113,6 +113,20 @@ CLUSTER_LOAD_OPTIONS = [
 ]
 
 router = APIRouter()
+
+# Pydantic SecretStr uses this fixed mask in public JSON responses.
+MASKED_CLUSTER_SECRET = "**********"
+
+
+async def _redact_cluster_event(event: Event) -> None:
+    # Configurations are already projected in data. Their raw history and
+    # non-public fields can contain credentials, including retired secrets.
+    event.changed_fields = {
+        key: value
+        for key, value in event.changed_fields.items()
+        if key in ClusterPublic.model_fields
+        and key not in {"worker_config", "k8s_options"}
+    }
 
 
 def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
@@ -255,6 +269,7 @@ async def get_clusters(
                 options=CLUSTER_LOAD_OPTIONS,
                 visibility_filter=visibility_check,
                 filter_func=_matches_gpu_filter,
+                event_transform=_redact_cluster_event,
             ),
             media_type="text/event-stream",
         )
@@ -721,6 +736,65 @@ def enforce_data_dir_mounts(input: Union[ClusterCreate, ClusterUpdate]):
         )
 
 
+def _resolve_cluster_secret(
+    value: Optional[str], supplied: bool, stored: Optional[str]
+) -> Optional[str]:
+    if supplied and value != MASKED_CLUSTER_SECRET:
+        return value
+    if value == MASKED_CLUSTER_SECRET and not stored:
+        raise BadRequestException(
+            message="No stored credential matches the mask; provide a new secret."
+        )
+    return stored
+
+
+def _preserve_image_credentials(
+    options: K8sOptions, stored: Optional[K8sOptions]
+) -> None:
+    if "image_credentials" not in options.model_fields_set:
+        if stored is not None:
+            options.image_credentials = stored.model_copy(deep=True).image_credentials
+        return
+
+    stored_credentials = (stored.image_credentials or []) if stored else []
+    for credential in options.image_credentials or []:
+        supplied = "password" in credential.model_fields_set
+        if supplied and credential.password != MASKED_CLUSTER_SECRET:
+            continue
+        # Identity, rather than list position, prevents a reorder or a registry
+        # edit from attaching a stored password to a different destination.
+        matches = [
+            item
+            for item in stored_credentials
+            if (item.registry, item.username)
+            == (credential.registry, credential.username)
+        ]
+        if len(matches) > 1:
+            raise BadRequestException(
+                message="Ambiguous registry credential; provide an explicit password."
+            )
+        credential.password = _resolve_cluster_secret(
+            credential.password, supplied, matches[0].password if matches else None
+        )
+
+
+def preserve_cluster_credentials(
+    input: ClusterUpdate, existing: Optional[Cluster] = None
+) -> None:
+    """Keep omitted or masked secrets; explicit null or empty values clear them."""
+    if input.worker_config is not None:
+        stored = existing.worker_config if existing else None
+        input.worker_config.huggingface_token = _resolve_cluster_secret(
+            input.worker_config.huggingface_token,
+            "huggingface_token" in input.worker_config.model_fields_set,
+            stored.huggingface_token if stored else None,
+        )
+    if input.k8s_options is not None:
+        _preserve_image_credentials(
+            input.k8s_options, existing.k8s_options if existing else None
+        )
+
+
 @router.post("", response_model=ClusterPublic, response_model_exclude_none=True)
 async def create_cluster(
     session: SessionDep, ctx: TenantContextDep, input: ClusterCreate
@@ -749,6 +823,7 @@ async def create_cluster(
 
     create_update_check(input.provider, input)
     await check_cluster_credential(session, ctx, input)
+    preserve_cluster_credentials(input)
     if input.provider == ClusterProvider.Kubernetes:
         enforce_data_dir_mounts(input)
     hoist_system_default_container_registry(input)
@@ -866,6 +941,7 @@ async def update_cluster(
 
     create_update_check(cluster.provider, input, existing=cluster)
     await check_cluster_credential(session, ctx, cluster)
+    preserve_cluster_credentials(input, cluster)
     if cluster.provider == ClusterProvider.Kubernetes:
         enforce_data_dir_mounts(input)
         await check_cluster_purpose_switch(session, cluster, input)
