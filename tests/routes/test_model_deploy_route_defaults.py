@@ -24,17 +24,21 @@ class _Recorder:
         self.hook_calls.append((action, section))
 
 
-def _model_in(replicas: int) -> ModelCreate:
+def _model_in(
+    replicas: int, name: str = "qwen", enable_model_route: bool = True
+) -> ModelCreate:
     return ModelCreate(
-        name="qwen",
+        name=name,
         replicas=replicas,
         source=SourceEnum.HUGGING_FACE,
         huggingface_repo_id="repo/qwen",
-        enable_model_route=True,
+        enable_model_route=enable_model_route,
     )
 
 
-async def _run_create(monkeypatch, replicas: int):
+async def _run_create(
+    monkeypatch, replicas: int, name: str = "qwen", enable_model_route: bool = True
+):
     recorders = {"least-load": _Recorder(), "session-affinity": _Recorder()}
     created = {}
 
@@ -42,6 +46,8 @@ async def _run_create(monkeypatch, replicas: int):
         from gpustack.schemas.models import Model
 
         model = Model(**source)
+        model.id = 1
+        created["model"] = model
         return model
 
     async def fake_route_create(cls, session, source, auto_commit=True):
@@ -50,6 +56,10 @@ async def _run_create(monkeypatch, replicas: int):
         return source
 
     async def fake_target_create(cls, session, source, auto_commit=True):
+        # Flush assigns the relationship foreign keys before history validation.
+        source.model_id = source.model.id
+        source.route_id = source.model_route.id
+        cls.model_validate(source.model_dump())
         created["target"] = source
         return source
 
@@ -83,7 +93,7 @@ async def _run_create(monkeypatch, replicas: int):
     monkeypatch.setattr("gpustack.routes.plugins.get_route_plugin", fake_get_plugin)
 
     await models_routes.create_model(
-        session=session, ctx=ctx, model_in=_model_in(replicas)
+        session=session, ctx=ctx, model_in=_model_in(replicas, name, enable_model_route)
     )
     return created, recorders
 
@@ -129,4 +139,29 @@ async def test_single_replica_route_keeps_weighted_shape(monkeypatch):
 
     assert created["target"].weight == 100
     # nothing to schedule between instances — no capability default
+    assert all(r.hook_calls == [] for r in recorders.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["qwen", "Qwen3-0.6B", "a"])
+async def test_letter_prefixed_deployment_name_creates_same_named_route(
+    monkeypatch, name
+):
+    created, _ = await _run_create(monkeypatch, replicas=1, name=name)
+
+    assert created["route"].name == name
+    assert created["target"].route_name == name
+    assert created["target"].model.name == name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["31231213", "3-model", "1"])
+async def test_numeric_deployment_name_is_allowed_without_auto_route(monkeypatch, name):
+    created, recorders = await _run_create(
+        monkeypatch, replicas=1, name=name, enable_model_route=False
+    )
+
+    assert created["model"].name == name
+    assert "route" not in created
+    assert "target" not in created
     assert all(r.hook_calls == [] for r in recorders.values())

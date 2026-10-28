@@ -668,7 +668,6 @@ async def get_user_from_api_token(
         for candidate in access_keys:
             api_key = await APIKeyService(session).get_by_access_key(candidate)
             if api_key:
-                logger.trace(f"Found API key for access key: {candidate}")
                 break
         if api_key is None and "" not in access_keys:
             # A token in the standard shape can still be the legacy cluster

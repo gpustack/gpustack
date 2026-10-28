@@ -3917,3 +3917,12 @@ def test_dynamo_server_class_mapping_and_health_check():
         assert is_ready(BackendEnum.DYNAMO, mi, None, model) is True
 
     get.assert_called_once_with("http://10.0.0.1:8000/health", timeout=1)
+def test_decision_models_skip_the_inference_probe():
+    # A decision deployment answers the Jev /v1/systemone contract; the
+    # inference probe imitates the OpenAI generation/embedding/rerank
+    # endpoints, so probing it would mark a healthy deployment down.
+    from gpustack.schemas.models import Model
+    from gpustack.worker.serve_manager import _get_inference_endpoint_and_payload
+
+    model = Model(id=1, name="laya", categories=["decision"])
+    assert _get_inference_endpoint_and_payload(model) is None
