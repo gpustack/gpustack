@@ -2,7 +2,7 @@ import asyncio
 import os
 from fastapi import APIRouter, Request
 from gpustack.config.config import get_global_config
-from gpustack.server.deps import CurrentUserDep
+from gpustack.server.deps import CurrentAdminUserDep, CurrentUserDep
 import yaml
 
 from gpustack.utils.metrics import get_builtin_metrics_config_file_path
@@ -77,7 +77,7 @@ async def get_metrics_config(user: CurrentUserDep):
 
 
 @router.post("/config")
-async def update_metrics_config(user: CurrentUserDep, request: Request):
+async def update_metrics_config(user: CurrentAdminUserDep, request: Request):
     data_dir = get_global_config().data_dir
     custom_metrics_config_path = f"{data_dir}/custom_metrics_config.yaml"
 
