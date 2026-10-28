@@ -21,6 +21,7 @@ from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
     HTTPException as APIHTTPException,
     InternalServerErrorException,
+    InvalidException,
     NotFoundException,
 )
 from gpustack.schemas.workers import Worker
@@ -844,16 +845,24 @@ async def get_model_instance_log_options(
 
 @router.post("", response_model=ModelInstancePublic)
 async def create_model_instance(
-    session: SessionDep, model_instance_in: ModelInstanceCreate
+    session: SessionDep,
+    ctx: TenantContextDep,
+    model_instance_in: ModelInstanceCreate,
 ):
-    # Inherit the parent Model's tenant binding. The schema default of
-    # PLATFORM_PRINCIPAL_ID would otherwise persist `owner_principal_id=1`
-    # for instances of a non-platform Model whenever the caller (worker /
-    # API client) doesn't echo the field back.
-    if model_instance_in.model_id is not None:
-        parent = await Model.one_by_id(session, model_instance_in.model_id)
-        if parent is not None:
-            model_instance_in.owner_principal_id = parent.owner_principal_id
+    if model_instance_in.model_id is None:
+        raise NotFoundException(message="Model not found")
+    parent = await Model.one_by_id(session, model_instance_in.model_id)
+    assert_resource_visible(ctx, parent, not_found_message="Model not found")
+    # Instances inherit the authorized model's tenant and cluster scope.
+    # Explicit bindings must agree with the parent, including a NULL cluster.
+    for field in ("owner_principal_id", "cluster_id"):
+        value = getattr(parent, field)
+        if (
+            field in model_instance_in.model_fields_set
+            and getattr(model_instance_in, field) != value
+        ):
+            raise InvalidException(message=f"{field} must match the parent model")
+        setattr(model_instance_in, field, value)
     try:
         model_instance = await ModelInstance.create(session, model_instance_in)
     except Exception as e:
