@@ -115,56 +115,38 @@ _BM74_BENCHMARK = dict(
 )
 
 
-class TestLooseSloFallsBackToThePeak:
-    """A threshold too loose to ever break must not hand back the top of the range.
+class TestHighestMeasuredSloLoad:
+    """The SLO answer is the highest passing load, independently of throughput."""
 
-    Benchmark 74 reported concurrency 1024 as the SLO capacity: 6% LESS throughput
-    than 256 at 5809ms TTFT instead of 142ms — a load nobody would choose to run at.
-    Past saturation more load buys only queueing, so the operating point is capped
-    at the throughput peak and the reason is stated instead of being implied.
-    """
-
-    def test_recommendation_is_capped_at_the_throughput_peak(self):
+    def test_primary_load_is_the_highest_passing_stage(self):
         benchmark = SimpleNamespace(**_BM74_BENCHMARK)
         out = analysis.compute_best_points(benchmark, _BM74)
         assert out["peak_rate"] == 256
-        # The literal SLO answer is kept as measured...
         assert out["slo_met_rate"] == 1024
-        # ...but the point to actually run at is the peak.
-        assert out["recommended_rate"] == 256
+        assert out["recommended_rate"] == 1024
 
-    def test_a_binding_slo_below_the_peak_is_left_alone(self):
-        # Tight TTFT budget: the boundary is at 128, well under the 256 peak, so the
-        # cap must not move it.
+    def test_a_binding_slo_below_the_peak_is_selected(self):
         benchmark = SimpleNamespace(**{**_BM74_BENCHMARK, "slo_avg_ttft_ms": 100.0})
         out = analysis.compute_best_points(benchmark, _BM74)
         assert out["slo_met_rate"] == 128
         assert out["recommended_rate"] == 128
 
-    def test_verdict_says_tighten_the_thresholds_not_raise_the_bound(self):
+    def test_an_unlocated_slo_boundary_requires_a_larger_range(self):
         benchmark = SimpleNamespace(**_BM74_BENCHMARK)
         best = analysis.compute_best_points(benchmark, _BM74)
-        v = analysis.compute_validity(benchmark, _BM74, best)
-        codes = [w["code"] for w in v["warnings"]]
-        assert codes == ["slo_not_binding"]
-        # "Raise the upper bound" would only buy more points past the peak.
-        assert "not_saturated" not in codes
-        # The advice carries the peak, so the message can name a load.
-        w = v["warnings"][0]
-        assert w["params"]["rate"] == 256
+        validity = analysis.compute_validity(benchmark, _BM74, best)
+        assert [item["code"] for item in validity["warnings"]] == ["not_saturated"]
+        assert validity["slo_boundary_located"] is False
 
-    def test_slo_holding_at_the_top_of_a_still_climbing_curve_is_not_flagged(self):
-        # Same loose SLO, but throughput never turned over: here "raise the upper
-        # bound" IS the right advice, so the top-edge code must still win.
+    def test_climbing_throughput_does_not_establish_an_slo_boundary(self):
         points = [
             _point(r, r * 1000.0, 0.5, time_to_first_token_mean=50.0)
             for r in (4, 8, 16, 32)
         ]
         benchmark = SimpleNamespace(**{**_BM74_BENCHMARK, "upper_bound": 32})
         best = analysis.compute_best_points(benchmark, points)
-        v = analysis.compute_validity(benchmark, points, best)
-        codes = [w["code"] for w in v["warnings"]]
-        assert codes == ["not_saturated"]
+        validity = analysis.compute_validity(benchmark, points, best)
+        assert [item["code"] for item in validity["warnings"]] == ["not_saturated"]
 
 
 class TestComputeValidity:
@@ -186,10 +168,11 @@ class TestComputeValidity:
         points = self._climbing(rates)
         best = analysis.compute_best_points(benchmark, points)
 
-        assert analysis.compute_validity(benchmark, points, best) == {
-            "coverage_applicable": False,
-            "warnings": [],
-        }
+        validity = analysis.compute_validity(benchmark, points, best)
+        assert validity["coverage_applicable"] is False
+        assert validity["warnings"] == []
+        assert "sufficient" not in validity
+        assert validity["primary_point"]["rate"] == rates[-1]
 
     @pytest.mark.parametrize("stages", [None, [{"rate": 8}]])
     def test_fixed_loads_keep_measurement_findings(self, stages):
@@ -332,11 +315,11 @@ class TestComputeValidity:
         ]
         benchmark = _search_benchmark(upper_bound=1024, max_points=12)
         v = analysis.compute_validity(benchmark, points, {"recommended_rate": 32})
-        assert v == {
-            "coverage_applicable": True,
-            "sufficient": True,
-            "warnings": [],
-        }
+        assert v["coverage_applicable"] is True
+        assert v["sufficient"] is True
+        assert v["warnings"] == []
+        assert v["primary_point"]["rate"] == 32
+        assert v["peak_point"]["rate"] == 32
 
 
 class TestBuildCommandArgs:
@@ -537,8 +520,7 @@ class TestMaybeSyncPartialMetrics:
 
     @staticmethod
     def _rows(n):
-        """Point rows shaped like `to_results` returns them: columns + the bulky
-        per-point dump the partial sync is expected to leave behind."""
+        """Point rows containing flat metrics and their per-stage statistics."""
         return [
             {"sequence": i, "rate": float(4 * 2**i), "raw_metrics": {"dump": i}}
             for i in range(n)
@@ -612,24 +594,60 @@ class TestMaybeSyncPartialMetrics:
         assert mgr._partial_synced_count[1] == 2
         assert mgr._last_partial_sync_at[1] == 1000.0
 
-    def test_the_bulky_dumps_stay_home_until_the_run_is_over(self, monkeypatch):
-        # The whole grid is re-posted every 10s for the life of the run, and each
-        # POST is a full replace, so shipping every point's raw_metrics again on
-        # every tick is the one part of this that grows with max_points. The
-        # columns still go (they are what the running page draws); the dumps are
-        # the terminal sync's job.
+    def test_finished_stage_details_are_uploaded_while_later_points_run(
+        self, monkeypatch
+    ):
         monkeypatch.setattr(bm.time, "time", lambda: 1000.0)
         mgr = _bare_manager()
-        calls = self._wire(mgr, on_disk=2, loaded=2)
+        rows = self._rows(2)
+        for i, row in enumerate(rows):
+            row["raw_metrics"] = {
+                "duration": 10.25 + i,
+                "metrics": {
+                    "time_to_first_token_ms": {
+                        "successful": {
+                            "count": 100,
+                            "mean": 10 + i,
+                            "min": 1 + i,
+                            "max": 20 + i,
+                            "percentiles": {
+                                "p25": 5 + i,
+                                "p50": 9 + i,
+                                "p75": 12 + i,
+                                "p90": 15 + i,
+                                "p95": 17 + i,
+                                "p99": 19 + i,
+                            },
+                        }
+                    },
+                    "prompt_token_count": {
+                        "successful": {"count": 100, "mean": 128 + i}
+                    },
+                    "output_token_count": {
+                        "successful": {"count": 100, "mean": 64 + i}
+                    },
+                },
+            }
+        calls = self._wire(mgr, on_disk=2, loaded=2, results=rows)
+
         mgr._maybe_sync_partial_metrics(
             SimpleNamespace(id=1, auto_tune=True, stages=None, name="x")
         )
-        assert all("raw_metrics" not in row for row in calls.posted)
-        assert all("rate" in row for row in calls.posted)
 
-    def test_stripping_the_dumps_does_not_mutate_the_analysis_input(self, monkeypatch):
-        # The same rows go on to _write_best_points_and_validity; the strip has to
-        # be a copy, or the analysis would be reading a grid we quietly edited.
+        assert calls.posted == rows
+        for i, posted in enumerate(calls.posted):
+            raw = posted["raw_metrics"]
+            assert raw["duration"] == 10.25 + i
+            distribution = raw["metrics"]["time_to_first_token_ms"]["successful"]
+            assert distribution["min"] == 1 + i
+            assert distribution["max"] == 20 + i
+            assert distribution["percentiles"]["p25"] == 5 + i
+            assert distribution["percentiles"]["p99"] == 19 + i
+            assert raw["metrics"]["prompt_token_count"]["successful"]["mean"] == 128 + i
+            assert raw["metrics"]["output_token_count"]["successful"]["mean"] == 64 + i
+        assert calls.wrote == (True, 1)
+
+    def test_partial_upload_preserves_the_analysis_input(self, monkeypatch):
         monkeypatch.setattr(bm.time, "time", lambda: 1000.0)
         mgr = _bare_manager()
         rows = self._rows(2)
@@ -638,12 +656,43 @@ class TestMaybeSyncPartialMetrics:
         mgr._write_best_points_and_validity = (
             lambda _b, res, in_progress=False, attempts=3: analysed.append(res)
         )
+
         mgr._maybe_sync_partial_metrics(
             SimpleNamespace(id=1, auto_tune=True, stages=None, name="x")
         )
+
         assert all("raw_metrics" in row for row in rows)
         assert analysed == [rows]
-        assert all("raw_metrics" not in row for row in calls.posted)
+        assert calls.posted == rows
+
+    def test_full_partial_results_retry_without_bypassing_throttle_or_duplication(
+        self, monkeypatch
+    ):
+        now = [1000.0]
+        monkeypatch.setattr(bm.time, "time", lambda: now[0])
+        mgr = _bare_manager()
+        rows = self._rows(2)
+        self._wire(mgr, on_disk=2, loaded=2, results=rows)
+        posted = []
+
+        def post(_benchmark, _metrics, results, attempts=3):
+            posted.append((results, attempts))
+            if len(posted) == 1:
+                raise RuntimeError("temporary API failure")
+
+        mgr._post_metrics_and_results = post
+        benchmark = SimpleNamespace(id=1, auto_tune=True, stages=None, name="x")
+        mgr._maybe_sync_partial_metrics(benchmark)
+        assert mgr._partial_synced_count.get(1, 0) == 0
+        now[0] = 1005.0
+        mgr._maybe_sync_partial_metrics(benchmark)
+        assert len(posted) == 1
+        now[0] = 1010.0
+        mgr._maybe_sync_partial_metrics(benchmark)
+        assert mgr._partial_synced_count[1] == 2
+        now[0] = 1020.0
+        mgr._maybe_sync_partial_metrics(benchmark)
+        assert posted == [(rows, 1), (rows, 1)]
 
     def test_a_point_still_mid_write_is_retried_next_tick(self, monkeypatch):
         # 3 files on disk but the newest failed to parse, so only 2 loaded. The
@@ -1276,6 +1325,8 @@ class TestSaturatedAtLowerBoundClearsBestPoints:
         # peak/recommended nulled so the number can't contradict the banner...
         assert captured["peak_rate"] is None
         assert captured["recommended_rate"] is None
+        assert captured["validity"]["primary_point"] is None
+        assert captured["validity"]["peak_point"] is None
         # ...while the validity still carries the ceiling to act on.
         codes = [w["code"] for w in captured["validity"]["warnings"]]
         assert "saturated_at_lower_bound" in codes
@@ -1670,21 +1721,17 @@ class TestReadRampFacts:
 
 
 class TestPeakAndRecommendation:
-    """peak_rate is the true throughput argmax; recommended_rate is the peak, or
-    (with an SLO) the SLO boundary capped at the peak — never a lower "knee". The
-    plateau guard keeps a saturated top from being mislabeled range-limited."""
+    """Primary load and total-TPS peak answer different questions for SLO tests."""
 
-    def test_bm92_peak_is_the_argmax(self):
-        # rate 31 has the highest throughput (0 errors) but was returned as
-        # peak_rate=30. peak_rate and the no-SLO recommendation are both the argmax.
-        bm92 = [
+    def test_peak_is_the_observed_argmax(self):
+        points = [
             _point(4, 4679.8, 0.14),
             _point(8, 9322.6, 0.18),
             _point(16, 18593.1, 0.20),
             _point(24, 27867.1, 0.24),
             _point(28, 32497.5, 0.33),
             _point(30, 34811.5, 0.35),
-            _point(31, 35964.5, 0.40),  # true throughput peak
+            _point(31, 35964.5, 0.40),
             _point(32, 35849.1, 1.16),
             _point(34, 31006.6, 16.27),
             _point(36, 30419.0, 28.99),
@@ -1692,32 +1739,20 @@ class TestPeakAndRecommendation:
         benchmark = _search_benchmark(
             load_type="fixed_rate", upper_bound=1024, max_points=12
         )
-        out = analysis.compute_best_points(benchmark, bm92)
+        out = analysis.compute_best_points(benchmark, points)
         assert out["peak_rate"] == 31
         assert out["recommended_rate"] == 31
-        v = analysis.compute_validity(benchmark, bm92, out)
-        assert v["warnings"] == []  # curve turned over cleanly; nothing to warn
+        assert analysis.compute_validity(benchmark, points, out)["warnings"] == []
 
-    def test_bm93_real_slo_recommends_the_max_within_the_slo(self):
+    def test_the_highest_passing_load_can_also_be_the_observed_peak(self):
         benchmark = SimpleNamespace(**_BM93_BENCHMARK)
         out = analysis.compute_best_points(benchmark, _BM93)
-        # 256 is the argmax AND meets the SLO => it is peak, slo_met, and the answer.
-        assert out["peak_rate"] == 256
-        assert out["slo_met_rate"] == 256
-        assert out["recommended_rate"] == 256  # NOT a lower knee (was 128)
-        v = analysis.compute_validity(benchmark, _BM93, out)
-        codes = [w["code"] for w in v["warnings"]]
-        # The recommendation is right, but the RUN has something to report: the
-        # ramp stopped on the throughput plateau at 256 of a 4..1024 range, and the
-        # 500ms budget was only 31% used there (155ms) — so 256 is a capacity
-        # ceiling, not the latency boundary the profile set out to find. Re-observed
-        # live as bm102, which reported "sufficient, no warnings" for a 7-point run.
-        assert codes == ["slo_not_binding"]
-        assert v["warnings"][0]["params"] == {"rate": 256, "used": 31}
-        # Still not the reversed advice: raising the bound only buys plateau points.
-        assert "not_saturated" not in codes
+        assert out["peak_rate"] == out["slo_met_rate"] == out["recommended_rate"] == 256
+        validity = analysis.compute_validity(benchmark, _BM93, out)
+        assert [item["code"] for item in validity["warnings"]] == ["not_saturated"]
+        assert validity["slo_boundary_located"] is False
 
-    def test_bm86_loose_slo_recommends_the_peak_without_a_reversed_warning(self):
+    def test_a_plateau_does_not_establish_the_slo_boundary(self):
         benchmark = _search_benchmark(
             load_type="concurrency",
             upper_bound=1024,
@@ -1726,58 +1761,31 @@ class TestPeakAndRecommendation:
             slo_avg_tpot_ms=1000.0,
         )
         out = analysis.compute_best_points(benchmark, _BM86)
-        assert out["peak_rate"] == 512
-        assert out["slo_met_rate"] == 512
-        assert out["recommended_rate"] == 512  # meets the loose SLO, max throughput
-        v = analysis.compute_validity(benchmark, _BM86, out)
-        codes = [w["code"] for w in v["warnings"]]
-        # Plateaued at the top => never "raise the bound". But a 10s TTFT budget
-        # that the top point used 19% of (1917ms) did not shape this answer, and
-        # saying so is the whole point of the code.
-        assert codes == ["slo_not_binding"]
-        assert v["warnings"][0]["params"]["used"] == 19
-        assert "not_saturated" not in codes
+        assert out["peak_rate"] == out["slo_met_rate"] == out["recommended_rate"] == 512
+        validity = analysis.compute_validity(benchmark, _BM86, out)
+        assert [item["code"] for item in validity["warnings"]] == ["not_saturated"]
 
-    def test_an_slo_pressed_against_at_the_peak_stays_silent(self):
-        # Same curve and range as bm93, but a budget the top point nearly spends
-        # (155ms of 160ms = 97%): here the SLO genuinely bound the answer, so there
-        # is nothing to report. This is the case _SLO_HEADROOM_RATIO protects — the
-        # headroom test, not the rates, is what separates it from bm93.
+    @pytest.mark.parametrize(
+        "thresholds",
+        [
+            {"slo_avg_ttft_ms": 160.0},
+            {"slo_avg_ttft_ms": 500.0, "slo_avg_tpot_ms": 1.3},
+        ],
+    )
+    def test_spending_most_of_a_budget_is_not_a_measured_failure(self, thresholds):
         benchmark = _search_benchmark(
-            load_type="concurrency",
-            upper_bound=1024,
-            max_points=12,
-            slo_avg_ttft_ms=160.0,
+            load_type="concurrency", upper_bound=1024, max_points=12, **thresholds
         )
         out = analysis.compute_best_points(benchmark, _BM93)
-        assert out["slo_met_rate"] == 256
-        assert out["recommended_rate"] == 256
-        v = analysis.compute_validity(benchmark, _BM93, out)
-        assert v["warnings"] == []
-        assert v["sufficient"] is True
+        validity = analysis.compute_validity(benchmark, _BM93, out)
+        assert [item["code"] for item in validity["warnings"]] == ["not_saturated"]
+        assert validity["sufficient"] is False
 
-    def test_the_tightest_threshold_decides_the_headroom(self):
-        # TTFT is loose (31%) but TPOT is nearly spent (1.21 of 1.3ms = 93%): the
-        # run WAS shaped by a latency budget, just not by the one with slack. Taking
-        # the loosest (or an average) would flag a binding SLO as irrelevant.
-        benchmark = _search_benchmark(
-            load_type="concurrency",
-            upper_bound=1024,
-            max_points=12,
-            slo_avg_ttft_ms=500.0,
-            slo_avg_tpot_ms=1.3,
-        )
-        out = analysis.compute_best_points(benchmark, _BM93)
-        v = analysis.compute_validity(benchmark, _BM93, out)
-        assert v["warnings"] == []
-
-    def test_no_slo_plateau_does_not_say_raise_the_bound(self):
+    def test_no_slo_plateau_does_not_require_a_larger_range(self):
         benchmark = _search_benchmark(upper_bound=1024, max_points=12)
         out = analysis.compute_best_points(benchmark, _BM86)
-        assert out["peak_rate"] == 512
-        assert out["recommended_rate"] == 512
-        v = analysis.compute_validity(benchmark, _BM86, out)
-        assert [w["code"] for w in v["warnings"]] == []
+        assert out["peak_rate"] == out["recommended_rate"] == 512
+        assert analysis.compute_validity(benchmark, _BM86, out)["warnings"] == []
 
 
 class TestArtifactNaming:
@@ -2276,6 +2284,35 @@ class TestResultsUploadIsTreatedLikeMetrics:
             [{"rate": 1}],
             **kw,
         )
+
+    def test_empty_primary_metrics_send_explicit_nulls_for_every_field(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(bm, "raise_if_response_error", lambda _r: None)
+        payloads = {}
+
+        class HttpClient:
+            def post(self, url, json):
+                payloads[url] = json
+                return object()
+
+        manager = _bare_manager()
+        manager._clientset_getter = lambda: SimpleNamespace(
+            http_client=SimpleNamespace(get_httpx_client=HttpClient)
+        )
+        manager._post_metrics_and_results(
+            SimpleNamespace(id=7, name="empty-primary"),
+            bm_schemas.BenchmarkMetrics(),
+            [],
+        )
+
+        payload = payloads["/benchmarks/7/metrics"]
+        received = bm_schemas.BenchmarkMetrics.model_validate(payload)
+        assert set(payload) == set(bm_schemas.BenchmarkMetrics.model_fields)
+        assert received.model_fields_set == set(
+            bm_schemas.BenchmarkMetrics.model_fields
+        )
+        assert all(value is None for value in payload.values())
 
     def test_a_transient_results_failure_is_retried(self, monkeypatch):
         mgr, calls = self._mgr(monkeypatch, fail_on="results", fail_times=2)
