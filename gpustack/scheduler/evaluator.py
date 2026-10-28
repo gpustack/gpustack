@@ -16,6 +16,7 @@ from gpustack.api.exceptions import HTTPException
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.config.config import Config
 from gpustack.policies.base import ModelInstanceScheduleCandidate
+from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack import envs
 from gpustack.routes.models import validate_model_in
 from gpustack.scheduler import scheduler
@@ -358,7 +359,7 @@ async def evaluate_model(
 ) -> ModelEvaluationResult:
     result = ModelEvaluationResult()
 
-    if await set_default_spec(session, model):
+    if await set_default_spec(session, model, workers):
         result.default_spec = model.model_copy()
 
     await set_gguf_model_file_path(config, model)
@@ -1230,12 +1231,18 @@ async def evaluate_model_input(
     return True, []
 
 
-async def set_default_spec(session: AsyncSession, model: ModelSpec) -> bool:
+async def set_default_spec(
+    session: AsyncSession, model: ModelSpec, workers: List[Worker]
+) -> bool:
     """
     Set the default spec for the model if it matches the catalog spec.
     """
+    selected_workers, _ = await LabelMatchingFilter(model).filter(workers)
     model_spec_in_catalog = await get_catalog_spec_by_source_key(
-        session, model.model_source_key
+        session,
+        model.model_source_key,
+        gpus=candidate_gpus(model, selected_workers),
+        backend=model.backend,
     )
 
     modified = False
@@ -1244,11 +1251,11 @@ async def set_default_spec(session: AsyncSession, model: ModelSpec) -> bool:
             model_spec_in_catalog.backend_parameters
             and model.backend_parameters is None
         ):
-            model.backend_parameters = model_spec_in_catalog.backend_parameters
+            model.backend_parameters = model_spec_in_catalog.backend_parameters.copy()
             modified = True
 
         if model_spec_in_catalog.env and model.env is None:
-            model.env = model_spec_in_catalog.env
+            model.env = model_spec_in_catalog.env.copy()
             modified = True
 
         if model_spec_in_catalog.categories and not model.categories:
