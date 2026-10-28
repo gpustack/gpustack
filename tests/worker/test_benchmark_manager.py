@@ -375,6 +375,7 @@ class TestBuildCommandArgs:
             setattr(benchmark, key, value)
         return SimpleNamespace(
             _benchmark=benchmark,
+            _model_name=None,
             _model_endpoint="http://127.0.0.1:8000",
             _model_path="/models/qwen3-0.6b",
             _model_backend_parameters=None,

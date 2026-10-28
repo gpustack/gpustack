@@ -46,6 +46,24 @@ def _model(extended_kv_cache=None) -> Model:
 
 
 @pytest.mark.asyncio
+async def test_snapshot_preserves_the_instances_model_name(monkeypatch):
+    _patch_worker_side(monkeypatch)
+    instance = _instance()
+    instance.model_name = "original-model"
+    model = _model()
+    model.name = "renamed-model"
+
+    snapshot = await benchmarks_route.get_benchmark_snapshot(
+        session=MagicMock(), mi=instance, model=model
+    )
+
+    restored = BenchmarkSnapshot.model_validate_json(snapshot.model_dump_json())
+    assert restored.instances[instance.name].model_dump().get("model_name") == (
+        "original-model"
+    )
+
+
+@pytest.mark.asyncio
 async def test_snapshot_names_the_attached_shared_cache_service(monkeypatch):
     _patch_worker_side(monkeypatch)
     one_by_id = AsyncMock(return_value=SimpleNamespace(name="svc-cache"))

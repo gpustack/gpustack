@@ -277,6 +277,8 @@ class ModelInstanceRuntimeInfo(BaseModel):
 class ModelInstanceSnapshot(ModelInstanceRuntimeInfo):
     id: int
     name: str
+    # The instance's model name can differ from the renamed deployment's name.
+    model_name: Optional[str] = None
     resolved_path: Optional[str] = None
     # Which role of its model this member served. None for a plain deployment,
     # and the only thing that tells a group's members apart once the run is
