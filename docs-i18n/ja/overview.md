@@ -50,7 +50,7 @@ GPUStack は、AI モデルサービングと GPU インスタンスのプロビ
 
     ---
 
-    同時実行数やリクエストレートを変えながらスループットとレイテンシを比較し、パフォーマンス目標を満たす運用設定の選択を支援します。
+    Auto Tune が同時実行数やリクエストレートを自動的に変化させ、ピークスループット、またはサービスレベル目標（SLO）を満たす最大同時実行数を探索します。
 
 -   :material-server-outline:{ .lg .middle .icon-blue } __GPU インスタンス__
 
@@ -87,6 +87,10 @@ GPUStack はエンジンの自動選択とパラメーターの最適化によ�
 ![H200 スループット比較](assets/h200-throughput-comparison.png)
 
 ベンチマーク手法と結果の詳細は、[推論性能ラボ](performance-lab/overview.md)をご覧ください。
+
+GPUStack の組み込みベンチマークで、デプロイメントが処理できる負荷を把握できます。**Auto Tune** が負荷を適応的に調整し、ピークスループット、またはサービスレベル目標（SLO）を満たす最大同時実行数を自動的に探索します。詳細なスループットとレイテンシのグラフがキャパシティプランニングを支援します。
+
+![gpustack-benchmark](assets/benchmark.png)
 
 ## 対応アクセラレーター { #supported-accelerators }
 

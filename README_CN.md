@@ -35,7 +35,7 @@ GPUStack 是一个开源的 GPU 集群管理器，用于 AI 模型推理服务�
 - **可插拔推理引擎。** 自动配置高性能推理引擎，如 vLLM、SGLang 和 TensorRT-LLM。您也可以根据需要添加自定义推理引擎。
 - **Day 0 模型支持。** GPUStack 的可插拔引擎架构使您能够在新模型发布当天即可部署。
 - **性能优化配置。** 提供低延迟和高吞吐预调优配置。支持 Prefill/Decode 分离，可分别配置两个阶段的副本与资源。平台统一管理共享 KV Cache，让兼容的部署和副本复用前缀缓存，并通过 L2 存储扩展缓存容量及跨节点复用。同时提供对 EAGLE3、MTP、N-grams 等推测性解码方法的内置支持。
-- **内置性能评估。** 扫描不同并发或请求速率下的吞吐量与延迟，帮助您选择满足性能目标的运行配置。
+- **内置性能评估。** Auto Tune 自动探索不同并发或请求速率，找到吞吐量上限或满足服务等级目标（SLO）的最大并发数。
 - **GPU 实例。** 按需启动可通过 SSH 访问的 GPU 实例，适用于开发、微调和交互式工作负载。
 - **企业级运维能力。** 支持自动故障恢复、负载均衡、监控、认证和访问控制。
 
@@ -60,6 +60,10 @@ GPUStack 的自动化引擎选择和参数优化可开箱即用地提供强大�
 ![h200-throughput-comparison](docs/assets/h200-throughput-comparison.png)
 
 有关详细的基准测试方法和结果，请访问我们的 [推理性能实验室](https://docs.gpustack.ai/latest/performance-lab/overview/)。
+
+通过 GPUStack 的内置性能评估，探索模型部署的承载能力。**Auto Tune** 自适应调整负载，自动探测吞吐量上限或满足服务等级目标（SLO）的最大并发数，并通过详细的吞吐量与延迟图表为容量规划提供依据。
+
+![gpustack-benchmark](docs/assets/benchmark.png)
 
 ## 支持的加速器
 
