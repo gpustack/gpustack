@@ -53,3 +53,12 @@ class WorkerRegistrationClient:
         )
         raise_if_response_error(response)
         return WorkerRegistrationPublic.model_validate(response.json())
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client, releasing pooled connections.
+
+        The registration client is single-use; without an explicit close its
+        keep-alive connection is stranded until the process exits, because
+        httpcore only reaps dead pooled connections on the next request.
+        """
+        await self._client.aclose()

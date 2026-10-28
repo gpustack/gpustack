@@ -13,7 +13,7 @@ from typing import Dict, Optional, Tuple
 from filelock import Timeout
 import modelscope
 from modelscope.hub.constants import TEMPORARY_FOLDER_NAME, API_FILE_DOWNLOAD_CHUNK_SIZE
-from multiprocessing import Manager, cpu_count
+from multiprocessing import cpu_count, get_context
 from packaging.version import Version
 from huggingface_hub._local_folder import get_local_download_paths
 from huggingface_hub.file_download import get_hf_file_metadata, hf_hub_url
@@ -85,9 +85,14 @@ class ModelFileManager:
                 await asyncio.sleep(5)
 
     def _prerun(self):
-        self._mp_manager = Manager()
+        # Download-related children (the shared manager and the pool workers)
+        # must not inherit the parent's pooled sockets: a forked child keeps
+        # half-closed fds alive even after the parent closes its own copies.
+        spawn = get_context("spawn")
+        self._mp_manager = spawn.Manager()
         self._download_pool = ProcessPoolExecutor(
             max_workers=min(max_concurrent_downloads, cpu_count()),
+            mp_context=spawn,
         )
 
     def _handle_model_file_event(self, event: Event):
@@ -500,46 +505,70 @@ class ModelFileDownloadTask:
 
     def run(self):
         try:
-            self.prerun()
-            self._write_to_instance_download_logs(
-                f"Model file download task started: {self._model_file.readable_source}"
-            )
-            self._download_model_file()
-            self._write_to_instance_download_logs(
-                f"Model file download task completed successfully: {self._model_file.readable_source}"
-            )
-        except asyncio.CancelledError:
-            self._write_to_instance_download_logs(
-                f"Download task cancelled: {self._model_file.readable_source}"
-            )
-        except Timeout:
-            lock_path = get_lock_path(self._config.cache_dir, self._model_file)
-
-            info = read_lock_info(lock_path) if lock_path else None
-            owner_id = info.get("worker_id") if info else None
-            current_worker_id = self._model_file.worker_id
-
-            if owner_id is None or owner_id != current_worker_id:
-                logger.warning(
-                    f"Download model {self._model_file.readable_source} timed out: "
-                    f"lock held by other worker, please try again later."
+            try:
+                self.prerun()
+                self._write_to_instance_download_logs(
+                    f"Model file download task started: {self._model_file.readable_source}"
                 )
-                return
+                self._download_model_file()
+                self._write_to_instance_download_logs(
+                    f"Model file download task completed successfully: {self._model_file.readable_source}"
+                )
+            except asyncio.CancelledError:
+                self._write_to_instance_download_logs(
+                    f"Download task cancelled: {self._model_file.readable_source}"
+                )
+            except Timeout:
+                lock_path = get_lock_path(self._config.cache_dir, self._model_file)
 
-            logger.warning(
-                f"Download model {self._model_file.readable_source} timed out waiting to acquire the lock. "
-                f"There might be another download task currently downloading the same model to the same disk directory."
-            )
-        except Exception as e:
-            self._write_to_instance_download_logs(
-                f"Download task failed: {self._model_file.readable_source} - {str(e)}",
-                is_error=True,
-            )
-            self._update_model_file(
-                self._model_file.id,
-                state=ModelFileStateEnum.ERROR,
-                state_message=str(e),
-            )
+                info = read_lock_info(lock_path) if lock_path else None
+                owner_id = info.get("worker_id") if info else None
+                current_worker_id = self._model_file.worker_id
+
+                if owner_id is None or owner_id != current_worker_id:
+                    logger.warning(
+                        f"Download model {self._model_file.readable_source} timed out: "
+                        f"lock held by other worker, please try again later."
+                    )
+                    return
+
+                logger.warning(
+                    f"Download model {self._model_file.readable_source} timed out waiting to acquire the lock. "
+                    f"There might be another download task currently downloading the same model to the same disk directory."
+                )
+            except Exception as e:
+                self._write_to_instance_download_logs(
+                    f"Download task failed: {self._model_file.readable_source} - {str(e)}",
+                    is_error=True,
+                )
+                self._update_model_file(
+                    self._model_file.id,
+                    state=ModelFileStateEnum.ERROR,
+                    state_message=str(e),
+                )
+        finally:
+            self._close_clientsets()
+
+    def _close_clientsets(self):
+        """Release this task's ClientSets so their pooled connections close.
+
+        httpcore only evicts dead pooled connections once a later request
+        touches the pool, so an unclosed ClientSet strands its keep-alive
+        socket until the worker process exits.
+        """
+        for clientset in (
+            getattr(self, "_progress_clientset", None),
+            getattr(self, "_clientset", None),
+        ):
+            if clientset is None:
+                continue
+            try:
+                clientset.http_client.close()
+            except Exception as e:
+                logger.warning(
+                    f"Failed to close clientset for "
+                    f"{self._model_file.readable_source}: {e}"
+                )
 
     def _read_lora_adapter_config(self, model_paths) -> Optional[dict]:
         """Return parsed adapter_config.json as a dict, or None when the file is absent.
@@ -660,7 +689,7 @@ class ModelFileDownloadTask:
             for monitor in monitors:
                 monitor.join()
             if is_huggingface:
-                self._progress_clientset.http_client.get_httpx_client().close()
+                self._progress_clientset.http_client.close()
 
         self._check_cancelled()
         if is_modelscope:
