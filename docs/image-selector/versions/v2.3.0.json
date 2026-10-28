@@ -195,7 +195,7 @@
   "postgres:18.6",
   "prom/prometheus:v3.13.2",
   "grafana/grafana:13.1.3",
-  "gpustack/higress-plugins:0.5.0",
+  "gpustack/higress-plugins:0.5.0.post2",
   "gpustack/mirrored-higress-higress:2.1.9",
   "gpustack/mirrored-higress-pilot:2.1.9",
   "gpustack/mirrored-higress-gateway:2.1.9",

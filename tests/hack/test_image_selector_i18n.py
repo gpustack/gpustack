@@ -153,7 +153,7 @@ function app(docsLanguage, storedLanguage) {
     const exports = `
         globalThis.API = {
             CONFIG, state, elements, initElements, bindEvents, setLanguage,
-            updateLanguage, generateImageList, renderFrameworkVersions,
+            updateLanguage, generateImageList, getCurrentImages, renderFrameworkVersions,
             renderCardSelector, loadData
         };
     `;
@@ -269,7 +269,8 @@ Object.assign(page.state, {
     images: [
         'gpustack/runtime:pause', 'gpustack/benchmark-runner:1', 'postgres:16',
         'prom/prometheus:v3', 'grafana/grafana:12',
-        'gpustack/mirrored-higress:v1', 'gpustack/gpustack-operator:v1'
+        'gpustack/mirrored-higress:v1', 'gpustack/gpustack-operator:v1',
+        'gpustack/llm-router:v0.3.1', 'gpustack/higress-plugins:0.5.0.post2'
     ],
     runnerImages: ['gpustack/runner:cuda12.8-vllm0.9.0'],
     optionalImages: {postgres: true, monitoring: true}
@@ -290,6 +291,14 @@ for (const component of ['all', 'server', 'worker']) {
                         line => line.startsWith('docker ')
                     )
                 );
+            }
+            for (const image of ['llm-router:v0.3.1', 'higress-plugins:0.5.0.post2']) {
+                const expected = `${page.CONFIG.registries[registry].prefix}${image}`;
+                const included = component !== 'worker';
+                assert.equal(commands[0].some(command => command.endsWith(expected)),
+                    included, `${component} pull commands include ${expected}`);
+                assert.equal(page.getCurrentImages(component).includes(expected),
+                    included, `${component} offline images include ${expected}`);
             }
             for (const translated of commands.slice(1)) {
                 assert.deepEqual(commands[0], translated);
