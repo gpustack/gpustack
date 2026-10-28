@@ -129,6 +129,7 @@ class BenchmarkRunner:
     _model_path: str
     _model_endpoint: str
     _model_backend_parameters: Optional[List[str]]
+    _model_name: Optional[str] = None
     _api_url: str
     _api_key: str
     _benchmark_dir: Optional[str]
@@ -196,6 +197,7 @@ class BenchmarkRunner:
             self._model_path = local_snapshot.resolved_path
             self._model_endpoint = f"http://{instance_snapshot.worker_ip}:{instance_snapshot.ports[0] if instance_snapshot.ports else ''}"
             self._model_backend_parameters = instance_snapshot.backend_parameters
+            self._model_name = instance_snapshot.model_name
             # `route` mode aims at the deployment instead of the member: the
             # load enters where client traffic does, so a plain model's
             # replicas are all of them rather than the one this snapshot
@@ -425,7 +427,11 @@ class BenchmarkRunner:
                 "member and report it as the deployment"
             )
         target = self._route_target() if route_mode else self._model_endpoint
-        served_name = self._route_name if route_mode else b.model_name
+        # The endpoint keeps its startup name when the deployment is renamed.
+        # Snapshots without an instance model name use the benchmark's name.
+        served_name = (
+            self._route_name if route_mode else (self._model_name or b.model_name)
+        )
 
         # guidellm 0.7.1 registers request handlers on OpenAIRequestHandlerFactory
         # by API PATH, and benchmark-runner's `openai_http_error_detail` backend

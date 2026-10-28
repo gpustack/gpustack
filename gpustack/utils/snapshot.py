@@ -48,6 +48,7 @@ def create_model_instance_snapshot(
     return ModelInstanceSnapshot(
         id=model_instance.id,
         name=model_instance.name,
+        model_name=model_instance.model_name,
         state=model_instance.state,
         state_message=model_instance.state_message,
         worker_id=model_instance.worker_id,
