@@ -310,6 +310,9 @@ async def proxy_request_by_model(
                 data=data,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT),
+                # Inference validation errors belong to the client. Forward
+                # their status and body instead of treating them as outages.
+                raise_on_error=False,
             )
             return Response(
                 status_code=resp.status,
