@@ -19,6 +19,7 @@ from gpustack.server.worker_request import request_to_worker, stream_to_worker
 from gpustack.utils.command import resolve_executor_backend
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
+    HTTPException as APIHTTPException,
     InternalServerErrorException,
     NotFoundException,
 )
@@ -917,6 +918,8 @@ async def update_model_instance(
     try:
         _preserve_download_state(model_instance, model_instance_in)
         await ModelInstanceService(session).update(model_instance, model_instance_in)
+    except APIHTTPException:
+        raise
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update model instance: {e}"

@@ -8,11 +8,12 @@ from fastapi.testclient import TestClient
 import pytest
 
 from gpustack.api.auth import get_current_user
-from gpustack.api.exceptions import register_handlers
+from gpustack.api.exceptions import InvalidException, register_handlers
 from gpustack.routes import workers
-from gpustack.schemas.clusters import Cluster, ClusterProvider
+from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
 from gpustack.schemas.principals import PrincipalType
 from gpustack.schemas.workers import Worker, WorkerCreate, WorkerStatus
+from gpustack.server import services
 
 
 def _principal(kind, worker_row_id=20):
@@ -188,3 +189,55 @@ def test_registration_cannot_reregister_another_workers_record(registration):
 
     assert response.status_code == 403
     registration.persist.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cluster_id,new_owner,allowed",
+    [(100, 99, True), (100, 777, False), (200, 99, False)],
+)
+async def test_reregistration_reconciles_only_authorized_cluster_owner(
+    monkeypatch, cluster_id, new_owner, allowed
+):
+    existing = Worker(id=20, name="test-worker", cluster_id=100, owner_principal_id=8)
+    incoming = Worker(
+        id=20, name="test-worker", cluster_id=100, owner_principal_id=new_owner
+    )
+    cluster = Cluster(
+        id=cluster_id,
+        name="test-cluster",
+        owner_principal_id=99,
+        state=ClusterStateEnum.READY,
+    )
+    session = SimpleNamespace(commit=AsyncMock())
+    save = AsyncMock()
+    monkeypatch.setattr(Worker, "save", save)
+    monkeypatch.setattr(Worker, "_publish_event_after_commit", MagicMock())
+    monkeypatch.setattr(services, "delete_cache_by_key", AsyncMock())
+
+    async def register():
+        return await workers._persist_worker_registration(
+            session,
+            existing_worker=existing,
+            new_worker=incoming,
+            new_token="unused-test-token",
+            to_create_principal=None,
+            existing_principal=None,
+            to_create_apikey=None,
+            all_workers=[existing],
+            cluster=cluster,
+        )
+
+    if allowed:
+        result = await register()
+        assert result.owner_principal_id == cluster.owner_principal_id
+        save.assert_awaited_once_with(session, auto_commit=False)
+        session.commit.assert_awaited_once()
+        with pytest.raises(InvalidException):
+            await existing.update(session, {"owner_principal_id": 777})
+    else:
+        with pytest.raises(InvalidException):
+            await register()
+        assert existing.owner_principal_id == 8
+        save.assert_not_awaited()
+        session.commit.assert_not_awaited()

@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 
 from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
+    HTTPException as APIHTTPException,
     AlreadyExistsException,
     BadRequestException,
     InternalServerErrorException,
@@ -144,6 +145,8 @@ async def update(
 
     try:
         await CloudCredential.update(existing, session=session, source=input)
+    except APIHTTPException:
+        raise
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update cloud credential: {e}"
