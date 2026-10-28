@@ -49,7 +49,7 @@ GPUStack is an open-source GPU cluster manager for AI model serving and GPU inst
 
     ---
 
-    Sweeps concurrency or request-rate levels to compare throughput and latency, helping you select operating points that meet your performance goals.
+    Auto Tune automatically explores concurrency or request rates to find peak throughput or the highest concurrency that meets your service-level objectives (SLOs).
 
 -   :material-server-outline:{ .lg .middle .icon-blue } __GPU Instances__
 
@@ -86,6 +86,10 @@ GPUStack's automated engine selection and parameter optimization deliver strong 
 ![h200-throughput-comparison](assets/h200-throughput-comparison.png)
 
 For detailed benchmarking methods and results, visit our [Inference Performance Lab](performance-lab/overview.md).
+
+Discover what your deployment can handle with GPUStack's built-in benchmarking. **Auto Tune** adaptively adjusts load to uncover peak throughput or find the highest concurrency that meets your service-level objectives (SLOs), with detailed throughput and latency charts to guide capacity planning.
+
+![gpustack-benchmark](assets/benchmark.png)
 
 ## Supported Accelerators
 
