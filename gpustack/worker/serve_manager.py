@@ -1268,6 +1268,7 @@ class ServeManager(ContainerLogPersister):
             interval = config["interval"]
             timeout = config["timeout"]
             threshold = config["threshold"]
+            failure_action = config["failure_action"]
 
             # Skip if the model is still provisioning.
             if self._is_provisioning(model_instance):
@@ -1300,16 +1301,30 @@ class ServeManager(ContainerLogPersister):
                 self._inference_health_check_failures[model_instance.id] = failure_count
 
                 if failure_count >= threshold:
-                    logger.warning(
-                        f"Model instance {model_instance.name} inference health check failed "
-                        f"{failure_count} times, updating state to ERROR."
-                    )
-                    patch_dict = {
-                        "state": ModelInstanceStateEnum.ERROR,
-                        "state_message": _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE,
-                    }
+                    if failure_action == "isolate":
+                        logger.warning(
+                            f"Model instance {model_instance.name} inference health check "
+                            f"failed {failure_count} times, isolating."
+                        )
+                        patch_dict = {
+                            "state": ModelInstanceStateEnum.ISOLATED,
+                            "isolated_since": datetime.now(timezone.utc),
+                            "isolation_reason": (
+                                f"Inference health check failed {failure_count} times."
+                            ),
+                            "state_message": _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE,
+                        }
+                    else:
+                        logger.warning(
+                            f"Model instance {model_instance.name} inference health check failed "
+                            f"{failure_count} times, updating state to ERROR."
+                        )
+                        patch_dict = {
+                            "state": ModelInstanceStateEnum.ERROR,
+                            "state_message": _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE,
+                        }
                     self._update_model_instance(model_instance.id, **patch_dict)
-                    # Reset failure count after marking as error.
+                    # Reset failure count after marking as error/isolation.
                     del self._inference_health_check_failures[model_instance.id]
                 else:
                     logger.debug(
@@ -3160,11 +3175,17 @@ def _get_inference_health_check_config(
         env.get("GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD"),
         3,
     )
+    failure_action = env.get(
+        "GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_ACTION", "restart"
+    ).lower()
+    if failure_action not in ("restart", "isolate"):
+        failure_action = "restart"
     return {
         "enabled": enabled,
         "interval": interval,
         "timeout": timeout,
         "threshold": threshold,
+        "failure_action": failure_action,
     }
 
 

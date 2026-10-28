@@ -1668,6 +1668,7 @@ class ModelInstanceStateEnum(str, Enum):
     DOWNLOADING = "downloading"
     ANALYZING = "analyzing"
     UNREACHABLE = "unreachable"
+    ISOLATED = "isolated"
 
     def __str__(self):
         return self.value
@@ -1895,6 +1896,30 @@ class ModelInstanceBase(SQLModel, ModelSource):
     `role_status` and `degradations` went on reporting the group as converged.
     The type strips the zone on the way in and puts UTC back on the way out,
     which is why every other timestamp on this table already uses it."""
+
+    isolated_since: Optional[datetime] = Field(
+        sa_column=Column(UTCDateTime), default=None
+    )
+    """Set when this member is flagged unhealthy and taken out of rotation.
+
+    Isolation removes the member from the router's registry (same as draining
+    does), but the member's state is also flipped to ISOLATED so controllers
+    and the status scan stop counting it as RUNNING. The container keeps
+    running so an operator can log into it and inspect the failure before
+    deciding whether to restart, fix, or discard it.
+
+    Clearing this field (and flipping the state back to RUNNING) brings the
+    member back on the next membership reconcile.
+
+    The timestamp survives a server restart — a restart mid-isolation would
+    otherwise leave a member nobody knows about and nothing will ever unisolate.
+    """
+
+    isolation_reason: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    """Human-readable reason the member was isolated (e.g. repeated inference
+    health check failures, manual operator action)."""
 
     def get_deployment_metadata(
         self,
