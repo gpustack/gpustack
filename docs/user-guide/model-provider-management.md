@@ -72,6 +72,15 @@ caching, thinking blocks, tool-use blocks), but the provider then serves the
 **Anthropic protocol only** — OpenAI-style requests to `/v1/chat/completions` are no
 longer translated for it, so use the Anthropic paths (`/v1/messages`) with it.
 
+## Use Another Qwen Domain
+
+An `Alibaba Qwen` provider talks to `dashscope.aliyuncs.com` by default. DashScope
+workspaces each get their own `maas.aliyuncs.com` domain — required for APIs the legacy
+domain does not serve, image generation among them — and a self-hosted or proxied
+Qwen-compatible service works the same way. Set `qwenDomain` to that domain (the host,
+plus the port when it is not 443), e.g. `maas.aliyuncs.com`: it becomes both the address
+GPUStack connects to and the Host header sent upstream. The scheme is always https.
+
 ## Add Route for Provider
 
 1. Go to `Providers` Page.
