@@ -68,6 +68,7 @@ from gpustack.api.auth import (
     get_worker_principal,
     management_scope,
     inference_scope,
+    require_system_route_access,
 )
 from gpustack.api.tenant import require_org_role
 from gpustack.schemas.principals import OrgRole
@@ -78,11 +79,70 @@ from gpustack_higress_plugins.server import router as higress_plugins_router
 
 versioned_prefix = "/v2"
 
-# Org-owner gate for management surfaces (Models / Model Routes /
-# Model Providers / Benchmarks / Model Files). Platform admin and
-# SYSTEM principals (worker / cluster callbacks reaching shared
-# routers) bypass via ``require_org_role`` itself.
-_org_owner_only = [Depends(require_org_role(OrgRole.OWNER))]
+# Worker runtime operations. Membership grants access to
+# the endpoint only; its handler remains responsible for resource authorization.
+SYSTEM_ROUTES = frozenset(
+    {
+        ("GET", workers.get_workers),
+        ("GET", workers.get_worker),
+        ("POST", workers.create_worker),
+        ("POST", workers.create_worker_status),
+        ("POST", workers.heartbeat),
+        ("GET", models.get_models),
+        ("GET", models.get_model),
+        ("PUT", models.update_model),
+        ("GET", model_instances.get_model_instances),
+        ("GET", model_instances.get_model_instance),
+        ("POST", model_instances.create_model_instance),
+        ("PUT", model_instances.update_model_instance),
+        ("DELETE", model_instances.delete_model_instance),
+        ("GET", model_instance_ports.availability),
+        ("POST", model_instance_ports.reserve),
+        ("DELETE", model_instance_ports.release),
+        ("GET", model_files.get_model_files),
+        ("GET", model_files.get_model_file),
+        ("PUT", model_files.update_model_file),
+        ("GET", cache_services.get_cache_service),
+        ("GET", cache_providers.list_cache_providers),
+        ("GET", cache_service_instances.get_cache_service_instances),
+        ("GET", cache_service_instances.get_cache_service_instance),
+        ("PUT", cache_service_instances.update_cache_service_instance),
+        ("GET", benchmarks.get_benchmarks),
+        ("GET", benchmarks.get_benchmark),
+        ("PATCH", benchmarks.update_benchmark_state),
+        ("POST", benchmarks.update_benchmark_metrics),
+        ("POST", benchmarks.update_benchmark_results),
+        ("GET", inference_backend.get_runner_override_entries),
+        ("GET", inference_backend.get_inference_backends),
+        ("GET", inference_backend.get_all_inference_backends),
+        ("GET", inference_backend.get_inference_backend),
+        ("GET", inference_backend.get_inference_backend_by_name),
+        ("GET", inference_backend.list_backend_configs),
+        ("GET", metrics.get_metrics_config),
+        ("GET", metrics.get_default_metrics_config),
+    }
+)
+# Cluster credentials serve bootstrap and controller Kubernetes operations.
+# Proxy handlers must authorize the target cluster before forwarding requests.
+CLUSTER_SYSTEM_ROUTES = frozenset(
+    {
+        ("GET", clusters.get_cluster_manifests),
+        ("GET", clusters.cluster_apiserver_proxy),
+        ("POST", clusters.cluster_apiserver_proxy),
+        ("PUT", clusters.cluster_apiserver_proxy),
+        ("PATCH", clusters.cluster_apiserver_proxy),
+        ("DELETE", clusters.cluster_apiserver_proxy),
+    }
+)
+_system_route_access = require_system_route_access(
+    SYSTEM_ROUTES, cluster_routes=CLUSTER_SYSTEM_ROUTES
+)
+
+# Shared runtime routers admit service accounts for worker reads and callbacks.
+# Their handlers must enforce the caller's cluster scope on each resource.
+_org_owner_only = [Depends(require_org_role(OrgRole.OWNER, allow_system=True))]
+# Org-wide provider and routing configuration has no worker callback surface.
+_org_management_only = [Depends(require_org_role(OrgRole.OWNER))]
 
 # Toggle for surfacing extended API endpoints in the OpenAPI schema
 # and ``/docs``. Endpoints stay mounted regardless — only the public
@@ -95,7 +155,9 @@ _EXTENDED_API_IN_SCHEMA = os.getenv("GPUSTACK_EXTENDED_API_DOCS", "").lower() in
 )
 
 api_router = APIRouter(responses=error_responses)
-management_router = APIRouter(dependencies=[Depends(management_scope)])
+management_router = APIRouter(
+    dependencies=[Depends(_system_route_access), Depends(management_scope)]
+)
 management_router.include_router(
     grafana.router,
     prefix="/grafana",
@@ -166,7 +228,7 @@ v1_base_router.include_router(
 # visibility and organization ownership inside their handlers.
 v1_base_router.include_router(workers.router, prefix="/workers", tags=["Workers"])
 
-cluster_client_router = APIRouter()
+cluster_client_router = APIRouter(dependencies=[Depends(_system_route_access)])
 cluster_client_router.add_api_route(
     path="/clusters/{id}/manifests",
     endpoint=clusters.get_cluster_manifests,
@@ -225,7 +287,7 @@ model_routers = [
         "router": model_routes.target_router,
         "prefix": "/model-route-targets",
         "tags": ["Model Route Targets"],
-        "dependencies": _org_owner_only,
+        "dependencies": _org_management_only,
     },
     {
         "router": gpu_instance_persistent_volume_types.router,
@@ -263,27 +325,12 @@ model_routers = [
         "tags": ["GPU Instances"],
     },
 ]
-# worker client have full access to model and model instances
-worker_client_router = APIRouter()
+# Worker-only paths complement the shared runtime routes on v1_base_router.
+worker_client_router = APIRouter(dependencies=[Depends(_system_route_access)])
 worker_client_router.include_router(
     model_instance_ports.router,
     prefix="/model-instances",
     include_in_schema=False,
-)
-for model_router in model_routers:
-    worker_client_router.include_router(**model_router)
-# ready only access to workers
-worker_client_router.add_api_route(
-    path="/workers",
-    endpoint=workers.get_workers,
-    methods=["GET"],
-    response_model=workers.WorkersPublic,
-)
-worker_client_router.add_api_route(
-    path="/workers/{id}",
-    endpoint=workers.get_worker,
-    methods=["GET"],
-    response_model=workers.WorkerPublic,
 )
 worker_client_router.add_api_route(
     path="/worker-status",
@@ -304,9 +351,6 @@ worker_client_router.add_api_route(
     response_model=inference_backend.RunnerOverrideEntriesPublic,
     tags=["Inference Backend"],
 )
-worker_client_router.include_router(
-    inference_backend.router, prefix="/inference-backends", tags=["Inference Backend"]
-)
 
 # Tenant-aware routers: any logged-in user can hit them; the handlers
 # filter by TenantContext (owner_principal_id / cluster visibility).
@@ -322,13 +366,13 @@ tenant_routers = model_routers + [
         "router": model_provider.router,
         "prefix": "/model-providers",
         "tags": ["Model Providers"],
-        "dependencies": _org_owner_only,
+        "dependencies": _org_management_only,
     },
     {
         "router": model_routes.router,
         "prefix": "/model-routes",
         "tags": ["Model Routes"],
-        "dependencies": _org_owner_only,
+        "dependencies": _org_management_only,
     },
     {
         "router": model_evaluations.router,
@@ -424,13 +468,9 @@ v1_admin_router = APIRouter()
 for admin_router in admin_routers:
     v1_admin_router.include_router(**admin_router)
 
-# Order matters: FastAPI dispatches the FIRST router whose path matches.
-# v1_base_router and worker_client_router register overlapping endpoints
-# (e.g. /v2/models, /v2/workers) — putting v1_base_router first means
-# regular user requests resolve through ``get_current_user`` (which also
-# accepts worker / cluster system principals), and only routes that
-# are unique to the worker / cluster client paths fall through to
-# those routers.
+# Shared routes authenticate users and service accounts through get_current_user.
+# The management-level gate applies SYSTEM_ROUTES to the dispatched endpoint;
+# worker-only paths additionally require get_worker_principal.
 management_router.include_router(
     v1_base_router, dependencies=[Depends(get_current_user)], prefix=versioned_prefix
 )
@@ -505,22 +545,9 @@ async def mark_internal_inference(request: Request):
     on this prefix rather than inside the check so it cannot be reached from
     `/v1` -- a request that did not come through here never has the flag.
 
-    **This is not where the tenant boundary is drawn, and narrowing it here
-    buys nothing.** The worker token is a cross-tenant credential by design:
-    `bypass_tenant_filter` returns True for every `kind=SYSTEM` principal
-    because, as it says, such a principal "needs to read every tenant's
-    resources to do their job". The same token already passes
-    `model_allowed_for_user` on plain `/v1` for any route in the fleet --
-    `get_user_accessible_model_names` hands a SYSTEM principal every
-    `ModelRoute` there is -- and `worker_client_router` grants it more than
-    that besides. So binding this flag to a running benchmark would constrain
-    a path that is strictly narrower than the ones already open to the same
-    credential, and it cannot be free: `benchmarks` carries one index, unique
-    on `name`, so every such check is a table scan on the load generator's
-    own request path, charged to the latency the run exists to measure. If
-    the worker token's reach is ever narrowed, this is one of the places that
-    has to be revisited -- but then the boundary belongs at the credential,
-    not here.
+    This inference router has its own worker authentication and is outside
+    the management endpoint allowlist. The marker does not grant access to
+    management APIs.
     """
     request.state.internal_inference = True
 

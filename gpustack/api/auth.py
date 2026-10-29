@@ -9,7 +9,7 @@ from starlette.datastructures import Headers
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.server.db import async_session
-from typing import Annotated, Optional, Set, Tuple, List, Dict
+from typing import Annotated, Callable, Iterable, Optional, Set, Tuple, List, Dict
 from fastapi.security import (
     APIKeyCookie,
     APIKeyHeader,
@@ -397,6 +397,43 @@ def is_server_token_principal(principal: Principal) -> bool:
         and principal.id is None
         and principal.name.startswith(SYSTEM_WORKER_USER_PREFIX)
     )
+
+
+def require_system_route_access(
+    allowed_routes: Iterable[Tuple[str, Callable]],
+    *,
+    cluster_routes: Iterable[Tuple[str, Callable]] = (),
+) -> Callable:
+    """Build a default-deny management gate for ordinary SYSTEM principals.
+
+    Authorization uses the dispatched endpoint and HTTP method, including when
+    user and worker routers share a path. Users and the platform server token
+    retain their existing role and resource checks. An allowed route must still
+    enforce the service account's resource scope inside its handler.
+    Cluster-only routes additionally require a cluster-linked principal.
+    """
+    allowed = frozenset(allowed_routes)
+    cluster_allowed = frozenset(cluster_routes)
+
+    async def dependency(
+        request: Request,
+        user: Annotated[Principal, Depends(get_current_user)],
+    ) -> Principal:
+        if (
+            user.kind == PrincipalType.SYSTEM
+            and not is_server_token_principal(user)
+            and (request.method, request.scope.get("endpoint")) not in allowed
+            and not (
+                getattr(user, "cluster", None) is not None
+                and (request.method, request.scope.get("endpoint")) in cluster_allowed
+            )
+        ):
+            raise ForbiddenException(
+                message="Service accounts cannot access this management endpoint"
+            )
+        return user
+
+    return dependency
 
 
 async def get_cluster_principal(

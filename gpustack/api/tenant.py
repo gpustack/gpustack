@@ -791,17 +791,27 @@ def assert_resource_visible(
         raise NotFoundException(message=not_found_message)
 
 
-def require_org_role(*allowed: OrgRole):
+def require_org_role(*allowed: OrgRole, allow_system: bool = False):
     """Build a dependency that requires the requesting user to hold one of the
-    given roles in `current_principal_id`. Platform admins and SYSTEM
-    principals (worker / cluster service accounts) always pass — mirrors
-    ``bypass_tenant_filter`` so write endpoints shared with worker callbacks
-    (e.g. benchmark metrics) keep working.
+    given roles in `current_principal_id`.
+
+    Platform admins and the legacy platform-level server token bypass the role
+    check. Worker / cluster service accounts require explicit ``allow_system``
+    for shared runtime endpoints, which must also enforce resource scope.
     """
 
     async def _dep(
         ctx: Annotated[TenantContext, Depends(get_tenant_context)],
     ) -> TenantContext:
+        if (
+            ctx.user is not None
+            and ctx.user.kind == PrincipalType.SYSTEM
+            and not allow_system
+            and not is_server_token_principal(ctx.user)
+        ):
+            raise OrgRoleError(
+                message="System principals cannot access organization management"
+            )
         if bypass_tenant_filter(ctx) or ctx.is_platform_admin:
             return ctx
         if ctx.current_principal_id is None:
