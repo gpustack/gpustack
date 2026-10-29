@@ -111,31 +111,42 @@ class WorkerManager:
             registration_token=self._cfg.token,
             wait_token_file=self._is_embedded,
         )
-        external_id = None
-        external_id_path = os.path.join(self._cfg.data_dir, 'external_id')
-        if os.path.exists(external_id_path):
-            with open(os.path.join(self._cfg.data_dir, 'external_id'), 'r') as f:
-                external_id = f.read()
+        try:
+            external_id = None
+            external_id_path = os.path.join(self._cfg.data_dir, 'external_id')
+            if os.path.exists(external_id_path):
+                with open(os.path.join(self._cfg.data_dir, 'external_id'), 'r') as f:
+                    external_id = f.read()
 
-        workerStatus = self._collector.timed_collect(initial=True)
-        # Set empty name if not specified to avoid validation error
-        workerUpdate = WorkerUpdate(
-            name=name or "",
-            labels=self._ensure_builtin_labels(),
-        )
-        to_register = WorkerCreate.model_validate(
-            {
-                **workerStatus.model_dump(),
-                **workerUpdate.model_dump(),
-                "external_id": external_id,
-                "worker_version": resolve_version_info()[0],
-            }
-        )
-        created = await self._registration_client.create_async(to_register)
-        logger.info(f"Worker {created.name} registered with worker_id {created.id}.")
-        set_worker_name(self._cfg.data_dir, created.name)
-        set_legacy_uuid(self._cfg.data_dir, created.worker_uuid)
-        return created
+            workerStatus = self._collector.timed_collect(initial=True)
+            # Set empty name if not specified to avoid validation error
+            workerUpdate = WorkerUpdate(
+                name=name or "",
+                labels=self._ensure_builtin_labels(),
+            )
+            to_register = WorkerCreate.model_validate(
+                {
+                    **workerStatus.model_dump(),
+                    **workerUpdate.model_dump(),
+                    "external_id": external_id,
+                    "worker_version": resolve_version_info()[0],
+                }
+            )
+            created = await self._registration_client.create_async(to_register)
+            logger.info(
+                f"Worker {created.name} registered with worker_id {created.id}."
+            )
+            set_worker_name(self._cfg.data_dir, created.name)
+            set_legacy_uuid(self._cfg.data_dir, created.worker_uuid)
+            return created
+        finally:
+            # The registration client is single-use. Close it so its pooled
+            # keep-alive connection is released instead of lingering in
+            # CLOSE-WAIT until the process exits when the server goes away.
+            try:
+                await self._registration_client.aclose()
+            except Exception as e:
+                logger.warning(f"Failed to close registration client: {e}")
 
     def _register_shutdown_hooks(self):
         pass

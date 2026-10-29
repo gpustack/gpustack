@@ -892,6 +892,9 @@ async def test_a_deleted_model_takes_its_membership_state_with_it(monkeypatch):
     assert pd_membership.outcome_for(4245) is not None
 
     controller = controllers.ModelController.__new__(controllers.ModelController)
+    # The id-only delete path also consults the gateway switch; disabled
+    # keeps this test on the membership question alone.
+    controller._disable_gateway = True
     # An id-only payload: the row is already gone, which is the shape a delete
     # most often arrives in and the one that used to leak unconditionally.
     event = Event(type=EventType.DELETED, data=None)

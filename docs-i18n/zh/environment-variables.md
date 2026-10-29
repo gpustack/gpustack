@@ -182,6 +182,7 @@ TLS 协议版本配置会写入 `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` 指定的
 | `GPUSTACK_GPU_INSTANCE_TRANSITIONING_REQUEUE_INTERVAL`      | 控制器通过内存重新入队，重新观察仍在状态转换中（尚未稳定）的 GPU 实例的间隔，单位为秒；PV / PVT 完成清理控制器也复用此值，重新探测仍在清理的实例。已就绪记录的状态偏移由下游监听检测。最小有效值为 `1` 秒。 | `15`    | Server     |
 | `GPUSTACK_GPU_INSTANCE_READY_SWEEP_INTERVAL`                | 可选低频扫描的间隔，单位为秒，用于重新观察已稳定就绪的 GPU 实例，补充下游监听在重连间隙可能遗漏的 Worker 端状态变化。`0`（默认）表示禁用；仅在实际发现此类监听覆盖缺口时，才应启用低频扫描。                            | `0`     | Server     |
 | `GPUSTACK_GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE` | 持久卷（PV / PVT）终结器在 Kubernetes 集群的所有 Worker 都不可用时等待该集群的秒数；超过后放弃该集群并释放该行。完全没有 Worker 的集群会立即跳过——它从未持有过该卷。持续不可达的集群会先被等待，然后被释放，其卷可能仍留在该集群中。`0` 表示立即放弃——与 `GPUSTACK_GPU_INSTANCE_UNREADABLE_CR_TOLERANCE` 相反，后者的 `0` 表示不设上限。 | `1800` | Server |
+| `GPUSTACK_GPU_INSTANCE_FINALIZING_UNREACHABLE_TOLERANCE` | 删除 GPU 实例时，在放弃并释放该行之前，等待其无法访问的集群的秒数——集群的所有 Worker 都不可用、网络不通，或集群已被删除。期间该行会等待，并写入一条点名该集群的消息，随后被释放；该实例的自定义资源可能仍留在该集群中。`0` 表示立即放弃——与 `GPUSTACK_GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE` 一致，与 `GPUSTACK_GPU_INSTANCE_UNREADABLE_CR_TOLERANCE` 相反，后者的 `0` 表示不设上限。 | `1800` | Server |
 
 ### Worker 与模型配置 { #worker-and-model-configuration }
 

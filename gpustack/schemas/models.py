@@ -12,6 +12,7 @@ from typing import (
     List,
     Literal,
     Optional,
+    Tuple,
     Union,
 )
 from croniter import croniter
@@ -50,6 +51,7 @@ from gpustack.schemas.model_routes import (
     ModelRoute,
     ModelRouteTarget,
     AccessPolicyEnum,
+    validate_model_route_name,
 )
 from gpustack.schemas.principals import _platform_principal_id
 from gpustack.schemas.cache_services import CacheConfigSnapshot
@@ -79,6 +81,13 @@ class CategoryEnum(str, Enum):
     RERANKER = "reranker"
     SPEECH_TO_TEXT = "speech_to_text"
     TEXT_TO_SPEECH = "text_to_speech"
+    # A deployment serving the Jev/System One decision API (``POST
+    # /v1/systemone``) rather than generation semantics. Distinct from the
+    # "decision" category ``determine_model_category`` already puts on decision
+    # providers' model cache: this one marks a servable deployment, and it is
+    # also what routes may filter on and what the decision-service plugin
+    # accepts as a local decision target.
+    DECISION = "decision"
     UNKNOWN = "unknown"
 
 
@@ -1059,6 +1068,7 @@ class ModelSpecBase(SQLModel, ModelSource):
     replicas: int = Field(default=1, ge=0)
     ready_replicas: int = Field(default=0, ge=0)
     categories: List[str] = Field(sa_type=JSON, default=[])
+
     placement_strategy: PlacementStrategyEnum = PlacementStrategyEnum.SPREAD
     cpu_offloading: Optional[bool] = None
     distributed_inference_across_workers: Optional[bool] = Field(
@@ -1300,11 +1310,59 @@ class ModelListParams(ListParams):
     ]
 
 
-class ModelCreate(ModelBase):
+class ModelWriteBase(ModelBase):
+    """The API write boundary: a request-only base for the create/update
+    schemas.
+
+    The categories whitelist does NOT live here: ``ModelUpdate`` is also
+    the round-trip vessel for internal whole-object PUTs (workers
+    persisting ``backend_version`` via ``ModelUpdate(**row.model_dump())``,
+    the UI echoing the stored row), and a legacy row holding a category
+    string outside ``CategoryEnum`` — the column predates the whitelist —
+    must keep flowing through them. Create validates in the schema (fresh
+    values, nothing stored to compare against); update validates against
+    the stored row in the route layer (``_validate_categories_update``),
+    where an unchanged echo passes and only a change to an unknown string
+    is rejected.
+    """
+
+
+class ModelCreate(ModelWriteBase):
     enable_model_route: Optional[bool] = Field(default=None)
 
+    @model_validator(mode="after")
+    def validate_auto_route_name(self):
+        # The automatic route copies the deployment name. Validate it at the
+        # request boundary, before creating the model or its related records.
+        if self.enable_model_route:
+            validate_model_route_name(self.name)
+        return self
 
-class ModelUpdate(ModelBase):
+    @field_validator("categories", mode="before")
+    @classmethod
+    def _categories_are_known(cls, v):
+        """Reject category strings outside ``CategoryEnum``, mirroring the
+        route-side whitelist.
+
+        Decision is the case this guards hardest: its identity IS the
+        string, there is no auto-detection to correct a typo (unlike
+        llm/embedding/reranker, which the scheduler derives from the model
+        artifacts when ``categories`` is empty), so ``"Decision"`` or
+        ``"decisions"`` would silently create a model that is not a
+        decision provider and not filterable as one — failing nowhere,
+        working nowhere. ``None`` passes through untouched, as the
+        route-side validator does.
+        """
+        if v is None:
+            return v
+        known = {e.value for e in CategoryEnum}
+        for category in v:
+            if category not in known:
+                raise ValueError(f"Invalid category: {category}")
+        return v
+
+
+class ModelUpdate(ModelWriteBase):
     pass
 
 
@@ -1891,6 +1949,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
 
 class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
     __tablename__ = 'model_instances'
+    __immutable_fields__: ClassVar[Tuple[str, ...]] = ("model_id", "cluster_id")
     id: Optional[int] = Field(default=None, primary_key=True)
 
     model: Optional[Model] = Relationship(
@@ -2140,6 +2199,16 @@ def is_reranker_model(model: Model):
         model: Model to check.
     """
     return "reranker" in model.categories
+
+
+def is_decision_model(model: Model) -> bool:
+    """
+    Check if the model serves the decision API (System One / Jev contract,
+    ``POST /v1/systemone``).
+    Args:
+        model: Model to check.
+    """
+    return "decision" in (model.categories or [])
 
 
 def get_backend(model: Model) -> str:

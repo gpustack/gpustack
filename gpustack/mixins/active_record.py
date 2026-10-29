@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import FlushError
 from sqlalchemy.orm.state import InstanceState
 from gpustack.schemas.common import PaginatedList, Pagination
+from gpustack.mixins.immutable import ImmutableFieldsMixin
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.cache import locked_cached, delete_cache_by_key, class_key
 from gpustack.server.db import async_session
@@ -139,7 +140,7 @@ def _fuzzy_conditions(cls, fuzzy_fields: Optional[dict]) -> List:
     ]
 
 
-class ActiveRecordMixin:
+class ActiveRecordMixin(ImmutableFieldsMixin):
     """ActiveRecordMixin provides a set of methods to interact with the database."""
 
     __config__ = None
@@ -668,6 +669,7 @@ class ActiveRecordMixin:
         elif source is None:
             source = {}
 
+        self._assert_immutable_update(source)
         for key, value in source.items():
             setattr(self, key, value)
         self._publish_event_after_commit(session, EventType.UPDATED, self)

@@ -2,6 +2,7 @@ from gpustack.policies.resource_view import ResourceView
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from transformers import AutoConfig, PretrainedConfig
 
 from tests.utils.mock import mock_async_session
 
@@ -11,6 +12,9 @@ from gpustack.policies.utils import (
 )
 from tests.utils.model import make_model, new_model, new_model_instance
 from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
+from gpustack.policies.candidate_selectors.base_candidate_selector import (
+    ModelParameters,
+)
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.scheduler import scheduler
 from gpustack.schemas.models import (
@@ -45,6 +49,7 @@ from tests.fixtures.workers.fixtures import (
 )
 from tests.utils.scheduler import compare_candidates
 from gpustack.utils.unit import byte_to_gib
+from gpustack.utils.hub import safe_pretrained_config_from_dict
 
 
 def expected_candidate(
@@ -1694,6 +1699,246 @@ def test_vision_num_attention_heads(pretrained_config, expect_num):
     assert (
         get_model_vision_num_attention_heads(DictToObj(pretrained_config)) == expect_num
     )
+
+
+@pytest.mark.parametrize("allow_global_access", [False, True])
+@pytest.mark.parametrize("serialized", [False, True], ids=["auto", "worker"])
+@pytest.mark.parametrize(
+    "model_type,text_config,expected_heads,expected_kv_heads",
+    [
+        (
+            "gemma4",
+            {
+                "num_attention_heads": 16,
+                "num_key_value_heads": 8,
+                "num_global_key_value_heads": 2,
+                "attention_k_eq_v": True,
+            },
+            16,
+            8,
+        ),
+        (
+            "gemma4",
+            {
+                "num_attention_heads": 8,
+                "num_key_value_heads": 2,
+                "num_hidden_layers": 42,
+                "attention_k_eq_v": False,
+            },
+            8,
+            2,
+        ),
+        ("gemma4_unified", {}, 8, 4),
+        ("diffusion_gemma", {}, 8, 4),
+        ("embedding_gemma2", {}, 4, 2),
+    ],
+    ids=["gemma4-26b", "gemma4-e4b", "unified", "diffusion", "embedding"],
+)
+@pytest.mark.asyncio
+async def test_heterogeneous_model_candidates(
+    config,
+    model_type,
+    text_config,
+    expected_heads,
+    expected_kv_heads,
+    serialized,
+    allow_global_access,
+):
+    pretrained = AutoConfig.for_model(model_type, text_config=text_config)
+    pretrained.text_config.allow_global_per_layer_attribute_access = allow_global_access
+    if serialized:
+        pretrained = safe_pretrained_config_from_dict(pretrained.to_dict())
+    model = make_model(1, backend=BackendEnum.VLLM)
+    selector = VLLMResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    worker = linux_nvidia_1_4090_24gx1()
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=pretrained),
+        ),
+        patch(
+            "gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram",
+            new=AsyncMock(return_value=2 * 1024**3),
+        ),
+    ):
+        candidates = await selector.select_candidates([worker])
+
+    assert len(candidates) == 1
+    assert selector._model_params.num_attention_heads == expected_heads
+    assert selector._model_params.num_key_value_heads == expected_kv_heads
+    assert selector._model_params.head_dim == 512
+    if not serialized:
+        assert (
+            pretrained.text_config.allow_global_per_layer_attribute_access
+            == allow_global_access
+        )
+
+
+@pytest.mark.parametrize("model_type", ["llama", "qwen3"])
+def test_homogeneous_model_parameters(model_type):
+    pretrained = AutoConfig.for_model(model_type)
+    params = ModelParameters()
+
+    params.from_model_pretrained_config(make_model(), pretrained)
+
+    assert params.num_attention_heads == pretrained.num_attention_heads
+    assert params.num_attention_heads_per_layer is None
+    assert params.num_key_value_heads == pretrained.num_key_value_heads
+    assert params.head_dim == (
+        pretrained.head_dim or pretrained.hidden_size // pretrained.num_attention_heads
+    )
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["text", "multimodal"])
+@pytest.mark.parametrize(
+    "attention_config,expected_kv_heads,expected_head_dim",
+    [
+        (
+            {
+                "num_key_value_heads": None,
+                "per_layer_config": {"1": {"num_key_value_heads": 4}},
+            },
+            16,
+            256,
+        ),
+        ({"per_layer_config": {"1": {"num_attention_heads": 32}}}, 4, 256),
+        (
+            {"head_dim": None, "per_layer_config": {"1": {"head_dim": 128}}},
+            4,
+            256,
+        ),
+        (
+            {
+                "num_key_value_heads": None,
+                "head_dim": None,
+                "per_layer_config": {
+                    "1": {
+                        "num_attention_heads": 32,
+                        "num_key_value_heads": 4,
+                        "head_dim": 128,
+                    }
+                },
+            },
+            16,
+            256,
+        ),
+        (
+            {
+                "head_dim": 128,
+                "per_layer_config": {"1": {"num_attention_heads": 32}},
+            },
+            4,
+            128,
+        ),
+        (
+            {
+                "num_key_value_heads": None,
+                "per_layer_config": {"1": {"num_attention_heads": 32}},
+            },
+            32,
+            256,
+        ),
+        (
+            {
+                "num_key_value_heads": None,
+                "head_dim": None,
+                "per_layer_config": {"1": {"head_dim": 128}},
+            },
+            16,
+            256,
+        ),
+    ],
+    ids=[
+        "optional-kv",
+        "derived-dim",
+        "optional-dim",
+        "combined",
+        "explicit-dim",
+        "global-kv-varying-heads",
+        "global-kv-varying-dim",
+    ],
+)
+def test_worker_heterogeneous_attention_defaults(
+    attention_config, expected_kv_heads, expected_head_dim, wrapped
+):
+    raw_config = {
+        "model_type": "llama",
+        "num_hidden_layers": 2,
+        "hidden_size": 4096,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 4,
+        "max_position_embeddings": 8192,
+        **attention_config,
+    }
+    if wrapped:
+        raw_config = {"text_config": raw_config}
+    pretrained = safe_pretrained_config_from_dict(raw_config)
+    params = ModelParameters()
+
+    params.from_model_pretrained_config(make_model(), pretrained)
+
+    assert params.num_key_value_heads == expected_kv_heads
+    assert params.head_dim == expected_head_dim
+
+
+@pytest.mark.parametrize("tp_size,invalid_heads", [(8, None), (64, 96), (96, 64)])
+@pytest.mark.asyncio
+async def test_heterogeneous_attention_heads_tp_divisibility(
+    config, tp_size, invalid_heads
+):
+    pretrained = PretrainedConfig(
+        architectures=["TestForCausalLM"],
+        text_config={
+            "num_hidden_layers": 2,
+            "num_attention_heads": 64,
+            "vocab_size": 98304,
+            "per_layer_config": {1: {"num_attention_heads": 96}},
+        },
+    )
+    selector = VLLMResourceFitSelector(
+        config,
+        make_model(1, backend=BackendEnum.VLLM),
+        [],
+        resource_view=ResourceView([]),
+    )
+    with patch(
+        "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+        new=AsyncMock(return_value=pretrained),
+    ):
+        await selector._init_model_parameters([])
+
+    assert selector._model_params.num_attention_heads == 96
+    assert selector._is_tp_size_divisible(tp_size) == (invalid_heads is None)
+    if invalid_heads is None:
+        assert selector._check_tp_size_divisibility(tp_size) is None
+    else:
+        assert selector._check_tp_size_divisibility(tp_size) == (
+            f"Total number of attention heads ({invalid_heads})"
+            f" must be divisible by tensor parallel size ({tp_size})."
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_parameters_preserve_unrelated_config_errors(config):
+    class InvalidConfig:
+        @property
+        def num_key_value_heads(self):
+            raise RuntimeError("invalid configuration")
+
+    selector = VLLMResourceFitSelector(
+        config,
+        make_model(1, backend=BackendEnum.VLLM),
+        [],
+        resource_view=ResourceView([]),
+    )
+    with patch(
+        "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+        new=AsyncMock(return_value=InvalidConfig()),
+    ):
+        with pytest.raises(ValueError, match="invalid configuration"):
+            await selector._init_model_parameters([])
 
 
 @pytest.mark.parametrize(

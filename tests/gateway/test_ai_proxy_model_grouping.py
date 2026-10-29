@@ -109,6 +109,18 @@ def test_capabilities_only_present_when_anthropic_is_native():
     }
 
 
+def test_plain_group_keeps_openai_provider_type():
+    providers, _rules = model_ai_proxy_plugin_spec(
+        groups=[
+            ModelAIProxyGroup(
+                model_id=9,
+                service_names={"model-9-1.static"},
+            )
+        ]
+    )
+    assert providers[0]["type"] == "openai"
+
+
 def test_capabilities_do_not_alias_the_module_level_map():
     """Every provider entry owns its capabilities dict.
 

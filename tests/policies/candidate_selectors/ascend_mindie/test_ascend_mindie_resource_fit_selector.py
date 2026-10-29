@@ -2,6 +2,7 @@ from gpustack.policies.resource_view import ResourceView
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from transformers import PretrainedConfig
 
 from tests.utils.model import new_model
 from gpustack.policies.candidate_selectors import AscendMindIEResourceFitSelector
@@ -24,6 +25,137 @@ from tests.fixtures.workers.fixtures import (
     linux_ascend_4_910b_64gx8,
 )
 from tests.utils.scheduler import compare_candidates
+
+
+@pytest.mark.parametrize("pipeline_parallel_size", [1, 2])
+@pytest.mark.parametrize("tensor_parallel_size,expected", [(4, True), (8, False)])
+@pytest.mark.asyncio
+async def test_heterogeneous_heads_parallelism(
+    config, pipeline_parallel_size, tensor_parallel_size, expected
+):
+    model = new_model(
+        1,
+        "heterogeneous-heads",
+        huggingface_repo_id="test/heterogeneous",
+        backend=BackendEnum.ASCEND_MINDIE,
+        backend_parameters=[
+            "--tensor-parallel-size",
+            str(tensor_parallel_size),
+            "--pipeline-parallel-size",
+            str(pipeline_parallel_size),
+        ],
+    )
+    selector = AscendMindIEResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    pretrained = PretrainedConfig(
+        num_hidden_layers=2,
+        num_attention_heads=12,
+        num_key_value_heads=4,
+        head_dim=128,
+        vocab_size=32768,
+        per_layer_config={1: {"num_attention_heads": 16}},
+    )
+    with patch(
+        "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+        new=AsyncMock(return_value=pretrained),
+    ):
+        await selector._init_model_parameters([])
+
+    assert await selector._validate_parallelized() is expected
+    if not expected:
+        assert "attention heads (12)" in selector.get_messages()[0]
+
+
+@pytest.mark.asyncio
+async def test_heterogeneous_heads_reject_invalid_manual_candidate(config):
+    worker = linux_ascend_1_910b_64gx8()
+    model = new_model(
+        1,
+        "heterogeneous-manual",
+        huggingface_repo_id="test/heterogeneous",
+        backend=BackendEnum.ASCEND_MINDIE,
+        backend_parameters=["--tensor-parallel-size", "8"],
+        gpu_selector=GPUSelector(
+            gpu_ids=[f"{worker.name}:cann:{i}" for i in range(8)],
+            gpus_per_replica=8,
+        ),
+    )
+    selector = AscendMindIEResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    pretrained = PretrainedConfig(
+        num_hidden_layers=2,
+        num_attention_heads=12,
+        num_key_value_heads=4,
+        head_dim=128,
+        vocab_size=32768,
+        per_layer_config={1: {"num_attention_heads": 16}},
+    )
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=pretrained),
+        ),
+        patch(
+            "gpustack.policies.candidate_selectors.ascend_mindie_resource_fit_selector.get_model_weight_size",
+            return_value=0,
+        ),
+    ):
+        assert await selector.select_candidates([worker]) == []
+
+    assert "attention heads (12)" in selector.get_messages()[0]
+
+
+@pytest.mark.parametrize("layer_head_dim", [128, 256])
+@pytest.mark.parametrize("kv_quant_type", [None, "c8"])
+@pytest.mark.parametrize("optional_defaults", [False, True])
+@pytest.mark.asyncio
+async def test_heterogeneous_kv_estimate_covers_all_layers(
+    config, layer_head_dim, kv_quant_type, optional_defaults
+):
+    model = new_model(
+        1,
+        "heterogeneous-kv",
+        huggingface_repo_id="test/heterogeneous",
+        backend=BackendEnum.ASCEND_MINDIE,
+        backend_parameters=["--max-batch-size", "1"],
+    )
+    selector = AscendMindIEResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    pretrained = PretrainedConfig(
+        num_hidden_layers=2,
+        hidden_size=2048,
+        num_attention_heads=16,
+        num_key_value_heads=None if optional_defaults else 16,
+        head_dim=None if optional_defaults else 128,
+        max_position_embeddings=8192,
+        quantization_config={"kv_quant_type": kv_quant_type},
+        per_layer_config={
+            1: {
+                "num_attention_heads": 24,
+                "num_key_value_heads": 8,
+                "head_dim": layer_head_dim,
+            }
+        },
+    )
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=pretrained),
+        ),
+        patch(
+            "gpustack.policies.candidate_selectors.ascend_mindie_resource_fit_selector.get_model_weight_size",
+            return_value=0,
+        ),
+    ):
+        await selector._init_model_parameters([])
+        usage = await selector._estimate_usage([])
+
+    cache_type_size = 1 if kv_quant_type == "c8" else 2
+    kv_bytes = 2 * (16 * 128 + 8 * layer_head_dim) * 8192 * cache_type_size
+    assert usage.vram - 3 * 1024**3 >= kv_bytes
 
 
 @pytest.mark.asyncio

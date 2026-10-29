@@ -73,6 +73,7 @@ class ModelParameters:
     hidden_size: Optional[int] = None
     vocab_size: Optional[int] = None
     num_attention_heads: Optional[int] = None
+    num_attention_heads_per_layer: Optional[List[int]] = None
     num_key_value_heads: int = 1
     n_group: Optional[int] = None
     head_dim: Optional[int] = None
@@ -114,9 +115,32 @@ class ModelParameters:
             # Exclude empty dict cases, as they indicate the locally-sourced model is not local to the server node.
             raise ValueError(f"Failed to get model {model.name} pretrained config")
 
+        per_layer_attributes = (
+            getattr(pretrained_config, "per_layer_attributes", None) or ()
+        )
         for attr_name in [attr.name for attr in fields(self.__class__)]:
             try:
-                attr_value = getattr(pretrained_config, attr_name, None)
+                if attr_name in per_layer_attributes and attr_name in {
+                    "num_attention_heads",
+                    "num_key_value_heads",
+                    "head_dim",
+                }:
+                    layer_values = [
+                        self._get_attention_parameter(layer_config, attr_name)
+                        for layer_config in pretrained_config.per_layer_config
+                    ]
+                    # Scalar resource estimates must cover the widest layer.
+                    attr_value = max(layer_values)
+                    if attr_name == "num_attention_heads":
+                        self.num_attention_heads_per_layer = layer_values
+                else:
+                    attr_value = getattr(pretrained_config, attr_name, None)
+                if (
+                    attr_name == "num_key_value_heads"
+                    and attr_value is None
+                    and per_layer_attributes
+                ):
+                    attr_value = self.num_attention_heads
                 if attr_value is not None:
                     setattr(self, attr_name, attr_value)
             except AttributeError:
@@ -130,7 +154,11 @@ class ModelParameters:
             # For backward compatibility, try to get num_attention_heads from llm_config.
             self.num_attention_heads = get_model_num_attention_heads(pretrained_config)
         if not self.head_dim and self.hidden_size and self.num_attention_heads:
-            self.head_dim = self.hidden_size // self.num_attention_heads
+            # The smallest head count gives the widest inferred head dimension.
+            num_attention_heads = min(
+                self.num_attention_heads_per_layer or [self.num_attention_heads]
+            )
+            self.head_dim = self.hidden_size // num_attention_heads
         if not self.moe_num_experts:
             for key in [
                 "n_routed_experts",
@@ -148,6 +176,20 @@ class ModelParameters:
                 if value := getattr(pretrained_config, key, None):
                     setattr(self, "moe_num_shared_experts", value)
                     break
+
+    @staticmethod
+    def _get_attention_parameter(config: Any, attr_name: str) -> Optional[int]:
+        """Resolve optional attention defaults before aggregating layer values."""
+        value = getattr(config, attr_name, None)
+        if attr_name == "num_key_value_heads" and value is None:
+            # Multi-head attention uses one KV head for each query head.
+            return getattr(config, "num_attention_heads", None)
+        if attr_name == "head_dim" and not value:
+            hidden_size = getattr(config, "hidden_size", None)
+            num_attention_heads = getattr(config, "num_attention_heads", None)
+            if hidden_size and num_attention_heads:
+                return hidden_size // num_attention_heads
+        return value
 
     def get_attention_type(self) -> ModelAttentionTypeEnum:
         """
@@ -1064,8 +1106,11 @@ class ScheduleCandidatesSelector(ABC):
         """
         if not tp_size:
             return False
-        if self._num_attention_heads and self._num_attention_heads % tp_size != 0:
-            return False
+        for num_attention_heads in self._model_params.num_attention_heads_per_layer or [
+            self._num_attention_heads
+        ]:
+            if num_attention_heads and num_attention_heads % tp_size != 0:
+                return False
         if (
             self._should_check_vision_tp_divisibility()
             and self._vision_num_attention_heads
@@ -1096,12 +1141,15 @@ class ScheduleCandidatesSelector(ABC):
         """
         if not tp_size:
             return None
-        if self._num_attention_heads and self._num_attention_heads % tp_size != 0:
-            return (
-                f"Total number of attention heads ({self._num_attention_heads})"
-                " must be divisible by tensor parallel size "
-                f"({tp_size})."
-            )
+        for num_attention_heads in self._model_params.num_attention_heads_per_layer or [
+            self._num_attention_heads
+        ]:
+            if num_attention_heads and num_attention_heads % tp_size != 0:
+                return (
+                    f"Total number of attention heads ({num_attention_heads})"
+                    " must be divisible by tensor parallel size "
+                    f"({tp_size})."
+                )
         if (
             self._should_check_vision_tp_divisibility()
             and self._vision_num_attention_heads

@@ -26,6 +26,7 @@ from gpustack.api.exceptions import (
 from gpustack.schemas.common import Pagination
 from gpustack.schemas.inference_backend import is_custom_backend
 from gpustack.schemas.models import (
+    CategoryEnum,
     ModelInstance,
     ModelInstanceStateEnum,
     ModelInstancesPublic,
@@ -69,7 +70,6 @@ from gpustack.api.tenant import (
 )
 from gpustack.server.db import async_session
 from gpustack.server.deps import (
-    CurrentUserDep,
     ListParamsDep,
     SessionDep,
     TenantContextDep,
@@ -230,12 +230,12 @@ async def get_models(
 @router.get("/adapters", response_model=Dict[str, Any])
 async def get_model_adapters(
     session: SessionDep,
-    user: CurrentUserDep,
+    ctx: TenantContextDep,
     base: str = Query(
         ...,
         description=(
-            "Base model repo id (e.g. Qwen/Qwen3-8B) for HF/ModelScope adapter discovery; "
-            "also used to match local cached LoRAs."
+            "Base model repo id (e.g. Qwen/Qwen3-8B) for remote HF/ModelScope "
+            "adapter discovery only."
         ),
     ),
     q: Optional[str] = Query(
@@ -249,8 +249,7 @@ async def get_model_adapters(
         description="Max adapter entries per remote source (HF and ModelScope).",
     ),
 ):
-    _ = user
-    return await list_adapters_for_base(session, base, q=q, limit=limit)
+    return await list_adapters_for_base(session, base, ctx=ctx, q=q, limit=limit)
 
 
 @router.get("/{id}", response_model=ModelPublic)
@@ -2394,6 +2393,23 @@ async def save_model_update(
     return model
 
 
+def _validate_categories_update(model_in: ModelUpdate, stored: Model) -> None:
+    """The update-side half of the categories whitelist: an unchanged echo
+    of the stored row passes — including legacy free-form values the column
+    predating the whitelist can hold, which internal whole-object PUTs
+    (workers persisting ``backend_version``, the UI) round-trip on every
+    write — while a change is held to ``CategoryEnum`` exactly like create.
+    """
+    if "categories" not in model_in.model_fields_set:
+        return
+    if model_in.categories == stored.categories:
+        return
+    known = {e.value for e in CategoryEnum}
+    for category in model_in.categories or []:
+        if category not in known:
+            raise BadRequestException(message=f"Invalid category: {category}")
+
+
 async def _apply_model_update(
     session: AsyncSession, ctx: TenantContext, model: Model, model_in: ModelUpdate
 ) -> Model:
@@ -2404,6 +2420,7 @@ async def _apply_model_update(
     await assert_cluster_belongs_to_org(
         ctx, session, model_in.cluster_id, model.owner_principal_id
     )
+    _validate_categories_update(model_in, model)
 
     # Runtime settings belong to their backend. Validate a backend switch
     # against its replacement settings, while preserving fields explicitly

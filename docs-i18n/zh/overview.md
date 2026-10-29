@@ -50,7 +50,7 @@ GPUStack 是一款开源 GPU 集群管理器，用于 AI 模型推理服务和 G
 
     ---
 
-    扫描不同并发或请求速率下的吞吐量与延迟，帮助您选择满足性能目标的运行配置。
+    Auto Tune 自动探索不同并发或请求速率，找到吞吐量上限或满足服务等级目标（SLO）的最大并发数。
 
 -   :material-server-outline:{ .lg .middle .icon-blue } __GPU 实例__
 
@@ -87,6 +87,10 @@ GPUStack 通过自动选择引擎和优化参数，提供开箱即用的高性�
 ![H200 吞吐量对比](assets/h200-throughput-comparison.png)
 
 有关详细的基准测试方法和结果，请参阅[推理性能实验室](performance-lab/overview.md)。
+
+通过 GPUStack 的内置性能评估，探索模型部署的承载能力。**Auto Tune** 自适应调整负载，自动探测吞吐量上限或满足服务等级目标（SLO）的最大并发数，并通过详细的吞吐量与延迟图表为容量规划提供依据。
+
+![gpustack-benchmark](assets/benchmark.png)
 
 ## 支持的加速器 { #supported-accelerators }
 

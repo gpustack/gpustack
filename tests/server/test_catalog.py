@@ -85,6 +85,44 @@ def test_packaged_catalog_model_release_dates(catalog_file):
 
 
 @pytest.mark.parametrize(
+    "catalog_file", ["model-catalog.yaml", "model-catalog-modelscope.yaml"]
+)
+@pytest.mark.parametrize(
+    "compute_capability,cache_dtype",
+    [
+        ("8.0", None),
+        ("9.0", "fp8"),
+        ("10.0", "nvfp4"),
+        ("10.3", "nvfp4"),
+        ("11.0", None),
+        ("12.0", "fp8"),
+        ("12.1", "fp8"),
+        ("13.0", None),
+    ],
+)
+def test_packaged_minimax31_hardware_recipe(
+    catalog_file, compute_capability, cache_dtype
+):
+    catalog_path = pkg_resources.files("gpustack.assets").joinpath(catalog_file)
+    model_set = _packaged_model_sets(str(catalog_path))["MiniMax-M3.1-Flash"]
+    specs = filter_specs_by_gpu(
+        [GPUDevice(vendor="nvidia", compute_capability=compute_capability)],
+        model_set.specs,
+    )
+    if cache_dtype is None:
+        assert not specs
+        return
+    assert len(specs) == 1
+    parameters = specs[0].backend_parameters
+    assert find_parameter(parameters, ["kv-cache-dtype"]) == cache_dtype
+    attention = json.loads(find_parameter(parameters, ["attention-config"]))
+    assert attention["indexer_kv_dtype"] == "fp8"
+    if cache_dtype == "fp8":
+        assert "--moe-backend=marlin" in parameters
+        assert not attention.get("use_prefill_query_quantization", False)
+
+
+@pytest.mark.parametrize(
     "catalog_file,source,repo_field,organizations",
     [
         (
@@ -431,7 +469,8 @@ def test_packaged_a2_quantized_deployment(name, repo_id, reasoning):
 
 
 def test_packaged_qwen38_huggingface_a2_deployment():
-    model_set = _packaged_model_sets()["Qwen3.8-27B"]
+    catalog_path = pkg_resources.files("gpustack.assets").joinpath("model-catalog.yaml")
+    model_set = _packaged_model_sets(str(catalog_path))["Qwen3.8-27B"]
     specs = filter_specs_by_gpu(
         [GPUDevice(vendor="ascend", arch_family="Ascend910B3")], model_set.specs
     )

@@ -65,7 +65,7 @@ dependencies = [
     "cachetools>=6.0.0",
     "gpustack-runner==0.1.31.post4",
     "gpustack-runtime==0.2.6",
-    "gpustack-higress-plugins==0.5.0.post2",
+    "gpustack-higress-plugins==0.5.1",
     "websockets==16.0",
     "py-radix>=1.1.0",
     # Usage export, xlsx path only (CSV needs nothing beyond the stdlib).

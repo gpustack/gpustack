@@ -343,6 +343,29 @@ GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE = int(
     os.getenv("GPUSTACK_GPU_INSTANCE_PV_FINALIZING_UNREACHABLE_TOLERANCE", 1800)
 )  # in seconds
 
+# How long a GPU instance deletion waits for a cluster it cannot reach before
+# it releases the row anyway. The server reaches the downstream cluster through
+# its own apiserver proxy, which needs a READY worker in the target cluster; a
+# cluster that stays down, loses its READY worker, or loses the network makes
+# the proxy answer 503 and the delete impossible. The row waits for the
+# connection to come back -- but a cluster that stays unreachable must not hold
+# the row in Deleting forever, because the row keeps its name reserved and the
+# user cannot recreate the instance.
+#
+# Past the bound the controller gives up: it releases the row and logs a
+# warning. The downstream custom resource may still exist at that point; the
+# row is released anyway, because a row that can never finalize is worse than a
+# leftover object an operator can clean up.
+#
+# The name pairs it with the persistent volume knob above: both bound the wait
+# for a cluster that cannot be reached while the row is being finalized, and
+# both read 0 the same way -- give up at once. The knob that means the opposite
+# is GPU_INSTANCE_UNREADABLE_CR_TOLERANCE, whose 0 disables its bound and
+# leaves the hold unbounded.
+GPU_INSTANCE_FINALIZING_UNREACHABLE_TOLERANCE = int(
+    os.getenv("GPUSTACK_GPU_INSTANCE_FINALIZING_UNREACHABLE_TOLERANCE", 1800)
+)  # in seconds
+
 # Model instance configuration
 MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD = int(
     os.getenv("GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD", 300)

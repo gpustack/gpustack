@@ -7,7 +7,7 @@ from gpustack.worker.exporter import MetricExporter
 
 def _exporter(cache=None):
     return MetricExporter(
-        cfg=SimpleNamespace(worker_metrics_port=10151),
+        cfg=SimpleNamespace(worker_metrics_port=10151, disable_openapi_docs=False),
         collector=None,
         worker_name_getter=lambda: "w",
         worker_ip_getter=lambda: "10.0.0.1",

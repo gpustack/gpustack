@@ -77,6 +77,7 @@ from gpustack.schemas.models import (
     RoleStatus,
     SourceEnum,
     get_backend,
+    is_decision_model,
     member_worker_ids,
     role_effective_model,
     shared_cache_service_ids_by_role,
@@ -198,6 +199,7 @@ from gpustack.cloud_providers.common import (
     get_client_from_provider,
     construct_cloud_instance,
     generate_ssh_key_pair,
+    validate_cluster_credential,
 )
 from gpustack.cloud_providers.abstract import (
     ProviderClientBase,
@@ -224,7 +226,10 @@ from gpustack.routes.plugins import (
 )
 from gpustack.routes.plugins.decision_service.providers import (
     DECISION_PROVIDER_TYPES,
-    sync_decision_service_providers,
+    decision_model_referencing_route_ids,
+    ensure_decision_model_entry,
+    render_decision_model_entry,
+    sync_decision_provider_entry,
 )
 from gpustack.routes.plugins.decision_service.plugin import (
     decision_referencing_route_ids,
@@ -314,6 +319,13 @@ class ModelController:
         # has no business knowing what a pass costs.
         self._passes = asyncio.Semaphore(envs.MODEL_RECONCILE_CONCURRENCY)
         self._dispatch_task: Optional[asyncio.Task] = None
+        # The last decision-catalogue entry this process rendered per model
+        # — the notification gate: re-notifying the routes on every
+        # ready-replica tick (which re-renders a byte-identical entry) is
+        # pure churn. A restart forgets it, so the first event per model
+        # (the startup replay delivers one CREATED per surviving row)
+        # re-notifies once.
+        self._decision_entry_cache: Dict[int, Optional[Dict[str, Any]]] = {}
 
     @staticmethod
     def _merge_events(existing: WorkEvent, incoming: WorkEvent) -> WorkEvent:
@@ -479,6 +491,22 @@ class ModelController:
                 f"Model {deleted_id} {event.type} not reconciled: "
                 f"the event carries only an id and the row is gone"
             )
+            # Whether a deleted model was a decision deployment is exactly
+            # what the gone row would tell — but the per-entry catalogue
+            # does not need to know: removing ``gpustack-model-{id}`` is a
+            # no-op for a model the catalogue never held, so the id alone
+            # retires a deleted decision model's entry without rebuilding
+            # anything from the surviving rows. Failure re-raises out of
+            # the reconcile, which the work queue retries.
+            if (
+                event.type == EventType.DELETED
+                and deleted_id is not None
+                and not self._disable_gateway
+            ):
+                async with async_session() as session:
+                    await self._sync_decision_entry(
+                        session, deleted_id, f"id {deleted_id}"
+                    )
             return
         try:
             async with async_session() as session:
@@ -533,6 +561,7 @@ class ModelController:
                 await sync_categories_and_meta(session, model, event)
                 await self._ensure_model_mcp_bridge(session, event.type, model)
                 await self._sync_model_ai_proxy(session, model)
+                await self._sync_decision_catalogue(session, model, event)
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
             raise
@@ -551,6 +580,135 @@ class ModelController:
             extensions_api=self._higress_extension_api,
             model_id=model.id,
         )
+
+    def _affects_decision_catalogue(self, model: Model, event: Event) -> bool:
+        """Whether this model event can move the decision-service
+        catalogue: it is a decision deployment now, or it stopped being one
+        (categories change), or it went away entirely. Instance liveness
+        arrives here as model events too (ready-replica sync), so one gate
+        covers both the entry's existence and its cluster target."""
+        if is_decision_model(model):
+            return True
+        changed = event.changed_fields or {}
+        if "categories" not in changed:
+            return False
+        categories_change = changed["categories"]
+        old_side = categories_change[0] if categories_change else None
+        if old_side is None:
+            return False
+        if isinstance(old_side, (list, tuple)):
+            if not old_side:
+                # detect_changes cannot attribute plain-string lists (no
+                # ``id`` key to diff by): a changed ``categories`` column
+                # arrives as the empty pair. Nothing decodable here, so
+                # the change counts — rebuilding is idempotent, while
+                # skipping leaves a stale entry. (find_history's empty
+                # None-side shares the shape and can only be adding the
+                # category, which the is_decision_model check above
+                # already covers.)
+                return True
+            # find_history wraps the whole old value in a 1-tuple;
+            # detect_changes stores the per-element removals when the
+            # elements carry keys. Flatten one level so membership reads
+            # the same either way — a scalar-only decode would miss the
+            # per-element shape and a dropped decision category would
+            # leave a stale entry behind.
+            removed = [
+                item
+                for entry in old_side
+                for item in (entry if isinstance(entry, (list, tuple)) else [entry])
+            ]
+            return "decision" in removed
+        return old_side == "decision"
+
+    async def _sync_decision_catalogue(
+        self, session: AsyncSession, model: Model, event: Event
+    ):
+        """Reconcile the model's own decision-service catalogue entry when
+        it may have moved, then re-reconcile the routes whose stored
+        section pins this model. Mirrors the ModelProvider controller's
+        decision pass on the other half of the catalogue."""
+        if self._disable_gateway:
+            return
+        if not self._affects_decision_catalogue(model, event):
+            return
+        await self._sync_decision_entry(session, model.id, model.name)
+
+    async def _sync_decision_entry(
+        self, session: AsyncSession, model_id: int, label: str
+    ) -> None:
+        """Render the model's own catalogue entry, re-reconcile the routes
+        pinning it when the render moved, then merge the entry into the CR.
+
+        The notification runs BEFORE the CR write, gated on the render
+        differing from the last one this process wrote (not on the CR
+        diff): the routes' render gates read DB rows, so they converge
+        whatever the write's outcome, and a failure between the two halves
+        leaves an unreferenced catalogue entry — inert — instead of a
+        stale active rule. A failure aborts before the cache updates, so
+        the work-queue retry re-runs both halves (one extra route
+        reconcile on a write retry, harmless).
+
+        Both halves re-raise: the work queue retries a raised reconcile as
+        a unit, while a swallowed failure would leave the catalogue and
+        the routes' rules disagreeing until an unrelated event happened to
+        touch them."""
+        try:
+            entry = await render_decision_model_entry(session, model_id)
+        except Exception as e:
+            logger.error(
+                "Failed to render decision-service entry for model %s: %s",
+                label,
+                e,
+            )
+            raise
+        if model_id not in self._decision_entry_cache or (
+            self._decision_entry_cache[model_id] != entry
+        ):
+            await self._notify_decision_routes(session, model_id, label)
+        try:
+            await ensure_decision_model_entry(
+                cfg=self._config,
+                extensions_api=self._higress_extension_api,
+                model_id=model_id,
+                entry=entry,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to ensure decision-service entry for model %s: %s",
+                label,
+                e,
+            )
+            raise
+        self._decision_entry_cache[model_id] = entry
+
+    async def _notify_decision_routes(
+        self, session: AsyncSession, model_id: int, label: str
+    ) -> None:
+        """Re-reconcile the routes whose stored decision-service section
+        pins ``model_id``: their render gate recomputes against the current
+        rows, so a pinned entry that went absent strips the rule."""
+        try:
+            policies = await CapabilityPolicy.all_by_fields(
+                session, fields={"capability": "decision-service"}
+            )
+            route_ids = decision_model_referencing_route_ids(policies, model_id)
+            for route_id in sorted(route_ids):
+                route = await ModelRoute.one_by_id(session, route_id)
+                if route is None:
+                    continue
+                route_copy = ModelRoute.model_validate(route.model_dump())
+                await event_bus.publish(
+                    route_copy.__class__.__name__.lower(),
+                    Event(type=EventType.UPDATED, data=route_copy),
+                )
+        except Exception as e:
+            logger.error(
+                "Failed to notify decision-service routes for model %s: %s",
+                label,
+                e,
+            )
+            raise
 
 
 class ModelInstanceController:
@@ -6404,14 +6562,15 @@ class WorkerProvisioningController:
             )
             if not worker:
                 return
-            credential: CloudCredential = await CloudCredential.one_by_id(
-                session, worker.cluster.credential_id
-            )
-            client = get_client_from_provider(
-                worker.cluster.provider,
-                credential=credential,
-            )
             try:
+                credential = await CloudCredential.one_by_id(
+                    session, worker.cluster.credential_id
+                )
+                validate_cluster_credential(worker.cluster, credential)
+                client = get_client_from_provider(
+                    worker.cluster.provider,
+                    credential=credential,
+                )
                 if worker.state == WorkerStateEnum.PENDING:
                     await self.check_server_external_url(worker.cluster.server_url)
                 if worker.state in [
@@ -6714,6 +6873,10 @@ class ModelProviderController:
         self._config = cfg
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
         self._k8s_config = get_async_k8s_config(cfg=cfg)
+        # Provider ids whose decision entry changed but whose route
+        # re-notification failed: the next reconcile re-runs the entry sync
+        # (a no-op once written) and must still notify.
+        self._decision_notify_owed: set = set()
 
     async def start(self):
         if self._disable_gateway:
@@ -6807,24 +6970,34 @@ class ModelProviderController:
             logger.error(f"Failed to ensure provider's ai_proxy config: {e}")
             raise
 
-    async def _ensure_decision_service_config(self):
-        """Rebuild the gpustack-lb-decision-service providers catalogue
-        (the gpustack-lb-typesafe type ModelProviders). Separate
+    async def _ensure_decision_service_config(self, provider_id: int) -> bool:
+        """Reconcile this provider's own entry in the gpustack-lb-decision-
+        service providers catalogue (the gpustack-lb-typesafe type
+        ModelProviders — per-entry, the ai-proxy discipline). Separate
         from the ai-proxy pass: a different CR, a different set of
-        providers (only the gpustack-lb-typesafe type), and a failure in
-        one must not mask the other."""
+        providers, and a failure in one must not mask the other.
+
+        Returns whether the entry changed — the caller's route
+        re-notification gate."""
         try:
             async with async_session() as session:
-                await sync_decision_service_providers(
+                return await sync_decision_provider_entry(
                     cfg=self._config,
                     session=session,
                     extensions_api=self._higress_extension_api,
+                    provider_id=provider_id,
                 )
         except Exception as e:
-            logger.error(f"Failed to ensure decision-service provider config: {e}")
+            logger.error(
+                "Failed to ensure decision-service entry for provider %s: %s",
+                provider_id,
+                e,
+            )
             raise
 
-    async def _notify_decision_service_routes(self, event: Event) -> None:
+    async def _notify_decision_service_routes(
+        self, event: Event, entry_changed: bool = False
+    ) -> None:
         """Re-reconcile routes whose decision-service section is affected by
         a provider change: a deletion (row or id-only payload -- it cannot
         be ruled out that the deleted row was a decision provider), a type
@@ -6834,6 +7007,11 @@ class ModelProviderController:
         strips or restores each matchRule while the stored policy is left
         untouched.
 
+        ``entry_changed`` (this reconcile's catalogue entry sync) notifies
+        too, as does an id owed by a previously failed notification: the
+        next reconcile's entry sync is a no-op after the write, and
+        without the bridge the routes' stale rules would linger.
+
         Field access goes through ``event_field``/``resolve_event_id``:
         cross-instance events can carry an id-only payload where attribute
         access would raise before any notification went out."""
@@ -6841,10 +7019,14 @@ class ModelProviderController:
         if provider_id is None:
             return
         changed = event.changed_fields or {}
+        owed = provider_id in self._decision_notify_owed
         if event.type == EventType.DELETED:
             payload_config = event_field(event.data, "config")
-            if payload_config is not None and not _is_decision_payload(payload_config):
-                return
+            if not (entry_changed or owed):
+                if payload_config is not None and not _is_decision_payload(
+                    payload_config
+                ):
+                    return
         else:
             config_change = changed.get("config")
             # _changed_scalar normalizes both producer shapes: the local
@@ -6877,7 +7059,9 @@ class ModelProviderController:
             # again), or when the pulled models cache changed (an alias may
             # have gone)
             if not (
-                was_decision != is_decision
+                entry_changed
+                or owed
+                or was_decision != is_decision
                 or (is_decision and model_changed)
                 or "models" in changed
             ):
@@ -6897,7 +7081,12 @@ class ModelProviderController:
                         route_copy.__class__.__name__.lower(),
                         Event(type=EventType.UPDATED, data=route_copy),
                     )
+            self._decision_notify_owed.discard(provider_id)
         except Exception as e:
+            # The owed id is what makes the next provider event retry this
+            # notification: its entry sync will report unchanged, and the
+            # routes' rules would otherwise stay stale.
+            self._decision_notify_owed.add(provider_id)
             logger.error(
                 "Failed to notify decision-service routes for provider %s: %s",
                 provider_id,
@@ -6974,12 +7163,17 @@ class ModelProviderController:
             await self._ensure_provider_ai_proxy_config()
         except Exception as e:
             ai_proxy_error = e
+        entry_changed = False
         try:
-            await self._ensure_decision_service_config()
+            provider_id = resolve_event_id(event)
+            if provider_id is not None:
+                entry_changed = await self._ensure_decision_service_config(provider_id)
         except Exception as e:
             decision_error = e
         try:
-            await self._notify_decision_service_routes(event)
+            await self._notify_decision_service_routes(
+                event, entry_changed=entry_changed
+            )
         except Exception as e:
             # the notifier already logs its own errors; recorded so the
             # failure surfaces with the others instead of disappearing

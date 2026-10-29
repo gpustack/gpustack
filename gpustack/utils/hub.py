@@ -662,7 +662,12 @@ def get_hf_text_config(config: PretrainedConfig):
         if text_config is not None:
             if isinstance(text_config, dict):
                 text_config = safe_pretrained_config_from_dict(text_config)
-            if hasattr(text_config, "num_attention_heads"):
+            per_layer_attributes = (
+                getattr(text_config, "per_layer_attributes", None) or ()
+            )
+            if "num_attention_heads" in per_layer_attributes or hasattr(
+                text_config, "num_attention_heads"
+            ):
                 return text_config
 
     return config

@@ -8,6 +8,7 @@ from starlette.responses import StreamingResponse
 
 from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
+    HTTPException as APIHTTPException,
     AlreadyExistsException,
     ConflictException,
     InternalServerErrorException,
@@ -253,6 +254,8 @@ def is_visible(obj, ctx: TenantContext) -> bool:
 async def handle_error(message: str):
     try:
         yield
+    except APIHTTPException:
+        raise
     except Exception as e:
         raise InternalServerErrorException(
             message=message,
