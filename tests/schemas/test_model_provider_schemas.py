@@ -11,6 +11,7 @@ from gpustack.schemas.model_provider import (
     ModelProviderTypeEnum,
     OpenAIConfig,
     ProviderConfigType,
+    QwenConfig,
 )
 
 
@@ -260,6 +261,93 @@ class TestClaudeCustomUrl:
 
         assert clean.ai_proxy_derived_fields()["providerDomain"] == "10.0.0.1:8080"
         assert clean.get_base_url() == "http://10.0.0.1:8080"
+
+
+class TestQwenDomain:
+    """Pointing a Qwen provider at another DashScope-family domain.
+
+    ``qwenDomain`` is ai-proxy's own field -- the qwen provider reads it
+    directly and overwrites the Host header with it -- so unlike a custom URL
+    there is nothing to derive. The domain still has to land in two
+    independent places: the McpBridge registry (where Envoy connects, from
+    ``get_base_url``) and the plugin config (the Host header it sends). A
+    value that reaches only one of them is a request sent to the right host
+    with the wrong Host header, or the reverse.
+    """
+
+    def _qwen(self, **kwargs) -> QwenConfig:
+        return QwenConfig(type=ModelProviderTypeEnum.QWEN, **kwargs)
+
+    def _spec(self, **kwargs) -> dict:
+        config = self._qwen(**kwargs)
+        return AIProxyDefaultConfig.model_validate(
+            {
+                "id": "provider-1",
+                "type": config.type,
+                **config.model_dump_with_default_override(),
+            }
+        ).model_dump(exclude_none=True)
+
+    def test_unset_leaves_dashscope_untouched(self):
+        config = self._qwen()
+
+        assert config.get_base_url() == "https://dashscope.aliyuncs.com"
+        assert config.get_chat_url() == (
+            "https://dashscope.aliyuncs.com",
+            "/compatible-mode/v1/chat/completions",
+        )
+        # No key at all, so an existing provider's plugin config is
+        # byte-for-byte what is already deployed.
+        assert "qwenDomain" not in self._spec()
+
+    def test_the_domain_becomes_the_base_url(self):
+        # This is what provider_registry parses, so it decides the registry's
+        # domain, port, protocol, and static-vs-dns type -- the plugin only
+        # rewrites the Host header, the cluster comes from the registry.
+        config = self._qwen(qwenDomain="dashscope-gw.example.com")
+
+        assert config.get_base_url() == "https://dashscope-gw.example.com"
+        assert config.get_chat_url() == (
+            "https://dashscope-gw.example.com",
+            "/compatible-mode/v1/chat/completions",
+        )
+        assert config.get_model_url() == (
+            "https://dashscope-gw.example.com",
+            "/compatible-mode/v1/models",
+        )
+
+    def test_a_pasted_url_is_reduced_to_its_authority(self):
+        # The field stores a bare host and the provider always speaks https,
+        # so a URL reaching get_base_url as-is would dial https://https://…
+        config = self._qwen(qwenDomain="https://maas.aliyuncs.com")
+
+        assert config.qwenDomain == "maas.aliyuncs.com"
+
+        with_port = self._qwen(qwenDomain="https://gw.example.com:8443/dashscope")
+
+        assert with_port.qwenDomain == "gw.example.com:8443"
+        assert with_port.get_base_url() == "https://gw.example.com:8443"
+
+        schemeless_with_path = self._qwen(qwenDomain="maas.aliyuncs.com/v1")
+
+        assert schemeless_with_path.qwenDomain == "maas.aliyuncs.com"
+
+    def test_the_field_reaches_the_ai_proxy_config(self):
+        # AIProxyDefaultConfig ignores fields it does not declare, and dropping
+        # this one is silent: the config validates, the plugin loads, and the
+        # Host header still says dashscope.aliyuncs.com.
+        assert (
+            self._spec(qwenDomain="dashscope-gw.example.com")["qwenDomain"]
+            == "dashscope-gw.example.com"
+        )
+
+    def test_the_compatible_default_survives_the_domain(self):
+        # qwenEnableCompatible rides the same dump; the domain must not shadow
+        # it, or the plugin would route the native-API paths instead.
+        assert (
+            self._spec(qwenDomain="dashscope-gw.example.com")["qwenEnableCompatible"]
+            is True
+        )
 
 
 class TestOpenAICustomUrlBasePath:
