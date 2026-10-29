@@ -10,7 +10,7 @@ translation_status: translated
 
 - GPUStack 已安装并运行。应用这些策略的 AI 网关默认随 GPUStack 部署，标准安装无需额外配置。
 - 已部署两个模型作为路由目标，例如下文使用的 `qwen3-0.6b` 和 `qwen3-32b`。
-- 对于决策服务部分：已在 `Model` - `Provider` 页面将 Jev 决策服务注册为 `TypeSafe Decision Service (Jev)` 提供商，参见[模型提供商管理](../user-guide/model-provider-management.md)。
+- 对于决策服务部分：需要一个决策服务——可以是已在 `Model` - `Provider` 页面注册为 `TypeSafe Decision Service (Jev)` 提供商的 Jev 决策服务（参见[模型提供商管理](../user-guide/model-provider-management.md)），也可以是本地部署的决策模型（参见[使用决策模型](../using-models/using-decision-models.md)）。
 
 ## 步骤 1：创建路由 { #step-1-create-the-route }
 
@@ -62,8 +62,7 @@ total(candidate) = Σ over plugins ( plugin weight × normalized score )
 接下来让路由感知模型能力：不再始终将会话固定到最初选择的模型，而是让决策引擎判断每个请求适合哪个模型。
 
 1. 编辑路由，启用 `Decision Service Routing`：
-    - `Decision Service`：选择已注册的提供商。
-    - `Decision Model`：例如 `jev-latest`。
+    - `Decision Service`：选择已注册的提供商及其某个引擎（例如 `jev-latest`），也可以改为选择本地部署的决策模型。
     - `Instructions`：“选择能够妥善处理请求的最小模型。简单、简短或事实类请求交给快速模型；复杂推理、数学或代码请求交给大模型。”
     - `Model Criteria`：为每个目标添加一项，也可以点击 `Generate from targets` 后再调整：
         - `qwen3-0.6b`：“非常快速、低成本的 0.6B 模型。适合问候、简单事实问答、格式整理和简短闲聊，不擅长多步推理、数学和代码。”

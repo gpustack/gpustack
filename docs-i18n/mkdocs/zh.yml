@@ -27,6 +27,7 @@ nav_translations:
   Audio: 音频
   Embedding: 向量嵌入
   Rerank: 重排序
+  Decision: 决策
   Model Catalog: 模型目录
   Model Deployment Management: 模型部署管理
   PD Disaggregation: 预填充与解码分离
@@ -58,6 +59,7 @@ nav_translations:
   Using Vision Language Models: 使用视觉语言模型
   Using Embedding Models: 使用向量嵌入模型
   Using Reranker Models: 使用重排序模型
+  Using Decision Models: 使用决策模型
   Using Image Generation Models: 使用图像生成模型
   Using Audio Models: 使用音频模型
   Tutorials: 教程

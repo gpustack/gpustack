@@ -60,12 +60,12 @@ Hedefleri o anda işledikleri istek sayısına göre puanlar ve en az isteği i�
 
 #### Karar Hizmeti Yönlendirme { #decision-service-routing }
 
-Hedefleri görev zorluğuna göre puanlar: her istek kısaltılarak model seçimi sorusuyla birlikte Jev uyumlu karar hizmetine (`Model` - `Provider` sayfasındaki `TypeSafe Decision Service (Jev)` sağlayıcısına) gönderilir. Yanıtı ağırlıklı oy olarak kullanılır. Karar hatası, zaman aşımı veya 2xx dışı yanıt durumunda sessizce diğer eklentilere dönülür.
+Hedefleri görev zorluğuna göre puanlar: her istek kısaltılarak model seçimi sorusuyla birlikte Jev uyumlu bir karar hizmetine — `Model` - `Provider` sayfasındaki harici `TypeSafe Decision Service (Jev)` sağlayıcısına veya yerel olarak dağıtılmış bir karar modeline ([Karar Modellerini Kullanma](../using-models/using-decision-models.md) bölümüne bakın) — gönderilir ve yanıtı ağırlıklı oy olarak kullanılır. Karar hatası, zaman aşımı veya 2xx dışı yanıt durumunda sessizce diğer eklentilere dönülür.
 
 Ayarlar:
 
-- `Decision Service` — karar hizmeti sağlayıcısı (gerekli).
-- `Decision Model` — rota düzeyinde karar modeli, bu politika etkinleştirildiğinde gereklidir. Seçenekler, seçilen sağlayıcıda önbelleğe alınan motorlardan okunur; ayarlanmamışsa veya geçersizse karar yönlendirme atlanır ve istekler diğer eklentilere geri döner.
+- `Decision Service` — karar hizmeti kaynağı (gerekli): harici bir TypeSafe sağlayıcısı veya yerel olarak dağıtılmış bir karar modeli (`decision` kategorisindeki çalışır durumdaki dağıtımlar). İkisi birbirini dışlar — tam olarak birini seçin.
+- `Decision Model` — sorulacak karar motoru, seçilen kaynaktan türetilir: harici sağlayıcı için seçilen motor (örn. `jev-latest`, sağlayıcıda önbelleğe alınan motorlardan okunur), yerel dağıtım için dağıtımın adı. Ayarlanmamışsa veya geçersizse karar yönlendirme atlanır ve istekler diğer eklentilere geri döner.
 - `Instructions` — Karar servisine gönderilen model seçimi sorusu için ekstra rehberlik.
 - `Model Criteria` — model adı → yetenek açıklaması: karar hizmetinin bir model seçmek için kullandığı temel. En az bir kriter gereklidir; girişler rotanın hedeflerinden oluşturulabilir.
 - `Weight` — diğer politikalarla birlikte kullanıldığında ağırlıklı toplama katkısıdır; ayarlanmazsa yerleşik varsayılan (10) kullanılır.

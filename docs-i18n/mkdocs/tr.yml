@@ -26,6 +26,7 @@ nav_translations:
   Audio: Ses
   Embedding: Vektör Gömme
   Rerank: Yeniden Sıralama
+  Decision: Karar
   Model Catalog: Model Kataloğu
   Model Deployment Management: Model Dağıtım Yönetimi
   PD Disaggregation: Prefill/Decode Ayrımı
@@ -57,6 +58,7 @@ nav_translations:
   Using Vision Language Models: Görsel Dil Modellerini Kullanma
   Using Embedding Models: Gömme Modellerini Kullanma
   Using Reranker Models: Yeniden Sıralama Modellerini Kullanma
+  Using Decision Models: Karar Modellerini Kullanma
   Using Image Generation Models: Görüntü Oluşturma Modellerini Kullanma
   Using Audio Models: Ses Modellerini Kullanma
   Tutorials: Öğreticiler
