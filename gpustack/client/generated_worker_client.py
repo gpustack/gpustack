@@ -12,7 +12,6 @@ from gpustack.api.exceptions import (
 from gpustack.server.bus import Event, EventType
 from gpustack.schemas import *
 from gpustack.schemas.common import Pagination
-from gpustack.utils.labels import LabelSearch
 
 from .generated_http_client import HTTPClient
 
@@ -27,7 +26,6 @@ class WorkerClient:
         self._cache: Dict[int, WorkerPublic] = {}
         self._cache_lock = threading.Lock()
         self._watch_started = False
-        self._watch_filtered = False
         self._initial_sync_logged = False
 
     def list(
@@ -40,7 +38,6 @@ class WorkerClient:
             params: Query parameters for filtering
             use_cache: Whether to use cache. Defaults to True (use cache if available).
                       Automatically falls back to API if cache watch is not running.
-                      Filtered watches always fetch lists from the API.
                       Note: If 'page' or 'perPage' params are provided, always calls API.
 
         Returns:
@@ -84,25 +81,18 @@ class WorkerClient:
         # the cache under the same lock) can never leave us reading an
         # empty cache while still believing it's authoritative.
         with self._cache_lock:
-            # A filtered watch only covers a subset of the worker collection.
-            if not self._watch_started or self._watch_filtered:
+            if not self._watch_started:
                 return None
             all_items = list(self._cache.values())
 
         # Apply filters if params provided
         if params:
-            label_search = LabelSearch(params["label"]) if params.get("label") else None
             filtered_items = []
             for item in all_items:
                 match = True
                 for key, value in params.items():
                     # Skip non-filter params like 'watch'
                     if key == 'watch':
-                        continue
-                    if key == 'label':
-                        if label_search and not label_search.matches(item.labels):
-                            match = False
-                            break
                         continue
                     # Convert attribute to string for comparison
                     attr_value = getattr(item, key, None)
@@ -208,12 +198,6 @@ class WorkerClient:
         if params is None:
             params = {}
         params["watch"] = "true"
-        watch_filtered = any(
-            key not in {"watch", "page", "perPage", "sort_by"}
-            and value is not None
-            and value != ""
-            for key, value in params.items()
-        )
 
         if stop_condition is None:
             stop_condition = lambda event: False
@@ -227,8 +211,8 @@ class WorkerClient:
             ) as response:
                 await async_raise_if_response_error(response)
 
-                # Replay covers the watch selection; only an unfiltered watch
-                # is authoritative for lists. Drop any stale entries
+                # Connection is up. The server's replay_existing=True snapshot
+                # that follows is authoritative, so drop any stale entries
                 # from a prior session — items deleted while we were
                 # disconnected won't get a DELETED event (already gone from
                 # DB) and would otherwise persist in the cache forever.
@@ -242,7 +226,6 @@ class WorkerClient:
                         self._initial_sync_logged = False
                         first_start = not self._watch_started
                         self._watch_started = True
-                        self._watch_filtered = watch_filtered
                     if first_start:
                         logger.debug(f"workers cache watch started")
 
@@ -314,7 +297,6 @@ class WorkerClient:
                 with self._cache_lock:
                     if self._watch_started:
                         self._watch_started = False
-                        self._watch_filtered = False
                         self._cache.clear()
 
     def get(self, id: int, use_cache: bool = True) -> WorkerPublic:

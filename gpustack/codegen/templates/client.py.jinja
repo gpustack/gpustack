@@ -12,9 +12,6 @@ from gpustack.api.exceptions import (
 from gpustack.server.bus import Event, EventType
 from gpustack.schemas import *
 from gpustack.schemas.common import Pagination
-{%- if class_name == "Worker" %}
-from gpustack.utils.labels import LabelSearch
-{%- endif %}
 
 from .generated_http_client import HTTPClient
 
@@ -29,9 +26,6 @@ class {{ class_name }}Client:
         self._cache: Dict[int, {{ class_name }}Public] = {}
         self._cache_lock = threading.Lock()
         self._watch_started = False
-{%- if class_name == "Worker" %}
-        self._watch_filtered = False
-{%- endif %}
         self._initial_sync_logged = False
 
     def list(
@@ -44,9 +38,6 @@ class {{ class_name }}Client:
             params: Query parameters for filtering
             use_cache: Whether to use cache. Defaults to True (use cache if available).
                       Automatically falls back to API if cache watch is not running.
-{%- if class_name == "Worker" %}
-                      Filtered watches always fetch lists from the API.
-{%- endif %}
                       Note: If 'page' or 'perPage' params are provided, always calls API.
 
         Returns:
@@ -91,20 +82,12 @@ class {{ class_name }}Client:
         # the cache under the same lock) can never leave us reading an
         # empty cache while still believing it's authoritative.
         with self._cache_lock:
-{%- if class_name == "Worker" %}
-            # A filtered watch only covers a subset of the worker collection.
-            if not self._watch_started or self._watch_filtered:
-{%- else %}
             if not self._watch_started:
-{%- endif %}
                 return None
             all_items = list(self._cache.values())
 
         # Apply filters if params provided
         if params:
-{%- if class_name == "Worker" %}
-            label_search = LabelSearch(params["label"]) if params.get("label") else None
-{%- endif %}
             filtered_items = []
             for item in all_items:
                 match = True
@@ -112,13 +95,6 @@ class {{ class_name }}Client:
                     # Skip non-filter params like 'watch'
                     if key == 'watch':
                         continue
-{%- if class_name == "Worker" %}
-                    if key == 'label':
-                        if label_search and not label_search.matches(item.labels):
-                            match = False
-                            break
-                        continue
-{%- endif %}
                     # Convert attribute to string for comparison
                     attr_value = getattr(item, key, None)
                     if attr_value is not None and str(attr_value) != str(value):
@@ -223,14 +199,6 @@ class {{ class_name }}Client:
         if params is None:
             params = {}
         params["watch"] = "true"
-{%- if class_name == "Worker" %}
-        watch_filtered = any(
-            key not in {"watch", "page", "perPage", "sort_by"}
-            and value is not None
-            and value != ""
-            for key, value in params.items()
-        )
-{%- endif %}
 
         if stop_condition is None:
             stop_condition = lambda event: False
@@ -244,15 +212,8 @@ class {{ class_name }}Client:
             ) as response:
                 await async_raise_if_response_error(response)
 
-{%- if class_name == "Worker" %}
-
-                # Replay covers the watch selection; only an unfiltered watch
-                # is authoritative for lists. Drop any stale entries
-{%- else %}
-
                 # Connection is up. The server's replay_existing=True snapshot
                 # that follows is authoritative, so drop any stale entries
-{%- endif %}
                 # from a prior session — items deleted while we were
                 # disconnected won't get a DELETED event (already gone from
                 # DB) and would otherwise persist in the cache forever.
@@ -266,9 +227,6 @@ class {{ class_name }}Client:
                         self._initial_sync_logged = False
                         first_start = not self._watch_started
                         self._watch_started = True
-{%- if class_name == "Worker" %}
-                        self._watch_filtered = watch_filtered
-{%- endif %}
                     if first_start:
                         logger.debug(
                             f"{{ class_name | to_dash_plural }} cache watch started"
@@ -342,9 +300,6 @@ class {{ class_name }}Client:
                 with self._cache_lock:
                     if self._watch_started:
                         self._watch_started = False
-{%- if class_name == "Worker" %}
-                        self._watch_filtered = False
-{%- endif %}
                         self._cache.clear()
 
     def get(self, id: int, use_cache: bool = True) -> {{ class_name }}Public:

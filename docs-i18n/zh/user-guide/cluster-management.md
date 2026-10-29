@@ -6,24 +6,6 @@ translation_status: translated
 
 GPUStack 支持按集群管理 Worker，并提供多种集群类型。可以通过 `DigitalOcean` 等 `Cloud Provider` 创建集群，也可以创建自托管集群并使用 `Docker` 运行命令添加 Worker。此外，还可以将自托管 `Kubernetes` 集群中的全部节点注册为 GPUStack Worker。
 
-## 按标签筛选 Worker { #filter-workers-by-label }
-
-Worker 列表 API（`GET /v2/workers`）接受 `label` 查询参数：
-
-- 单个关键词会在所有标签的键和值中进行不区分大小写的子串匹配。例如，`label=region` 和 `label=beijing` 都能匹配带有 `region=beijing` 标签的 Worker；`label=bei` 也能匹配。
-- 用空白分隔的关键词按 AND 组合：每个词都必须出现在某个标签的键或值中。例如，`label=region beijing` 可以匹配 `region=beijing` 和 `region=beijing-east`，但不会匹配 `region=shanghai`。各关键词可以命中不同标签，因此 `label=region production` 也能匹配同时带有 `region=beijing` 和 `env=production` 标签的 Worker。首尾和重复的空白会被忽略。
-- `key=value` 或 `key:value` 表达式会精确匹配区分大小写的键值对。例如，`label=region=beijing` 和 `label=region:beijing` 都不会匹配 `region=beijing-east`。第一个 `=` 或 `:` 用来分隔键和值，因此值中可以包含这两种字符。
-- 精确键值对表达式会保留键和值中的空白；例如，`label=city=New York` 匹配完整的值 `New York`。
-- `%` 和 `_` 按普通字符处理，不作为搜索通配符。省略 `label`，或传入空值、仅含空白的值，会禁用标签筛选。
-
-构造请求时应对参数值进行 URL 编码，例如 `/v2/workers?label=region%3Dbeijing`、`/v2/workers?label=region%3Abeijing` 或 `/v2/workers?label=region%20beijing`。
-
-Python 客户端通过 `client.workers.list(params={"label": "beijing"})` 接受相同参数，从 watch 缓存返回结果时也支持此参数。
-
-只有不带筛选条件的 `awatch()` 才能从缓存提供 Worker 列表。运行 `awatch(params={"label": "region=beijing"})` 或其他带筛选条件的 watch 时，`list()` 会从 API 获取结果，包括不带筛选条件的请求和使用其他标签的搜索。对于启用缓存的客户端，这些回源请求会获取所有匹配的 Worker，除非显式指定了分页参数。watch 仍会发送回调，并使用缓存中的筛选结果补齐仅包含 ID 的移除事件。
-
-标签筛选可以与现有的名称搜索和集群筛选组合使用，分页总数会反映筛选结果。它也适用于 `watch=true`：进入筛选结果的 Worker 会产生 `CREATED` 事件，离开结果的 Worker 会产生 `DELETED` 事件。所有结果仍受调用方的租户可见性约束。`me=true` 查询保持覆盖其他筛选条件的行为。
-
 ## 创建集群 { #create-cluster }
 
 1. 进入 `Clusters` 页面。

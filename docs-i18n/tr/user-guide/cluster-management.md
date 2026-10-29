@@ -6,24 +6,6 @@ translation_status: translated
 
 GPUStack, küme tabanlı çalışan yönetimini destekler ve birden fazla küme türü sağlar. `DigitalOcean` gibi bir `Cloud Provider` aracılığıyla bir kümenin temel hazırlığını yapabilir veya şirket içinde barındırılan bir küme oluşturabilir ve `Docker` çalıştırma komutlarını kullanarak çalışanlar ekleyebilirsiniz. Alternatif olarak, şirket içinde barındırılan bir `Kubernetes` kümesindeki tüm düğümleri GPUStack çalışanları olarak kaydedebilirsiniz.
 
-## Çalışanları Etikete Göre Filtreleme { #filter-workers-by-label }
-
-Çalışan listesi API'si (`GET /v2/workers`), `label` sorgu parametresini kabul eder:
-
-- Tek bir anahtar sözcük, tüm etiket anahtarları ve değerleri içinde büyük/küçük harfe duyarsız alt dize eşleştirmesi yapar. Örneğin hem `label=region` hem de `label=beijing`, `region=beijing` etiketine sahip bir çalışanla eşleşir; `label=bei` de eşleşir.
-- Boşluk karakterleriyle ayrılan anahtar sözcükler AND ile birleştirilir: her sözcük bir etiketin anahtarında veya değerinde bulunmalıdır. Örneğin `label=region beijing`, `region=beijing` ve `region=beijing-east` ile eşleşir, ancak `region=shanghai` değerini dışlar. Sözcükler farklı etiketlerle eşleşebilir; bu nedenle `label=region production`, `region=beijing` ve `env=production` etiketlerine sahip bir çalışanla da eşleşir. Baştaki, sondaki ve yinelenen boşluk karakterleri yok sayılır.
-- `key=value` veya `key:value` ifadesi, büyük/küçük harfe duyarlı tam bir anahtar-değer çiftiyle eşleşir. Örneğin hem `label=region=beijing` hem de `label=region:beijing`, `region=beijing-east` etiketine sahip çalışanları dışlar. İlk `=` veya `:` anahtarı ve değeri ayırır; dolayısıyla değer her iki karakteri de içerebilir.
-- Tam çift eşleştirme ifadeleri, anahtar ve değerdeki boşlukları korur; örneğin `label=city=New York`, `New York` değerinin tamamıyla eşleşir.
-- `%` ve `_`, arama joker karakterleri olarak değil, normal karakterler olarak değerlendirilir. `label` parametresini atlamak veya boş ya da yalnızca boşluk içeren bir değer göndermek etiket filtresini devre dışı bırakır.
-
-İstek oluştururken parametre değerini URL olarak kodlayın; örneğin `/v2/workers?label=region%3Dbeijing`, `/v2/workers?label=region%3Abeijing` veya `/v2/workers?label=region%20beijing`.
-
-Python istemcisi, watch önbelleğinden sonuç döndürürken de `client.workers.list(params={"label": "beijing"})` üzerinden aynı parametreyi kabul eder.
-
-Çalışan listelerini önbellekten yalnızca filtresiz bir `awatch()` sunabilir. `awatch(params={"label": "region=beijing"})` veya başka bir filtreli watch etkin olduğunda `list()`, filtresiz istekler ve farklı bir etiketle yapılan aramalar dahil olmak üzere sonuçları API'den alır. Önbelleği etkin istemcilerde bu API istekleri, sayfalama açıkça belirtilmediği sürece eşleşen tüm çalışanları alır. Watch, geri çağırımları çalıştırmaya ve yalnızca ID içeren kaldırma olaylarını önbellekteki seçili çalışan verileriyle tamamlamaya devam eder.
-
-Etiket filtresi, mevcut ad araması ve küme filtreleriyle birlikte kullanılabilir; sayfalama toplamları filtrelenmiş sonuçları yansıtır. Bu davranış `watch=true` için de geçerlidir: seçime giren çalışanlar `CREATED`, seçimden çıkanlar ise `DELETED` olayı üretir. Tüm sonuçlar çağıranın kiracı görünürlüğüne tabi olmaya devam eder. `me=true` sorgusu, diğer filtreleri geçersiz kılan mevcut davranışını korur.
-
 ## Küme Oluştur { #create-cluster }
 
 1. `Clusters` sayfasına gidin.

@@ -2,24 +2,6 @@
 
 GPUStack は、クラスター単位のワーカー管理と複数のクラスタータイプをサポートしています。`DigitalOcean` などの `Cloud Provider` でクラスターを作成するほか、セルフホストのクラスターを作成して `Docker` の実行コマンドでワーカーを追加できます。また、セルフホストの `Kubernetes` クラスターにあるすべてのノードを GPUStack ワーカーとして登録することもできます。
 
-## ラベルによるワーカーの絞り込み { #filter-workers-by-label }
-
-ワーカー一覧 API（`GET /v2/workers`）は、クエリパラメーター `label` を受け付けます。
-
-- 単一のキーワードは、すべてのラベルのキーと値に対して大文字と小文字を区別しない部分一致検索を行います。たとえば、`label=region` と `label=beijing` はどちらもラベル `region=beijing` を持つワーカーに一致し、`label=bei` も一致します。
-- 空白で区切ったキーワードは AND で結合され、すべての語がいずれかのラベルのキーまたは値に含まれる必要があります。たとえば、`label=region beijing` は `region=beijing` と `region=beijing-east` に一致しますが、`region=shanghai` には一致しません。語は別々のラベルに一致してもよいため、`label=region production` は `region=beijing` と `env=production` の両方を持つワーカーにも一致します。先頭、末尾、連続する空白は無視されます。
-- `key=value` または `key:value` は、大文字と小文字を区別してキーと値の組を完全一致で検索します。たとえば、`label=region=beijing` と `label=region:beijing` はどちらも `region=beijing-east` を除外します。最初の `=` または `:` がキーと値を区切るため、値にはどちらの文字も含められます。
-- 完全一致の式では、キーと値に含まれる空白を保持します。たとえば、`label=city=New York` は値 `New York` 全体に一致します。
-- `%` と `_` は検索のワイルドカードではなく、そのままの文字として扱われます。`label` を省略するか、空または空白のみの値を渡すと、ラベルによる絞り込みが無効になります。
-
-リクエストを構築するときは、パラメーターの値を URL エンコードしてください。例：`/v2/workers?label=region%3Dbeijing`、`/v2/workers?label=region%3Abeijing`、`/v2/workers?label=region%20beijing`。
-
-Python クライアントでは、`client.workers.list(params={"label": "beijing"})` で同じパラメーターを指定できます。watch のキャッシュから結果を返す場合にも適用されます。
-
-キャッシュからワーカー一覧を返せるのは、絞り込み条件のない `awatch()` のみです。`awatch(params={"label": "region=beijing"})` など、条件付きの watch が実行中の場合、`list()` は API から結果を取得します。条件なしのリクエストや別のラベルを指定した検索も対象です。キャッシュが有効なクライアントでは、ページが明示的に指定されていない限り、API へのフォールバックで一致するすべてのワーカーを取得します。watch は引き続きコールバックを呼び出し、選択範囲のキャッシュを使って ID のみの削除イベントを補完します。
-
-ラベルによる絞り込みは、既存の名前検索やクラスターの絞り込みと組み合わせられ、ページネーションの総件数にも反映されます。`watch=true` にも適用され、選択範囲に入ったワーカーには `CREATED`、範囲から外れたワーカーには `DELETED` イベントが送信されます。すべての結果は引き続き呼び出し元のテナント可視性に従います。`me=true` による照会は、ほかの絞り込み条件を上書きする既存の動作を維持します。
-
 ## クラスターの作成 { #create-cluster }
 
 1. `Clusters` ページに移動します。
