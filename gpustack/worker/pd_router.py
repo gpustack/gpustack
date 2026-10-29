@@ -30,7 +30,7 @@ from gpustack.schemas.pd_modes import (
 )
 from gpustack.utils.template import render
 
-logger = logging.getlogger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # A router holds client and engine sockets concurrently. Raise only the soft
 # limit so this works without additional container privileges, and keep the
@@ -54,7 +54,10 @@ if [ "$soft" != unlimited ] && [ "$soft" -lt 65536 ]; then
     echo "Increase the container hard limit to support high concurrency" >&2
 fi
 exec "$@"
-'''NamedTuple):
+'''
+
+
+class PeerAddress(NamedTuple):
     """One member of the group, as the router needs to address it.
 
     Carries the member's named port bands as well as its HTTP port, because
