@@ -2,7 +2,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 import enum
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+from transformers import PretrainedConfig
 from gpustack.config import Config
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
 from gpustack.schemas.models import (
@@ -15,7 +17,7 @@ from gpustack.schemas.models import (
     is_omni_model,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.utils.hub import get_hf_text_config, get_max_model_len
+from gpustack.utils.model_config import get_hf_text_config, get_max_model_len
 from gpustack.scheduler.calculator import get_pretrained_config_with_workers
 from gpustack.utils.gpu import (
     abbreviate_worker_gpu_indexes,
@@ -43,6 +45,10 @@ from gpustack.utils.unit import byte_to_gib
 logger = logging.getLogger(__name__)
 
 EVENT_ACTION_DEFAULT = "default_scheduling_msg"
+MISSING_ATTENTION_HEADS_MESSAGE = (
+    "Skipping attention-head divisibility check: model configuration does not provide "
+    "valid num_attention_heads. The inference backend will validate parallelism at startup."
+)
 EVENT_ACTION_MANUAL_MULTI = "manual_multi_gpu_scheduling_msg"
 EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU = "auto_multi_worker_multi_gpu_scheduling_msg"
 EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU = (
@@ -68,13 +74,17 @@ class ModelAttentionTypeEnum(enum.Enum):
 @dataclass
 class ModelParameters:
     architectures: List[str] = None
-    derived_max_seq_len: int = 0
+    model_type: Optional[str] = None
+    derived_max_seq_len: Optional[int] = None
     num_hidden_layers: int = 0
     hidden_size: Optional[int] = None
+    intermediate_size: Optional[int] = None
+    num_heads: Optional[int] = None
+    n_groups: Optional[int] = None
     vocab_size: Optional[int] = None
     num_attention_heads: Optional[int] = None
     num_attention_heads_per_layer: Optional[List[int]] = None
-    num_key_value_heads: int = 1
+    num_key_value_heads: Optional[int] = None
     n_group: Optional[int] = None
     head_dim: Optional[int] = None
     q_lora_rank: Optional[int] = None
@@ -90,7 +100,7 @@ class ModelParameters:
     moe_intermediate_size: Optional[int] = None
 
     is_multimodel: bool = False
-    vision_config: Optional[Dict] = None
+    vision_config: Optional[Union[Dict, PretrainedConfig]] = None
     vision_num_attention_heads: Optional[int] = None
 
     def from_model_pretrained_config(  # noqa: C901
@@ -106,19 +116,33 @@ class ModelParameters:
                 pretrained_config
             )
 
-        # Get architectures first, it is not available in text_config.
+        # The root architecture identifies the complete model, including vision.
         if hasattr(pretrained_config, "architectures"):
             self.architectures = pretrained_config.architectures
 
-        pretrained_config = get_hf_text_config(pretrained_config)
+        root_config = pretrained_config
+        pretrained_config = get_hf_text_config(root_config)
+        if not self.architectures:
+            self.architectures = getattr(pretrained_config, "architectures", None)
         if pretrained_config is None and CategoryEnum.LLM in model.categories:
-            # Exclude empty dict cases, as they indicate the locally-sourced model is not local to the server node.
+            # An empty dict can represent unavailable server-local metadata.
+            # Only None means configuration loading returned no result at all.
             raise ValueError(f"Failed to get model {model.name} pretrained config")
 
         per_layer_attributes = (
             getattr(pretrained_config, "per_layer_attributes", None) or ()
         )
         for attr_name in [attr.name for attr in fields(self.__class__)]:
+            if attr_name in {
+                "architectures",
+                "is_multimodel",
+                "vision_config",
+                "vision_num_attention_heads",
+                "intermediate_size",
+                "num_heads",
+                "n_groups",
+            }:
+                continue
             try:
                 if attr_name in per_layer_attributes and attr_name in {
                     "num_attention_heads",
@@ -148,8 +172,12 @@ class ModelParameters:
                 # which would not register in the argument parser.
                 pass
 
+        self._read_state_space_parameters(pretrained_config)
+
         # Default
-        self.derived_max_seq_len = get_max_model_len(pretrained_config)
+        self.derived_max_seq_len = get_max_model_len(
+            pretrained_config, default=None, fallback_config=root_config
+        )
         if not self.num_attention_heads:
             # For backward compatibility, try to get num_attention_heads from llm_config.
             self.num_attention_heads = get_model_num_attention_heads(pretrained_config)
@@ -177,6 +205,22 @@ class ModelParameters:
                     setattr(self, "moe_num_shared_experts", value)
                     break
 
+    def is_attention_free(self) -> bool:
+        """Identify pure SSM families; hybrid attention models are not exempt."""
+        return self.model_type in {"mamba", "mamba2", "falcon_mamba"}
+
+    def _read_state_space_parameters(self, config: Any) -> None:
+        # These dimensions constrain pure SSM parallelism. Attention models can
+        # vary their MLP widths per layer without having a global intermediate size.
+        if not self.is_attention_free():
+            return
+        for name in ("intermediate_size", "num_heads", "n_groups"):
+            setattr(self, name, getattr(config, name, None))
+        if self.intermediate_size is None:
+            expand = getattr(config, "expand", None)
+            if type(expand) is int and type(self.hidden_size) is int:
+                self.intermediate_size = expand * self.hidden_size
+
     @staticmethod
     def _get_attention_parameter(config: Any, attr_name: str) -> Optional[int]:
         """Resolve optional attention defaults before aggregating layer values."""
@@ -196,7 +240,7 @@ class ModelParameters:
         Get the attention type based on the hyperparameters.
         """
 
-        if self.num_attention_heads:
+        if self.num_attention_heads and self.num_key_value_heads:
             if self.num_key_value_heads == 1:
                 return ModelAttentionTypeEnum.MQA
             elif (
@@ -320,7 +364,6 @@ class ScheduleCandidatesSelector(ABC):
             pretrained_config = await get_pretrained_config_with_workers(
                 self._model,
                 workers,
-                trust_remote_code=True,
             )
 
             self._model_params.from_model_pretrained_config(
@@ -330,6 +373,8 @@ class ScheduleCandidatesSelector(ABC):
             self._vision_num_attention_heads = (
                 self._model_params.vision_num_attention_heads
             )
+            if self._missing_attention_heads():
+                logger.warning(MISSING_ATTENTION_HEADS_MESSAGE)
         except Exception as e:
             raise ValueError(
                 f"Failed to parse model {self._model.name} hyperparameters: {e}"
@@ -1096,6 +1141,7 @@ class ScheduleCandidatesSelector(ABC):
         1. num_attention_heads
         2. vision_num_attention_heads
         3. vocab_size
+        4. Known pure-SSM channel, head and group dimensions
 
         Notes on `tp_size` (tensor parallel size) usage in auto scheduling:
         - Single-worker multi-GPU: `tp_size` is the number of GPUs currently selected
@@ -1104,27 +1150,7 @@ class ScheduleCandidatesSelector(ABC):
         - Multi-worker multi-GPU: selected workers are constrained to have the same
           number of GPUs, so `tp_size` equals the per-worker GPU count (i.e., `gpu_count`)
         """
-        if not tp_size:
-            return False
-        for num_attention_heads in self._model_params.num_attention_heads_per_layer or [
-            self._num_attention_heads
-        ]:
-            if num_attention_heads and num_attention_heads % tp_size != 0:
-                return False
-        if (
-            self._should_check_vision_tp_divisibility()
-            and self._vision_num_attention_heads
-            and self._vision_num_attention_heads % tp_size != 0
-        ):
-            return False
-
-        if (
-            self._model_params.vocab_size
-            and self._model_params.vocab_size % tp_size != 0
-        ):
-            return False
-
-        return True
+        return bool(tp_size) and self._check_tp_size_divisibility(tp_size) is None
 
     def _check_tp_size_divisibility(
         self,
@@ -1135,16 +1161,24 @@ class ScheduleCandidatesSelector(ABC):
         1. num_attention_heads
         2. vision_num_attention_heads
         3. vocab_size
+        4. Known pure-SSM channel, head and group dimensions
 
         Return:
             None if divisibility is satisfied, otherwise an error message.
         """
         if not tp_size:
             return None
+        if self._model_params.is_attention_free():
+            if message := self._check_state_space_tp_size(tp_size):
+                return message
         for num_attention_heads in self._model_params.num_attention_heads_per_layer or [
             self._num_attention_heads
         ]:
-            if num_attention_heads and num_attention_heads % tp_size != 0:
+            if (
+                type(num_attention_heads) is int
+                and num_attention_heads > 0
+                and num_attention_heads % tp_size != 0
+            ):
                 return (
                     f"Total number of attention heads ({num_attention_heads})"
                     " must be divisible by tensor parallel size "
@@ -1172,3 +1206,31 @@ class ScheduleCandidatesSelector(ABC):
             )
 
         return None
+
+    def _check_state_space_tp_size(self, tp_size: int) -> Optional[str]:
+        """Check known SSM dimensions without treating absent metadata as invalid."""
+        # Mamba-1 shards intermediate channels. Mamba-2 also shards SSM heads and
+        # groups, with a single group replicated across ranks.
+        # https://github.com/vllm-project/vllm/blob/e8ae84bf7e992c63570905fce3073fd7a7de2412/vllm/model_executor/layers/mamba/mamba_mixer2.py
+        # https://github.com/sgl-project/sglang/blob/7d1a16d3eb2d12d540db7f849b0815bf6f82fb7e/python/sglang/srt/layers/attention/mamba/mamba1.py
+        dimensions = {"intermediate_size": self._model_params.intermediate_size}
+        if self._model_params.model_type == "mamba2":
+            dimensions["num_heads"] = self._model_params.num_heads
+            if self._model_params.n_groups != 1:
+                dimensions["n_groups"] = self._model_params.n_groups
+        for name, value in dimensions.items():
+            if type(value) is int and value > 0 and value % tp_size != 0:
+                return (
+                    f"SSM {name} ({value}) must be divisible by tensor parallel size "
+                    f"({tp_size})."
+                )
+        return None
+
+    def _missing_attention_heads(self) -> bool:
+        """Whether LLM tensor-parallel checks lack a positive head count per layer."""
+        if is_omni_model(self._model) or self._model_params.is_attention_free():
+            return False
+        heads = self._model_params.num_attention_heads_per_layer or [
+            self._num_attention_heads
+        ]
+        return any(type(value) is not int or value <= 0 for value in heads)

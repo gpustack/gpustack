@@ -1114,7 +1114,7 @@ async def test_tp_divisibility_checks_vision_heads_for_sglang(config):
     resource_fit_selector = SGLangResourceFitSelector(
         config, m, [], resource_view=ResourceView([])
     )
-    resource_fit_selector._num_attention_heads = 0
+    resource_fit_selector._num_attention_heads = 12
     resource_fit_selector._vision_num_attention_heads = 16
     resource_fit_selector._model_params.vocab_size = None
 
@@ -1148,7 +1148,7 @@ async def test_tp_divisibility_skips_vision_heads_in_language_only_mode_for_sgla
     resource_fit_selector = SGLangResourceFitSelector(
         config, m, [], resource_view=ResourceView([])
     )
-    resource_fit_selector._num_attention_heads = 0
+    resource_fit_selector._num_attention_heads = 12
     resource_fit_selector._vision_num_attention_heads = 16
     resource_fit_selector._model_params.vocab_size = None
 

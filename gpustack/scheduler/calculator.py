@@ -35,8 +35,8 @@ from gpustack.utils.hub import (
     match_model_scope_file_paths,
     get_pretrained_config,
     read_repo_file_content,
-    safe_pretrained_config_from_dict,
 )
+from gpustack.utils.model_config import safe_pretrained_config_from_dict
 from gpustack.utils import platform
 
 logger = logging.getLogger(__name__)
@@ -718,12 +718,12 @@ async def get_pretrained_config_with_workers(
 
     Handles all model sources with appropriate fallback strategies:
     - For LOCAL_PATH model which is not available locally, get from workers
-    - For others, AutoConfig and fallback to config.json
+    - For others, read JSON metadata using installed configuration classes
 
     Args:
         model: Model to get config for
         workers: Available workers (for LOCAL_PATH)
-        trust_remote_code: Whether to trust remote code
+        trust_remote_code: Legacy option, ignored. Metadata never executes repository code.
 
     Returns:
         PretrainedConfig object or None
@@ -748,9 +748,7 @@ async def get_pretrained_config_with_workers(
         else:
             logger.info(f"Trying to get pretrained config from {model.source}")
             pretrained_config = await asyncio.wait_for(
-                asyncio.to_thread(
-                    get_pretrained_config, model, trust_remote_code=trust_remote_code
-                ),
+                asyncio.to_thread(get_pretrained_config, model),
                 timeout=timeout_in_seconds,
             )
     except Exception as e:
@@ -810,20 +808,8 @@ def should_fallback_load_config_json(e: Exception, model: Model) -> bool:
         # Track upstream progress: https://github.com/huggingface/transformers/issues/43837
         return True
 
-    # For very new HF checkpoints, AutoConfig may fail on an older transformers.
-    # Falling back to reading config.json avoids requiring a transformers upgrade.
-    #
-    # Example upstream error message (may vary by transformers version):
-    """
-    The checkpoint you are trying to load has model type `{config_dict['model_type']}`
-    but Transformers does not recognize this architecture. This could be because of an
-    issue with the checkpoint, or because your version of Transformers is out of date.
-    You can update Transformers with the command `pip install --upgrade transformers`.
-    If this does not work, and the checkpoint is very new, then there may not be a
-    release version that supports this model yet. In this case, you can get the most
-    up-to-date code by installing Transformers from source with the command
-    `pip install git+https://github.com/huggingface/transformers.git`
-    """
+    # Retry direct JSON retrieval when configuration loading surfaces a
+    # Transformers architecture/version diagnostic.
     msg = str(e).lower()
     if (
         "update transformers" in msg

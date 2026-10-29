@@ -1,7 +1,7 @@
 import pytest
 from tenacity import retry, stop_after_attempt, wait_fixed
 from transformers import PretrainedConfig
-from gpustack.utils import hub
+from gpustack.utils import hub, model_config
 from gpustack.utils.hub import (
     get_hugging_face_model_min_gguf_path,
     get_model_scope_model_min_gguf_path,
@@ -26,7 +26,7 @@ def test_get_hf_text_config_with_heterogeneous_attention_heads():
         },
     )
 
-    text_config = hub.get_hf_text_config(config)
+    text_config = model_config.get_hf_text_config(config)
 
     assert text_config.per_layer_config[0].num_attention_heads == 64
     assert text_config.per_layer_config[1].num_attention_heads == 96

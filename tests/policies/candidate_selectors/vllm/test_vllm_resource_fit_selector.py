@@ -49,7 +49,7 @@ from tests.fixtures.workers.fixtures import (
 )
 from tests.utils.scheduler import compare_candidates
 from gpustack.utils.unit import byte_to_gib
-from gpustack.utils.hub import safe_pretrained_config_from_dict
+from gpustack.utils.model_config import safe_pretrained_config_from_dict
 
 
 def expected_candidate(
@@ -1355,7 +1355,7 @@ async def test_tp_divisibility_checks_vision_heads_for_vllm(config):
     resource_fit_selector = VLLMResourceFitSelector(
         config, m, [], resource_view=ResourceView([])
     )
-    resource_fit_selector._num_attention_heads = 0
+    resource_fit_selector._num_attention_heads = 12
     resource_fit_selector._vision_num_attention_heads = 16
     resource_fit_selector._model_params.vocab_size = None
 
@@ -1388,7 +1388,7 @@ async def test_tp_divisibility_skips_vision_heads_in_language_only_mode_for_vllm
     resource_fit_selector = VLLMResourceFitSelector(
         config, m, [], resource_view=ResourceView([])
     )
-    resource_fit_selector._num_attention_heads = 0
+    resource_fit_selector._num_attention_heads = 12
     resource_fit_selector._vision_num_attention_heads = 16
     resource_fit_selector._model_params.vocab_size = None
 

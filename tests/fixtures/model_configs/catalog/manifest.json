@@ -1,0 +1,787 @@
+{
+  "catalog": "gpustack/assets/model-catalog.yaml",
+  "catalog_sha256": "acb2f094e0edc97315a7367287a89e78e517bfe98c043b6c46b5485a5277e9c2",
+  "selection_date": "2026-10-29",
+  "models": [
+    {
+      "name": "Nanbeige4.3-33B",
+      "release_date": "2026-10-24",
+      "repo_id": "Nanbeige/Nanbeige4.3-33B",
+      "revision": "df919e1e2cf077a22204c78b6c826bf3db18bc08",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "LlamaForCausalLM"
+      ],
+      "file": "Nanbeige4.3-33B.json",
+      "sha256": "ee6db71f6de1bc2d78c0adc543e339c44e9340c1e3f474285f3144d2d3cd3df9",
+      "expected": {
+        "num_hidden_layers": 52,
+        "hidden_size": 7168,
+        "num_attention_heads": 56,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "derived_max_seq_len": 524288,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": null,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "MiniMax-M3.1-Flash",
+      "release_date": "2026-10-23",
+      "repo_id": "MiniMaxAI/MiniMax-M3.1-Flash",
+      "revision": "262ae6830934f3512211081b8a3f16425b93a239",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "MiniMaxM3SparseForConditionalGeneration"
+      ],
+      "file": "MiniMax-M3.1-Flash.json",
+      "sha256": "df6a3668e2de5b8dc0e883e3767495ad17af7e4d69fabe9683088be015fda9ab",
+      "expected": {
+        "num_hidden_layers": 60,
+        "hidden_size": 6144,
+        "num_attention_heads": 64,
+        "num_key_value_heads": 4,
+        "head_dim": 128,
+        "derived_max_seq_len": 1048576,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": 128,
+        "hybrid_attention": true
+      }
+    },
+    {
+      "name": "DeepSeek-V4.1-Flash-1017",
+      "release_date": "2026-10-17",
+      "repo_id": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "DeepseekV41ForCausalLM"
+      ],
+      "file": "DeepSeek-V4.1-Flash-1017.json",
+      "sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+      "expected": {
+        "num_hidden_layers": 40,
+        "hidden_size": 5120,
+        "num_attention_heads": 64,
+        "num_key_value_heads": 1,
+        "head_dim": 512,
+        "derived_max_seq_len": 1048576,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": 384,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "MiMo-V2.6-Pro-MOPD",
+      "release_date": "2026-09-27",
+      "repo_id": "XiaomiMiMo/MiMo-V2.6-Pro-MOPD",
+      "revision": "da71ee15e76a8849bd1a9610195c452007a79678",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "MiMoV2ForCausalLM"
+      ],
+      "file": "MiMo-V2.6-Pro-MOPD.json",
+      "sha256": "a9dc00e2a0c2c172efd198f42e81e41c95472021b57c65366c06587d44038b62",
+      "expected": {
+        "num_hidden_layers": 70,
+        "hidden_size": 6144,
+        "num_attention_heads": 128,
+        "num_key_value_heads": 8,
+        "head_dim": 192,
+        "derived_max_seq_len": 1048576,
+        "vision_num_attention_heads": 32,
+        "moe_num_experts": 384,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "GLM-5.3",
+      "release_date": "2026-08-28",
+      "repo_id": "zai-org/GLM-5.3",
+      "revision": "ba32f8c19c8738e2c57c71798c601d477a7bf844",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "GlmMoeDsaForCausalLM"
+      ],
+      "file": "GLM-5.3.json",
+      "sha256": "3ac72612095574542f7fff847ada8e59d9199dd8af44bdf625d7e02615572e69",
+      "expected": {
+        "num_hidden_layers": 78,
+        "hidden_size": 6144,
+        "num_attention_heads": 64,
+        "num_key_value_heads": 64,
+        "head_dim": 64,
+        "derived_max_seq_len": 1048576,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": 256,
+        "hybrid_attention": true
+      }
+    },
+    {
+      "name": "GLM-5.3-Flash",
+      "release_date": "2026-08-26",
+      "repo_id": "zai-org/GLM-5.3-Flash",
+      "revision": "46a050bec13002ad29ee795c16e61cf4fa3c4a9c",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "Glm5NextForConditionalGeneration"
+      ],
+      "file": "GLM-5.3-Flash.json",
+      "sha256": "bb8f01c42cb92a52ca72e65afb4d5bd8d11aef083cd210e8de25dfb904f23e9f",
+      "expected": {
+        "num_hidden_layers": 45,
+        "hidden_size": 4096,
+        "num_attention_heads": 64,
+        "num_key_value_heads": 64,
+        "head_dim": 64,
+        "derived_max_seq_len": 1048576,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": 288,
+        "hybrid_attention": true
+      }
+    },
+    {
+      "name": "Qwen3.8-27B",
+      "release_date": "2026-08-14",
+      "repo_id": "Qwen/Qwen3.8-27B",
+      "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "Qwen3_5ForConditionalGeneration"
+      ],
+      "file": "Qwen3.8-27B.json",
+      "sha256": "7718cd6bf3d6521d5550966d4ab8484fc81a01347d74b7e52163070f35ca7f35",
+      "expected": {
+        "num_hidden_layers": 64,
+        "hidden_size": 5120,
+        "num_attention_heads": 24,
+        "num_key_value_heads": 4,
+        "head_dim": 256,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": null,
+        "hybrid_attention": true
+      }
+    },
+    {
+      "name": "Muse-Glimmer-30B",
+      "release_date": "2026-08-10",
+      "repo_id": "meta-models/Muse-Glimmer-30B",
+      "revision": "cec94fcfd6512f2cfe708138c32533b346ea4f69",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "MuseGlimmerForConditionalGeneration"
+      ],
+      "file": "Muse-Glimmer-30B.json",
+      "sha256": "5a9df2d8a385b3d361ab6ae68d73586f4e775033933bd0cd863fb7f3820e6a14",
+      "expected": {
+        "num_hidden_layers": 52,
+        "hidden_size": 6656,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 2,
+        "head_dim": 128,
+        "derived_max_seq_len": 131072,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": null,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "Kimi-K3",
+      "release_date": "2026-07-27",
+      "repo_id": "moonshotai/Kimi-K3",
+      "revision": "f831ab66814297da540d832a5235f8e904f29d06",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "KimiK3ForConditionalGeneration"
+      ],
+      "file": "Kimi-K3.json",
+      "sha256": "9728baf9c770935feddeca32b80bba19b9a571bdfb3b5c7b6cd5a845f121f4ad",
+      "expected": {
+        "num_hidden_layers": 93,
+        "hidden_size": 7168,
+        "num_attention_heads": 96,
+        "num_key_value_heads": 96,
+        "head_dim": 64,
+        "derived_max_seq_len": 1048576,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": 896,
+        "hybrid_attention": true
+      }
+    },
+    {
+      "name": "Hy3",
+      "release_date": "2026-07-06",
+      "repo_id": "tencent/Hy3",
+      "revision": "a960ebc3da325ba167f069f76c41eb62c9280d22",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "HYV3ForCausalLM"
+      ],
+      "file": "Hy3.json",
+      "sha256": "0c9daab42bff9cce1b6f058b10d7b730f76d583e583e28ad56e92b36373246f0",
+      "expected": {
+        "num_hidden_layers": 80,
+        "hidden_size": 4096,
+        "num_attention_heads": 64,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": 192,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "Kimi-K2.7-Code",
+      "release_date": "2026-06-12",
+      "repo_id": "moonshotai/Kimi-K2.7-Code",
+      "revision": "74797c9c62378b951a1f6fcf5c4631024e9b8bef",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "KimiK25ForConditionalGeneration"
+      ],
+      "file": "Kimi-K2.7-Code.json",
+      "sha256": "6b1c800863053375ec077c95bfc67e2b3e984bf8baf0f99189f5e90258794fea",
+      "expected": {
+        "num_hidden_layers": 61,
+        "hidden_size": 7168,
+        "num_attention_heads": 64,
+        "num_key_value_heads": 64,
+        "head_dim": 64,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": 384,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "DiffusionGemma-26B-A4B-it",
+      "release_date": "2026-06-10",
+      "repo_id": "google/diffusiongemma-26B-A4B-it",
+      "revision": "f7f5b7f5fa82ffc52addd066915886d497f5517b",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "DiffusionGemmaForBlockDiffusion"
+      ],
+      "file": "DiffusionGemma-26B-A4B-it.json",
+      "sha256": "13b11d2fe87302cc2332c64eb9eb4ac305d9b8a123ffe9c5cb5b1920fc70c506",
+      "expected": {
+        "num_hidden_layers": 30,
+        "hidden_size": 2816,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "head_dim": 512,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": 128,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "LFM2.5-8B-A1B",
+      "release_date": "2026-05-28",
+      "repo_id": "LiquidAI/LFM2.5-8B-A1B",
+      "revision": "5dd22602c2e9f6a097b1de4c4efe0658b605015c",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "Lfm2MoeForCausalLM"
+      ],
+      "file": "LFM2.5-8B-A1B.json",
+      "sha256": "9c0255c2d5c744c99b760a12edca2572935348dae340e79e2e6625af975d2d68",
+      "expected": {
+        "num_hidden_layers": 24,
+        "hidden_size": 2048,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 8,
+        "head_dim": 64,
+        "derived_max_seq_len": 128000,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": 32,
+        "hybrid_attention": true
+      }
+    },
+    {
+      "name": "Mellum2-12B-A2.5B-Instruct",
+      "release_date": "2026-05-26",
+      "repo_id": "JetBrains/Mellum2-12B-A2.5B-Instruct",
+      "revision": "273d9c1c6882ac8e1562e5b7e043857d35a787b6",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "MellumForCausalLM"
+      ],
+      "file": "Mellum2-12B-A2.5B-Instruct.json",
+      "sha256": "f43d018246094dee6dca455b3072766b6acbefd1ac8e7fe664df34710606a541",
+      "expected": {
+        "num_hidden_layers": 28,
+        "hidden_size": 2304,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 4,
+        "head_dim": 128,
+        "derived_max_seq_len": 131072,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": 64,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "MiniCPM-V-4.6",
+      "release_date": "2026-05-11",
+      "repo_id": "openbmb/MiniCPM-V-4.6",
+      "revision": "36f34a661a4bd35d0dc2294cb044d2584646c7d3",
+      "backend": "SGLang",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "MiniCPMV4_6ForConditionalGeneration"
+      ],
+      "file": "MiniCPM-V-4.6.json",
+      "sha256": "72d83ac9089bebddf28131b9953908acaf0a5740b868263c8aaac7c40b97991c",
+      "expected": {
+        "num_hidden_layers": 24,
+        "hidden_size": 1024,
+        "num_attention_heads": 8,
+        "num_key_value_heads": 2,
+        "head_dim": 256,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": null,
+        "hybrid_attention": true
+      }
+    },
+    {
+      "name": "Mistral-Medium-3.5-128B",
+      "release_date": "2026-04-29",
+      "repo_id": "mistralai/Mistral-Medium-3.5-128B",
+      "revision": "22b2b868a15677cfa6061277ed2f653d1349a9ab",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "Mistral3ForConditionalGeneration"
+      ],
+      "file": "Mistral-Medium-3.5-128B.json",
+      "sha256": "6ebadc48e3bdfff1a6a0b863530c68c9725a49eecd21c0527bdcb21b822f4d71",
+      "expected": {
+        "num_hidden_layers": 88,
+        "hidden_size": 12288,
+        "num_attention_heads": 96,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": null,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "DeepSeek-V4-Pro",
+      "release_date": "2026-04-23",
+      "repo_id": "deepseek-ai/DeepSeek-V4-Pro",
+      "revision": "b5968e9190ef611bbf34a7229255be88a0e937c1",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "DeepseekV4ForCausalLM"
+      ],
+      "file": "DeepSeek-V4-Pro.json",
+      "sha256": "6fccb45a06b59a94033d0c74ec23bf860e67bc0f4ebc18ea1e33d357fac3336c",
+      "expected": {
+        "num_hidden_layers": 61,
+        "hidden_size": 7168,
+        "num_attention_heads": 128,
+        "num_key_value_heads": 1,
+        "head_dim": 512,
+        "derived_max_seq_len": 1048576,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": 384,
+        "hybrid_attention": true
+      }
+    },
+    {
+      "name": "Nemotron-3-Nano-Omni-30B-A3B-Reasoning",
+      "release_date": "2026-04-20",
+      "repo_id": "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16",
+      "revision": "e5e9932441de940c9a62185c870ea5bcd4cd24e2",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "NemotronH_Nano_Omni_Reasoning_V3"
+      ],
+      "file": "Nemotron-3-Nano-Omni-30B-A3B-Reasoning.json",
+      "sha256": "5df171fdf3214fe89e99bad26eeb50dcddfba49e9f420b6b74f3c9d4cf79cf15",
+      "expected": {
+        "num_hidden_layers": 52,
+        "hidden_size": 2688,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 2,
+        "head_dim": 128,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": 128,
+        "hybrid_attention": true
+      }
+    },
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "release_date": "2026-04-15",
+      "repo_id": "Qwen/Qwen3.6-35B-A3B",
+      "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "Qwen3_5MoeForConditionalGeneration"
+      ],
+      "file": "Qwen3.6-35B-A3B.json",
+      "sha256": "a535dda50243c13dc2c55921451175d204d4f1f96b9322d4a8f47005a88fcd75",
+      "expected": {
+        "num_hidden_layers": 40,
+        "hidden_size": 2048,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 2,
+        "head_dim": 256,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": 256,
+        "hybrid_attention": true
+      }
+    },
+    {
+      "name": "MiniMax-M2.7",
+      "release_date": "2026-04-09",
+      "repo_id": "MiniMaxAI/MiniMax-M2.7",
+      "revision": "0a6536713b0b03f3be97494e5cf8d22f668a3164",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "MiniMaxM2ForCausalLM"
+      ],
+      "file": "MiniMax-M2.7.json",
+      "sha256": "697c30492781d55ac516011f937b5cdec045710b5b0c9ca39a6ea277785df9aa",
+      "expected": {
+        "num_hidden_layers": 62,
+        "hidden_size": 3072,
+        "num_attention_heads": 48,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "derived_max_seq_len": 204800,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": 256,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "Gemma-4-E2B-it",
+      "release_date": "2026-04-02",
+      "repo_id": "google/gemma-4-E2B-it",
+      "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "Gemma4ForConditionalGeneration"
+      ],
+      "file": "Gemma-4-E2B-it.json",
+      "sha256": "1b28f3d2c3100f6c594754b81107428bd7b822a7f48272ca681dae9d2ec38330",
+      "expected": {
+        "num_hidden_layers": 35,
+        "hidden_size": 1536,
+        "num_attention_heads": 8,
+        "num_key_value_heads": 1,
+        "head_dim": 512,
+        "derived_max_seq_len": 131072,
+        "vision_num_attention_heads": 12,
+        "moe_num_experts": null,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "Nemotron-Cascade-2-30B-A3B",
+      "release_date": "2026-03-19",
+      "repo_id": "nvidia/Nemotron-Cascade-2-30B-A3B",
+      "revision": "6327cdbcf907e1c7cec9cb29fb6e6cebdf8feaf7",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "NemotronHForCausalLM"
+      ],
+      "file": "Nemotron-Cascade-2-30B-A3B.json",
+      "sha256": "400eb0e76223490377bba4d254bfcbdad150a06f1c35d2209254434641089599",
+      "expected": {
+        "num_hidden_layers": 52,
+        "hidden_size": 2688,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 2,
+        "head_dim": 128,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": 128,
+        "hybrid_attention": true
+      }
+    },
+    {
+      "name": "Qwen3-Coder-Next",
+      "release_date": "2026-02-03",
+      "repo_id": "Qwen/Qwen3-Coder-Next",
+      "revision": "a7fbcb5c0e12d62a448eaa0e260346bf5dcc0feb",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "Qwen3NextForCausalLM"
+      ],
+      "file": "Qwen3-Coder-Next.json",
+      "sha256": "a7b8098d3b05777f12bb5677a26bf1240a1bb09def1b06b29e6be86cae2e84f8",
+      "expected": {
+        "num_hidden_layers": 48,
+        "hidden_size": 2048,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 2,
+        "head_dim": 256,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": 512,
+        "hybrid_attention": true
+      }
+    },
+    {
+      "name": "Step-3.5-Flash",
+      "release_date": "2026-02-02",
+      "repo_id": "stepfun-ai/Step-3.5-Flash",
+      "revision": "ab446a3de5e171ea341227e24bb1f090e1b771f7",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "Step3p5ForCausalLM"
+      ],
+      "file": "Step-3.5-Flash.json",
+      "sha256": "3af39cdf3ac1aa3e36e28a6b4f97e46315de475acea988cc306075bb3e6e2fe5",
+      "expected": {
+        "num_hidden_layers": 45,
+        "hidden_size": 4096,
+        "num_attention_heads": 96,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": 288,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "PaddleOCR-VL-1.5",
+      "release_date": "2026-01-29",
+      "repo_id": "PaddlePaddle/PaddleOCR-VL-1.5",
+      "revision": "2a4195faa5e7914c12f2fc601d72c81caf8d2da5",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "PaddleOCRVLForConditionalGeneration"
+      ],
+      "file": "PaddleOCR-VL-1.5.json",
+      "sha256": "ce7f4565f8b1db78532ad5d1b9ebe55c2139d49bd4cb04778b580a08a598f171",
+      "expected": {
+        "num_hidden_layers": 18,
+        "hidden_size": 1024,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 2,
+        "head_dim": 128,
+        "derived_max_seq_len": 131072,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": null,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "Qwen3-ASR-1.7B",
+      "release_date": "2026-01-29",
+      "repo_id": "Qwen/Qwen3-ASR-1.7B",
+      "revision": "7278e1e70fe206f11671096ffdd38061171dd6e5",
+      "backend": "vLLM",
+      "categories": [
+        "speech_to_text"
+      ],
+      "architectures": [
+        "Qwen3ASRForConditionalGeneration"
+      ],
+      "file": "Qwen3-ASR-1.7B.json",
+      "sha256": "cd98738fd153ab6c17910fa9545e4c472a451bb5bbeea1fec72b6be3b5e94c8d",
+      "expected": {
+        "num_hidden_layers": 28,
+        "hidden_size": 2048,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "derived_max_seq_len": 65536,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": null,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "Qwen3-TTS-12Hz-1.7B-Base",
+      "release_date": "2026-01-22",
+      "repo_id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+      "revision": "fd4b254389122332181a7c3db7f27e918eec64e3",
+      "backend": "vLLM",
+      "categories": [
+        "text_to_speech"
+      ],
+      "architectures": [
+        "Qwen3TTSForConditionalGeneration"
+      ],
+      "file": "Qwen3-TTS-12Hz-1.7B-Base.json",
+      "sha256": "45b3876bfe8b4358ed440fe84aa98961d9959f58ee8ba626e17dc3de0f9c421e",
+      "expected": {
+        "num_hidden_layers": 28,
+        "hidden_size": 2048,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "derived_max_seq_len": 32768,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": null,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "LightOnOCR-2-1B",
+      "release_date": "2026-01-19",
+      "repo_id": "lightonai/LightOnOCR-2-1B",
+      "revision": "be7c41313c30e940fe5571de59e5fabc779e00c8",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "LightOnOCRForConditionalGeneration"
+      ],
+      "file": "LightOnOCR-2-1B.json",
+      "sha256": "43b62f9ec0a7207f67fd032f7ef9719fa8b6b44d7b3cf20fbc2346329493ff3a",
+      "expected": {
+        "num_hidden_layers": 28,
+        "hidden_size": 1024,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "derived_max_seq_len": 16384,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": null,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "Qwen3-VL-Embedding-2B",
+      "release_date": "2026-01-08",
+      "repo_id": "Qwen/Qwen3-VL-Embedding-2B",
+      "revision": "9f2f7e710d6d81056aa5c0a4f04764fec6bb7bda",
+      "backend": "vLLM",
+      "categories": [
+        "embedding"
+      ],
+      "architectures": [
+        "Qwen3VLForConditionalGeneration"
+      ],
+      "file": "Qwen3-VL-Embedding-2B.json",
+      "sha256": "9172f55b0b9cce70b7f67b10c58a408ccf3ec15c587e6efd4d5f41631237fded",
+      "expected": {
+        "num_hidden_layers": 28,
+        "hidden_size": 2048,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": 16,
+        "moe_num_experts": null,
+        "hybrid_attention": false
+      }
+    },
+    {
+      "name": "Falcon-H1R-7B",
+      "release_date": "2026-01-05",
+      "repo_id": "tiiuae/Falcon-H1R-7B",
+      "revision": "a6f74bf181389908efd6970878d7ee2b42f5d417",
+      "backend": "vLLM",
+      "categories": [
+        "llm"
+      ],
+      "architectures": [
+        "FalconH1ForCausalLM"
+      ],
+      "file": "Falcon-H1R-7B.json",
+      "sha256": "a0ed9a14b6a71ed4701b72549eb07e17d5c2a68c223aae09630de4e945c76c05",
+      "expected": {
+        "num_hidden_layers": 44,
+        "hidden_size": 3072,
+        "num_attention_heads": 12,
+        "num_key_value_heads": 2,
+        "head_dim": 128,
+        "derived_max_seq_len": 262144,
+        "vision_num_attention_heads": null,
+        "moe_num_experts": null,
+        "hybrid_attention": true
+      }
+    }
+  ]
+}

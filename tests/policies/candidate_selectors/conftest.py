@@ -1,17 +1,9 @@
 """
 Shared fixtures for candidate selector tests.
 
-The selectors call ``get_pretrained_config_with_workers`` during
-``_init_model_parameters`` for HuggingFace/ModelScope models. Some repos (notably
-the DeepSeek family) require ``trust_remote_code=True`` and pull in
-``configuration_deepseek.py`` + ``modeling_deepseek.py`` on top of ``config.json``.
-On CI runners the combined download frequently exceeds the 15s timeout inside
-``get_pretrained_config_with_workers`` and the tests fail with
-``ValueError: Failed to parse model ... hyperparameters: ...``.
-
-Mock the pretrained-config lookup for these repos with values mirrored from
-their public ``config.json`` so VRAM/attention-shape estimates stay stable, and
-fall through to the real function for every other repo.
+Mock DeepSeek metadata with values mirrored from public ``config.json`` so
+VRAM/attention-shape estimates stay stable without a hub download. Other repos
+use the configuration loader.
 """
 
 from types import SimpleNamespace

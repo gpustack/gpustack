@@ -66,8 +66,12 @@ from gpustack.utils.command import flatten_to_argv, is_parameter_key
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars
 from gpustack.utils.template import deployment_variables, render, render_values
-from gpustack.utils.hub import get_hf_text_config, get_max_model_len
-from gpustack.utils.hub import get_pretrained_config, safe_pretrained_config_from_dict
+from gpustack.utils.hub import get_pretrained_config
+from gpustack.utils.model_config import (
+    get_hf_text_config,
+    get_max_model_len,
+    safe_pretrained_config_from_dict,
+)
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
 from gpustack.utils.version import pick_runtime_version
@@ -421,12 +425,12 @@ class InferenceServer(ABC):
         Get the pretrained model configuration, if available.
 
         Returns:
-            The pretrained model configuration dictionary, or None if not available.
+            The pretrained model configuration object, or None if not available.
         """
         if self._pretrained_config_initialized:
             return self._pretrained_config
 
-        auto_config_error: Optional[Exception] = None
+        config_load_error: Optional[Exception] = None
         try:
             pretrained_config = get_pretrained_config(self._model)
             if isinstance(pretrained_config, dict):
@@ -439,9 +443,9 @@ class InferenceServer(ABC):
             return pretrained_config
         except Exception as e:
             logger.debug(
-                f"Failed to get pretrained config via AutoConfig, falling back to local config.json. Error: {e}"
+                f"Failed to read model configuration metadata, falling back to local config.json. Error: {e}"
             )
-            auto_config_error = e
+            config_load_error = e
 
         try:
             fallback_config = self._load_pretrained_config_from_local_config_json()
@@ -451,7 +455,7 @@ class InferenceServer(ABC):
         except Exception as e:
             raise RuntimeError(
                 "Failed to load pretrained config. "
-                f"AutoConfig error: {auto_config_error}. "
+                f"Configuration metadata error: {config_load_error}. "
                 f"Local config.json fallback error: {e}."
             ) from e
 
@@ -490,7 +494,9 @@ class InferenceServer(ABC):
         try:
             pretrained_config = self._get_pretrained_config()
             pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
-            return get_max_model_len(pretrained_or_hf_text_config)
+            return get_max_model_len(
+                pretrained_or_hf_text_config, fallback_config=pretrained_config
+            )
         except Exception as e:
             logger.warning(
                 f"Failed to derive max model length: {e}, continuing with default"

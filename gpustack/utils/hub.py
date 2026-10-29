@@ -11,39 +11,11 @@ from functools import cache
 from huggingface_hub import HfFileSystem
 from huggingface_hub.utils import validate_repo_id
 
-# Neutralize modelscope 1.33+'s global monkey-patch of
-# `transformers.dynamic_module_utils.get_class_from_dynamic_module` before any
-# `from modelscope import <Auto class>` runs (see get_pretrained_config below).
-# Upstream tracking: https://github.com/modelscope/modelscope/issues/1751
-#
-# `modelscope/utils/hf_util/patcher.py::_patch_pretrained_class` fires the
-# first time anything touches a class off the `modelscope` LazyImportModule
-# and replaces transformers' `get_class_from_dynamic_module` with a wrapper
-# that snapshot-downloads the whole repo from ModelScope for every
-# `trust_remote_code=True` load. On a server that serves both HuggingFace and
-# ModelScope sourced models this reroutes subsequent HF `AutoConfig.from_pretrained`
-# calls through `modelscope.snapshot_download(<hf_repo_id>)` — the HF repo id
-# usually does not exist on modelscope.cn, so config loads either 404 or fetch
-# the wrong content.
-#
-# The patcher gates its install with
-# `if not hasattr(dmu, "origin_get_class_from_dynamic_module")`, so seeding
-# that sentinel here turns the whole global patch into a no-op while leaving
-# the real transformers function intact. Our ModelScope code path below
-# downloads the snapshot itself and calls `AutoConfig.from_pretrained` on the
-# local directory, so it does not depend on the modelscope wrapper. Any code
-# that actually needs modelscope-backed HF routing can still call
-# `modelscope.utils.hf_util.patch_hub()` explicitly.
-import transformers.dynamic_module_utils as _dmu
-
-if not hasattr(_dmu, "origin_get_class_from_dynamic_module"):
-    _dmu.origin_get_class_from_dynamic_module = _dmu.get_class_from_dynamic_module
-
-from modelscope.hub.api import HubApi  # noqa: E402
-from modelscope.hub.snapshot_download import (  # noqa: E402
+from modelscope.hub.api import HubApi
+from modelscope.hub.snapshot_download import (
     snapshot_download as modelscope_snapshot_download,
 )
-from transformers import PretrainedConfig  # noqa: E402
+from transformers import PretrainedConfig
 from huggingface_hub import HfApi
 from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
 from requests.exceptions import HTTPError
@@ -57,17 +29,17 @@ from gpustack.schemas.models import (
     get_mmproj_filename,
 )
 from gpustack.utils.cache import is_cached, load_cache, save_cache
+from gpustack.utils import model_config
 
 logger = logging.getLogger(__name__)
 
 LIST_REPO_CACHE_DIR = "repo-skeleton"
 
 
-# Only root config.json plus Python modules (custom configs / trust_remote_code).
-# Avoid '*.json' so large files like tokenizer.json are not pulled during evaluation.
+# Configuration inspection only downloads JSON metadata, including versioned configs.
 MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN = [
     "config.json",
-    "*.py",
+    "config.*.json",
 ]
 
 
@@ -478,39 +450,25 @@ def get_diffusion_model_weight_size(model: Model, token: Optional[str] = None) -
 
 def get_pretrained_config(model: Model, **kwargs):
     """
-    Get the pretrained config of the model from Hugging Face or ModelScope.
+    Read model metadata without importing repository Python.
     Args:
         model: Model to get the pretrained config for.
+        kwargs: Legacy options, ignored. Backend trust flags only apply to inference.
     """
 
-    trust_remote_code = False
-    if (
-        model.backend_parameters and "--trust-remote-code" in model.backend_parameters
-    ) or kwargs.get("trust_remote_code"):
-        trust_remote_code = True
-
     global_config = get_global_config()
-    pretrained_config = None
     if model.source == SourceEnum.HUGGING_FACE:
-        from transformers import AutoConfig
-
-        pretrained_config = AutoConfig.from_pretrained(
+        config_dict, _ = PretrainedConfig.get_config_dict(
             model.huggingface_repo_id,
             token=global_config.huggingface_token,
-            trust_remote_code=trust_remote_code,
             cache_dir=os.path.join(global_config.cache_dir, "huggingface"),
         )
     elif model.source == SourceEnum.MODEL_SCOPE:
-        from modelscope import AutoConfig
-
         model_scope_cache_dir = os.path.join(global_config.cache_dir, "model_scope")
         repo_cache_dir = os.path.join(
             model_scope_cache_dir, *model.model_scope_model_id.split('/')
         )
         ms_config_json = os.path.join(repo_cache_dir, "config.json")
-        # ModelScope's wrapped AutoConfig passes kwargs to HF from_pretrained after
-        # snapshot_download; cache_dir/local_dir are not forwarded to snapshot_download,
-        # so downloads must use modelscope_snapshot_download with local_dir here.
         # Require config.json (not merely an existing dir) so empty directories still fetch.
         if not os.path.isfile(ms_config_json):
             logger.info(
@@ -531,10 +489,8 @@ def get_pretrained_config(model: Model, **kwargs):
             f"Loading pretrained config for ModelScope model {model.model_scope_model_id} "
             f"from {repo_cache_dir}"
         )
-        pretrained_config = AutoConfig.from_pretrained(
+        config_dict, _ = PretrainedConfig.get_config_dict(
             repo_cache_dir,
-            trust_remote_code=trust_remote_code,
-            allow_file_pattern=MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN,
             local_files_only=True,
         )
         logger.info(
@@ -548,129 +504,15 @@ def get_pretrained_config(model: Model, **kwargs):
             # Return an empty dict here to facilitate special handling by upstream methods.
             return {}
 
-        from transformers import AutoConfig
-
-        pretrained_config = AutoConfig.from_pretrained(
+        config_dict, _ = PretrainedConfig.get_config_dict(
             model.local_path,
-            trust_remote_code=trust_remote_code,
             local_files_only=True,
         )
 
     else:
         raise ValueError(f"Unsupported model source: {model.source}")
 
-    return pretrained_config
-
-
-def safe_pretrained_config_from_dict(config_dict: Dict) -> PretrainedConfig:
-    """
-    Reconstruct a PretrainedConfig from a raw config.json dict.
-
-    Works around a transformers v5 bug where __post_init__'s RoPE
-    standardization reads self.max_position_embeddings before kwargs are
-    applied as attributes, which raises AttributeError on configs that
-    still use the legacy `rope_scaling` key.
-    """
-    config_dict = dict(config_dict)
-    rope_scaling = config_dict.pop("rope_scaling", None)
-    config = PretrainedConfig.from_dict(config_dict)
-    if rope_scaling is not None:
-        config.rope_scaling = rope_scaling
-    return config
-
-
-# Simplified from vllm.config._get_and_verify_max_len
-# Keep in our codebase to avoid dependency on vllm's internal
-# APIs which may change unexpectedly.
-# https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/config.py#L2453
-def get_max_model_len(pretrained_config) -> int:  # noqa: C901
-    """Get the model's maximum length."""
-    derived_max_model_len = float("inf")
-    possible_keys = [
-        # OPT
-        "max_position_embeddings",
-        # GPT-2
-        "n_positions",
-        # MPT
-        "max_seq_len",
-        # ChatGLM2
-        "seq_length",
-        # Command-R
-        "model_max_length",
-        # Whisper
-        "max_target_positions",
-        # Others
-        "max_sequence_length",
-        "max_seq_length",
-        "seq_len",
-    ]
-    # Choose the smallest "max_length" from the possible keys.
-    max_len_key = None
-    for key in possible_keys:
-        max_len = getattr(pretrained_config, key, None)
-        if max_len is not None:
-            max_len_key = key if max_len < derived_max_model_len else max_len_key
-            derived_max_model_len = min(derived_max_model_len, max_len)
-
-    # If none of the keys were found in the config, use a default and
-    # log a warning.
-    if derived_max_model_len == float("inf"):
-        default_max_len = 2048
-        logger.warning(
-            "The model's config.json does not contain any of the following "
-            "keys to determine the original maximum length of the model: "
-            "%s. Assuming the model's maximum length is %d.",
-            possible_keys,
-            default_max_len,
-        )
-        derived_max_model_len = default_max_len
-
-    rope_scaling = getattr(pretrained_config, "rope_scaling", None)
-    if rope_scaling is not None and isinstance(rope_scaling, dict):
-        if "type" in rope_scaling:
-            rope_type = rope_scaling["type"]
-        elif "rope_type" in rope_scaling:
-            rope_type = rope_scaling["rope_type"]
-        else:
-            # Per-attention-type rope_parameters (e.g., Gemma-4) surface as a
-            # nested dict keyed by attention type with no top-level rope_type.
-            # No single scaling factor applies; fall through to derived length.
-            rope_type = None
-
-        # The correct one should be "longrope", kept "su" here
-        # to be backward compatible
-        if rope_type is not None and rope_type not in ("su", "longrope", "llama3"):
-            scaling_factor = 1
-            if "factor" in rope_scaling:
-                scaling_factor = rope_scaling["factor"]
-            if rope_type == "yarn":
-                derived_max_model_len = rope_scaling["original_max_position_embeddings"]
-            derived_max_model_len *= scaling_factor
-
-    logger.debug(f"Derived max model length: {derived_max_model_len}")
-    return int(derived_max_model_len)
-
-
-# Similar to https://github.com/vllm-project/vllm/blob/89a77b10846fd96273cce78d86d2556ea582d26e/vllm/transformers_utils/config.py#L978,
-# But we don't assert and fail if num_attention_heads is missing.
-def get_hf_text_config(config: PretrainedConfig):
-    """Get the "sub" config relevant to llm for multi modal models.
-    No op for pure text models.
-    """
-    if hasattr(config, "text_config"):
-        text_config = config.get_text_config()
-        if text_config is not None:
-            if isinstance(text_config, dict):
-                text_config = safe_pretrained_config_from_dict(text_config)
-            per_layer_attributes = (
-                getattr(text_config, "per_layer_attributes", None) or ()
-            )
-            if "num_attention_heads" in per_layer_attributes or hasattr(
-                text_config, "num_attention_heads"
-            ):
-                return text_config
-
-    return config
+    return model_config.safe_pretrained_config_from_dict(config_dict)
 
 
 quantization_list = [

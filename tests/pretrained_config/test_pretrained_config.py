@@ -1,6 +1,6 @@
 from transformers import AutoConfig
 
-from gpustack.utils.hub import get_hf_text_config, get_max_model_len
+from gpustack.utils.model_config import get_hf_text_config, get_max_model_len
 
 
 def test_get_max_model_len():

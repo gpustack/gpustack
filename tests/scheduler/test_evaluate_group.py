@@ -352,8 +352,9 @@ async def test_a_declared_router_memory_replaces_the_floor():
     assert group.total.ram == 8 * GIB
 
 
+@pytest.mark.parametrize("metadata_messages", [[], ["Unsupported architecture."]])
 @pytest.mark.asyncio
-async def test_a_role_bearing_model_never_reaches_find_candidate():
+async def test_a_role_bearing_model_never_reaches_find_candidate(metadata_messages):
     """The gate, stated as a test. `find_candidate` answers "where would one
     more instance go", which is not a question a group has."""
     placement = GroupPlacement(
@@ -372,6 +373,7 @@ async def test_a_role_bearing_model_never_reaches_find_candidate():
             return []
 
     view = SimpleNamespace(root=SimpleNamespace(), scopes=lambda: [])
+    solve = AsyncMock(return_value=placement)
     find_candidate = AsyncMock(return_value=(None, []))
     worker = SimpleNamespace(id=1, cluster_id=1)
 
@@ -384,9 +386,7 @@ async def test_a_role_bearing_model_never_reaches_find_candidate():
         patch.object(evaluator, "cache_instances_in", AsyncMock(return_value=[])),
         patch.object(evaluator, "build_view", lambda *a, **kw: view),
         patch.object(evaluator, "GroupCapacity", FakeCapacity),
-        patch.object(
-            evaluator, "solve_group_placement", AsyncMock(return_value=placement)
-        ),
+        patch.object(evaluator, "solve_group_placement", solve),
         patch.object(evaluator.scheduler, "find_candidate", find_candidate),
         patch.object(evaluator, "set_default_spec", AsyncMock(return_value=False)),
         patch.object(evaluator, "set_gguf_model_file_path", AsyncMock()),
@@ -394,7 +394,9 @@ async def test_a_role_bearing_model_never_reaches_find_candidate():
             evaluator, "evaluate_model_input", AsyncMock(return_value=(True, []))
         ),
         patch.object(
-            evaluator, "evaluate_model_metadata", AsyncMock(return_value=(True, []))
+            evaluator,
+            "evaluate_model_metadata",
+            AsyncMock(return_value=(not metadata_messages, metadata_messages)),
         ),
         patch.object(
             evaluator, "evaluate_environment", AsyncMock(return_value=(True, []))
@@ -410,7 +412,16 @@ async def test_a_role_bearing_model_never_reaches_find_candidate():
         )
 
     find_candidate.assert_not_called()
-    assert result.compatible is True
+    assert result.compatible is (not metadata_messages)
+    assert result.compatibility_messages == metadata_messages
+    if metadata_messages:
+        solve.assert_not_awaited()
+        assert result.resource_claim is None
+        assert result.resource_claim_by_cluster_id is None
+        assert result.role_resource_claims is None
+        assert result.role_resource_claims_by_cluster_id is None
+        return
+    solve.assert_awaited_once()
     assert result.resource_claim.vram == 40 * GIB
     assert result.role_resource_claims[0].role == "prefill"
     assert result.role_resource_claims_by_cluster_id[1][0].replicas == 1

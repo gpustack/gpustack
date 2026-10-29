@@ -74,9 +74,8 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         # Parse model params.
         model = self._model
         max_seq_len = self._model_params.derived_max_seq_len
-        if max_seq_len > 8192:
-            max_seq_len = 8192
-        self._serving_params.max_seq_len = max_seq_len
+        if max_seq_len is not None:
+            self._serving_params.max_seq_len = min(max_seq_len, 8192)
         try:
             self._serving_params.from_args_and_envs(
                 model.backend_parameters or [], model.env or {}
@@ -192,6 +191,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             if request_vram > 0:
                 return RequestEstimateUsage(reqeust_ram, request_vram)
 
+        self._validate_resource_metadata()
         is_multimodal = (
             is_multimodal_model(self._model_params.architectures)
             and compare_versions(self._model.backend_version or "0.0.0", "2.2.rc1") >= 0
@@ -300,6 +300,14 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 # Independent per-layer maxima can fail the GQA divisibility check.
                 # KV head and dimension maxima still bound the standard KV cache.
                 n_heads = 2 * self._model_params.num_key_value_heads
+            elif attention_type == ModelAttentionTypeEnum.UNK:
+                # Use full multi-head attention as a conservative KV cache estimate.
+                n_heads = 2 * self._model_params.num_attention_heads
+                logger.warning(
+                    "Unknown KV head layout; estimating MindIE cache memory using "
+                    "all %s attention heads",
+                    self._model_params.num_attention_heads,
+                )
 
             vram_kv_cache = n_heads * d_head * n_layers * n_tokens * ct_size
 
@@ -355,6 +363,24 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         )
 
         return RequestEstimateUsage(ram, vram)
+
+    def _validate_resource_metadata(self) -> None:
+        """Require the dimensions used by MindIE's KV and activation estimates."""
+        required = ["num_hidden_layers", "num_attention_heads", "head_dim"]
+        if self._model_params.get_attention_type() == ModelAttentionTypeEnum.MLA:
+            required.append("qk_nope_head_dim")
+        missing = [
+            key
+            for key in required
+            if not isinstance(getattr(self._model_params, key), int)
+            or getattr(self._model_params, key) <= 0
+        ]
+        if missing:
+            raise ValueError(
+                "Cannot estimate MindIE memory: model configuration is missing valid "
+                + ", ".join(missing)
+                + ". Provide complete configuration metadata or explicit resource claims."
+            )
 
     async def _validate_parallelized(self) -> bool:  # noqa: C901
         # Validate whether model can be parallelized.

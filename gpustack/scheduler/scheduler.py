@@ -1277,11 +1277,9 @@ async def evaluate_pretrained_config(
     architectures = get_vllm_override_architectures(model)
     if not architectures:
         try:
-            trust_remote_code = _extract_trust_remote_code(model)
             pretrained_config = await get_pretrained_config_with_workers(
                 model,
                 workers=workers,
-                trust_remote_code=trust_remote_code,
             )
         except ValueError as e:
             # Skip value error exceptions and defaults to LLM catagory for certain cases.
@@ -1311,6 +1309,8 @@ async def evaluate_pretrained_config(
 
     model_type = detect_model_type(architectures)
 
+    # An unselected backend leaves custom deployment options open during search.
+    # Apply the builtin architecture list only when vLLM is explicitly selected.
     # TODO : Additional checks for unsupported architectures for other backends.
     if (
         model.backend == BackendEnum.VLLM
@@ -1366,7 +1366,6 @@ async def _pd_layout_config(model: Model, config, workers: Optional[List[Worker]
         return await get_pretrained_config_with_workers(
             effective,
             workers=workers,
-            trust_remote_code=_extract_trust_remote_code(effective),
         )
     except Exception:
         logger.debug(
@@ -1443,13 +1442,6 @@ def _record_pd_connector_variant(
     return True
 
 
-def _extract_trust_remote_code(model: Model) -> bool:
-    """Extract trust_remote_code from model backend parameters."""
-    if model.backend_parameters and "--trust-remote-code" in model.backend_parameters:
-        return True
-    return False
-
-
 def _parse_hf_overrides(raw: str) -> Optional[Dict]:
     """Return interpretable JSON overrides without rejecting other syntax."""
     try:
@@ -1514,11 +1506,6 @@ def simplify_auto_config_value_error(e: ValueError) -> ValueError:
     Simplify the error message for ValueError exceptions.
     """
     message = str(e)
-    if "trust_remote_code=True" in message:
-        return ValueError(
-            "The model contains custom code that must be executed to load correctly. If you trust the source, please pass the backend parameter `--trust-remote-code` to allow custom code to be run."
-        )
-
     if "pip install --upgrade transformers" in message:
         return ValueError(f"Unsupported model. {UNSUPPORTED_MODEL_REMEDY}")
 

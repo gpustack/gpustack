@@ -1651,6 +1651,24 @@ class _StubServer(InferenceServer):
         raise NotImplementedError
 
 
+@pytest.mark.parametrize("text_length,expected", [(None, 65536), (8192, 32768)])
+def test_worker_context_length_uses_root_only_when_text_length_is_missing(
+    text_length, expected
+):
+    config = types.SimpleNamespace(
+        max_position_embeddings=32768,
+        rope_scaling={"type": "linear", "factor": 2},
+        text_config=types.SimpleNamespace(
+            num_attention_heads=16,
+            max_position_embeddings=text_length,
+            rope_scaling={"type": "linear", "factor": 4},
+        ),
+    )
+    server = _StubServer.__new__(_StubServer)
+    server._get_pretrained_config = lambda: config
+    assert server._derive_max_model_len() == expected
+
+
 @pytest.mark.parametrize(
     "image,expected",
     [

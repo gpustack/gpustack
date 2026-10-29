@@ -1,23 +1,242 @@
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
+from transformers import PretrainedConfig
 from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
 from gpustack.policies.utils import should_skip_gpu_count_check
 from gpustack.scheduler.evaluator import evaluate_model_metadata
+from gpustack.scheduler import evaluator, scheduler
 from tests.utils.model import make_model, new_model
 from gpustack.scheduler.scheduler import (
     UNSUPPORTED_MODEL_REMEDY,
     evaluate_pretrained_config,
     set_model_gpus_per_replica,
 )
-from gpustack.schemas.models import CategoryEnum, BackendEnum
+from gpustack.schemas.models import CategoryEnum, BackendEnum, ComputedResourceClaim
+from gpustack.schemas.model_evaluations import ModelSpec
+
+
+@pytest.fixture(autouse=True)
+def offline_model_metadata(monkeypatch):
+    fixtures = Path(__file__).parents[1] / "fixtures" / "model_configs"
+    cases = json.loads((fixtures / "scheduler_cases.json").read_text())
+    snapshots = {
+        "microsoft/Phi-4-multimodal-instruct": "phi4mm.json",
+        "Qwen/Qwen2-0.5B-Instruct": "qwen2.json",
+        "deepseek-ai/DeepSeek-R1": "deepseek_v3.json",
+    }
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_OFFLINE", True)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Scheduler tests must not use network or repository Python")
+
+    def get_config_dict(repo_id, **kwargs):
+        if repo_id in snapshots:
+            return json.loads((fixtures / snapshots[repo_id]).read_text()), {}
+        assert repo_id in cases, f"Missing configuration fixture: {repo_id}"
+        return cases[repo_id], {}
+
+    def read_repo_file_content(model, file_path, **kwargs):
+        assert file_path == "model_index.json"
+        if model.huggingface_repo_id == "Tongyi-MAI/Z-Image-Turbo":
+            return cases[model.huggingface_repo_id]
+        return None
+
+    monkeypatch.setattr(
+        PretrainedConfig, "get_config_dict", staticmethod(get_config_dict)
+    )
+    monkeypatch.setattr(
+        "gpustack.utils.hub.read_repo_file_content", read_repo_file_content
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.HfApi.auth_check", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr("requests.Session.request", forbidden)
+    monkeypatch.setattr("httpx.Client.send", forbidden)
+    monkeypatch.setattr(
+        "transformers.dynamic_module_utils.get_class_from_dynamic_module", forbidden
+    )
+    monkeypatch.setattr(
+        "transformers.models.auto.configuration_auto.get_class_from_dynamic_module",
+        forbidden,
+    )
+
+
+@pytest.mark.parametrize(
+    "backend,version,image,compatible",
+    [
+        (None, None, None, True),
+        (BackendEnum.VLLM, None, None, False),
+        (BackendEnum.CUSTOM, None, None, True),
+        (BackendEnum.VLLM, "custom-version", None, True),
+        (BackendEnum.VLLM, None, "example/custom-vllm:latest", True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_unknown_architecture_only_rejects_explicit_builtin_vllm(
+    config, backend, version, image, compatible
+):
+    model = ModelSpec(
+        source="huggingface",
+        huggingface_repo_id="LiquidAI/LFM3-1.7B",
+        backend=backend,
+        backend_version=version,
+        image_name=image,
+    )
+    actual, messages = await evaluate_model_metadata(config, model, [])
+    assert actual == compatible
+    if not compatible:
+        assert "Unsupported architecture: ['Lfm3ForCausalLM']" in messages[0]
+    else:
+        assert messages == []
+
+
+@pytest.mark.asyncio
+async def test_unselected_backend_routes_gguf_to_gguf_evaluation(config, monkeypatch):
+    model = ModelSpec(
+        source="huggingface",
+        huggingface_repo_id="LiquidAI/LFM3-1.7B-GGUF",
+        huggingface_filename="model.gguf",
+    )
+    evaluate_gguf = AsyncMock()
+    monkeypatch.setattr(scheduler, "evaluate_gguf_model", evaluate_gguf)
+    assert await evaluate_model_metadata(config, model, []) == (True, [])
+    evaluate_gguf.assert_awaited_once_with(model, workers=[])
+    assert model.backend is None
+
+
+@pytest.mark.parametrize("backend", [None, BackendEnum.VLLM])
+@pytest.mark.asyncio
+async def test_diffusion_detection_precedes_text_architecture_check(config, backend):
+    model = ModelSpec(
+        source="huggingface",
+        huggingface_repo_id="Tongyi-MAI/Z-Image-Turbo",
+        backend=backend,
+    )
+    assert await evaluate_model_metadata(config, model, []) == (True, [])
+    assert model.categories == [CategoryEnum.IMAGE]
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [
+        None,
+        BackendEnum.VLLM,
+        BackendEnum.SGLANG,
+        BackendEnum.ASCEND_MINDIE,
+        BackendEnum.CUSTOM,
+    ],
+)
+@pytest.mark.parametrize(
+    "repo_id", ["microsoft/Phi-4-multimodal-instruct", "deepseek-ai/DeepSeek-R1"]
+)
+@pytest.mark.parametrize("trusted", [False, True])
+@pytest.mark.asyncio
+async def test_auto_map_does_not_determine_backend_compatibility(
+    config, backend, repo_id, trusted
+):
+    parameters = ["--trust-remote-code"] if trusted else []
+    model = ModelSpec(
+        source="huggingface",
+        huggingface_repo_id=repo_id,
+        backend=backend,
+        backend_parameters=parameters.copy(),
+    )
+    assert await evaluate_model_metadata(config, model, []) == (True, [])
+    assert model.backend_parameters == parameters
+    assert model.categories == [CategoryEnum.LLM]
+
+
+@pytest.mark.parametrize("failure", [None, "environment", "kv_cache", "resources"])
+@pytest.mark.parametrize("trusted", [False, True])
+@pytest.mark.parametrize(
+    "repo_id", ["microsoft/Phi-4-multimodal-instruct", "deepseek-ai/DeepSeek-R1"]
+)
+@pytest.mark.asyncio
+async def test_auto_map_preserves_full_evaluation(
+    config, monkeypatch, failure, trusted, repo_id
+):
+    parameters = ["--trust-remote-code"] if trusted else []
+    model = ModelSpec(
+        source="huggingface",
+        huggingface_repo_id=repo_id,
+        backend=BackendEnum.VLLM,
+        backend_parameters=parameters.copy(),
+    )
+    worker = SimpleNamespace(id=1, cluster_id=1)
+    candidate = SimpleNamespace(
+        overcommit=False,
+        subordinate_workers=None,
+        computed_resource_claim=ComputedResourceClaim(ram=1024, vram={0: 4096}),
+    )
+    environment = AsyncMock(
+        return_value=(
+            (False, ["Environment incompatible"])
+            if failure == "environment"
+            else (True, [])
+        )
+    )
+    kv_cache = AsyncMock(
+        return_value=(
+            (False, ["KV cache incompatible"]) if failure == "kv_cache" else (True, [])
+        )
+    )
+    resources = AsyncMock(
+        return_value=(
+            (None, ["Not enough VRAM"]) if failure == "resources" else (candidate, [])
+        )
+    )
+    monkeypatch.setattr(evaluator, "set_default_spec", AsyncMock(return_value=False))
+    monkeypatch.setattr(evaluator, "set_gguf_model_file_path", AsyncMock())
+    monkeypatch.setattr(
+        evaluator, "evaluate_model_input", AsyncMock(return_value=(True, []))
+    )
+    monkeypatch.setattr(evaluator, "evaluate_environment", environment)
+    monkeypatch.setattr(evaluator, "evaluate_hybrid_model_kv_cache", kv_cache)
+    monkeypatch.setattr(scheduler, "find_candidate", resources)
+    result = await evaluator.evaluate_model(config, None, model, [worker], [])
+    assert result.compatible == (failure is None)
+    assert not result.error
+    environment.assert_awaited_once()
+    assert kv_cache.await_count == (0 if failure == "environment" else 1)
+    assert resources.await_count == (0 if failure in {"environment", "kv_cache"} else 1)
+    if failure is None:
+        assert result.resource_claim.model_dump() == {"ram": 1024, "vram": 4096}
+        assert result.resource_claim_by_cluster_id == {1: result.resource_claim}
+    else:
+        assert result.resource_claim is None
+        expected = {
+            "environment": "Environment incompatible",
+            "kv_cache": "KV cache incompatible",
+            "resources": "Unable to find a schedulable worker for the model.",
+        }
+        assert result.compatibility_messages[0] == expected[failure]
+    assert result.scheduling_messages == (
+        ["Not enough VRAM"] if failure == "resources" else []
+    )
+    assert len(result.compatibility_messages) == int(failure is not None)
+    assert model.backend_parameters == parameters
+
+
+@pytest.mark.asyncio
+async def test_model_without_remote_code_declaration_has_no_hint(config):
+    model = ModelSpec(
+        source="huggingface",
+        huggingface_repo_id="Qwen/Qwen2-0.5B-Instruct",
+        backend=BackendEnum.VLLM,
+    )
+    assert await evaluate_model_metadata(config, model, []) == (True, [])
 
 
 @pytest.mark.parametrize(
     "case_name, model, expect_error, expect_error_match, expect_categories",
     [
         (
-            # Checkpoint:
-            # The model contains custom code but `--trust-remote-code` is not provided.
-            # This should raise a ValueError with a specific message.
+            # Metadata inspection does not require executing custom model code.
             "custom_code_without_trust_remote_code",
             new_model(
                 1,
@@ -27,14 +246,12 @@ from gpustack.schemas.models import CategoryEnum, BackendEnum
                 backend=BackendEnum.VLLM,
                 backend_parameters=[],
             ),
-            ValueError,
-            "The model contains custom code that must be executed to load correctly. If you trust the source, please pass the backend parameter `--trust-remote-code` to allow custom code to be run.",
             None,
+            None,
+            ["LLM"],
         ),
         (
-            # Checkpoint:
-            # The model contains custom code and `--trust-remote-code` is provided.
-            # This should pass without errors and set the model category to LLM.
+            # Inference trust flags do not change metadata inspection.
             "custom_code_with_trust_remote_code",
             new_model(
                 1,
@@ -127,7 +344,7 @@ from gpustack.schemas.models import CategoryEnum, BackendEnum
                 1,
                 "test_name",
                 1,
-                huggingface_repo_id="Qwen/Qwen2.5-0.5B-Instruct",
+                huggingface_repo_id="Qwen/Qwen2-0.5B-Instruct",
                 backend=BackendEnum.VLLM,
                 backend_parameters=[],
             ),
@@ -136,10 +353,8 @@ from gpustack.schemas.models import CategoryEnum, BackendEnum
             ["LLM"],
         ),
         (
-            # Checkpoint:
-            # The model could run with vllm backend but get import error while get pretrained config.
-            # This should pass without errors.
-            "pass_import_error_in_pretrained_config",
+            # Custom configuration metadata supports classification without imports.
+            "custom_architecture_without_repository_imports",
             new_model(
                 1,
                 "test_name",
