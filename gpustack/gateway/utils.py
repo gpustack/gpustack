@@ -177,6 +177,14 @@ class RoutePrefix:
         """
         Returns regex patterns for the prefixes, considering versioning and legacy support.
         It supports removing -openai suffix from the versioned prefix with rewrite-target: /$1$3
+
+        The trailing .* lives inside the third capturing group on purpose.
+        The wasm capability plugins rewrite :path before the router runs,
+        and the route's regex_rewrite (sharing this pattern) then fires on
+        the already rewritten path: a greedy in-group tail keeps that
+        second pass an identity on any capability target path (e.g.
+        /compatible-api/v1/reranks), while characters matched outside the
+        groups would be dropped by the /$1$3 substitution.
         """
         versioned_prefixes = [f"/(v1){'(-openai)?' if self.support_legacy else '()'}"]
         if self.additional_versions:
@@ -185,7 +193,7 @@ class RoutePrefix:
                 for additional_version in self.additional_versions
             )
         return [
-            f"{versioned_prefix}({prefix})"
+            f"{versioned_prefix}({prefix}.*)"
             for versioned_prefix in versioned_prefixes
             for prefix in self.prefixes
         ]
