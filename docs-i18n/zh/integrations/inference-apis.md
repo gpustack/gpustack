@@ -135,6 +135,74 @@ curl http://your_gpustack_server_url/v1/rerank \
 }
 ```
 
+## System One 决策 API { #system-one-decision-api }
+
+决策模型——`decision` 类别的部署——遵循 System One（Jev）决策契约，而非生成文本：给定一个 state 和一组 questions，它们返回类型化的答案而非补全。GPUStack 在 `/v1/systemone` 路径上提供该契约。
+
+`model` 字段必填，取模型路由名称，与 `/v1/chat/completions` 完全一致。GPUStack 解析模型后，将请求体其余部分和整个响应原样透传给决策引擎。
+
+### 使用方法 { #usage_3 }
+
+#### cURL 示例 { #curl-example_2 }
+
+```bash
+export GPUSTACK_API_KEY=your_api_key
+curl http://your_gpustack_server_url/v1/systemone \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GPUSTACK_API_KEY" \
+  -d '{
+      "model": "qwen3-decision-8b",
+      "state": {
+          "messages": [
+              { "role": "user", "content": "Write a 200-word poem in Hungarian." }
+          ]
+      },
+      "questions": {
+          "model_selection": {
+              "type": "choice",
+              "instructions": "Pick the model best suited.",
+              "criteria": {
+                  "qwen3-8b": "Strong multilingual generation.",
+                  "llama3-8b": "Faster, weaker multilingual."
+              }
+          }
+      }
+  }' | jq
+```
+
+输出示例：
+
+```json
+{
+  "model": "qwen3-decision-8b",
+  "usage": {
+    "input_tokens": 189,
+    "output_tokens": 12
+  },
+  "answers": {
+    "model_selection": {
+      "type": "choice",
+      "choice": "qwen3-8b",
+      "confidence": 0.93,
+      "probabilities": {
+        "qwen3-8b": 0.93,
+        "llama3-8b": 0.07
+      }
+    }
+  }
+}
+```
+
+`state` 是做出决策所依据的情境——纯文本，或 chat messages 这类结构化 JSON。`questions` 下的每个条目将问题 id 映射到问题定义，三种类型是常规用法：
+
+| 类型 | 含义 | `criteria` | 答案字段 |
+| --- | --- | --- | --- |
+| `choice` | 选择一个选项 | 选项名 → 描述 | `choice`——选中的选项名 |
+| `score` | 按有序级别对 state 评分 | 有序的级别描述列表 | `score`——级别索引 |
+| `noul` | 二元（是/否）问题 | `true` / `false` 两侧的可选描述 | `noul`——布尔值 |
+
+问题的答案以相同 id 返回在 `answers` 中，并附带 `confidence` 和 `probabilities`。契约中的问题集是开放的——引擎可以接受更多字段——GPUStack 只校验 `model`，其余内容原样转发。决策模型的部署参见[使用决策模型](../using-models/using-decision-models.md)。
+
 ## 其他 API { #other-apis }
 
 对于其他 API 类型，可以在部署模型时启用 **Generic Proxy** 功能。

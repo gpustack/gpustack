@@ -135,6 +135,74 @@ curl http://your_gpustack_server_url/v1/rerank \
 }
 ```
 
+## System One 判定 API { #system-one-decision-api }
+
+判定モデル（`decision` カテゴリのデプロイ）は、テキストを生成する代わりに System One（Jev）判定契約に応答します。state と一連の questions を渡すと、補完ではなく型付きの回答を返します。GPUStack はこの契約を `/v1/systemone` パスで提供します。
+
+`model` フィールドは必須で、`/v1/chat/completions` とまったく同じくモデルルート名を指定します。GPUStack はモデルを解決し、リクエスト本文の残りとレスポンス全体を判定エンジンへそのまま透過します。
+
+### 使用方法 { #usage_3 }
+
+#### cURL の例 { #curl-example_2 }
+
+```bash
+export GPUSTACK_API_KEY=your_api_key
+curl http://your_gpustack_server_url/v1/systemone \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GPUSTACK_API_KEY" \
+  -d '{
+      "model": "qwen3-decision-8b",
+      "state": {
+          "messages": [
+              { "role": "user", "content": "Write a 200-word poem in Hungarian." }
+          ]
+      },
+      "questions": {
+          "model_selection": {
+              "type": "choice",
+              "instructions": "Pick the model best suited.",
+              "criteria": {
+                  "qwen3-8b": "Strong multilingual generation.",
+                  "llama3-8b": "Faster, weaker multilingual."
+              }
+          }
+      }
+  }' | jq
+```
+
+出力例:
+
+```json
+{
+  "model": "qwen3-decision-8b",
+  "usage": {
+    "input_tokens": 189,
+    "output_tokens": 12
+  },
+  "answers": {
+    "model_selection": {
+      "type": "choice",
+      "choice": "qwen3-8b",
+      "confidence": 0.93,
+      "probabilities": {
+        "qwen3-8b": 0.93,
+        "llama3-8b": 0.07
+      }
+    }
+  }
+}
+```
+
+`state` は判定の対象となる状況で、チャットメッセージのようなプレーンテキストまたは構造化 JSON です。`questions` の各エントリは質問 ID を質問定義に対応付けるもので、次の 3 種類が一般的です。
+
+| 型 | 意味 | `criteria` | 回答フィールド |
+| --- | --- | --- | --- |
+| `choice` | 選択肢から 1 つ選ぶ | 選択肢名 → 説明 | `choice`——選ばれた選択肢名 |
+| `score` | 順序付きレベルで state を評価 | レベル説明の順序付きリスト | `score`——レベルのインデックス |
+| `noul` | 二値（はい/いいえ）の質問 | `true` / `false` 両側の任意の説明 | `noul`——真偽値 |
+
+質問への回答は同じ ID で `answers` に返り、判定結果とともに `confidence` と `probabilities` が付きます。契約上の質問セットはオープンで、エンジンはさらに多くのフィールドを受け付けます。GPUStack が検証するのは `model` のみで、残りはそのまま転送します。判定モデルのデプロイについては、[判定モデルの利用](../using-models/using-decision-models.md)を参照してください。
+
 ## その他の API { #other-apis }
 
 ほかの種類の API には、モデルのデプロイ時に **Generic Proxy** を有効にできます。

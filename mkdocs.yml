@@ -188,6 +188,7 @@ nav:
               - Audio: user-guide/playground/audio.md
               - Embedding: user-guide/playground/embedding.md
               - Rerank: user-guide/playground/rerank.md
+              - Decision: user-guide/playground/decision.md
           - Model Catalog: user-guide/model-catalog.md
           - Model Deployment Management: user-guide/model-deployment-management.md
           - PD Disaggregation: user-guide/pd-disaggregation.md
@@ -219,6 +220,7 @@ nav:
           - Using Vision Language Models: using-models/using-vision-language-models.md
           - Using Embedding Models: using-models/using-embedding-models.md
           - Using Reranker Models: using-models/using-reranker-models.md
+          - Using Decision Models: using-models/using-decision-models.md
           - Using Image Generation Models: using-models/using-image-generation-models.md
           - Using Audio Models: using-models/using-audio-models.md
       - Tutorials:

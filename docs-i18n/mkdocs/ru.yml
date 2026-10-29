@@ -26,6 +26,7 @@ nav_translations:
   Audio: Аудио
   Embedding: Эмбеддинги
   Rerank: Переранжирование
+  Decision: Принятие решений
   Model Catalog: Каталог моделей
   Model Deployment Management: Управление развертыванием модели
   PD Disaggregation: Разделение prefill и decode
@@ -57,6 +58,7 @@ nav_translations:
   Using Vision Language Models: Использование визуально-языковых моделей
   Using Embedding Models: Использование эмбеддинг-моделей
   Using Reranker Models: Использование моделей переранжирования
+  Using Decision Models: Использование моделей принятия решений
   Using Image Generation Models: Использование моделей генерации изображений
   Using Audio Models: Использование аудиомоделей
   Tutorials: Практические руководства

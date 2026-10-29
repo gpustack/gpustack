@@ -10,7 +10,7 @@ translation_status: translated
 
 - GPUStack が稼働していること。ポリシーを適用する AI ゲートウェイはデフォルトでデプロイされるため、標準構成に追加設定は不要です。
 - ルートの対象として使う 2 つのデプロイ済みモデル（以下では `qwen3-0.6b` と `qwen3-32b`）。
-- 判断サービスの例では、`Model` - `Provider` ページに `TypeSafe Decision Service (Jev)` プロバイダーとして Jev を登録します（[モデルプロバイダー管理](../user-guide/model-provider-management.md)を参照）。
+- 判断サービスの例では、判定サービスを用意します。`Model` - `Provider` ページに `TypeSafe Decision Service (Jev)` プロバイダーとして登録した Jev サービス（[モデルプロバイダー管理](../user-guide/model-provider-management.md)を参照）、またはローカルにデプロイした判定モデル（[判定モデルの利用](../using-models/using-decision-models.md)を参照）のどちらでもかまいません。
 
 ## 手順 1：ルートの作成 { #step-1-create-the-route }
 
@@ -62,8 +62,7 @@ total(candidate) = Σ over plugins ( plugin weight × normalized score )
 次は、開始時のモデルに常に固定する代わりに、各要求に適切なモデルを判断エンジンへ問い合わせます。
 
 1. ルートを編集し、`Decision Service Routing` を有効化します。
-    - `Decision Service`：登録したプロバイダーを選択。
-    - `Decision Model`：例：`jev-latest`。
+    - `Decision Service`：登録したプロバイダーとそのエンジン（例: `jev-latest`）を選択するか、代わりにローカルにデプロイされた判定モデルを選択します。
     - `Instructions`：「要求を十分に処理できる最小のモデルを選んでください。単純・短い・事実に関する要求は高速モデルへ、複雑な推論・数学・コードの要求は大型モデルへ送ってください。」
     - `Model Criteria`：対象ごとに入力（または `Generate from targets` をクリックして調整）。
         - `qwen3-0.6b`：「非常に高速で低コストの 0.6B モデル。挨拶、単純な事実質問、書式整形、短い雑談に対応します。複数段階の推論、数学、コードには不向きです。」

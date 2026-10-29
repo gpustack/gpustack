@@ -131,6 +131,74 @@ Example output:
 }
 ```
 
+## System One Decision API
+
+Decision models — deployments in the `decision` category — answer the System One (Jev) decision contract instead of generating text: given a state and a set of questions, they return typed answers rather than completions. GPUStack exposes the contract at the `/v1/systemone` path.
+
+The `model` field is required and takes the model route name, exactly like `/v1/chat/completions`. GPUStack resolves the model and passes the rest of the request body, and the whole response, through to the decision engine untouched.
+
+### Usage
+
+#### cURL Example
+
+```bash
+export GPUSTACK_API_KEY=your_api_key
+curl http://your_gpustack_server_url/v1/systemone \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GPUSTACK_API_KEY" \
+  -d '{
+      "model": "qwen3-decision-8b",
+      "state": {
+          "messages": [
+              { "role": "user", "content": "Write a 200-word poem in Hungarian." }
+          ]
+      },
+      "questions": {
+          "model_selection": {
+              "type": "choice",
+              "instructions": "Pick the model best suited.",
+              "criteria": {
+                  "qwen3-8b": "Strong multilingual generation.",
+                  "llama3-8b": "Faster, weaker multilingual."
+              }
+          }
+      }
+  }' | jq
+```
+
+Example output:
+
+```json
+{
+  "model": "qwen3-decision-8b",
+  "usage": {
+    "input_tokens": 189,
+    "output_tokens": 12
+  },
+  "answers": {
+    "model_selection": {
+      "type": "choice",
+      "choice": "qwen3-8b",
+      "confidence": 0.93,
+      "probabilities": {
+        "qwen3-8b": 0.93,
+        "llama3-8b": 0.07
+      }
+    }
+  }
+}
+```
+
+A `state` is the situation the decision is made against — plain text or structured JSON such as chat messages. Each entry under `questions` maps a question id to a question definition, and three types are conventional:
+
+| Type | Meaning | `criteria` | Answer field |
+| --- | --- | --- | --- |
+| `choice` | Pick one option | Option name → description | `choice` — the picked option name |
+| `score` | Score the state against ordered levels | Ordered list of level descriptions | `score` — the level index |
+| `noul` | Binary (yes/no) question | Optional descriptions for the `true` / `false` sides | `noul` — a boolean |
+
+The answer for a question comes back under the same id in `answers`, carrying `confidence` and `probabilities` alongside the verdict. The question set is open in the contract — engines may accept further fields — and GPUStack validates only `model`, forwarding the rest verbatim. For deploying decision models, see [Using Decision Models](../using-models/using-decision-models.md).
+
 ## Other APIs
 
 For other API types, GPUStack allows you to enable the **Generic Proxy** feature when deploying a model.

@@ -56,12 +56,12 @@ When Session Affinity and Least Inflight Request are both enabled, session affin
 
 #### Decision Service Routing
 
-Score targets by task difficulty: each request is sent (truncated) with a model-selection question to a Jev-compatible decision service — a `TypeSafe Decision Service (Jev)` provider on the `Model` - `Provider` page — whose answer becomes a weighted vote. Decision failures, timeouts, or non-2xx responses fall back silently to the other plugins.
+Score targets by task difficulty: each request is sent (truncated) with a model-selection question to a Jev-compatible decision service — an external `TypeSafe Decision Service (Jev)` provider on the `Model` - `Provider` page, or a locally deployed decision model (see [Using Decision Models](../using-models/using-decision-models.md)) — whose answer becomes a weighted vote. Decision failures, timeouts, or non-2xx responses fall back silently to the other plugins.
 
 Settings:
 
-- `Decision Service` — the decision service provider (required).
-- `Decision Model` — route-level decision model, required when this policy is enabled. Options are read from the engines cached in the selected provider; if unset or invalid, decision routing is skipped and requests fall back to the other plugins.
+- `Decision Service` — the decision service source (required): an external TypeSafe provider, or a locally deployed decision model (running deployments in the `decision` category). The two are mutually exclusive — pick exactly one.
+- `Decision Model` — the decision engine to ask, derived from the selected source: the picked engine for an external provider (e.g. `jev-latest`, read from the engines cached in the provider), or the deployment's name for a local deployment. If unset or invalid, decision routing is skipped and requests fall back to the other plugins.
 - `Instructions` — extra guidance for the model-selection question sent to the decision service.
 - `Model Criteria` — model name → capability description: the basis the decision service uses to pick a model. At least one criterion is required; entries can be generated from the route's targets.
 - `Weight` — contribution weight in the weighted sum when combined with other policies; unset uses the built-in default (10).
