@@ -142,8 +142,12 @@ async def check_backend_in_use(
 
         return is_in_use, model_names
     except Exception as e:
-        logger.error(f"Error checking backend usage: {e}")
-        return False, []
+        # A failed usage lookup is not evidence that deletion is safe. Block the
+        # mutation and keep the database error in the cause chain for diagnosis.
+        logger.exception("Error checking backend usage")
+        raise InternalServerErrorException(
+            message="Failed to verify whether the inference backend is in use"
+        ) from e
 
 
 async def _source_owned_versions(session: AsyncSession) -> Set[Tuple[str, str]]:
@@ -1658,6 +1662,8 @@ async def update_inference_backend_from_yaml(  # noqa: C901
         raise BadRequestException(message=f"Invalid YAML format: {e}")
     except BadRequestException:
         raise  # Re-raise BadRequestException without wrapping
+    except InternalServerErrorException:
+        raise  # Preserve the original fail-closed error and cause chain
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update inference backend from YAML: {e}"

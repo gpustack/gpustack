@@ -402,11 +402,10 @@ async def deployed_backend_versions(
     asking about each separately is both slow and only ever answers about the
     first violation.
 
-    Deliberately not ``check_backend_in_use``: that helper answers ``False`` on a
-    database error, which reads as "nothing is in use" — letting a destructive
-    write through, or deleting the rows a deployment runs on. A model pinning no
-    version is left out, because Auto resolves at placement rather than against a
-    fixed version.
+    Deliberately not ``check_backend_in_use``: that helper answers one
+    (backend, version) pair per query, while this read covers every disappearing
+    pair — and names every offender — at once. A model pinning no version is left
+    out, because Auto resolves at placement rather than against a fixed version.
 
     Shared by the pre-write checks and the reconciles, so "in use" means one thing
     on every path that can take content away.
