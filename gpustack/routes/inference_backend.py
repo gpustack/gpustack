@@ -1284,7 +1284,11 @@ async def _redirect_global_edit_to_org_row(
     Returns ``None`` when no redirect is needed (target already
     belongs to the caller's Org, or caller is in "All" mode).
     """
-    if backend.owner_principal_id is not None or ctx.current_principal_id is None:
+    if (
+        cluster_scoped_system(ctx)
+        or backend.owner_principal_id is not None
+        or ctx.current_principal_id is None
+    ):
         return None
 
     org_row = await InferenceBackend.one_by_fields(

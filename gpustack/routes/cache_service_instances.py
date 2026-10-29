@@ -1,8 +1,8 @@
-from typing import Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from sqlmodel import select
+from sqlmodel import false, select
 
 from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
@@ -11,11 +11,9 @@ from gpustack.api.exceptions import (
     NotFoundException,
 )
 from gpustack.api.tenant import (
+    TenantContext,
     bypass_tenant_filter,
     cluster_scoped_system,
-    scoped_cluster_row_visible,
-    tenant_list_conditions,
-    tenant_stream_filter,
 )
 from gpustack.schemas.cache_services import (
     CacheService,
@@ -31,6 +29,61 @@ from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
 from gpustack.server.services import CacheServiceInstanceService
 
 router = APIRouter()
+
+
+def _system_instance_stream_filter(
+    ctx: TenantContext,
+) -> Callable[[Any], Awaitable[bool]]:
+    # Parent ownership is immutable. Cache it per stream, including for deletion
+    # events whose parent has already been removed. New services resolve lazily
+    # so a long-lived worker stream can discover newly deployed workloads.
+    owners = {}
+
+    async def visible(instance: Any) -> bool:
+        if (
+            ctx.scoped_cluster_owner_id is None
+            or getattr(instance, "cluster_id", None) != ctx.scoped_cluster_id
+        ):
+            return False
+        service_id = getattr(instance, "cache_service_id", None)
+        if service_id is None:
+            return False
+        if service_id not in owners:
+            async with async_session() as session:
+                # Include soft-deleted parents to authorize instance cleanup
+                # events even when this stream has not cached the owner yet.
+                service = await CacheService.one_by_id(session, service_id)
+            if service is None:
+                return False
+            owners[service_id] = service.owner_principal_id
+        return owners[service_id] == ctx.scoped_cluster_owner_id
+
+    return visible
+
+
+async def _assert_instance_visible(
+    session, ctx: TenantContext, instance: Optional[CacheServiceInstance]
+) -> None:
+    not_found = "Cache service instance not found"
+    if instance is None:
+        raise NotFoundException(message=not_found)
+    if cluster_scoped_system(ctx):
+        if instance.cluster_id != ctx.scoped_cluster_id:
+            raise NotFoundException(message=not_found)
+        owner_id = ctx.scoped_cluster_owner_id
+    elif bypass_tenant_filter(ctx):
+        return
+    else:
+        owner_id = ctx.current_principal_id
+    if owner_id is None:
+        raise NotFoundException(message=not_found)
+    service = await CacheService.one_by_id(session, instance.cache_service_id)
+    if (
+        service is None
+        or service.deleted_at is not None
+        or service.owner_principal_id != owner_id
+    ):
+        raise NotFoundException(message=not_found)
 
 
 @router.get("", response_model=CacheServiceInstancesPublic)
@@ -56,14 +109,8 @@ async def get_cache_service_instances(
         fields["state"] = state
 
     if params.watch:
-        # Cluster-bound service accounts (worker / cluster bootstrap) only
-        # stream instances of their own cluster (via the denormalized
-        # cluster_id). Instances carry no owner_principal_id — tenant
-        # visibility derives from the parent service, so Org-scoped
-        # callers are filtered against the services they own at stream
-        # start.
         if cluster_scoped_system(ctx):
-            filter_func = tenant_stream_filter(ctx, CacheServiceInstance)
+            filter_func = _system_instance_stream_filter(ctx)
         elif ctx.current_principal_id is not None and not bypass_tenant_filter(ctx):
             async with async_session() as session:
                 services = await CacheService.all_by_fields(
@@ -92,14 +139,24 @@ async def get_cache_service_instances(
         )
 
     async with async_session() as session:
-        extra_conditions = tenant_list_conditions(ctx, CacheServiceInstance)
-        if ctx.current_principal_id is not None and not bypass_tenant_filter(ctx):
-            # Tenant scoping derives from the parent service: instances
-            # have no owner_principal_id of their own.
+        extra_conditions = []
+        if cluster_scoped_system(ctx):
+            extra_conditions.append(
+                CacheServiceInstance.cluster_id == ctx.scoped_cluster_id
+            )
+            owner_id = ctx.scoped_cluster_owner_id
+        else:
+            owner_id = ctx.current_principal_id
+        if cluster_scoped_system(ctx) or not bypass_tenant_filter(ctx):
+            # Instances derive tenant ownership from their parent service.
             extra_conditions.append(
                 CacheServiceInstance.cache_service_id.in_(
                     select(CacheService.id).where(
-                        CacheService.owner_principal_id == ctx.current_principal_id,
+                        (
+                            CacheService.owner_principal_id == owner_id
+                            if owner_id is not None
+                            else false()
+                        ),
                         CacheService.deleted_at.is_(None),
                     )
                 )
@@ -124,23 +181,7 @@ async def get_cache_service_instance(
     during a stream reconnect), so their state write-backs must not depend
     on the cache being warm."""
     instance = await CacheServiceInstance.one_by_id(session, id)
-    if instance is None:
-        raise NotFoundException(message="Cache service instance not found")
-
-    # Visibility mirrors the list endpoint: cluster-bound service accounts
-    # see their own cluster's rows, and other tenant-scoped callers see the
-    # instances of the services they own.
-    if cluster_scoped_system(ctx):
-        if not scoped_cluster_row_visible(ctx, instance):
-            raise NotFoundException(message="Cache service instance not found")
-    elif ctx.current_principal_id is not None and not bypass_tenant_filter(ctx):
-        service = await CacheService.one_by_id(session, instance.cache_service_id)
-        if (
-            service is None
-            or service.deleted_at is not None
-            or service.owner_principal_id != ctx.current_principal_id
-        ):
-            raise NotFoundException(message="Cache service instance not found")
+    await _assert_instance_visible(session, ctx, instance)
 
     return instance
 
@@ -161,13 +202,7 @@ async def update_cache_service_instance(
         )
 
     instance = await CacheServiceInstance.one_by_id(session, id)
-    if instance is None:
-        raise NotFoundException(message="Cache service instance not found")
-
-    # Cluster-bound service accounts write their own cluster's rows only,
-    # mirroring the read endpoints' scoping.
-    if cluster_scoped_system(ctx) and not scoped_cluster_row_visible(ctx, instance):
-        raise NotFoundException(message="Cache service instance not found")
+    await _assert_instance_visible(session, ctx, instance)
 
     try:
         await CacheServiceInstanceService(session).update(

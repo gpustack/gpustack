@@ -152,6 +152,7 @@ def test_admin_acting_as_org_is_still_scoped(batch):
 def test_cluster_system_principal_cannot_write_another_cluster(batch):
     batch.ctx.user.kind = PrincipalType.SYSTEM
     batch.ctx.scoped_cluster_id = 1
+    batch.ctx.scoped_cluster_owner_id = 10
     assert _post(batch).status_code == 404
     batch.save.assert_not_awaited()
     statement = batch.session.exec.await_args.args[0]

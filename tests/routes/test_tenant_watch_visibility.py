@@ -40,6 +40,7 @@ def _context(scope):
         org_role=OrgRole.OWNER if scope == "org" else None,
         current_is_personal_scope=scope == "personal",
         scoped_cluster_id=11 if scope == "scoped-system" else None,
+        scoped_cluster_owner_id=101 if scope == "scoped-system" else None,
     )
 
 
@@ -92,6 +93,8 @@ async def test_watch_filters_replay_and_bus_events(
     ]
     if scope in ("org", "personal", "admin-org"):
         rows.append(_row(model, 5, None, 11))
+    if scope == "scoped-system":
+        rows.extend([_row(model, 6, 202, 11), _row(model, 7, 101, None)])
     cached_all = AsyncMock(return_value=rows)
     monkeypatch.setattr(model, "cached_all", cached_all)
     events = []
@@ -125,10 +128,10 @@ async def test_watch_filters_replay_and_bus_events(
     expected_ids = [1, 4]
     if scope == "personal":
         expected_ids = []
-    elif scope in ("admin-all", "system") or (
-        scope == "scoped-system" and model is not WorkerPool
-    ):
+    elif scope in ("admin-all", "system"):
         expected_ids = [1, 2, 3, 4]
+    elif scope == "scoped-system" and model is not WorkerPool:
+        expected_ids = []
     if filters:
         expected_ids = [row_id for row_id in expected_ids if row_id != 4]
 

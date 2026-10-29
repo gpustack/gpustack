@@ -951,8 +951,8 @@ async def assert_cluster_belongs_to_org(
     (or another Org's) cluster, stamping a cross-tenant model. A cluster the
     caller can't see is reported as missing (404), so cross-tenant cluster
     ids can't be probed via a 403-vs-404 difference; a visible cluster owned
-    by another Org is a 403. No cluster chosen (``cluster_id is None``)
-    leaves default-cluster resolution to pick the Org's own cluster.
+    by another Org is a 403. With no chosen cluster (``cluster_id is None``),
+    this check is skipped; it does not select or assign a default cluster.
 
     ``cluster`` may be passed pre-fetched to avoid a duplicate lookup.
     """

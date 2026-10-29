@@ -5,15 +5,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gpustack.api.exceptions import NotFoundException
+from gpustack.api.exceptions import ForbiddenException, NotFoundException
 from gpustack.api.tenant import (
     TenantContext,
     assert_cluster_visible,
+    assert_cluster_writable,
+    assert_org_owned_writable,
     assert_resource_visible,
     cluster_scoped_system,
     cluster_visibility_conditions,
     scoped_cluster_row_visible,
     tenant_list_conditions,
+    resolve_tenant_context,
 )
 from gpustack.routes.inference_backend import _hybrid_backend_conditions
 from gpustack.schemas.clusters import Cluster
@@ -21,7 +24,7 @@ from gpustack.schemas.models import Model
 from gpustack.schemas.principals import PrincipalType
 
 
-def _system_ctx(cluster_id=None, cluster_owner_id=None) -> TenantContext:
+def _system_ctx(cluster_id=None, cluster_owner_id=42) -> TenantContext:
     user = MagicMock()
     user.kind = PrincipalType.SYSTEM
     return TenantContext(
@@ -53,21 +56,46 @@ def test_cluster_scoped_system_detection():
     assert not cluster_scoped_system(None)
 
 
-def test_scoped_cluster_row_visible():
+@pytest.mark.parametrize(
+    "fields, expected",
+    [
+        ({"cluster_id": 3, "owner_principal_id": 42}, True),
+        ({"cluster_id": 3, "owner_principal_id": 99}, False),
+        ({"cluster_id": 3, "owner_principal_id": None}, False),
+        ({"cluster_id": 4, "owner_principal_id": 42}, False),
+        ({"cluster_id": None, "owner_principal_id": 42}, False),
+        ({"cluster_id": None, "owner_principal_id": 99}, False),
+        ({"cluster_id": 3}, False),
+        ({"owner_principal_id": 42}, False),
+        ({}, False),
+    ],
+)
+def test_scoped_cluster_row_visible(fields, expected):
     ctx = _system_ctx(cluster_id=3)
-    assert scoped_cluster_row_visible(ctx, SimpleNamespace(cluster_id=3))
-    assert not scoped_cluster_row_visible(ctx, SimpleNamespace(cluster_id=4))
-    # NULL cluster rows stay visible (default-cluster resolution).
-    assert scoped_cluster_row_visible(ctx, SimpleNamespace(cluster_id=None))
-    # Resources without a cluster_id attribute keep the plain bypass.
-    assert scoped_cluster_row_visible(ctx, SimpleNamespace())
+    resource = SimpleNamespace(**fields)
+    assert scoped_cluster_row_visible(ctx, resource) is expected
+    if expected:
+        assert_resource_visible(ctx, resource)
+        assert_org_owned_writable(ctx, resource)
+    else:
+        with pytest.raises(NotFoundException):
+            assert_resource_visible(ctx, resource)
+        with pytest.raises(ForbiddenException):
+            assert_org_owned_writable(ctx, resource)
+
+
+def test_scoped_system_requires_a_known_owner():
+    ctx = _system_ctx(cluster_id=3, cluster_owner_id=None)
+    resource = Model(cluster_id=3, owner_principal_id=None)
+    assert not scoped_cluster_row_visible(ctx, resource)
+    assert str(tenant_list_conditions(ctx, Model)[0]) == "false"
 
 
 def test_tenant_list_conditions_scopes_cluster_bound_system():
     scoped = tenant_list_conditions(_system_ctx(cluster_id=3), Model)
-    assert len(scoped) == 1
-    rendered = str(scoped[0])
-    assert "cluster_id" in rendered
+    assert len(scoped) == 2
+    assert scoped[0].compare(Model.cluster_id == 3)
+    assert scoped[1].compare(Model.owner_principal_id == 42)
 
     # Legacy SYSTEM principal keeps the full bypass.
     assert tenant_list_conditions(_system_ctx(), Model) == []
@@ -83,8 +111,11 @@ def test_cluster_visibility_conditions_scoped_to_own_cluster():
 
 def test_assert_resource_visible_scoped():
     ctx = _system_ctx(cluster_id=3)
-    assert_resource_visible(ctx, SimpleNamespace(cluster_id=3))
-    assert_resource_visible(ctx, SimpleNamespace(cluster_id=None))
+    assert_resource_visible(ctx, SimpleNamespace(cluster_id=3, owner_principal_id=42))
+    with pytest.raises(NotFoundException):
+        assert_resource_visible(
+            ctx, SimpleNamespace(cluster_id=None, owner_principal_id=42)
+        )
     with pytest.raises(NotFoundException):
         assert_resource_visible(ctx, SimpleNamespace(cluster_id=4))
     # Legacy SYSTEM principal still sees everything.
@@ -139,8 +170,8 @@ async def test_gpu_instance_list_scopes_cluster_bound_system(monkeypatch):
     await gpu_instances.get_gpu_instances(ctx=ctx, params=GPUInstanceListParams())
     conditions = query.call_args.kwargs["extra_conditions"]
     expected = tenant_list_conditions(ctx, GPUInstance)
-    assert len(conditions) == len(expected) == 1
-    assert conditions[0].compare(expected[0])
+    assert len(conditions) == len(expected) == 2
+    assert all(actual.compare(wanted) for actual, wanted in zip(conditions, expected))
 
 
 def test_hybrid_backend_conditions_scoped_to_cluster_owner():
@@ -152,3 +183,72 @@ def test_hybrid_backend_conditions_scoped_to_cluster_owner():
     assert "owner_principal_id" in rendered
 
     assert _hybrid_backend_conditions(_system_ctx()) == []
+
+
+@pytest.mark.parametrize("owner_id", [None, 42, 99])
+@pytest.mark.parametrize("cluster_id", [3, 4])
+def test_system_cluster_write_scope(cluster_id, owner_id):
+    ctx = _system_ctx(cluster_id=3, cluster_owner_id=42)
+    cluster = SimpleNamespace(id=cluster_id, owner_principal_id=owner_id)
+    if cluster_id == 3:
+        assert_cluster_writable(ctx, cluster)
+    else:
+        with pytest.raises(NotFoundException):
+            assert_cluster_writable(ctx, cluster)
+
+
+@pytest.mark.parametrize("allow_member", [False, True])
+@pytest.mark.parametrize("owner_id", [None, 42, 99])
+@pytest.mark.parametrize(
+    "cluster_fields", [{}, {"cluster_id": None}, {"cluster_id": 4}]
+)
+def test_system_writes_require_a_matching_cluster(
+    allow_member, owner_id, cluster_fields
+):
+    ctx = _system_ctx(cluster_id=3, cluster_owner_id=42)
+    resource = SimpleNamespace(owner_principal_id=owner_id, **cluster_fields)
+    with pytest.raises(ForbiddenException):
+        assert_org_owned_writable(ctx, resource, allow_member=allow_member)
+
+
+def test_system_can_write_own_cluster_resources():
+    assert_org_owned_writable(
+        _system_ctx(cluster_id=3, cluster_owner_id=42),
+        SimpleNamespace(cluster_id=3, owner_principal_id=42),
+    )
+
+
+@pytest.mark.parametrize("kind", ["cluster", "worker", "server", "unlinked"])
+@pytest.mark.parametrize("header", [None, "99"])
+@pytest.mark.asyncio
+async def test_system_context_uses_only_authenticated_cluster_scope(kind, header):
+    user = SimpleNamespace(
+        id=None if kind == "server" else 7,
+        name="system/worker/test",
+        kind=PrincipalType.SYSTEM,
+        is_admin=False,
+        worker=(
+            SimpleNamespace(cluster_id=3, owner_principal_id=42)
+            if kind == "worker"
+            else None
+        ),
+        cluster=(
+            SimpleNamespace(id=3, owner_principal_id=42) if kind == "cluster" else None
+        ),
+    )
+    request = SimpleNamespace(
+        state=SimpleNamespace(api_key=SimpleNamespace(owner_principal_id=99))
+    )
+    session = AsyncMock()
+    if kind == "unlinked":
+        with pytest.raises(ForbiddenException):
+            await resolve_tenant_context(request, user, header, session=session)
+        assert not hasattr(request.state, "tenant_context")
+    else:
+        ctx = await resolve_tenant_context(request, user, header, session=session)
+        assert ctx.current_principal_id is None
+        assert ctx.scoped_cluster_id == (None if kind == "server" else 3)
+        assert ctx.scoped_cluster_owner_id == (None if kind == "server" else 42)
+        if kind == "server":
+            assert_org_owned_writable(ctx, SimpleNamespace(owner_principal_id=99))
+    session.exec.assert_not_awaited()

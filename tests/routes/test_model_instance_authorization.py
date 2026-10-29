@@ -170,6 +170,7 @@ async def test_privileged_identity_scope(api, identity, allowed, method):
         api.ctx.current_principal_id = None
         if identity != "legacy_system":
             api.ctx.scoped_cluster_id = 1 if identity == "same_cluster_system" else 2
+            api.ctx.scoped_cluster_owner_id = 20
     response = await _request(api, method)
     assert response.status_code == (200 if allowed else 404)
     if not allowed:
@@ -202,6 +203,7 @@ async def test_update_accepts_unchanged_or_omitted_binding(api, full_report):
     if full_report:
         api.ctx.user.kind = PrincipalType.SYSTEM
         api.ctx.scoped_cluster_id = 1
+        api.ctx.scoped_cluster_owner_id = 10
         api.payload = ModelInstancePublic.model_validate(api.instance).model_dump(
             mode="json"
         )

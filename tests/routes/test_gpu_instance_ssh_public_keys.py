@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import ConflictException
+from gpustack.api.tenant import TenantContext
 from gpustack.routes import gpu_instance_ssh_public_keys as key_routes
 from gpustack.schemas.gpu_instance_ssh_public_keys import (
     GPUInstanceSSHPublicKey,
@@ -16,10 +17,11 @@ from gpustack.schemas.gpu_instance_ssh_public_keys import (
 from gpustack.schemas.gpu_instances import GPUInstance
 from gpustack.schemas.principals import PrincipalType
 
-CTX = SimpleNamespace(
-    user=SimpleNamespace(kind=PrincipalType.SYSTEM, id=1),
+CTX = TenantContext(
+    user=SimpleNamespace(kind=PrincipalType.USER, id=1),
     is_platform_admin=True,
     current_principal_id=None,
+    org_role=None,
 )
 
 

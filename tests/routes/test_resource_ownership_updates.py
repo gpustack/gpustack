@@ -152,12 +152,20 @@ async def client(api):
 @pytest.mark.parametrize("resource_type,endpoint,payload", CASES)
 @pytest.mark.parametrize("actor", ["owner", "admin", "admin-in-org", "worker"])
 @pytest.mark.parametrize("new_owner", [None, 99])
-async def test_owner_changes_rejected_before_persistence(api, client, actor, new_owner):
+async def test_owner_changes_rejected_before_persistence(
+    api, client, actor, new_owner, resource_type
+):
     api.ctx.__dict__.update(context(actor).__dict__)
     response = await client.put(
         "/1", json={**api.payload, "owner_principal_id": new_owner}
     )
-    assert response.status_code == 422, response.text
+    # Worker credentials can update model runtime resources, not infrastructure.
+    expected_status = (
+        403
+        if actor == "worker" and resource_type not in (Model, ModelInstance)
+        else 422
+    )
+    assert response.status_code == expected_status, response.text
     assert api.resource.owner_principal_id == 8
     api.save.assert_not_awaited()
     api.session.commit.assert_not_awaited()
@@ -167,7 +175,9 @@ async def test_owner_changes_rejected_before_persistence(api, client, actor, new
 @pytest.mark.parametrize("resource_type,endpoint,payload", CASES)
 @pytest.mark.parametrize("actor", ["owner", "admin", "admin-in-org", "worker"])
 @pytest.mark.parametrize("echo_owner", [False, True])
-async def test_ordinary_updates_preserve_owner(api, client, actor, echo_owner):
+async def test_updates_preserve_owner_and_require_write_access(
+    api, client, actor, echo_owner, resource_type
+):
     api.ctx.__dict__.update(context(actor).__dict__)
     field, value = (
         ("pid", 42)
@@ -178,6 +188,13 @@ async def test_ordinary_updates_preserve_owner(api, client, actor, echo_owner):
     if echo_owner:
         payload["owner_principal_id"] = 8
     response = await client.put("/1", json=payload)
+    if actor == "worker" and resource_type not in (Model, ModelInstance):
+        assert response.status_code == 403, response.text
+        assert api.resource.owner_principal_id == 8
+        assert getattr(api.resource, field) != value
+        api.save.assert_not_awaited()
+        api.session.commit.assert_not_awaited()
+        return
     assert response.status_code == 200, response.text
     assert api.resource.owner_principal_id == 8
     assert getattr(api.resource, field) == value
@@ -252,6 +269,10 @@ async def test_worker_can_echo_instance_bindings(api, client, cluster_id):
     payload = api.resource.model_dump(mode="json")
     payload["pid"] = 42
     response = await client.put("/1", json=payload)
+    if cluster_id is None:
+        assert response.status_code == 404, response.text
+        api.save.assert_not_awaited()
+        return
     assert response.status_code == 200, response.text
     assert api.resource.pid == 42
     assert api.resource.owner_principal_id == 8
