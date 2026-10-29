@@ -16,6 +16,8 @@ URL-encode the parameter value when constructing a request, for example `/v2/wor
 
 The Python client accepts the same parameter through `client.workers.list(params={"label": "beijing"})`, including when serving results from its watch cache.
 
+Only an unfiltered `awatch()` can serve worker lists from its cache. When `awatch(params={"label": "region=beijing"})` or another filtered watch is active, `list()` fetches results from the API, including for unfiltered requests or searches using a different label. Requests without explicit pagination fetch all matching workers. The watch still delivers callbacks and enriches ID-only removal events from its cached selection.
+
 Label filtering combines with the existing name search and cluster filters, and pagination totals reflect the filtered results. It also applies to `watch=true`: workers entering the selection emit a `CREATED` event, and workers leaving it emit a `DELETED` event. All results remain subject to the caller's tenant visibility. The `me=true` lookup retains its behavior of overriding other filters.
 
 ## Create Cluster
