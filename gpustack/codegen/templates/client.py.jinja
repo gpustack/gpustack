@@ -12,6 +12,9 @@ from gpustack.api.exceptions import (
 from gpustack.server.bus import Event, EventType
 from gpustack.schemas import *
 from gpustack.schemas.common import Pagination
+{%- if class_name == "Worker" %}
+from gpustack.utils.labels import LabelSearch
+{%- endif %}
 
 from .generated_http_client import HTTPClient
 
@@ -88,6 +91,9 @@ class {{ class_name }}Client:
 
         # Apply filters if params provided
         if params:
+{%- if class_name == "Worker" %}
+            label_search = LabelSearch(params["label"]) if params.get("label") else None
+{%- endif %}
             filtered_items = []
             for item in all_items:
                 match = True
@@ -95,6 +101,13 @@ class {{ class_name }}Client:
                     # Skip non-filter params like 'watch'
                     if key == 'watch':
                         continue
+{%- if class_name == "Worker" %}
+                    if key == 'label':
+                        if label_search and not label_search.matches(item.labels):
+                            match = False
+                            break
+                        continue
+{%- endif %}
                     # Convert attribute to string for comparison
                     attr_value = getattr(item, key, None)
                     if attr_value is not None and str(attr_value) != str(value):

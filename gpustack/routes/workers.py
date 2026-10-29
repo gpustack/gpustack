@@ -52,7 +52,7 @@ from gpustack.schemas.workers import (
     WorkerStatusStored,
     WorkerStateEnum,
 )
-from gpustack.server.bus import Event, EventType
+from gpustack.server.bus import Event, EventType, event_field
 from gpustack.server.worker_allocated_cache import (
     get_worker_allocated,
     get_workers_allocated,
@@ -80,6 +80,7 @@ from gpustack.security import (
 from gpustack.server.services import WorkerService
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
 from gpustack.utils.grafana import resolve_grafana_base_url
+from gpustack.utils.labels import LabelSearch
 
 router = APIRouter()
 system_name_prefix = "system/worker"
@@ -190,6 +191,40 @@ def _normalize_worker_order_by(order_by):
     return out
 
 
+def _worker_label_watch(label_search, fields, fuzzy_fields):
+    """Track membership so label edits remove or add workers in a watched list."""
+    matched_ids = set()
+
+    def matches(worker):
+        event = Event(type=EventType.UPDATED, data=worker)
+        return (
+            Worker._match_fields(event, fields)
+            and Worker._match_fuzzy_fields(event, fuzzy_fields)
+            and label_search.matches(event_field(worker, "labels"))
+        )
+
+    def include(worker):
+        return event_field(worker, "id") in matched_ids or matches(worker)
+
+    async def transform(event):
+        worker_id = event.id
+        if event.type == EventType.DELETED:
+            matched_ids.discard(worker_id)
+            return
+        if not matches(event.data):
+            matched_ids.discard(worker_id)
+            event.type = EventType.DELETED
+            event.data = {"id": worker_id}
+            event.changed_fields = {}
+            return
+        if worker_id not in matched_ids:
+            event.type = EventType.CREATED
+        matched_ids.add(worker_id)
+        await _inject_allocated_into_event(event)
+
+    return include, transform
+
+
 @router.get("", response_model=WorkersPublic)
 async def get_workers(
     user: CurrentUserDep,
@@ -202,6 +237,7 @@ async def get_workers(
     cluster_id: Optional[int] = None,
 ):
     fields, fuzzy_fields = _build_worker_list_filters(name, uuid, cluster_id, search)
+    label_search = LabelSearch(params.label) if params.label else None
 
     # Worker carries denormalized owner_principal_id (synced from cluster), so
     # tenant filtering scopes the list to the caller's own Org — a shared
@@ -209,13 +245,23 @@ async def get_workers(
     extra_conditions = tenant_list_conditions(ctx, Worker)
 
     if params.watch:
+        watch_filter = None
+        event_transform = _inject_allocated_into_event
+        if label_search:
+            watch_filter, event_transform = _worker_label_watch(
+                label_search, fields, fuzzy_fields
+            )
+            # The membership filter also receives rows leaving the selection,
+            # so it can turn their updates into removal events.
+            fields, fuzzy_fields = {}, {}
         return StreamingResponse(
             tenant_streaming(
                 Worker,
                 ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                event_transform=_inject_allocated_into_event,
+                filter_func=watch_filter,
+                event_transform=event_transform,
             ),
             media_type="text/event-stream",
         )
@@ -223,8 +269,13 @@ async def get_workers(
         # me query overrides all other filters
         fields = {"id": user.worker.id}
         fuzzy_fields = {}
+        label_search = None
 
     async with async_session() as session:
+        if label_search:
+            extra_conditions.append(
+                label_search.condition(Worker.labels, session.get_bind().dialect.name)
+            )
         worker_list = await Worker.paginated_by_query(
             session=session,
             fields=fields,

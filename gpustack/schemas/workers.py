@@ -4,6 +4,7 @@ from typing import ClassVar, Dict, Optional, Any, TYPE_CHECKING
 from typing_extensions import Annotated, deprecated
 from pydantic import ConfigDict, BaseModel, PositiveInt, field_validator
 from urllib.parse import urlparse
+from fastapi import Query
 from sqlmodel import (
     Field,
     SQLModel,
@@ -598,6 +599,13 @@ class Worker(WorkerBase, BaseModelMixin, table=True):
 
 
 class WorkerListParams(ListParams):
+    label: Optional[str] = Query(
+        default=None,
+        description="Match all whitespace-separated terms against label keys or values "
+        "by case-insensitive substring, "
+        "or match an exact, case-sensitive key=value or key:value pair.",
+    )
+
     sortable_fields: ClassVar[List[str]] = [
         "name",
         "state",

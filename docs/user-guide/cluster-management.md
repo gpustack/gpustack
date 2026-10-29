@@ -2,6 +2,22 @@
 
 GPUStack supports cluster-based worker management and provides multiple cluster types. You can provision a cluster through a `Cloud Provider` such as `DigitalOcean`, or create a self-hosted cluster and add workers using `Docker` run commands. Alternatively, you can register all nodes in a self-hosted `Kubernetes` cluster as GPUStack workers.
 
+## Filter Workers by Label
+
+The worker list API (`GET /v2/workers`) accepts a `label` query parameter:
+
+- A keyword searches all label keys and values using case-insensitive substring matching. For example, both `label=region` and `label=beijing` match a worker with the label `region=beijing`; `label=bei` also matches.
+- Whitespace-separated keywords use AND: every keyword must occur in some label key or value. For example, `label=region beijing` matches `region=beijing` and `region=beijing-east`, but excludes `region=shanghai`. Keywords can match different labels, so `label=region production` also matches a worker with `region=beijing` and `env=production`. Leading, trailing, and repeated whitespace is ignored.
+- A `key=value` or `key:value` expression matches that exact, case-sensitive pair. For example, both `label=region=beijing` and `label=region:beijing` exclude workers with `region=beijing-east`. The first `=` or `:` separates the key and value, so values may contain either character.
+- Exact pair expressions preserve whitespace in the key and value; for example, `label=city=New York` matches the complete value `New York`.
+- `%` and `_` are literal characters, rather than search wildcards. Omitting `label` or passing an empty or whitespace-only value disables label filtering.
+
+URL-encode the parameter value when constructing a request, for example `/v2/workers?label=region%3Dbeijing`, `/v2/workers?label=region%3Abeijing`, or `/v2/workers?label=region%20beijing`.
+
+The Python client accepts the same parameter through `client.workers.list(params={"label": "beijing"})`, including when serving results from its watch cache.
+
+Label filtering combines with the existing name search and cluster filters, and pagination totals reflect the filtered results. It also applies to `watch=true`: workers entering the selection emit a `CREATED` event, and workers leaving it emit a `DELETED` event. All results remain subject to the caller's tenant visibility. The `me=true` lookup retains its behavior of overriding other filters.
+
 ## Create Cluster
 
 1. Go to the `Clusters` page.
