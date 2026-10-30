@@ -146,6 +146,44 @@ async def test_a_role_less_model_reaches_the_selector_unprojected(harness):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('reserve_gib', [2, 3])
+async def test_managed_smg_ram_refusal_uses_the_reservation_constant(
+    harness, monkeypatch, reserve_gib
+):
+    from gpustack.policies.candidate_selectors import sglang_resource_fit_selector
+
+    selector = SimpleNamespace(
+        select_candidates=AsyncMock(return_value=[object()]), get_messages=lambda: []
+    )
+    monkeypatch.setattr(
+        scheduler, 'build_candidate_selector', lambda *a, **kw: selector
+    )
+    monkeypatch.setattr(scheduler, '_incompatible_cohort_message', lambda *a: None)
+    monkeypatch.setattr(scheduler, 'sglang_smg_mode', lambda model: True)
+    monkeypatch.setattr(
+        scheduler, 'ROUTER_DEFAULT_MEMORY', reserve_gib * 1024**3, raising=False
+    )
+    monkeypatch.setattr(
+        sglang_resource_fit_selector, 'reserve_sglang_smg_ram', lambda *a: []
+    )
+
+    candidate, messages = await scheduler.find_candidate(
+        None,
+        SimpleNamespace(cache_dir=None),
+        _model(),
+        [_worker()],
+        [],
+        managed_sglang=True,
+    )
+
+    assert candidate is None
+    assert messages == [
+        f'The primary Worker requires an additional {reserve_gib} GiB of RAM for SMG.',
+        'No workers meet the resource requirements.',
+    ]
+
+
+@pytest.mark.asyncio
 async def test_the_role_s_parameters_reach_the_selector(harness):
     model = _model(
         roles=[
@@ -274,3 +312,127 @@ async def test_a_role_less_model_never_takes_the_accelerator_free_path(harness):
 
     assert len(harness.selectors["VLLMResourceFitSelector"].seen) == 1
     assert not harness.selectors["CustomBackendResourceFitSelector"].seen
+
+
+def _admission_worker(identity=7, supported=True):
+    return SimpleNamespace(
+        id=identity,
+        name=f'worker-{identity}',
+        cluster_id=None,
+        deleted_at=None,
+        state='ready',
+        system_principal_id=identity + 100,
+        status=SimpleNamespace(
+            orchestration=SimpleNamespace(
+                protocol_version=1 if supported else None, admission_blocked=False
+            )
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_protocol_filter_keeps_target_marker_before_exclusion_and_role_projection(
+    harness,
+):
+    from gpustack.schemas.models import DistributedServers
+    from gpustack.policies.worker_filters.status_filter import StatusFilter
+    from tests.utils.model import new_model_instance
+
+    model = _pd_model()
+    pending = new_model_instance(10, 'new', model.id)
+    pending.distributed_servers = DistributedServers(workloads=[])
+    await scheduler.find_candidate(
+        None,
+        SimpleNamespace(cache_dir=None),
+        model,
+        [_admission_worker()],
+        [pending],
+        role='router',
+        exclude_instance_id=10,
+    )
+    status = next(f for f in harness.filters_seen[0] if isinstance(f, StatusFilter))
+    kept, messages = await status.filter([_admission_worker(supported=False)])
+    assert kept == []
+    assert any('protocol v1' in message for message in messages)
+    assert status._model is not model
+
+
+@pytest.mark.asyncio
+async def test_initial_protocol_filter_prevents_old_worker_candidate_construction(
+    harness, monkeypatch
+):
+    from gpustack.schemas.models import DistributedServers
+    from gpustack.policies.worker_filters.status_filter import StatusFilter
+    from tests.utils.model import new_model_instance
+
+    model = _model()
+    pending = new_model_instance(10, 'new', model.id)
+    pending.distributed_servers = DistributedServers(workloads=[])
+
+    class ProtocolChain:
+        def __init__(self, filters):
+            self.filters = filters
+
+        async def filter(self, workers):
+            return await next(
+                f for f in self.filters if isinstance(f, StatusFilter)
+            ).filter(workers)
+
+    monkeypatch.setattr(scheduler, 'WorkerFilterChain', ProtocolChain)
+    candidate, messages = await scheduler.find_candidate(
+        None,
+        SimpleNamespace(cache_dir=None),
+        model,
+        [_admission_worker(supported=False)],
+        [pending],
+        exclude_instance_id=10,
+    )
+    assert candidate is None
+    assert any('protocol v1' in message for message in messages)
+    assert all(not cls.seen for cls in harness.selectors.values())
+
+
+@pytest.mark.asyncio
+async def test_pending_managed_model_cannot_join_old_assigned_legacy_router(harness):
+    from gpustack.schemas.models import DistributedServers
+    from tests.utils.model import new_model_instance
+
+    model = _pd_model()
+    pending = new_model_instance(10, 'new', model.id)
+    pending.distributed_servers = DistributedServers(workloads=[])
+    router = new_model_instance(11, 'router', model.id, worker_id=9)
+    router.role = 'router'
+    candidate, messages = await scheduler.find_candidate(
+        None,
+        SimpleNamespace(cache_dir=None),
+        model,
+        [_admission_worker(), _admission_worker(9, False)],
+        [pending, router],
+        exclude_instance_id=10,
+    )
+    assert candidate is None
+    assert any('upgrade' in message for message in messages)
+    assert all(not cls.seen for cls in harness.selectors.values())
+
+
+@pytest.mark.asyncio
+async def test_cohort_protocol_precheck_does_not_require_existing_sibling_ready():
+    from gpustack.schemas.models import DistributedServers
+    from tests.utils.model import new_model_instance
+
+    model = _model()
+    pending = new_model_instance(10, 'new', model.id)
+    pending.distributed_servers = DistributedServers(workloads=[])
+    sibling = new_model_instance(11, 'existing', model.id, worker_id=9)
+    worker = _admission_worker(9)
+    worker.state = 'maintenance'
+    assert (
+        scheduler._incompatible_cohort_message(
+            model, [worker], [pending, sibling], True
+        )
+        is None
+    )
+    worker.status.orchestration.protocol_version = None
+    assert 'protocol v1' in scheduler._incompatible_cohort_message(
+        model, [worker], [pending, sibling], True
+    )

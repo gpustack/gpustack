@@ -1,10 +1,11 @@
 """Validate PD role graphs and mode-specific deployment constraints."""
 
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 from gpustack.api.exceptions import BadRequestException
 from gpustack.schemas.models import (
     PD_BACKENDS,
+    BackendEnum,
     DisaggregationSpec,
     Model,
     ModelCreate,
@@ -15,6 +16,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.server.pd_mode_catalog import get_pd_mode
 from gpustack.utils.command import flatten_to_argv
+from gpustack.utils.vllm_topology import vllm_lb_mode
 from gpustack.validation.pd.common import model_field
 
 
@@ -178,6 +180,27 @@ def validate_roles(  # noqa: C901
     _reject_cache_under_a_hand_written_mode(field, roles, disaggregation)
     _reject_a_policy_the_mode_cannot_apply(disaggregation)
     _reject_router_params_the_platform_owns(roles, disaggregation)
+    launch_fields = ("backend", "backend_parameters", "disaggregation")
+    changed = stored is None or any(
+        field(name) != getattr(stored, name) for name in launch_fields
+    )
+    previous = {role.name: role for role in (stored.roles or [])} if stored else {}
+    for role in roles:
+        old = previous.get(role.name)
+        role_changed = old is None or (role.backend, role.backend_parameters) != (
+            old.backend,
+            old.backend_parameters,
+        )
+        if role.name in ("prefill", "decode") and (changed or role_changed):
+            validate_external_pd_membership(
+                disaggregation.mode.value,
+                role.backend or field("backend") or BackendEnum.VLLM,
+                (
+                    role.backend_parameters
+                    if role.backend_parameters is not None
+                    else field("backend_parameters")
+                ),
+            )
 
     # A recipe injects one engine's connector configuration into every role,
     # so a role on a different engine would receive settings it cannot read.
@@ -201,6 +224,37 @@ def validate_roles(  # noqa: C901
                         f"connection parameters are yours to supply."
                     )
                 )
+
+
+def validate_external_pd_membership(
+    mode_name: str, backend: Optional[str], parameters: Optional[List[str]]
+) -> None:
+    """Reject unsupported PD layouts and static-only router membership."""
+    if backend != BackendEnum.VLLM:
+        return
+    try:
+        lb_mode = vllm_lb_mode(parameters)
+    except ValueError as exc:
+        raise BadRequestException(message=str(exc)) from exc
+    if lb_mode == "native":
+        raise BadRequestException(
+            message="Native multi-port vLLM is supported only for ordinary instances, not PD roles."
+        )
+    if lb_mode != "external":
+        return
+    mode = get_pd_mode(mode_name)
+    if (
+        mode is not None
+        and mode.router is not None
+        and mode.router.membership_update.value == "restart"
+        and not mode.router.membership_api_usable
+    ):
+        raise BadRequestException(
+            message=(
+                f"Managed External-LB PD requires dynamic router membership; "
+                f"mode '{mode_name}' only supports router restart."
+            )
+        )
 
 
 def _reject_router_params_the_platform_owns(roles, disaggregation) -> None:

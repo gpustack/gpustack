@@ -266,6 +266,54 @@ async def test_a_distributed_placement_keeps_its_other_halves_visible():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("managed", [False, True])
+async def test_distributed_capacity_keeps_backend_and_managed_identity(managed):
+    from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
+    from gpustack.policies.resource_view import ResourceView
+    from gpustack.schemas.models import BackendEnum, Model
+
+    model = Model(
+        name="pd",
+        source="local_path",
+        local_path="/models/moe",
+        backend=BackendEnum.VLLM,
+        backend_parameters=["--data-parallel-external-lb"] if managed else [],
+    )
+
+    class Distributed(FakeSelector):
+        def __init__(self, instances):
+            super().__init__(instances, free_gpus=[0, 1])
+            self._model = model
+
+        async def select_candidates(self, workers):
+            guard = VLLMResourceFitSelector(
+                SimpleNamespace(),
+                model,
+                self._instances,
+                resource_view=ResourceView(self._instances),
+            )
+            if not all(
+                guard._validate_distributed_limit_per_worker(w) for w in workers
+            ):
+                return []
+            found = await super().select_candidates(workers)
+            for c in found:
+                c.subordinate_workers = [
+                    SimpleNamespace(
+                        worker_id=2,
+                        gpu_indexes=c.gpu_indexes,
+                        computed_resource_claim=c.computed_resource_claim,
+                    )
+                ]
+            return found
+
+    result = await count_offer_slots(Distributed, [worker(), worker(2)], [], limit=2)
+
+    assert result.unavailable is None
+    assert result.slots == (2 if managed else 1)
+
+
+@pytest.mark.asyncio
 async def test_the_stand_in_is_readable_by_the_real_allocation_function():
     """The load-bearing claim of this module: the pretence is exact because it
     goes through the same accounting the scheduler will. Asserted against the

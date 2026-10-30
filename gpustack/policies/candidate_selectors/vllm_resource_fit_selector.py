@@ -49,6 +49,8 @@ from gpustack.utils.unit import byte_to_gib
 from gpustack.utils.vllm_topology import (
     parse_user_parallelism,
     validate_multinode_topology,
+    vllm_lb_mode,
+    managed_lb_parallelism,
 )
 
 logger = logging.getLogger(__name__)
@@ -1139,23 +1141,30 @@ def _create_candidate(
     tries the next one — without raising, because a different combination
     may still satisfy the requirements.
     """
-    if len(selected_workers) > 1 and (
-        resolve_executor_backend(
-            model.backend_parameters, model.backend_version, model.image_name
+    try:
+        mode = vllm_lb_mode(model.backend_parameters)
+        if mode in ("external", "native") or (
+            len(selected_workers) > 1
+            and (
+                resolve_executor_backend(
+                    model.backend_parameters, model.backend_version, model.image_name
+                )
+                == "mp"
+            )
+        ):
+            gpu_per_node = [len(w.status.gpu_devices or []) for w in selected_workers]
+            if mode in ("external", "native"):
+                managed_lb_parallelism(model.backend_parameters, gpu_per_node)
+            else:
+                validate_multinode_topology(
+                    gpu_per_node, parse_user_parallelism(model.backend_parameters)
+                )
+    except ValueError as e:
+        logger.info(
+            f"Skipping worker combination {[w.name for w in selected_workers]} "
+            f"for {model.name}: {e}"
         )
-        == "mp"
-    ):
-        gpu_per_node = [len(w.status.gpu_devices or []) for w in selected_workers]
-        try:
-            validate_multinode_topology(
-                gpu_per_node, parse_user_parallelism(model.backend_parameters)
-            )
-        except ValueError as e:
-            logger.info(
-                f"Skipping worker combination {[w.name for w in selected_workers]} "
-                f"for {model.name}: {e}"
-            )
-            return None, str(e)
+        return None, str(e)
 
     main_worker = selected_workers[0]
     vram_claim_main = {

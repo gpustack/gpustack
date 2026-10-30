@@ -1,5 +1,6 @@
 import logging
 from collections import defaultdict
+from dataclasses import replace
 from typing import Dict, List, Optional, Tuple
 from transformers.utils import strtobool
 
@@ -25,6 +26,7 @@ from gpustack.policies.utils import (
     estimate_model_vram,
     get_model_ram_claim,
     group_workers_by_gpu_type,
+    ram_not_enough,
     sort_workers_by_gpu_count,
     estimate_diffusion_model_vram,
     sort_gpu_indexes_by_allocatable_rate,
@@ -35,6 +37,7 @@ from gpustack.schemas.models import (
     Model,
     ModelInstanceSubordinateWorker,
     CategoryEnum,
+    ROUTER_DEFAULT_MEMORY,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.config import Config
@@ -44,6 +47,29 @@ from gpustack.utils.command import (
     find_int_parameter,
 )
 from gpustack.utils.unit import byte_to_gib, byte_to_mib
+
+
+def reserve_sglang_smg_ram(
+    candidates, selector
+) -> List[ModelInstanceScheduleCandidate]:
+    """Add one CPU router's RAM to each feasible primary, leaving Engines unchanged."""
+    result = []
+    for candidate in candidates:
+        ram = (candidate.computed_resource_claim.ram or 0) + ROUTER_DEFAULT_MEMORY
+        available = selector.get_worker_allocatable_resource(
+            candidate.worker, candidate.gpu_type
+        )
+        if ram_not_enough(ram, available):
+            continue
+        reserved = replace(
+            candidate,
+            computed_resource_claim=candidate.computed_resource_claim.model_copy(
+                update={"ram": ram}
+            ),
+        )
+        result.append(reserved)
+    return result
+
 
 logger = logging.getLogger(__name__)
 _EVENT_ACTION_RAM_NOT_ENOUGH = "ram_not_enough"
@@ -57,8 +83,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         model_instances: List[ModelInstance],
         *,
         resource_view: ResourceView,
+        managed_sglang: bool = False,
     ):
         super().__init__(cfg, model, model_instances, resource_view=resource_view)
+        self._managed_sglang = managed_sglang
 
         self._vram_claim = 0
         self._ram_claim = 0
@@ -367,6 +395,13 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             )
 
             candidates = candidate_func(workers)
+            if self._managed_sglang and candidates:
+                candidates = reserve_sglang_smg_ram(candidates, self)
+                if not candidates:
+                    self._add_message(
+                        "The primary Worker requires an additional "
+                        f"{byte_to_gib(ROUTER_DEFAULT_MEMORY):g} GiB of RAM for SMG."
+                    )
 
             if len(candidates) == 1 and candidates[0].overcommit:
                 self._set_messages()

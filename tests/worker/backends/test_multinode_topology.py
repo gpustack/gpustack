@@ -774,6 +774,18 @@ def test_create_candidate_cross_node_tp_allowed():
     assert reason is None
 
 
+def test_create_candidate_returns_a_reason_for_conflicting_lb_parameters():
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+
+    candidate, reason = _create_candidate(
+        _mock_model(['--data-parallel-external-lb', '--dpm']), [_mock_worker('a', 4)]
+    )
+    assert candidate is None
+    assert reason
+
+
 def test_create_candidate_returns_candidate_when_topology_fits():
     """Homogeneous cluster with valid cross-node TP/PP → candidate created."""
     from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
@@ -897,6 +909,39 @@ def test_external_topology_uniform_rank_slices(gpus, dp, tp, expected):
         [f'--data-parallel-size={dp}', f'--tensor-parallel-size={tp}'], gpus
     )
     assert (result.dp, result.dpl_per_node, result.nnodes_within_dp) == expected
+
+
+@pytest.mark.parametrize('local', ['1', '2', '0', '-1', 'invalid'])
+def test_external_heterogeneous_allocation_rejects_uniform_local_dp_override(local):
+    from gpustack.utils.vllm_topology import external_lb_parallelism
+
+    with pytest.raises(ValueError, match='data-parallel-size-local'):
+        external_lb_parallelism(
+            ['--dp=3', '--tp=4', f'--data-parallel-size-local={local}'], [4, 8]
+        )
+
+
+@pytest.mark.parametrize(
+    'counts,accepted', [([4], True), ([8], False), ([4, 4], False)]
+)
+def test_external_selector_validates_rank_world_for_every_executor(counts, accepted):
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+
+    model = _mock_model(
+        [
+            '--distributed-executor-backend=ray',
+            '--data-parallel-external-lb',
+            '--dp=2',
+            '--tp=2',
+        ]
+    )
+    candidate, reason = _create_candidate(
+        model, [_mock_worker(str(i), count) for i, count in enumerate(counts)]
+    )
+    assert (candidate is not None) == accepted, reason
+    assert (reason is None) == accepted
 
 
 def test_external_selector_accepts_multiple_local_rank_fragments():

@@ -19,9 +19,9 @@ one fewer slot on that host, which the solver handles like any other shortage:
 it moves to the next host, or refuses with an arithmetic the operator can act
 on ("widen the port range").
 
-Only reached from the group path. A model without `roles` has no PD mode, so
-`member_port_demand` returns 1 for it and the capacity it computes is the
-count it already had.
+Only reached from the group path. Internal serving keeps its one API port;
+managed vLLM also reserves rank APIs and communication windows before the
+connector bands are counted.
 """
 
 from __future__ import annotations
@@ -37,7 +37,12 @@ from gpustack.utils.network import parse_port_range
 # placed on a host, that one decides whether it can start there, and a private
 # copy here would drift into a scheduler that promises room the allocator does
 # not find.
-from gpustack.schemas.models import member_worker_ids
+from gpustack.schemas.models import BackendEnum, get_backend, member_worker_ids
+from gpustack.utils.vllm_topology import (
+    VLLM_MP_CONNECTING_PORT_COUNT,
+    managed_lb_parallelism,
+    vllm_lb_mode,
+)
 from gpustack.worker.pd_injection import band_specs_for, member_band_width
 
 logger = logging.getLogger(__name__)
@@ -55,6 +60,9 @@ def member_port_demand(
     `gpu_per_node` so the shared band covers every global rank offset on
     each host, just as the worker allocator does.
 
+    Managed vLLM counts the complete API, RPC, store and compatibility-window
+    allocation, including ports reserved on a headless host without a listener.
+
     **A band that cannot be resolved counts as zero, and that is not an
     underestimate.** The worker skips such a band too (leaving
     `{{ports.<name>}}` in the launch for the engine to reject by name), so no
@@ -62,6 +70,25 @@ def member_port_demand(
     the stricter of two checks that are supposed to be the same check.
     """
     demand = _BASE_PORTS
+    mode = (
+        vllm_lb_mode(model.backend_parameters)
+        if get_backend(model) == BackendEnum.VLLM
+        else "internal"
+    )
+    allocation = gpu_per_node or [cards]
+    if (
+        role in (None, "prefill", "decode")
+        and mode in ("external", "native")
+        and min(allocation) > 0
+    ):
+        topology = managed_lb_parallelism(model.backend_parameters, allocation)
+        demand = (
+            VLLM_MP_CONNECTING_PORT_COUNT
+            + topology.dp
+            + 1  # Shared DP RPC.
+            + (topology.dp if topology.nnodes_within_dp > 1 else 0)
+            + (1 if mode == "native" else 0)
+        )
     for spec in band_specs_for(model, role, context=f"Role {role!r}"):
         if spec.scope == PDPortScopeEnum.ROLE:
             # Refused outright on the worker. Budgeting for it would be

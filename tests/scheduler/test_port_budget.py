@@ -15,7 +15,7 @@ import pytest
 
 from gpustack.scheduler import port_budget
 from gpustack.schemas.cache_services import CacheServiceInstanceBase
-from gpustack.schemas.models import RoleNameEnum
+from gpustack.schemas.models import BackendEnum, RoleNameEnum
 
 MOONCAKE = "vllm-ascend-mooncake"
 NIXL = "sglang-nixl"
@@ -23,6 +23,11 @@ NIXL = "sglang-nixl"
 
 def _model(mode=None, backend_parameters=None):
     return SimpleNamespace(
+        backend=(
+            BackendEnum.SGLANG
+            if mode and mode.startswith("sglang")
+            else BackendEnum.VLLM
+        ),
         disaggregation=SimpleNamespace(mode=mode) if mode else None,
         backend_parameters=backend_parameters or [],
     )
@@ -50,6 +55,48 @@ def _cache_instance(worker_id, ports=None, port=None):
 
 
 class TestMemberDemand:
+    def test_non_vllm_parameters_do_not_use_vllm_mode_validation(self):
+        model = _model(
+            NIXL,
+            ["--data-parallel-external-lb", "--data-parallel-multi-port-external-lb"],
+        )
+        assert port_budget.member_port_demand(model, "prefill", 4) == 2
+
+    @pytest.mark.parametrize(
+        "flag, nodes, parameters, mode, expected",
+        [
+            ("--data-parallel-external-lb", [4], ["--dp=2", "--tp=2"], None, 13),
+            (
+                "--data-parallel-multi-port-external-lb",
+                [4],
+                ["--dp=2", "--tp=2"],
+                None,
+                14,
+            ),
+            ("--data-parallel-external-lb", [4], ["--dp=2", "--tp=2"], MOONCAKE, 17),
+            ("--data-parallel-external-lb", [4, 4], ["--dp=2", "--tp=4"], MOONCAKE, 21),
+            (
+                "--data-parallel-external-lb",
+                [4, 4],
+                ["--dp=2", "--tp=4", "--data-parallel-size-local=2"],
+                MOONCAKE,
+                23,
+            ),
+        ],
+    )
+    def test_managed_demand_includes_rank_and_communication_ports(
+        self, flag, nodes, parameters, mode, expected
+    ):
+        model = _model(mode, [flag, *parameters])
+        model.backend = BackendEnum.VLLM
+
+        demand = port_budget.member_port_demand(
+            model, "prefill" if mode else None, nodes[0], gpu_per_node=nodes
+        )
+
+        assert demand == expected
+        assert port_budget.port_capacity("40000-40063", demand, 40) == 24 // expected
+
     @pytest.mark.parametrize("parameters", [["--tp=16"], ["--dp=0"]])
     def test_invalid_spanning_topology_leaves_the_band_unresolved(self, parameters):
         model = _model("vllm-nixl", parameters + ["--distributed-executor-backend=mp"])

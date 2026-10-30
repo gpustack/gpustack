@@ -8,6 +8,10 @@ from gpustack.schemas.workers import Worker
 logger = logging.getLogger(__name__)
 
 
+class WorkerPathCheckError(RuntimeError):
+    """No accessible path was confirmed because a worker check failed."""
+
+
 class WorkerSelector:
     """Service for selecting workers based on various criteria."""
 
@@ -33,6 +37,7 @@ class WorkerSelector:
 
         Raises:
             ValueError: If worker_id is specified but worker not found
+            WorkerPathCheckError: If no path is confirmed and a worker check failed
         """
         # If worker_id is specified, use that worker
         if worker_id is not None:
@@ -56,7 +61,9 @@ class WorkerSelector:
                     logger.error(
                         f"Failed to check path {path} on worker {worker.id}: {e}"
                     )
-                    return None
+                    raise WorkerPathCheckError(
+                        f"Failed to check path {path} on worker {worker.id}"
+                    ) from e
 
             return worker
 
@@ -81,8 +88,10 @@ class WorkerSelector:
         Returns:
             First worker that has the path, or None if not found
         """
+        if not workers:
+            raise WorkerPathCheckError("No workers are available to check the path")
 
-        async def check_worker(worker: Worker) -> tuple[Worker, bool]:
+        async def check_worker(worker: Worker) -> tuple[Worker, Optional[bool]]:
             """Check if a worker has the specified path."""
             try:
                 exists_response = await self._filesystem_client.path_exists(
@@ -93,17 +102,30 @@ class WorkerSelector:
                 logger.warning(
                     f"Failed to check path {path} on worker {worker.id}: {e}"
                 )
-                return worker, False
+                return worker, None
 
-        # Create tasks for all workers
-        tasks = [check_worker(worker) for worker in workers]
+        tasks = [asyncio.create_task(check_worker(worker)) for worker in workers]
+        failed_workers = []
+        try:
+            for completed_task in asyncio.as_completed(tasks):
+                worker, exists = await completed_task
+                if exists:
+                    logger.info(f"Found path {path} on worker {worker.id}")
+                    return worker
+                if exists is None:
+                    failed_workers.append(worker.name)
+        finally:
+            # Finish outstanding probes before the caller closes its HTTP client.
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Execute tasks concurrently and get results as they complete
-        for completed_task in asyncio.as_completed(tasks):
-            worker, exists = await completed_task
-            if exists:
-                logger.info(f"Found path {path} on worker {worker.id}")
-                return worker
+        if failed_workers:
+            raise WorkerPathCheckError(
+                f"Failed to check path {path} on workers: "
+                f"{', '.join(sorted(failed_workers))}"
+            )
 
         # No worker has the path
         logger.warning(f"Path {path} not found on any worker")

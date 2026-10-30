@@ -81,6 +81,7 @@ async def test_evaluation_blocks_incompatible_pairs_but_preserves_metadata_fallb
         name="pd-prefill",
         worker_id=None,
         state=ModelInstanceStateEnum.PENDING,
+        distributed_servers=None,
         created_at=now,
         updated_at=now,
     )

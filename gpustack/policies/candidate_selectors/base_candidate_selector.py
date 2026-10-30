@@ -1138,24 +1138,30 @@ class ScheduleCandidatesSelector(ABC):
         ]
 
     def _validate_distributed_limit_per_worker(self, worker: Worker) -> bool:
-        """
-        Validate that there is no more than one distributed vLLM instance per worker.
-        """
+        """Keep the legacy limit outside port-isolated managed vLLM groups."""
         instances = get_worker_model_instances(self._model_instances, worker)
         for instance in instances:
+            model = getattr(instance, "model", None)
             if (
                 instance.distributed_servers
                 and instance.distributed_servers.subordinate_workers
-                and (
-                    instance.model
-                    and instance.model.backend
-                    and instance.model.backend == self._model.backend
-                )
+                and (model and model.backend and model.backend == self._model.backend)
             ):
+                if (
+                    model.backend == BackendEnum.VLLM
+                    and getattr(instance.distributed_servers, "workloads", None)
+                    is not None
+                ):
+                    # Managed groups reserve their communication ports per
+                    # instance; device and memory claims still constrain fits.
+                    continue
+                name = getattr(instance, "name", None) or (
+                    f"planned member of {getattr(model, 'name', 'deployment')}"
+                )
                 self._messages = [
                     str(
                         ListMessageBuilder(
-                            f"Each worker can run only one distributed vLLM instance. Worker '{worker.name}' already has '{instance.name}'."
+                            f"Each worker can run only one distributed vLLM instance. Worker '{worker.name}' already has '{name}'."
                         )
                     ),
                 ]
