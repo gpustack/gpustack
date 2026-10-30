@@ -247,6 +247,13 @@ class Config(WorkerConfig, BaseSettings):
     # Kept for backwards compatibility with existing config files
     # and CLI invocations. Will be removed in a future release.
     force_auth_localhost: Optional[bool] = None
+    # Max silence between chunks of a streaming inference response, in seconds.
+    # Enforced by the worker inference proxy and the server's WebSocket proxy.
+    # Read per request from the global config, so updates pushed through
+    # PUT /config take effect without a process restart (the field is part of
+    # WHITELIST_CONFIG_FIELDS). The GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS
+    # env remains the startup default.
+    proxy_stream_idle_timeout: int = 60
     metrics_port: int = 10161
     disable_metrics: bool = False
     disable_update_check: bool = False

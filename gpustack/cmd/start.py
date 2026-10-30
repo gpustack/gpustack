@@ -77,6 +77,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("PROXY_PORT"),
     )
     common_group.add_argument(
+        "--proxy-stream-idle-timeout",
+        type=int,
+        help="Maximum silence between chunks of a streaming inference response, in seconds. Enforced by both the worker inference proxy and the server's WebSocket proxy. Runtime-updatable via PUT /config (gpustack reload-config) without a process restart.",
+        default=get_gpustack_env("PROXY_STREAM_IDLE_TIMEOUT_SECONDS"),
+    )
+    common_group.add_argument(
         "--config-file",
         type=str,
         help="Path to the YAML config file.",
@@ -878,6 +884,7 @@ def set_common_options(args, config_data: dict):
         "tls_port",
         "api_port",
         "proxy_port",
+        "proxy_stream_idle_timeout",
         "gateway_mode",
         "gateway_kubeconfig",
         "gateway_namespace",

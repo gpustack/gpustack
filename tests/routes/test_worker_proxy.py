@@ -20,6 +20,7 @@ from httpx import ASGITransport, AsyncClient
 
 from gpustack import envs
 from gpustack.api.auth import worker_proxy_auth
+from gpustack.config.config import Config
 from gpustack.api.exceptions import register_handlers
 from gpustack.routes.worker import proxy as worker_proxy
 from gpustack.utils.stall import stall_error_sse
@@ -204,9 +205,12 @@ async def _sse_response(request, chunks: List[bytes], stall_after: bool):
 
 
 @pytest.fixture
-def tight_budgets(monkeypatch):
+def tight_budgets(monkeypatch, config):
     monkeypatch.setattr(envs, "PROXY_TTFT_TIMEOUT", TTFT_TIMEOUT)
-    monkeypatch.setattr(envs, "PROXY_STREAM_IDLE_TIMEOUT", IDLE_TIMEOUT)
+    prior = config.proxy_stream_idle_timeout
+    config.proxy_stream_idle_timeout = IDLE_TIMEOUT
+    yield
+    config.proxy_stream_idle_timeout = prior
 
 
 @pytest.mark.asyncio
@@ -320,6 +324,30 @@ async def test_stall_mid_stream_ends_stream_with_error_event(tight_budgets):
     body = resp.content
     assert body.startswith(b"data: one\n\ndata: two\n\n")
     assert body.endswith(stall_error_sse())
+
+
+@pytest.mark.asyncio
+async def test_stream_idle_timeout_runtime_update_takes_effect(config):
+    """PUT /config writes Config.proxy_stream_idle_timeout; the next request
+    must pick it up without touching the env or restarting the worker."""
+    config.proxy_stream_idle_timeout = IDLE_TIMEOUT
+    try:
+
+        async def handler(request):
+            return await _sse_response(
+                request, [b"data: one\n\n", b"data: two\n\n"], stall_after=True
+            )
+
+        async with _fake_inference_server(handler) as port:
+            async with _worker_client(port) as (client, _):
+                resp = await client.post("/v1/chat/completions", json={"stream": True})
+
+        assert resp.status_code == 200
+        assert resp.content.endswith(stall_error_sse())
+    finally:
+        config.proxy_stream_idle_timeout = Config.model_fields[
+            "proxy_stream_idle_timeout"
+        ].default
 
 
 @pytest.mark.asyncio

@@ -49,6 +49,20 @@ class StallPolicy:
     # Absolute ceiling on the whole response, and the only bound that applies
     # while the response head has not arrived yet.
     total_timeout: float
+    # Optional dynamic access for the idle budget (e.g. tied to a runtime
+    # config field). When set it wins over ``idle_timeout`` on each budget
+    # evaluation so runtime updates land without recreating the proxy server.
+    idle_timeout_getter: Optional[Callable[[], float]] = None
+
+    def effective_idle_timeout(self) -> float:
+        if self.idle_timeout_getter is None:
+            return self.idle_timeout
+        # A non-positive value would behave as "no timeout" further down, so a
+        # bad runtime update must not disable stall detection; fall back to the
+        # static budget instead.
+        value = self.idle_timeout_getter()
+        return value if value and value > 0 else self.idle_timeout
+
     # Body of the synthesized 504 returned when the stall predates the head.
     error_body: bytes = b'{"error":{"message":"upstream stalled"}}'
     # Terminal frames appended when the stall happens mid-stream.
@@ -494,7 +508,7 @@ async def wait_for_complete_response(  # noqa: C901
         elif not headers_sent:
             budget = stall_policy.ttft_timeout
         else:
-            budget = stall_policy.idle_timeout
+            budget = stall_policy.effective_idle_timeout()
         remaining = deadline - loop.time()
         if remaining <= 0:
             # A zero or negative budget must not be handed to the reader: some
