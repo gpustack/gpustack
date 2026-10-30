@@ -28,7 +28,7 @@ from gpustack.api.auth import (
     GATEWAY_ASSERTED_KEY_REF_HEADER,
     GATEWAY_DOWNSTREAM_CONN_HEADER,
 )
-from gpustack.security import JWTManager, AUTH_CACHE_HEADER
+from gpustack.security import JWTManager, AUTH_CACHE_HEADER, is_legacy_token_access_key
 from gpustack.server.gateway_auth_reconciler import gateway_ref_indexable
 
 logger = logging.getLogger(__name__)
@@ -64,13 +64,12 @@ def _build_consumer(access_key: Optional[str], user: User) -> str:
     the two must agree byte for byte or access-log attribution and the
     rate-limit consumer dimension silently drift apart.
 
-    The key part is omitted when there is nothing to name: for identities with
-    no API key behind them (cookie / basic), and equally for the legacy cluster
-    token, whose row carries an empty access key. Testing for emptiness rather
-    than for None is what keeps the second case from rendering as a leading
-    dot, ``.gpustack-<id>``.
+    Cookie/basic identities and deployment tokens have no public access key.
+    Omit their internal marker so logs and rate limits identify them by user.
     """
-    return ".".join([part for part in [access_key, f"gpustack-{user.id}"] if part])
+    if is_legacy_token_access_key(access_key):
+        return f"gpustack-{user.id}"
+    return f"{access_key}.gpustack-{user.id}"
 
 
 async def _resolve_caller(

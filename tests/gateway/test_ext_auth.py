@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gpustack import envs
+from gpustack.security import LEGACY_TOKEN_ACCESS_KEY
 from gpustack.config.config import GatewayPluginEntry
 from gpustack.gateway.client import WasmPluginMatchRule, WasmPluginSpec
 from gpustack.gateway.ext_auth import (
@@ -387,13 +388,12 @@ async def test_expiry_is_unix_seconds_and_omitted_when_absent():
 
 
 @pytest.mark.asyncio
-async def test_a_digest_eligible_key_without_an_access_key_is_dropped():
-    """The legacy cluster token's row stores the deployment-provided token
-    under an empty access key. It belongs to a SYSTEM principal and the query
-    filters it out; this is the second line of defense, because there is no
-    key to index it under and an empty-string entry would match nothing at
-    best."""
-    keys, refs = await build_local_auth_tables(_FakeSession([_row(access_key="")]))
+@pytest.mark.parametrize("access_key", ["", LEGACY_TOKEN_ACCESS_KEY])
+async def test_a_deployment_token_is_excluded_from_local_auth(access_key):
+    """Reserved deployment-token markers must not enter the gateway digest table."""
+    keys, refs = await build_local_auth_tables(
+        _FakeSession([_row(access_key=access_key)])
+    )
 
     assert keys == {} and refs == {}
 

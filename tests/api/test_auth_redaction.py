@@ -1,6 +1,6 @@
 import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -8,6 +8,7 @@ from gpustack.api import auth as auth_module
 from gpustack.api.auth import get_user_from_api_token, worker_auth, worker_proxy_auth
 from gpustack.api.exceptions import UnauthorizedException
 from gpustack.logging import TRACE_LEVEL
+from gpustack.security import LEGACY_TOKEN_ACCESS_KEY
 from gpustack.server.cache import cache, delete_cache_by_key
 
 
@@ -44,8 +45,8 @@ def _request():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "access_key",
-    ["abcd1234", "abcd", "", "x" * 10000],
-    ids=["standard", "short", "legacy-empty", "long"],
+    ["abcd1234", "abcd", "", LEGACY_TOKEN_ACCESS_KEY, "x" * 10000],
+    ids=["standard", "short", "legacy-empty", "legacy-reserved", "long"],
 )
 async def test_api_key_authentication_logs_no_credentials(
     monkeypatch, caplog, access_key
@@ -60,29 +61,36 @@ async def test_api_key_authentication_logs_no_credentials(
         user_id=7,
     )
     user = SimpleNamespace(is_active=True, id=7)
-    lookup = AsyncMock(return_value=key)
+    lookup = AsyncMock(
+        side_effect=lambda session, fields: (
+            key if fields["access_key"] == access_key else None
+        )
+    )
     monkeypatch.setattr(auth_module.ApiKey, "one_by_fields", lookup)
     monkeypatch.setattr(
         auth_module.UserService, "get_by_id", AsyncMock(return_value=user)
     )
     monkeypatch.setattr(auth_module, "verify_hashed_secret", lambda *_: True)
     secret = "abcdefghijklmnop"
-    token = f"gpustack_{access_key}_{secret}"
+    token = (
+        secret
+        if access_key == LEGACY_TOKEN_ACCESS_KEY
+        else f"gpustack_{access_key}_{secret}"
+    )
     caplog.set_level(TRACE_LEVEL)
     session = _Session()
     await cache.clear()
     try:
         assert await get_user_from_api_token(session, token) == (user, key)
         assert await get_user_from_api_token(session, token) == (user, key)
-        lookup.assert_awaited_once_with(
-            session, {"access_key": access_key, "deleted_at": None}
-        )
+        stored_lookup = call(session, {"access_key": access_key, "deleted_at": None})
+        assert lookup.await_args_list.count(stored_lookup) == 1
 
         await delete_cache_by_key(
             auth_module.APIKeyService(session).get_by_access_key, access_key
         )
         assert await get_user_from_api_token(session, token) == (user, key)
-        assert lookup.await_count == 2
+        assert lookup.await_args_list.count(stored_lookup) == 2
     finally:
         await cache.clear()
 

@@ -1036,7 +1036,7 @@ class Server:
 
             # Store the deployment token under the pair authentication
             # resolves it to: its own access key when it is in the standard
-            # shape, the empty access key otherwise.
+            # shape, the reserved deployment-token access key otherwise.
             access_key, secret_key = migrated_token_key_pair(self._config.token)
             new_key = ApiKey(
                 name="Legacy Cluster Token",

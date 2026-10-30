@@ -16,6 +16,11 @@ ph = PasswordHasher()
 
 API_KEY_PREFIX = "gpustack"
 
+# A non-empty marker preserves NOT NULL and uniqueness on databases that treat
+# empty strings as NULL. Underscores cannot occur in a parsed access-key segment,
+# and generated access keys and custom-key hashes contain only hex digits.
+LEGACY_TOKEN_ACCESS_KEY = "__legacy_token__"
+
 # Number of random bytes behind a secret this server generates itself. 16 bytes
 # of CSPRNG output (32 hex characters) is what makes the fast digest below sound:
 # there is no dictionary to try, so a work factor buys nothing.
@@ -82,6 +87,11 @@ def generate_secret_key() -> str:
     return secrets.token_hex(GENERATED_SECRET_KEY_BYTES)
 
 
+def is_legacy_token_access_key(access_key: Optional[str]) -> bool:
+    """Recognize deployment-token rows, including the empty-key representation."""
+    return not access_key or access_key == LEGACY_TOKEN_ACCESS_KEY
+
+
 def secret_key_digest_eligible(
     *, secret_key: Union[str, bytes], is_custom: bool, access_key: str
 ) -> bool:
@@ -92,9 +102,9 @@ def secret_key_digest_eligible(
     cannot see that.
 
     A secret this server generated always qualifies, on two conditions that have
-    to hold together: a non-empty ``access_key``, which excludes the legacy
+    to hold together: a non-legacy ``access_key``, which excludes the legacy
     cluster token (its row stores the deployment-provided ``config.token`` under
-    an empty access key and never goes through the custom flag), and the exact
+    a reserved access key and never goes through the custom flag), and the exact
     hex shape of :func:`generate_secret_key`. Neither suffices alone -- a custom
     key may well be 32 hex characters, an md5 of a dictionary word being one.
 
@@ -107,7 +117,7 @@ def secret_key_digest_eligible(
     make with knowledge this code does not have. See the flag's own comment for
     what it costs.
     """
-    if not access_key:
+    if is_legacy_token_access_key(access_key):
         return False
     if is_custom:
         return envs.GATEWAY_AUTH_ALLOW_CUSTOM_KEYS
@@ -318,17 +328,18 @@ def migrated_token_key_pair(token: str) -> Tuple[str, str]:
     that issued it. It is stored the way that database stored it, so the
     parser resolves it like any other key. A UUID in the access-key position
     is the legacy worker presentation, which authentication remaps to the
-    empty access key; the pair follows. Anything else is an opaque deployment
-    secret: empty access key, whole string as the secret.
+    reserved access key; the pair follows. Anything else is an opaque deployment
+    secret: reserved access key, whole string as the secret. An empty parsed
+    access key also uses this representation so it remains non-NULL in storage.
 
     Must agree with the lookup mapping in api.auth.get_user_from_api_token:
     that is the reader of what this function writes.
     """
     valid, access_key, secret_key = is_valid_format(token)
-    if not valid:
-        return "", token
+    if not valid or not access_key:
+        return LEGACY_TOKEN_ACCESS_KEY, token
     if parse_hyphen_uuid(access_key) is not None:
-        return "", secret_key
+        return LEGACY_TOKEN_ACCESS_KEY, secret_key
     return access_key, secret_key
 
 
