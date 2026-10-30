@@ -36,6 +36,7 @@ class CustomConfig(BaseModel):
     qwenEnableSearch: Optional[bool] = None
     qwenFileIds: Optional[List[str]] = None
     qwenEnableCompatible: Optional[bool] = None
+    qwenDomain: Optional[str] = None
     modelVersion: Optional[str] = None
     tritonDomain: Optional[str] = None
     # Generic in the plugin, not per-provider: providerDomain overrides whatever

@@ -907,7 +907,7 @@ async def test_local_loras_ignore_base_metadata(base, source, field, name):
             False,
             True,
             7,
-            "(model_files.cluster_id = 7 OR model_files.cluster_id IS NULL)",
+            "model_files.cluster_id = 7 AND model_files.owner_principal_id = 10",
         ),
     ],
 )
@@ -918,6 +918,7 @@ async def test_local_loras_follow_model_file_visibility(
     if system:
         ctx.user.kind = PrincipalType.SYSTEM
     ctx.scoped_cluster_id = cluster_id
+    ctx.scoped_cluster_owner_id = principal_id
     session = _adapters_session([])
 
     assert await discovery.list_local_loras(session, ctx) == []

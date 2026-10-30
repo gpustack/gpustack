@@ -60,6 +60,21 @@ GPUStack 利用 Higress 的能力集成公共 MaaS 服务。在 `Model` - `Provi
 
 此类提供商默认仍通过 OpenAI API 对外提供服务：请求发往端点时会转换为 Anthropic 协议，响应返回时再转换回来。要改为原样转发，请在提供商配置中添加 `protocol: original`。透传模式保留 OpenAI schema 无法表示的所有内容（提示词缓存、思考块、工具使用块），但此时提供商**仅提供 Anthropic 协议**；不会再为它转换发往 `/v1/chat/completions` 的 OpenAI 风格请求，因此请使用 Anthropic 路径（`/v1/messages`）。
 
+## 通过提供商使用 Qwen 模型 { #use-qwen-models-through-a-provider }
+
+`Alibaba Qwen` 提供商默认连接 `dashscope.aliyuncs.com`，支持：
+
+- **LLM** — `/v1/chat/completions`
+- **Embedding** — `/v1/embeddings`
+- **Rerank** — `/v1/rerank`
+- **图像生成** — `/v1/images/generations`（如 qwen-image 系列模型）
+
+图像生成是默认域名上的唯一例外：DashScope **仅在按工作空间分配的 `maas.aliyuncs.com` 域名**上提供该 API，`dashscope.aliyuncs.com` 对其返回 404。要使用图像模型，请将 `qwenDomain` 设置为你的工作空间域名（可在 DashScope，即百炼的工作空间页面查看），其余类别在同一入口继续可用。自托管或经代理的 Qwen 兼容服务的配置方式相同。
+
+`qwenDomain` 填主机名，非 443 端口时附带端口，如 `maas.aliyuncs.com`：它会同时成为 GPUStack 的连接地址和发往上游的 Host 头。协议固定为 https。
+
+图像响应携带 `data[].url` —— 24 小时有效的 OSS 预签名链接 —— 而非内嵌 base64，请在该时间窗口内下载或转存图片。`usage` 对象是 DashScope 特有格式（`width`、`height`、`image_count`），不是 OpenAI 的 token 用量。
+
 ## 为提供商添加路由 { #add-route-for-provider }
 
 1. 进入 `Providers` 页面。

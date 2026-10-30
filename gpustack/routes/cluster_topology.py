@@ -40,7 +40,7 @@ from pydantic import BaseModel
 from gpustack.api.exceptions import BadRequestException
 from gpustack.api.tenant import (
     assert_cluster_visible,
-    assert_org_owned_writable,
+    assert_cluster_writable,
     tenant_list_conditions,
 )
 from gpustack.schemas.clusters import Cluster, ClusterTopology
@@ -499,7 +499,7 @@ async def set_cluster_topology_locations(
 
     cluster = await Cluster.one_by_id(session, id)
     assert_cluster_visible(ctx, cluster, not_found_message=f"cluster {id} not found")
-    assert_org_owned_writable(ctx, cluster, resource_label="cluster")
+    assert_cluster_writable(ctx, cluster)
 
     worker_ids = sorted(
         {worker_id for a in body.assignments for worker_id in a.worker_ids}

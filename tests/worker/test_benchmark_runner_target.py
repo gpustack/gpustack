@@ -356,6 +356,55 @@ class TestRouteModeAimsAtTheDeployment:
         assert kwargs["verify"] is False
 
 
+@pytest.mark.parametrize(
+    "target_mode,instance_model_name,expected_model_name",
+    [
+        (BenchmarkTargetModeEnum.INSTANCE, "original-model", "original-model"),
+        (BenchmarkTargetModeEnum.INSTANCE, None, "renamed-model"),
+        (BenchmarkTargetModeEnum.ROUTE, "original-model", "org1/qwen"),
+    ],
+)
+def test_request_model_name_comes_from_the_target(
+    config, monkeypatch, target_mode, instance_model_name, expected_model_name
+):
+    monkeypatch.setattr(runner_module, "setup_logging", Mock())
+    monkeypatch.setattr(runner_module, "setup_runtime_logging", Mock())
+    monkeypatch.setattr(runner_module, "read_worker_token", lambda _: "token")
+    benchmark = (
+        TestRouteModeAimsAtTheDeployment()
+        ._runner(mode=target_mode, route_name="org1/qwen")
+        ._benchmark
+    )
+    benchmark.model_name = "renamed-model"
+    benchmark.model_instance_name = "router"
+    benchmark.worker_id = 12
+    endpoint_data = _snapshot("router", worker_id=13, path=None).model_dump(
+        exclude={"model_name"}
+    )
+    if instance_model_name is not None:
+        endpoint_data["model_name"] = instance_model_name
+    placement_data = _snapshot("decode", worker_id=12, path="/cache/qwen3").model_dump()
+    placement_data["model_name"] = "placement-model"
+    benchmark.snapshot = BenchmarkSnapshot(
+        instances={
+            "router": ModelInstanceSnapshot.model_validate(endpoint_data),
+            "decode": ModelInstanceSnapshot.model_validate(placement_data),
+        },
+        route_name="org1/qwen",
+        gateway_url="https://cluster-gateway.example",
+    )
+
+    runner = BenchmarkRunner(
+        clientset=SimpleNamespace(base_url="http://10.0.0.9:9091"),
+        benchmark=benchmark,
+        cfg=config,
+    )
+    args = runner._build_command_args()
+
+    assert args[args.index("--model") + 1] == expected_model_name
+    assert benchmark.model_name == "renamed-model"
+
+
 # ── warmup / cooldown: which axis gets trimmed ───────────────────────────────
 
 

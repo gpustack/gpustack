@@ -56,6 +56,21 @@ API のベース URL ではなく、サービスがマウントされている�
 
 このようなプロバイダーも、既定では OpenAI API を通じて公開されます。エンドポイントへ送る際にリクエストを Anthropic プロトコルへ変換し、返された応答を再変換します。変換せずに転送するには、プロバイダー構成に `protocol: original` を追加します。パススルーでは、プロンプトキャッシュ、thinking ブロック、tool-use ブロックなど、OpenAI スキーマでは表現できない要素を保持できます。ただし、そのプロバイダーは **Anthropic プロトコルのみ**を提供するようになります。`/v1/chat/completions` への OpenAI 形式のリクエストは変換されなくなるため、Anthropic のパス（`/v1/messages`）を使用してください。
 
+## プロバイダー経由で Qwen モデルを利用する { #use-qwen-models-through-a-provider }
+
+`Alibaba Qwen` プロバイダーはデフォルトで `dashscope.aliyuncs.com` に接続し、以下を提供します:
+
+- **LLM** — `/v1/chat/completions`
+- **Embedding** — `/v1/embeddings`
+- **Rerank** — `/v1/rerank`
+- **画像生成** — `/v1/images/generations`（例: qwen-image 系モデル）
+
+画像生成がデフォルトドメインでの唯一の例外です: DashScope はこの API を**ワークスペースごとの `maas.aliyuncs.com` ドメインでのみ**提供しており、`dashscope.aliyuncs.com` は 404 を返します。画像モデルを使うには、`qwenDomain` をワークスペースのドメインに設定してください（DashScope、すなわち百炼のワークスペースページで確認できます）。他のカテゴリは同じエントリで引き続き利用できます。セルフホストまたはプロキシ経由の Qwen 互換サービスも同じ方法で設定します。
+
+`qwenDomain` にはホスト名を指定します（443 以外のポートの場合はポートも含む、例: `maas.aliyuncs.com`）。GPUStack の接続先と、上流へ送信する Host ヘッダーの両方になります。スキームは常に https です。
+
+画像レスポンスはインライン base64 ではなく `data[].url` —— 24 時間有効な署名付き OSS リンク —— を返すため、この期間内に画像をダウンロードまたは転送してください。`usage` オブジェクトは DashScope 固有の形式（`width`、`height`、`image_count`）であり、OpenAI のトークン使用量ではありません。
+
 ## プロバイダーへのルートの追加 { #add-route-for-provider }
 
 1. `Providers` ページに移動します。

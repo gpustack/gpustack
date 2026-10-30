@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Response, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
 
 from gpustack.api.streaming import tenant_streaming
+from gpustack.mixins.immutable import allow_immutable_field_update
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -675,9 +676,18 @@ async def _persist_worker_registration(
     if existing_worker is not None:
         if to_create_apikey is not None:
             new_worker.token = new_token
-        await WorkerService(session).update(
-            existing_worker, new_worker, auto_commit=False
-        )
+        # Registration reconciles only the owner derived from the worker's
+        # authorized cluster; request fields cannot select the new owner.
+        if existing_worker.cluster_id != cluster.id:
+            raise InvalidException(
+                message="worker must belong to the registration cluster"
+            )
+        with allow_immutable_field_update(
+            existing_worker, "owner_principal_id", cluster.owner_principal_id
+        ):
+            await WorkerService(session).update(
+                existing_worker, new_worker, auto_commit=False
+            )
         worker = existing_worker
     else:
         worker = await retry_create_worker(session, new_worker, all_workers)

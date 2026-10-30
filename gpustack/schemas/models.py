@@ -12,6 +12,7 @@ from typing import (
     List,
     Literal,
     Optional,
+    Tuple,
     Union,
 )
 from croniter import croniter
@@ -1951,6 +1952,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
 
 class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
     __tablename__ = 'model_instances'
+    __immutable_fields__: ClassVar[Tuple[str, ...]] = ("model_id", "cluster_id")
     id: Optional[int] = Field(default=None, primary_key=True)
 
     model: Optional[Model] = Relationship(

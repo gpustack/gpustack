@@ -199,6 +199,7 @@ from gpustack.cloud_providers.common import (
     get_client_from_provider,
     construct_cloud_instance,
     generate_ssh_key_pair,
+    validate_cluster_credential,
 )
 from gpustack.cloud_providers.abstract import (
     ProviderClientBase,
@@ -6561,14 +6562,15 @@ class WorkerProvisioningController:
             )
             if not worker:
                 return
-            credential: CloudCredential = await CloudCredential.one_by_id(
-                session, worker.cluster.credential_id
-            )
-            client = get_client_from_provider(
-                worker.cluster.provider,
-                credential=credential,
-            )
             try:
+                credential = await CloudCredential.one_by_id(
+                    session, worker.cluster.credential_id
+                )
+                validate_cluster_credential(worker.cluster, credential)
+                client = get_client_from_provider(
+                    worker.cluster.provider,
+                    credential=credential,
+                )
                 if worker.state == WorkerStateEnum.PENDING:
                     await self.check_server_external_url(worker.cluster.server_url)
                 if worker.state in [
@@ -7117,6 +7119,7 @@ class ModelProviderController:
         # - ollamaServerHost
         # - difyApiUrl
         # - claudeCustomUrl
+        # - qwenDomain
         # The above fields will affect the registry type of the provider_registry,
         # it requires notifying ingress to regenerate registry destination.
         related_fields = [
@@ -7124,6 +7127,7 @@ class ModelProviderController:
             "ollamaServerHost",
             "difyApiUrl",
             "claudeCustomUrl",
+            "qwenDomain",
         ]
         for field in related_fields:
             if old_config.get(field) != new_config.get(field):

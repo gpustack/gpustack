@@ -1,9 +1,11 @@
 import asyncio
 import json
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from filelock import Timeout
 
 from gpustack.schemas.model_files import ModelFile, ModelFileStateEnum
 from gpustack.schemas.models import SourceEnum
@@ -92,6 +94,89 @@ def test_lora_resolution_without_adapter_config(lora_task, tmp_path, user_hint):
     )
     assert lora_task._model_file.is_lora is user_hint
     lora_task._update_model_file.assert_not_called()
+
+
+def test_download_children_use_spawn_context(monkeypatch):
+    """The pool workers and the shared Manager both start from the spawn
+    context so no download-related child inherits the worker's pooled
+    sockets: a forked child keeps half-closed fds alive even after the
+    parent closes its own copies."""
+    manager = model_file_manager.ModelFileManager(1, MagicMock(), MagicMock())
+    pool_factory = MagicMock()
+    manager_factory = MagicMock()
+    spawn = model_file_manager.get_context("spawn")
+    monkeypatch.setattr(model_file_manager, "ProcessPoolExecutor", pool_factory)
+    monkeypatch.setattr(spawn, "Manager", manager_factory)
+
+    manager._prerun()
+
+    manager_factory.assert_called_once_with()
+    assert pool_factory.call_args.kwargs["mp_context"] is spawn
+
+
+def _bare_download_task(**attrs):
+    task = object.__new__(model_file_manager.ModelFileDownloadTask)
+    task._model_file = ModelFile(
+        id=1,
+        worker_id=1,
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/model",
+    )
+    task._write_to_instance_download_logs = MagicMock()
+    task._update_model_file = MagicMock()
+    task.prerun = MagicMock()
+    for name, value in attrs.items():
+        setattr(task, name, value)
+    return task
+
+
+@pytest.mark.parametrize("outcome", ["success", "error", "cancelled", "timeout"])
+def test_download_task_closes_clientsets_on_every_exit_path(outcome, tmp_path):
+    """Whatever way a download task ends, its ClientSets are closed so their
+    pooled connections do not linger in CLOSE-WAIT until process exit."""
+
+    def download():
+        if outcome == "error":
+            raise RuntimeError("download failed")
+        if outcome == "cancelled":
+            raise asyncio.CancelledError()
+        if outcome == "timeout":
+            raise Timeout("lock busy")
+
+    task = _bare_download_task(
+        _config=SimpleNamespace(cache_dir=str(tmp_path)),
+        _download_model_file=download,
+    )
+    task._clientset = MagicMock()
+    task._progress_clientset = MagicMock()
+
+    task.run()
+
+    task._clientset.http_client.close.assert_called_once()
+    task._progress_clientset.http_client.close.assert_called_once()
+    if outcome == "error":
+        task._update_model_file.assert_called_once()
+    else:
+        task._update_model_file.assert_not_called()
+
+
+def test_download_task_teardown_survives_close_failure(caplog):
+    """A failing close must not mask the task's own outcome."""
+    task = _bare_download_task()
+    task._clientset = MagicMock()
+    task._clientset.http_client.close.side_effect = RuntimeError("close failed")
+
+    task._close_clientsets()
+
+    task._clientset.http_client.close.assert_called_once()
+    assert "close failed" in caplog.text
+
+
+def test_download_task_teardown_tolerates_missing_clientsets():
+    """prerun() may fail before any ClientSet is constructed."""
+    task = _bare_download_task()
+
+    task._close_clientsets()
 
 
 @pytest.mark.asyncio

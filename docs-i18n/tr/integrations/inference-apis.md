@@ -135,6 +135,74 @@ curl http://your_gpustack_server_url/v1/rerank \
 }
 ```
 
+## System One Karar API'si { #system-one-decision-api }
+
+Karar modelleri — `decision` kategorisindeki dağıtımlar — metin üretmek yerine System One (Jev) karar sözleşmesine göre yanıt verir: bir state ve bir dizi soru verildiğinde tamamlama yerine tiplendirilmiş yanıtlar döndürür. GPUStack bu sözleşmeyi `/v1/systemone` yolunda sunar.
+
+`model` alanı zorunludur ve `/v1/chat/completions` ile tam olarak aynı şekilde model rotası adını alır. GPUStack modeli çözer ve istek gövdesinin geri kalanını ve tüm yanıtı karar motoruna dokunulmadan iletir.
+
+### Kullanım { #usage_3 }
+
+#### cURL Örneği { #curl-example_2 }
+
+```bash
+export GPUSTACK_API_KEY=your_api_key
+curl http://your_gpustack_server_url/v1/systemone \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GPUSTACK_API_KEY" \
+  -d '{
+      "model": "qwen3-decision-8b",
+      "state": {
+          "messages": [
+              { "role": "user", "content": "Write a 200-word poem in Hungarian." }
+          ]
+      },
+      "questions": {
+          "model_selection": {
+              "type": "choice",
+              "instructions": "Pick the model best suited.",
+              "criteria": {
+                  "qwen3-8b": "Strong multilingual generation.",
+                  "llama3-8b": "Faster, weaker multilingual."
+              }
+          }
+      }
+  }' | jq
+```
+
+Örnek çıktı:
+
+```json
+{
+  "model": "qwen3-decision-8b",
+  "usage": {
+    "input_tokens": 189,
+    "output_tokens": 12
+  },
+  "answers": {
+    "model_selection": {
+      "type": "choice",
+      "choice": "qwen3-8b",
+      "confidence": 0.93,
+      "probabilities": {
+        "qwen3-8b": 0.93,
+        "llama3-8b": 0.07
+      }
+    }
+  }
+}
+```
+
+`state`, kararın verildiği durumdur — düz metin veya sohbet mesajları gibi yapılandırılmış JSON. `questions` altındaki her giriş bir soru kimliğini soru tanımına eşler ve üç tür gelenekseldir:
+
+| Tür | Anlamı | `criteria` | Yanıt alanı |
+| --- | --- | --- | --- |
+| `choice` | Bir seçenek seçin | Seçenek adı → açıklama | `choice` — seçilen seçeneğin adı |
+| `score` | Durumu sıralı düzeylere göre puanlayın | Düzey açıklamalarının sıralı listesi | `score` — düzey dizini |
+| `noul` | İkili (evet/hayır) soru | `true` / `false` taraflarının isteğe bağlı açıklamaları | `noul` — bir boole değeri |
+
+Bir sorunun yanıtı `answers` içinde aynı kimlikle döner ve sonuçla birlikte `confidence` ve `probabilities` taşır. Sözleşmedeki soru seti açıktır — motorlar başka alanlar kabul edebilir — ve GPUStack yalnızca `model` alanını doğrular, geri kalanı olduğu gibi iletir. Karar modellerinin dağıtımı için [Karar Modellerini Kullanma](../using-models/using-decision-models.md) bölümüne bakın.
+
 ## Diğer API'ler { #other-apis }
 
 Diğer API türleri için GPUStack, bir modeli dağıtırken **Generic Proxy** özelliğini etkinleştirmenize olanak tanır.

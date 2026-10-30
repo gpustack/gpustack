@@ -77,13 +77,13 @@ def test_regex_prefixes():
         ["/chat/completions", "/completions", "/responses"],
         support_legacy=True,
     ).regex_prefixes() == [
-        r"/(v1)(-openai)?(/chat/completions)",
-        r"/(v1)(-openai)?(/completions)",
-        r"/(v1)(-openai)?(/responses)",
+        r"/(v1)(-openai)?(/chat/completions.*)",
+        r"/(v1)(-openai)?(/completions.*)",
+        r"/(v1)(-openai)?(/responses.*)",
     ]
     assert RoutePrefix(["/chat/completions", "/completions"]).regex_prefixes() == [
-        r"/(v1)()(/chat/completions)",
-        r"/(v1)()(/completions)",
+        r"/(v1)()(/chat/completions.*)",
+        r"/(v1)()(/completions.*)",
     ]
 
 
@@ -94,13 +94,67 @@ def test_v2_prefixes():
         additional_versions=["/v2"],
     )
     assert rerank.regex_prefixes() == [
-        r"/(v1)()(/rerank)",
-        r"/(v2)()(/rerank)",
+        r"/(v1)()(/rerank.*)",
+        r"/(v2)()(/rerank.*)",
     ]
     assert rerank.flattened_prefixes() == [
         "/v1/rerank",
         "/v2/rerank",
     ]
+
+
+def regex_rewrite(pattern: str, path: str) -> str:
+    # Envoy regex_rewrite is a global replace of every match with the
+    # shared substitution /$1$3.
+    return re.sub(pattern, r"/\1\3", path)
+
+
+@pytest.mark.parametrize(
+    "route_prefix,path,expected",
+    [
+        (
+            RoutePrefix(["/rerank"], additional_versions=["/v2"]),
+            "/v1/rerank",
+            "/v1/rerank",
+        ),
+        (
+            RoutePrefix(["/rerank"], additional_versions=["/v2"]),
+            "/v2/rerank",
+            "/v2/rerank",
+        ),
+        # Paths the wasm capability plugins rewrite must reach the upstream
+        # with every character intact.
+        (
+            RoutePrefix(["/rerank"], additional_versions=["/v2"]),
+            "/compatible-api/v1/reranks",
+            "/compatible-api/v1/reranks",
+        ),
+        (
+            RoutePrefix(["/chat/completions"], support_legacy=True),
+            "/compatible-mode/v1/chat/completions",
+            "/compatible-mode/v1/chat/completions",
+        ),
+        # The legacy -openai version prefix is normalized away.
+        (
+            RoutePrefix(["/chat/completions"], support_legacy=True),
+            "/v1-openai/chat/completions",
+            "/v1/chat/completions",
+        ),
+    ],
+)
+def test_regex_rewrite_is_lossless(route_prefix, path, expected):
+    # Higress appends a group-external .* when converting the ingress path
+    # to an Envoy regex, so the rewrite must be lossless in both forms.
+    for pattern in route_prefix.regex_prefixes():
+        assert regex_rewrite(pattern, path) == expected
+        assert regex_rewrite(pattern + ".*", path) == expected
+
+
+def test_regex_rewrite_ignores_capability_native_paths():
+    rerank = RoutePrefix(["/rerank"], additional_versions=["/v2"])
+    native = "/api/v1/services/rerank/text-rerank/text-rerank"
+    for pattern in rerank.regex_prefixes():
+        assert re.search(pattern, native) is None
 
 
 def test_provider_registry_static_ip():

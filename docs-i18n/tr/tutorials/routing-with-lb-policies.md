@@ -10,7 +10,7 @@ Bu eğitimde GPUStack'in rota düzeyinde yük dengeleme politikaları pratikte a
 
 - Çalışan bir GPUStack kurulumu. Bu politikaları uygulayan AI ağ geçidi, varsayılan olarak GPUStack ile dağıtılır, dolayısıyla standart kurulumun ekstra kuruluma ihtiyacı yoktur.
 - Rota hedefi olarak hizmet veren iki konuşlandırılmış model, ör. `qwen3-0.6b` ve `qwen3-32b` (aşağıdaki örneklerde bunlar kullanılmaktadır).
-- Karar hizmeti kısmı için: `Model` - `Provider` sayfasında `TypeSafe Decision Service (Jev)` sağlayıcısı olarak kayıtlı bir Jev karar hizmeti (bkz. [Model Sağlayıcı Yönetimi](../user-guide/model-provider-management.md)).
+- Karar hizmeti kısmı için: bir karar hizmeti — `Model` - `Provider` sayfasında `TypeSafe Decision Service (Jev)` sağlayıcısı olarak kayıtlı bir Jev karar hizmeti (bkz. [Model Sağlayıcı Yönetimi](../user-guide/model-provider-management.md)) veya yerel olarak dağıtılmış bir karar modeli (bkz. [Karar Modellerini Kullanma](../using-models/using-decision-models.md)).
 
 ## Adım 1: Rotayı Oluşturun { #step-1-create-the-route }
 
@@ -62,8 +62,7 @@ Her yolda gerçekte hangi anahtar kaynakların geçerli olduğuna dikkat edin: b
 Şimdi rotayı modele uygun hale getirin: Bir oturumu her zaman hangi modelde başlamış olursa olsun sabitlemek yerine, karar motoruna her isteğin hangi modeli hak ettiğini sorun.
 
 1. Rotayı düzenleyin ve `Decision Service Routing`'ı etkinleştirin:
-    - `Decision Service` — kayıtlı sağlayıcıyı seçin.
-    - `Decision Model` — e.g. `jev-latest`.
+    - `Decision Service` — kayıtlı sağlayıcıyı ve motorlarından birini (örn. `jev-latest`) seçin ya da bunun yerine yerel olarak dağıtılmış bir karar modeli seçin.
     - `Instructions` — "İsteği iyi karşılayabilecek en küçük modeli seçin. Basit, kısa veya olgusal istekler hızlı modele; karmaşık akıl yürütme, matematik veya kod istekleri büyük modele gider."
     - `Model Criteria` — hedef başına bir giriş (veya `Generate from targets`'e tıklayın ve hassaslaştırın):
         - `qwen3-0.6b` — "Çok hızlı, düşük maliyetli 0,6B modeli. Selamlaşmayı, basit gerçek soruları, biçimlendirmeyi ve kısa sohbetleri yönetir. Çok adımlı akıl yürütme, matematik ve kod konularında başarısız olur."

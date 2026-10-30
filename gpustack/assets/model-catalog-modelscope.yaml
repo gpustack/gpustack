@@ -1891,6 +1891,65 @@ model_sets:
         - --max-model-len=65536
         - --tokenizer-mode=deepseek_v32
         - --reasoning-parser=deepseek_v3
+- name: MiniMax-M3.1-Flash
+  description: MiniMax-M3.1-Flash is a multimodal MoE model with 428B total parameters (23B activated), a 1M context window, and mixed MXFP8 dense layers and NVFP4 experts for coding, tool use, and agentic workflows.
+  home: https://www.minimax.io
+  icon: /static/catalog_icons/minimax.png
+  size: 428
+  activated_size: 23
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+    - tools
+  licenses:
+    - minimax-community
+  release_date: "2026-10-23"
+  specs:
+    # SM90 (Hopper) and SM120 (Blackwell RTX) use FP8 caches and Marlin.
+    - mode: standard
+      quantization: NVFP4
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0,<13.0,!=10.*,!=11.*"
+      source: model_scope
+      model_scope_model_id: MiniMax/MiniMax-M3.1-Flash
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --block-size=128
+        - --reasoning-parser=minimax_m3
+        - --tool-call-parser=minimax_m3
+        - --enable-auto-tool-choice
+        - --kv-cache-dtype=fp8
+        - --attention-config={"indexer_kv_dtype":"fp8"}
+        - --compilation-config={"cudagraph_mode":"FULL_AND_PIECEWISE"}
+        - --disable-hybrid-kv-cache-manager
+        - --moe-backend=marlin
+        - --limit-mm-per-prompt={"video":0}
+        - --trust-remote-code
+    # SM100-family GPUs (B200/B300) support the MSA NVFP4 KV cache.
+    # The indexer uses FP8 for compatibility with vLLM 0.32.0.
+    - mode: standard
+      quantization: NVFP4
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=10.0,<11.0"
+      source: model_scope
+      model_scope_model_id: MiniMax/MiniMax-M3.1-Flash
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --block-size=128
+        - --reasoning-parser=minimax_m3
+        - --tool-call-parser=minimax_m3
+        - --enable-auto-tool-choice
+        - --kv-cache-dtype=nvfp4
+        - --attention-config={"indexer_kv_dtype":"fp8","use_prefill_query_quantization":true}
+        - --compilation-config={"cudagraph_mode":"FULL_AND_PIECEWISE"}
+        - --disable-hybrid-kv-cache-manager
+        - --trust-remote-code
 - name: MiniMax-M3
   description: MiniMax-M3 is MiniMax's flagship native-multimodal MoE model with 428B total parameters (23B activated), featuring a 1M context window with MSA sparse attention, adaptive reasoning modes, tool use, and frontier coding performance.
   home: https://www.minimax.io
@@ -2267,6 +2326,30 @@ model_sets:
         - --enable-auto-tool-choice
         - --tool-call-parser=step3p5
         - --trust-remote-code
+- name: Nanbeige4.3-33B
+  description: Nanbeige4.3-33B is a 33B-parameter language model from Nanbeige LLM Lab with a 512K context window, configurable reasoning, and tool use for coding and professional agent workflows.
+  home: https://modelscope.cn/organization/nanbeige
+  icon: /static/catalog_icons/nanbeige.png
+  size: 33
+  categories:
+    - llm
+  capabilities:
+    - context/512K
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-10-24"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: nanbeige/Nanbeige4.3-33B
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --reasoning-parser=qwen3
+        - --tool-call-parser=qwen3_coder
+        - --enable-auto-tool-choice
 - name: Nanbeige4.1-3B
   description: Nanbeige4.1-3B is a 3B-parameter language model from Nanbeige LLM Lab, optimized for long-context reasoning, agentic tasks, and tool use.
   home: https://modelscope.cn/organization/nanbeige

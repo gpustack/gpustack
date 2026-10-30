@@ -50,7 +50,7 @@ GPUStack, AI modellerini sunmak ve GPU örnekleri sağlamak için açık kaynakl
 
     ---
 
-    Farklı eşzamanlılık veya istek hızı seviyelerinde verim ve gecikmeyi karşılaştırarak performans hedeflerinize uygun çalışma noktalarını seçmenize yardımcı olur.
+    Auto Tune, eşzamanlılık düzeylerini veya istek hızlarını otomatik olarak değiştirerek en yüksek verimi veya hizmet düzeyi hedeflerinizi (SLO) karşılayan en yüksek eşzamanlılık düzeyini bulur.
 
 -   :material-server-outline:{ .lg .middle .icon-blue } __GPU Örnekleri__
 
@@ -87,6 +87,10 @@ GPUStack'in otomatik motor seçimi ve parametre optimizasyonu, kutudan çıktı�
 ![h200-iş hacmi karşılaştırması](assets/h200-throughput-comparison.png)
 
 Ayrıntılı kıyaslama yöntemleri ve sonuçları için [Çıkarım Performans Laboratuvarımızı](performance-lab/overview.md) ziyaret edin.
+
+GPUStack'in yerleşik performans testleriyle dağıtımınızın ne kadar yük kaldırabileceğini keşfedin. **Auto Tune**, yükü uyarlanabilir biçimde ayarlayarak en yüksek verimi veya hizmet düzeyi hedeflerinizi (SLO) karşılayan en yüksek eşzamanlılık düzeyini otomatik olarak bulur. Ayrıntılı verim ve gecikme grafikleri kapasite planlamasına yol gösterir.
+
+![gpustack-benchmark](assets/benchmark.png)
 
 ## Desteklenen Hızlandırıcılar { #supported-accelerators }
 

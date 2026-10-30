@@ -1,9 +1,8 @@
 """Top-level cache-service-instance route checks.
 
 Instances carry no owner_principal_id: list/watch visibility derives from
-the parent service (Org callers) or the caller's cluster (cluster-bound
-system accounts), and writes are reserved for system principals (worker
-state write-back).
+the parent service. Cluster-bound system accounts also require a matching
+cluster, and writes are reserved for system principals (worker state write-back).
 """
 
 from contextlib import asynccontextmanager
@@ -46,6 +45,7 @@ def _system_ctx(scoped_cluster_id=None) -> TenantContext:
         current_principal_id=None,
         org_role=None,
         scoped_cluster_id=scoped_cluster_id,
+        scoped_cluster_owner_id=ORG_PRINCIPAL,
     )
 
 
@@ -112,8 +112,10 @@ async def test_list_scopes_cluster_system_to_its_cluster(monkeypatch):
     )
 
     conditions = paginated.await_args.kwargs["extra_conditions"]
-    assert len(conditions) == 1
+    assert len(conditions) == 2
     assert "cluster_id" in str(conditions[0])
+    assert "cache_service_id IN" in str(conditions[1])
+    assert list(conditions[1].compile().params.values()) == [ORG_PRINCIPAL]
 
 
 @pytest.mark.asyncio
@@ -157,19 +159,28 @@ def _patch_streaming(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_watch_filters_cluster_system_to_its_cluster(monkeypatch):
+@pytest.mark.parametrize("deleted_at", [None, "2026-01-01T00:00:00Z"])
+async def test_watch_filters_cluster_system_to_its_cluster(monkeypatch, deleted_at):
     captured = _patch_streaming(monkeypatch)
+    _patch_session(monkeypatch)
+    lookup = AsyncMock(
+        return_value=SimpleNamespace(
+            owner_principal_id=ORG_PRINCIPAL, deleted_at=deleted_at
+        )
+    )
+    monkeypatch.setattr(instances_route.CacheService, "one_by_id", lookup)
 
     await instances_route.get_cache_service_instances(
         ctx=_system_ctx(scoped_cluster_id=3), params=_params(watch=True)
     )
 
     filter_func = captured["filter_func"]
-    assert filter_func(_instance_row(cluster_id=3)) is True
-    assert filter_func(_instance_row(cluster_id=4)) is False
-    assert filter_func(_instance_row(cluster_id=None)) is True
-    assert filter_func({"id": 21}) is False
-    assert filter_func(SimpleNamespace(id=21)) is False
+    assert await filter_func(_instance_row(cluster_id=3)) is True
+    assert await filter_func(_instance_row(cluster_id=4)) is False
+    assert await filter_func(_instance_row(cluster_id=None)) is False
+    assert await filter_func({"id": 21}) is False
+    assert await filter_func(SimpleNamespace(id=21)) is False
+    lookup.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -189,6 +200,70 @@ async def test_watch_filters_org_users_to_their_services(monkeypatch):
     filter_func = captured["filter_func"]
     assert filter_func(_instance_row(cache_service_id=9))
     assert not filter_func(_instance_row(cache_service_id=8))
+
+
+@pytest.mark.asyncio
+async def test_system_watch_resolves_new_parents_and_caches_immutable_ownership(
+    monkeypatch,
+):
+    captured = _patch_streaming(monkeypatch)
+    _patch_session(monkeypatch)
+    lookup = AsyncMock(
+        side_effect=[
+            SimpleNamespace(owner_principal_id=ORG_PRINCIPAL),
+            SimpleNamespace(owner_principal_id=ORG_PRINCIPAL + 1),
+            SimpleNamespace(owner_principal_id=ORG_PRINCIPAL),
+        ]
+    )
+    monkeypatch.setattr(instances_route.CacheService, "one_by_id", lookup)
+    await instances_route.get_cache_service_instances(
+        ctx=_system_ctx(scoped_cluster_id=3), params=_params(watch=True)
+    )
+    visible = captured["filter_func"]
+    for _ in range(2):
+        assert await visible(_instance_row(cache_service_id=9))
+        assert not await visible(_instance_row(cache_service_id=10))
+    assert lookup.await_count == 2
+    # A service first observed after the stream opens is authorized on demand.
+    assert await visible(_instance_row(cache_service_id=11))
+    assert lookup.await_count == 3
+    # Deletion events retain the cached immutable owner after parent removal.
+    lookup.side_effect = AssertionError("Known parents must not be queried per event")
+    assert await visible(_instance_row(cache_service_id=9))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write", [False, True])
+@pytest.mark.parametrize("cluster_id", [3, 4, None])
+@pytest.mark.parametrize("owner_id", [ORG_PRINCIPAL, ORG_PRINCIPAL + 1, None])
+async def test_system_instance_access_requires_cluster_and_parent_owner(
+    monkeypatch, write, cluster_id, owner_id
+):
+    instance = _instance_row(cluster_id=cluster_id, update=AsyncMock())
+    monkeypatch.setattr(
+        instances_route.CacheServiceInstance,
+        "one_by_id",
+        AsyncMock(return_value=instance),
+    )
+    monkeypatch.setattr(
+        instances_route.CacheService,
+        "one_by_id",
+        AsyncMock(
+            return_value=SimpleNamespace(owner_principal_id=owner_id, deleted_at=None)
+        ),
+    )
+    kwargs = dict(session=MagicMock(), ctx=_system_ctx(scoped_cluster_id=3), id=21)
+    endpoint = instances_route.get_cache_service_instance
+    if write:
+        endpoint = instances_route.update_cache_service_instance
+        kwargs["instance_in"] = _update_in(port=40001)
+    if cluster_id == 3 and owner_id == ORG_PRINCIPAL:
+        assert await endpoint(**kwargs) is instance
+        assert instance.update.await_count == int(write)
+    else:
+        with pytest.raises(NotFoundException):
+            await endpoint(**kwargs)
+        instance.update.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -237,6 +312,15 @@ async def test_get_by_id_serves_system_callers(monkeypatch):
     """The worker's state write-back reads the instance back through this
     endpoint whenever its watch cache is cold."""
     instance = _instance_row()
+    monkeypatch.setattr(
+        instances_route.CacheService,
+        "one_by_id",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                owner_principal_id=ORG_PRINCIPAL, deleted_at=None
+            )
+        ),
+    )
     monkeypatch.setattr(
         instances_route.CacheServiceInstance,
         "one_by_id",

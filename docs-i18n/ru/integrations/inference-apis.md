@@ -135,6 +135,74 @@ curl http://your_gpustack_server_url/v1/rerank \
 }
 ```
 
+## System One API принятия решений { #system-one-decision-api }
+
+Модели принятия решений — развертывания в категории `decision` — отвечают по контракту System One (Jev), а не генерируют текст: получив state и набор questions, они возвращают типизированные ответы, а не дополнения. GPUStack предоставляет этот контракт по пути `/v1/systemone`.
+
+Поле `model` обязательно и принимает имя маршрута модели, точно как в `/v1/chat/completions`. GPUStack разрешает модель и передает остальную часть тела запроса и весь ответ движку решений без изменений.
+
+### Использование { #usage_3 }
+
+#### Пример cURL { #curl-example_2 }
+
+```bash
+export GPUSTACK_API_KEY=your_api_key
+curl http://your_gpustack_server_url/v1/systemone \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GPUSTACK_API_KEY" \
+  -d '{
+      "model": "qwen3-decision-8b",
+      "state": {
+          "messages": [
+              { "role": "user", "content": "Write a 200-word poem in Hungarian." }
+          ]
+      },
+      "questions": {
+          "model_selection": {
+              "type": "choice",
+              "instructions": "Pick the model best suited.",
+              "criteria": {
+                  "qwen3-8b": "Strong multilingual generation.",
+                  "llama3-8b": "Faster, weaker multilingual."
+              }
+          }
+      }
+  }' | jq
+```
+
+Пример вывода:
+
+```json
+{
+  "model": "qwen3-decision-8b",
+  "usage": {
+    "input_tokens": 189,
+    "output_tokens": 12
+  },
+  "answers": {
+    "model_selection": {
+      "type": "choice",
+      "choice": "qwen3-8b",
+      "confidence": 0.93,
+      "probabilities": {
+        "qwen3-8b": 0.93,
+        "llama3-8b": 0.07
+      }
+    }
+  }
+}
+```
+
+`state` — ситуация, относительно которой принимается решение: простой текст или структурированный JSON, например сообщения чата. Каждая запись в `questions` сопоставляет идентификатор вопроса с его определением; распространены три типа:
+
+| Тип | Значение | `criteria` | Поле ответа |
+| --- | --- | --- | --- |
+| `choice` | Выбрать один вариант | Имя варианта → описание | `choice` — имя выбранного варианта |
+| `score` | Оценить state по упорядоченным уровням | Упорядоченный список описаний уровней | `score` — индекс уровня |
+| `noul` | Бинарный вопрос (да/нет) | Необязательные описания сторон `true` / `false` | `noul` — логическое значение |
+
+Ответ на вопрос возвращается в `answers` под тем же идентификатором, вместе с вердиктом несутся `confidence` и `probabilities`. Набор вопросов в контракте открыт — движки могут принимать дополнительные поля — а GPUStack проверяет только `model`, остальное пересылает без изменений. О развертывании моделей принятия решений см. [Использование моделей принятия решений](../using-models/using-decision-models.md).
+
 ## Другие API { #other-apis }
 
 Для других типов API GPUStack позволяет включить функцию **Generic Proxy** при развертывании модели.

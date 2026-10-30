@@ -1,11 +1,13 @@
 """Unit tests for TenantContext resolution and role guards."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gpustack.api.exceptions import ForbiddenException, InvalidException
 from gpustack.api.tenant import (
+    TenantContext,
     _resolve_requested_principal_id,
     resolve_tenant_context,
     require_org_role,
@@ -16,7 +18,6 @@ from gpustack.schemas.principals import (
     OrgRole,
     PrincipalType,
 )
-
 
 # Pre-seed the cached ``system/authenticated`` principal id so the
 # ``get_authenticated_principal_id`` async helper short-circuits via
@@ -397,11 +398,8 @@ async def test_require_org_role_blocks_personal_scope():
 
 @pytest.mark.asyncio
 async def test_require_org_role_passes_system_principal():
-    """SYSTEM principals (worker / cluster callbacks reaching shared
-    routers like benchmark ``/metrics``) bypass the Org Owner gate via
-    ``bypass_tenant_filter`` — they aren't users and have no Org role.
-    """
-    dep = require_org_role(OrgRole.OWNER)
+    """Runtime endpoints explicitly admit service accounts without an Org role."""
+    dep = require_org_role(OrgRole.OWNER, allow_system=True)
     ctx = MagicMock()
     ctx.user.kind = PrincipalType.SYSTEM
     ctx.is_platform_admin = False
@@ -411,3 +409,32 @@ async def test_require_org_role_passes_system_principal():
         side_effect=AssertionError("assert_org_role should not be reached for SYSTEM")
     )
     assert await dep(ctx) is ctx
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cluster_id", [None, 10])
+async def test_require_org_role_denies_persisted_system_by_default(cluster_id):
+    ctx = TenantContext(
+        user=SimpleNamespace(
+            kind=PrincipalType.SYSTEM, id=7, name="system/worker/test"
+        ),
+        is_platform_admin=False,
+        current_principal_id=20,
+        org_role=OrgRole.OWNER,
+        scoped_cluster_id=cluster_id,
+    )
+    with pytest.raises(ForbiddenException):
+        await require_org_role(OrgRole.OWNER)(ctx)
+
+
+@pytest.mark.asyncio
+async def test_require_org_role_preserves_platform_server_token():
+    ctx = TenantContext(
+        user=SimpleNamespace(
+            kind=PrincipalType.SYSTEM, id=None, name="system/worker/test"
+        ),
+        is_platform_admin=False,
+        current_principal_id=None,
+        org_role=None,
+    )
+    assert await require_org_role(OrgRole.OWNER)(ctx) is ctx

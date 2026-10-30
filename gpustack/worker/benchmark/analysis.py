@@ -23,10 +23,14 @@ Two kinds of input, deliberately kept apart:
 
 import json
 import logging
-from typing import Optional
+import math
+from typing import List, Optional, Tuple
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from gpustack.schemas.benchmark import (
     SLO_THRESHOLDS,
+    BenchmarkBase,
     BenchmarkLoadTypeEnum,
     BenchmarkLoadModeEnum,
     SLOThreshold,
@@ -45,12 +49,6 @@ MIN_SUCCESS_RATE = 0.95
 # saturation at the top (don't).
 PEAK_PLATEAU_TOLERANCE = 0.05
 
-# Fraction of its tightest SLO budget a point may consume and still count as "the
-# thresholds never came into play". A sweep that ended on 31% of its TTFT budget
-# was not stopped by latency, whatever the SLO-capacity number says. Used to
-# phrase the message, and as the fallback discriminator when no ramp facts exist.
-SLO_HEADROOM_RATIO = 0.7
-
 # Achieved rps below this fraction of the OFFERED rate = the server plainly cannot
 # keep up. Deliberately loose: a finite max_requests leaves achieved a few percent
 # under offered even on an idle server (the drain tail), so ~6x that bias only
@@ -59,9 +57,52 @@ MIN_KEEPUP_RATIO = 0.8
 
 # ── Ramp stop reasons (benchmark-runner's RampOutcome.bracket_reason) ──────────
 RAMP_STOP_CAPACITY_PLATEAU = "capacity_plateau"
+RAMP_STOP_THROUGHPUT_DECLINE = "throughput_decline"
+RAMP_STOP_THROUGHPUT_GAIN_CONVERGED = "throughput_gain_converged"
 RAMP_STOP_UPPER_BOUND = "upper_bound"
 RAMP_STOP_BUDGET_POINTS = "budget_points"
 RAMP_STOP_BUDGET_SECONDS = "budget_seconds"
+
+
+class _ThroughputDeclinePoint(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    rate: float = Field(gt=0, allow_inf_nan=False)
+    total_tps: float = Field(ge=0, allow_inf_nan=False)
+    drop_percent: float = Field(ge=0, le=100, allow_inf_nan=False)
+
+
+class _ThroughputDeclineEvidence(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    threshold_percent: float = Field(gt=0, le=100, allow_inf_nan=False)
+    consecutive_points: int = Field(gt=0)
+    peak_rate: float = Field(gt=0, allow_inf_nan=False)
+    peak_total_tps: float = Field(gt=0, allow_inf_nan=False)
+    points: list[_ThroughputDeclinePoint] = Field(min_length=1)
+
+
+class _ThroughputGainPoint(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    rate: float = Field(gt=0, allow_inf_nan=False)
+    total_tps: float = Field(gt=0, allow_inf_nan=False)
+    best_total_tps: float = Field(gt=0, allow_inf_nan=False)
+
+
+class _ThroughputGainEvidence(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    threshold_percent: float = Field(gt=0, le=100, allow_inf_nan=False)
+    window_points: int = Field(ge=3, le=3)
+    baseline_rate: float = Field(gt=0, allow_inf_nan=False)
+    baseline_total_tps: float = Field(gt=0, allow_inf_nan=False)
+    best_rate: float = Field(gt=0, allow_inf_nan=False)
+    best_total_tps: float = Field(gt=0, allow_inf_nan=False)
+    gain_percent: float = Field(ge=0, allow_inf_nan=False)
+    lower_rate: float = Field(gt=0, allow_inf_nan=False)
+    upper_rate: float = Field(gt=0, allow_inf_nan=False)
+    points: list[_ThroughputGainPoint] = Field(min_length=3, max_length=3)
 
 
 def read_ramp_facts(benchmark_dir: str, benchmark) -> Optional[dict]:
@@ -232,55 +273,91 @@ def slo_boundary_located(
 # ── Best operating points ─────────────────────────────────────────────────────
 
 
-def compute_best_points(benchmark, results: list) -> dict:
-    """Derive best operating points from the per-rate result grid.
+def total_throughput(point: dict) -> Optional[float]:
+    """Read the measured total token throughput without substituting output TPS.
 
-    - peak_rate: the true throughput argmax — the rate with the highest measured
-      throughput (ties resolve to the lowest rate). Exactly what the name says.
-    - slo_met_rate: when SLO targets are set, the max rate whose latency metrics
-      all stay within the SLO thresholds (ms). The literal answer to "how much
-      load still meets the SLO", reported as measured.
-    - recommended_rate: the load to actually RUN at.
-      * No SLO => the throughput peak (the user asked to maximise throughput).
-      * SLO    => min(slo_met_rate, peak_rate). Capped at the PEAK, not below: up
-        to the peak more load buys more throughput, so if it meets the SLO
-        recommend it (bm93: a real 500ms TTFT target held at concurrency 256 — the
-        throughput peak — at 155ms, so 256 is the answer, NOT some lower-latency
-        point below it). The cap only bites past the peak, where throughput
-        DECLINES and a higher SLO-meeting rate is strictly worse (bm74: the loose
-        10s target held to 1024, which delivered LESS throughput than 256 — so
-        recommend 256, and _edge_warnings flags the gap via `slo_not_binding`).
+    Args:
+        point: One measured stage's flat result fields.
 
-      An earlier version capped recommended at a "knee" (lowest rate within 5% of
-      peak throughput). That under-delivered on real SLOs: it treated a healthy
-      near-peak point (bm93's 256) the same as an over-saturated one and
-      recommended a lower load than the SLO actually allowed.
+    Returns:
+        Total tokens per second, or None when it was not measured.
     """
-    points = [
-        r
-        for r in measured_stages(results)
-        if r.get("tokens_per_second_mean") is not None
+    return point.get("tokens_per_second_mean")
+
+
+def select_result_points(
+    benchmark: BenchmarkBase, results: list
+) -> Tuple[Optional[dict], Optional[dict]]:
+    """Select the primary result and the independently observed total-TPS peak.
+
+    SLO tests answer the highest measured load satisfying all targets and the
+    request-success floor. Other tests summarize the total-throughput peak.
+    Equal peaks prefer the lower load, then the earlier measured stage.
+
+    Args:
+        benchmark: Workload configuration and optional SLO targets.
+        results: Measured stages and any auxiliary probe results.
+
+    Returns:
+        Primary and peak stage dictionaries, each optional.
+    """
+    points = sorted(
+        measured_stages(results),
+        key=lambda point: (
+            point["rate"],
+            point.get("sequence") or 0,
+            point.get("input_tokens") or 0,
+        ),
+    )
+    measured = [point for point in points if total_throughput(point) is not None]
+    peak = max(measured, key=total_throughput, default=None)
+    if not has_slo(benchmark):
+        return peak, peak
+    passing = [
+        point for point in points if meets_slo(benchmark, point) and success_ok(point)
     ]
-    if not points:
-        return {}
-    points = sorted(points, key=lambda r: r["rate"])
-    out: dict = {}
+    primary = max(
+        passing,
+        key=lambda point: (point["rate"], total_throughput(point) or 0),
+        default=None,
+    )
+    return primary, peak
 
-    # `points` is sorted ascending by rate; max() returns the first maximal
-    # element, so ties resolve to the lowest rate.
-    peak = max(points, key=lambda r: r.get("tokens_per_second_mean") or 0)
-    peak_rate = float(peak["rate"])
-    out["peak_rate"] = peak_rate
 
-    if has_slo(benchmark):
-        met = [r for r in points if meets_slo(benchmark, r) and success_ok(r)]
-        if met:
-            slo_rate = float(max(met, key=lambda r: r["rate"])["rate"])
-            out["slo_met_rate"] = slo_rate
-            out["recommended_rate"] = min(slo_rate, peak_rate)
-    else:
-        out["recommended_rate"] = peak_rate
+def point_coordinates(point: Optional[dict]) -> Optional[dict]:
+    """Identify a stage without relying on result rows that uploads replace.
 
+    Args:
+        point: Selected stage, or None when no stage applies.
+
+    Returns:
+        Stable input-length, sequence and load coordinates, or None.
+    """
+    if point is None:
+        return None
+    return {
+        "input_tokens": point.get("input_tokens"),
+        "sequence": point.get("sequence") or 0,
+        "rate": point["rate"],
+    }
+
+
+def compute_best_points(benchmark, results: list) -> dict:
+    """Derive the primary result load and independently observed total-TPS peak.
+
+    `recommended_rate` is the primary result's configured concurrency or request
+    rate. With SLO targets it equals `slo_met_rate`, the highest measured passing
+    load, even when a lower load delivered more total throughput. Without SLO
+    targets it equals `peak_rate`. No passing SLO stage means no primary result.
+    """
+    primary, peak = select_result_points(benchmark, results)
+    out = {}
+    if peak is not None:
+        out["peak_rate"] = float(peak["rate"])
+    if primary is not None:
+        out["recommended_rate"] = float(primary["rate"])
+        if has_slo(benchmark):
+            out["slo_met_rate"] = float(primary["rate"])
     return out
 
 
@@ -295,8 +372,11 @@ def compute_validity(
     Returns ``coverage_applicable`` and ``warnings``. Search runs also report
     ``sufficient`` plus, when available, ``stop_reason`` / ``stopped_at`` /
     ``slo_boundary_located`` and the saturation probe's ``probe_ceiling`` /
-    ``probe_bound`` / ``probe_relaxed``. Non-search runs report only findings from
-    the measured points, without a search coverage verdict.
+    ``probe_bound`` / ``probe_relaxed``. Every run also carries primary_point and
+    peak_point coordinates from the same selection used for parent metrics.
+    Non-search runs include those selections and measured findings without a
+    search coverage verdict. A protective throughput-decline stop can also carry
+    validated trigger-time evidence recorded by the runner.
 
     Codes (rendered/localized by the UI):
     - ``slo_never_met``: SLO targets set but no measured point meets them -> the
@@ -312,10 +392,12 @@ def compute_validity(
       measured sustained rps as ``params.ceiling`` so the advice is a number, not
       a direction. Supersedes the top-edge codes, whose advice ("raise the upper
       bound") would point the opposite way.
-    - ``slo_not_binding``: SLO targets set, but they held at the HIGHEST load
-      measured while throughput had already turned over -> capacity, not the
-      latency budget, is what limited this run; the thresholds are too loose to
-      locate a boundary. Carries the throughput peak as ``params.rate``.
+    - ``slo_not_binding``: a runner stopped an SLO search on throughput plateau
+      without locating a latency boundary. The highest passing load remains a
+      measured lower bound; the throughput peak is only an independent fact.
+    - ``throughput_decline``: the runner explicitly stopped an SLO search after
+      sustained total-throughput decline. The last passing load remains the
+      primary result, but the latency boundary has not been located.
     - ``peak_at_floor``: the best point is the LOWEST one measured -> the optimum
       may be below the search range; lower lower_bound.
     - ``point_high_error``: some point's success rate < 95% -> overloaded /
@@ -330,6 +412,11 @@ def compute_validity(
     bound sends them to change the one number that was never the constraint.
     """
     warnings: list = []
+    primary, peak = select_result_points(benchmark, results)
+    selection = {
+        "primary_point": point_coordinates(primary),
+        "peak_point": point_coordinates(peak),
+    }
 
     rate_points = measured_stages(results)
     slo_set = has_slo(benchmark)
@@ -359,7 +446,7 @@ def compute_validity(
     if benchmark_load_mode(benchmark) is not BenchmarkLoadModeEnum.AUTO_TUNE:
         # Fixed loads do not claim to locate a curve maximum or boundary.
         # Point failures and unmet SLO targets remain useful measurements.
-        return {"coverage_applicable": False, "warnings": warnings}
+        return {"coverage_applicable": False, "warnings": warnings, **selection}
 
     warnings.extend(
         _edge_warnings(
@@ -379,6 +466,7 @@ def compute_validity(
         "coverage_applicable": True,
         "sufficient": len(warnings) == 0,
         "warnings": warnings,
+        **selection,
     }
     if slo_set and best_points.get("slo_met_rate") is not None:
         # Whether `slo_met_rate` is a measured boundary or a floor. Rides in
@@ -389,7 +477,152 @@ def compute_validity(
             benchmark, rate_points, best_points, ramp
         )
     out.update(_ramp_facts_for_ui(ramp))
+    out.update(_throughput_decline_facts_for_ui(ramp, warnings))
+    out.update(_throughput_gain_facts_for_ui(benchmark, results, ramp))
     return out
+
+
+def _throughput_decline_evidence(ramp: Optional[dict]) -> Optional[dict]:
+    """Validate the runner's recorded evidence without recalculating its values."""
+    evidence = (ramp or {}).get("throughput_decline")
+    if not isinstance(evidence, dict):
+        return None
+    try:
+        validated = _ThroughputDeclineEvidence.model_validate(evidence)
+    except ValidationError:
+        return None
+    if len(validated.points) != validated.consecutive_points:
+        return None
+    return validated.model_dump()
+
+
+def _throughput_decline_warning(ramp: Optional[dict]) -> dict:
+    evidence = _throughput_decline_evidence(ramp)
+    params = (
+        {
+            "points": evidence["consecutive_points"],
+            "threshold": evidence["threshold_percent"],
+        }
+        if evidence is not None
+        else {}
+    )
+    return {"code": "throughput_decline", "params": params}
+
+
+def _throughput_decline_facts_for_ui(ramp: Optional[dict], warnings: list) -> dict:
+    if not any(warning["code"] == "throughput_decline" for warning in warnings):
+        return {}
+    evidence = _throughput_decline_evidence(ramp)
+    return {"throughput_decline": evidence} if evidence is not None else {}
+
+
+def _positive_finite(value) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
+def _valid_gain_sample(point: Optional[dict]) -> bool:
+    return (
+        point is not None
+        and _positive_finite(total_throughput(point))
+        and success_ok(point)
+    )
+
+
+def _gain_ordered_points(results: list) -> Optional[list]:
+    points = measured_stages(results)
+    sequences = [point.get("sequence") for point in points]
+    if (
+        len(points) <= 3
+        or any(
+            not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 0
+            for sequence in sequences
+        )
+        or len(set(sequences)) != len(sequences)
+        or any(not _positive_finite(point["rate"]) for point in points)
+    ):
+        return None
+    return sorted(points, key=lambda point: point["sequence"])
+
+
+def _gain_window_matches(window: list, evidence: _ThroughputGainEvidence) -> bool:
+    best = evidence.baseline_total_tps
+    for row, recorded in zip(window, evidence.points):
+        if not _valid_gain_sample(row):
+            return False
+        best = max(best, total_throughput(row))
+        if (
+            row["rate"] != recorded.rate
+            or total_throughput(row) != recorded.total_tps
+            or best != recorded.best_total_tps
+        ):
+            return False
+    return True
+
+
+def _gain_coverage_matches(points: list, evidence: _ThroughputGainEvidence) -> bool:
+    valid = [point for point in points if _valid_gain_sample(point)]
+    lower = max(
+        (point["rate"] for point in valid if point["rate"] < evidence.best_rate),
+        default=None,
+    )
+    upper = min(
+        (point["rate"] for point in valid if point["rate"] > evidence.best_rate),
+        default=None,
+    )
+    return lower == evidence.lower_rate and upper == evidence.upper_rate
+
+
+def _gain_matches_measurements(
+    benchmark, results: list, evidence: _ThroughputGainEvidence
+) -> bool:
+    points = _gain_ordered_points(results)
+    if points is None:
+        return False
+    before, window = points[:-3], points[-3:]
+    _primary, baseline = select_result_points(benchmark, before)
+    _primary, best = select_result_points(benchmark, points)
+    if not _valid_gain_sample(baseline) or not _valid_gain_sample(best):
+        return False
+    if (
+        baseline["rate"] != evidence.baseline_rate
+        or total_throughput(baseline) != evidence.baseline_total_tps
+        or best["rate"] != evidence.best_rate
+        or total_throughput(best) != evidence.best_total_tps
+    ):
+        return False
+    gain = 100 * (evidence.best_total_tps / evidence.baseline_total_tps - 1)
+    return (
+        evidence.gain_percent < evidence.threshold_percent
+        and 0 <= gain < evidence.threshold_percent
+        and math.isclose(gain, evidence.gain_percent, rel_tol=0, abs_tol=5.00001e-7)
+        and _gain_window_matches(window, evidence)
+        and _gain_coverage_matches(points, evidence)
+    )
+
+
+def _throughput_gain_facts_for_ui(
+    benchmark, results: list, ramp: Optional[dict]
+) -> dict:
+    if (
+        has_slo(benchmark)
+        or (ramp or {}).get("stop_reason") != RAMP_STOP_THROUGHPUT_GAIN_CONVERGED
+    ):
+        return {}
+    raw = ramp.get("throughput_gain_evidence")
+    if not isinstance(raw, dict):
+        return {}
+    try:
+        evidence = _ThroughputGainEvidence.model_validate(raw)
+    except ValidationError:
+        return {}
+    if not _gain_matches_measurements(benchmark, results, evidence):
+        return {}
+    return {"throughput_gain_evidence": evidence.model_dump()}
 
 
 def _ramp_facts_for_ui(ramp: Optional[dict]) -> dict:
@@ -430,7 +663,7 @@ def _ramp_facts_for_ui(ramp: Optional[dict]) -> dict:
         "bracket_reason": ramp.get("bracket_reason"),
         "stopped_at": ramp.get("stopped_at"),
     }
-    for key in ("probe_ceiling", "probe_bound", "probe_relaxed"):
+    for key in ("probe_ceiling", "probe_bound", "probe_relaxed", "slo_bracket"):
         if ramp.get(key) is not None:
             facts[key] = ramp[key]
     return facts
@@ -455,80 +688,55 @@ def _edge_warnings(
     if rec is None or not rate_points:
         return out
 
-    floor_ceiling = _saturated_at_floor_ceiling(benchmark, rate_points)
-    if floor_ceiling is not None:
-        # The search range STARTS above what the server can sustain, so nothing
-        # inside it can be the optimum. Reported instead of searching below the
-        # range (see the ramp's Phase-1 bracket): [lower_bound, upper_bound] is the
-        # user's range and the sweep never leaves it.
-        #
-        # This supersedes the top-edge codes: the best point is necessarily also
-        # the highest one measured here, and "raise the upper bound" would send the
-        # user in exactly the wrong direction.
-        out.append(
-            {"code": "saturated_at_lower_bound", "params": {"ceiling": floor_ceiling}}
-        )
-        return out
+    final_stop = (ramp or {}).get("stop_reason")
+    if final_stop == RAMP_STOP_THROUGHPUT_GAIN_CONVERGED and slo_set:
+        if not slo_boundary_located(benchmark, rate_points, best_points, ramp):
+            return [{"code": "not_saturated", "params": {}}]
+        return []
 
-    top_point = max(rate_points, key=lambda r: r["rate"])
-    top_rate = top_point["rate"]
-    slo_rate = best_points.get("slo_met_rate")
-    peak_rate = best_points.get("peak_rate")
-    if (
-        slo_set
-        and slo_rate is not None
-        and peak_rate is not None
-        and slo_rate >= top_rate
-    ):
-        # The SLO held at the highest load measured. Two different runs land here,
-        # and only the second one has a real latency boundary:
-        #
-        # (a) throughput PEAKED strictly below the top — the thresholds have
-        #     headroom the throughput does not.
-        # (b) the sweep STOPPED on the throughput plateau with the thresholds
-        #     barely touched. The ramp's SLO branch breaks out on capacity
-        #     saturation (past it, more load buys only queueing), so the sweep ends
-        #     mid-range with peak == slo == top and every rate comparison comes out
-        #     equal. bm102: stopped at concurrency 256 of a 4..1024 range after 7 of
-        #     12 points, reporting "max within SLO = 256" — while TTFT there was
-        #     156ms of a 500ms budget (31%) and TPOT 1.2ms of 50ms. Judging this on
-        #     rates alone said "sufficient, no warnings": a capacity ceiling wearing
-        #     an SLO label, with nothing to tell the user why the run ended there.
-        #
-        # Either way the advice is "tighten the thresholds", NOT the top-edge codes'
-        # "raise the upper bound", which would only buy points past the peak. A
-        # threshold actually pressed against at the peak (bm93) is a binding SLO and
-        # still reports nothing: its recommendation IS the peak.
-        used = slo_utilization(benchmark, top_point)
-        bracket = (ramp or {}).get("bracket_reason")
-        if bracket is not None:
-            # FACT: the ramp says capacity is what ended the bracket.
-            capacity_bound = bracket == RAMP_STOP_CAPACITY_PLATEAU
-        else:
-            # No facts (stage / legacy / pre-sidecar run): fall back to the grid.
-            # `used <= ratio` + a flattened top step is the closest observable
-            # proxy, and the reason this cannot be the primary signal is that a
-            # binding SLO at the peak produces the same rates.
-            capacity_bound = (
-                used is not None
-                and used <= SLO_HEADROOM_RATIO
-                and _plateaued_at_top(rate_points)
-            )
-        if peak_rate < slo_rate or capacity_bound:
-            out.append(
+    if slo_set:
+        facts = ramp or {}
+        stop_reason = facts.get("stop_reason") or facts.get("bracket_reason")
+        if stop_reason == RAMP_STOP_THROUGHPUT_DECLINE and not slo_boundary_located(
+            benchmark, rate_points, best_points, ramp
+        ):
+            return [_throughput_decline_warning(ramp)]
+        limits = _limit_warnings(
+            benchmark,
+            rate_points,
+            rec,
+            max(r["rate"] for r in rate_points),
+            overloaded_any,
+            ramp,
+        )
+        if limits:
+            return limits
+        if (ramp or {}).get(
+            "bracket_reason"
+        ) == RAMP_STOP_CAPACITY_PLATEAU and not slo_boundary_located(
+            benchmark, rate_points, best_points, ramp
+        ):
+            # A throughput plateau does not establish where latency targets fail.
+            top_point = max(rate_points, key=lambda point: point["rate"])
+            used = slo_utilization(benchmark, top_point)
+            return [
                 {
                     "code": "slo_not_binding",
                     "params": {
-                        "rate": peak_rate,
-                        # Percent of the strictest budget the top point used, so the
-                        # message can say HOW loose the thresholds were instead of
-                        # only asserting that they were.
+                        "rate": best_points.get("peak_rate"),
                         "used": round(used * 100) if used is not None else None,
                     },
                 }
-            )
-            return out
+            ]
+        return []
 
+    floor_ceiling = saturation_floor_ceiling(benchmark, rate_points)
+    if floor_ceiling is not None:
+        return [
+            {"code": "saturated_at_lower_bound", "params": {"ceiling": floor_ceiling}}
+        ]
+
+    top_rate = max(r["rate"] for r in rate_points)
     out.extend(
         _limit_warnings(benchmark, rate_points, rec, top_rate, overloaded_any, ramp)
     )
@@ -574,6 +782,8 @@ def _limit_warnings(
     stopped at 31 (cap = ceil(25.6 * 1.2)) and was told to raise the 1024.
     """
     stop = (ramp or {}).get("stop_reason")
+    if stop == RAMP_STOP_THROUGHPUT_GAIN_CONVERGED:
+        return []
     if stop in (RAMP_STOP_BUDGET_POINTS, RAMP_STOP_BUDGET_SECONDS):
         which = "seconds" if stop == RAMP_STOP_BUDGET_SECONDS else "points"
         return [{"code": "budget_exhausted", "params": {"which": which}}]
@@ -596,11 +806,13 @@ def _limit_warnings(
         return []
 
     # ── No facts (stage / legacy / pre-sidecar run): judge from the grid ──
-    # "Could go higher" only makes sense when nothing overloaded AND the curve was
-    # still CLIMBING at the top. If throughput already flattened on the last step
-    # the sweep found saturation, so "raise the bound" is wrong advice — more range
-    # would only add plateau points (bm86/bm93: top step gained <5%).
-    if overloaded_any or rec != top_rate or _plateaued_at_top(rate_points):
+    # A throughput search can finish on a plateau. An SLO search still needs a
+    # higher failed point even if throughput already flattened or declined.
+    if (
+        overloaded_any
+        or rec != top_rate
+        or (not has_slo(benchmark) and _plateaued_at_top(rate_points))
+    ):
         return []
     # Point budget checked first: when it ran out, the search range was never the
     # binding constraint no matter where the top point landed. The TIME cap is
@@ -662,23 +874,36 @@ def _plateaued_at_top(rate_points: list) -> bool:
     pts = sorted(measured_stages(rate_points), key=lambda r: r["rate"])
     if len(pts) < 2:
         return False
-    prev_tps = pts[-2].get("tokens_per_second_mean") or 0
-    top_tps = pts[-1].get("tokens_per_second_mean")
+    prev_tps = total_throughput(pts[-2]) or 0
+    top_tps = total_throughput(pts[-1])
     if prev_tps <= 0 or top_tps is None:
         return False
     return (top_tps / prev_tps - 1.0) < PEAK_PLATEAU_TOLERANCE
 
 
-def _saturated_at_floor_ceiling(benchmark, rate_points: list) -> Optional[float]:
-    """Sustained rps when the sweep's LOWEST point already outran the server.
+def saturation_floor_ceiling(
+    benchmark: BenchmarkBase, results: List[dict]
+) -> Optional[float]:
+    """Read the sustained request rate when a throughput search starts saturated.
 
-    Returns None unless this is a fixed-rate run whose lowest measured point shows
-    achieved << offered. Only the rate axis can be judged this way: there the knob
-    IS an offered request rate, so `requests_per_second_mean` is directly
-    comparable to it. On the concurrency axis the knob counts in-flight streams and
-    no such comparison exists.
+    Only a fixed-rate throughput search compares delivered and offered request
+    rates. A shortfall does not determine whether latency SLO targets bind.
+
+    Args:
+        benchmark: The search configuration.
+        results: Measured stages and any auxiliary probe readings.
+
+    Returns:
+        Sustained requests per second, or None without an invalid throughput floor.
     """
-    if getattr(benchmark, "load_type", None) != BenchmarkLoadTypeEnum.FIXED_RATE:
+    if (
+        benchmark_load_mode(benchmark) is not BenchmarkLoadModeEnum.AUTO_TUNE
+        or has_slo(benchmark)
+        or getattr(benchmark, "load_type", None) != BenchmarkLoadTypeEnum.FIXED_RATE
+    ):
+        return None
+    rate_points = measured_stages(results)
+    if not rate_points:
         return None
     lowest = min(rate_points, key=lambda r: r["rate"])
     offered = lowest.get("rate") or 0

@@ -27,6 +27,7 @@ nav_translations:
   Audio: 音声
   Embedding: 埋め込み
   Rerank: リランキング
+  Decision: 意思決定
   Model Catalog: モデルカタログ
   Model Deployment Management: モデルデプロイ管理
   PD Disaggregation: プリフィルとデコードの分離
@@ -58,6 +59,7 @@ nav_translations:
   Using Vision Language Models: 視覚言語モデルの利用
   Using Embedding Models: 埋め込みモデルの利用
   Using Reranker Models: リランカーモデルの利用
+  Using Decision Models: 意思決定モデルの利用
   Using Image Generation Models: 画像生成モデルの利用
   Using Audio Models: 音声モデルの利用
   Tutorials: チュートリアル

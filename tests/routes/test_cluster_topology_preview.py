@@ -65,7 +65,7 @@ def _stubs(workers, saved=None, allocated=None, models=None):
         patch.object(route.Cluster, "one_by_id", AsyncMock(return_value=cluster)),
         patch.object(route.Worker, "all_by_field", AsyncMock(return_value=workers)),
         patch.object(route, "assert_cluster_visible", lambda *a, **k: None),
-        patch.object(route, "assert_org_owned_writable", lambda *a, **k: None),
+        patch.object(route, "assert_cluster_writable", lambda *a, **k: None),
         patch(
             "gpustack.server.worker_allocated_cache.get_workers_allocated",
             new=AsyncMock(side_effect=fake_allocated),
