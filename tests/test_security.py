@@ -10,6 +10,7 @@ from gpustack import envs, security
 from gpustack.security import (
     GENERATED_SECRET_KEY_BYTES,
     JWTManager,
+    LEGACY_TOKEN_ACCESS_KEY,
     SECRET_KEY_DIGEST_ALGORITHM,
     gateway_digest,
     generate_access_key,
@@ -235,23 +236,21 @@ def test_a_generated_key_still_has_to_look_generated(monkeypatch):
     )
 
 
-def test_deployment_token_never_gets_a_digest():
-    """The legacy cluster token stores the deployment-provided ``config.token``
-    under an empty access key, and never goes through the custom flag — so the
-    empty access key is the only thing standing between it and a fast hash.
-    """
-    assert (
-        new_secret_key_digest(
-            secret_key=generate_secret_key(), is_custom=False, access_key=""
+@pytest.mark.parametrize("access_key", ["", LEGACY_TOKEN_ACCESS_KEY])
+@pytest.mark.parametrize("is_custom", [False, True])
+@pytest.mark.parametrize("allow_custom", [False, True])
+def test_deployment_token_never_gets_a_digest(
+    monkeypatch, access_key, is_custom, allow_custom
+):
+    """Deployment-token markers exclude even hex-shaped secrets from fast hashes."""
+    monkeypatch.setattr(envs, "GATEWAY_AUTH_ALLOW_CUSTOM_KEYS", allow_custom)
+    for secret in (generate_secret_key(), "123456"):
+        assert (
+            new_secret_key_digest(
+                secret_key=secret, is_custom=is_custom, access_key=access_key
+            )
+            is None
         )
-        is None
-    )
-    assert (
-        new_secret_key_digest(
-            secret_key="a-deployment-chosen-token", is_custom=False, access_key=""
-        )
-        is None
-    )
 
 
 @pytest.mark.parametrize(
@@ -397,18 +396,23 @@ def test_an_underivable_digest_yields_nothing(digest):
             ("3192253c1f4a9b7e", "c11c75ed6334ea9505da4ad9c11c75ed"),
         ),
         # A UUID in the access position is the legacy worker presentation;
-        # authentication remaps it to the empty access key.
+        # authentication remaps it to the reserved access key.
         (
             "gpustack_3192253c-c11c-75ed-6334-ea9505da4ad9_opaque-secret",
-            ("", "opaque-secret"),
+            (LEGACY_TOKEN_ACCESS_KEY, "opaque-secret"),
         ),
         # One underscore short of the standard shape: an opaque secret whose
         # whole string is the credential.
         (
             "gpustack_c11c75ed6334ea9505da4ad9c11c75ed",
-            ("", "gpustack_c11c75ed6334ea9505da4ad9c11c75ed"),
+            (LEGACY_TOKEN_ACCESS_KEY, "gpustack_c11c75ed6334ea9505da4ad9c11c75ed"),
         ),
-        ("deployment-supplied-secret", ("", "deployment-supplied-secret")),
+        (
+            "deployment-supplied-secret",
+            (LEGACY_TOKEN_ACCESS_KEY, "deployment-supplied-secret"),
+        ),
+        ("123456", (LEGACY_TOKEN_ACCESS_KEY, "123456")),
+        ("gpustack__secret", (LEGACY_TOKEN_ACCESS_KEY, "gpustack__secret")),
     ],
 )
 def test_migrated_token_key_pair(token, expected):
@@ -416,7 +420,7 @@ def test_migrated_token_key_pair(token, expected):
     authentication resolves it to. A token in the standard shape is a
     registration token some GPUStack database minted, so it gets its own
     access key and secret portion like any key that database issued;
-    everything else hashes the whole string under the empty access key."""
+    opaque secrets use the whole string under the reserved access key."""
     assert security.migrated_token_key_pair(token) == expected
 
 

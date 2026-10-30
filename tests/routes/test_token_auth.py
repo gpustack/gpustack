@@ -19,6 +19,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+
+from gpustack.security import LEGACY_TOKEN_ACCESS_KEY
 from starlette.datastructures import Headers
 
 from gpustack import envs
@@ -586,13 +588,12 @@ async def test_a_marker_minted_without_a_connection_never_short_circuits(
 
 
 @pytest.mark.asyncio
-async def test_a_key_with_no_access_key_does_not_leave_a_leading_dot(
-    monkeypatch, route_policy
+@pytest.mark.parametrize("access_key", ["", LEGACY_TOKEN_ACCESS_KEY])
+async def test_deployment_token_consumer_uses_only_the_user_identity(
+    monkeypatch, route_policy, access_key
 ):
-    """The legacy cluster token's row carries an empty access key. Testing for
-    None rather than for emptiness rendered it as ``.gpustack-<id>``, which the
-    access log and the rate-limit consumer dimension then carry verbatim."""
-    api_key = _api_key(access_key="")
+    """Internal token markers must not change log or rate-limit identities."""
+    api_key = _api_key(access_key=access_key)
     user = _principal()
 
     async def _authenticate(request, **kwargs):
