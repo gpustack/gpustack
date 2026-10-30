@@ -714,6 +714,92 @@ async def test_route_target_goes_unavailable_when_a_group_loses_a_role():
     assert target.state == TargetStateEnum.UNAVAILABLE
 
 
+@pytest.mark.asyncio
+async def test_notify_parents_publishes_recounted_counters():
+    """The route snapshot republished on a target state change carries
+    counters derived from the target rows, not the pre-reconcile row: the
+    route row is only corrected one reconcile later (``_sync_targets``,
+    triggered by this very event), and a pre-reconcile ``ready_targets``
+    on the snapshot can regress watch-stream clients past the value the
+    REST API already returned."""
+    from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget
+
+    controller = ModelRouteTargetController(config=MagicMock())
+    target = SimpleNamespace(
+        id=3,
+        name="t",
+        route_id=1,
+        model_id=1,
+        provider_id=None,
+        state=TargetStateEnum.ACTIVE,
+    )
+    route = ModelRoute(id=1, name="r1", targets=2, ready_targets=0)
+    route.route_targets = [
+        ModelRouteTarget(
+            id=11,
+            name="r1-aaaaa",
+            route_name="r1",
+            route_id=1,
+            model_id=1,
+            state=TargetStateEnum.ACTIVE,
+        ),
+        ModelRouteTarget(
+            id=12,
+            name="r1-bbbbb",
+            route_name="r1",
+            route_id=1,
+            model_id=2,
+            state=TargetStateEnum.UNAVAILABLE,
+        ),
+        # an ACTIVE row retired via soft delete must not count
+        ModelRouteTarget(
+            id=13,
+            name="r1-ccccc",
+            route_name="r1",
+            route_id=1,
+            model_id=3,
+            state=TargetStateEnum.ACTIVE,
+            deleted_at=datetime(2026, 1, 1),
+        ),
+    ]
+    published = []
+
+    async def fake_publish(topic, event):
+        published.append((topic, event))
+
+    with (
+        patch(
+            "gpustack.server.controllers.ModelRoute.one_by_id",
+            AsyncMock(return_value=route),
+        ),
+        patch(
+            "gpustack.server.controllers.event_bus.publish",
+            new=fake_publish,
+        ),
+        patch(
+            "gpustack.server.controllers.notify_model_ai_proxy_change",
+            AsyncMock(),
+        ),
+    ):
+        await controller._notify_parents(
+            MagicMock(),
+            target,
+            Event(
+                type=EventType.UPDATED,
+                data=target,
+                changed_fields={
+                    "state": (TargetStateEnum.UNAVAILABLE, TargetStateEnum.ACTIVE)
+                },
+            ),
+        )
+
+    assert published[0][0] == "modelroute"
+    copied = published[0][1].data
+    # derived from the loaded target rows, overriding the row's stale 0
+    assert copied.targets == 2
+    assert copied.ready_targets == 1
+
+
 # --- what the "state means servable, degradation sits beside it" choice buys
 
 

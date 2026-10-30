@@ -7301,11 +7301,28 @@ class ModelRouteTargetController:
             return
         try:
             model_route: ModelRoute = await ModelRoute.one_by_id(
-                session, target.route_id
+                session,
+                target.route_id,
+                options=[selectinload(ModelRoute.route_targets)],
             )
             if not model_route:
                 return
             copied_route = ModelRoute.model_validate(model_route.model_dump())
+            # Stamp the derived counters from the target rows this very
+            # notification is about. The route row itself is only corrected
+            # one reconcile later (``ModelRouteController._sync_targets``,
+            # triggered by this event), and a snapshot taken before that
+            # carries pre-reconcile counters — publishing it would let a
+            # stale ``ready_targets`` regress watch-stream clients past the
+            # value the REST API already returns. Soft-deleted targets are
+            # excluded: they linger in the table but no longer count.
+            live_targets = [
+                t for t in (model_route.route_targets or []) if t.deleted_at is None
+            ]
+            copied_route.targets = len(live_targets)
+            copied_route.ready_targets = len(
+                [t for t in live_targets if t.state == TargetStateEnum.ACTIVE]
+            )
             await event_bus.publish(
                 ModelRoute.__name__.lower(),
                 Event(type=EventType.UPDATED, data=copied_route),
@@ -7487,13 +7504,13 @@ class ModelRouteController:
         )
         if not model_route:
             return False
-        target_total = len(model_route.route_targets)
+        # Soft-deleted targets linger in the table but no longer count —
+        # the same exclusion the API write path's ``_recount_route_targets``
+        # applies, so the two writers can never fight over a diverging row.
+        live_targets = [t for t in model_route.route_targets if t.deleted_at is None]
+        target_total = len(live_targets)
         ready_target_total = len(
-            [
-                target
-                for target in model_route.route_targets
-                if target.state == TargetStateEnum.ACTIVE
-            ]
+            [t for t in live_targets if t.state == TargetStateEnum.ACTIVE]
         )
         model_route_service = ModelRouteService(session=session)
         if target_total == 0 and model_route.created_model_id is not None:

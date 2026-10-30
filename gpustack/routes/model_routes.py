@@ -804,7 +804,6 @@ async def create_model_route(
     source["meta"] = _merge_meta_update(None, source.get("meta")) or None
     targets = input.targets or []
     await validate_targets(session, targets, route_owner_principal_id=target_org_id)
-    source["targets"] = len(targets)
     source["owner_principal_id"] = target_org_id
 
     # Multi-tenant default: a non-platform Org's new route is scoped to
@@ -836,6 +835,7 @@ async def create_model_route(
             targets=targets,
             auto_commit=False,
         )
+        await _recount_route_targets(session, route)
         await _assert_consistent_lb_weights(session, route.id)
         # Auto-grant the owning Org so the defaulted ALLOWED_PRINCIPALS
         # route is visible to its members out of the box. Users can add
@@ -920,7 +920,7 @@ async def update_model_route(
         input_data["meta"] = _merge_meta_update(existing.meta, input_data["meta"])
     try:
         if input.targets is not None or input.name != existing.name:
-            target_count, _ = await batch_handle_targets(
+            await batch_handle_targets(
                 session=session,
                 route_id=existing.id,
                 route_name=existing.name,
@@ -929,7 +929,7 @@ async def update_model_route(
                 new_route_name=input.name if input.name != existing.name else None,
                 route_owner_principal_id=existing.owner_principal_id,
             )
-            input_data["targets"] = target_count
+            await _recount_route_targets(session, existing)
         await ModelRouteService(session).update(
             existing, source=input_data, auto_commit=False
         )
@@ -1039,7 +1039,7 @@ async def add_model_route_targets(
         route,
         not_found_message=f"ModelRoute with id '{id}' not found.",
     )
-    target_count, touched_targets = await batch_handle_targets(
+    _, touched_targets = await batch_handle_targets(
         session=session,
         route_id=route.id,
         route_name=route.name,
@@ -1049,7 +1049,7 @@ async def add_model_route_targets(
         auto_commit=False,
     )
     try:
-        route.targets = target_count
+        await _recount_route_targets(session, route)
         await ModelRouteService(session=session).update(route, auto_commit=True)
         await session.commit()
         # New targets carry no UPDATED event of their own; enqueue the
@@ -1090,6 +1090,29 @@ async def _assert_consistent_lb_weights(session: AsyncSession, route_id: int) ->
             "either every target of a route carries a positive weight or "
             "none may — a mix leaves LB unable to render the route"
         )
+
+
+async def _recount_route_targets(session: AsyncSession, route: ModelRoute) -> None:
+    """Set a route's derived target counters from the staged post-write rows.
+
+    ``targets``/``ready_targets`` describe the target set, and the write
+    path must commit them in the same transaction as the target rows it
+    stages: the after-commit event publishes the row exactly as committed,
+    and a pre-reconcile ``ready_targets`` (only recomputed later by
+    ``ModelRouteController._sync_targets``) can reach watch-stream clients
+    out of order and regress a route the REST API already reports ready.
+    Reads the staged row state the same way ``_assert_consistent_lb_weights``
+    does — the autoflush returns exactly the rows this transaction is about
+    to commit.
+    """
+    targets = await ModelRouteTarget.all_by_field(session, "route_id", route.id)
+    # soft-deleted rows linger in the table; they no longer count — the
+    # same exclusion ``_assert_consistent_lb_weights`` above applies
+    live_targets = [t for t in targets if t.deleted_at is None]
+    route.targets = len(live_targets)
+    route.ready_targets = len(
+        [t for t in live_targets if t.state == TargetStateEnum.ACTIVE]
+    )
 
 
 async def batch_handle_targets(
@@ -1563,6 +1586,12 @@ async def update_model_route_target(
             existing_target_map={id: existing},
             auto_commit=False,
         )
+        # Any field change rewrites the target's state (UNAVAILABLE for a
+        # model target pending re-validation, ACTIVE for a provider one),
+        # so the route's derived counters must follow in this same commit —
+        # the after-commit event publishes the row as committed.
+        await _recount_route_targets(session, parent_route)
+        await ModelRouteService(session=session).update(parent_route, auto_commit=False)
         await _assert_consistent_lb_weights(session, existing.route_id)
         await session.commit()
     except InvalidException:
@@ -1603,7 +1632,7 @@ async def delete_model_route_target(
         await dispatch_target_hooks("delete", existing, None, session)
         await existing.delete(session=session, auto_commit=False)
         if route:
-            route.targets = max(0, route.targets - 1)
+            await _recount_route_targets(session, route)
             await ModelRouteService(session=session).update(route, auto_commit=False)
         await session.commit()
         await _refresh_route_lb_mode(session, existing.route_id)
