@@ -926,6 +926,10 @@ async def update_model_instance(
 
     try:
         _preserve_download_state(model_instance, model_instance_in)
+        # Status reports can carry a null default for this startup-owned field.
+        # Only a supplied configuration replaces the recorded launch inputs.
+        if model_instance_in.model_config_snapshot is None:
+            model_instance_in.model_fields_set.discard("model_config_snapshot")
         await ModelInstanceService(session).update(model_instance, model_instance_in)
     except APIHTTPException:
         raise

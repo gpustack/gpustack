@@ -25,6 +25,7 @@ from gpustack.schemas.model_routes import TargetStateEnum
 from gpustack.schemas.models import (
     DisaggregationSpec,
     Model,
+    ModelConfigSnapshot,
     ModelInstance,
     ModelInstanceStateEnum,
     PDModeEnum,
@@ -80,6 +81,9 @@ def _member(name, role=None, id=1, worker_id=10, path="/w", **kwargs) -> ModelIn
         worker_id=worker_id,
         resolved_path=path,
         state=kwargs.pop("state", ModelInstanceStateEnum.RUNNING),
+        model_config_snapshot=kwargs.pop(
+            "model_config_snapshot", ModelConfigSnapshot()
+        ),
         **kwargs,
     )
 

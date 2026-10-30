@@ -6,6 +6,13 @@ GPUStack can run benchmarks against running model instances. Benchmarks are exec
 
 - A model instance is running and healthy.
 
+Existing running instances can be benchmarked without redeployment. Reports use
+each instance's recorded startup configuration when available. For instances
+without a startup snapshot, reports use the model configuration at benchmark
+creation, including role overrides, and identify the affected instances with a
+reference-only notice. These reference settings may differ from the running
+configuration. Benchmarking does not backfill the instance's startup snapshot.
+
 ### Route benchmark gateway address
 
 Route benchmarks use a worker-reachable Higress base URL (without `/v1`),
