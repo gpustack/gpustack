@@ -5,7 +5,7 @@ from typing import Optional
 
 from .generated_worker_client import WorkerClient
 from .generated_model_client import ModelClient
-from .generated_model_instance_client import ModelInstanceClient
+from .model_instance_client import ModelInstanceClient
 from .generated_model_file_client import ModelFileClient
 from .generated_user_client import UserClient
 from .generated_inference_backend_client import InferenceBackendClient

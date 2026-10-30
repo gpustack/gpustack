@@ -10,9 +10,217 @@ side — see ``gpustack.worker.backends.vllm.cal_multinode_topology``.
 from dataclasses import dataclass
 from functools import reduce
 from math import gcd
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
-from gpustack.utils.command import find_int_parameter
+from gpustack.utils.command import (
+    find_int_parameter,
+    find_last_int_parameter,
+    find_last_parameter,
+    find_bool_parameter,
+)
+
+# vLLM excludes this window from automatic ports when VLLM_DP_MASTER_PORT
+# is set. Both placement budgeting and Worker reservations protect it.
+VLLM_MP_CONNECTING_PORT_COUNT = 10
+
+
+def vllm_lb_mode(parameters: Optional[List[str]]) -> str:
+    """Identify explicitly selected load balancing and reject conflicting modes."""
+    external = find_bool_parameter(parameters, ["data-parallel-external-lb", "dpe"])
+    native = find_bool_parameter(
+        parameters, ["data-parallel-multi-port-external-lb", "dpm"]
+    )
+    hybrid = find_bool_parameter(parameters, ["data-parallel-hybrid-lb", "dph"]) or (
+        not native
+        and find_last_parameter(parameters, ["data-parallel-start-rank", "dpr", "dps"])
+        is not None
+    )
+    if sum((external, native, hybrid)) > 1 or (
+        native
+        and find_last_parameter(parameters, ["data-parallel-rank", "dpn"]) is not None
+    ):
+        raise ValueError("Choose only one vLLM data parallel load balancing mode.")
+    for mode, enabled in (
+        ("external", external),
+        ("native", native),
+        ("hybrid", hybrid),
+    ):
+        if enabled:
+            return mode
+    return "internal"
+
+
+def external_lb_parallelism(
+    parameters: List[str], gpu_count: Union[int, List[int]]
+) -> "ValidatedTopology":
+    """Validate the complete allocation and split uniform rank fragments."""
+    values = {}
+    for field, names in (
+        ("dp", ["data-parallel-size", "dp"]),
+        ("tp", ["tensor-parallel-size", "tp"]),
+        ("pp", ["pipeline-parallel-size", "pp"]),
+        ("pcp", ["prefill-context-parallel-size", "pcp"]),
+        ("dpl", ["data-parallel-size-local", "dpl"]),
+    ):
+        raw = find_last_parameter(parameters, names)
+        value = find_last_int_parameter(parameters, names)
+        if raw is not None and (value is None or value <= 0):
+            raise ValueError(f"--{names[0]} must be a positive integer.")
+        values[field] = value
+    counts = [gpu_count] if isinstance(gpu_count, int) else gpu_count
+    if not counts or min(counts) <= 0:
+        raise ValueError("Managed vLLM External-LB requires allocated devices.")
+    uniform = len(set(counts)) == 1
+    local_ranks = values.pop('dpl')
+    # Uniform External-LB slices can span Workers; heterogeneous allocations
+    # must satisfy the generic per-node consistency check for an explicit dpl.
+    result = validate_multinode_topology(
+        counts,
+        MultinodeUserParallelism(**values, dpl=local_ranks if not uniform else None),
+    )
+    if result.tp * result.pp * (values["pcp"] or 1) * result.dp != sum(counts):
+        raise ValueError("Selected devices must exactly match the full DP/TP/PP world.")
+    if uniform:
+        local_ranks = local_ranks if local_ranks is not None else result.dpl_per_node[0]
+        if (
+            counts[0] % local_ranks
+            or result.dp % local_ranks
+            or len(counts) * local_ranks % result.dp
+        ):
+            raise ValueError(
+                "External-LB local rank slices must evenly consume the allocation."
+            )
+        nodes = len(counts) * local_ranks // result.dp
+        result.dpl_per_node = [local_ranks] * len(counts)
+        result.nnodes_within_dp = nodes
+    return result
+
+
+def validate_managed_http_parameters(parameters: Optional[List[str]]) -> None:
+    """Keep managed rank APIs compatible with platform HTTP routes and probes."""
+    if any(
+        find_last_parameter(parameters, [name]) is not None
+        for name in ("ssl-keyfile", "ssl-certfile")
+    ):
+        raise ValueError(
+            "Managed rank routes and health checks currently require HTTP; TLS is unsupported."
+        )
+
+
+def validate_native_lb_parameters(parameters: Optional[List[str]]) -> None:
+    """Reject native DPS options that cannot represent managed rank APIs."""
+    if vllm_lb_mode(parameters) != "native":
+        raise ValueError("Native DPS requires multi-port external load balancing.")
+    for names in (["api-server-count"], ["prefill-context-parallel-size", "pcp"]):
+        raw = find_last_parameter(parameters, names)
+        if raw is not None and find_last_int_parameter(parameters, names) != 1:
+            raise ValueError(f"Native DPS requires --{names[0]}=1.")
+    for names, minimum in (
+        (["data-parallel-size", "dp"], 2),
+        (["data-parallel-size-local", "dpl"], 2),
+    ):
+        if find_last_parameter(parameters, names) is not None:
+            value = find_last_int_parameter(parameters, names)
+            if value is None or value < minimum:
+                raise ValueError(f"Native DPS requires --{names[0]} >= {minimum}.")
+    nnodes = find_last_parameter(parameters, ["nnodes"])
+    if nnodes is not None and find_last_int_parameter(parameters, ["nnodes"]) != 1:
+        raise ValueError("Native DPS requires every rank to fit on one Worker.")
+    for flag in ("headless", "grpc"):
+        if find_bool_parameter(parameters, [flag]):
+            raise ValueError(f"Native DPS does not support --{flag}.")
+    if find_last_parameter(parameters, ["uds"]) is not None:
+        raise ValueError("Native DPS does not support --uds.")
+    validate_managed_http_parameters(parameters)
+    for name, allowed in (
+        ("distributed-executor-backend", ("mp", "uni")),
+        ("data-parallel-backend", ("mp",)),
+    ):
+        if find_last_parameter(parameters, [name]) not in (None, *allowed):
+            raise ValueError(f"Native DPS requires a local --{name}.")
+
+
+def validate_managed_lb_parameters(parameters: Optional[List[str]]) -> None:
+    """Validate an explicit LB mode before scheduling without device assumptions."""
+    if vllm_lb_mode(parameters) == "native":
+        validate_native_lb_parameters(parameters)
+
+
+def native_lb_parallelism(
+    parameters: List[str], gpu_count: Union[int, List[int]]
+) -> "ValidatedTopology":
+    """Resolve native DPS with complete, evenly allocated local DP replicas."""
+    validate_native_lb_parameters(parameters)
+    counts = [gpu_count] if isinstance(gpu_count, int) else gpu_count
+    result = external_lb_parallelism(parameters, counts)
+    if find_last_parameter(parameters, ["data-parallel-size-local", "dpl"]) is None:
+        width = result.tp * result.pp
+        local = counts[0] // width
+        if counts[0] % width or local < 2:
+            raise ValueError(
+                "Native DPS requires complete local ranks and local DP >= 2."
+            )
+        result = external_lb_parallelism(
+            [*parameters, "--data-parallel-size-local", str(local)], counts
+        )
+    if result.dp < 2 or min(result.dpl_per_node) < 2:
+        raise ValueError("Native DPS requires DP > 1 and local DP >= 2.")
+    if result.nnodes_within_dp != 1 or len(set(result.dpl_per_node)) != 1:
+        raise ValueError("Native DPS requires every rank to fit on one Worker.")
+    if (
+        find_last_parameter(parameters, ["distributed-executor-backend"]) == "uni"
+        and result.tp * result.pp > 1
+    ):
+        raise ValueError("Native DPS TP/PP ranks require multiprocessing executors.")
+    start = find_last_parameter(parameters, ["data-parallel-start-rank", "dpr", "dps"])
+    if start is not None:
+        value = find_last_int_parameter(
+            parameters, ["data-parallel-start-rank", "dpr", "dps"]
+        )
+        if value is None or value < 0 or value + result.dpl_per_node[0] > result.dp:
+            raise ValueError("Native DPS start rank exceeds the allocated DP world.")
+    return result
+
+
+def managed_lb_parallelism(
+    parameters: List[str], gpu_count: Union[int, List[int]]
+) -> "ValidatedTopology":
+    """Resolve the topology for the explicitly selected managed LB mode."""
+    if vllm_lb_mode(parameters) == "native":
+        return native_lb_parallelism(parameters, gpu_count)
+    return external_lb_parallelism(parameters, gpu_count)
+
+
+@dataclass(frozen=True)
+class ExternalRankFragment:
+    dp_rank: int
+    node_rank: int
+    positions: List[int]
+    main_worker_index: int
+
+
+def external_lb_fragments(
+    gpu_per_node: List[int], topology: "ValidatedTopology", worker_index: int
+) -> List[ExternalRankFragment]:
+    """Map Worker-local device positions to logical rank coordinates."""
+    nodes = topology.nnodes_within_dp
+    local_ranks = topology.dpl_per_node[worker_index]
+    if nodes == 1:
+        first_rank = sum(topology.dpl_per_node[:worker_index])
+        main = worker_index
+    else:
+        main = worker_index // nodes * nodes
+        first_rank = main // nodes * local_ranks
+    width = gpu_per_node[worker_index] // local_ranks
+    return [
+        ExternalRankFragment(
+            dp_rank=first_rank + index,
+            node_rank=worker_index - main,
+            positions=list(range(index * width, (index + 1) * width)),
+            main_worker_index=main,
+        )
+        for index in range(local_ranks)
+    ]
 
 
 MultinodeShape = Literal["dp_only", "mp_only", "nested"]

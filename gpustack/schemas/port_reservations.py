@@ -15,6 +15,7 @@ class WorkerPortAvailability(BaseModel):
 
 class ModelPortClaim(BaseModel):
     token: UUID
+    restart_count: Optional[int] = Field(default=None, ge=0)
     generations: Dict[int, UUID] = Field(default_factory=dict)
     replaces: Dict[int, UUID] = Field(default_factory=dict)
     ports: List[Annotated[int, Field(ge=1, le=65535)]] = Field(

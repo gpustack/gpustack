@@ -281,10 +281,19 @@ class Maintenance(BaseModel):
     message: Optional[str] = None
 
 
+class WorkerOrchestrationStatus(BaseModel):
+    """The Worker's declared protocol and the Server's admission decision."""
+
+    protocol_version: Optional[int] = Field(default=None, ge=1)
+    admission_blocked: bool = False
+
+
 class WorkerStatus(SystemInfo):
     """
     rpc_servers: Deprecated
     """
+
+    orchestration: Optional[WorkerOrchestrationStatus] = None
 
     gpu_devices: Optional[GPUDevicesStatus] = Field(
         sa_column=Column(JSON), default=None
@@ -437,6 +446,17 @@ class WorkerBase(WorkerCreate):
     )
 
     def compute_state(self):
+        if (
+            self.status is not None
+            and self.status.orchestration is not None
+            and self.status.orchestration.admission_blocked
+        ):
+            self.state = WorkerStateEnum.NOT_READY
+            self.state_message = (
+                "Worker orchestration admission is blocked. Upgrade the worker "
+                "to support the assigned model instance protocol."
+            )
+            return
         if self.maintenance and self.maintenance.enabled:
             self.state = WorkerStateEnum.MAINTENANCE
             self.state_message = self.maintenance.message
