@@ -1188,6 +1188,10 @@ modes:
         - flag: --kv-cache-block-size
           default: "64"
           options: ["16", "32", "64", "128"]
+      # Dynamo Frontend dynamically discovers and routes to workers via etcd;
+      # it does not accept static worker CLI arguments (--prefill / --decode).
+      # Empty role specs with repeated_flag ensure no CLI peer flags are rendered
+      # while satisfying schema conformance.
       peers:
         style: repeated_flag
         prefill: {}

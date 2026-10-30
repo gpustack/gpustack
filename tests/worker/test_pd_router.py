@@ -560,8 +560,8 @@ def test_dynamo_runner_image_is_resolved_from_builtin_inference_backend():
         _config=SimpleNamespace(kv_transfer_ifname=None),
         _model_spec=spec,
         _model=SimpleNamespace(backend=BackendEnum.CUSTOM.value),
-        _resolve_image=lambda backend=None, spec=None, inference_backend=None: inference_backend.get_image_name(
-            spec.backend_version
+        _resolve_image=lambda backend=None, spec=None, inference_backend=None: (
+            inference_backend.get_image_name(spec.backend_version)
         ),
         _engine_inference_backend=lambda _spec: dynamo_backend,
         _net_device_plane=lambda: PDNetDevicePlaneEnum.DATA,

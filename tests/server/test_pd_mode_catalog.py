@@ -1042,7 +1042,8 @@ def test_every_shipped_router_classifies_its_invocation():
         if router is None or router.protocol == PDRouterProtocolEnum.USER_PROVIDED:
             continue
         if mode.name == "dynamo-nixl":
-            # Dynamo Frontend discovers workers dynamically via etcd and declares no CLI peer flags.
+            # Dynamo Frontend discovers workers dynamically via etcd
+            # and declares no CLI peer flags.
             continue
         assert router.entrypoint, f"{mode.name}: no entrypoint"
         assert router.connection_args, f"{mode.name}: no connection_args"

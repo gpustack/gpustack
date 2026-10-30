@@ -3917,6 +3917,8 @@ def test_dynamo_server_class_mapping_and_health_check():
         assert is_ready(BackendEnum.DYNAMO, mi, None, model) is True
 
     get.assert_called_once_with("http://10.0.0.1:8000/health", timeout=1)
+
+
 def test_decision_models_skip_the_inference_probe():
     # A decision deployment answers the Jev /v1/systemone contract; the
     # inference probe imitates the OpenAI generation/embedding/rerank

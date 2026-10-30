@@ -389,9 +389,16 @@ def get_built_in_backend() -> List[InferenceBackend]:
                     )
                 }
             ),
-            default_run_command="python3 -m dynamo.vllm --model {{model_path}} --served-model-name {{model_name}} --host {{worker_ip}} --port {{port}}",
+            default_run_command=(
+                "python3 -m dynamo.vllm --model {{model_path}} "
+                "--served-model-name {{model_name}} --host {{worker_ip}} "
+                "--port {{port}}"
+            ),
             health_check_path="/health",
-            description="NVIDIA AI Dynamo datacenter-scale LLM inference framework with disaggregated serving",
+            description=(
+                "NVIDIA AI Dynamo datacenter-scale LLM inference framework "
+                "with disaggregated serving"
+            ),
         ),
     ]
 
