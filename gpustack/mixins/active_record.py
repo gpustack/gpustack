@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import importlib
 from inspect import isawaitable
@@ -22,8 +23,9 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, event as sa_event, inspect
 from sqlmodel import SQLModel, and_, asc, col, desc, or_, select, text, exists
 from sqlmodel.ext.asyncio.session import AsyncSession
-from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError, InvalidRequestError, OperationalError
+from sqlalchemy.orm import Session, SessionTransaction
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.orm.exc import FlushError
 from sqlalchemy.orm.state import InstanceState
 from gpustack.schemas.common import PaginatedList, Pagination
@@ -35,25 +37,126 @@ from gpustack.server.db import async_session
 logger = logging.getLogger(__name__)
 
 
+def _copy_event_data(data: Any, memo: Optional[dict] = None) -> Any:
+    """Copy loaded ORM data without lazy loads or copying collection adapters."""
+    memo = {} if memo is None else memo
+    if isinstance(data, list):
+        return [_copy_event_data(item, memo) for item in data]
+    state = inspect(data, raiseerr=False)
+    if not isinstance(state, InstanceState):
+        return deepcopy(data, memo)
+    if id(data) in memo:
+        return memo[id(data)]
+    values = {
+        key: value
+        for key, value in state.dict.items()
+        if key in data.__class__.model_fields
+    }
+    copied = data.__class__(**deepcopy(values, memo))
+    memo[id(data)] = copied
+    for relationship in state.mapper.relationships:
+        if relationship.key not in state.dict:
+            continue
+        value = state.dict[relationship.key]
+        copied_value = (
+            [_copy_event_data(item, memo) for item in value]
+            if relationship.uselist
+            else _copy_event_data(value, memo)
+        )
+        set_committed_value(copied, relationship.key, copied_value)
+    return copied
+
+
 class CommitEvent:
     name: str
     event: Event
 
     def __init__(self, name: str, type: EventType, data: Any):
         self.name = name
+        self.data = data
         self.event = Event(type=type, data=data)
+        self.needs_snapshot = True
+
+    def snapshot(self) -> None:
+        """Keep a payload usable after rollback expires the source object."""
+        payload = _copy_event_data(self.data)
+        state = inspect(self.data, raiseerr=False)
+        for key in state.expired_attributes if isinstance(state, InstanceState) else ():
+            if key in self.event.data.__dict__:
+                payload.__dict__[key] = _copy_event_data(self.event.data.__dict__[key])
+        self.event = Event(
+            type=self.event.type,
+            data=payload,
+            changed_fields=deepcopy(self.event.changed_fields),
+            id=self.event.id,
+        )
+        self.needs_snapshot = False
+
+
+@sa_event.listens_for(Session, "after_transaction_create")
+def checkpoint_pending_events(
+    session: Session, transaction: SessionTransaction
+) -> None:
+    if transaction.nested:
+        events = session.info.get("pending_events", [])
+        for event in events:
+            if event.needs_snapshot:
+                event.snapshot()
+        session.info.setdefault("pending_event_savepoints", {})[transaction] = [
+            (
+                event,
+                Event(
+                    type=event.event.type,
+                    data=event.event.data,
+                    changed_fields=deepcopy(event.event.changed_fields),
+                    id=event.event.id,
+                ),
+            )
+            for event in events
+        ]
+
+
+@sa_event.listens_for(Session, "after_transaction_end")
+def discard_uncommitted_events(
+    session: Session, transaction: SessionTransaction
+) -> None:
+    if transaction.parent is None:
+        session.info.pop("pending_events", None)
+        session.info.pop("pending_event_savepoints", None)
+    elif transaction.nested:
+        checkpoints = session.info.get("pending_event_savepoints", {})
+        checkpoint = checkpoints.pop(transaction, None)
+        # Successful SAVEPOINT commits remove their checkpoint in after_commit.
+        # Rollback and close restore both the queue and outer event metadata.
+        if checkpoint is not None:
+            session.info["pending_events"] = [event for event, _ in checkpoint]
+            for event, snapshot in checkpoint:
+                event.event = snapshot
+                event.needs_snapshot = False
+        if not checkpoints:
+            session.info.pop("pending_event_savepoints", None)
+
+
+@sa_event.listens_for(Session, "after_flush_postexec")
+def snapshot_pending_events(session: Session, flush_context) -> None:
+    for event in session.info.get("pending_events", []):
+        if event.needs_snapshot:
+            event.snapshot()
 
 
 @sa_event.listens_for(Session, "before_flush")
-def find_history(session: AsyncSession, flush_context, instances):
+def find_history(session: Session, flush_context, instances):
     events: List[CommitEvent] = session.info.get("pending_events", [])
     if len(events) == 0:
         return
     dirty_objs = [obj for obj in session.dirty if instances is None or obj in instances]
+    changed_ids = {id(obj) for obj in (*dirty_objs, *session.new, *session.deleted)}
     for event in events:
-        if event.event.data not in dirty_objs:
+        if id(event.data) in changed_ids:
+            event.needs_snapshot = True
+        if event.data not in dirty_objs:
             continue
-        obj = event.event.data
+        obj = event.data
         relationship_keys = set(rel.key for rel in obj.__mapper__.relationships)
         state = inspect(obj)
         for attr in state.attrs:
@@ -77,23 +180,21 @@ def find_history(session: AsyncSession, flush_context, instances):
 
 # commit hook to send events after a database commit
 @sa_event.listens_for(Session, "after_commit")
-def send_post_commit_events(session: AsyncSession):
+def send_post_commit_events(session: Session):
+    nested = session.get_nested_transaction()
+    if nested is not None:
+        session.info.get("pending_event_savepoints", {}).pop(nested, None)
+        return
     events: List[CommitEvent] = session.info.pop("pending_events", [])
     for event in events:
-        # copy before submit to avoid mutation
-        id = getattr(event.event.data, "id", None)
-        logger.trace(f"Sending event {event.name} of type {event.event.type}, id {id}")
-        bus_event = event.event
         try:
-            # Detach from the SQLAlchemy session so subscribers don't see
-            # lazy loads or further mutations on the same row.
-            bus_event.data = bus_event.data.model_copy(deep=True)
-            # ``CommitEvent`` builds the Event when the write is queued, which
-            # for a CREATED event is before the INSERT assigns the primary
-            # key -- so it snapshotted ``id=None`` while ``data.id`` is now
-            # correct. Derive after the copy, so ``id`` can never disagree
-            # with the payload subscribers are handed.
-            bus_event.refresh_id()
+            # Capture final loaded values and preserve flushed values for any
+            # attributes expired by a SAVEPOINT rollback. No SQL is issued.
+            event.snapshot()
+            bus_event = event.event
+            logger.trace(
+                f"Sending event {event.name} of type {bus_event.type}, id {bus_event.id}"
+            )
             asyncio.create_task(event_bus.publish(event.name, bus_event))
         except Exception as e:
             logger.exception(f"Failed to publish events: {e}")
@@ -174,6 +275,116 @@ class ActiveRecordMixin(ImmutableFieldsMixin):
         """
 
         return await session.get(cls, id, with_for_update=for_update, options=options)
+
+    @classmethod
+    def _check_refreshable(cls, session: AsyncSession) -> None:
+        """Reject refreshing pending changes to this model before an explicit flush."""
+        for objects in (session.new, session.dirty, session.deleted):
+            for obj in objects:
+                if isinstance(obj, cls) and (
+                    obj in session.new
+                    or obj in session.deleted
+                    or session.is_modified(obj, include_collections=True)
+                ):
+                    raise InvalidRequestError(
+                        f"Cannot refresh {cls.__name__} with unflushed changes; "
+                        "flush or discard them first"
+                    )
+
+    @classmethod
+    async def one_by_id_with_refresh(
+        cls,
+        session: AsyncSession,
+        id: int,
+        *,
+        for_update: bool = False,
+        options: Optional[List] = None,
+    ) -> Optional[SQLModel]:
+        """Reload a row within the caller's transaction without implicit writes.
+
+        This bypasses ORM identity-map reuse, not transaction isolation. The
+        caller owns commit, rollback and close, including row-lock release.
+        Pending changes to this model must be flushed first. In-place JSON
+        changes must be tracked through assignment or flag_modified before
+        flushing; untracked changes cannot be protected by the ORM.
+
+        Args:
+            session: Existing caller-owned session.
+            id: Primary key to read.
+            for_update: Hold an exclusive row lock until the transaction ends.
+            options: Eager loaders needed by the caller after refreshing the row.
+        """
+        cls._check_refreshable(session)
+        load_options = {"options": options} if options is not None else {}
+        with session.no_autoflush:
+            return await session.get(
+                cls,
+                id,
+                with_for_update=for_update,
+                populate_existing=True,
+                **load_options,
+            )
+
+    @classmethod
+    async def all_by_ids_with_refresh(
+        cls, session: AsyncSession, ids: Iterable[int], *, for_update: bool = False
+    ) -> List[SQLModel]:
+        """Reload distinct primary keys in order without implicit transaction writes.
+
+        Uses the same dirty-target and caller-owned transaction contract as
+        one_by_id_with_refresh. An empty set performs no query or refresh.
+
+        Args:
+            session: Existing caller-owned session.
+            ids: Primary keys to reload; absent rows are omitted.
+            for_update: Hold row locks until the caller ends the transaction.
+        """
+        identities = sorted(set(ids))
+        if not identities:
+            return []
+        cls._check_refreshable(session)
+        statement = (
+            select(cls)
+            .where(cls.id.in_(identities))
+            .order_by(*cls.__mapper__.primary_key)
+            .execution_options(populate_existing=True, autoflush=False)
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        with session.no_autoflush:
+            return list((await session.exec(statement)).all())
+
+    @classmethod
+    async def all_by_field_with_refresh(
+        cls,
+        session: AsyncSession,
+        field: str,
+        value: Any,
+        *,
+        for_update: bool = False,
+    ) -> List[SQLModel]:
+        """Reload matching rows in primary-key order without ending the transaction.
+
+        Uses the same pending-change and transaction ownership contract as
+        one_by_id_with_refresh. No application cache or write hooks are invoked.
+
+        Args:
+            session: Existing caller-owned session.
+            field: Model field to compare.
+            value: Exact field value.
+            for_update: Hold row locks until the caller ends the transaction.
+        """
+        cls._check_refreshable(session)
+        statement = (
+            select(cls)
+            .where(getattr(cls, field) == value)
+            .order_by(*cls.__mapper__.primary_key)
+            .execution_options(populate_existing=True, autoflush=False)
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        with session.no_autoflush:
+            return list((await session.exec(statement)).all())
 
     @classmethod
     async def first_by_field(cls, session: AsyncSession, field: str, value: Any):
@@ -822,6 +1033,15 @@ class ActiveRecordMixin(ImmutableFieldsMixin):
     def _publish_event_after_commit(
         cls, session: AsyncSession, event_type: str, data: Any
     ):
+        sync_session = session.sync_session
+        if not sync_session.in_transaction():
+            if not sync_session.autobegin:
+                raise InvalidRequestError(
+                    "Autobegin is disabled on this Session; "
+                    "please call session.begin() to start a new transaction"
+                )
+            # Establish only the ORM transaction scope; no connection or SQL.
+            sync_session.begin()
         session.info.setdefault("pending_events", []).append(
             CommitEvent(
                 name=cls.__name__.lower(),
