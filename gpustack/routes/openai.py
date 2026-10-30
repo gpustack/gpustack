@@ -12,6 +12,7 @@ from openai.pagination import SyncPage
 from sqlmodel import or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.datastructures import UploadFile
+from gpustack_runtime.envs import to_bool
 
 from gpustack.api.exceptions import (
     BadRequestException,
@@ -361,7 +362,7 @@ async def parse_form_data(request: Request) -> Tuple[aiohttp.FormData, str, bool
     try:
         form = await request.form()
         model_name = form.get("model")
-        stream = form.get("stream", False)
+        stream = to_bool(form.get("stream"))
 
         form_data = aiohttp.FormData()
         for key, value in form.items():

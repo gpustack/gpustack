@@ -2,6 +2,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import FastAPI, Request
+from httpx import ASGITransport, AsyncClient
 
 from gpustack.api.exceptions import NotFoundException, ServiceUnavailableException
 from gpustack.routes import openai as openai_route
@@ -77,3 +79,40 @@ async def test_deployed_model_with_no_active_target_is_unavailable(monkeypatch):
 
     assert exc.value.status_code == 503
     assert exc.value.message == "No running instances available"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fields,expected",
+    [
+        ({}, False),
+        ({"stream": "false"}, False),
+        ({"stream": "False"}, False),
+        ({"stream": "0"}, False),
+        ({"stream": "true"}, True),
+        ({"stream": "True"}, True),
+    ],
+)
+async def test_multipart_stream_field_is_parsed_as_a_boolean(fields, expected):
+    """``stream`` arrives as text in a multipart body and is parsed to a bool.
+
+    Only true-like text selects the streaming relay in proxy_request_by_model.
+    """
+    app = FastAPI()
+
+    @app.post("/probe")
+    async def probe(request: Request):
+        _, stream, _, _ = await openai_route.parse_request_body(request)
+        return {"stream": stream}
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/probe",
+            data={"model": "whisper", **fields},
+            files={"file": ("a.wav", b"audio", "audio/wav")},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"stream": expected}
