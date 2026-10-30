@@ -111,7 +111,10 @@ def filter_yaml_fields(yaml_data: Dict, filter_keys: List[str]) -> Dict:  # noqa
 
 
 async def check_backend_in_use(
-    session: SessionDep, backend_name: str, backend_version: Optional[str] = None
+    session: SessionDep,
+    backend_name: str,
+    backend_version: Optional[str] = None,
+    owner_principal_id: Optional[int] = None,
 ) -> Tuple[bool, List[str]]:
     """
     Check if a backend or specific backend version is being used by any models.
@@ -120,6 +123,8 @@ async def check_backend_in_use(
         session: Database session
         backend_name: The name of the backend to check
         backend_version: Optional specific version to check. If None, checks all versions.
+        owner_principal_id: Optional owner scope. If None, checks models across all
+            owners for a Platform backend. Otherwise, checks only this owner's models.
 
     Returns:
         A tuple containing:
@@ -127,15 +132,13 @@ async def check_backend_in_use(
         - List of model names that are using the backend/version
     """
     try:
-        # Query models that use the specified backend
+        fields = {"backend": backend_name}
         if backend_version:
-            # Check for specific backend and version combination
-            models = await Model.all_by_fields(
-                session, {"backend": backend_name, "backend_version": backend_version}
-            )
-        else:
-            # Check for any models using this backend (any version)
-            models = await Model.all_by_field(session, "backend", backend_name)
+            fields["backend_version"] = backend_version
+        if owner_principal_id is not None:
+            fields["owner_principal_id"] = owner_principal_id
+
+        models = await Model.all_by_fields(session, fields)
         models = [model for model in models if model.replicas > 0]
         model_names = [model.name for model in models]
         is_in_use = len(models) > 0
@@ -1425,7 +1428,11 @@ async def delete_inference_backend(session: SessionDep, ctx: TenantContextDep, i
         raise BadRequestException(message="Cannot delete built-in or community backend")
 
     # Check if the backend is being used by any models
-    is_in_use, model_names = await check_backend_in_use(session, backend.backend_name)
+    is_in_use, model_names = await check_backend_in_use(
+        session,
+        backend.backend_name,
+        owner_principal_id=backend.owner_principal_id,
+    )
     if is_in_use:
         raise BadRequestException(
             message=f"Cannot delete backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
@@ -1716,7 +1723,10 @@ async def _validate_version_removal(
     # Check if removed versions are in use
     for version in removed_versions:
         is_in_use, model_names = await check_backend_in_use(
-            session, backend.backend_name, version
+            session,
+            backend.backend_name,
+            version,
+            owner_principal_id=backend.owner_principal_id,
         )
         if is_in_use:
             raise BadRequestException(
