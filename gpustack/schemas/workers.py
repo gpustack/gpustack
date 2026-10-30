@@ -366,6 +366,13 @@ class WorkerStatusPublic(WorkerStatusStored):
     gateway_endpoint: Optional[str] = None
 
 
+class WorkerLabelOption(BaseModel):
+    """Existing values for one exact worker label key."""
+
+    key: str
+    values: List[str]
+
+
 class WorkerLabelsUpdate(BaseModel):
     """Labels to add or overwrite on every selected worker.
 

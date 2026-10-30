@@ -4,13 +4,16 @@ import base64
 import uuid
 import logging
 import asyncio
-from typing import Optional, List, Dict, Any, Set, Tuple
+from typing import Annotated, Optional, List, Dict, Any, Set, Tuple
+from sqlalchemy import or_
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from urllib.parse import urlencode
-from fastapi import APIRouter, Depends, Response, Request
+from fastapi import APIRouter, Depends, Query, Response, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
+from pydantic import StringConstraints
 
 from gpustack.api.streaming import tenant_streaming
 from gpustack.mixins.immutable import allow_immutable_field_update
@@ -46,13 +49,14 @@ from gpustack.schemas.workers import (
     WorkerPublic,
     WorkerUpdate,
     WorkerLabelsUpdate,
+    WorkerLabelOption,
     WorkersPublic,
     Worker,
     WorkerRegistrationPublic,
     WorkerStatusStored,
     WorkerStateEnum,
 )
-from gpustack.server.bus import Event, EventType
+from gpustack.server.bus import Event, EventType, event_field
 from gpustack.server.worker_allocated_cache import (
     get_worker_allocated,
     get_workers_allocated,
@@ -80,6 +84,7 @@ from gpustack.security import (
 from gpustack.server.services import WorkerService
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
 from gpustack.utils.grafana import resolve_grafana_base_url
+from gpustack.utils.labels import LabelFilter
 
 router = APIRouter()
 system_name_prefix = "system/worker"
@@ -190,6 +195,46 @@ def _normalize_worker_order_by(order_by):
     return out
 
 
+def _worker_label_watch(label_filter_groups, fields, fuzzy_fields):
+    """Track membership so label edits remove or add workers in a watched list."""
+    matched_ids = set()
+
+    def matches(worker):
+        event = Event(type=EventType.UPDATED, data=worker)
+        return (
+            Worker._match_fields(event, fields)
+            and Worker._match_fuzzy_fields(event, fuzzy_fields)
+            and all(
+                any(
+                    label_filter.matches(event_field(worker, "labels"))
+                    for label_filter in group
+                )
+                for group in label_filter_groups.values()
+            )
+        )
+
+    def include(worker):
+        return event_field(worker, "id") in matched_ids or matches(worker)
+
+    async def transform(event):
+        worker_id = event.id
+        if event.type == EventType.DELETED:
+            matched_ids.discard(worker_id)
+            return
+        if not matches(event.data):
+            matched_ids.discard(worker_id)
+            event.type = EventType.DELETED
+            event.data = {"id": worker_id}
+            event.changed_fields = {}
+            return
+        if worker_id not in matched_ids:
+            event.type = EventType.CREATED
+        matched_ids.add(worker_id)
+        await _inject_allocated_into_event(event)
+
+    return include, transform
+
+
 @router.get("", response_model=WorkersPublic)
 async def get_workers(
     user: CurrentUserDep,
@@ -200,8 +245,28 @@ async def get_workers(
     uuid: str = None,
     me: Optional[bool] = None,
     cluster_id: Optional[int] = None,
+    label: Annotated[
+        Optional[
+            List[Annotated[str, StringConstraints(pattern=r"^$|^[^=]+=[\s\S]*$")]]
+        ],
+        Query(
+            description="Filter by exact, case-sensitive key=value label pairs. "
+            "Repeat the label parameter to match any value for the same key (OR) "
+            "and require every different key (AND), for example "
+            "label=region=beijing&label=region=shanghai&label=env=production. "
+            "Each key must be non-empty; "
+            "values may be empty or contain '='. Keys and values are not trimmed. "
+            "Empty entries are ignored; omit all entries to disable filtering. "
+            "Any invalid non-empty entry returns HTTP 422.",
+        ),
+    ] = None,
 ):
     fields, fuzzy_fields = _build_worker_list_filters(name, uuid, cluster_id, search)
+    label_filter_groups: Dict[str, List[LabelFilter]] = {}
+    for value in label or []:
+        if value:
+            label_filter = LabelFilter.parse(value)
+            label_filter_groups.setdefault(label_filter.key, []).append(label_filter)
 
     # Worker carries denormalized owner_principal_id (synced from cluster), so
     # tenant filtering scopes the list to the caller's own Org — a shared
@@ -209,13 +274,23 @@ async def get_workers(
     extra_conditions = tenant_list_conditions(ctx, Worker)
 
     if params.watch:
+        watch_filter = None
+        event_transform = _inject_allocated_into_event
+        if label_filter_groups:
+            watch_filter, event_transform = _worker_label_watch(
+                label_filter_groups, fields, fuzzy_fields
+            )
+            # The membership filter also receives rows leaving the selection,
+            # so it can turn their updates into removal events.
+            fields, fuzzy_fields = {}, {}
         return StreamingResponse(
             tenant_streaming(
                 Worker,
                 ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
-                event_transform=_inject_allocated_into_event,
+                filter_func=watch_filter,
+                event_transform=event_transform,
             ),
             media_type="text/event-stream",
         )
@@ -223,8 +298,21 @@ async def get_workers(
         # me query overrides all other filters
         fields = {"id": user.worker.id}
         fuzzy_fields = {}
+        label_filter_groups = {}
 
     async with async_session() as session:
+        if label_filter_groups:
+            extra_conditions.extend(
+                or_(
+                    *(
+                        label_filter.condition(
+                            Worker.labels, session.get_bind().dialect.name
+                        )
+                        for label_filter in group
+                    )
+                )
+                for group in label_filter_groups.values()
+            )
         worker_list = await Worker.paginated_by_query(
             session=session,
             fields=fields,
@@ -247,6 +335,39 @@ async def get_workers(
             for worker in worker_list.items
         ]
         return WorkersPublic(items=public_list, pagination=worker_list.pagination)
+
+
+@router.get("/label-options", response_model=List[WorkerLabelOption])
+async def get_worker_label_options(
+    ctx: TenantContextDep,
+    session: SessionDep,
+    cluster_id: Optional[int] = None,
+) -> List[WorkerLabelOption]:
+    """Return existing label keys and values for the worker filter dropdown.
+
+    Selecting only labels avoids loading complete worker status and computing
+    resource allocations just to build filter options. Candidates follow worker
+    list visibility and an optional cluster scope, independently of active name
+    or label filters. Keys and values are deduplicated and sorted; empty values
+    are preserved. Keys incompatible with key=value filtering are omitted.
+    """
+    statement = select(Worker.labels).where(
+        Worker.deleted_at.is_(None), *tenant_list_conditions(ctx, Worker)
+    )
+    if cluster_id is not None:
+        statement = statement.where(Worker.cluster_id == cluster_id)
+    label_maps = (await session.exec(statement)).all()
+    values_by_key: Dict[str, Set[str]] = {}
+    for labels in label_maps:
+        if not isinstance(labels, dict):
+            continue
+        for key, value in labels.items():
+            if key and "=" not in key and isinstance(value, str):
+                values_by_key.setdefault(key, set()).add(value)
+    return [
+        WorkerLabelOption(key=key, values=sorted(values))
+        for key, values in sorted(values_by_key.items())
+    ]
 
 
 @router.post("/labels", status_code=204)
