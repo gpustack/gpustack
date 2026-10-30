@@ -1,0 +1,56 @@
+---
+title: Qwen3.6-35B-A3B-FP8 (vLLM)
+description: "Deploy Qwen3.6-35B-A3B-FP8 with vLLM — Qwen Mixture-of-Experts (MoE) model with native MTP speculative config, Data-Parallel vision encoder, and 256K context."
+tag: NEW
+---
+
+# Deploying Qwen3.6-35B-A3B-FP8 with GPUStack and vLLM
+
+This tutorial guides you through setting up **Qwen3.6-35B-A3B-FP8**—a highly optimized Mixture-of-Experts (MoE) model with native FP8 precision and multi-modal capabilities—using **vLLM (v0.24.0)** in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `vllm/vllm-openai:v0.24.0-cu129`
+* **Hardware Requirements**: 8x GPUs cluster (supporting hybrid TP / DP / EP execution)
+
+### 2. Model Weights Source
+* **Model Name**: `Qwen3.6-35B-A3B-FP8`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/Qwen/Qwen3.6-35B-A3B-FP8`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to **Models** -> **deployment**, and select the **model deploy** / **modelscope** mode.
+
+### 1. Basic Information
+* **Model Name**: `Qwen3.6-35B-A3B-FP8`
+* **Container Image**: `vllm/vllm-openai:v0.24.0-cu129`
+
+### 2. Backend Arguments (Multi-line Format for UI Input)
+Based on the UI screenshot `image_e85a24.png`, you can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+--max-model-len 256000
+--performance-mode=throughput
+--enable-prefix-caching
+--mm-encoder-tp-mode data
+--reasoning-parser qwen3
+--tool-call-parser qwen3_xml
+--enable-auto-tool-choice
+--enable-expert-parallel
+--trust-remote-code
+--default-chat-template-kwargs '{"enable_thinking": false}'
+--speculative-config '{"method":"mtp","num_speculative_tokens":3,"moe_layers_per_spec":1}'
+--kv-cache-dtype fp8
+--max-num-batched-tokens 65536
+--max-num-seqs 50
+```
+### 3. more config
+
+https://recipes.vllm.ai/Qwen/Qwen3.6-35B-A3B
+
+
