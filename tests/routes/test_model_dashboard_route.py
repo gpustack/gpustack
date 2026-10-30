@@ -8,6 +8,9 @@ so.
 """
 
 from types import SimpleNamespace
+import json
+from pathlib import Path
+import re
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -110,3 +113,420 @@ async def test_a_group_is_refused_when_only_the_pd_uid_is_missing():
     # The same deployment still serves a plain model.
     location = await _redirect(_model(), cfg=_cfg(grafana_pd_dashboard_uid=None))
     assert "/d/gpustack-model/" in location
+
+
+def _dashboard():
+    return json.loads(
+        (
+            Path(__file__).parents[2]
+            / 'docker-compose/grafana/grafana_dashboards/gpustack-model.json'
+        ).read_text()
+    )
+
+
+@pytest.mark.parametrize(
+    'value', ['.*', 'engine.[0]"\\💃', ' leading\ntrailing ', "x'y/$1"]
+)
+def test_fixed_dashboard_scope_quotes_literal_re2_without_changing_all(value):
+    from gpustack.utils.grafana import model_dashboard_scope_params
+
+    params = model_dashboard_scope_params(
+        cluster_id=1,
+        model_id=10,
+        model_instance_id=100,
+        restart_count=3,
+        source_kind='vllm_engine',
+        source_name=value,
+        worker_id=2,
+        dp_rank=4,
+    )
+    encoded = params['var-scope_source_name']
+    assert json.loads(encoded).startswith('^')
+    assert re.fullmatch(json.loads(encoded), value)
+    assert not re.fullmatch(json.loads(encoded), value + 'other')
+    assert '\\ud' not in encoded.lower()
+    assert params['var-scope_endpoint_dp_rank'] == '"4"'
+    assert params['var-scope_scheduler_dp_rank'] == '".*"'
+    assert params['var-scope_legacy_enabled'] == '0'
+    assert params['var-scope_bound'] == '1'
+    defaults = model_dashboard_scope_params()
+    assert defaults['var-scope_source_name'] == '".*"'
+    assert encoded != defaults['var-scope_source_name']
+
+
+def test_sglang_rank_scope_uses_native_dp_without_treating_attention_or_ep_as_dp():
+    from gpustack.utils.grafana import model_dashboard_scope_params
+
+    values = model_dashboard_scope_params(
+        source_kind='sglang_engine', restart_count=3, dp_rank=2
+    )
+    assert values['var-scope_scheduler_dp_rank'] == '"2"'
+    assert values['var-scope_endpoint_dp_rank'] == '".*"'
+    assert not any('attn' in k or 'tp_rank' in k or 'ep_rank' in k for k in values)
+    with pytest.raises(ValueError):
+        model_dashboard_scope_params(source_kind='sglang_smg', dp_rank=2)
+
+
+def test_real_template_has_fixed_scopes_and_scopes_every_business_expression():
+    dashboard = _dashboard()
+    variables = {v['name']: v for v in dashboard['templating']['list']}
+    scopes = [name for name in variables if name.startswith('scope_')]
+    assert len(scopes) >= 12
+    assert all(
+        variables[n]['type'] == 'textbox' and not variables[n].get('refresh')
+        for n in scopes
+    )
+    context = {32, 33, 35, 28, 34, 30, 29}
+    original_exprs = 0
+    for panel in dashboard['panels']:
+        for target in panel.get('targets', []):
+            expr = target.get('expr', '')
+            if not expr:
+                continue
+            if panel['id'] <= 53:
+                original_exprs += 1
+            assert '${scope_cluster_id:raw}' in expr
+            assert '${scope_model_id:raw}' in expr
+            if panel['id'] in context:
+                assert 'model context' in panel['description'].lower()
+                continue
+            if panel['id'] <= 53:
+                for name in (
+                    'model_instance_id',
+                    'restart_count',
+                    'source_name',
+                    'source_kind',
+                    'worker_id',
+                    'endpoint_dp_rank',
+                    'scheduler_dp_rank',
+                    'component_attempt',
+                ):
+                    assert '${scope_' + name + ':raw}' in expr
+                assert 'gpustack:runtime_metrics_scrape_status' in expr
+                assert 'gpustack:model_instance_source_info' in expr
+                assert 'source_kind=""' in expr
+                assert '${scope_legacy_enabled:raw}' in expr
+                assert 'count_over_time(gpustack:runtime_metrics_scrape_status' in expr
+                if panel['type'] == 'stat':
+                    assert target['instant'] is True
+                    assert target['range'] is False
+                    assert panel['options']['reduceOptions']['calcs'] == ['last']
+            assert 'or vector(0)' not in expr
+            assert 'group_left' not in expr
+            if 'histogram_quantile' in expr:
+                assert 'sum by(le,' in expr or 'sum by (le,' in expr
+    assert original_exprs == 75
+    all_exprs = '\n'.join(
+        t.get('expr', '') for p in dashboard['panels'] for t in p.get('targets', [])
+    )
+    for metric in (
+        'gpustack:smg_router_requests_total',
+        'gpustack:smg_worker_selections_total',
+        'gpustack:smg_worker_requests_active',
+        'gpustack:model_instance_placement_info',
+    ):
+        assert metric in all_exprs
+
+
+@pytest.mark.asyncio
+async def test_plain_model_dashboard_url_binds_stable_ids_without_changing_pd_url():
+    from urllib.parse import parse_qs, urlsplit
+
+    values = parse_qs(urlsplit(await _redirect(_model(id=10))).query)
+    assert values['var-scope_model_id'] == ['"10"']
+    assert values['var-scope_cluster_id'] == ['"1"']
+    assert values['var-scope_bound'] == ['1']
+    pd = parse_qs(
+        urlsplit(
+            await _redirect(
+                _model(
+                    id=10, disaggregation=DisaggregationSpec(mode=PDModeEnum.VLLM_NIXL)
+                )
+            )
+        ).query
+    )
+    assert not any(k.startswith('var-scope_') for k in pd)
+
+
+def test_compatibility_names_are_literal_patterns_separate_from_display_names():
+    from gpustack.utils.grafana import model_dashboard_scope_params
+
+    name = '引擎.[x]"\\path💃'
+    params = model_dashboard_scope_params(
+        model_id=10,
+        model_name=name,
+        cluster_name=name,
+        model_instance_name=name,
+    )
+    for key in ('model_name', 'cluster_name', 'model_instance_name'):
+        assert re.fullmatch(params['var-' + key], name)
+        assert not re.fullmatch(params['var-' + key], name + 'other')
+        assert params['var-display_' + key] == name
+
+
+@pytest.mark.parametrize(
+    'name',
+    [
+        None,
+        'live5742-qwen-smoke',
+        '.*',
+        '引擎.[x]"\\path💃',
+        'name`}|other_metric{a="b',
+        ' leading\ntrailing ',
+        "x'y/$1",
+    ],
+)
+def test_template_name_matchers_remain_quoted_after_grafana_interpolation(name):
+    from gpustack.utils.grafana import model_dashboard_scope_params
+
+    dashboard = _dashboard()
+    values = {
+        variable['name']: variable['current']['value']
+        for variable in dashboard['templating']['list']
+    }
+    names = ('cluster_name', 'model_name', 'model_instance_name')
+    if name is not None:
+        params = model_dashboard_scope_params(**dict.fromkeys(names, name))
+        values.update(
+            {key.removeprefix('var-'): value for key, value in params.items()}
+        )
+
+    def interpolate(match):
+        key, formatter = match.groups()
+        value = values[key]
+        # Grafana Scenes 6.34 JSON formatting leaves string values unchanged.
+        if formatter == 'raw' or isinstance(value, str):
+            return str(value)
+        assert formatter == 'json'
+        return json.dumps(value, ensure_ascii=False)
+
+    selector = r'\b(cluster_name|model_name|model_instance_name)=~'
+    literal = r'(`[^`]*`|"(?:[^"\\]|\\.)*")'
+    matched = 0
+    for panel in dashboard['panels']:
+        for target in panel.get('targets', []):
+            expression = re.sub(
+                r'\$\{([a-zA-Z0-9_]+):(raw|json)\}',
+                interpolate,
+                target.get('expr', ''),
+            )
+            selectors = re.findall(selector, expression)
+            matchers = re.findall(selector + literal, expression)
+            assert len(matchers) == len(selectors), expression
+            for _, quoted in matchers:
+                pattern = quoted[1:-1] if quoted.startswith('`') else json.loads(quoted)
+                assert re.fullmatch(pattern, name if name is not None else 'any-model')
+                if name is not None:
+                    assert not re.fullmatch(pattern, name + 'other')
+                matched += 1
+    assert matched > 0
+
+
+@pytest.mark.parametrize(
+    'kwargs',
+    [
+        {'worker_id': -1},
+        {'model_id': True},
+        {'dp_rank': 1},
+        {'source_kind': 'arbitrary_label'},
+        {'source_kind': 'sglang_engine', 'component_attempt': 1},
+    ],
+)
+def test_fixed_scope_helper_rejects_invalid_internal_binding(kwargs):
+    from gpustack.utils.grafana import model_dashboard_scope_params
+
+    with pytest.raises(ValueError):
+        model_dashboard_scope_params(**kwargs)
+
+
+
+
+@pytest.mark.parametrize(
+    'server_url, expected',
+    [
+        (None, None),
+        ('https://public.example/gpu/', 'https://public.example/gpu'),
+    ],
+)
+def test_pure_dashboard_helper_uses_only_configured_server_without_request(
+    server_url, expected
+):
+    from gpustack.utils.grafana import build_model_dashboard_url
+    from urllib.parse import parse_qs, urlsplit
+
+    location = build_model_dashboard_url(
+        _cfg(server_external_url=server_url),
+        'https://external.example/grafana',
+        _model(id=10),
+    )
+    params = parse_qs(urlsplit(location).query)
+    if expected is None:
+        assert 'var-gpustack_base_url' not in params
+    else:
+        assert params['var-gpustack_base_url'] == [expected]
+
+
+@pytest.mark.parametrize(
+    'panel_id,ref,labels,selected,expected',
+    [
+        (
+            22,
+            'A',
+            {'model_instance_name': 'instance-a', 'endpoint_dp_rank': '0'},
+            'instance-a',
+            'DP 0',
+        ),
+        (
+            22,
+            'A',
+            {'model_instance_name': 'instance-b', 'endpoint_dp_rank': '1'},
+            'instance-a',
+            '[instance-b] · DP 1',
+        ),
+        (
+            22,
+            'A',
+            {
+                'model_instance_name': 'instance-a',
+                'endpoint_dp_rank': '0',
+                'dp_rank': '0',
+            },
+            'instance-a',
+            'DP 0',
+        ),
+        (
+            22,
+            'A',
+            {'model_instance_name': 'instance-a', 'dp_rank': '1'},
+            'instance-a',
+            'logical DP 1',
+        ),
+        (41, 'D', {}, 'instance-a', 'Total'),
+        (
+            9,
+            'B',
+            {
+                'model_instance_id': '70',
+                'model_instance_name': 'instance-b',
+                'endpoint_dp_rank': '0',
+            },
+            'instance-a',
+            'P99 · [instance-b] · DP 0',
+        ),
+        (
+            9,
+            'B',
+            {
+                'model_instance_name': 'instance-a',
+                'endpoint_dp_rank': '0',
+                'dp_rank': '0',
+            },
+            'instance-a',
+            'P99 · DP 0',
+        ),
+        (
+            9,
+            'B',
+            {'model_instance_id': '70', 'endpoint_dp_rank': '0'},
+            'instance-a',
+            'P99 · [70] · DP 0',
+        ),
+        (
+            9,
+            'B',
+            {'model_instance_name': 'a.[x]', 'endpoint_dp_rank': '1'},
+            'a.[x]',
+            'P99 · DP 1',
+        ),
+        (4, 'A', {'model_instance_name': 'instance-a'}, 'instance-a', 'Engine'),
+    ],
+)
+def test_dashboard_legends_keep_only_useful_series_identity(
+    panel_id, ref, labels, selected, expected
+):
+    panel = next(p for p in _dashboard()['panels'] if p['id'] == panel_id)
+    target = next(t for t in panel['targets'] if t['refId'] == ref)
+    # Prometheus returns an empty string for an absent legend label; rename
+    # transformations do not interpolate dashboard variables.
+    name = re.sub(
+        r'\{\{\s*(.+?)\s*\}\}',
+        lambda m: labels.get(m[1], ''),
+        target['legendFormat'].replace(
+            '${legend_instance_prefix:raw}',
+            (
+                ''
+                if labels.get('model_instance_name') == selected
+                else '[{{model_instance_name}}] · [{{model_instance_id}}] · '
+            ),
+        ),
+    )
+    for transform in panel.get('transformations', []):
+        if transform['id'] != 'renameByRegex':
+            continue
+        options = transform['options']
+        pattern = options['regex']
+        global_ = pattern.startswith('/') and pattern.endswith('/g')
+        if pattern.startswith('/'):
+            pattern = pattern[1:-2] if global_ else pattern[1:-1]
+        else:
+            pattern = '^' + pattern + '$'
+        name = re.sub(
+            pattern,
+            lambda match: re.sub(
+                r'\$(\d+)',
+                lambda group: match[int(group[1])] or '',
+                options['renamePattern'],
+            ),
+            name,
+            count=0 if global_ else 1,
+        )
+    assert name == expected
+    assert not any(
+        token in name
+        for token in (
+            'source=',
+            'epoch=',
+            'attempt=',
+            'endpoint_dp_rank',
+            'model_instance_name',
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    'instance_id, expected',
+    [(None, '[{{model_instance_name}}] · [{{model_instance_id}}] · '), (70, '')],
+)
+def test_fixed_instance_scope_sets_native_legend_prefix(instance_id, expected):
+    from gpustack.utils.grafana import model_dashboard_scope_params
+
+    params = model_dashboard_scope_params(model_instance_id=instance_id)
+    assert params['var-legend_instance_prefix'] == expected
+
+
+@pytest.mark.asyncio
+async def test_pd_dashboard_names_cannot_break_quoted_promql():
+    from urllib.parse import parse_qs, urlsplit
+    from gpustack.utils.grafana import build_model_dashboard_url
+
+    name = 'm.[x]"\\path\nnext'
+    model = _model(
+        name=name, disaggregation=DisaggregationSpec(mode=PDModeEnum.VLLM_NIXL)
+    )
+    url = build_model_dashboard_url(_cfg(), 'http://grafana', model, cluster_name=name)
+    params = parse_qs(urlsplit(url).query)
+    for field in ('model_name', 'cluster_name'):
+        assert json.loads('"' + params['var-' + field][0] + '"') == name
+
+
+def test_manifest_dashboard_legends_use_exported_labels():
+    panels = {p['id']: p for p in _dashboard()['panels']}
+    for id_ in (61, 62, 66):
+        for target in panels[id_]['targets']:
+            worker_label = (
+                '{{placement_worker_name}}' if id_ == 66 else '{{worker_name}}'
+            )
+            assert worker_label in target['legendFormat']
+            assert '{{worker}}' not in target['legendFormat']
+            assert '{{policy}}' not in target['legendFormat']
+    assert '{{status}}' in panels[61]['targets'][0]['legendFormat']

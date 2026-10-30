@@ -16,6 +16,7 @@ from gpustack.logging import setup_logging
 from gpustack.policies.resource_view import compute_worker_allocated
 from gpustack.utils.name import metric_name
 from gpustack.worker.collector import WorkerStatusCollector
+from gpustack.worker.runtime_metrics_aggregator import runtime_metrics_values
 import uvicorn
 import logging
 from fastapi import FastAPI, Response
@@ -378,11 +379,7 @@ class MetricExporter(Collector):
         yield filesystem_utilization_rate
 
     def collect_runtime_metrics(self):
-        if not self._cache or self._cache.get("unified") is None:
-            return
-
-        for _, prom_metric in self._cache["unified"].items():
-            yield prom_metric
+        yield from runtime_metrics_values(self._cache, "unified")
 
     def start(self):
         try:
@@ -438,11 +435,7 @@ class RawCollector(Collector):
 
     def collect(self):
         # passthrough raw metrics from runtime and add gpustack related labels.
-        if not self._cache or self._cache.get("raw") is None:
-            return
-
-        for _, prom_metric in self._cache["raw"].items():
-            yield prom_metric
+        yield from runtime_metrics_values(self._cache, "raw")
 
 
 def _rate(used, total):
