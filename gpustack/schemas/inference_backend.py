@@ -377,6 +377,29 @@ def get_built_in_backend() -> List[InferenceBackend]:
         ),
         InferenceBackend(backend_name=BackendEnum.VOX_BOX.value, is_built_in=True),
         InferenceBackend(backend_name=BackendEnum.CUSTOM.value, is_built_in=True),
+        InferenceBackend(
+            backend_name=BackendEnum.DYNAMO.value,
+            is_built_in=True,
+            default_version="1.3.0",
+            version_configs=VersionConfigDict(
+                root={
+                    "1.3.0": VersionConfig(
+                        image_name="nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.3.0",
+                        custom_framework="cuda",
+                    )
+                }
+            ),
+            default_run_command=(
+                "python3 -m dynamo.vllm --model {{model_path}} "
+                "--served-model-name {{model_name}} --host {{worker_ip}} "
+                "--port {{port}}"
+            ),
+            health_check_path="/health",
+            description=(
+                "NVIDIA AI Dynamo datacenter-scale LLM inference framework "
+                "with disaggregated serving"
+            ),
+        ),
     ]
 
 

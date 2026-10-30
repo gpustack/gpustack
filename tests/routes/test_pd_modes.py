@@ -6,6 +6,7 @@ matters is that it serves every declared mode with its connection state
 intact.
 """
 
+import math
 import pytest
 
 from gpustack.routes.pd_modes import list_pd_modes
@@ -68,7 +69,7 @@ async def test_list_search_and_pagination():
     first_page = await list_pd_modes(params=params(page=1, perPage=2), search=None)
     assert len(first_page.items) == 2
     assert first_page.pagination.total == len(load_pd_modes())
-    assert first_page.pagination.totalPage == 3
+    assert first_page.pagination.totalPage == math.ceil(len(load_pd_modes()) / 2)
 
     unpaged = await list_pd_modes(params=params(page=0, perPage=0), search=None)
     assert len(unpaged.items) == len(load_pd_modes())

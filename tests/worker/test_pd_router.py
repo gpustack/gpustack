@@ -88,6 +88,18 @@ def test_the_catalog_router_renders_a_complete_command():
     assert plan.health_path == "/health"
 
 
+def test_dynamo_router_renders_a_complete_command():
+    plan = render_router(get_pd_mode("dynamo-nixl"), VARIABLES, PEERS)
+
+    assert plan.image == "gpustack/runner:cuda12.9-vllm0.17.1"
+    assert plan.command[:3] == ["python3", "-m", "dynamo.frontend"]
+    assert plan.health_path == "/health"
+    assert "--model-name" in plan.command
+    assert "qwen3-0.6b" in plan.command
+    assert "--router-mode" in plan.command
+    assert "--kv-cache-block-size" in plan.command
+
+
 @pytest.mark.parametrize(
     "mode",
     [
@@ -524,6 +536,39 @@ def test_the_runner_image_is_resolved_against_the_groups_engine():
         "the row this server was handed is the router's own — which is None"
     )
     assert variables["runner_image"] == "gpustack/runner:cuda12.9-vllm0.17.1"
+
+
+def test_dynamo_runner_image_is_resolved_from_builtin_inference_backend():
+    from types import SimpleNamespace
+
+    from gpustack.schemas.inference_backend import get_built_in_backend
+    from gpustack.schemas.models import BackendEnum
+    from gpustack.schemas.pd_modes import PDNetDevicePlaneEnum
+    from gpustack.worker.backends.base import InferenceServer
+
+    dynamo_backend = next(
+        b for b in get_built_in_backend() if b.backend_name == BackendEnum.DYNAMO.value
+    )
+    spec = SimpleNamespace(
+        backend=BackendEnum.DYNAMO.value,
+        backend_version="1.3.0",
+        image_name=None,
+    )
+
+    fake = SimpleNamespace(
+        _worker=SimpleNamespace(ifname="eno1", name="node-a"),
+        _config=SimpleNamespace(kv_transfer_ifname=None),
+        _model_spec=spec,
+        _model=SimpleNamespace(backend=BackendEnum.CUSTOM.value),
+        _resolve_image=lambda backend=None, spec=None, inference_backend=None: (
+            inference_backend.get_image_name(spec.backend_version)
+        ),
+        _engine_inference_backend=lambda _spec: dynamo_backend,
+        _net_device_plane=lambda: PDNetDevicePlaneEnum.DATA,
+    )
+
+    variables = InferenceServer._pd_template_variables(fake)
+    assert variables["runner_image"] == "nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.3.0"
 
 
 # --- which plane the derived NIC rides -------------------------------------- #

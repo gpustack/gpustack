@@ -133,6 +133,7 @@ _SERVER_CLASS_MAPPING = {
     BackendEnum.SGLANG: SGLangServer,
     BackendEnum.VOX_BOX: VoxBoxServer,
     BackendEnum.ASCEND_MINDIE: AscendMindIEServer,
+    BackendEnum.DYNAMO: CustomServer,
 }
 
 # Annotation the operator device plugin writes onto the Pod after allocation,
@@ -3053,7 +3054,10 @@ def is_ready(
         else:
             # Older versions do not support health check, consider it always ready.
             return True
-    elif backend in (BackendEnum.VLLM, BackendEnum.SGLANG) and not health_check_path:
+    elif (
+        backend in (BackendEnum.VLLM, BackendEnum.SGLANG, BackendEnum.DYNAMO)
+        and not health_check_path
+    ):
         health_check_path = "/health"
     elif is_built_in and backend != BackendEnum.CUSTOM and not health_check_path:
         # VoxBox uses the OpenAI model list as its default health endpoint.
