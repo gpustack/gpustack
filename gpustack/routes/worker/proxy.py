@@ -25,7 +25,12 @@ from gpustack.api.exceptions import (
 from gpustack import envs
 from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.utils.stall import stall_error_sse
-from gpustack.gateway.utils import get_instance_id_from_header, router_header_key
+from gpustack.gateway.utils import (
+    router_header_key,
+    transform_sglang_component_request,
+    read_sglang_component_body,
+)
+from gpustack.utils.model_instance_workers import parse_model_instance_target
 
 router = APIRouter(dependencies=[Depends(worker_proxy_auth)])
 
@@ -243,9 +248,29 @@ async def proxy(path: str, request: Request):  # noqa: C901
         headers.pop("host", None)
         # Read the header while popping it: aiohttp sets its own framing, and
         # checking after the pop would never see a chunked upload.
+        component_target = getattr(request.state, "model_instance_target", None)
+        component = getattr(component_target, "component", None)
+        transformed = component in ("sglang_smg", "sglang_engine")
+        if transformed:
+            transform_sglang_component_request(
+                request.headers,
+                None,
+                component=component,
+                dp_rank=component_target.dp_rank,
+            )
         transfer_encoding = headers.pop("transfer-encoding", "")
         body_consumed = asyncio.Event()
-        if transfer_encoding.lower() == "chunked":
+        if transformed:
+            content = await read_sglang_component_body(request)
+            headers, content = await asyncio.to_thread(
+                transform_sglang_component_request,
+                headers,
+                content,
+                component=component,
+                dp_rank=component_target.dp_rank,
+            )
+            body_consumed.set()
+        elif transfer_encoding.lower() == "chunked":
 
             async def body_generator():
                 async for chunk in request.stream():
@@ -374,6 +399,8 @@ async def proxy(path: str, request: Request):  # noqa: C901
             message=error_message,
             is_openai_exception=True,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         error_message = "An unexpected error occurred"
         if str(e):
@@ -397,14 +424,24 @@ def get_model_instance_info_from_model_name(
 
     Return (port, model_instance_id).
     """
-    model_instance_id = get_instance_id_from_header(request.headers)
+    try:
+        target = parse_model_instance_target(request.headers.get(router_header_key, ""))
+    except ValueError as exc:
+        raise NotFoundException(message="Invalid model destination") from exc
+    model_instance_id = target.instance_id
     port: Optional[int] = request.app.state.get_instance_port_by_model_instance_id(
-        model_instance_id
+        model_instance_id,
+        model_id=target.model_id,
+        restart_count=target.restart_count,
+        dp_rank=target.dp_rank,
+        component=target.component,
+        attempt=target.attempt,
     )
     if not port:
         raise NotFoundException(
             message=f"No running model instance found for model name: {model_instance_id}",
         )
+    request.state.model_instance_target = target
     logger.debug(f"Found port {port} from model instance id {model_instance_id}")
     return port, model_instance_id
 
@@ -419,7 +456,7 @@ async def set_port_from_model_name(request: Request, call_next):
         request.state.x_target_port = str(port)
         request.state.x_target_instance_id = model_instance_id
         return await call_next(request)
-    except NotFoundException as e:
+    except (NotFoundException, ServiceUnavailableException) as e:
         logger.debug("failed to find model instance for proxying: %s", e.message)
         return JSONResponse(
             status_code=e.status_code,

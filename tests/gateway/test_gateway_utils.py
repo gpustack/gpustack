@@ -1175,3 +1175,623 @@ async def test_startup_prune_keeps_cross_namespace_rules():
             "gpustack-system/ai-route-route-6.fallback.internal",
         ]
     ]
+
+
+@pytest.fixture
+def managed_rank_instance():
+    from tests.routes.test_worker_proxy import rank_instance
+
+    return rank_instance.__wrapped__()
+
+
+@pytest.fixture
+def rank_workers():
+    from gpustack.schemas.workers import Worker
+
+    return {
+        worker_id: Worker(
+            id=worker_id,
+            cluster_id=11,
+            ip=f'10.0.0.{worker_id}',
+            port=10150,
+            proxy_mode='direct',
+        )
+        for worker_id in (1, 2)
+    }
+
+
+def test_registry_list_expands_ranks_and_keeps_lora_identity(
+    managed_rank_instance, rank_workers
+):
+    instance = managed_rank_instance
+    suffix = lora_registry_name_suffix('moe:adapter')
+    destinations = model_instances_registry_list(
+        [instance],
+        rank_workers,
+        downstream_model_name='moe:adapter',
+        registry_name_suffix=suffix,
+    )
+    assert [registry.name for _, _, registry in destinations] == [
+        f'model-1-7-r3-dp{rank}-{suffix}' for rank in (0, 1)
+    ]
+    assert [registry.domain for _, _, registry in destinations] == [
+        '10.0.0.1:41000',
+        '10.0.0.1:41001',
+    ]
+    assert [model_name for _, model_name, _ in destinations] == ['moe:adapter'] * 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['created', 'updated', 'deleted', 'startup'])
+async def test_managed_registry_reconciliation_uses_same_rank_set(
+    managed_rank_instance, rank_workers, monkeypatch, operation
+):
+    from gpustack.gateway import utils
+    from gpustack.server.bus import EventType
+
+    ensure = AsyncMock()
+    monkeypatch.setattr(utils, 'ensure_mcp_bridge', ensure)
+    if operation == 'startup':
+        monkeypatch.setattr(utils.k8s_client, 'ApiClient', MagicMock())
+        await utils.cleanup_mcpbridge_registry(
+            [],
+            [managed_rank_instance],
+            list(rank_workers.values()),
+            'default',
+            k8s_client.Configuration(),
+        )
+    else:
+        await utils.ensure_model_mcp_bridge(
+            EventType[operation.upper()],
+            1,
+            [managed_rank_instance],
+            MagicMock(),
+            'default',
+            11,
+            workers=rank_workers,
+        )
+    registries = ensure.call_args.kwargs['desired_registries']
+    assert [registry.name for registry in registries] == (
+        [] if operation == 'deleted' else ['model-1-7-r3-dp0', 'model-1-7-r3-dp1']
+    )
+    assert ensure.call_args.kwargs['to_delete_prefix'] == (
+        'model-' if operation == 'startup' else 'model-1-'
+    )
+
+
+@pytest.mark.asyncio
+async def test_model_destinations_collects_all_rank_owners_without_primary_api(
+    managed_rank_instance, rank_workers, monkeypatch
+):
+    from gpustack.server import controllers
+    from gpustack.schemas.models import (
+        DistributedServers,
+        ModelInstanceSubordinateWorker,
+    )
+    from gpustack.schemas.workers import Worker
+    from tests.utils.model import new_model
+
+    instance = managed_rank_instance
+    instance.cluster_id = 11
+    instance.port, instance.ports, instance.worker_ip = None, [], None
+    first, second = instance.distributed_servers.workloads[0].model_copy(
+        deep=True
+    ), instance.distributed_servers.workloads[0].model_copy(deep=True)
+    first.dp_rank_placements = first.dp_rank_placements[:1]
+    second.name, second.worker_id = 'second-worker', 2
+    second.dp_rank_placements = second.dp_rank_placements[1:]
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
+        workloads=[first, second],
+    )
+    model = new_model(1, 'moe', huggingface_repo_id='org/model', cluster_id=11)
+    monkeypatch.setattr(
+        controllers, 'get_cluster_registry', AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        ModelInstance, 'all_by_field', AsyncMock(return_value=[instance])
+    )
+    worker_query = AsyncMock(return_value=list(rank_workers.values()))
+    monkeypatch.setattr(Worker, 'all_by_fields', worker_query)
+    destinations = await controllers.calculate_model_destinations(None, model)
+    assert [registry.domain for _, _, registry in destinations] == [
+        '10.0.0.1:41000',
+        '10.0.0.2:41001',
+    ]
+    expression = worker_query.call_args.kwargs['extra_conditions'][0]
+    assert set(expression.right.value) == {1, 2}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'field',
+    [
+        'distributed_servers',
+        'ports',
+        'restart_count',
+        'draining_since',
+        'state_message',
+    ],
+)
+async def test_managed_instance_endpoint_change_refreshes_route_targets(
+    managed_rank_instance, monkeypatch, field
+):
+    import asyncio
+    from gpustack.server import controllers
+    from gpustack.server.bus import Event, EventType
+    from tests.utils.mock import mock_async_session
+    from tests.utils.model import new_model
+
+    model = new_model(1, 'moe', huggingface_repo_id='org/model')
+    monkeypatch.setattr(controllers, 'async_session', lambda: mock_async_session())
+    monkeypatch.setattr(controllers.Model, 'one_by_id', AsyncMock(return_value=model))
+    monkeypatch.setattr(controllers.Model, 'refresh', AsyncMock())
+    monkeypatch.setattr(controllers, 'sync_model_status', AsyncMock(return_value=False))
+    monkeypatch.setattr(controllers.event_bus, 'publish', AsyncMock())
+    notify = AsyncMock()
+    monkeypatch.setattr(controllers, 'notify_model_route_target', notify)
+    await controllers.ModelInstanceController(MagicMock())._reconcile(
+        Event(
+            type=EventType.UPDATED,
+            data=managed_rank_instance,
+            changed_fields={field: (None, 'changed')},
+        )
+    )
+    await asyncio.sleep(0)
+    if field == 'state_message':
+        notify.assert_not_awaited()
+    else:
+        notify.assert_awaited_once()
+        assert 'instance_endpoints' in notify.call_args.kwargs['event'].changed_fields
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['proxy_address', 'ip', 'advertise_address', 'port'])
+async def test_rank_owner_proxy_change_notifies_primary_model(
+    managed_rank_instance, rank_workers, monkeypatch, field
+):
+    from gpustack.server import controllers
+    from gpustack.server.bus import Event, EventType
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+    from tests.utils.mock import mock_async_session
+    from tests.utils.model import new_model
+
+    instance = managed_rank_instance
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=2)
+    ]
+    instance.distributed_servers.workloads[0].worker_id = 2
+    model = new_model(1, 'moe', huggingface_repo_id='org/model')
+    monkeypatch.setattr(controllers, 'async_session', lambda: mock_async_session())
+    monkeypatch.setattr(
+        ModelInstance, 'all_by_fields', AsyncMock(return_value=[instance])
+    )
+    model_lookup = AsyncMock(return_value=[model])
+    monkeypatch.setattr(controllers.Model, 'all_by_fields', model_lookup)
+    monkeypatch.setattr(controllers.event_bus, 'publish', AsyncMock())
+    notify = AsyncMock()
+    monkeypatch.setattr(controllers, 'notify_model_route_target', notify)
+    await controllers.WorkerController.__new__(
+        controllers.WorkerController
+    )._notify_relatives(
+        Event(
+            type=EventType.UPDATED,
+            data=rank_workers[2],
+            changed_fields={field: (None, 'changed')},
+        )
+    )
+    notify.assert_awaited_once()
+    model_lookup.assert_awaited_once()
+    condition = model_lookup.await_args.kwargs['extra_conditions'][0]
+    assert list(condition.compile().params.values()) == [[model.id]]
+    assert notify.await_args.kwargs['model'].id == model.id
+    expected_field = (
+        'worker_proxy_address' if field == 'proxy_address' else 'worker_address'
+    )
+    assert expected_field in notify.await_args.kwargs['event'].changed_fields
+
+
+@pytest.mark.parametrize(
+    'change',
+    [
+        'empty',
+        'unready',
+        'draining',
+        'missing_owner',
+        'tunnel_offline',
+        'deleted_owner',
+        'foreign_cluster',
+    ],
+)
+def test_rank_registry_withdraws_complete_instance(
+    managed_rank_instance, rank_workers, change
+):
+    from datetime import datetime, timezone
+
+    instance = managed_rank_instance
+    if change == 'empty':
+        instance.distributed_servers.workloads = []
+    elif change == 'unready':
+        instance.distributed_servers.workloads[0].dp_rank_placements[0].ready = False
+    elif change == 'draining':
+        instance.draining_since = datetime.now(timezone.utc)
+    elif change in ('missing_owner', 'tunnel_offline'):
+        from gpustack.schemas.models import ModelInstanceSubordinateWorker
+
+        first = instance.distributed_servers.workloads[0]
+        second = first.model_copy(deep=True)
+        second.worker_id, second.name = 2, 'second-worker'
+        second.dp_rank_placements = second.dp_rank_placements[1:]
+        first.dp_rank_placements = first.dp_rank_placements[:1]
+        instance.distributed_servers.subordinate_workers = [
+            ModelInstanceSubordinateWorker(worker_id=2)
+        ]
+        instance.distributed_servers.workloads.append(second)
+        if change == 'missing_owner':
+            rank_workers.pop(2)
+        else:
+            rank_workers[2].proxy_mode = 'tunnel'
+    elif change == 'deleted_owner':
+        rank_workers[1].deleted_at = datetime.now(timezone.utc)
+    else:
+        instance.cluster_id = 12
+    assert model_instances_registry_list([instance], rank_workers) == []
+
+
+def test_rank_generation_replaces_old_registry_names(
+    managed_rank_instance, rank_workers
+):
+    instance = managed_rank_instance
+    old = [
+        registry
+        for _, _, registry in model_instances_registry_list([instance], rank_workers)
+    ]
+    unrelated = model_instance_registry(
+        ModelInstance(id=7, model_id=2, worker_ip='10.0.0.1', port=8000)
+    )
+    instance.restart_count = 4
+    desired = [
+        registry
+        for _, _, registry in model_instances_registry_list([instance], rank_workers)
+    ]
+    changed, current = diff_registries(
+        old + [unrelated], desired, to_delete_prefix='model-1-'
+    )
+    assert changed
+    assert {registry.name for registry in current} == {
+        'model-1-7-r4-dp0',
+        'model-1-7-r4-dp1',
+        'model-2-7',
+    }
+    instance.distributed_servers.workloads = []
+    desired = [
+        registry
+        for _, _, registry in model_instances_registry_list([instance], rank_workers)
+    ]
+    _, current = diff_registries(current, desired, to_delete_prefix='model-1-')
+    assert current == [unrelated]
+
+
+@pytest.mark.asyncio
+async def test_model_registry_controller_collects_secondary_workers(
+    managed_rank_instance, rank_workers, monkeypatch
+):
+    from types import SimpleNamespace
+    from gpustack.server import controllers
+    from gpustack.server.bus import EventType
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+    from gpustack.schemas.workers import Worker
+    from tests.utils.model import new_model
+
+    instance = managed_rank_instance
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=2)
+    ]
+    model = new_model(1, 'moe', huggingface_repo_id='org/model', cluster_id=11)
+    monkeypatch.setattr(
+        ModelInstance, 'all_by_fields', AsyncMock(return_value=[instance])
+    )
+    workers = AsyncMock(return_value=list(rank_workers.values()))
+    monkeypatch.setattr(Worker, 'all_by_fields', workers)
+    ensure = AsyncMock()
+    monkeypatch.setattr(controllers.mcp_handler, 'ensure_model_mcp_bridge', ensure)
+    controller = controllers.ModelController.__new__(controllers.ModelController)
+    controller._disable_gateway = False
+    controller._config = SimpleNamespace(gateway_namespace='default')
+    controller._higress_network_api = MagicMock()
+    controller._higress_extension_api = MagicMock()
+    monkeypatch.setattr(
+        controllers.mcp_handler, 'ensure_sglang_smg_transformer', AsyncMock()
+    )
+    await controller._ensure_model_mcp_bridge(None, EventType.UPDATED, model)
+    assert set(workers.call_args.kwargs['extra_conditions'][0].right.value) == {1, 2}
+    assert set(ensure.call_args.kwargs['workers']) == {1, 2}
+
+
+@pytest.mark.asyncio
+async def test_remote_cluster_gateway_is_selected_before_rank_expansion(monkeypatch):
+    from gpustack.server import controllers
+    from tests.utils.model import new_model
+
+    gateway = model_instance_registry(
+        ModelInstance(id=1, model_id=1, worker_ip='gateway.remote', port=80)
+    )
+    monkeypatch.setattr(
+        controllers, 'get_cluster_registry', AsyncMock(return_value=gateway)
+    )
+    instances = AsyncMock()
+    monkeypatch.setattr(ModelInstance, 'all_by_field', instances)
+    model = new_model(1, 'moe', huggingface_repo_id='org/model', cluster_id=11)
+    assert await controllers.calculate_model_destinations(
+        None, model, 'moe:adapter'
+    ) == [(1, 'moe:adapter', gateway)]
+    instances.assert_not_awaited()
+
+
+def test_smg_transformer_diff_replaces_only_one_model_owner():
+    from gpustack.gateway import sglang_smg_transformer_plugin
+    from gpustack.gateway import utils
+    from tests.gateway.test_gateway_plugins import make_cfg
+
+    cfg = make_cfg('http://plugins')
+    _, base = sglang_smg_transformer_plugin(cfg)
+    foreign = WasmPluginMatchRule(service=['foreign'], config={'reqRules': []})
+    other = WasmPluginMatchRule(
+        service=['other'], config={'x-gpustack-owner': 'sglang-smg:2'}
+    )
+    old = WasmPluginMatchRule(
+        service=['old-attempt'], config={'x-gpustack-owner': 'sglang-smg:1'}
+    )
+    current = base.model_copy(update={'matchRules': [foreign, other, old]})
+    result = utils.sglang_smg_transformer_spec_diff(
+        current, model_id=1, service_names={'model-1-7-r3-smg-a1.static'}, cfg=cfg
+    )
+    assert foreign in result.matchRules and other in result.matchRules
+    owned = [
+        r
+        for r in result.matchRules
+        if r.config.get('x-gpustack-owner') == 'sglang-smg:1'
+    ]
+    assert len(owned) == 1
+    assert owned[0].service == ['model-1-7-r3-smg-a1.static']
+    assert owned[0].ingress == []
+    removed = utils.sglang_smg_transformer_spec_diff(
+        result, model_id=1, service_names=set(), cfg=cfg
+    )
+    assert removed.matchRules == [foreign, other]
+    assert current.matchRules == [foreign, other, old]
+    assert (
+        utils.sglang_smg_transformer_spec_diff(
+            None, model_id=1, service_names=set(), cfg=cfg
+        )
+        is None
+    )
+
+
+def test_smg_transformer_orphans_preserve_live_and_foreign_rules():
+    from gpustack.gateway import utils
+
+    rules = [
+        WasmPluginMatchRule(config={'x-gpustack-owner': owner})
+        for owner in ('sglang-smg:1', 'sglang-smg:2', 'mapper', 'sglang-smg:bad')
+    ]
+    manual = WasmPluginMatchRule(service=['manual'], config={'reqRules': []})
+    current = WasmPluginSpec(matchRules=rules + [manual])
+    result = utils.sglang_smg_transformer_orphan_diff(current, live_model_ids={2})
+    assert result.matchRules == rules[1:] + [manual]
+    assert len(current.matchRules) == 5
+    assert utils.sglang_smg_transformer_orphan_diff(None, live_model_ids=set()) is None
+
+
+def test_smg_services_use_real_ready_registry_identity(
+    managed_rank_instance, rank_workers
+):
+    from gpustack.gateway import utils
+    from gpustack.schemas.models import DistributedServers
+    from tests.routes.test_model_instance_progress import _sg_component
+
+    instance = managed_rank_instance
+    engine = _sg_component(api_port=41000, dp_size=2)
+    smg = _sg_component('sglang_smg', api_port=42000, metrics_port=42001)
+    for workload in (engine, smg):
+        workload.state = 'running'
+        workload.component.ready = True
+    instance.distributed_servers = DistributedServers(workloads=[engine, smg])
+    names = utils.sglang_smg_service_names([instance], rank_workers, ['moe:adapter'])
+    assert names == {
+        'model-1-7-r3-smg-a0.static',
+        f'model-1-7-r3-smg-a0-{lora_registry_name_suffix("moe:adapter")}.static',
+    }
+    smg.component.ready = False
+    assert (
+        utils.sglang_smg_service_names([instance], rank_workers, ['moe:adapter'])
+        == set()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['conflict', 'foreign_owner'])
+async def test_smg_declaration_does_not_swallow_publication_failure(
+    failure, monkeypatch
+):
+    from gpustack.gateway import utils, sglang_smg_transformer_plugin
+    from tests.gateway.test_gateway_plugins import make_cfg
+
+    monkeypatch.setattr(
+        utils, 'ensure_wasm_plugin', utils.ensure_wasm_plugin.__wrapped__
+    )
+    cfg = make_cfg('http://plugins')
+    cfg.gateway_namespace = 'default'
+    _, base = sglang_smg_transformer_plugin(cfg)
+    api = MagicMock()
+    api.get_wasmplugin = AsyncMock(
+        return_value={
+            'metadata': {
+                'labels': managed_labels if failure == 'conflict' else {},
+                'resourceVersion': '7',
+            },
+            'spec': base.model_dump(exclude_none=True),
+        }
+    )
+    api.edit_wasmplugin = AsyncMock(side_effect=ApiException(status=409))
+    with pytest.raises(ApiException if failure == 'conflict' else ValueError):
+        await utils.ensure_sglang_smg_transformer(
+            model_id=1,
+            service_names={'model-1-7-r3-smg-a0.static'},
+            cfg=cfg,
+            extensions_api=api,
+        )
+    if failure == 'conflict':
+        assert (
+            api.edit_wasmplugin.call_args.kwargs['body'].metadata['resourceVersion']
+            == '7'
+        )
+    else:
+        api.edit_wasmplugin.assert_not_awaited()
+
+
+def test_smg_initial_diff_is_idempotent_and_creates_one_rule():
+    from gpustack.gateway import utils
+    from tests.gateway.test_gateway_plugins import make_cfg
+
+    cfg = make_cfg('http://plugins')
+    services = {'model-1-7-r3-smg-a0.static'}
+    initial = utils.sglang_smg_transformer_spec_diff(
+        None, model_id=1, service_names=services, cfg=cfg
+    )
+    assert len(initial.matchRules) == 1
+    assert (
+        utils.sglang_smg_transformer_spec_diff(
+            initial, model_id=1, service_names=services, cfg=cfg
+        )
+        == initial
+    )
+
+
+@pytest.mark.asyncio
+async def test_smg_conflict_retry_merges_fresh_other_model_rules(monkeypatch):
+    from tenacity import stop_after_attempt, wait_none
+    from gpustack.gateway import utils, sglang_smg_transformer_plugin
+    from tests.gateway.test_gateway_plugins import make_cfg
+
+    cfg = make_cfg('http://plugins')
+    cfg.gateway_namespace = 'default'
+    _, base = sglang_smg_transformer_plugin(cfg)
+    fresh = utils.sglang_smg_transformer_spec_diff(
+        base, model_id=2, service_names={'model-2-8-r0-smg-a0.static'}, cfg=cfg
+    )
+    api = MagicMock()
+    api.get_wasmplugin = AsyncMock(
+        side_effect=[
+            {
+                'metadata': {'labels': managed_labels, 'resourceVersion': '1'},
+                'spec': base.model_dump(),
+            },
+            {
+                'metadata': {'labels': managed_labels, 'resourceVersion': '2'},
+                'spec': fresh.model_dump(),
+            },
+        ]
+    )
+    api.edit_wasmplugin = AsyncMock(side_effect=[ApiException(status=409), None])
+    monkeypatch.setattr(
+        utils,
+        'ensure_wasm_plugin',
+        utils.ensure_wasm_plugin.retry_with(
+            wait=wait_none(), stop=stop_after_attempt(2)
+        ),
+    )
+    await utils.ensure_sglang_smg_transformer(
+        model_id=1,
+        service_names={'model-1-7-r3-smg-a0.static'},
+        cfg=cfg,
+        extensions_api=api,
+    )
+    body = api.edit_wasmplugin.call_args.kwargs['body']
+    assert body.metadata['resourceVersion'] == '2'
+    assert {r.config['x-gpustack-owner'] for r in body.spec.matchRules} == {
+        'sglang-smg:1',
+        'sglang-smg:2',
+    }
+
+
+@pytest.mark.parametrize('component,rank', [('sglang_smg', None), ('sglang_engine', 2)])
+def test_component_request_conversion_removes_conflicting_rank_fields(component, rank):
+    import json
+    from gpustack.gateway.utils import transform_sglang_component_request
+
+    body = json.dumps(
+        {'prompt': '你好', 'routed_dp_rank': 9, 'data_parallel_rank': 8},
+        ensure_ascii=False,
+    ).encode()
+    headers, transformed = transform_sglang_component_request(
+        {
+            'Content-Type': 'application/json; charset=utf-8',
+            'X-Data-Parallel-Rank': '9',
+            'Content-Length': str(len(body)),
+        },
+        body,
+        component=component,
+        dp_rank=rank,
+    )
+    assert json.loads(transformed) == (
+        {'prompt': '你好', 'routed_dp_rank': rank}
+        if rank is not None
+        else {'prompt': '你好'}
+    )
+    assert headers.get('x-data-parallel-rank') == (
+        str(rank) if rank is not None else None
+    )
+    assert headers['content-length'] == str(len(transformed))
+
+
+@pytest.mark.parametrize(
+    'body,headers,status',
+    [
+        (b'not-json', {'content-type': 'application/json'}, 400),
+        (b'[]', {'content-type': 'application/json'}, 400),
+        (b'{}', {'content-type': 'multipart/form-data'}, 415),
+        (b'{}', {'content-type': 'application/json', 'content-encoding': 'gzip'}, 415),
+        (b'{}', {'content-type': 'application/json', 'expect': '100-continue'}, 417),
+        (
+            b'{}',
+            {
+                'content-type': 'application/json',
+                'content-length': '2',
+                'transfer-encoding': 'chunked',
+            },
+            400,
+        ),
+        (b'{}', {'content-type': 'application/json', 'content-length': '-1'}, 400),
+    ],
+)
+def test_component_conversion_rejects_unsafe_bodies(body, headers, status):
+    from gpustack.gateway.utils import transform_sglang_component_request
+
+    with pytest.raises(HTTPException) as exc:
+        transform_sglang_component_request(headers, body, component='sglang_smg')
+    assert exc.value.status_code == status
+
+
+def test_component_conversion_bounds_body_and_preserves_rank_under_connection_tokens(
+    monkeypatch,
+):
+    from gpustack.gateway import utils
+
+    headers, body = utils.transform_sglang_component_request(
+        {
+            'content-type': 'application/json',
+            'connection': 'content-length, x-data-parallel-rank',
+        },
+        b'{}',
+        component='sglang_engine',
+        dp_rank=1,
+    )
+    assert headers['x-data-parallel-rank'] == '1'
+    assert 'connection' not in headers
+    monkeypatch.setattr(utils, 'SG_ROUTING_MAX_BODY_BYTES', 3)
+    with pytest.raises(HTTPException) as exc:
+        utils.transform_sglang_component_request(
+            {'content-type': 'application/json'}, b'{"a":1}', component='sglang_smg'
+        )
+    assert exc.value.status_code == 413

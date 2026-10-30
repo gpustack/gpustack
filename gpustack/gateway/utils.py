@@ -1,4 +1,5 @@
 import re
+import json
 import hashlib
 import logging
 import copy
@@ -50,6 +51,13 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancePublic,
 )
+from gpustack.utils.model_instance_workers import (
+    ModelInstanceEndpoint,
+    get_model_instance_workloads,
+    model_instance_endpoints,
+    parse_model_instance_target,
+    resolve_model_instance_endpoint,
+)
 from gpustack.schemas.model_provider import (
     ModelProvider,
     ModelProviderTypeEnum,
@@ -57,7 +65,7 @@ from gpustack.schemas.model_provider import (
 from gpustack.schemas.model_routes import ModelRoute
 from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
-from gpustack.server.services import ModelInstanceService, WorkerService
+from gpustack.server.services import WorkerService
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
@@ -66,7 +74,7 @@ from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException, V1IngressTLS
 from gpustack import envs
 from gpustack.envs import GATEWAY_MIRROR_INGRESS_NAME
-from gpustack.api.exceptions import NotFoundException
+from gpustack.api.exceptions import ForbiddenException, NotFoundException
 from gpustack.websocket_proxy.message import ServerInfo, RegisteredClientInfo
 
 logger = logging.getLogger(__name__)
@@ -394,8 +402,42 @@ def model_instance_registry(
     model_instance: Union[ModelInstance, ModelInstancePublic],
     worker: Optional[Worker] = None,
     name_suffix: Optional[str] = None,
+    endpoint: Optional[ModelInstanceEndpoint] = None,
 ) -> Optional[McpBridgeRegistry]:
+    if (
+        model_instance.distributed_servers
+        and model_instance.distributed_servers.workloads is not None
+    ):
+        if (
+            endpoint is None
+            or worker is None
+            or worker.id != endpoint.worker_id
+            or worker.deleted_at is not None
+            or (
+                model_instance.cluster_id is not None
+                and worker.cluster_id != model_instance.cluster_id
+            )
+        ):
+            return None
+        try:
+            resolved = resolve_model_instance_endpoint(
+                model_instance,
+                parse_model_instance_target(endpoint.registry_name + ".static"),
+            )
+            if resolved != endpoint:
+                return None
+        except ValueError:
+            return None
+        model_instance = model_instance.model_copy(
+            update={
+                "worker_ip": worker.ip,
+                "worker_advertise_address": worker.advertise_address,
+                "port": endpoint.port,
+            }
+        )
     name = model_instance_prefix(model_instance)
+    if endpoint is not None:
+        name = endpoint.registry_name
     if name_suffix:
         name = f"{name}-{name_suffix}"
     if worker is not None:
@@ -1058,19 +1100,170 @@ def model_instances_registry_list(
 ) -> DestinationTupleList:
     registries: DestinationTupleList = []
     for model_instance in model_instances:
-        worker = (
-            (workers or {}).get(model_instance.worker_id)
-            if model_instance.worker_id
-            else None
-        )
-        registry = model_instance_registry(
-            model_instance, worker=worker, name_suffix=registry_name_suffix
-        )
-        if registry is not None:
-            registries.append(
-                (1, downstream_model_name or model_instance.model_name, registry)
+        if get_model_instance_workloads(model_instance) is not None:
+            endpoints = model_instance_endpoints(model_instance)
+            instance_registries = [
+                model_instance_registry(
+                    model_instance,
+                    worker=(workers or {}).get(endpoint.worker_id),
+                    name_suffix=registry_name_suffix,
+                    endpoint=endpoint,
+                )
+                for endpoint in endpoints
+            ]
+            # A missing owner or tunnel address withdraws the whole instance.
+            if any(registry is None for registry in instance_registries):
+                continue
+        else:
+            registry = model_instance_registry(
+                model_instance,
+                worker=(workers or {}).get(model_instance.worker_id),
+                name_suffix=registry_name_suffix,
             )
+            instance_registries = [registry] if registry is not None else []
+        registries.extend(
+            (1, downstream_model_name or model_instance.model_name, registry)
+            for registry in instance_registries
+        )
     return registries
+
+
+def sglang_smg_service_names(
+    model_instances: List[Union[ModelInstance, ModelInstancePublic]],
+    workers: Optional[Dict[int, Worker]],
+    lora_route_names: Optional[List[str]] = None,
+) -> Set[str]:
+    """Actual ready ordinary-SMG services, including their registry aliases."""
+    instances = [
+        instance
+        for instance in model_instances
+        if not instance.role
+        and any(
+            endpoint.component == "sglang_smg"
+            for endpoint in model_instance_endpoints(instance)
+        )
+    ]
+    suffixes = [None] + [
+        lora_registry_name_suffix(name) for name in lora_route_names or []
+    ]
+    return {
+        registry.get_service_name()
+        for suffix in suffixes
+        for _, _, registry in model_instances_registry_list(
+            instances, workers, registry_name_suffix=suffix
+        )
+    }
+
+
+def sglang_smg_transformer_spec_diff(
+    current_spec: Optional[WasmPluginSpec],
+    *,
+    model_id: int,
+    service_names: Set[str],
+    cfg: Config,
+) -> Optional[WasmPluginSpec]:
+    """Replace one model's service-only candidate declarations, never other owners."""
+    from gpustack.gateway import (
+        sglang_smg_transformer_plugin,
+        sglang_smg_transformer_init_spec_diff,
+    )
+    from gpustack.routes.plugins.artifacts import RULE_OWNER_KEY
+
+    if current_spec is None and not service_names:
+        return None
+    scopes = (
+        [WasmPluginMatchRule(service=sorted(service_names))] if service_names else []
+    )
+    _, expected = sglang_smg_transformer_plugin(cfg, scopes)
+    result = sglang_smg_transformer_init_spec_diff(
+        current_spec, expected.model_copy(deep=True, update={"matchRules": []})
+    )
+    owner = f"sglang-smg:{model_id}"
+    kept = [
+        rule
+        for rule in result.matchRules or []
+        if (rule.config or {}).get(RULE_OWNER_KEY) != owner
+    ]
+    for rule in expected.matchRules:
+        rule.config[RULE_OWNER_KEY] = owner
+        kept.append(rule)
+    kept.sort(
+        key=lambda rule: (
+            str((rule.config or {}).get(RULE_OWNER_KEY, "")),
+            tuple(rule.service or []),
+            tuple(rule.ingress or []),
+        )
+    )
+    result.matchRules = kept
+    return result
+
+
+def sglang_smg_transformer_orphan_diff(
+    current_spec: Optional[WasmPluginSpec], *, live_model_ids: Set[int]
+) -> Optional[WasmPluginSpec]:
+    """Retire only feature-stamped owners whose model no longer exists."""
+    from gpustack.routes.plugins.artifacts import RULE_OWNER_KEY
+
+    if current_spec is None:
+        return None
+    result = current_spec.model_copy(deep=True)
+    result.matchRules = [
+        rule
+        for rule in result.matchRules or []
+        if not (
+            (
+                match := re.fullmatch(
+                    r"sglang-smg:(\d+)",
+                    str((rule.config or {}).get(RULE_OWNER_KEY, "")),
+                )
+            )
+            and int(match.group(1)) not in live_model_ids
+        )
+    ]
+    return result
+
+
+async def ensure_sglang_smg_transformer(
+    *,
+    model_id: int,
+    service_names: Set[str],
+    cfg: Config,
+    extensions_api: ExtensionsHigressIoV1Api,
+) -> None:
+    """Declare exact SMG services; publication does not prove data-plane matching."""
+    from gpustack.gateway import sglang_smg_transformer_name
+
+    await ensure_wasm_plugin(
+        api=extensions_api,
+        name=sglang_smg_transformer_name,
+        namespace=cfg.gateway_namespace,
+        spec_diff=partial(
+            sglang_smg_transformer_spec_diff,
+            model_id=model_id,
+            service_names=service_names,
+            cfg=cfg,
+        ),
+        require_managed=bool(service_names),
+    )
+
+
+async def cleanup_sglang_smg_transformer(
+    *,
+    live_model_ids: Set[int],
+    cfg: Config,
+    extensions_api: ExtensionsHigressIoV1Api,
+) -> None:
+    """Leader-only orphan sweep; leave foreign and manually declared rules intact."""
+    from gpustack.gateway import sglang_smg_transformer_name
+
+    await ensure_wasm_plugin(
+        api=extensions_api,
+        name=sglang_smg_transformer_name,
+        namespace=cfg.gateway_namespace,
+        spec_diff=partial(
+            sglang_smg_transformer_orphan_diff, live_model_ids=live_model_ids
+        ),
+    )
 
 
 @retry(stop=stop_after_attempt(5), wait=wait_fixed(2))
@@ -1197,6 +1390,7 @@ async def ensure_wasm_plugin(
     namespace: str,
     spec_diff: Callable[[Optional[WasmPluginSpec]], WasmPluginSpec],
     extra_labels: Optional[Dict[str, str]] = None,
+    require_managed: bool = False,
 ):
     labels = copy.deepcopy(managed_labels)
     if extra_labels:
@@ -1246,6 +1440,8 @@ async def ensure_wasm_plugin(
                 body=current_plugin,
             )
             logger.info(f"Updated WasmPlugin {name} in namespace {namespace}.")
+    elif require_managed:
+        raise ValueError(f"WasmPlugin {name} is not managed by GPUStack")
 
 
 async def cleanup_model_mapper(
@@ -1332,18 +1528,13 @@ async def ensure_model_mcp_bridge(
         lora_registry_name_suffix(name) for name in lora_route_names or []
     ]
     if event_type != EventType.DELETED:
-        for model_instance in model_instances:
-            worker = (
-                (workers or {}).get(model_instance.worker_id)
-                if model_instance.worker_id
-                else None
-            )
-            for name_suffix in name_suffixes:
-                registry = model_instance_registry(
-                    model_instance, worker=worker, name_suffix=name_suffix
+        for name_suffix in name_suffixes:
+            desired_registry.extend(
+                registry
+                for _, _, registry in model_instances_registry_list(
+                    model_instances, workers, registry_name_suffix=name_suffix
                 )
-                if registry is not None:
-                    desired_registry.append(registry)
+            )
     await ensure_mcp_bridge(
         client=networking_higress_api,
         namespace=namespace,
@@ -2028,13 +2219,13 @@ async def cleanup_mcpbridge_registry(
         to_delete_proxies_prefix=provider_id_prefix,
     )
     # cleanup model instances
-    desired_registries = []
     to_delete_prefix = model_id_prefix
-    for instance in model_instances:
-        worker = worker_by_id.get(instance.worker_id)
-        registry = model_instance_registry(instance, worker=worker)
-        if registry is not None:
-            desired_registries.append(registry)
+    desired_registries = [
+        registry
+        for _, _, registry in model_instances_registry_list(
+            model_instances, worker_by_id
+        )
+    ]
     await ensure_mcp_bridge(
         client=networking_higress_api,
         namespace=namespace,
@@ -2100,54 +2291,206 @@ def get_instance_id_from_header(headers: Mapping[str, str]) -> int:
             status_code=400, detail=f"Missing {router_header_key} header"
         )
 
-    # Match pattern: model-<model_id>-<instance_id>[-<alias>].<type>
-    # instance_id is the second numeric segment, optionally followed by a LoRA alias.
-    match = re.match(r'^model-\d+-(\d+)(?:-[^.]+)?\..+', model_destination)
-    if not match:
-        raise NotFoundException(
-            message=f"Invalid model destination format: {model_destination}"
-        )
+    try:
+        return parse_model_instance_target(model_destination).instance_id
+    except ValueError as exc:
+        raise NotFoundException(message="Invalid model destination format") from exc
 
-    return int(match.group(1))
+
+SG_ROUTING_MAX_BODY_BYTES = 16 * 1024 * 1024
+
+
+def _validate_sglang_request_headers(result: Dict[str, str]) -> str:
+    if result.get("expect"):
+        raise HTTPException(417, "Send this request without the Expect header")
+    if result.get("content-encoding", "identity").lower() != "identity":
+        raise HTTPException(415, "Send an uncompressed JSON request")
+    transfer = result.get("transfer-encoding", "").lower()
+    if transfer and (transfer != "chunked" or "content-length" in result):
+        raise HTTPException(400, "Use either Content-Length or chunked encoding")
+    try:
+        length = int(result.get("content-length", "0"))
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid Content-Length") from exc
+    if length < 0:
+        raise HTTPException(400, "Invalid Content-Length")
+    if length > SG_ROUTING_MAX_BODY_BYTES:
+        raise HTTPException(413, "Reduce the request body to 16 MiB or less")
+    content_type = result.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type and content_type != "application/json":
+        raise HTTPException(415, "Use application/json for this request")
+    return content_type
+
+
+def transform_sglang_component_request(
+    headers: Mapping[str, str],
+    body: Optional[bytes],
+    *,
+    component: str,
+    dp_rank: Optional[int] = None,
+) -> Tuple[Dict[str, str], Optional[bytes]]:
+    """Prepare a resolved SMG or Engine request without conflicting rank hints."""
+    if hasattr(headers, "getlist") and any(
+        len(headers.getlist(key)) > 1 for key in ("content-length", "transfer-encoding")
+    ):
+        raise HTTPException(400, "Use one request framing header")
+    result = {key.lower(): value for key, value in headers.items()}
+    if component not in ("sglang_smg", "sglang_engine"):
+        return result, body
+    content_type = _validate_sglang_request_headers(result)
+    result.pop("x-data-parallel-rank", None)
+    if component == "sglang_engine":
+        if dp_rank is None or dp_rank < 0:
+            raise HTTPException(400, "A valid Engine rank is required")
+        result["x-data-parallel-rank"] = str(dp_rank)
+    if body is None:
+        return result, None
+    if len(body) > SG_ROUTING_MAX_BODY_BYTES:
+        raise HTTPException(413, "Reduce the request body to 16 MiB or less")
+    if body:
+        if content_type != "application/json":
+            raise HTTPException(415, "Use application/json for this request")
+        try:
+            data = json.loads(body)
+        except (ValueError, UnicodeError) as exc:
+            raise HTTPException(400, "Send a valid JSON object") from exc
+        if not isinstance(data, dict):
+            raise HTTPException(400, "Send a valid JSON object")
+        data.pop("routed_dp_rank", None)
+        data.pop("data_parallel_rank", None)
+        if component == "sglang_engine":
+            data["routed_dp_rank"] = dp_rank
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        if len(body) > SG_ROUTING_MAX_BODY_BYTES:
+            raise HTTPException(413, "Reduce the request body to 16 MiB or less")
+        result["content-type"] = "application/json"
+    result.pop("transfer-encoding", None)
+    result.pop("trailer", None)
+    result.pop("connection", None)
+    result.pop("proxy-connection", None)
+    result["content-length"] = str(len(body))
+    return result, body
+
+
+async def read_sglang_component_body(request) -> bytes:
+    """Bound component JSON buffering without changing other upload paths."""
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > SG_ROUTING_MAX_BODY_BYTES:
+            raise HTTPException(413, "Reduce the request body to 16 MiB or less")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 async def resolve_instance_address_from_model_header(
     headers: Dict[str, str],
 ) -> Tuple[Optional[str], int]:
-    """Resolve the target worker (IP, port) for an inference request.
+    """Resolve a model identity; recognized invalid targets never use URI fallback.
 
-    Parses the ``x-gpustack-model-instance`` routing header injected by the API gateway
-    to extract the model instance ID, then queries the database for that
-    instance's worker IP and inference port.
-
-    Used as the ``header_router`` callback of ``HTTPSProxyServer`` in tunnel
-    proxy mode so the proxy knows which instance address to forward each request to.
-
-    Returns ``(None, 0)`` when the header is absent or the instance cannot be
-    resolved, causing the proxy to fall back to URI-based routing.
+    Non-model requests retain URI-based routing. Rank targets require internal
+    credentials and are rechecked against the current generation and Worker.
+    The read session closes before any tunnel connection or response stream.
     """
+    destination = Headers(headers).get(router_header_key)
+    if not destination or not destination.startswith("model-"):
+        return None, 0
     try:
-        instance_id = get_instance_id_from_header(headers)
-    except HTTPException as e:
-        logger.trace(f"direct proxying request as: {e}")
-        return None, 0
-    except Exception as e:
-        logger.debug(f"Error parsing model destination header: {e}")
-        return None, 0
-    async with async_session() as session:
-        model_instance_service = ModelInstanceService(session)
-        model_instance: ModelInstance = await model_instance_service.get_by_id(
-            instance_id
-        )
-        if model_instance is None:
-            logger.error(f"Model instance with ID {instance_id} not found.")
-            return None, 0
-        if model_instance.worker_ip is None or len(model_instance.ports) == 0:
-            logger.error(
-                f"Model instance with ID {instance_id} do not get scheduled yet."
+        target = parse_model_instance_target(destination)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404, detail="Invalid model destination"
+        ) from exc
+    principal = None
+    if target.restart_count is not None:
+        from gpustack.api.auth import authenticate_worker_by_request_headers
+        from gpustack.schemas.principals import PrincipalType
+
+        principal = await authenticate_worker_by_request_headers(headers)
+        if principal is None or principal.kind != PrincipalType.SYSTEM:
+            raise HTTPException(
+                status_code=403, detail="Rank routing requires internal credentials"
             )
-            return None, 0
-        return model_instance.worker_ip, model_instance.ports[0]
+    async with async_session() as session:
+        instance = await ModelInstance.one_by_id_with_refresh(
+            session, target.instance_id
+        )
+        if instance is None or instance.model_id != target.model_id:
+            raise HTTPException(status_code=404, detail="Model destination not found")
+        if (
+            instance.distributed_servers is None
+            or instance.distributed_servers.workloads is None
+        ):
+            if (
+                target.restart_count is not None
+                or not instance.worker_ip
+                or not instance.ports
+            ):
+                raise HTTPException(
+                    status_code=404, detail="Model destination is unavailable"
+                )
+            return instance.worker_ip, instance.ports[0]
+        try:
+            endpoint = resolve_model_instance_endpoint(instance, target)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        worker = await Worker.one_by_id_with_refresh(session, endpoint.worker_id)
+        if (
+            worker is None
+            or worker.deleted_at is not None
+            or (
+                instance.cluster_id is not None
+                and worker.cluster_id != instance.cluster_id
+            )
+            or not worker.ip
+        ):
+            raise HTTPException(
+                status_code=404, detail="Destination Worker is unavailable"
+            )
+        await _assert_rank_destination_visible(session, principal, instance, worker)
+        if endpoint.component in ("sglang_smg", "sglang_engine"):
+            from gpustack.websocket_proxy.proxy_server import RoutedAddress
+
+            return RoutedAddress(
+                worker.ip,
+                endpoint.port,
+                request_transform=partial(
+                    transform_sglang_component_request,
+                    component=endpoint.component,
+                    dp_rank=endpoint.dp_rank,
+                ),
+                body_limit=SG_ROUTING_MAX_BODY_BYTES,
+            )
+        return worker.ip, endpoint.port
+
+
+async def _assert_rank_destination_visible(session, principal, instance, worker):
+    """Fence rank routing to the current internal principal binding."""
+    from fastapi import Request
+    from gpustack.api.tenant import resolve_tenant_context, assert_resource_visible
+
+    request = Request({"type": "http", "headers": []})
+    try:
+        ctx = await resolve_tenant_context(request, principal, session=session)
+        assert_resource_visible(
+            ctx, instance, not_found_message="Model destination not found"
+        )
+    except NotFoundException as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    except ForbiddenException as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    if principal.worker is not None and (
+        principal.worker.id != worker.id or worker.system_principal_id != principal.id
+    ):
+        raise HTTPException(
+            status_code=403, detail="Destination belongs to another Worker"
+        )
+    if principal.cluster is not None:
+        cluster = await Cluster.one_by_id_with_refresh(session, instance.cluster_id)
+        if cluster is None or cluster.system_principal_id != principal.id:
+            raise HTTPException(
+                status_code=403, detail="Cluster credential binding changed"
+            )
 
 
 async def worker_websocket_connect_callback(

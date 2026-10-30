@@ -458,6 +458,73 @@ def transform_header(
     }
 
 
+sglang_smg_transformer_name = "gpustack-sglang-smg-transformer"
+
+
+def sglang_smg_transformer_plugin(
+    cfg: Config, scopes: Optional[List[gw_client.WasmPluginMatchRule]] = None
+) -> Tuple[str, WasmPluginSpec]:
+    """Build candidate rules for trusted, resolved ordinary SMG scopes.
+
+    Callers must exclude Engine diagnostics, PD and other backends. An ingress
+    scope must contain only SMG destinations; a service scope must name SMG
+    components. Final service matching after dynamic LB needs gateway validation.
+    No rules or resources are published by this factory.
+    """
+    rules = []
+    for scope in scopes or []:
+        ingress, service = scope.ingress or [], scope.service or []
+        if (
+            bool(ingress) == bool(service)
+            or scope.domain
+            or any(not value.strip() or "*" in value for value in ingress + service)
+        ):
+            raise ValueError(
+                "SMG cleaning requires one explicit ingress or service scope"
+            )
+        rules.append(
+            scope.model_copy(
+                deep=True,
+                update={
+                    "configDisable": False,
+                    "config": {
+                        "reqRules": [
+                            {
+                                "operate": "remove",
+                                "headers": [{"key": "X-Data-Parallel-Rank"}],
+                                "body": [
+                                    {"key": "routed_dp_rank"},
+                                    {"key": "data_parallel_rank"},
+                                ],
+                            }
+                        ],
+                    },
+                },
+            )
+        )
+    return sglang_smg_transformer_name, WasmPluginSpec(
+        defaultConfig={"reqRules": []},
+        defaultConfigDisable=False,
+        failStrategy="FAIL_CLOSE",
+        imagePullPolicy="UNSPECIFIED_POLICY",
+        matchRules=rules,
+        phase="UNSPECIFIED_PHASE",
+        priority=110,
+        **plugin_spec_overrides("transformer", cfg=cfg),
+    )
+
+
+def sglang_smg_transformer_init_spec_diff(
+    current_spec: Optional[WasmPluginSpec], expected_spec: WasmPluginSpec
+) -> WasmPluginSpec:
+    """Refresh the static module settings without erasing dynamic SMG scopes."""
+    if current_spec is None:
+        return expected_spec
+    return expected_spec.model_copy(
+        deep=True, update={"matchRules": copy.deepcopy(current_spec.matchRules or [])}
+    )
+
+
 def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-header-transformer"
     expected_spec = WasmPluginSpec(
@@ -855,6 +922,8 @@ def _spec_diff_for(
     plugins carry their own; the built-ins are keyed by resource name."""
     if plugin_name == gpustack_generic_proxy_router_name:
         return partial(generic_proxy_router_spec_diff, expected_spec=plugin_spec)
+    if plugin_name == sglang_smg_transformer_name:
+        return partial(sglang_smg_transformer_init_spec_diff, expected_spec=plugin_spec)
     if plugin_name == ext_auth_resource_name:
         # Hybrid resource: the static base is rewritten from cfg on
         # every start, the key tables and route rules are carried
@@ -986,6 +1055,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
         ]
         if cfg.server_role() != Config.ServerRole.WORKER:
             plugin_list.append(transformer_plugin(cfg=cfg))
+            plugin_list.append(sglang_smg_transformer_plugin(cfg=cfg))
             plugin_list.append(token_usage_plugin(cfg=cfg))
         route_plugin_diffs = _append_route_plugin_entries(cfg, plugin_list)
 
