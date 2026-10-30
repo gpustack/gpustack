@@ -10,9 +10,14 @@ from gpustack.api.exceptions import register_handlers
 from gpustack.api.tenant import TenantContext
 from gpustack.routes import model_instances as routes
 from gpustack.routes.routes import model_routers
-from gpustack.schemas.models import ModelInstance, ModelInstancePublic
+from gpustack.schemas.models import (
+    ModelConfigSnapshot,
+    ModelInstance,
+    ModelInstancePublic,
+)
 from gpustack.schemas.principals import OrgRole, PrincipalType
 from gpustack.server.deps import get_session, get_tenant_context
+from gpustack.server.bus import Event, EventType
 
 
 @pytest.fixture
@@ -225,3 +230,130 @@ async def test_update_rejects_other_tenants_instance(api):
     response = await _request(api, "PUT", owner_principal_id=10)
     assert response.status_code == 404
     api.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("admin", [False, True])
+@pytest.mark.parametrize("snapshot", [{}, {"env": {"TOKEN": "forged"}}])
+async def test_user_cannot_forge_startup_configuration(api, admin, snapshot):
+    api.ctx.is_platform_admin = admin
+    response = await _request(api, "PUT", model_config_snapshot=snapshot)
+    assert response.status_code == 403
+    assert "forged" not in response.text
+    api.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_user_status_update_preserves_private_snapshot(api):
+    recorded = ModelConfigSnapshot(env={"TOKEN": "private-config-value"})
+    api.instance.model_config_snapshot = recorded
+    response = await _request(api, "PUT", model_config_snapshot=None, state="error")
+    assert response.status_code == 200
+    assert api.instance.model_config_snapshot == recorded
+    assert "private-config-value" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_cluster_system_can_write_snapshot_without_exposing_it(api):
+    api.ctx.user.kind = PrincipalType.SYSTEM
+    api.ctx.current_principal_id = None
+    api.ctx.scoped_cluster_id = 1
+    api.ctx.scoped_cluster_owner_id = 10
+    response = await _request(
+        api, "PUT", model_config_snapshot={"env": {"TOKEN": "private-config-value"}}
+    )
+    assert response.status_code == 200
+    assert api.instance.model_config_snapshot.env == {"TOKEN": "private-config-value"}
+    assert "model_config_snapshot" not in response.json()
+    assert "private-config-value" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_other_cluster_system_cannot_write_snapshot(api):
+    api.ctx.user.kind = PrincipalType.SYSTEM
+    api.ctx.current_principal_id = None
+    api.ctx.scoped_cluster_id = 2
+    api.ctx.scoped_cluster_owner_id = 10
+    response = await _request(
+        api, "PUT", model_config_snapshot={"backend_parameters": ["--forged"]}
+    )
+    assert response.status_code == 404
+    api.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_does_not_accept_user_supplied_startup_snapshot(api):
+    response = await _request(
+        api, "POST", model_config_snapshot={"env": {"TOKEN": "forged"}}
+    )
+    assert response.status_code == 200
+    assert "model_config_snapshot" not in api.create.await_args.args[1].model_dump()
+    assert "forged" not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("list_response", [False, True])
+async def test_instance_read_responses_do_not_expose_startup_config(
+    api, monkeypatch, list_response
+):
+    api.instance.model_config_snapshot = ModelConfigSnapshot(
+        env={"TOKEN": "private-config-value"}
+    )
+    if list_response:
+        monkeypatch.setattr(
+            routes.ModelInstance,
+            "paginated_by_query",
+            AsyncMock(
+                return_value={
+                    "items": [api.instance],
+                    "pagination": {
+                        "page": 1,
+                        "perPage": 20,
+                        "total": 1,
+                        "totalPage": 1,
+                    },
+                }
+            ),
+        )
+        manager = MagicMock()
+        manager.__aenter__ = AsyncMock(return_value=MagicMock())
+        manager.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(routes, "async_session", lambda: manager)
+    path = "/v2/model-instances" + ("" if list_response else "/1")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(api.app), base_url="http://server"
+    ) as client:
+        response = await client.get(path)
+    assert response.status_code == 200
+    assert "model_config_snapshot" not in response.text
+    assert "private-config-value" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_instance_watch_hides_private_configuration_and_change_values(
+    api, monkeypatch
+):
+    api.instance.model_config_snapshot = ModelConfigSnapshot(
+        env={"TOKEN": "private-config-value"}
+    )
+    changes = {
+        "model_config_snapshot": (
+            None,
+            api.instance.model_config_snapshot.model_dump(),
+        ),
+        "state": ("starting", "running"),
+    }
+
+    async def events():
+        yield Event(type=EventType.UPDATED, data=api.instance, changed_fields=changes)
+
+    monkeypatch.setattr(routes.ModelInstance, "subscribe", lambda **kwargs: events())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(api.app), base_url="http://server"
+    ) as client:
+        response = await client.get("/v2/model-instances", params={"watch": "true"})
+    assert response.status_code == 200
+    assert "model_config_snapshot" not in response.text
+    assert "private-config-value" not in response.text
+    assert '"changed_fields":{"state":' in response.text
+    assert "model_config_snapshot" in changes

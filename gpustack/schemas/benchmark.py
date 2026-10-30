@@ -2,7 +2,7 @@ import random
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Literal, Optional
 from pydantic import BaseModel
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, ForeignKey, Integer, SQLModel, Text
@@ -277,6 +277,8 @@ class ModelInstanceRuntimeInfo(BaseModel):
 class ModelInstanceSnapshot(ModelInstanceRuntimeInfo):
     id: int
     name: str
+    config_source: Optional[Literal["instance_snapshot", "current_model"]] = None
+    """Origin of configuration values; absent on reports without provenance."""
     # The instance's model name can differ from the renamed deployment's name.
     model_name: Optional[str] = None
     resolved_path: Optional[str] = None

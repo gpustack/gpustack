@@ -23,6 +23,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     InvalidException,
     NotFoundException,
+    ForbiddenException,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
@@ -32,6 +33,7 @@ from gpustack.api.tenant import (
 )
 from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
+from gpustack.server.bus import Event
 from gpustack.schemas.models import (
     BackendEnum,
     Model,
@@ -46,12 +48,21 @@ from gpustack.schemas.models import (
     ServeLogOptionsResponse,
 )
 from gpustack.schemas.model_files import ModelFileStateEnum
+from gpustack.schemas.principals import PrincipalType
 from gpustack.config.config import get_global_config
 from gpustack.utils.grafana import resolve_grafana_base_url
 from gpustack.utils.export_limits import attachment_headers, sanitize_filename
 from gpustack.utils.tabular_export import stream_zip
 
 router = APIRouter()
+
+
+async def _strip_private_snapshot_changes(event: Event) -> None:
+    event.changed_fields = {
+        name: values
+        for name, values in event.changed_fields.items()
+        if name != "model_config_snapshot"
+    }
 
 
 def _is_vllm_ray_subordinate(model_instance: ModelInstance) -> bool:
@@ -139,6 +150,7 @@ async def get_model_instances(
                 ctx,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
+                event_transform=_strip_private_snapshot_changes,
             ),
             media_type="text/event-stream",
         )
@@ -926,6 +938,14 @@ async def update_model_instance(
 
     try:
         _preserve_download_state(model_instance, model_instance_in)
+        # Status reports can carry a null default for this startup-owned field.
+        # Only a supplied configuration replaces the recorded launch inputs.
+        if model_instance_in.model_config_snapshot is None:
+            model_instance_in.model_fields_set.discard("model_config_snapshot")
+        elif getattr(ctx.user, "kind", None) != PrincipalType.SYSTEM:
+            raise ForbiddenException(
+                message="Only system principals can update model configuration snapshots"
+            )
         await ModelInstanceService(session).update(model_instance, model_instance_in)
     except APIHTTPException:
         raise

@@ -7,7 +7,13 @@ from gpustack.schemas.benchmark import (
     ModelInstanceSnapshot,
     WorkerSnapshot,
 )
-from gpustack.schemas.models import Model, ModelInstance
+from gpustack.schemas.models import (
+    Model,
+    ModelConfigSnapshot,
+    ModelInstance,
+    ModelInstanceLaunchIdentity,
+    role_effective_model,
+)
 from gpustack.schemas.workers import Worker
 from gpustack.utils.gpu import make_gpu_id
 
@@ -21,6 +27,17 @@ def create_model_instance_snapshot(
     names the attached shared cache service (resolved by the caller,
     which holds the session): the config carries only the id, and the
     snapshot keeps the name after the service is deleted."""
+
+    config = model_instance.model_config_snapshot
+    config_source = "instance_snapshot"
+    launch = ModelInstanceLaunchIdentity.from_instance(model_instance)
+    if config is None or launch is None or config.launch_identity != launch:
+        # Only inputs recorded for this process generation are authoritative.
+        # Reference configuration keeps unrecorded or stale launches benchmarkable.
+        effective = role_effective_model(model, model_instance.role)
+        config = ModelConfigSnapshot.model_validate(effective, from_attributes=True)
+        config_source = "current_model"
+    config = config.model_copy(deep=True)
 
     subordinate_workers_snapshots: Optional[List[ModelInstanceRuntimeInfo]] = None
     if (
@@ -48,6 +65,7 @@ def create_model_instance_snapshot(
     return ModelInstanceSnapshot(
         id=model_instance.id,
         name=model_instance.name,
+        config_source=config_source,
         model_name=model_instance.model_name,
         state=model_instance.state,
         state_message=model_instance.state_message,
@@ -68,14 +86,14 @@ def create_model_instance_snapshot(
         backend=model_instance.backend,
         backend_version=model_instance.backend_version,
         api_detected_backend_version=model_instance.api_detected_backend_version,
-        backend_parameters=model.backend_parameters,
+        backend_parameters=config.backend_parameters,
         injected_backend_parameters=model_instance.injected_backend_parameters,
-        env=model.env,
-        image_name=model.image_name,
-        run_command=model.run_command,
-        extended_kv_cache=model.extended_kv_cache,
+        env=config.env,
+        image_name=config.image_name,
+        run_command=config.run_command,
+        extended_kv_cache=config.extended_kv_cache,
         cache_service_name=cache_service_name,
-        speculative_config=model.speculative_config,
+        speculative_config=config.speculative_config,
     )
 
 

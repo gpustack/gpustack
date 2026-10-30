@@ -1641,6 +1641,43 @@ def role_effective_model(model, role_name: Optional[str]):
 # Model Instances
 
 
+class ModelInstanceLaunchIdentity(BaseModel):
+    """Instance placement and process generation that supplied a snapshot."""
+
+    instance_id: int
+    worker_id: int
+    pid: int
+    restart_count: int
+
+    @classmethod
+    def from_instance(
+        cls, instance: "ModelInstance"
+    ) -> Optional["ModelInstanceLaunchIdentity"]:
+        if any(
+            value is None for value in (instance.id, instance.worker_id, instance.pid)
+        ):
+            return None
+        return cls(
+            instance_id=instance.id,
+            worker_id=instance.worker_id,
+            pid=instance.pid,
+            restart_count=instance.restart_count or 0,
+        )
+
+
+class ModelConfigSnapshot(BaseModel):
+    """Effective user configuration read for one instance launch."""
+
+    backend_parameters: Optional[List[str]] = None
+    env: Optional[Dict[str, str]] = None
+    image_name: Optional[str] = None
+    run_command: Optional[str] = None
+    extended_kv_cache: Optional[ExtendedKVCacheConfig] = None
+    speculative_config: Optional[SpeculativeConfig] = None
+    launch_identity: Optional[ModelInstanceLaunchIdentity] = None
+    """The launch these inputs belong to; missing identity cannot establish freshness."""
+
+
 class ModelInstanceStateEnum(str, Enum):
     r"""
     Enum for Model Instance State
@@ -1807,7 +1844,6 @@ class ModelInstanceBase(SQLModel, ModelSource):
     injected_backend_parameters: Optional[List[str]] = Field(
         sa_column=Column(JSON), default=None
     )
-
     distributed_servers: Optional[DistributedServers] = Field(
         sa_column=Column(pydantic_column_type(DistributedServers)), default=None
     )
@@ -1951,6 +1987,11 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
     __tablename__ = 'model_instances'
     __immutable_fields__: ClassVar[Tuple[str, ...]] = ("model_id", "cluster_id")
     id: Optional[int] = Field(default=None, primary_key=True)
+    model_config_snapshot: Optional[ModelConfigSnapshot] = Field(
+        default=None,
+        sa_column=Column(pydantic_column_type(ModelConfigSnapshot), nullable=True),
+    )
+    """Internal launch configuration recorded by the main worker."""
 
     model: Optional[Model] = Relationship(
         back_populates="instances",
@@ -2005,7 +2046,7 @@ class ModelInstanceCreate(ModelInstanceBase):
 
 
 class ModelInstanceUpdate(ModelInstanceBase):
-    pass
+    model_config_snapshot: Optional[ModelConfigSnapshot] = None
 
 
 class ModelInstancePublic(
