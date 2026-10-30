@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Query, Response, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
+from pydantic import StringConstraints
 
 from gpustack.api.streaming import tenant_streaming
 from gpustack.mixins.immutable import allow_immutable_field_update
@@ -191,7 +192,7 @@ def _normalize_worker_order_by(order_by):
     return out
 
 
-def _worker_label_watch(label_filter, fields, fuzzy_fields):
+def _worker_label_watch(label_filters, fields, fuzzy_fields):
     """Track membership so label edits remove or add workers in a watched list."""
     matched_ids = set()
 
@@ -200,7 +201,10 @@ def _worker_label_watch(label_filter, fields, fuzzy_fields):
         return (
             Worker._match_fields(event, fields)
             and Worker._match_fuzzy_fields(event, fuzzy_fields)
-            and label_filter.matches(event_field(worker, "labels"))
+            and all(
+                label_filter.matches(event_field(worker, "labels"))
+                for label_filter in label_filters
+            )
         )
 
     def include(worker):
@@ -236,18 +240,21 @@ async def get_workers(
     me: Optional[bool] = None,
     cluster_id: Optional[int] = None,
     label: Annotated[
-        Optional[str],
+        Optional[
+            List[Annotated[str, StringConstraints(pattern=r"^$|^[^=]+=[\s\S]*$")]]
+        ],
         Query(
-            pattern=r"^$|^[^=]+=[\s\S]*$",
-            description="Filter by an exact, case-sensitive key=value label pair. "
-            "The key must be non-empty; the value may be empty or contain '='. "
-            "Keys and values are not trimmed. Omit or pass an empty string to "
-            "disable label filtering. Invalid non-empty input returns HTTP 422.",
+            description="Filter by exact, case-sensitive key=value label pairs. "
+            "Repeat the label parameter to require all pairs (AND), for example "
+            "label=arch=amd64&label=region=beijing. Each key must be non-empty; "
+            "values may be empty or contain '='. Keys and values are not trimmed. "
+            "Empty entries are ignored; omit all entries to disable filtering. "
+            "Any invalid non-empty entry returns HTTP 422.",
         ),
     ] = None,
 ):
     fields, fuzzy_fields = _build_worker_list_filters(name, uuid, cluster_id, search)
-    label_filter = LabelFilter.parse(label) if label else None
+    label_filters = [LabelFilter.parse(value) for value in label or [] if value]
 
     # Worker carries denormalized owner_principal_id (synced from cluster), so
     # tenant filtering scopes the list to the caller's own Org — a shared
@@ -257,9 +264,9 @@ async def get_workers(
     if params.watch:
         watch_filter = None
         event_transform = _inject_allocated_into_event
-        if label_filter:
+        if label_filters:
             watch_filter, event_transform = _worker_label_watch(
-                label_filter, fields, fuzzy_fields
+                label_filters, fields, fuzzy_fields
             )
             # The membership filter also receives rows leaving the selection,
             # so it can turn their updates into removal events.
@@ -279,12 +286,13 @@ async def get_workers(
         # me query overrides all other filters
         fields = {"id": user.worker.id}
         fuzzy_fields = {}
-        label_filter = None
+        label_filters = []
 
     async with async_session() as session:
-        if label_filter:
-            extra_conditions.append(
+        if label_filters:
+            extra_conditions.extend(
                 label_filter.condition(Worker.labels, session.get_bind().dialect.name)
+                for label_filter in label_filters
             )
         worker_list = await Worker.paginated_by_query(
             session=session,

@@ -60,7 +60,7 @@ async def worker_db(monkeypatch):
                 _worker(3, {"Region": "Beijing"}, cluster=22),
                 _worker(4, {"region": "shanghai", "city": "beijing"}),
                 _worker(5, {}),
-                _worker(6, {"region": "beijing"}, owner=202),
+                _worker(6, {"region": "beijing", "env": "production"}, owner=202),
                 _worker(7, {"city": "bei_jing%/\\"}),
                 _worker(8, {"a.b/c": "北京=x=y"}),
                 _worker(9, {"region": ""}),
@@ -114,7 +114,7 @@ async def test_worker_label_filter_precedes_pagination(worker_db, query, expecte
             USER,
             CTX,
             WorkerListParams(page=page, perPage=2, sort_by="name"),
-            label=query,
+            label=[query] if query is not None else None,
         )
         actual_ids.extend(worker.id for worker in result.items)
         assert result.pagination.total == len(expected_ids)
@@ -128,7 +128,7 @@ async def test_worker_label_filter_combines_with_existing_filters(worker_db):
         USER,
         CTX,
         WorkerListParams(),
-        label="region=beijing",
+        label=["region=beijing"],
         cluster_id=11,
         search="gpu-1",
         uuid="uuid-1",
@@ -148,7 +148,7 @@ async def test_worker_label_filter_skips_null_labels(worker_db, sql_null):
             await session.exec(text("UPDATE workers SET labels = NULL WHERE id = 12"))
             await session.commit()
     result = await workers_route.get_workers(
-        USER, CTX, WorkerListParams(), label="region=beijing"
+        USER, CTX, WorkerListParams(), label=["region=beijing"]
     )
     assert [worker.id for worker in result.items] == [1]
     assert result.pagination.total == 1
@@ -160,7 +160,7 @@ async def test_me_lookup_overrides_label_filter(worker_db):
         SimpleNamespace(worker=SimpleNamespace(id=5)),
         CTX,
         WorkerListParams(),
-        label="region=beijing",
+        label=["region=beijing", "env=production"],
         me=True,
         search="missing",
         cluster_id=22,
@@ -175,14 +175,20 @@ def test_label_parameter_documents_exact_filter_and_invalid_input():
     label = next(p for p in parameters if p["name"] == "label")
     assert label["in"] == "query"
     assert "case-sensitive key=value" in label["description"]
+    assert "AND" in label["description"]
     assert "422" in label["description"]
+    schema = next(s for s in label["schema"]["anyOf"] if s["type"] == "array")
+    assert "pattern" in schema["items"]
 
 
 @pytest.mark.parametrize("watch", [False, True])
+@pytest.mark.parametrize("position", ["only", "first", "last"])
 @pytest.mark.parametrize(
     "label", ["region", "beijing", "region beijing", "region:beijing", "=beijing", " "]
 )
-def test_invalid_label_returns_422_before_query_or_watch(monkeypatch, label, watch):
+def test_invalid_label_returns_422_before_query_or_watch(
+    monkeypatch, label, watch, position
+):
     session = MagicMock(side_effect=AssertionError("Unexpected database access"))
     subscribe = MagicMock(side_effect=AssertionError("Unexpected watch subscription"))
     monkeypatch.setattr(workers_route, "async_session", session)
@@ -192,8 +198,13 @@ def test_invalid_label_returns_422_before_query_or_watch(monkeypatch, label, wat
     app.include_router(workers_route.router, prefix="/workers")
     app.dependency_overrides[get_current_user] = lambda: USER
     app.dependency_overrides[get_tenant_context] = lambda: CTX
+    labels = {
+        "only": [label],
+        "first": [label, "env=production"],
+        "last": ["region=beijing", "", label],
+    }[position]
     with TestClient(app) as client:
-        response = client.get("/workers", params={"label": label, "watch": watch})
+        response = client.get("/workers", params={"label": labels, "watch": watch})
     assert response.status_code == 422, response.text
     assert "label" in response.text
     session.assert_not_called()
@@ -202,12 +213,17 @@ def test_invalid_label_returns_422_before_query_or_watch(monkeypatch, label, wat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "labels", [{"region": "beijing"}, {"Region": "Beijing"}, {"region": ""}]
+    "labels",
+    [
+        {"region": "beijing"},
+        {"Region": "Beijing"},
+        {"region": ""},
+        {"region": "beijing", "env": "production"},
+    ],
 )
 async def test_worker_label_watch_tracks_membership_and_tenant_visibility(
     monkeypatch, labels
 ):
-    key, value = next(iter(labels.items()))
     first = _worker(1, labels)
     outside = _worker(2, {"city": "shanghai"})
     other_tenant = _worker(3, labels, owner=202)
@@ -240,7 +256,7 @@ async def test_worker_label_watch_tracks_membership_and_tenant_visibility(
         USER,
         CTX,
         WorkerListParams(watch=True),
-        label=f"{key}={value}",
+        label=[f"{key}={value}" for key, value in labels.items()],
         search="gpu",
         cluster_id=11,
     )
@@ -279,7 +295,7 @@ async def test_worker_label_watch_requires_exact_pair(monkeypatch):
     monkeypatch.setattr(Worker, "subscribe", subscribe)
     monkeypatch.setattr(workers_route, "_inject_allocated_into_event", AsyncMock())
     response = await workers_route.get_workers(
-        USER, CTX, WorkerListParams(watch=True), label="region=beijing"
+        USER, CTX, WorkerListParams(watch=True), label=["region=beijing"]
     )
     payloads = [json.loads(frame) async for frame in response.body_iterator]
     assert [(p["type"], p["data"]["id"]) for p in payloads] == [
@@ -303,10 +319,107 @@ async def test_label_watch_only_forwards_known_id_only_deletions(monkeypatch):
         USER,
         replace(CTX, is_platform_admin=True, current_principal_id=None),
         WorkerListParams(watch=True),
-        label="region=beijing",
+        label=["region=beijing"],
     )
     payloads = [json.loads(frame) async for frame in response.body_iterator]
     assert [(p["type"], p["data"]["id"]) for p in payloads] == [
         (EventType.CREATED.value, 1),
         (EventType.DELETED.value, 1),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "queries,expected_ids",
+    [
+        (["region=beijing", "env=production"], [1, 12]),
+        (["region=beijing", "env=staging"], [13]),
+        (["region=beijing", "region=shanghai"], []),
+        (["region=beijing", "region=beijing"], [1, 12, 13]),
+        (["", "region=beijing", "env=production", ""], [1, 12]),
+        (["city=New York", "env=production"], []),
+    ],
+)
+async def test_multiple_label_filters_use_and_before_pagination(
+    worker_db, queries, expected_ids
+):
+    async with AsyncSession(worker_db) as session:
+        session.add_all(
+            [
+                _worker(12, {"region": "beijing", "env": "production"}),
+                _worker(13, {"region": "beijing", "env": "staging"}),
+            ]
+        )
+        await session.commit()
+    actual_ids = []
+    for page in range(1, max(1, len(expected_ids)) + 1):
+        result = await workers_route.get_workers(
+            USER,
+            CTX,
+            WorkerListParams(page=page, perPage=1, sort_by="name"),
+            label=queries,
+        )
+        actual_ids.extend(worker.id for worker in result.items)
+        assert result.pagination.total == len(expected_ids)
+        assert result.pagination.totalPage == len(expected_ids)
+    assert actual_ids == expected_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "queries,expected_ids",
+    [
+        (["region=beijing", "env=production"], [1]),
+        (["region=beijing", "env=missing"], []),
+        (["region=beijing", "region=shanghai"], []),
+        (["", "region=beijing", "env=production"], [1]),
+        (["region=beijing"], [1]),
+        (["", ""], [1, 2, 3, 4, 5, 7, 8, 9, 10, 11]),
+    ],
+)
+async def test_repeated_label_http_parameters(worker_db, queries, expected_ids):
+    app = FastAPI()
+    register_handlers(app)
+    app.include_router(workers_route.router, prefix="/workers")
+    app.dependency_overrides[get_current_user] = lambda: USER
+    app.dependency_overrides[get_tenant_context] = lambda: CTX
+    with TestClient(app) as client:
+        response = client.get("/workers", params={"label": queries, "perPage": 100})
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert sorted(worker["id"] for worker in data["items"]) == expected_ids
+    assert data["pagination"]["total"] == len(expected_ids)
+
+
+@pytest.mark.asyncio
+async def test_multiple_label_watch_requires_all_pairs(monkeypatch):
+    labels = [
+        {"region": "beijing"},
+        {"env": "production"},
+        {"region": "beijing", "env": "production"},
+        {"region": "beijing", "env": "Production"},
+        {"region": "beijing", "env": "production"},
+        {"region": "shanghai", "env": "production"},
+        {"region": "beijing", "env": "production"},
+    ]
+
+    async def subscribe(**kwargs):
+        for value in labels:
+            yield Event(type=EventType.UPDATED, data=_worker(1, value))
+
+    monkeypatch.setattr(Worker, "subscribe", subscribe)
+    monkeypatch.setattr(workers_route, "_inject_allocated_into_event", AsyncMock())
+    response = await workers_route.get_workers(
+        USER,
+        CTX,
+        WorkerListParams(watch=True),
+        label=["region=beijing", "env=production"],
+    )
+    payloads = [json.loads(frame) async for frame in response.body_iterator]
+    assert [(p["type"], p["data"]["id"]) for p in payloads] == [
+        (EventType.CREATED.value, 1),
+        (EventType.DELETED.value, 1),
+        (EventType.CREATED.value, 1),
+        (EventType.DELETED.value, 1),
+        (EventType.CREATED.value, 1),
     ]
