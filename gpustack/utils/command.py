@@ -3,7 +3,7 @@ import sys
 import sysconfig
 from os.path import dirname, abspath, join
 import shutil
-from typing import Any, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
 import shlex
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
@@ -195,6 +195,89 @@ def find_bool_parameter(parameters: List[str], param_names: List[str]) -> bool:
             return False
         return True
     return False
+
+
+# The value words llama.cpp accepts for a boolean flag that takes a value,
+# e.g. "--flash-attn on|off|auto".
+_BOOL_FLAG_ON_VALUES = frozenset({"1", "true", "on", "enabled"})
+_BOOL_FLAG_OFF_VALUES = frozenset({"0", "false", "off", "disabled"})
+# "auto" leaves the decision to the backend. The estimate cannot tell whether
+# the device runs the feature, and the backend turns the feature off when the
+# device does not support it, so the estimate assumes the feature is off.
+_BOOL_FLAG_AUTO_VALUES = frozenset({"auto", "-1"})
+
+
+def parse_bool_flag_value(value: str) -> Optional[bool]:
+    """
+    Return the state a value-taking boolean flag stands for.
+
+    "auto" counts as off. The backend decides whether it runs the feature, and
+    it turns the feature off when the device does not support it, so the
+    estimate takes the state that uses more memory.
+
+    Returns None when the value is not one of the words llama.cpp accepts.
+    """
+    normalized = value.lower()
+    if normalized in _BOOL_FLAG_ON_VALUES:
+        return True
+    if normalized in _BOOL_FLAG_OFF_VALUES or normalized in _BOOL_FLAG_AUTO_VALUES:
+        return False
+    return None
+
+
+def rewrite_value_bool_flags(
+    argv: List[str], flags: Dict[str, str]
+) -> Tuple[List[str], List[str]]:
+    """
+    Rewrite boolean flags that carry a value into their ``--flag`` / ``--no-flag`` form.
+
+    llama.cpp turned some boolean flags into flags that take a value, for
+    example ``--flash-attn on``. A parser that models them as plain booleans
+    cannot read the value, so it is folded into the flag spelling here.
+
+    Args:
+        argv: The argument vector, already flattened.
+        flags: Maps every accepted spelling of a boolean flag to the spelling
+            that turns the flag off, e.g. ``{"--flash-attn": "--no-flash-attn"}``.
+
+    Returns:
+        The rewritten argument vector and the values that could not be
+        interpreted. A flag with an unrecognized value is dropped, so that it
+        neither enables the feature nor aborts the parse of the other flags.
+    """
+    result: List[str] = []
+    unrecognized: List[str] = []
+    index = 0
+    count = len(argv)
+    while index < count:
+        token = argv[index]
+        key, separator, value = token.partition("=")
+        if key not in flags:
+            result.append(token)
+            index += 1
+            continue
+
+        # "--flag value": the value is the next token, unless it is a flag itself.
+        attached = False
+        if not separator:
+            if index + 1 < count and not is_parameter_key(argv[index + 1]):
+                value = argv[index + 1]
+                attached = True
+            else:
+                result.append(token)
+                index += 1
+                continue
+
+        state = parse_bool_flag_value(value)
+        if state is None:
+            unrecognized.append(value)
+        elif state:
+            result.append(key)
+        else:
+            result.append(flags[key])
+        index += 2 if attached else 1
+
+    return result, unrecognized
 
 
 def get_versioned_command(command_name: str, version: str) -> str:

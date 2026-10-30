@@ -16,7 +16,9 @@ from gpustack.utils.command import (
     format_backend_parameters,
     is_parameter_key,
     merge_flag_arguments,
+    parse_bool_flag_value,
     resolve_executor_backend,
+    rewrite_value_bool_flags,
     safe_split,
     sanitize_args,
 )
@@ -649,3 +651,122 @@ def test_find_last_int_parameter_takes_the_last_value_and_fails_quiet():
     )
     # A value the engine would reject is not a value to draw conclusions from.
     assert find_last_int_parameter(['--tp', 'eight'], ['tp']) is None
+
+
+FLASH_FLAGS = {
+    '--flash-attention': '--no-flash-attention',
+    '--flash-attn': '--no-flash-attn',
+    '--diffusion-fa': '--no-diffusion-fa',
+    '-fa': '--no-flash-attn',
+}
+
+
+@pytest.mark.parametrize(
+    'argv,expected,expected_unrecognized',
+    [
+        # A value in a separate token.
+        (
+            ['--flash-attn', 'on'],
+            ['--flash-attn'],
+            [],
+        ),
+        # A value attached to the flag.
+        (
+            ['--flash-attn=on'],
+            ['--flash-attn'],
+            [],
+        ),
+        # A value that turns the flag off.
+        (
+            ['--flash-attn', 'off'],
+            ['--no-flash-attn'],
+            [],
+        ),
+        (
+            ['--flash-attn=off'],
+            ['--no-flash-attn'],
+            [],
+        ),
+        # "auto" leaves the decision to the backend, so the estimate assumes the
+        # feature is off.
+        (
+            ['--flash-attn', 'auto'],
+            ['--no-flash-attn'],
+            [],
+        ),
+        # The values are matched case-insensitively.
+        (
+            ['--flash-attn', 'OFF'],
+            ['--no-flash-attn'],
+            [],
+        ),
+        # A bare flag carries no value.
+        (
+            ['--flash-attn'],
+            ['--flash-attn'],
+            [],
+        ),
+        # A flag that is not followed by a value keeps its own spelling.
+        (
+            ['--flash-attn', '--ctx-size', '24576'],
+            ['--flash-attn', '--ctx-size', '24576'],
+            [],
+        ),
+        # The other flags are left alone.
+        (
+            ['--ctx-size', '24576', '--parallel', '1'],
+            ['--ctx-size', '24576', '--parallel', '1'],
+            [],
+        ),
+        # An unrecognized value drops the flag and is reported.
+        (
+            ['--flash-attn', 'maybe', '--ctx-size', '24576'],
+            ['--ctx-size', '24576'],
+            ['maybe'],
+        ),
+        # An unrecognized value attached to the flag drops it as well.
+        (
+            ['--flash-attn=maybe'],
+            [],
+            ['maybe'],
+        ),
+        # "enable" and "disable" are not the words llama.cpp accepts.
+        (
+            ['--flash-attn', 'enable'],
+            [],
+            ['enable'],
+        ),
+        (
+            ['--flash-attn=disable'],
+            [],
+            ['disable'],
+        ),
+    ],
+)
+def test_rewrite_value_bool_flags(argv, expected, expected_unrecognized):
+    result, unrecognized = rewrite_value_bool_flags(argv, FLASH_FLAGS)
+    assert result == expected
+    assert unrecognized == expected_unrecognized
+
+
+@pytest.mark.parametrize(
+    'value,expected',
+    [
+        ('on', True),
+        ('enabled', True),
+        ('true', True),
+        ('1', True),
+        ('auto', False),
+        ('-1', False),
+        ('off', False),
+        ('disabled', False),
+        ('false', False),
+        ('0', False),
+        ('maybe', None),
+        ('enable', None),
+        ('disable', None),
+        ('', None),
+    ],
+)
+def test_parse_bool_flag_value(value, expected):
+    assert parse_bool_flag_value(value) == expected
