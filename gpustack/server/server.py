@@ -532,7 +532,8 @@ class Server:
 
         # Publishes the key tables the gateway authenticates against. Runs
         # regardless of proxy mode, but no-ops when the gateway is disabled.
-        gateway_auth_reconciler = GatewayAuthReconciler(self._config)
+        # The app rides along for the dispatch hook a pass consults.
+        gateway_auth_reconciler = GatewayAuthReconciler(self._config, app=self._app)
         tasks.append(asyncio.create_task(gateway_auth_reconciler.start()))
 
         cache_service_controller = CacheServiceController(self._config)

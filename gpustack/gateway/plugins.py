@@ -97,12 +97,12 @@ def get_plugin_url_prefix(cfg: Optional[Config] = None) -> str:
 
     This setting decides something the code cannot: whether a gateway pod can
     still load its modules while the GPUStack server is down. Unset, the server
-    serves them itself, so a pod cold-starting during an outage gets nothing --
-    and ``failStrategy: FAIL_OPEN`` turns a module that fails to load into
-    inference routes served with no authentication at all. The chart points it
-    at a separate deployment, which is what takes module distribution out of
-    the server's availability domain; embedded mode does not, and relies on
-    Envoy having cached the module for the life of the pod.
+    serves them itself, so a pod that must load one during an outage gets
+    nothing -- and with the auth filter failing closed, that is a refused
+    request rather than one served with no authentication at all. The chart
+    points it at a separate deployment, which is what takes module
+    distribution out of the server's availability domain; embedded mode does
+    not, and relies on Envoy having cached the module for the life of the pod.
 
     Deliberately no ``sha256`` on what comes back, though the spec accepts one
     and an operator can supply it. The URL already carries the plugin version
@@ -228,8 +228,8 @@ async def verify_published_plugin_modules(
     Worth doing because a module Envoy cannot load is not a degradation: the
     filter is discovered over ECDS with ``initial_fetch_timeout: 0`` and no
     default config, so an unresolved one leaves the listener warming and its
-    port unbound, and ``failStrategy: FAIL_OPEN`` does not cover it. Silence
-    from the gateway is the only other symptom.
+    port unbound, and no ``failStrategy`` covers it. Silence from the gateway
+    is the only other symptom.
 
     ``file://`` URLs are stat'd -- under the embedded gateway that is every
     module, on the filesystem Envoy itself reads, so an existing readable file
