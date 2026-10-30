@@ -24,6 +24,7 @@ from gpustack import envs
 from gpustack.api.exceptions import ConflictException, InternalServerErrorException
 from gpustack.routes.models import _restart_in_flight, restart_model
 from gpustack.schemas.models import (
+    DistributedServers,
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
@@ -84,7 +85,17 @@ async def _restart(model, instances):
             setattr(row, key, value)
 
     service = MagicMock(return_value=SimpleNamespace(batch_delete=_batch_delete))
-    model_service = MagicMock(return_value=SimpleNamespace(update=_update))
+
+    async def _stop_instances(row, rows, source=None):
+        await _update(row, source)
+        for instance in rows:
+            instance.draining_since = instance.draining_since or datetime.now(
+                timezone.utc
+            )
+
+    model_service = MagicMock(
+        return_value=SimpleNamespace(update=_update, stop_instances=_stop_instances)
+    )
     with (
         patch("gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=model)),
         patch("gpustack.routes.models.assert_resource_visible", MagicMock()),
@@ -101,6 +112,44 @@ async def _restart(model, instances):
     ):
         result = await restart_model(MagicMock(), MagicMock(), 1)
     return result, deleted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pd", [False, True])
+async def test_restart_only_waits_for_physical_stop_for_pd(pd):
+    model = _model(roles=_pd_roles() if pd else None)
+    instances = [
+        _instance(1, role="prefill" if pd else None),
+        _instance(2, role="decode" if pd else None),
+    ]
+    instances[0].distributed_servers = DistributedServers(workloads=[])
+    result, deleted = await _restart(model, instances)
+    assert result.restarted is True
+    assert result.deleted_instances == ([] if pd else [i.name for i in instances])
+    assert deleted == ([] if pd else instances)
+    assert model.restarting_since is not None
+    assert all((instance.draining_since is not None) == pd for instance in instances)
+    if pd:
+        assert "stop" in result.message.lower()
+
+
+@pytest.mark.asyncio
+async def test_managed_stop_guard_does_not_expire():
+    model = _model()
+    model.restarting_since = datetime.now(timezone.utc) - timedelta(days=1)
+    instance = _instance(1)
+    instance.draining_since = model.restarting_since
+    instance.distributed_servers = DistributedServers(workloads=[])
+    with pytest.raises(ConflictException):
+        await _restart(model, [instance])
+
+
+@pytest.mark.asyncio
+async def test_a_model_pending_deletion_cannot_accept_restart():
+    model = _model()
+    model.deleted_at = datetime.now(timezone.utc)
+    with pytest.raises(ConflictException):
+        await _restart(model, [_instance(1)])
 
 
 @pytest.mark.asyncio
@@ -306,14 +355,21 @@ async def test_a_healthy_group_is_rebuilt_without_the_failure_wording():
 
 
 @pytest.mark.asyncio
-async def test_a_teardown_that_failed_leaves_no_guard_behind():
+@pytest.mark.parametrize(
+    'failure, expected_error',
+    [
+        (RuntimeError('boom'), InternalServerErrorException),
+        (ConflictException(message='Cannot prove stop'), ConflictException),
+    ],
+)
+async def test_a_teardown_that_failed_leaves_no_guard_behind(failure, expected_error):
     """Nothing was torn down, so there are no replacements to protect. The
     failure the operator now has to retry is the worst possible moment to
     answer their retry with a 409."""
     model = _model(roles=_pd_roles())
 
     async def _explode(_rows):
-        raise RuntimeError("boom")
+        raise failure
 
     service = MagicMock(return_value=SimpleNamespace(batch_delete=_explode))
 
@@ -324,6 +380,10 @@ async def test_a_teardown_that_failed_leaves_no_guard_behind():
     model_service = MagicMock(return_value=SimpleNamespace(update=_update))
     with (
         patch("gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=model)),
+        patch(
+            "gpustack.routes.models.Model.one_by_id_with_refresh",
+            AsyncMock(return_value=model),
+        ),
         patch("gpustack.routes.models.assert_resource_visible", MagicMock()),
         patch(
             "gpustack.routes.models.model_spec_digest", AsyncMock(return_value=TARGET)
@@ -335,7 +395,7 @@ async def test_a_teardown_that_failed_leaves_no_guard_behind():
         patch("gpustack.routes.models.ModelInstanceService", service),
         patch("gpustack.routes.models.ModelService", model_service),
     ):
-        with pytest.raises(InternalServerErrorException):
+        with pytest.raises(expected_error):
             await restart_model(MagicMock(), MagicMock(), 1)
 
     assert model.restarting_since is None

@@ -6,7 +6,13 @@ rejects a new model of that name. A route that other targets still point at is
 kept instead, with ``created_model_id`` intact.
 """
 
+import asyncio
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
 from sqlalchemy import event
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -14,18 +20,29 @@ import pytest
 import pytest_asyncio
 
 import gpustack.schemas  # noqa: F401  (registers every table)
+from gpustack.api.exceptions import ConflictException, InternalServerErrorException
+from gpustack.routes import models as model_routes
 from gpustack.schemas.model_routes import (
     ModelRoute,
     ModelRouteTarget,
     TargetStateEnum,
 )
-from gpustack.schemas.models import Model, SourceEnum
+from gpustack.schemas.models import (
+    DistributedServers,
+    Model,
+    ModelInstance,
+    ModelInstanceStateEnum,
+    ModelInstanceWorkloadStateEnum,
+    SourceEnum,
+)
 from gpustack.schemas.principals import (
     Principal,
     PrincipalType,
     platform_principal_id,
 )
-from gpustack.server.services import ModelService
+from gpustack.server.services import ModelService, ModelInstanceService
+from gpustack.server.bus import EventType, event_bus
+from tests.utils.model import new_model_instance_workload
 
 ORG_ID = platform_principal_id()
 
@@ -161,3 +178,359 @@ async def test_delete_model_ignores_soft_deleted_targets_of_other_models(session
     await ModelService(session).delete(model)
 
     assert await _route(session, "stale") is None
+
+
+async def _managed_instance(session, model, state="running", group_id="pd-group"):
+    return await ModelInstance.create(
+        session,
+        ModelInstance(
+            name=f"{model.name}-instance",
+            group_id=group_id,
+            model_id=model.id,
+            model_name=model.name,
+            owner_principal_id=ORG_ID,
+            source=SourceEnum.HUGGING_FACE,
+            huggingface_repo_id="org/repo",
+            worker_id=1,
+            gpu_indexes=[0],
+            state=ModelInstanceStateEnum.RUNNING,
+            distributed_servers=DistributedServers(
+                workloads=[new_model_instance_workload(state=state)]
+            ),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_state", ["running", "pending", "failed", "unknown"])
+async def test_managed_model_delete_preserves_children_and_routes_until_stop(
+    session, task_state
+):
+    model = await _model_with_created_route(session, "managed")
+    instance = await _managed_instance(session, model, task_state)
+
+    await ModelService(session).delete(model)
+
+    assert model.deleted_at is not None
+    assert model.replicas == 0
+    assert await Model.one_by_id(session, model.id) is model
+    assert await ModelInstance.one_by_id(session, instance.id) is instance
+    assert instance.draining_since is not None
+    assert instance.distributed_servers.workloads[0].state == task_state
+    assert await _route(session, model.name) is not None
+    from unittest.mock import AsyncMock, patch
+
+    service = ModelService(session)
+    with patch.object(service, "stop_instances", AsyncMock()) as request_stop:
+        await service.delete(model)
+    request_stop.assert_not_awaited()
+
+    servers = instance.distributed_servers.model_copy(deep=True)
+    servers.workloads[0].state = ModelInstanceWorkloadStateEnum.STOPPED
+    await instance.update(session, {"distributed_servers": servers})
+    await ModelService(session).delete(model)
+
+    assert await Model.one_by_id(session, model.id) is None
+    assert await ModelInstance.one_by_id(session, instance.id) is None
+    assert await _route(session, model.name) is None
+
+
+@pytest.mark.asyncio
+async def test_instance_delete_keeps_manifest_until_confirmed_stopped(session):
+    model = await _model_with_created_route(session, "single-stop")
+    instance = await _managed_instance(session, model)
+    service = ModelInstanceService(session)
+
+    assert await service.delete(instance) is False
+    since = instance.draining_since
+    assert since is not None
+    assert instance.distributed_servers.stop_requested is True
+    assert await service.delete(instance) is False
+    assert instance.draining_since == since
+    assert instance.gpu_indexes == [0]
+    assert instance.distributed_servers.workloads
+    assert await service.get_running_instances(model.id) == []
+
+    servers = instance.distributed_servers.model_copy(deep=True)
+    servers.workloads[0].state = ModelInstanceWorkloadStateEnum.STOPPED
+    await instance.update(session, {"distributed_servers": servers})
+    assert await service.delete(instance) is True
+    assert await ModelInstance.one_by_id(session, instance.id) is None
+
+
+@pytest.mark.asyncio
+async def test_all_stop_batch_retains_legacy_member_while_managed_task_is_unknown(
+    session,
+):
+    model = await _model_with_created_route(session, "all-stop")
+    instance = await _managed_instance(session, model, "unknown")
+    legacy = await ModelInstance.create(
+        session,
+        ModelInstance(
+            name="legacy-router",
+            model_id=model.id,
+            model_name=model.name,
+            owner_principal_id=ORG_ID,
+            source=SourceEnum.HUGGING_FACE,
+            huggingface_repo_id="org/repo",
+        ),
+    )
+
+    assert (
+        await ModelInstanceService(session).batch_delete(
+            [legacy, instance], require_all_stopped=True
+        )
+        == []
+    )
+    assert await ModelInstance.one_by_id(session, legacy.id) is legacy
+    assert await ModelInstance.one_by_id(session, instance.id) is instance
+
+
+@pytest.mark.asyncio
+async def test_batch_stop_conflict_rolls_back_without_erasing_task_evidence(session):
+    model = await _model_with_created_route(session, 'stop-conflict')
+    managed = await _managed_instance(session, model, 'unknown')
+    legacy = await ModelInstance.create(
+        session,
+        ModelInstance(
+            name='unassigned-legacy',
+            model_id=model.id,
+            model_name=model.name,
+            owner_principal_id=ORG_ID,
+            source=SourceEnum.HUGGING_FACE,
+            huggingface_repo_id='org/repo',
+            state=ModelInstanceStateEnum.RUNNING,
+            pid=123,
+        ),
+    )
+    managed_id, legacy_id = managed.id, legacy.id
+    with pytest.raises(ConflictException) as error:
+        await ModelInstanceService(session).batch_delete([managed, legacy])
+    assert error.value.status_code == 409
+    current = await ModelInstance.one_by_id_with_refresh(session, managed_id)
+    assert current.draining_since is None
+    assert not current.distributed_servers.stop_requested
+    assert current.distributed_servers.workloads[0].state == 'unknown'
+    current = await ModelInstance.one_by_id_with_refresh(session, legacy_id)
+    assert current.draining_since is None
+    assert current.distributed_servers is None
+    assert current.pid == 123
+
+
+@pytest.mark.asyncio
+async def test_model_restart_marks_parent_and_all_children_in_one_commit(session):
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    model = await _model_with_created_route(session, "atomic-stop")
+    instance = await _managed_instance(session, model)
+    with patch.object(session, "commit", wraps=session.commit) as commit:
+        await ModelService(session).stop_instances(
+            model, [instance], {"restarting_since": datetime.now(timezone.utc)}
+        )
+    assert commit.await_count == 1
+    assert model.restarting_since is not None
+    assert instance.draining_since is not None
+    assert instance.distributed_servers.stop_requested is True
+
+
+@pytest.mark.asyncio
+async def test_stale_delete_snapshot_preserves_the_new_generation(session):
+    model = await _model_with_created_route(session, "stale-delete")
+    instance = await _managed_instance(session, model)
+    snapshot = instance.model_copy(deep=True)
+    await instance.update(
+        session,
+        {"restart_count": 1, "distributed_servers": DistributedServers(workloads=[])},
+    )
+    assert await ModelInstanceService(session).batch_delete([snapshot]) == []
+    assert await ModelInstance.one_by_id(session, instance.id) is instance
+    assert instance.restart_count == 1
+    assert instance.draining_since is None
+
+
+@pytest.mark.asyncio
+async def test_savepoint_rollback_preserves_outer_relationship_snapshot(
+    session, monkeypatch
+):
+    model = await _model_with_created_route(session, "relationship-snapshot")
+    route = await _route(session, model.name)
+    route = await session.get(
+        ModelRoute,
+        route.id,
+        populate_existing=True,
+        options=[selectinload(ModelRoute.route_targets)],
+    )
+    await asyncio.sleep(0)
+    published = AsyncMock()
+    monkeypatch.setattr(event_bus, "publish", published)
+    await route.update(session, {"description": "outer-saved"}, auto_commit=False)
+    nested = await session.begin_nested()
+    target = ModelRouteTarget(
+        name="discarded",
+        route_id=route.id,
+        route_name=route.name,
+        model_id=model.id,
+        weight=100,
+        state=TargetStateEnum.UNAVAILABLE,
+    )
+    session.add(target)
+    await route.update(
+        session, {"route_targets": [*route.route_targets, target]}, auto_commit=False
+    )
+    assert "route_targets" in session.info["pending_events"][-1].event.changed_fields
+    await nested.rollback()
+    await session.commit()
+    await asyncio.sleep(0)
+    published.assert_awaited_once()
+    notification = published.await_args.args[1]
+    assert notification.data.description == "outer-saved"
+    assert [item.name for item in notification.data.route_targets] == [
+        "relationship-snapshot-deployment"
+    ]
+    assert "route_targets" not in notification.changed_fields
+
+
+@pytest.mark.asyncio
+async def test_commit_payload_includes_later_changes_to_loaded_related_rows(
+    session, monkeypatch
+):
+    model = await _model_with_created_route(session, "related-update")
+    route = await _route(session, model.name)
+    route = await session.get(
+        ModelRoute,
+        route.id,
+        populate_existing=True,
+        options=[selectinload(ModelRoute.route_targets)],
+    )
+    await asyncio.sleep(0)
+    published = AsyncMock()
+    monkeypatch.setattr(event_bus, "publish", published)
+    await route.update(session, {"description": "saved"}, auto_commit=False)
+    await route.route_targets[0].update(session, {"name": "renamed"}, auto_commit=False)
+    await session.commit()
+    await asyncio.sleep(0)
+    notifications = {
+        topic: item for topic, item in (call.args for call in published.await_args_list)
+    }
+    assert notifications["modelroute"].data.route_targets[0].name == "renamed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("newer_restart", [False, True])
+async def test_legacy_restart_failure_clears_guard_without_rolled_back_deletions(
+    session, monkeypatch, newer_restart
+):
+    model = await _model_with_created_route(session, "restart-failure")
+    instance = await _managed_instance(session, model)
+    await instance.update(session, {"distributed_servers": None})
+    model_id, instance_id = model.id, instance.id
+    await asyncio.sleep(0)
+    published = AsyncMock()
+    monkeypatch.setattr(event_bus, "publish", published)
+    monkeypatch.setattr(model_routes, "assert_resource_visible", MagicMock())
+    monkeypatch.setattr(
+        model_routes, "model_spec_digest", AsyncMock(return_value="sha1:test")
+    )
+    original_delete = ModelInstance.delete
+    failed_deletions = []
+
+    async def fail_delete(row, current_session, **kwargs):
+        await original_delete(row, current_session, **kwargs)
+        await current_session.flush()
+        failed_deletions.append(instance_id)
+        raise RuntimeError("delete failed")
+
+    monkeypatch.setattr(ModelInstance, "delete", fail_delete)
+    replacement_guard = datetime(2040, 1, 1, tzinfo=timezone.utc)
+    original_batch_delete = ModelInstanceService.batch_delete
+
+    async def delete_and_replace_guard(service, instances):
+        try:
+            return await original_batch_delete(service, instances)
+        except InternalServerErrorException:
+            if newer_restart:
+                async with AsyncSession(session.bind, expire_on_commit=False) as other:
+                    current = await Model.one_by_id(other, model_id)
+                    await current.update(other, {"restarting_since": replacement_guard})
+            raise
+
+    monkeypatch.setattr(ModelInstanceService, "batch_delete", delete_and_replace_guard)
+    with pytest.raises(InternalServerErrorException) as error:
+        await model_routes.restart_model(session, SimpleNamespace(), model_id)
+    assert error.value.message.startswith("Failed to restart model:")
+    assert failed_deletions == [instance_id]
+    await asyncio.sleep(0)
+    await model.refresh(session)
+    assert model.restarting_since == (replacement_guard if newer_restart else None)
+    assert await ModelInstance.one_by_id(session, instance_id) is not None
+    notifications = [call.args[1] for call in published.await_args_list]
+    assert not any(item.type == EventType.DELETED for item in notifications)
+    if not newer_restart:
+        assert any(
+            item.type == EventType.UPDATED and item.data.restarting_since is None
+            for item in notifications
+        )
+
+
+@pytest.mark.asyncio
+async def test_failed_stop_request_rolls_back_parent_and_children(session):
+    from datetime import datetime, timezone
+    from unittest.mock import AsyncMock, patch
+
+    model = await _model_with_created_route(session, "rollback-stop")
+    instance = await _managed_instance(session, model)
+    with patch.object(
+        ModelInstance, "update", AsyncMock(side_effect=RuntimeError("write failed"))
+    ):
+        with pytest.raises(RuntimeError):
+            await ModelService(session).stop_instances(
+                model, [instance], {"restarting_since": datetime.now(timezone.utc)}
+            )
+    await session.refresh(model)
+    await session.refresh(instance)
+    assert model.restarting_since is None
+    assert instance.draining_since is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["delete", "batch", "model"])
+async def test_ordinary_managed_delete_does_not_wait_for_physical_stop(
+    session, operation
+):
+    model = await _model_with_created_route(session, "ordinary-stop")
+    instance = await _managed_instance(session, model, group_id=None)
+    service = ModelInstanceService(session)
+    if operation == "delete":
+        await service.delete(instance)
+    elif operation == "batch":
+        assert await service.batch_delete([instance]) == [instance.name]
+    else:
+        await ModelService(session).delete(model)
+        assert await Model.one_by_id(session, model.id) is None
+    assert await ModelInstance.one_by_id(session, instance.id) is None
+    assert instance.draining_since is None
+    assert instance.distributed_servers.stop_requested is False
+
+
+@pytest.mark.asyncio
+async def test_ordinary_pause_removes_the_ready_instance_in_one_convergence(
+    session, monkeypatch
+):
+    from gpustack.server import controllers
+
+    model = await _model_with_created_route(session, "ordinary-pause")
+    instance = await _managed_instance(session, model, group_id=None)
+    await model.update(session, {"replicas": 0, "ready_replicas": 1})
+    monkeypatch.setattr(
+        controllers,
+        'find_scale_down_candidates',
+        AsyncMock(return_value=[SimpleNamespace(model_instance=instance)]),
+    )
+    await controllers.sync_replicas(session, model)
+    assert await ModelInstance.one_by_id(session, instance.id) is None
+    await controllers.sync_model_status(session, model)
+    assert model.replicas == 0
+    assert model.ready_replicas == 0
+    assert instance.draining_since is None
+    assert not instance.distributed_servers.stop_requested

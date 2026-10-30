@@ -2728,6 +2728,61 @@ async def test_a_credential_failure_401_is_not_a_policy_rejection(monkeypatch):
     assert not is_policy_rejection(raised.value)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'token,allowed',
+    [('worker-token', True), ('registration-token', True), ('user-token', False)],
+)
+async def test_rank_proxy_requires_internal_credentials(monkeypatch, token, allowed):
+    from gpustack.api.auth import worker_proxy_auth
+
+    request = SimpleNamespace(
+        headers={
+            'X-GPUStack-Model-Instance': 'model-1-7-r3-dp1.static',
+            'X-Higress-Llm-Model': 'my-model',
+        },
+        app=SimpleNamespace(
+            state=SimpleNamespace(token='worker-token', config=DummyWorkerConfig())
+        ),
+    )
+    delegated = MagicMock()
+    monkeypatch.setattr('gpustack.api.auth.make_auth_token_via_server', delegated)
+    bearer = HTTPAuthorizationCredentials(scheme='Bearer', credentials=token)
+    if allowed:
+        await worker_proxy_auth(request, bearer)
+    else:
+        with pytest.raises(UnauthorizedException):
+            await worker_proxy_auth(request, bearer)
+    delegated.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_legacy_proxy_keeps_delegated_model_authorization(monkeypatch):
+    from gpustack.api.auth import worker_proxy_auth
+
+    request = SimpleNamespace(
+        headers={
+            'X-GPUStack-Model-Instance': 'model-1-7.static',
+            'X-Higress-Llm-Model': 'my-model',
+        },
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                token='worker-token',
+                config=DummyWorkerConfig(),
+                http_client_no_proxy=object(),
+            )
+        ),
+    )
+    delegated = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        'gpustack.api.auth.make_auth_token_via_server', lambda _: delegated
+    )
+    await worker_proxy_auth(
+        request, HTTPAuthorizationCredentials(scheme='Bearer', credentials='user-token')
+    )
+    delegated.assert_awaited_once_with('http://example.com', 'user-token', 'my-model')
+
+
 # --- Forward-proxy request authentication (tunnel mode) ----------------------
 #
 # The server's forward proxy authenticates every request it relays. The

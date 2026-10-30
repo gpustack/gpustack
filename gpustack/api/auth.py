@@ -43,6 +43,7 @@ from gpustack.api.exceptions import (
 from gpustack.schemas.api_keys import ApiKey, PermissionScope
 from gpustack.schemas.users import User
 from gpustack.schemas.principals import Principal, PrincipalType
+from gpustack.utils.model_instance_workers import parse_model_instance_target
 from gpustack.security import (
     JWTManager,
     LEGACY_TOKEN_ACCESS_KEY,
@@ -1014,6 +1015,17 @@ async def worker_proxy_auth(
         return
     except UnauthorizedException:
         pass
+
+    destination = request.headers.get("X-GPUStack-Model-Instance")
+    if destination:
+        try:
+            target = parse_model_instance_target(destination)
+        except ValueError:
+            target = None
+        if target is not None and target.restart_count is not None:
+            raise UnauthorizedException(
+                message="Rank routing requires Worker or registration credentials"
+            )
 
     token_value = (bearer_token.credentials if bearer_token else None) or x_api_key
     if not token_value:

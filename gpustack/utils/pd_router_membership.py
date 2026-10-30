@@ -18,37 +18,67 @@ if TYPE_CHECKING:
     from gpustack.schemas.models import Model
 
 
+def instance_router_peers(
+    instance: object, worker_ip_by_id: Optional[Mapping[int, str]] = None
+) -> Iterator[Tuple[str, int, Dict[str, int]]]:
+    """Resolve a serving PD member without falling back from managed tasks."""
+    from gpustack.utils.model_instance_workers import model_instance_endpoints
+
+    if getattr(instance, "role", None) not in ("prefill", "decode"):
+        return
+    if (
+        getattr(instance, "state", None) != "running"
+        or getattr(instance, "draining_since", None) is not None
+        or getattr(instance, "deleted_at", None) is not None
+    ):
+        return
+    servers = getattr(instance, "distributed_servers", None)
+    managed = servers is not None and getattr(servers, "workloads", None) is not None
+    addresses = worker_ip_by_id
+    if addresses is None:
+        addresses = {
+            getattr(instance, "worker_id", None): getattr(instance, "worker_ip", None)
+        }
+        for worker in getattr(servers, "subordinate_workers", None) or []:
+            addresses[worker.worker_id] = worker.worker_ip
+    ports = {
+        name: band.base
+        for name, band in (getattr(instance, "named_ports", None) or {}).items()
+        if getattr(band, "base", None) is not None
+    }
+    if not managed:
+        ip = addresses.get(getattr(instance, "worker_id", None))
+        port = getattr(instance, "port", None)
+        if ip and port:
+            yield ip, int(port), ports
+        return
+    try:
+        endpoints = model_instance_endpoints(instance)
+    except (AttributeError, TypeError, ValueError):
+        return
+    if any(not addresses.get(endpoint.worker_id) for endpoint in endpoints):
+        return
+    for endpoint in endpoints:
+        yield addresses[endpoint.worker_id], endpoint.port, ports
+
+
 def active_router_peers(
     instances: Sequence[object],
     group_id: Optional[str],
-    worker_ip_by_id: Mapping[int, str],
+    worker_ip_by_id: Optional[Mapping[int, str]] = None,
 ) -> Iterator[Tuple[object, str, int, Dict[str, int]]]:
     """Yield reachable, non-draining GPU members of one generation."""
     for instance in instances:
-        if getattr(instance, "role", None) not in ("prefill", "decode"):
-            continue
         if getattr(instance, "group_id", None) != group_id:
             continue
-        if getattr(instance, "state", None) != "running":
-            continue
-        if getattr(instance, "draining_since", None) is not None:
-            continue
-        ip = worker_ip_by_id.get(getattr(instance, "worker_id", None))
-        port = getattr(instance, "port", None)
-        if not ip or not port:
-            continue
-        ports = {
-            name: band.base
-            for name, band in (getattr(instance, "named_ports", None) or {}).items()
-            if getattr(band, "base", None) is not None
-        }
-        yield instance, ip, int(port), ports
+        for ip, port, ports in instance_router_peers(instance, worker_ip_by_id):
+            yield instance, ip, port, ports
 
 
 def router_peer_snapshot(
     instances: Sequence[object],
     group_id: Optional[str],
-    worker_ip_by_id: Mapping[int, str],
+    worker_ip_by_id: Optional[Mapping[int, str]] = None,
 ) -> List[Dict[str, Any]]:
     """Record peer identities, addresses and bootstrap ports used at startup.
 

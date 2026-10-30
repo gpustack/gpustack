@@ -8,16 +8,18 @@ from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.db import async_session
 
 from gpustack.server.services import ModelInstanceService
-from gpustack.utils.model_instance_workers import get_model_instance_worker_match
+from gpustack.utils.model_instance_workers import (
+    get_model_instance_worker_match,
+    has_model_instance_stop_barrier,
+)
 from gpustack.utils.network import is_offline
-
 
 logger = logging.getLogger(__name__)
 
 
 class WorkerInstanceCleaner:
     """
-    Periodically check offline workers and delete model instances.
+    Periodically remove legacy instances on offline workers.
     """
 
     def __init__(self, interval=30):
@@ -36,7 +38,7 @@ class WorkerInstanceCleaner:
 
     async def _cleanup_offline_worker_instances(self):
         """
-        Delete model instances assigned to offline workers.
+        Retain managed assignments and reschedule only legacy offline instances.
         """
         async with async_session() as session:
             workers = await Worker.all(session)
@@ -77,7 +79,12 @@ class WorkerInstanceCleaner:
 
             instances_to_delete = []
             impacted_instances_by_worker = defaultdict(list)
-            for instance in instances:
+            legacy_instances = [
+                instance
+                for instance in instances
+                if not has_model_instance_stop_barrier(instance)
+            ]
+            for instance in legacy_instances:
                 impacted_worker_names = []
                 for worker_name, worker_info in offline_workers.items():
                     match = get_model_instance_worker_match(

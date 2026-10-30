@@ -9,9 +9,10 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
 from gpustack.api.exceptions import BadRequestException, register_handlers
+from gpustack.routes import models
 from gpustack.routes import models as models_routes
 from gpustack.routes.models import _validate_categories_update
-from gpustack.schemas.models import Model, ModelUpdate
+from gpustack.schemas.models import Model, ModelUpdate, ModelCreate, SourceEnum
 from gpustack.server.deps import get_session, get_tenant_context
 
 
@@ -121,3 +122,101 @@ def test_create_schema_still_rejects_unknown_category():
 
     with pytest.raises(ValidationError, match="Invalid category"):
         ModelCreate.model_validate(_payload(["Decision"]))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "other", ["--data-parallel-multi-port-external-lb", "--data-parallel-hybrid-lb"]
+)
+async def test_vllm_conflicting_load_balancing_is_rejected_before_scheduling(
+    monkeypatch, other
+):
+    monkeypatch.setattr(models, "validate_pd_config", AsyncMock())
+    model = ModelCreate(
+        name="moe",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/moe",
+        backend="vLLM",
+        backend_parameters=["--data-parallel-external-lb", other],
+    )
+    with pytest.raises(BadRequestException) as error:
+        await models.validate_model_in(MagicMock(), model)
+    assert "load balancing" in error.value.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parameter', ['--headless', '--api-server-count=0', '--pcp=2', '--dp=1', '-dpn=0']
+)
+async def test_native_dps_invalid_parameters_are_rejected_before_scheduling(
+    monkeypatch, parameter
+):
+    monkeypatch.setattr(models, 'validate_pd_config', AsyncMock())
+    model = ModelCreate(
+        name='moe',
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id='org/moe',
+        backend='vLLM',
+        backend_parameters=['-dpm', parameter],
+    )
+    with pytest.raises(BadRequestException):
+        await models.validate_model_in(MagicMock(), model)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parameters,categories',
+    [
+        (['--policy=random'], None),
+        (['--dp=4', '--policy=consistent_hashing'], None),
+        (['--dp=4', '--policy'], None),
+        (['--dp=4', '--policy=random'], ['image']),
+    ],
+)
+async def test_sglang_policy_requires_supported_paired_smg(
+    monkeypatch, parameters, categories
+):
+    monkeypatch.setattr(models, 'validate_pd_config', AsyncMock())
+    model = ModelCreate(
+        name='sg',
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id='org/sg',
+        backend='SGLang',
+        backend_parameters=parameters,
+        categories=categories or [],
+    )
+    with pytest.raises(BadRequestException):
+        await models.validate_model_in(MagicMock(), model)
+
+
+@pytest.mark.parametrize(
+    'parameters',
+    [
+        ['--dp=4', '--policy=random'],
+        ['--enable-dp-attention', '--dp-size=4', '--policy=manual'],
+        ['--ep-size=8', '--policy=cache_aware'],
+    ],
+)
+def test_sglang_valid_policy_preserves_saved_argv(parameters):
+    model = ModelCreate(
+        name='sg',
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id='org/sg',
+        backend='SGLang',
+        backend_parameters=list(parameters),
+    )
+    models._validate_sglang_smg_policy(model)
+    assert model.backend_parameters == parameters
+
+
+def test_sglang_pd_policy_is_outside_ordinary_component_validation():
+    from types import SimpleNamespace
+    from gpustack.utils.model_instance_workers import validate_sglang_smg_policy
+
+    model = SimpleNamespace(
+        backend='SGLang',
+        disaggregation=object(),
+        backend_parameters=['--policy=', '--dp=4'],
+    )
+    validate_sglang_smg_policy(model)
+    assert model.backend_parameters == ['--policy=', '--dp=4']

@@ -115,6 +115,18 @@ async def test_a_group_is_refused_when_only_the_pd_uid_is_missing():
     assert "/d/gpustack-model/" in location
 
 
+def test_ascii_dashboard_digits_can_exceed_the_runtime_integer_limit():
+    import sys
+    from gpustack.routes.model_instances import _dashboard_query_target
+    from gpustack.api.exceptions import BadRequestException
+
+    limit = sys.get_int_max_str_digits()
+    if not limit:
+        pytest.skip('Runtime integer conversion limit is disabled')
+    with pytest.raises(BadRequestException):
+        _dashboard_query_target({'dp_rank': '9' * (limit + 1)})
+
+
 def _dashboard():
     return json.loads(
         (
@@ -339,6 +351,63 @@ def test_fixed_scope_helper_rejects_invalid_internal_binding(kwargs):
         model_dashboard_scope_params(**kwargs)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'grafana_url, server_url, expected_server',
+    [
+        ('https://charts.example/observability', None, 'https://api.example/platform'),
+        ('https://charts.example/grafana', None, 'https://api.example/platform'),
+        (
+            'https://charts.example/grafana',
+            'https://public.example/gpu/',
+            'https://public.example/gpu',
+        ),
+        (None, None, 'https://api.example/platform'),
+        (None, 'https://public.example/gpu/', 'https://public.example/gpu'),
+    ],
+)
+async def test_worker_link_uses_actual_server_request_root_not_grafana_origin(
+    grafana_url, server_url, expected_server
+):
+    import httpx
+    from fastapi import FastAPI, Request
+    from urllib.parse import parse_qs, urlsplit
+
+    app = FastAPI(root_path='/platform')
+
+    @app.get('/models/{id}/dashboard')
+    async def dashboard(id: int, request: Request):
+        return await route.get_model_dashboard(None, None, id, request)
+
+    cfg = _cfg(
+        grafana_url=grafana_url,
+        server_external_url=server_url,
+        get_grafana_url=lambda: grafana_url or 'http://127.0.0.1:3000',
+    )
+    with (
+        patch.object(route, '_get_model', AsyncMock(return_value=_model(id=10))),
+        patch.object(
+            route.Cluster,
+            'one_by_id',
+            AsyncMock(return_value=SimpleNamespace(name='cluster')),
+        ),
+        patch.object(route, 'get_global_config', lambda: cfg),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url='https://api.example'
+        ) as client:
+            response = await client.get('/models/10/dashboard')
+    assert response.status_code == 302
+    location = response.headers['location']
+    values = parse_qs(urlsplit(location).query)
+    assert values['var-gpustack_base_url'] == [expected_server]
+    placement = next(p for p in _dashboard()['panels'] if p['id'] == 66)
+    link = placement['fieldConfig']['overrides'][0]['properties'][0]['value'][0]['url']
+    actual_worker_url = link.replace(
+        '${gpustack_base_url:raw}', values['var-gpustack_base_url'][0]
+    ).replace('${__value.raw}', '2')
+    assert actual_worker_url == expected_server + '/v2/workers/2/dashboard'
+    assert location.startswith((grafana_url or expected_server + '/grafana') + '/d/')
 
 
 @pytest.mark.parametrize(

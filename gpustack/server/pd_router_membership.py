@@ -40,7 +40,7 @@ async def expected_router_peers(
 async def router_worker_ips(
     session: AsyncSession, cluster_id: Optional[int]
 ) -> Dict[int, str]:
-    """Load addresses once for all router generations in a reconciliation pass.
+    """Refresh active Worker addresses for a router peer snapshot.
 
     Args:
         session: The current reconciliation session.
@@ -49,8 +49,12 @@ async def router_worker_ips(
     Returns:
         Worker IP addresses keyed by worker id.
     """
-    workers = await Worker.all_by_field(session, "cluster_id", cluster_id)
-    return {worker.id: worker.ip for worker in workers if worker.ip}
+    workers = await Worker.all_by_field_with_refresh(session, "cluster_id", cluster_id)
+    return {
+        worker.id: worker.ip
+        for worker in workers
+        if worker.ip and getattr(worker, "deleted_at", None) is None
+    }
 
 
 def router_refresh_ready(
