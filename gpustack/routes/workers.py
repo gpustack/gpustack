@@ -5,6 +5,8 @@ import uuid
 import logging
 import asyncio
 from typing import Annotated, Optional, List, Dict, Any, Set, Tuple
+from sqlalchemy import or_
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -47,6 +49,7 @@ from gpustack.schemas.workers import (
     WorkerPublic,
     WorkerUpdate,
     WorkerLabelsUpdate,
+    WorkerLabelOption,
     WorkersPublic,
     Worker,
     WorkerRegistrationPublic,
@@ -192,7 +195,7 @@ def _normalize_worker_order_by(order_by):
     return out
 
 
-def _worker_label_watch(label_filters, fields, fuzzy_fields):
+def _worker_label_watch(label_filter_groups, fields, fuzzy_fields):
     """Track membership so label edits remove or add workers in a watched list."""
     matched_ids = set()
 
@@ -202,8 +205,11 @@ def _worker_label_watch(label_filters, fields, fuzzy_fields):
             Worker._match_fields(event, fields)
             and Worker._match_fuzzy_fields(event, fuzzy_fields)
             and all(
-                label_filter.matches(event_field(worker, "labels"))
-                for label_filter in label_filters
+                any(
+                    label_filter.matches(event_field(worker, "labels"))
+                    for label_filter in group
+                )
+                for group in label_filter_groups.values()
             )
         )
 
@@ -245,8 +251,10 @@ async def get_workers(
         ],
         Query(
             description="Filter by exact, case-sensitive key=value label pairs. "
-            "Repeat the label parameter to require all pairs (AND), for example "
-            "label=arch=amd64&label=region=beijing. Each key must be non-empty; "
+            "Repeat the label parameter to match any value for the same key (OR) "
+            "and require every different key (AND), for example "
+            "label=region=beijing&label=region=shanghai&label=env=production. "
+            "Each key must be non-empty; "
             "values may be empty or contain '='. Keys and values are not trimmed. "
             "Empty entries are ignored; omit all entries to disable filtering. "
             "Any invalid non-empty entry returns HTTP 422.",
@@ -254,7 +262,11 @@ async def get_workers(
     ] = None,
 ):
     fields, fuzzy_fields = _build_worker_list_filters(name, uuid, cluster_id, search)
-    label_filters = [LabelFilter.parse(value) for value in label or [] if value]
+    label_filter_groups: Dict[str, List[LabelFilter]] = {}
+    for value in label or []:
+        if value:
+            label_filter = LabelFilter.parse(value)
+            label_filter_groups.setdefault(label_filter.key, []).append(label_filter)
 
     # Worker carries denormalized owner_principal_id (synced from cluster), so
     # tenant filtering scopes the list to the caller's own Org — a shared
@@ -264,9 +276,9 @@ async def get_workers(
     if params.watch:
         watch_filter = None
         event_transform = _inject_allocated_into_event
-        if label_filters:
+        if label_filter_groups:
             watch_filter, event_transform = _worker_label_watch(
-                label_filters, fields, fuzzy_fields
+                label_filter_groups, fields, fuzzy_fields
             )
             # The membership filter also receives rows leaving the selection,
             # so it can turn their updates into removal events.
@@ -286,13 +298,20 @@ async def get_workers(
         # me query overrides all other filters
         fields = {"id": user.worker.id}
         fuzzy_fields = {}
-        label_filters = []
+        label_filter_groups = {}
 
     async with async_session() as session:
-        if label_filters:
+        if label_filter_groups:
             extra_conditions.extend(
-                label_filter.condition(Worker.labels, session.get_bind().dialect.name)
-                for label_filter in label_filters
+                or_(
+                    *(
+                        label_filter.condition(
+                            Worker.labels, session.get_bind().dialect.name
+                        )
+                        for label_filter in group
+                    )
+                )
+                for group in label_filter_groups.values()
             )
         worker_list = await Worker.paginated_by_query(
             session=session,
@@ -316,6 +335,39 @@ async def get_workers(
             for worker in worker_list.items
         ]
         return WorkersPublic(items=public_list, pagination=worker_list.pagination)
+
+
+@router.get("/label-options", response_model=List[WorkerLabelOption])
+async def get_worker_label_options(
+    ctx: TenantContextDep,
+    session: SessionDep,
+    cluster_id: Optional[int] = None,
+) -> List[WorkerLabelOption]:
+    """Return existing label keys and values for the worker filter dropdown.
+
+    Selecting only labels avoids loading complete worker status and computing
+    resource allocations just to build filter options. Candidates follow worker
+    list visibility and an optional cluster scope, independently of active name
+    or label filters. Keys and values are deduplicated and sorted; empty values
+    are preserved. Keys incompatible with key=value filtering are omitted.
+    """
+    statement = select(Worker.labels).where(
+        Worker.deleted_at.is_(None), *tenant_list_conditions(ctx, Worker)
+    )
+    if cluster_id is not None:
+        statement = statement.where(Worker.cluster_id == cluster_id)
+    label_maps = (await session.exec(statement)).all()
+    values_by_key: Dict[str, Set[str]] = {}
+    for labels in label_maps:
+        if not isinstance(labels, dict):
+            continue
+        for key, value in labels.items():
+            if key and "=" not in key and isinstance(value, str):
+                values_by_key.setdefault(key, set()).add(value)
+    return [
+        WorkerLabelOption(key=key, values=sorted(values))
+        for key, values in sorted(values_by_key.items())
+    ]
 
 
 @router.post("/labels", status_code=204)
