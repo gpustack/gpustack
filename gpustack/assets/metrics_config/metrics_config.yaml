@@ -490,7 +490,7 @@ runtime_mapping:
       # degradation band would fire on every correct deployment.
       sglang:num_running_reqs: gpustack:num_requests_running
       sglang:num_queue_reqs: gpustack:num_requests_waiting
-      sglang:num_retracted_reqs: gpustack:request_preemptions
+      sglang:num_retracted_requests: gpustack:request_preemptions
       sglang:cache_hit_rate: gpustack:prefix_cache_hit_rate
       sglang:token_usage: gpustack:kv_cache_usage_ratio
       sglang:prompt_tokens: gpustack:prompt_tokens
@@ -515,15 +515,12 @@ runtime_mapping:
       # instead of only on vLLM.
       sglang:prompt_tokens_histogram: gpustack:request_prompt_tokens
       sglang:generation_tokens_histogram: gpustack:request_generation_tokens
-      sglang:spec_num_draft_tokens: gpustack:spec_decode_draft_tokens
       # Identical spelling to vLLM's, down to the suffix, and behind the same
       # `--enable-mfu-metrics` flag. SGLang leaves them unregistered when the
       # flag is off, so here absence is the honest signal rather than a zero.
       sglang:estimated_flops_per_gpu: gpustack:estimated_flops_per_gpu
       sglang:estimated_read_bytes_per_gpu: gpustack:estimated_read_bytes_per_gpu
       sglang:estimated_write_bytes_per_gpu: gpustack:estimated_write_bytes_per_gpu
-    "<0.5.13":
-      sglang:num_retracted_requests: gpustack:request_preemptions
     "<=0.4.4":
       sglang:time_per_output_token_seconds: gpustack:time_per_output_token_seconds
       
