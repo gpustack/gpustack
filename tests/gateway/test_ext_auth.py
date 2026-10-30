@@ -805,7 +805,7 @@ def test_a_missing_cr_is_rebuilt_in_full():
     """``ensure_wasm_plugin`` hands whatever this returns straight to *create*
     when the CR is absent, so returning None would create one with no spec --
     which for this plugin means no authentication filter on any inference
-    route, served open and silent under FAIL_OPEN."""
+    route, served open and silent: an absent CR carries no fail strategy."""
     registry = MagicMock()
     registry.get_service_name.return_value = "gpustack.static"
     registry.port = 80
@@ -828,6 +828,9 @@ def test_a_missing_cr_is_rebuilt_in_full():
     # The static base is present too, not just the tables.
     assert spec.defaultConfig["authz"]["endpoint"]["path"] == "/token-auth"
     assert spec.phase == "AUTHN" and spec.priority == 360
+    # A rebuilt CR must fail closed: a module that cannot load has to refuse
+    # inference, never serve it unauthenticated.
+    assert spec.failStrategy == "FAIL_CLOSE"
 
 
 # --- The ModelRoute event filter ------------------------------------------

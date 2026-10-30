@@ -177,8 +177,8 @@ def ext_auth_module_source(cfg: Config) -> Dict[str, Any]:
     ships, unless ``gateway_plugin.gpustack-ext-auth.url`` overrides it. Nothing
     is defaulted when neither yields a URL -- a package carrying no such plugin
     at all. The alternative failure is Envoy unable to pull the module, which
-    means the filter does not load, which under ``FAIL_OPEN`` serves every
-    inference route unauthenticated and silently. A refused startup is the loud
+    means the filter does not load -- under ``FAIL_CLOSE`` every inference
+    request through it is then refused. A refused startup is the loud, early
     form of the same problem.
     """
     try:
@@ -196,8 +196,9 @@ def model_route_prefix(cfg: Config) -> str:
 
     Higress qualifies a route name with ``<namespace>/`` when the ingresses
     live outside the gateway's own namespace. Getting this wrong does not fail
-    loudly -- the matcher simply returns nothing, and under ``FAIL_OPEN`` the
-    inference APIs are then served unauthenticated.
+    loudly -- the matcher simply returns nothing, and the inference APIs are
+    then served unauthenticated. No fail strategy covers this: it governs a
+    module that fails to load, not one that loads and skips.
     """
     namespace = cfg.get_namespace()
     service_namespace_prefix = (
@@ -218,8 +219,8 @@ def route_match_regexes(cfg: Config) -> List[str]:
     Anchored explicitly. The plugin does not anchor patterns for you, and an
     unanchored prefix would match a route that merely contains it somewhere.
     Empty matches nothing, so an over-narrow pattern fails closed for this
-    plugin -- but under ``FAIL_OPEN`` that means the inference routes are
-    served unauthenticated, not that they are refused.
+    plugin -- the routes it misses are served unauthenticated, whatever the
+    fail strategy, because the module loaded and chose to skip them.
     """
     return [f"^{re.escape(model_route_prefix(cfg))}"]
 
@@ -433,24 +434,21 @@ def ext_auth_spec(
         ),
         matchRules=route_match_rules(route_rules),
         defaultConfigDisable=False,
-        # Unchanged from the upstream plugin, and the exposure it carries is a
-        # real one: a module Envoy cannot load means this filter is absent, and
-        # absent means every inference route is served with no authentication,
-        # silently.
+        # An authentication filter that cannot run must not fall back to
+        # serving its routes unauthenticated -- that failure is silent, and
+        # nothing surfaces it until it is exploited. FAIL_CLOSE turns a
+        # module Envoy cannot load into a visible refusal instead, the same
+        # trade the LB filter already makes; the capability plugins stay
+        # open, because skipping statistics or routing degrades nothing
+        # that security rests on.
         #
-        # It stays open because the alternative is worse where it matters. The
-        # supported deployments serve modules from their own workload, so a
-        # gateway pod can load them whether or not the server is up (see
-        # ``get_plugin_url_prefix``); what FAIL_CLOSE would add there is a total
-        # inference outage on any transient fetch failure. Where the server does
-        # serve them -- embedded mode, or ``gateway_plugin_server_url`` unset --
-        # FAIL_CLOSE would couple every gateway pod restart to the server being
-        # up, which is the coupling this whole design exists to remove.
-        #
-        # Worth revisiting only alongside a guarantee that the module is always
-        # loadable, which is a property of how it is distributed rather than of
-        # this field.
-        failStrategy="FAIL_OPEN",
+        # The cost lands where the server itself serves the modules
+        # (embedded mode, or ``gateway_plugin_server_url`` unset): a gateway
+        # pod that must rebuild its VM during a server outage now refuses
+        # rather than serving open. A module that never resolves at
+        # discovery is unaffected either way -- the listener stays warming
+        # and the port unbound.
+        failStrategy="FAIL_CLOSE",
         phase="AUTHN",
         priority=360,
         **ext_auth_module_source(cfg),
@@ -587,8 +585,9 @@ def ext_auth_reconcile_spec_diff(
     convention cannot be borrowed here twice over. ``ensure_wasm_plugin``
     passes the result straight to *create* when the CR is absent, so returning
     ``None`` would create one carrying no spec at all; and for this plugin
-    specifically, absent means no authentication filter on any inference route,
-    which ``failStrategy: FAIL_OPEN`` then serves unauthenticated and silently.
+    specifically, absent means no authentication filter on any inference
+    route, which serves them unauthenticated and silently -- no CR means no
+    fail strategy to save it.
     Every input needed to rebuild it is already in hand, so rebuilding is both
     possible and plainly better than either alternative.
 
