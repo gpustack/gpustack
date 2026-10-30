@@ -27,6 +27,7 @@ from gpustack.schemas.model_routes import (
     ModelRoutesPublic,
     ModelRouteTarget,
     ModelRouteTargetUpdateItem,
+    ModelRouteTargetUpdateWithPlugins,
     ModelRouteUpdate,
     MyModel,
     TargetStateEnum,
@@ -1106,11 +1107,35 @@ async def test_update_model_route_notifies_created_model_targets(monkeypatch):
     async def fake_batch_handle_targets(**kw):
         return 2, []
 
+    async def fake_all_by_field(session=None, field=None, value=None, **kw):
+        # the staged row state once the batch's writes are flushed
+        return [
+            ModelRouteTarget(
+                id=1,
+                name="r1-abcde",
+                route_name="r1",
+                route_id=1,
+                model_id=5,
+                weight=2,
+                state=TargetStateEnum.ACTIVE,
+            ),
+            ModelRouteTarget(
+                id=2,
+                name="r1-fghij",
+                route_name="r1",
+                route_id=1,
+                model_id=6,
+                weight=1,
+                state=TargetStateEnum.ACTIVE,
+            ),
+        ]
+
     async def fake_dispatch(action, route_, plugins, session):
         return None
 
     monkeypatch.setattr(ModelRoute, "one_by_fields", fake_one_by_fields)
     monkeypatch.setattr(ModelRoute, "one_by_id", fake_one_by_id)
+    monkeypatch.setattr(ModelRouteTarget, "all_by_field", fake_all_by_field)
     monkeypatch.setattr(model_routes, "batch_handle_targets", fake_batch_handle_targets)
     monkeypatch.setattr(model_routes, "dispatch_route_hooks", fake_dispatch)
     monkeypatch.setattr(
@@ -1469,3 +1494,225 @@ async def test_add_targets_refreshes_real_targets_only(monkeypatch):
     # handler enqueues the ai-proxy reconcile for the created
     # model-backed entries only (the id=1 entry is an update).
     notify_ai_proxy.assert_awaited_once_with(session, {6})
+
+
+@pytest.mark.asyncio
+async def test_add_targets_commits_recounted_route_counters(monkeypatch):
+    """The route counters a target write commits are derived from the
+    staged target rows, not carried over from the pre-write row: the
+    after-commit event publishes the row exactly as committed, and a
+    pre-reconcile ``ready_targets`` on it can regress a watch-stream
+    client past the value the REST API already returned."""
+    route = SimpleNamespace(
+        id=1,
+        name="r1",
+        targets=1,
+        ready_targets=0,
+        owner_principal_id=None,
+        deleted_at=None,
+        meta=None,
+    )
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        model_id=5,
+        weight=1,
+        # a local-model target mid-transition: the controller has not
+        # flipped it ACTIVE yet
+        state=TargetStateEnum.UNAVAILABLE,
+    )
+    created = ModelRouteTarget(
+        id=2,
+        name="r1-fghij",
+        route_name="r1",
+        route_id=1,
+        provider_id=10,
+        overridden_model_name="gpt-4",
+        weight=1,
+        # provider targets are born ACTIVE — no readiness to wait on
+        state=TargetStateEnum.ACTIVE,
+    )
+    committed = {}
+
+    # an ACTIVE row retired via soft delete: it lingers in the table but
+    # must not count toward either counter
+    soft_deleted = ModelRouteTarget(
+        id=3,
+        name="r1-retired",
+        route_name="r1",
+        route_id=1,
+        provider_id=11,
+        overridden_model_name="gpt-4o",
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+        deleted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    async def fake_all_by_field(session=None, field=None, value=None, **kwargs):
+        # the staged row state once the batch's writes are flushed
+        assert field == "route_id"
+        return [existing, created, soft_deleted]
+
+    async def fake_batch_handle_targets(**kwargs):
+        return 2, [created]
+
+    async def fake_service_update(self, model_route, source=None, auto_commit=True):
+        committed["targets"] = model_route.targets
+        committed["ready_targets"] = model_route.ready_targets
+
+    monkeypatch.setattr(ModelRouteTarget, "all_by_field", fake_all_by_field)
+    monkeypatch.setattr(model_routes, "batch_handle_targets", fake_batch_handle_targets)
+    monkeypatch.setattr(model_routes.ModelRouteService, "update", fake_service_update)
+    monkeypatch.setattr(model_routes, "notify_model_ai_proxy_change", AsyncMock())
+    monkeypatch.setattr(model_routes, "_refresh_route_lb_mode", AsyncMock())
+    monkeypatch.setattr(model_routes, "_apply_target_plugin_sections", AsyncMock())
+    monkeypatch.setattr(ModelRoute, "one_by_id", AsyncMock(return_value=route))
+    monkeypatch.setattr(model_routes, "assert_resource_visible", lambda *a, **k: None)
+
+    await model_routes.add_model_route_targets(
+        id=1,
+        session=MagicMock(commit=AsyncMock(), refresh=AsyncMock()),
+        ctx=MagicMock(),
+        targets=[
+            ModelRouteTargetUpdateItem(id=1, model_id=5, weight=2),
+            ModelRouteTargetUpdateItem(
+                provider_id=10, overridden_model_name="gpt-4", weight=1
+            ),
+        ],
+    )
+
+    # one born-ACTIVE provider target against one mid-transition model target
+    assert committed == {"targets": 2, "ready_targets": 1}
+
+
+@pytest.mark.asyncio
+async def test_update_target_recounts_route_counters(monkeypatch):
+    """Editing a target rewrites its state (a model switch goes
+    UNAVAILABLE until the controller re-validates), so the route's
+    counters must follow in the same commit: the after-commit event
+    publishes the row as committed, and carrying the pre-edit
+    ``ready_targets`` would tell watch-stream clients the route is ready
+    when its only target just stopped being servable."""
+    route = ModelRoute(
+        id=1,
+        name="r1",
+        targets=1,
+        ready_targets=1,
+        owner_principal_id=None,
+    )
+    existing = ModelRouteTarget(
+        id=2,
+        name="r1-fghij",
+        route_name="r1",
+        route_id=1,
+        provider_id=10,
+        overridden_model_name="gpt-4",
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+    committed = {}
+    _capture_target_updates(monkeypatch)
+
+    async def fake_all_by_field(session=None, field=None, value=None, **kwargs):
+        # the staged row state: update_model_route_targets has rewritten
+        # the state to UNAVAILABLE for the switched-to model target
+        return [existing]
+
+    async def fake_service_update(self, model_route, source=None, auto_commit=True):
+        committed["targets"] = model_route.targets
+        committed["ready_targets"] = model_route.ready_targets
+
+    monkeypatch.setattr(ModelRouteTarget, "one_by_id", AsyncMock(return_value=existing))
+    monkeypatch.setattr(ModelRoute, "one_by_id", AsyncMock(return_value=route))
+    monkeypatch.setattr(ModelRouteTarget, "all_by_field", fake_all_by_field)
+    monkeypatch.setattr(model_routes, "validate_targets", AsyncMock(return_value=None))
+    monkeypatch.setattr(model_routes.ModelRouteService, "update", fake_service_update)
+    monkeypatch.setattr(model_routes, "_refresh_route_lb_mode", AsyncMock())
+    monkeypatch.setattr(model_routes, "_apply_target_plugin_sections", AsyncMock())
+    monkeypatch.setattr(model_routes, "assert_resource_visible", lambda *a, **k: None)
+
+    await model_routes.update_model_route_target(
+        id=2,
+        session=MagicMock(commit=AsyncMock()),
+        ctx=MagicMock(),
+        input=ModelRouteTargetUpdateWithPlugins(model_id=5, weight=1),
+    )
+
+    # the provider->model switch went UNAVAILABLE in this very transaction
+    assert existing.state == TargetStateEnum.UNAVAILABLE
+    assert committed == {"targets": 1, "ready_targets": 0}
+
+
+@pytest.mark.asyncio
+async def test_delete_target_recounts_route_counters(monkeypatch):
+    """Removing the only ready target must drop ``ready_targets`` in the
+    same commit: the after-commit event publishes the row as committed, so
+    carrying the pre-delete counter would tell watch-stream clients a route
+    is ready when it has no servable target left."""
+    remaining = ModelRouteTarget(
+        id=1,
+        name="r1-abcde",
+        route_name="r1",
+        route_id=1,
+        model_id=5,
+        weight=1,
+        state=TargetStateEnum.UNAVAILABLE,
+    )
+    deleted = ModelRouteTarget(
+        id=2,
+        name="r1-fghij",
+        route_name="r1",
+        route_id=1,
+        provider_id=10,
+        overridden_model_name="gpt-4",
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+    )
+    deleted.model_route = ModelRoute(
+        id=1,
+        name="r1",
+        targets=2,
+        ready_targets=1,
+        owner_principal_id=None,
+    )
+    committed = {}
+
+    # an ACTIVE row retired via soft delete must not count either
+    soft_deleted = ModelRouteTarget(
+        id=3,
+        name="r1-retired",
+        route_name="r1",
+        route_id=1,
+        provider_id=11,
+        overridden_model_name="gpt-4o",
+        weight=1,
+        state=TargetStateEnum.ACTIVE,
+        deleted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    async def fake_all_by_field(session=None, field=None, value=None, **kwargs):
+        # the staged row state once the delete is flushed: the removed
+        # target no longer counts
+        return [remaining, soft_deleted]
+
+    async def fake_service_update(self, model_route, source=None, auto_commit=True):
+        committed["targets"] = model_route.targets
+        committed["ready_targets"] = model_route.ready_targets
+
+    monkeypatch.setattr(ModelRouteTarget, "one_by_id", AsyncMock(return_value=deleted))
+    monkeypatch.setattr(ModelRouteTarget, "all_by_field", fake_all_by_field)
+    monkeypatch.setattr(ModelRouteTarget, "delete", AsyncMock())
+    monkeypatch.setattr(model_routes, "dispatch_target_hooks", AsyncMock())
+    monkeypatch.setattr(model_routes.ModelRouteService, "update", fake_service_update)
+    monkeypatch.setattr(model_routes, "_refresh_route_lb_mode", AsyncMock())
+    monkeypatch.setattr(model_routes, "assert_resource_visible", lambda *a, **k: None)
+
+    await model_routes.delete_model_route_target(
+        id=2,
+        session=MagicMock(commit=AsyncMock()),
+        ctx=MagicMock(),
+    )
+
+    assert committed == {"targets": 1, "ready_targets": 0}
