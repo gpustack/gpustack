@@ -1,8 +1,9 @@
 from sqlmodel import col
+import logging
 import re
 import yaml
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 import aiohttp
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -18,6 +19,7 @@ from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
     NotFoundException,
+    ForbiddenException,
     BadRequestException,
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
@@ -42,13 +44,18 @@ from gpustack.schemas.models import (
     servable_instances,
 )
 from gpustack.schemas.clusters import Cluster
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.schemas.model_routes import (
     ModelRoute,
     ModelRouteTarget,
     TargetStateEnum,
     effective_route_name,
 )
-from gpustack.schemas.principals import Principal, platform_principal_id
+from gpustack.schemas.principals import (
+    Principal,
+    PrincipalType,
+    platform_principal_id,
+)
 from gpustack.schemas.workers import Worker
 from gpustack.config.config import get_global_config
 from gpustack.routes.clusters import get_server_url
@@ -71,6 +78,7 @@ from gpustack.schemas.benchmark import (
     BenchmarkResultCreate,
     BenchmarkResultPublic,
     BenchmarkSnapshot,
+    BenchmarkGatewayTarget,
     BenchmarkStateEnum,
     BenchmarkStateUpdate,
     BenchmarkUpdate,
@@ -94,6 +102,8 @@ from gpustack.utils.snapshot import (
 )
 from gpustack.worker.logs import LogOptionsDep
 from sqlalchemy.orm import defer
+
+logger = logging.getLogger(__name__)
 
 MAX_EXPORT_RECORDS = 20
 # Upper bound on the per-point grid a single benchmark may upload. The ramp's own
@@ -957,13 +967,13 @@ def _assert_trusted_benchmark_request_url(
     raise BadRequestException(message=message)
 
 
-async def _resolve_benchmark_gateway_url(
+async def _resolve_benchmark_gateway_target(
     session: SessionDep,
     ctx: TenantContext,
     placement: ModelInstance,
     request: Request,
-) -> str:
-    """Resolve the Higress entrance using the cluster registration URL policy."""
+) -> Tuple[Optional[str], Optional[BenchmarkGatewayTarget]]:
+    """Select an explicit entrance or a trusted worker-side resolution policy."""
     worker = await WorkerService(session).get_by_id(placement.worker_id)
     if worker is None:
         raise BadRequestException(message="Benchmark placement worker not found")
@@ -974,7 +984,41 @@ async def _resolve_benchmark_gateway_url(
     cluster_url = (cluster.server_url or "").strip() or None
     cfg = get_global_config()
     if cluster_url or (cfg and cfg.server_external_url):
-        return get_server_url(request, cluster_url)
+        return get_server_url(request, cluster_url), None
+
+    if cfg and cfg.gateway_mode == GatewayModeEnum.disabled:
+        return None, BenchmarkGatewayTarget(mode=GatewayModeEnum.disabled)
+
+    if cfg and cfg.gateway_mode == GatewayModeEnum.embedded:
+        port = cfg.get_gateway_port()
+        # The HTTP port is optional; without it an explicit entrance is required.
+        if not port:
+            raise BadRequestException(
+                message="Configure a benchmark entrance: the embedded gateway has no HTTP listener"
+            )
+        fallback_url = None
+        if cfg.advertise_address:
+            host = cfg.advertise_address
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            fallback_url = f"http://{host}:{port}"
+        else:
+            try:
+                candidate = get_server_url(request, None)
+                _assert_trusted_benchmark_request_url(candidate, cfg.trusted_hosts)
+                fallback_url = candidate
+            except (BadRequestException, ValueError):
+                # An embedded worker can resolve the local listener without
+                # accepting an untrusted request as a remote fallback.
+                logger.debug(
+                    "No trusted remote entrance for the embedded benchmark gateway; "
+                    "a combined worker can resolve its local listener. For remote "
+                    "workers, configure advertise_address, a cluster server_url, "
+                    "server_external_url, or an exact trusted_hosts entrance."
+                )
+        return None, BenchmarkGatewayTarget(
+            mode=GatewayModeEnum.embedded, port=port, fallback_url=fallback_url
+        )
 
     try:
         gateway_url = get_server_url(request, None)
@@ -983,7 +1027,7 @@ async def _resolve_benchmark_gateway_url(
     _assert_trusted_benchmark_request_url(
         gateway_url, cfg.trusted_hosts if cfg else None
     )
-    return gateway_url
+    return gateway_url, None
 
 
 async def validate_and_mutate_benchmark_in(  # noqa: C901
@@ -1006,6 +1050,7 @@ async def validate_and_mutate_benchmark_in(  # noqa: C901
     # where the load is SENT, which the runner reads off `target_mode`.
     route_name = None
     gateway_url = None
+    gateway_target = None
     if mutated.target_mode == BenchmarkTargetModeEnum.ROUTE:
         # Named by the caller when it had a list to pick from (the form does),
         # derived when it did not (an API client naming only a model).
@@ -1014,7 +1059,7 @@ async def validate_and_mutate_benchmark_in(  # noqa: C901
             if benchmark_in.route_name
             else await _resolve_route_name(session, model)
         )
-        gateway_url = await _resolve_benchmark_gateway_url(
+        gateway_url, gateway_target = await _resolve_benchmark_gateway_target(
             session, ctx, placement, request
         )
 
@@ -1080,6 +1125,7 @@ async def validate_and_mutate_benchmark_in(  # noqa: C901
         session, instance, model, route_name=route_name
     )
     snapshot.gateway_url = gateway_url
+    snapshot.gateway_target = gateway_target
     mutated.snapshot = snapshot
     mutated.gpu_summary, mutated.gpu_vendor_summary = summary_gpu_snapshots(
         snapshot.gpus
@@ -1143,6 +1189,54 @@ async def update_benchmark(
     return benchmark
 
 
+def _reported_gateway_snapshot(
+    ctx: TenantContext, benchmark: Benchmark, gateway_url: str
+) -> BenchmarkSnapshot:
+    """Freeze the actual entrance, accepting reports only from the assigned worker."""
+    principal = ctx.user
+    worker = getattr(principal, "worker", None)
+    if (
+        getattr(principal, "kind", None) != PrincipalType.SYSTEM
+        or worker is None
+        or worker.id != benchmark.worker_id
+    ):
+        raise ForbiddenException(
+            message="Only the assigned worker can report the gateway URL"
+        )
+    snapshot = benchmark.snapshot
+    if benchmark.target_mode != BenchmarkTargetModeEnum.ROUTE or snapshot is None:
+        raise BadRequestException(message="Only route benchmarks have a gateway URL")
+    gateway_url = gateway_url.rstrip("/")
+    try:
+        parsed = urlparse(gateway_url)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("Invalid inference base URL")
+        # Reading .port rejects values above 65535; zero needs an explicit check.
+        port = parsed.port
+        if port is not None and port <= 0:
+            raise ValueError("Invalid inference port")
+    except ValueError:
+        raise BadRequestException(message="Invalid benchmark gateway URL")
+    if snapshot.gateway_url and snapshot.gateway_url.rstrip("/") != gateway_url:
+        raise BadRequestException(message="The benchmark gateway URL is already fixed")
+    if not snapshot.gateway_url and benchmark.state not in (
+        BenchmarkStateEnum.PENDING,
+        BenchmarkStateEnum.QUEUED,
+        BenchmarkStateEnum.RUNNING,
+    ):
+        raise BadRequestException(
+            message="A finished benchmark cannot acquire a new gateway URL"
+        )
+    return snapshot.model_copy(update={"gateway_url": gateway_url})
+
+
 @router.patch(
     "/{id}/state",
     response_model=BenchmarkPublic,
@@ -1172,8 +1266,13 @@ async def update_benchmark_state(
 
     apply_progress_invariant(state_update, benchmark)
 
+    patch = state_update.model_dump(exclude_unset=True, exclude={"gateway_url"})
+    if state_update.gateway_url is not None:
+        patch["snapshot"] = _reported_gateway_snapshot(
+            ctx, benchmark, state_update.gateway_url
+        )
     try:
-        await benchmark.update(session, state_update)
+        await benchmark.update(session, patch)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update benchmark state: {e}"

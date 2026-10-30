@@ -14,6 +14,7 @@ from starlette.requests import Request
 
 from gpustack.api.exceptions import BadRequestException, NotFoundException
 from gpustack.api.tenant import TenantContext
+from gpustack.config.config import Config
 from gpustack.routes import benchmarks as route
 from gpustack.routes import clusters as cluster_routes
 from gpustack.schemas.benchmark import (
@@ -22,6 +23,7 @@ from gpustack.schemas.benchmark import (
     BenchmarkTargetModeEnum,
 )
 from gpustack.schemas.model_routes import TargetStateEnum
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.schemas.models import (
     DisaggregationSpec,
     Model,
@@ -131,9 +133,14 @@ class TestClusterGatewaySnapshot:
         )
         save = AsyncMock(side_effect=lambda session, value: value)
         monkeypatch.setattr(route.Benchmark, "create", save)
-        config = SimpleNamespace(
+        config = Config.model_construct(
             server_external_url="https://public-gateway.example/",
             trusted_hosts=["request-gateway.example:8443"],
+            gateway_mode=GatewayModeEnum.external,
+            advertise_address="10.0.0.9",
+            port=8080,
+            api_port=30080,
+            enable_worker=True,
         )
         monkeypatch.setattr(cluster_routes, "get_global_config", lambda: config)
         monkeypatch.setattr(route, "get_global_config", lambda: config)
@@ -212,12 +219,94 @@ class TestClusterGatewaySnapshot:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "mode", [GatewayModeEnum.embedded, GatewayModeEnum.disabled]
+    )
+    async def test_server_freezes_mode_policy_without_detecting_an_ip(
+        self, setup, mode, monkeypatch, caplog
+    ):
+        caplog.set_level("DEBUG", logger=route.__name__)
+        setup.cluster.server_url = None
+        setup.config.server_external_url = None
+        setup.config.advertise_address = None
+        setup.config.trusted_hosts = None
+        setup.config.gateway_mode = mode
+        monkeypatch.setattr(
+            Config,
+            "get_advertise_address",
+            lambda _: pytest.fail("must not detect an IP"),
+        )
+        benchmark = await self._create(setup)
+        assert benchmark.snapshot.gateway_url is None
+        policy = benchmark.snapshot.gateway_target
+        assert policy.mode == mode
+        assert policy.port == (8080 if mode == GatewayModeEnum.embedded else None)
+        assert policy.fallback_url is None
+        if mode == GatewayModeEnum.embedded:
+            assert (
+                "No trusted remote entrance for the embedded benchmark gateway"
+                in caplog.text
+            )
+
+    @pytest.mark.asyncio
+    async def test_embedded_policy_keeps_explicit_advertise_as_remote_fallback(
+        self, setup
+    ):
+        setup.cluster.server_url = None
+        setup.config.server_external_url = None
+        setup.config.gateway_mode = GatewayModeEnum.embedded
+        setup.config.advertise_address = "2001:db8::9"
+        benchmark = await self._create(setup)
+        assert benchmark.snapshot.gateway_url is None
+        assert (
+            benchmark.snapshot.gateway_target.fallback_url
+            == "http://[2001:db8::9]:8080"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "gateway_mode", [GatewayModeEnum.embedded, GatewayModeEnum.disabled]
+    )
+    async def test_configured_urls_override_mode_specific_listener(
+        self, setup, gateway_mode
+    ):
+        setup.config.gateway_mode = gateway_mode
+        benchmark = await self._create(setup)
+        assert benchmark.snapshot.gateway_url == setup.cluster.server_url.rstrip("/")
+        setup.cluster.server_url = None
+        benchmark = await self._create(setup)
+        assert (
+            benchmark.snapshot.gateway_url
+            == setup.config.server_external_url.rstrip("/")
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("port", [None, 0])
+    async def test_missing_embedded_http_listener_requires_an_explicit_entrance(
+        self, setup, port
+    ):
+        setup.cluster.server_url = None
+        setup.config.server_external_url = None
+        setup.config.gateway_mode = GatewayModeEnum.embedded
+        setup.config.port = port
+        setup.config.api_port = None
+
+        with pytest.raises(BadRequestException) as excinfo:
+            await self._create(setup)
+        assert "HTTP listener" in excinfo.value.message
+        setup.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "gateway_mode", [GatewayModeEnum.external, GatewayModeEnum.incluster]
+    )
     @pytest.mark.parametrize("external_url", [None, ""])
     async def test_missing_configured_urls_use_request_entrance(
-        self, setup, external_url
+        self, setup, external_url, gateway_mode
     ):
         setup.cluster.server_url = None
         setup.config.server_external_url = external_url
+        setup.config.gateway_mode = gateway_mode
         benchmark = await self._create(setup)
         assert benchmark.snapshot.gateway_url == "https://request-gateway.example:8443"
 
