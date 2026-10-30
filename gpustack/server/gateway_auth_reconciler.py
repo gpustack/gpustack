@@ -49,12 +49,14 @@ from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
 from kubernetes_asyncio import client as k8s_client
+from fastapi import FastAPI
 from sqlalchemy import or_
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack import envs
 from gpustack.config.config import Config
+from gpustack.extension import Plugin, plugin_needs_instantiation
 from gpustack.gateway import get_async_k8s_config, get_gpustack_higress_registry
 from gpustack.gateway.client.extensions_higress_io_v1_api import (
     ExtensionsHigressIoV1Api,
@@ -591,11 +593,77 @@ def _policy_rule_value(policy: Any) -> Optional[str]:
     return None
 
 
+# The base no-op verdict, compared by underlying function so the dispatch
+# helper below can skip a plugin that never declared the hook — the same
+# trick ``_DEFAULT_ON_AUTHENTICATED`` pulls off in gpustack.api.auth.
+_DEFAULT_DISPATCH_PERMITTED = Plugin.gateway_auth_dispatch_permitted.__func__
+
+# The reconciler running in this process, if any. A standby in a highly
+# available deployment never constructs one — the reconciler starts with
+# leadership — so ``request_gateway_auth_flush`` answers "not running"
+# there and the leader's pass is what converges the state.
+_running_reconciler: Optional["GatewayAuthReconciler"] = None
+
+
+def _plugins_withhold_dispatch(app: Optional[FastAPI]) -> bool:
+    """Whether any static plugin withdraws the gateway's local-auth permission.
+
+    An exception counts as a withdrawal: the alternative would keep serving
+    the previous tables off a hook whose state just became unreadable, and
+    this gate being wrong fails open — silently unauthenticated local
+    access — rather than merely slow.
+    """
+    state = getattr(app, "state", None) if app is not None else None
+    contexts = getattr(state, "plugin_contexts", None)
+    if not contexts:
+        return False
+    for name, ctx in contexts.items():
+        if ctx.plugin_cls is None or plugin_needs_instantiation(ctx.plugin_cls):
+            continue
+        hook = ctx.plugin_cls.gateway_auth_dispatch_permitted
+        if getattr(hook, "__func__", None) is _DEFAULT_DISPATCH_PERMITTED:
+            continue
+        try:
+            if not hook(ctx):
+                return True
+        except Exception:
+            logger.exception(
+                "gateway_auth_dispatch_permitted hook of plugin %s failed; "
+                "withholding the gateway auth tables for this pass",
+                name,
+            )
+            return True
+    return False
+
+
+def request_gateway_auth_flush(reason: str = "") -> bool:
+    """Ask the running gateway auth reconciler for an immediate pass.
+
+    For a component that changes what a ``gateway_auth_dispatch_permitted``
+    hook answers from — a policy table, a mode flag — this is how a
+    tightening reaches the gateway on the next request instead of the next
+    periodic pass. Returns whether a reconciler is running in this process;
+    where there is none (a standby, a worker) the leader's periodic pass is
+    what converges the state.
+    """
+    reconciler = _running_reconciler
+    if reconciler is None or reconciler._disabled:
+        return False
+    reconciler._flush_now.set()
+    if reason:
+        logger.debug("Gateway auth flush requested: %s", reason)
+    return True
+
+
 class GatewayAuthReconciler:
     """Writes the key tables and the per-route rules into the ext-auth CR."""
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, app: Optional[FastAPI] = None):
         self._config = cfg
+        # The FastAPI app, read for ``app.state.plugin_contexts`` when a pass
+        # consults the dispatch hook. Optional because everything else here
+        # works without one.
+        self._app = app
         self._disabled = cfg.gateway_mode == GatewayModeEnum.disabled
         self._interval = envs.GATEWAY_AUTH_RECONCILE_INTERVAL_SECONDS
         self._budget = envs.GATEWAY_AUTH_MAX_CR_BYTES
@@ -638,6 +706,11 @@ class GatewayAuthReconciler:
         ] = None
 
     async def start(self):
+        # Registered before the disabled check so the flush helper reports
+        # "not running" for a disabled reconciler rather than pointing at a
+        # stale one constructed earlier.
+        global _running_reconciler
+        _running_reconciler = self
         if self._disabled:
             return
         self._extensions_api = ExtensionsHigressIoV1Api(
@@ -820,6 +893,22 @@ class GatewayAuthReconciler:
                 "server per request."
             )
         routes = public_routes[:public_kept] + authed_routes[:authed_kept]
+
+        if _plugins_withhold_dispatch(self._app):
+            # A plugin withdrew the gateway's permission to authenticate
+            # callers locally. Publish an empty surface instead of the
+            # computed one — no keys, no refs, no skippable-route rules —
+            # so every request, anonymous traffic on a public route
+            # included, authorizes against the server. The watch-driven and
+            # periodic passes recompute this each time, so the withdrawal
+            # lasts exactly as long as the hook keeps answering no.
+            if self._applied_state != ({}, {}, []):
+                logger.info(
+                    "Gateway auth: a plugin withheld local authentication; "
+                    "publishing an empty auth surface so every request "
+                    "authorizes via the server"
+                )
+            keys, refs, routes = {}, {}, []
         rule_ingresses = route_rule_ingresses(routes, self._config)
 
         # ``ensure_wasm_plugin`` compares the rendered spec and skips the write

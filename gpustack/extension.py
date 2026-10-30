@@ -371,6 +371,32 @@ class Plugin:
         return None
 
     @classmethod
+    def gateway_auth_dispatch_permitted(cls, ctx: "PluginContext") -> bool:
+        """Whether the gateway may authenticate callers locally right now.
+
+        The gateway authenticates API keys against tables this server
+        publishes to it, and serves a small set of route policies without
+        asking the server at all. Returning ``False`` withdraws that
+        permission for the next reconciliation pass: the key tables and
+        the per-route rules are published empty, so every request —
+        anonymous traffic on a public route included — authorizes against
+        the server instead. A plugin holding the platform to a policy it
+        cannot yet vouch for answers ``False`` until it can.
+
+        Consulted once per reconciliation pass, and right before a pass
+        requested via ``request_gateway_auth_flush``, so it must stay
+        cheap: read a cached verdict rather than querying, because a pass
+        runs on every key, principal or route change. A verdict that is
+        not yet known should be ``False``, and so is one that raises —
+        the reconciler treats an exception as a withdrawal and logs it,
+        keeping the failure closed.
+
+        Static shape only: a legacy instance's same-named method is not
+        dispatched to. Default: permitted.
+        """
+        return True
+
+    @classmethod
     def cache_provider_assets(cls) -> List[Tuple[str, str]]:
         """Contribute cache-provider catalog assets as (package, resource)
         pairs, read after the bundled catalog.

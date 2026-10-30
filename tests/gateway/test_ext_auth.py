@@ -14,6 +14,7 @@ because both fail silently rather than loudly:
   route the flag is what removes that check.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -23,6 +24,7 @@ import pytest
 
 from gpustack import envs
 from gpustack.config.config import GatewayPluginEntry
+from gpustack.extension import Plugin, PluginContext
 from gpustack.gateway.client import WasmPluginMatchRule, WasmPluginSpec
 from gpustack.gateway.ext_auth import (
     ext_auth_init_spec_diff,
@@ -33,6 +35,7 @@ from gpustack.gateway.ext_auth import (
 from gpustack.schemas.api_keys import PermissionScope
 from gpustack.schemas.model_routes import AccessPolicyEnum
 from gpustack.schemas.principals import PrincipalType
+from gpustack.server import gateway_auth_reconciler
 from gpustack.server.bus import EventType
 from gpustack.server.gateway_auth_reconciler import (
     KEY_ENTRY_BYTES,
@@ -46,6 +49,7 @@ from gpustack.server.gateway_auth_reconciler import (
     gateway_key_unrestricted,
     gateway_ref_eligible,
     gateway_ref_indexable,
+    request_gateway_auth_flush,
     route_rule_ingresses,
 )
 
@@ -1037,6 +1041,9 @@ def _live_reconciler():
     reconciler._budget = 10_000_000
     reconciler._extensions_api = object()
     reconciler._registry = MagicMock()
+    # No app means no plugin contexts to consult, which is the same as no
+    # plugin withdrawing the gateway's local-auth permission.
+    reconciler._app = None
     reconciler._applied_route_policies = None
     reconciler._applied_state = None
     return reconciler
@@ -1278,3 +1285,121 @@ def test_the_server_withholds_a_ref_wherever_refs_would_be_empty(monkeypatch):
         assert not gateway_ref_indexable(
             _key(is_custom=True, secret_key_digest=digest), _principal()
         )
+
+
+# ---- plugin-controlled suspension of the gateway auth surface ----
+
+
+def _app_with_plugins(*plugin_classes):
+    contexts = {
+        cls.__name__: PluginContext(
+            name=cls.__name__, app=None, cfg=MagicMock(), plugin_cls=cls
+        )
+        for cls in plugin_classes
+    }
+    return SimpleNamespace(state=SimpleNamespace(plugin_contexts=contexts))
+
+
+class _WithholdingPlugin(Plugin):
+    @classmethod
+    def gateway_auth_dispatch_permitted(cls, ctx):
+        return False
+
+
+class _BrokenVerdictPlugin(Plugin):
+    @classmethod
+    def gateway_auth_dispatch_permitted(cls, ctx):
+        raise RuntimeError("policy state unreadable")
+
+
+def test_dispatch_stays_permitted_until_a_plugin_answers_no():
+    # No app, no contexts, and a plugin that never declared the hook all
+    # leave the gateway's local-auth permission alone.
+    assert gateway_auth_reconciler._plugins_withhold_dispatch(None) is False
+    assert (
+        gateway_auth_reconciler._plugins_withhold_dispatch(_app_with_plugins(Plugin))
+        is False
+    )
+
+
+def test_a_withdrawn_or_failed_verdict_withholds_dispatch():
+    assert (
+        gateway_auth_reconciler._plugins_withhold_dispatch(
+            _app_with_plugins(_WithholdingPlugin)
+        )
+        is True
+    )
+    # A hook that cannot answer withholds too: the failure mode of this
+    # gate being wrong fails open, not merely slow.
+    assert (
+        gateway_auth_reconciler._plugins_withhold_dispatch(
+            _app_with_plugins(_BrokenVerdictPlugin)
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconcile_publishes_an_empty_surface_when_a_plugin_withholds(
+    monkeypatch,
+):
+    """The key tables and the skippable-route rules are the whole local-auth
+    surface. Withheld, nothing authenticates or authorizes at the gateway,
+    so every request -- anonymous traffic on a public route included --
+    lands on the server instead."""
+    captured = {}
+
+    async def fake_ensure_wasm_plugin(**kwargs):
+        captured.update(kwargs)
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def fake_skippable(session):
+        return [(1, AccessPolicyEnum.PUBLIC.value), (2, AccessPolicyEnum.AUTHED.value)]
+
+    async def fake_tables(session, max_entries):
+        return ({"ak": {"digest": "sha256$s$h", "user_id": 7}}, {"9": {}})
+
+    monkeypatch.setattr(
+        gateway_auth_reconciler, "ensure_wasm_plugin", fake_ensure_wasm_plugin
+    )
+    # The reconciler enters ``async_session()`` as a context manager, so the
+    # stub is a plain callable returning one -- not a coroutine.
+    monkeypatch.setattr(gateway_auth_reconciler, "async_session", lambda: _SessionCtx())
+    monkeypatch.setattr(
+        gateway_auth_reconciler, "build_skippable_routes", fake_skippable
+    )
+    monkeypatch.setattr(gateway_auth_reconciler, "build_local_auth_tables", fake_tables)
+
+    cfg = MagicMock()
+    cfg.gateway_mode = "embedded"
+    reconciler = GatewayAuthReconciler(cfg, app=_app_with_plugins(_WithholdingPlugin))
+    await reconciler.reconcile()
+
+    spec_diff = captured["spec_diff"]
+    assert spec_diff.keywords["keys"] == {}
+    assert spec_diff.keywords["refs"] == {}
+    assert spec_diff.keywords["route_rules"] == []
+    # The applied state records the emptiness, so the next pass diffs away
+    # instead of rewriting the CR every interval.
+    assert reconciler._applied_state == ({}, {}, [])
+
+
+def test_request_gateway_auth_flush_wakes_the_running_reconciler(monkeypatch):
+    reconciler = GatewayAuthReconciler.__new__(GatewayAuthReconciler)
+    reconciler._disabled = False
+    reconciler._flush_now = asyncio.Event()
+    monkeypatch.setattr(gateway_auth_reconciler, "_running_reconciler", reconciler)
+
+    assert request_gateway_auth_flush("policy flip") is True
+    assert reconciler._flush_now.is_set()
+
+
+def test_request_gateway_auth_flush_without_a_running_reconciler(monkeypatch):
+    monkeypatch.setattr(gateway_auth_reconciler, "_running_reconciler", None)
+    assert request_gateway_auth_flush() is False
