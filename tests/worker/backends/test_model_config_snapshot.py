@@ -55,7 +55,9 @@ def test_capture_is_detached_from_model_and_backend_mutations(role):
     client.models.get.return_value = model
     server = SimpleNamespace(
         _clientset=client,
-        _model_instance=SimpleNamespace(model_id=1, group_id=None, role=role),
+        _model_instance=SimpleNamespace(
+            model_id=1, group_id=None, role=role, distributed_servers=None
+        ),
         _config=SimpleNamespace(data_dir="/worker"),
     )
     InferenceServer.get_model(server)

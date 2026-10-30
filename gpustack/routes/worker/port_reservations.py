@@ -12,6 +12,7 @@ from gpustack.schemas.port_reservations import (
 )
 from gpustack.utils import network
 from gpustack.worker.port_reservations import model_instance_ports
+from gpustack.utils.model_instance_workers import get_model_instance_workloads
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
@@ -62,6 +63,10 @@ def reserve(
     instance_id: int, claim: ModelPortClaim, request: Request
 ) -> PortClaimResult:
     manager, instance = _instance(request, instance_id)
+    if get_model_instance_workloads(instance) is not None and claim.restart_count != (
+        instance.restart_count or 0
+    ):
+        raise HTTPException(status_code=409, detail="Port claim generation mismatch")
     ports = set(claim.ports)
     generation = claim.generations.get(manager._worker_id)
     if generation is None:

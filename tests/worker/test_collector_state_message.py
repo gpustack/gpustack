@@ -108,3 +108,14 @@ def test_the_initial_pass_still_skips_gpu_detection(initial):
     reported = collector.collect(initial=initial)
 
     assert "no /proc" in reported.state_message
+
+
+@pytest.mark.parametrize('initial', [True, False])
+@pytest.mark.parametrize('failed', [True, False])
+def test_collector_always_advertises_its_local_orchestration_protocol(initial, failed):
+    collector = _collector(
+        system_info_error=RuntimeError('detection unavailable') if failed else None
+    )
+    reported = collector.collect(initial=initial)
+    assert reported.status.orchestration.protocol_version == 1
+    assert reported.status.orchestration.admission_blocked is False

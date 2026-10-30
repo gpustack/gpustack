@@ -878,3 +878,133 @@ def test_ray_path_still_pins_vllm_port_to_connecting_port():
     env = _distributed_env("dp_only", executor_backend="ray")
     assert env["VLLM_PORT"] == "40063"
     assert "VLLM_DP_MASTER_PORT" not in env
+
+
+@pytest.mark.parametrize(
+    'gpus,dp,tp,expected',
+    [
+        ([4, 4], 2, 4, (2, [1, 1], 1)),
+        ([2, 2], 2, 2, (2, [1, 1], 1)),
+        ([2, 2], 4, 1, (4, [2, 2], 1)),
+        ([4, 4, 4, 4], 2, 8, (2, [1, 1, 1, 1], 2)),
+        ([4, 8], 3, 4, (3, [1, 2], 1)),
+    ],
+)
+def test_external_topology_uniform_rank_slices(gpus, dp, tp, expected):
+    from gpustack.utils.vllm_topology import external_lb_parallelism
+
+    result = external_lb_parallelism(
+        [f'--data-parallel-size={dp}', f'--tensor-parallel-size={tp}'], gpus
+    )
+    assert (result.dp, result.dpl_per_node, result.nnodes_within_dp) == expected
+
+
+def test_external_selector_accepts_multiple_local_rank_fragments():
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+
+    model = _mock_model(
+        [
+            '--distributed-executor-backend=mp',
+            '--data-parallel-external-lb',
+            '--dp=2',
+            '--tp=4',
+            '--dpl=2',
+        ]
+    )
+    candidate, reason = _create_candidate(
+        model, [_mock_worker('a', 4), _mock_worker('b', 4)]
+    )
+    assert candidate is not None, reason
+    assert len(candidate.gpu_indexes) == 4
+    assert len(candidate.subordinate_workers) == 1
+    assert len(candidate.subordinate_workers[0].gpu_indexes) == 4
+
+
+@pytest.mark.parametrize(
+    'counts,params,expected',
+    [
+        ([4], ['--dp=2', '--tp=2'], (2, 2, 1)),
+        ([8], ['--dp=2', '--tp=2', '--pp=2'], (2, 2, 2)),
+        ([4, 4], ['--dp=4', '--tp=2'], (4, 2, 1)),
+    ],
+)
+def test_native_dps_complete_local_rank_topology(counts, params, expected):
+    from gpustack.utils.vllm_topology import native_lb_parallelism
+
+    topology = native_lb_parallelism(['-dpm', *params], counts)
+    assert (topology.dp, topology.tp, topology.pp) == expected
+    assert topology.nnodes_within_dp == 1
+    assert min(topology.dpl_per_node) >= 2
+
+
+@pytest.mark.parametrize(
+    'counts,params',
+    [
+        ([2], ['--dp=1']),
+        ([2, 2], ['--dp=2', '--tp=2']),
+        ([4, 4], ['--dp=2', '--tp=4']),
+        ([8], ['--dp=2', '--tp=2', '--pcp=2']),
+        ([4], ['--dp=2', '--headless']),
+        ([4], ['--dp=2', '--api-server-count=0']),
+        ([4], ['--dp=2', '-dpn=0']),
+        ([4], ['--dp=2', '--grpc']),
+        ([4], ['--dp=2', '--uds=/tmp/vllm']),
+        ([4], ['--dp=2', '--distributed-executor-backend=ray']),
+        ([4], ['--dp=2', '--nnodes=2']),
+        ([4], ['--dp=2', '-dpr=-1']),
+    ],
+)
+def test_native_dps_rejects_unrepresentable_rank_layout(counts, params):
+    from gpustack.utils.vllm_topology import native_lb_parallelism
+
+    with pytest.raises(ValueError):
+        native_lb_parallelism(['-dpm', *params], counts)
+
+
+@pytest.mark.parametrize(
+    'counts, params, accepted',
+    [
+        ([4, 4], ['--dp=2', '--tp=4', '--distributed-executor-backend=mp'], False),
+        ([4, 4], ['--dp=4', '--tp=2', '--distributed-executor-backend=mp'], True),
+        ([2, 2], ['--dp=4', '--tp=1', '--distributed-executor-backend=uni'], True),
+        ([4, 4], ['--dp=4', '--tp=2', '--distributed-executor-backend=uni'], False),
+        ([4], ['--dp=2', '--tp=2', '--distributed-executor-backend=mp'], True),
+        ([4], ['--dp=2', '--tp=2', '--distributed-executor-backend=uni'], False),
+    ],
+)
+def test_native_selector_uses_worker_topology_contract(counts, params, accepted):
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+    from gpustack.utils.vllm_topology import managed_lb_parallelism
+
+    parameters = ['-dpm', *params]
+    model = _mock_model(parameters)
+    workers = [_mock_worker(str(i), count) for i, count in enumerate(counts)]
+    candidate, reason = _create_candidate(model, workers)
+    if accepted:
+        assert candidate is not None, reason
+        assert len(candidate.gpu_indexes) == counts[0]
+    else:
+        with pytest.raises(ValueError) as error:
+            managed_lb_parallelism(parameters, counts)
+        assert candidate is None
+        assert reason == str(error.value)
+
+
+@pytest.mark.parametrize(
+    'counts,dp,tp,local,nodes',
+    [([2, 2], 2, 2, 2, 2), ([4, 4], 2, 4, 2, 2), ([4, 4, 4, 4], 2, 8, 2, 4)],
+)
+def test_external_explicit_local_slices_preserve_cross_worker_ranks(
+    counts, dp, tp, local, nodes
+):
+    from gpustack.utils.vllm_topology import external_lb_parallelism
+
+    result = external_lb_parallelism(
+        [f'--dp={dp}', f'--tp={tp}', f'--dpl={local}'], counts
+    )
+    assert result.dpl_per_node == [local] * len(counts)
+    assert result.nnodes_within_dp == nodes

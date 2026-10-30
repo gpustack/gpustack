@@ -1,6 +1,11 @@
 import json
 import logging
 import types
+import os
+import pickle
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -42,6 +47,406 @@ from gpustack.worker.backends.vllm import (
     get_cache_report_arguments as get_vllm_cache_report_arguments,
 )
 from gpustack.worker.backends.vox_box import VoxBoxServer
+from gpustack.utils.vllm_topology import vllm_lb_mode, external_lb_parallelism
+from gpustack_runtime.deployer import Container, ContainerExecution, WorkloadPlan
+from gpustack.schemas.models import (
+    DistributedServers,
+    PortBand,
+    ModelInstanceSubordinateWorker,
+)
+from tests.utils.model import new_model, new_model_instance
+
+
+@pytest.mark.parametrize(
+    "parameters,mode",
+    [
+        ([], "internal"),
+        (["--data-parallel-size 4"], "internal"),
+        (["--data-parallel-external-lb"], "external"),
+        (["--data-parallel-multi-port-external-lb"], "native"),
+        (["--data-parallel-hybrid-lb"], "hybrid"),
+    ],
+)
+def test_vllm_load_balancing_modes(parameters, mode):
+    assert vllm_lb_mode(parameters) == mode
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "--data-parallel-multi-port-external-lb",
+        "--data-parallel-hybrid-lb",
+        "--data-parallel-start-rank=0",
+    ],
+)
+def test_external_load_balancing_modes_cannot_be_combined(other):
+    with pytest.raises(ValueError, match="load balancing"):
+        vllm_lb_mode(["--data-parallel-external-lb", other])
+
+
+def _external_backend(dp=2, vendor="NVIDIA"):
+    backend = VLLMServer.__new__(VLLMServer)
+    backend._model = types.SimpleNamespace(
+        backend_parameters=[
+            "--data-parallel-external-lb",
+            f"--data-parallel-size={dp}",
+            "--tensor-parallel-size=2",
+        ],
+        backend_version="0.32.0",
+        image_name=None,
+    )
+    backend._model_instance = new_model_instance(1, "moe", model_id=1, worker_id=7)
+    backend._model_instance.restart_count = 3
+    backend._model_instance.distributed_servers = DistributedServers(workloads=[])
+    backend._model_instance.ports = [*range(40000, 40000 + dp), 40010, 40020]
+    backend._model_instance.named_ports = {
+        "_vllm_external_rpc": PortBand(base=40010, count=1),
+        "_vllm_mp_connecting": PortBand(base=40020, count=10),
+    }
+    backend._worker = types.SimpleNamespace(id=7, ip="10.0.0.7")
+    backend._get_selected_gpu_devices = lambda: [
+        types.SimpleNamespace(
+            index=2 * i + 1,
+            vendor=vendor,
+            type="cuda" if vendor == "NVIDIA" else "cann",
+        )
+        for i in range(dp * 2)
+    ]
+    backend._get_pretrained_config = lambda: types.SimpleNamespace(num_experts=8)
+    plan = WorkloadPlan(
+        name="moe",
+        containers=[
+            Container(
+                image="test/vllm:0.32",
+                name="default",
+                execution=ContainerExecution(),
+                files=[],
+                envs=[],
+            )
+        ],
+    )
+    return backend, plan
+
+
+@pytest.mark.parametrize("dp", [1, 2, 4])
+def test_external_plan_has_all_ranks_and_injected_supervisor(dp):
+    backend, plan = _external_backend(dp)
+    manifest = backend._configure_external_workload(
+        plan,
+        ["vllm", "serve"],
+        [
+            "/models/moe",
+            *backend._model.backend_parameters,
+            "--dtype",
+            "float16",
+            "--port=1234",
+        ],
+    )
+    assert manifest.worker_id == 7
+    assert manifest.name == "moe"
+    assert [p.dp_rank for p in manifest.dp_rank_placements] == list(range(dp))
+    assert [p.gpu_indexes for p in manifest.dp_rank_placements] == [
+        [4 * i + 1, 4 * i + 3] for i in range(dp)
+    ]
+    assert [p.api_port for p in manifest.dp_rank_placements] == list(
+        range(40000, 40000 + dp)
+    )
+    assert all(p.ready is False for p in manifest.dp_rank_placements)
+    files = {f.path: f for f in plan.containers[0].files}
+    assert (
+        files["/gpustack/supervisor.py"].content
+        == Path("gpustack/worker/backends/supervisor.py").read_text()
+    )
+    tasks = json.loads(files["/gpustack/tasks.json"].content)["tasks"]
+    assert len(tasks) == dp
+    for rank, task in enumerate(tasks):
+        argv = task["argv"][6:]
+        assert argv[:3] == ["vllm", "serve", "/models/moe"]
+        assert argv[argv.index("--data-parallel-rank") + 1] == str(rank)
+        assert argv[argv.index("--port") + 1] == str(40000 + rank)
+        assert "float16" in argv
+        assert "--port=1234" not in argv
+    assert (
+        plan.termination_grace_period_seconds
+        > json.loads(files["/gpustack/tasks.json"].content)["shutdown_timeout"]
+    )
+
+
+@pytest.mark.parametrize("config", [None, types.SimpleNamespace(num_experts=0)])
+def test_external_plan_refuses_unverified_or_dense_models(config):
+    backend, plan = _external_backend()
+    backend._get_pretrained_config = lambda: config
+    with pytest.raises(ValueError, match="MoE"):
+        backend._configure_external_workload(plan, ["vllm", "serve"], ["/models/moe"])
+
+
+def test_external_device_count_cannot_discard_selected_devices():
+    with pytest.raises(ValueError):
+        external_lb_parallelism(
+            ["--data-parallel-size=2", "--tensor-parallel-size=2"], 5
+        )
+
+
+@pytest.mark.parametrize('primary', [False, True])
+@pytest.mark.parametrize('deleted', [False, True])
+def test_managed_failure_reporting_preserves_original_error_on_generation_race(
+    primary, deleted
+):
+    from unittest.mock import MagicMock
+    from gpustack.api.exceptions import NotFoundException
+
+    backend, _ = _external_backend()
+    backend._model.backend = 'vLLM'
+    backend._model_instance.worker_id = backend._worker.id if primary else 8
+    backend._clientset = MagicMock()
+    fresh = backend._model_instance.model_copy(deep=True)
+    fresh.restart_count += 1
+    backend._clientset.model_instances.get.return_value = fresh
+    if deleted:
+        backend._clientset.model_instances.get.side_effect = NotFoundException(
+            'deleted'
+        )
+    original = RuntimeError('engine startup failed')
+    with pytest.raises(RuntimeError) as error:
+        InferenceServer._handle_error(backend, original)
+    assert error.value is original
+
+
+def test_external_plan_rejects_empty_worker_devices_before_device_type_lookup():
+    backend, plan = _external_backend()
+    backend._get_selected_gpu_devices = lambda: []
+    with pytest.raises(ValueError, match="allocated devices"):
+        backend._configure_external_workload(plan, ["vllm", "serve"], ["/models/moe"])
+
+
+@pytest.mark.parametrize(
+    "vendor,key,pool",
+    [
+        ("NVIDIA", "CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b,GPU-c,GPU-d"),
+        ("Huawei", "ASCEND_RT_VISIBLE_DEVICES", "1,3,5,7"),
+    ],
+)
+def test_external_task_masks_use_positions_in_the_container_device_pool(
+    vendor, key, pool
+):
+    from gpustack.worker.backends.vllm import _DEVICE_TASK_EXEC
+
+    backend, plan = _external_backend(vendor=vendor)
+    backend._configure_external_workload(plan, ["vllm", "serve"], ["/models/moe"])
+    config = json.loads(
+        next(
+            f.content for f in plan.containers[0].files if f.path.endswith("tasks.json")
+        )
+    )
+    for rank, task in enumerate(config["tasks"]):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                _DEVICE_TASK_EXEC,
+                *task["argv"][3:6],
+                sys.executable,
+                "-c",
+                f"import os; print(os.environ[{key!r}])",
+            ],
+            env={**os.environ, key: pool},
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+        assert result.stdout.strip() == ",".join(
+            pool.split(",")[rank * 2 : (rank + 1) * 2]
+        )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["vllm", "serve", "/models/moe", "--dtype=float16"],
+        ["/venv/bin/vllm", "serve", "/models/moe", "--dtype", "float16"],
+    ],
+)
+def test_external_custom_command_preserves_options_and_one_entrypoint(command):
+    backend, plan = _external_backend()
+    backend._configure_external_workload(plan, ["vllm", "serve"], command)
+    tasks = json.loads(
+        next(
+            f.content for f in plan.containers[0].files if f.path.endswith("tasks.json")
+        )
+    )["tasks"]
+    assert tasks[0]["argv"][6:9] == command[:3]
+    assert all("--dtype=float16" in t["argv"] or "float16" in t["argv"] for t in tasks)
+
+
+@pytest.mark.parametrize(
+    "key,pool", [("ASCEND_RT_VISIBLE_DEVICES", None), ("CUDA_VISIBLE_DEVICES", "GPU-a")]
+)
+def test_external_mask_mismatch_cannot_run_the_engine(key, pool):
+    from gpustack.worker.backends.vllm import _DEVICE_TASK_EXEC
+
+    env = dict(os.environ)
+    env.pop(key, None)
+    if pool is not None:
+        env[key] = pool
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _DEVICE_TASK_EXEC,
+            key,
+            "4",
+            "[0,1]",
+            sys.executable,
+            "-c",
+            "print('engine-started')",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode != 0
+    assert "engine-started" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["bash", "-c", "vllm serve model"],
+        ["vllm", "serve", "model", "&&", "echo", "ready"],
+    ],
+)
+def test_external_ambiguous_command_is_rejected(argv):
+    backend, plan = _external_backend()
+    with pytest.raises(ValueError, match="directly executable"):
+        backend._configure_external_workload(plan, argv, [])
+
+
+def test_external_ports_cannot_treat_control_ports_as_extra_rank_apis():
+    backend, plan = _external_backend()
+    backend._model.backend_parameters = [
+        "--data-parallel-external-lb",
+        "--data-parallel-size=4",
+        "--tensor-parallel-size=1",
+    ]
+    with pytest.raises(ValueError, match="ports"):
+        backend._configure_external_workload(plan, ["vllm", "serve"], ["/models/moe"])
+
+
+@pytest.mark.parametrize(
+    "parameter",
+    [
+        "--distributed-executor-backend=ray",
+        "--data-parallel-backend=ray",
+        "--device-ids=0,1",
+    ],
+)
+def test_external_unsupported_device_or_executor_overrides_are_rejected(parameter):
+    backend, plan = _external_backend()
+    with pytest.raises(ValueError, match="multiprocessing|Device selection"):
+        backend._configure_external_workload(
+            plan, ["vllm", "serve"], ["/models/moe", parameter]
+        )
+
+
+@pytest.mark.parametrize("mode", ["external", "internal", "native", "native_managed"])
+def test_vllm_workload_creation_uses_the_selected_lifecycle(monkeypatch, mode):
+    backend, plan = _external_backend()
+    if mode == "native_managed":
+        backend._model.backend_parameters[0] = '-dpm'
+        backend._model_instance.named_ports['_vllm_external_api'] = PortBand(
+            base=40000, count=2
+        )
+        backend._model_instance.named_ports['_vllm_native_supervisor'] = PortBand(
+            base=40030
+        )
+    elif mode != "external":
+        backend._model_instance.distributed_servers = None
+        backend._model.backend_parameters = (
+            ["--data-parallel-multi-port-external-lb"] if mode == "native" else []
+        ) + ["--data-parallel-size=2"]
+    from unittest.mock import MagicMock
+
+    backend._get_configured_mounts = lambda: []
+    backend._get_configured_ports = lambda: []
+    backend._get_configured_files = lambda: []
+    backend._get_container_env_config = lambda env: types.SimpleNamespace(
+        user=0, group=0, shm_size_gib=1
+    )
+    backend._host_ipc_enabled = lambda: False
+    backend._transform_workload_plan = lambda plan: plan
+    backend._workload_plan_callback = MagicMock()
+    create = MagicMock()
+    monkeypatch.setattr("gpustack.worker.backends.vllm.create_workload", create)
+    backend._create_workload(
+        backend._model_instance.get_deployment_metadata(7),
+        ["vllm", "serve"],
+        '#!/bin/sh\nexec "$@"',
+        (
+            ["/models/moe", *backend._model.backend_parameters]
+            if mode == 'native_managed'
+            else ["/models/moe"]
+        ),
+        {},
+        "image",
+    )
+    if mode not in ("external", "native_managed"):
+        create.assert_called_once()
+        backend._workload_plan_callback.assert_not_called()
+        assert create.call_args.args[0].containers[0].files == []
+        return
+    create.assert_not_called()
+    manifests, plans = backend._workload_plan_callback.call_args.args
+    assert manifests[0].name == plans[0].name
+    assert len(plans[0].containers) == 1
+    assert "1,3,5,7" in plans[0].containers[0].resources.values()
+    cloned = pickle.loads(pickle.dumps((manifests, plans)))
+    assert cloned[0][0] == manifests[0]
+    if mode == 'native_managed':
+        argv = cloned[1][0].containers[0].execution.args
+        assert '--data-parallel-multi-port-external-lb' in argv
+        assert cloned[1][0].containers[0].files == []
+        return
+    assert cloned[1][0].containers[0].execution.args == [
+        "python3",
+        "/gpustack/supervisor.py",
+        "/gpustack/tasks.json",
+    ]
+
+
+@pytest.mark.parametrize("grace", [1, 10, 30])
+def test_external_supervisor_shutdown_finishes_before_container_deadline(grace):
+    backend, plan = _external_backend()
+    plan.termination_grace_period_seconds = grace
+    backend._configure_external_workload(plan, ["vllm", "serve"], ["/models/moe"])
+    config = json.loads(
+        next(
+            f.content for f in plan.containers[0].files if f.path.endswith("tasks.json")
+        )
+    )
+    assert 0 < config["shutdown_timeout"] < grace
+
+
+@pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize("stale", [False, True])
+def test_managed_backend_reads_current_configuration_before_preparation(managed, stale):
+    from unittest.mock import MagicMock
+
+    backend, _ = _external_backend()
+    if not managed:
+        backend._model_instance.distributed_servers = None
+    model = new_model(1, "moe", huggingface_repo_id="org/moe")
+    model.stale = stale
+    backend._clientset = MagicMock()
+    backend._clientset.models.get.return_value = model
+    backend._config = types.SimpleNamespace(data_dir="/data")
+    if managed and stale:
+        with pytest.raises(RuntimeError, match="configuration has changed"):
+            backend.get_model()
+    else:
+        backend.get_model()
+    backend._clientset.models.get.assert_called_once_with(id=1, use_cache=not managed)
 
 
 @pytest.mark.parametrize(
@@ -1043,6 +1448,7 @@ def test_sglang_command_args_include_model_and_late_system_flags_as_injected(
         ports=[4000],
         computed_resource_claim=None,
         mounted_loras=None,
+        distributed_servers=None,
     )
     backend._model = types.SimpleNamespace(
         backend_parameters=[],
@@ -2563,3 +2969,930 @@ def test_shared_cache_env_resolves_runtime_variables_without_mutating_snapshot(
             assert "CACHE_CLIENT_NAME" not in env
             assert "CACHE_MODE" not in env
     assert snapshot.model_dump() == before
+
+
+@pytest.mark.parametrize('worker_index', [0, 1])
+@pytest.mark.parametrize('vendor', ['NVIDIA', 'Huawei'])
+def test_external_cross_worker_rank_commands_and_device_slices(worker_index, vendor):
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+
+    backend, plan = _external_backend(vendor=vendor)
+    mi = backend._model_instance
+    mi.worker_ip = '10.0.0.7'
+    mi.gpu_indexes = [1, 3, 5, 7]
+    mi.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
+            worker_id=8, worker_ip='10.0.0.8', gpu_indexes=[1, 3, 5, 7]
+        )
+    ]
+    mi.named_ports['_vllm_external_store'] = PortBand(base=40100, count=2)
+    backend._model.backend_parameters = [
+        '--data-parallel-external-lb',
+        '--dp=2',
+        '--tp=4',
+        '--dpl=2',
+    ]
+    backend._worker.id = 7 + worker_index
+    backend._worker.ip = f'10.0.0.{7 + worker_index}'
+    manifest = backend._configure_external_workload(
+        plan, ['vllm', 'serve'], ['/models/moe']
+    )
+    config = json.loads(
+        next(
+            f.content for f in plan.containers[0].files if f.path.endswith('tasks.json')
+        )
+    )
+    for rank, task in enumerate(config['tasks']):
+        argv = task['argv'][6:]
+
+        def value(key):
+            return argv[argv.index(key) + 1]
+
+        assert value('--nnodes') == '4'
+        assert value('--node-rank') == str(rank * 2 + worker_index)
+        assert value('--master-port') == '40100'
+        assert value('--master-addr') == '10.0.0.7'
+        assert value('--data-parallel-rpc-port') == '40010'
+        assert value('--data-parallel-size-local') == '1'
+        assert ('--headless' in argv) == bool(worker_index)
+        assert value('--api-server-count') == ('0' if worker_index else '1')
+        assert json.loads(task['argv'][5]) == [rank * 2, rank * 2 + 1]
+        placement = manifest.dp_rank_placements[rank]
+        assert placement.gpu_indexes == ([1, 3] if rank == 0 else [5, 7])
+        assert placement.node_rank == worker_index
+        assert placement.api_port == (None if worker_index else 40000 + rank)
+    assert {e.name: e.value for e in plan.containers[0].envs}[
+        'VLLM_DP_MASTER_IP'
+    ] == '10.0.0.7'
+
+
+@pytest.mark.parametrize('worker_index', range(4))
+def test_external_disjoint_dp_groups_share_global_store(worker_index):
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+
+    backend, plan = _external_backend()
+    mi = backend._model_instance
+    mi.worker_ip, mi.gpu_indexes = '10.0.0.7', [1, 3, 5, 7]
+    mi.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
+            worker_id=7 + index,
+            worker_ip=f'10.0.0.{7 + index}',
+            gpu_indexes=[1, 3, 5, 7],
+        )
+        for index in range(1, 4)
+    ]
+    mi.named_ports['_vllm_external_store'] = PortBand(base=40100, count=2)
+    backend._model.backend_parameters = [
+        '--data-parallel-external-lb',
+        '--dp=2',
+        '--tp=8',
+        '--dpl=1',
+    ]
+    backend._worker.id = 7 + worker_index
+    backend._worker.ip = f'10.0.0.{7 + worker_index}'
+
+    backend._configure_external_workload(plan, ['vllm', 'serve'], ['/models/moe'])
+
+    config = json.loads(
+        next(
+            f.content for f in plan.containers[0].files if f.path.endswith('tasks.json')
+        )
+    )
+    assert len(config['tasks']) == 1
+    argv = config['tasks'][0]['argv']
+    assert argv[argv.index('--node-rank') + 1] == str(worker_index)
+    assert argv[argv.index('--master-addr') + 1] == '10.0.0.7'
+    assert argv[argv.index('--master-port') + 1] == '40100'
+
+
+def test_managed_backend_version_conflict_stops_preparation_before_model_write():
+    from unittest.mock import MagicMock
+
+    backend, _ = _external_backend()
+    backend._model.backend_version = None
+    backend._model_spec = new_model(1, 'moe', huggingface_repo_id='org/moe')
+    backend._clientset = MagicMock()
+    backend._update_model_instance = MagicMock(
+        side_effect=RuntimeError('version conflict')
+    )
+    with pytest.raises(RuntimeError, match='version conflict'):
+        backend._update_model_backend_service_version('0.32.0')
+    backend._clientset.models.update.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'parameters, mode',
+    [
+        (['-dpm', '-dpr', '2'], 'native'),
+        (
+            ['--data-parallel-multi-port-external-lb', '--data-parallel-start-rank=0'],
+            'native',
+        ),
+        (['-dpe'], 'external'),
+    ],
+)
+def test_native_mode_preserves_start_rank_alias(parameters, mode):
+    assert vllm_lb_mode(parameters) == mode
+
+
+@pytest.mark.parametrize('vendor', ['NVIDIA', 'Huawei'])
+def test_native_plan_uses_original_dps_and_contiguous_apis(vendor):
+    backend, plan = _external_backend(vendor=vendor)
+    backend._model.backend_parameters = ['-dpm', '--dp=2', '--tp=2']
+    backend._model_instance.gpu_indexes = [1, 3, 5, 7]
+    backend._model_instance.named_ports['_vllm_external_api'] = PortBand(
+        base=40000, count=2
+    )
+    backend._model_instance.named_ports['_vllm_native_supervisor'] = PortBand(
+        base=40030
+    )
+    backend._override_entrypoint = lambda command, args, script: (command, args)
+    manifest = backend._configure_native_workload(
+        plan, ['vllm', 'serve'], ['/models/moe', *backend._model.backend_parameters]
+    )
+    argv = plan.containers[0].execution.command + plan.containers[0].execution.args
+    assert '--data-parallel-multi-port-external-lb' in argv
+    assert '--data-parallel-external-lb' not in argv
+    assert plan.containers[0].files == []
+    assert [p.dp_rank for p in manifest.dp_rank_placements] == [0, 1]
+    assert [p.api_port for p in manifest.dp_rank_placements] == [40000, 40001]
+    assert [p.gpu_indexes for p in manifest.dp_rank_placements] == [[1, 3], [5, 7]]
+    assert argv[argv.index('--data-parallel-supervisor-port') + 1] == '40030'
+    assert argv[argv.index('--data-parallel-size-local') + 1] == '2'
+
+
+@pytest.mark.parametrize('worker_index', [0, 1])
+def test_native_dps_cross_worker_apis_have_real_global_ranks(worker_index):
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+
+    backend, plan = _external_backend()
+    backend._model.backend_parameters = ['-dpm', '--dp=4', '--tp=2']
+    mi = backend._model_instance
+    mi.gpu_indexes = [1, 3, 5, 7]
+    mi.worker_ip = '10.0.0.7'
+    mi.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
+            worker_id=8, worker_ip='10.0.0.8', gpu_indexes=[1, 3, 5, 7]
+        )
+    ]
+    mi.named_ports['_vllm_external_api'] = PortBand(base=40000, count=4)
+    mi.named_ports['_vllm_native_supervisor'] = PortBand(base=40030)
+    backend._worker.id = 7 + worker_index
+    backend._worker.ip = f'10.0.0.{7 + worker_index}'
+    manifest = backend._configure_native_workload(
+        plan, ['vllm', 'serve'], ['/models/moe', *backend._model.backend_parameters]
+    )
+    argv = plan.containers[0].execution.command
+    assert argv[argv.index('--port') + 1] == str(40000 + 2 * worker_index)
+    assert argv[argv.index('--data-parallel-start-rank') + 1] == str(2 * worker_index)
+    assert '--headless' not in argv
+    assert [p.dp_rank for p in manifest.dp_rank_placements] == [
+        2 * worker_index,
+        2 * worker_index + 1,
+    ]
+    env = {e.name: e.value for e in plan.containers[0].envs}
+    assert env['VLLM_DP_MASTER_PORT'] == '40020'
+    assert env['VLLM_DP_MASTER_IP'] == '10.0.0.7'
+
+
+@pytest.mark.parametrize('native', [False, True])
+@pytest.mark.parametrize('flag', ['--ssl-keyfile=key.pem', '--ssl-certfile=cert.pem'])
+def test_managed_rank_http_contract_rejects_tls(native, flag):
+    backend, plan = _external_backend()
+    if native:
+        backend._model.backend_parameters[0] = '-dpm'
+    configure = (
+        backend._configure_native_workload
+        if native
+        else backend._configure_external_workload
+    )
+    with pytest.raises(ValueError, match='routes and health checks.*HTTP'):
+        configure(
+            plan,
+            ['vllm', 'serve'],
+            ['/models/moe', *backend._model.backend_parameters, flag],
+        )
+
+
+@pytest.mark.parametrize('parameter', ['-dpm', '--data-parallel-start-rank=0'])
+def test_external_command_cannot_switch_to_another_load_balancing_mode(parameter):
+    backend, plan = _external_backend()
+    with pytest.raises(ValueError, match='selected External-LB mode'):
+        backend._configure_external_workload(
+            plan, ['vllm', 'serve'], ['/models/moe', parameter]
+        )
+
+
+def test_native_custom_command_retains_supported_dps_parameters():
+    backend, plan = _external_backend()
+    backend._model.backend_parameters[0] = '-dpm'
+    mi = backend._model_instance
+    mi.named_ports['_vllm_external_api'] = PortBand(base=40000, count=2)
+    mi.named_ports['_vllm_native_supervisor'] = PortBand(base=40030)
+    manifest = backend._configure_native_workload(
+        plan,
+        [
+            'vllm',
+            'serve',
+            '/models/moe',
+            *backend._model.backend_parameters,
+            '--dp-supervisor-probe-interval-s=7',
+        ],
+        [],
+    )
+    assert len(manifest.dp_rank_placements) == 2
+    assert '--dp-supervisor-probe-interval-s=7' in plan.containers[0].execution.command
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('role', ['prefill', 'decode'])
+async def test_new_pd_external_member_builds_distinct_rank_plans(monkeypatch, role):
+    from unittest.mock import AsyncMock, MagicMock
+    from gpustack.schemas.models import (
+        Model,
+        ModelInstance,
+        RoleSpec,
+        DisaggregationSpec,
+        role_effective_model,
+    )
+    from gpustack.server import controllers
+
+    backend, plan = _external_backend()
+    parameters = list(backend._model.backend_parameters)
+    model = Model(
+        id=1,
+        name='pd',
+        source='huggingface',
+        huggingface_repo_id='org/moe',
+        owner_principal_id=1,
+        backend=BackendEnum.VLLM,
+        backend_version='0.32.0',
+        backend_parameters=['--tp=16'],
+        disaggregation=DisaggregationSpec(mode='vllm-nixl'),
+        roles=[
+            RoleSpec(name=name, replicas=1, backend_parameters=parameters)
+            for name in ['prefill', 'decode']
+        ]
+        + [RoleSpec(name='router', replicas=1)],
+    )
+    monkeypatch.setattr(
+        controllers, 'get_draft_model_source', AsyncMock(return_value=None)
+    )
+    row = await controllers._build_instance_create(
+        MagicMock(),
+        model,
+        next(r for r in model.roles if r.name == role),
+        'g1',
+        'digest',
+    )
+    assert row.distributed_servers.workloads == []
+    mi = ModelInstance.model_validate(row.model_dump())
+    mi.id, mi.worker_id, mi.worker_ip = 1, 7, '10.0.0.7'
+    mi.restart_count = 3
+    mi.gpu_indexes = [1, 3, 5, 7]
+    mi.port, mi.ports = 40000, backend._model_instance.ports
+    mi.named_ports = {
+        **backend._model_instance.named_ports,
+        'kv_side_channel': PortBand(base=40100, count=2),
+    }
+    backend._model_instance = mi
+    backend._model_spec = model
+    backend._model = role_effective_model(model, role)
+    backend._model_path = '/models/moe'
+    backend._pd_injection_resolved = False
+    backend._pd_injection_cache = None
+    backend._pd_template_variables = lambda: {'net_device': 'eth0'}
+    manifest = backend._configure_external_workload(
+        plan, ['vllm', 'serve'], ['/models/moe', *parameters]
+    )
+    tasks = json.loads(
+        next(
+            f.content
+            for f in plan.containers[0].files
+            if f.path == '/gpustack/tasks.json'
+        )
+    )['tasks']
+    assert [p.api_port for p in manifest.dp_rank_placements] == [40000, 40001]
+    for rank, task in enumerate(tasks):
+        argv = task['argv']
+        descriptor = json.loads(argv[argv.index('--kv-transfer-config') + 1])
+        assert descriptor['engine_id'] == f'gpustack-1-r3-dp{rank}'
+        assert descriptor['kv_role'] == (
+            'kv_producer' if role == 'prefill' else 'kv_consumer'
+        )
+        assert task['env']['VLLM_NIXL_SIDE_CHANNEL_PORT'] == '40100'
+    assert model.backend_parameters == ['--tp=16']
+    assert backend._model.backend_parameters == parameters
+
+
+@pytest.mark.parametrize(
+    'flag', ['--kv-transfer-config', '--kv-transfer-config=', '--kv_transfer_config=']
+)
+def test_pd_rank_final_user_kv_json_and_generated_files_are_isolated(flag):
+    from gpustack.worker.pd_injection import PDInjection
+
+    backend, plan = _external_backend()
+    backend._model_instance.role = 'prefill'
+    backend._model.env = {}
+    backend._template_variables = lambda **kwargs: kwargs
+    backend._pd_injection = lambda **kwargs: PDInjection(
+        env={'PD_CONFIG': '/etc/pd.json'},
+        files={'/etc/pd.json': json.dumps({'rank': kwargs['dp_rank']})},
+    )
+    descriptor = {
+        'kv_connector': 'MultiConnector',
+        'engine_id': 'user-engine',
+        'kv_connector_extra_config': {
+            'connectors': [
+                {'kv_connector': 'NixlConnector', 'engine_id': 'user-child'},
+                {'kv_connector': 'LMCacheConnectorV1'},
+            ]
+        },
+    }
+    encoded = json.dumps(descriptor)
+    user_args = [flag + encoded] if flag.endswith('=') else [flag, encoded]
+    backend._configure_external_workload(
+        plan, ['vllm', 'serve'], ['/models/moe', *user_args]
+    )
+    files = {f.path: f.content for f in plan.containers[0].files}
+    tasks = json.loads(files['/gpustack/tasks.json'])['tasks']
+    for rank, task in enumerate(tasks):
+        index = next(
+            i
+            for i, token in enumerate(task['argv'])
+            if token.split('=', 1)[0].replace('_', '-') == '--kv-transfer-config'
+        )
+        token = task['argv'][index]
+        raw = token.split('=', 1)[1] if '=' in token else task['argv'][index + 1]
+        actual = json.loads(raw)
+        assert actual['engine_id'] == f'gpustack-1-r3-dp{rank}'
+        assert all(
+            'engine_id' not in child
+            for child in actual['kv_connector_extra_config']['connectors']
+        )
+        config_path = task['env']['PD_CONFIG']
+        assert config_path == f'/gpustack/pd/dp{rank}/etc/pd.json'
+        assert json.loads(files[config_path]) == {'rank': rank}
+    assert json.loads(encoded) == descriptor
+
+
+@pytest.mark.parametrize('pd_role', [None, 'prefill', 'decode'])
+def test_external_dp1_dense_stays_one_complete_engine(pd_role):
+    backend, plan = _external_backend(dp=1)
+    backend._get_pretrained_config = lambda: types.SimpleNamespace(hidden_size=4096)
+    if pd_role:
+        from gpustack.worker.pd_injection import PDInjection
+
+        backend._model_instance.role = pd_role
+        backend._model.env = {}
+        backend._template_variables = lambda **kwargs: kwargs
+        backend._pd_injection = lambda **kwargs: PDInjection(
+            args=['--kv-transfer-config', json.dumps({'kv_connector': 'NixlConnector'})]
+        )
+    manifest = backend._configure_external_workload(
+        plan, ['vllm', 'serve'], ['/models/dense']
+    )
+    assert len(manifest.dp_rank_placements) == 1
+    assert manifest.dp_rank_placements[0].gpu_indexes == [1, 3]
+
+
+def test_managed_pd_dense_tp_across_workers_keeps_one_engine_identity():
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+    from gpustack.worker.pd_injection import PDInjection
+
+    identities = []
+    for worker_index in (0, 1):
+        backend, plan = _external_backend(dp=1)
+        backend._model.backend_parameters = [
+            '--data-parallel-external-lb',
+            '--dp=1',
+            '--tp=4',
+        ]
+        backend._get_pretrained_config = lambda: types.SimpleNamespace(hidden_size=4096)
+        backend._model.env = {}
+        backend._template_variables = lambda **kwargs: kwargs
+        backend._pd_injection = lambda **kwargs: PDInjection(
+            args=['--kv-transfer-config', '{"kv_connector":"NixlConnector"}']
+        )
+        mi = backend._model_instance
+        mi.role, mi.worker_ip, mi.gpu_indexes = 'prefill', '10.0.0.7', [1, 3]
+        mi.distributed_servers.subordinate_workers = [
+            ModelInstanceSubordinateWorker(
+                worker_id=8, worker_ip='10.0.0.8', gpu_indexes=[1, 3]
+            )
+        ]
+        mi.named_ports['_vllm_external_store'] = PortBand(base=40100, count=1)
+        backend._worker.id = 7 + worker_index
+        backend._worker.ip = f'10.0.0.{7 + worker_index}'
+        manifest = backend._configure_external_workload(
+            plan, ['vllm', 'serve'], ['/models/dense']
+        )
+        tasks = json.loads(
+            next(
+                f.content
+                for f in plan.containers[0].files
+                if f.path == '/gpustack/tasks.json'
+            )
+        )['tasks']
+        assert len(tasks) == 1
+        argv = tasks[0]['argv']
+        identities.append(
+            json.loads(argv[argv.index('--kv-transfer-config') + 1])['engine_id']
+        )
+        placement = manifest.dp_rank_placements[0]
+        assert placement.node_rank == worker_index
+        assert placement.api_port == (None if worker_index else 40000)
+        assert ('--headless' in argv) is bool(worker_index)
+    assert identities == ['gpustack-1-r3-dp0'] * 2
+
+
+def _managed_pd_backend_case(mode, env=None):
+    from gpustack.schemas.models import (
+        Model,
+        RoleSpec,
+        DisaggregationSpec,
+        role_effective_model,
+    )
+
+    backend, plan = _external_backend(
+        vendor='Huawei' if mode == 'vllm-ascend-mooncake' else 'NVIDIA'
+    )
+    parameters = list(backend._model.backend_parameters)
+    model = Model(
+        id=1,
+        name='pd',
+        source='huggingface',
+        huggingface_repo_id='org/moe',
+        owner_principal_id=1,
+        backend=BackendEnum.VLLM,
+        env=env or {},
+        disaggregation=DisaggregationSpec(mode=mode),
+        roles=[
+            RoleSpec(name=name, backend_parameters=parameters)
+            for name in ['prefill', 'decode']
+        ],
+    )
+    backend._model_spec = model
+    backend._model = role_effective_model(model, 'prefill')
+    backend._model_instance.role, backend._model_instance.gpu_indexes = 'prefill', [
+        1,
+        3,
+        5,
+        7,
+    ]
+    backend._model_instance.named_ports.update(
+        {
+            'kv_side_channel': PortBand(base=40100, count=2),
+            'kv_port': PortBand(base=40200, count=4),
+        }
+    )
+    backend._model_path = '/models/moe'
+    backend._pd_injection_resolved, backend._pd_injection_cache = False, None
+    backend._pd_template_variables = lambda: {'net_device': 'eth0'}
+    return backend, plan
+
+
+@pytest.mark.parametrize(
+    'mode,key,value',
+    [
+        ('vllm-nixl', 'VLLM_NIXL_SIDE_CHANNEL_PORT', '49999'),
+        ('vllm-nixl', 'VLLM_NIXL_SIDE_CHANNEL_HOST', '10.99.0.1'),
+        ('vllm-ascend-mooncake', 'HCCL_IF_IP', '10.99.0.1'),
+    ],
+)
+def test_managed_pd_rejects_reserved_endpoint_env_conflicts(mode, key, value):
+    backend, plan = _managed_pd_backend_case(mode, {key: value})
+    with pytest.raises(ValueError, match='reserved connector'):
+        backend._configure_external_workload(plan, ['vllm', 'serve'], ['/models/moe'])
+
+
+@pytest.mark.parametrize('port', [None, 40200, 49999])
+def test_managed_ascend_final_kv_json_uses_reserved_port(port):
+    backend, plan = _managed_pd_backend_case(
+        'vllm-ascend-mooncake', {'HCCL_SOCKET_IFNAME': 'bond0'}
+    )
+    descriptor = {'kv_connector': 'MooncakeHybridConnector', 'kv_role': 'kv_producer'}
+    if port is not None:
+        descriptor['kv_port'] = port
+    args = ['/models/moe', '--kv-transfer-config', json.dumps(descriptor)]
+    if port == 49999:
+        with pytest.raises(ValueError, match='reserved connector'):
+            backend._configure_external_workload(plan, ['vllm', 'serve'], args)
+        return
+    backend._configure_external_workload(plan, ['vllm', 'serve'], args)
+    tasks = json.loads(
+        next(
+            f.content for f in plan.containers[0].files if f.path.endswith('tasks.json')
+        )
+    )['tasks']
+    for task in tasks:
+        argv = task['argv']
+        assert (
+            json.loads(argv[argv.index('--kv-transfer-config') + 1])['kv_port'] == 40200
+        )
+        assert task['env']['HCCL_SOCKET_IFNAME'] == 'bond0'
+
+
+@pytest.mark.parametrize(
+    'parameters,expected',
+    [
+        (['--dp-size=4'], True),
+        (['--enable-dp-attention', '--dp', '2'], True),
+        (['--ep-size', '8'], True),
+        (['--tp', '8'], False),
+        (['--dp-size=1'], False),
+        (['--policy=random'], False),
+        (['--dp=4', '--data-parallel-size=1'], False),
+    ],
+)
+def test_sglang_smg_mode_uses_effective_parallelism(parameters, expected):
+    from gpustack.utils.model_instance_workers import sglang_smg_mode
+
+    model = new_model(
+        1,
+        'sg',
+        huggingface_repo_id='org/sg',
+        backend='SGLang',
+        backend_parameters=parameters,
+    )
+    assert sglang_smg_mode(model) is expected
+    model.disaggregation = True
+    assert not sglang_smg_mode(model)
+
+
+@pytest.mark.parametrize(
+    'parameters,expected,policy',
+    [
+        (['--dp=4'], ['--dp=4'], 'cache_aware'),
+        (
+            ['--policy=random', '--policy round_robin', '--dp=4'],
+            ['--dp=4'],
+            'round_robin',
+        ),
+        (
+            [
+                '--schedule-policy=lpm',
+                '--load-balance-method=auto',
+                '--policy',
+                'manual',
+            ],
+            ['--schedule-policy=lpm', '--load-balance-method=auto'],
+            'manual',
+        ),
+    ],
+)
+def test_sglang_smg_policy_is_native_and_nonmutating(parameters, expected, policy):
+    from gpustack.worker.backends.sglang import split_sglang_smg_parameters
+
+    original = list(parameters)
+    assert split_sglang_smg_parameters(parameters, {'sglang-router': '0.3.2'}) == (
+        expected,
+        policy,
+    )
+    assert parameters == original
+
+
+@pytest.mark.parametrize(
+    'parameters,dependencies',
+    [
+        (['--policy'], {'sglang-router': '0.3.2'}),
+        (['--policy='], {'sglang-router': '0.3.2'}),
+        (['--policy', '--dp=4'], {'sglang-router': '0.3.2'}),
+        (['--policy=consistent_hashing'], {'sglang-router': '0.3.2'}),
+        ([], None),
+        ([], {'sglang-router': '0.5.0'}),
+    ],
+)
+def test_sglang_smg_policy_rejects_unknown_capabilities(parameters, dependencies):
+    from gpustack.worker.backends.sglang import split_sglang_smg_parameters
+
+    with pytest.raises(ValueError):
+        split_sglang_smg_parameters(parameters, dependencies)
+
+
+def test_resolved_image_capabilities_follow_selected_runner_and_reset(monkeypatch):
+    import gpustack.worker.backends.base as base_module
+
+    runner = _make_versioned_runner('13.0', 'selected-image')
+    runner.variants[0].services[0].versions[0].platforms[0].dependencies = {
+        'sglang-router': '0.3.2'
+    }
+    monkeypatch.setattr(
+        base_module,
+        'merged_backend_runners',
+        lambda *_, **__: [types.SimpleNamespace(versions=[runner])],
+    )
+    server = SGLangServer.__new__(SGLangServer)
+    server._model = types.SimpleNamespace(
+        image_name=None, backend='sglang', backend_version=None
+    )
+    server.inference_backend = None
+    server._get_device_info = lambda: ('cuda', '13.0', None)
+    server._fetch_runner_overrides = lambda: []
+    assert server._resolve_image()[0] == 'selected-image'
+    assert server._resolved_image_dependencies == {'sglang-router': '0.3.2'}
+    server._model.image_name = 'custom-image'
+    assert server._resolve_image()[0] == 'custom-image'
+    assert server._resolved_image_dependencies is None
+
+
+def test_ordinary_sglang_legacy_launcher_does_not_forward_smg_policy():
+    server = SGLangServer.__new__(SGLangServer)
+    server._model = new_model(
+        1,
+        'sg',
+        huggingface_repo_id='org/sg',
+        backend='SGLang',
+        backend_parameters=['--dp=4', '--policy=random'],
+    )
+    server._model_instance = new_model_instance(1, 'sg', model_id=1, worker_id=1)
+    with pytest.raises(ValueError, match='paired SMG'):
+        server._start()
+
+
+def _managed_sglang_backend(worker_id=1):
+    from unittest.mock import MagicMock
+
+    backend = SGLangServer.__new__(SGLangServer)
+    backend._model = new_model(
+        1,
+        'sg',
+        huggingface_repo_id='org/sg',
+        backend='SGLang',
+        backend_parameters=['--dp=4', '--policy=manual'],
+    )
+    backend._model_instance = new_model_instance(1, 'sg', model_id=1, worker_id=1)
+    backend._model_instance.worker_ip = '10.0.0.1'
+    backend._model_instance.restart_count = 3
+    backend._model_instance.port = 40000
+    backend._model_instance.ports = [40000, 40001, 40002, 40003]
+    backend._model_instance.named_ports = {
+        '_sglang_engine_api': PortBand(base=40000),
+        '_sglang_connecting': PortBand(base=40001),
+        '_sglang_smg_api': PortBand(base=40002),
+        '_sglang_smg_metrics': PortBand(base=40003),
+    }
+    backend._model_instance.distributed_servers = DistributedServers(workloads=[])
+    if worker_id != 1:
+        backend._model_instance.distributed_servers.subordinate_workers = [
+            ModelInstanceSubordinateWorker(
+                worker_id=worker_id, worker_ip='10.0.0.2', gpu_indexes=[0]
+            )
+        ]
+    backend._worker = types.SimpleNamespace(id=worker_id, ip=f'10.0.0.{worker_id}')
+    backend._smg_image_dependencies = {'sglang-router': '0.3.2'}
+    backend._get_configured_resources = lambda: {'nvidia.com/gpu': '0'}
+    backend._get_configured_mounts = lambda: []
+    backend._get_configured_ports = lambda: []
+    backend._get_container_env_config = lambda env: types.SimpleNamespace(
+        user=0, group=0, shm_size_gib=1
+    )
+    backend._host_ipc_enabled = lambda: False
+    backend._transform_workload_plan = lambda plan, **kwargs: plan
+    backend._workload_plan_callback = MagicMock()
+    return backend
+
+
+@pytest.mark.parametrize('worker_id,count', [(1, 2), (2, 1)])
+def test_managed_sglang_prepares_engine_and_primary_cpu_smg(
+    monkeypatch, worker_id, count
+):
+    from gpustack.schemas.models import ROUTER_DEFAULT_CPU, ROUTER_DEFAULT_MEMORY
+
+    backend = _managed_sglang_backend(worker_id)
+    monkeypatch.setattr(
+        'gpustack.worker.backends.sglang.create_workload',
+        lambda *args: pytest.fail('preparer created runtime'),
+    )
+    backend._create_workload(
+        backend._model_instance.get_deployment_metadata(worker_id),
+        ['sglang', 'serve'],
+        None,
+        ['--dp=4', '--port=40000'],
+        {'CUDA_VISIBLE_DEVICES': '0', 'NCCL_DEBUG': 'INFO'},
+        'same-engine-image',
+    )
+    manifests, plans = backend._workload_plan_callback.call_args.args
+    assert len(plans) == len(manifests) == count
+    assert manifests[0].component.kind == 'sglang_engine'
+    assert manifests[0].component.api_port == (40000 if worker_id == 1 else None)
+    assert manifests[0].component.dp_size == (4 if worker_id == 1 else None)
+    assert not manifests[0].dp_rank_placements
+    assert plans[0].containers[0].resources == {'nvidia.com/gpu': '0'}
+    assert manifests[0].component.image == 'same-engine-image'
+    assert manifests[0].component.router_version == '0.3.2'
+
+    assert '--policy' not in ' '.join(
+        [
+            *(plans[0].containers[0].execution.command or []),
+            *(plans[0].containers[0].execution.args or []),
+        ]
+    )
+    if worker_id == 1:
+        smg = plans[1].containers[0]
+        assert smg.image == 'same-engine-image'
+        assert smg.resources == {
+            'cpu': ROUTER_DEFAULT_CPU,
+            'memory': ROUTER_DEFAULT_MEMORY,
+        }
+        assert [(env.name, env.value) for env in smg.envs] == [
+            ('TORCH_DEVICE_BACKEND_AUTOLOAD', '0'),
+            ('ASCEND_VISIBLE_DEVICES', 'void'),
+            ('NVIDIA_VISIBLE_DEVICES', 'void'),
+        ]
+        assert not smg.mounts
+        assert not plans[1].instance_type and not plans[1].host_ipc
+        argv = [*(smg.execution.command or []), *smg.execution.args]
+        assert argv[:3] == ['python3', '-m', 'sglang_router.launch_router']
+        assert argv[argv.index('--worker-urls') + 1] == 'http://10.0.0.1:40000'
+        assert argv[argv.index('--policy') + 1] == 'manual'
+        assert '--dp-aware' in argv
+        assert {port.internal for port in smg.ports} == {40002, 40003}
+        assert not {40002, 40003} & {
+            port.internal for port in plans[0].containers[0].ports
+        }
+    assert pickle.loads(pickle.dumps((manifests, plans)))[0] == manifests
+
+
+@pytest.mark.parametrize('dependencies', [None, {}, {'sglang-router': 'unknown'}])
+def test_managed_sglang_preparation_rejects_unknown_image_capability(
+    monkeypatch, dependencies
+):
+    backend = _managed_sglang_backend()
+    backend._smg_image_dependencies = dependencies
+    monkeypatch.setattr(
+        'gpustack.worker.backends.sglang.create_workload',
+        lambda *args: pytest.fail('preparer created runtime'),
+    )
+    with pytest.raises(ValueError, match='trusted'):
+        backend._create_workload(
+            backend._model_instance.get_deployment_metadata(1),
+            ['sglang', 'serve'],
+            None,
+            [],
+            {},
+            'unknown-image',
+        )
+    backend._workload_plan_callback.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'parameters,error',
+    [
+        (
+            [
+                '--dp=4',
+                '--policy=manual',
+                '--schedule-policy=lpm',
+                '--load-balance-method=auto',
+            ],
+            False,
+        ),
+        (['--dp=4', '--host=wrong'], True),
+        (['--dp=4', '--port=9999'], True),
+    ],
+)
+def test_managed_sglang_engine_argv_splits_policy_and_fences_addresses(
+    parameters, error
+):
+    backend = _managed_sglang_backend()
+    backend._model.backend_parameters = list(parameters)
+    backend._model_path = '/models/sg'
+    backend.inference_backend = None
+    backend._derive_max_model_len = lambda: None
+    backend._get_model_architecture = lambda: []
+    backend._get_speculative_arguments = lambda: []
+    backend._get_hicache_arguments = lambda: []
+    backend._get_selected_gpu_devices = lambda: []
+    backend._flatten_backend_param = lambda: list(parameters)
+    if error:
+        with pytest.raises(ValueError, match='conflicts'):
+            backend._build_command_args(40000, False, False)
+    else:
+        argv, injected = backend._build_command_args(40000, False, False)
+        assert '--policy=manual' not in argv
+        assert '--schedule-policy=lpm' in argv and '--load-balance-method=auto' in argv
+    assert backend._model.backend_parameters == parameters
+
+
+def test_accelerator_free_plan_conversion_skips_model_instance_type(monkeypatch):
+    import gpustack.worker.backends.base as base_module
+
+    backend = _StubServer.__new__(_StubServer)
+    backend._model = types.SimpleNamespace(
+        gpu_type_selector=types.SimpleNamespace(type='gpu-instance-type')
+    )
+    backend._config, backend._fallback_registry = None, None
+    monkeypatch.setattr(
+        base_module, 'transform_workload_plan', lambda config, plan, registry: plan
+    )
+    cpu = WorkloadPlan(name='smg', containers=[])
+    engine = WorkloadPlan(name='engine', containers=[])
+    assert (
+        backend._transform_workload_plan(cpu, accelerator_free=True).instance_type
+        is None
+    )
+    assert backend._transform_workload_plan(engine).instance_type == 'gpu-instance-type'
+
+
+def test_smg_recovery_plan_is_pure_cpu_and_preserves_resolved_image():
+    from gpustack.schemas.models import ModelInstanceComponent
+    from gpustack.worker.backends.sglang import build_sglang_smg_workload
+
+    component = ModelInstanceComponent(
+        kind='sglang_smg', api_port=41002, metrics_port=41003, attempt=2
+    )
+    plan = build_sglang_smg_workload(
+        'instance-r3-smg-a2',
+        'mirror/engine:chosen',
+        'cache_aware',
+        component,
+        '10.0.0.1',
+        'http://10.0.0.1:41000',
+    )
+    assert plan.name == 'instance-r3-smg-a2'
+    assert plan.instance_type is None
+    container = plan.containers[0]
+    assert container.image == 'mirror/engine:chosen'
+    assert [(env.name, env.value) for env in container.envs] == [
+        ('TORCH_DEVICE_BACKEND_AUTOLOAD', '0'),
+        ('ASCEND_VISIBLE_DEVICES', 'void'),
+        ('NVIDIA_VISIBLE_DEVICES', 'void'),
+    ]
+    assert not container.mounts
+    assert set(container.resources) == {'cpu', 'memory'}
+    assert container.execution.command == [
+        'python3',
+        '-m',
+        'sglang_router.launch_router',
+    ]
+    assert (
+        container.execution.args[container.execution.args.index('--worker-urls') + 1]
+        == 'http://10.0.0.1:41000'
+    )
+
+
+@pytest.mark.parametrize('handed_off', [True, False])
+def test_sglang_child_preparer_failure_respects_engine_handoff(handed_off):
+    from unittest.mock import MagicMock, patch
+    from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+    from gpustack.worker.backends.sglang import SGLangServer
+    from tests.utils.model import new_model_instance
+
+    server = object.__new__(SGLangServer)
+    mi = new_model_instance(1, 'sg', 1, worker_id=1)
+    mi.distributed_servers = DistributedServers(workloads=[])
+    server._model_instance = mi
+    server._worker = types.SimpleNamespace(id=1)
+    server._clientset = MagicMock()
+    current = mi.model_copy(deep=True)
+    if handed_off:
+        current.distributed_servers.workloads = [
+            ModelInstanceWorkload(
+                name='engine',
+                worker_id=1,
+                state='running',
+                component=dict(
+                    kind='sglang_engine', api_port=41000, dp_size=2, ready=True
+                ),
+            )
+        ]
+    server._clientset.model_instances.get.return_value = current
+    error = BrokenPipeError('preparation pipe closed')
+    with patch.object(InferenceServer, '_handle_error', side_effect=error) as parent:
+        with pytest.raises(BrokenPipeError):
+            server._handle_error(error)
+    assert parent.call_count == int(not handed_off)
+
+
+@pytest.mark.parametrize('conflict', [None, 'dist-init-addr', 'nccl-port'])
+def test_managed_single_node_sglang_dpa_uses_reserved_internal_ports(conflict):
+    from gpustack.utils.command import find_parameter
+
+    backend = _managed_sglang_backend()
+    backend._model.backend_parameters.append('--enable-dp-attention')
+    band = backend._model_instance.named_ports['_sglang_connecting']
+    band.count = 14
+    args = backend._get_multinode_arguments(True)
+    assert find_parameter(args, ['dist-init-addr']) == '127.0.0.1:40001'
+    assert find_parameter(args, ['nccl-port']) == '40008'
+    parameters = [f'--{conflict}=49999'] if conflict else []
+    if conflict:
+        with pytest.raises(ValueError, match='reserved allocation'):
+            backend._validate_managed_engine_parameters(parameters, False, True, 40000)
+    else:
+        backend._validate_managed_engine_parameters([], False, True, 40000)
+
+
+def test_managed_sglang_dpa_refuses_to_expand_a_published_old_layout():
+    backend = _managed_sglang_backend()
+    backend._model.backend_parameters.append('--enable-dp-attention')
+    with pytest.raises(ValueError, match='recreate the instance'):
+        backend._get_multinode_arguments(True)
+
+
+def test_legacy_single_node_sglang_dpa_keeps_native_port_selection():
+    backend = _managed_sglang_backend()
+    backend._model_instance.distributed_servers.workloads = None
+    backend._model.backend_parameters.append('--enable-dp-attention')
+    assert backend._get_multinode_arguments(True) == []

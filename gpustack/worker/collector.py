@@ -11,6 +11,7 @@ from gpustack.schemas.workers import (
     MountPoint,
     WorkerStatusPublic,
     WorkerStatus,
+    WorkerOrchestrationStatus,
     SystemReserved,
     GPUDevicesStatus,
     SystemInfo,
@@ -117,6 +118,8 @@ class WorkerStatusCollector:
         self._inject_computed_filesystem_usage(status)
         self._inject_topology_facts(status)
         self._inject_kv_transfer_ifname(status)
+
+        status.orchestration = WorkerOrchestrationStatus(protocol_version=1)
 
         # If disable_worker_metrics is set, set metrics_port to -1
         metrics_port = self._cfg.worker_metrics_port

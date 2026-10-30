@@ -1,15 +1,20 @@
 import asyncio
+import httpx
 import contextlib
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import wraps
 import json
 import multiprocessing
+from multiprocessing.connection import Connection
 import shutil
 import threading
 import time
 
 import requests
 import setproctitle
+import psutil
 import os
 from typing import Dict, Optional, Set, List, Callable, Tuple
 from pathlib import Path
@@ -18,7 +23,11 @@ from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
 from gpustack_runtime.deployer import (
+    create_workload,
     get_workload,
+    list_workloads,
+    WorkloadPlan,
+    WorkloadStatus,
     WorkloadStatusStateEnum,
     delete_workload,
 )
@@ -40,11 +49,21 @@ from gpustack.schemas.inference_backend import (
 from gpustack.utils import network
 from gpustack.utils.convert import safe_int
 from gpustack.utils.attrs import set_attr
-from gpustack.utils.command import find_int_parameter
-from gpustack.utils.process import terminate_process_tree, add_signal_handlers
+from gpustack.utils.command import find_int_parameter, find_last_parameter
+from gpustack.utils.process import (
+    terminate_process_tree,
+    terminate_process,
+    add_signal_handlers,
+)
 from gpustack.worker.backends.base import PD_CONFIGURATION_CHANGED_MESSAGE
 from gpustack.worker.backends.ascend_mindie import AscendMindIEServer
-from gpustack.worker.backends.sglang import SGLangServer
+from gpustack.worker.backends.sglang import (
+    SGLangServer,
+    build_sglang_smg_workload,
+    split_sglang_smg_parameters,
+    sglang_component_connecting_port_count,
+)
+from gpustack.utils.runtime import transform_workload_plan
 from gpustack.utils.command import resolve_executor_backend
 from gpustack.worker.backends.vllm import VLLMServer, cal_multinode_topology
 from gpustack.utils.vllm_topology import parse_user_parallelism
@@ -52,6 +71,7 @@ from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.custom import CustomServer
 from gpustack.worker.log_sources import (
     CappedLogWriter,
+    write_log_sources,
     canonical_log_path,
     container_log_path,
     find_instance_log_dir,
@@ -85,6 +105,12 @@ from gpustack.schemas.models import (
     ModelUpdate,
     ModelInstance,
     ModelInstanceUpdate,
+    ModelInstanceRankReport,
+    ModelInstanceStopUpdate,
+    ModelInstanceStopReport,
+    ModelInstanceRankUpdate,
+    ModelInstanceWorkload,
+    ModelInstanceWorkloadStateEnum,
     ModelInstanceStateEnum,
     get_backend,
     DistributedServerCoordinateModeEnum,
@@ -96,6 +122,19 @@ from gpustack.schemas.models import (
     role_effective_model,
 )
 from gpustack.schemas.pd_modes import PDPortScopeEnum
+from gpustack.utils.model_instance_workers import (
+    get_model_instance_workloads,
+    model_instance_legacy_stop,
+    has_model_instance_stop_barrier,
+    managed_instance_update,
+    ModelInstanceTarget,
+    resolve_model_instance_endpoint,
+)
+from gpustack.utils.vllm_topology import (
+    VLLM_MP_CONNECTING_PORT_COUNT as _VLLM_MP_CONNECTING_BAND,
+    managed_lb_parallelism,
+    vllm_lb_mode,
+)
 from gpustack.schemas.workers import WorkerStateEnum
 from gpustack.worker.pd_injection import (
     ACCELERATOR_COUNT_KEY,
@@ -115,10 +154,16 @@ _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE = "Inference health check failed."
 _WORKLOAD_FAILED_MESSAGE = "Inference server exited or unhealthy."
 _SUBORDINATE_ERROR_PREFIX = "Distributed serving error in subordinate worker "
 
-# vLLM excludes a ten-port window starting at VLLM_DP_MASTER_PORT from its
-# other automatic port selections. Protect that window for MP topologies
-# that set the variable; this is a compatibility budget, not a listener count.
-_VLLM_MP_CONNECTING_BAND = 10
+_RANK_HEALTH_CONCURRENCY = 4
+
+
+@dataclass
+class _RankHealthCheck:
+    startup: bool
+    failures: int = 0
+    last_check: Optional[float] = None
+    future: Optional[Future] = None
+
 
 _PORT_CLEANUP_RETRIES = 15
 _PORT_CLEANUP_RETRY_INTERVAL = 2
@@ -211,6 +256,9 @@ class _LogPersistence:
         self.main_thread = main_thread
         # Which restart's files the generation writes.
         self.restart_count = restart_count
+        self.workload_name: Optional[str] = None
+        self.component_writer = None
+        self.component_attempt = -1
         self._lock = threading.Lock()
         self._stopping = False
         self._aux_threads: List[threading.Thread] = []
@@ -240,6 +288,14 @@ class _LogPersistence:
                 self._aux_stop_events.append(stop_event)
             thread.start()
             return True
+
+    def discard_aux_thread(self, thread, stop_event) -> None:
+        """Release a confirmed stopped writer instead of retaining attempt history."""
+        with self._lock:
+            if thread in self._aux_threads:
+                self._aux_threads.remove(thread)
+            if stop_event in self._aux_stop_events:
+                self._aux_stop_events.remove(stop_event)
 
     def stop(self, model_instance_id: int, timeout: float) -> bool:
         """Signal every thread of this generation and wait for it to finish.
@@ -416,6 +472,7 @@ class ServeManager(ContainerLogPersister):
 
         self._provisioning_processes = {}
         self._log_persistence = {}
+        self._legacy_stop_names = {}
         self._log_persistence_lock = threading.Lock()
         self._error_model_instances = {}
         self._pending_model_instance_errors: Dict[int, dict] = {}
@@ -424,6 +481,9 @@ class ServeManager(ContainerLogPersister):
         self._starting_model_instances: Set[int] = set()
         self._model_instance_start_lock = threading.Lock()
         self._model_lifecycle_locks = WeakValueDictionary()
+        self._managed_stopping: Dict[Tuple[int, int], bool] = {}
+        self._managed_launches: Dict[Tuple[int, int], Connection] = {}
+        self._smg_stopping: Dict[tuple, tuple] = {}
         self._distributed_port_claim_lock = threading.Lock()
         self._distributed_port_client: Optional[DistributedPortClient] = None
         self._distributed_port_claims: Dict[int, UUID] = {}
@@ -445,6 +505,11 @@ class ServeManager(ContainerLogPersister):
         self._last_successful_inference: Dict[int, float] = {}
         # Track last health check time per model instance
         self._last_health_check_time: Dict[int, float] = {}
+        self._rank_health_checks: Dict[Tuple, _RankHealthCheck] = {}
+        self._rank_health_futures: Dict[Tuple, Future] = {}
+        self._rank_health_last_dispatch: Dict[int, float] = {}
+        self._rank_health_executor: Optional[ThreadPoolExecutor] = None
+        self._rank_health_lock = threading.RLock()
 
         # Timestamp of the last authoritative (uncached) DB reconciliation in
         # the state sync, for the optional periodic backstop. Starts "now" so
@@ -456,6 +521,1191 @@ class ServeManager(ContainerLogPersister):
     def record_successful_inference(self, instance_id: int):
         """Called by worker proxy on successful inference response."""
         self._last_successful_inference[instance_id] = time.time()
+
+    def _is_local_model_instance(self, mi: ModelInstance) -> bool:
+        if get_model_instance_workloads(mi) is not None:
+            return self._worker_id in member_worker_ids(mi)
+        return mi.get_deployment_metadata(self._worker_id) is not None
+
+    def _managed_workload_labels(self, mi: ModelInstance) -> Dict[str, str]:
+        return {
+            "gpustack.ai/model-instance-id": str(mi.id),
+            "gpustack.ai/restart-count": str(mi.restart_count or 0),
+            "gpustack.ai/worker-id": str(self._worker_id),
+        }
+
+    @staticmethod
+    def _component_workload_labels(item: ModelInstanceWorkload) -> Dict[str, str]:
+        if item.component is None:
+            return {}
+        return {
+            "gpustack.ai/component-kind": item.component.kind,
+            "gpustack.ai/component-attempt": str(item.component.attempt),
+        }
+
+    @staticmethod
+    def _managed_launcher_available(mi, model) -> bool:
+        from gpustack.utils.model_instance_workers import sglang_smg_mode
+
+        return (
+            get_backend(model) == BackendEnum.VLLM
+            and mi.role in (None, "prefill", "decode")
+            and vllm_lb_mode(model.backend_parameters) in ("external", "native")
+        ) or (mi.role is None and sglang_smg_mode(model))
+
+    @staticmethod
+    def _component_plan_current(mi, item) -> bool:
+        if item.component is None:
+            return True
+        current = next(
+            (
+                w
+                for w in get_model_instance_workloads(mi, item.worker_id) or []
+                if w.name == item.name
+            ),
+            None,
+        )
+        return bool(
+            current is not None
+            and current.component is not None
+            and current.component.kind == item.component.kind
+            and current.component.attempt == item.component.attempt
+            and not current.component.stop_requested
+            and current.state
+            not in (
+                ModelInstanceWorkloadStateEnum.STOPPED,
+                ModelInstanceWorkloadStateEnum.FAILED,
+            )
+        )
+
+    def _managed_runtime_workloads(
+        self, mi: ModelInstance
+    ) -> Dict[str, List[WorkloadStatus]]:
+        """Read local matches and probe names omitted by the node-scoped listing."""
+        found = {
+            item.name: [] for item in get_model_instance_workloads(mi, self._worker_id)
+        }
+        statuses = list_workloads()
+        if statuses is None:
+            raise RuntimeError("Runtime workload listing is unknown")
+        statuses = list(statuses)
+        listed = {status.name for status in statuses}
+        # Node-scoped listings can omit admission-gated Pods until binding.
+        # A named lookup keeps these pending objects from looking absent.
+        for name in found.keys() - listed:
+            status = get_workload(name)
+            if status is not None:
+                if status.name != name:
+                    raise RuntimeError("Runtime workload lookup identity mismatch")
+                statuses.append(status)
+        local = {
+            item.name: item
+            for item in get_model_instance_workloads(mi, self._worker_id)
+        }
+        labels = self._managed_workload_labels(mi)
+        for status in statuses:
+            if status.name not in found:
+                continue
+            if any(
+                (status.labels or {}).get(key) != value
+                for key, value in {
+                    **labels,
+                    **self._component_workload_labels(local[status.name]),
+                }.items()
+            ):
+                raise RuntimeError(
+                    f"Workload {status.name} does not match this instance generation"
+                )
+            found[status.name].append(status)
+        return found
+
+    def _hold_managed_instance(self, mi: ModelInstance) -> None:
+        self._model_instance_by_instance_id[mi.id] = mi.model_copy(deep=True)
+        ports = model_instance_ports(mi, self._worker_id)
+        if (mi.id, mi.restart_count or 0) in self._managed_launches:
+            ports |= self._assigned_ports.get(mi.id, set())
+        self._port_reservations.hold_model(mi.id, ports)
+
+    def _report_managed_workloads(
+        self, mi: ModelInstance, workloads: List[ModelInstanceWorkload], **diagnostic
+    ) -> ModelInstance:
+        update = ModelInstanceRankUpdate(
+            rank_report=ModelInstanceRankReport(
+                restart_count=mi.restart_count or 0, workloads=workloads
+            ),
+            **diagnostic,
+        )
+        result = self._clientset.model_instances.update(id=mi.id, model_update=update)
+        return ModelInstance.model_validate(result)
+
+    @staticmethod
+    def _managed_stop_requested(mi: ModelInstance) -> bool:
+        if mi.state == ModelInstanceStateEnum.ERROR:
+            return True
+        return bool(
+            mi.draining_since is not None
+            and mi.distributed_servers is not None
+            and mi.distributed_servers.stop_requested
+        )
+
+    @staticmethod
+    def _preserve_registered_observations(local, previous) -> None:
+        """Preparation cannot reset the observations or Server-owned recovery intent."""
+        for item in local:
+            old = previous.get(item.name)
+            if old:
+                if item.component is not None and old.component is not None:
+                    item.component.ready = old.component.ready
+                    item.component.stop_requested = old.component.stop_requested
+                    item.component.last_restart_time = old.component.last_restart_time
+                item.state = old.state
+                ready = {
+                    (p.dp_rank, p.node_rank): p.ready for p in old.dp_rank_placements
+                }
+                for placement in item.dp_rank_placements:
+                    placement.ready = ready.get(
+                        (placement.dp_rank, placement.node_rank), placement.ready
+                    )
+
+    @_model_lifecycle
+    def _start_managed_workloads(
+        self,
+        mi: ModelInstance,
+        workloads: List[ModelInstanceWorkload],
+        plans: List[WorkloadPlan],
+    ) -> bool:
+        """Register resolved plans in the Worker's default runtime namespace."""
+        key = (mi.id, mi.restart_count or 0)
+        registered = starting = False
+        try:
+            current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+            if (
+                get_model_instance_workloads(current) is None
+                or current.restart_count != mi.restart_count
+                or current.cluster_id != mi.cluster_id
+                or self._worker_id not in member_worker_ids(current)
+                or self._managed_stop_requested(current)
+                or current.draining_since is not None
+                or key in self._managed_stopping
+                or any(
+                    item.state
+                    in (
+                        ModelInstanceWorkloadStateEnum.FAILED,
+                        ModelInstanceWorkloadStateEnum.STOPPED,
+                    )
+                    and (item.component is None or item.component.kind != 'sglang_smg')
+                    for item in get_model_instance_workloads(current, self._worker_id)
+                )
+            ):
+                return False
+            tracked = self._model_instance_by_instance_id.get(mi.id)
+            if tracked and tracked.restart_count != current.restart_count:
+                return False
+            local = [
+                item.model_copy(deep=True)
+                for item in ModelInstanceRankReport(
+                    restart_count=mi.restart_count or 0, workloads=workloads
+                ).workloads
+            ]
+            if (
+                not local
+                or any(item.worker_id != self._worker_id for item in local)
+                or len(plans) != len(local)
+                or {plan.name for plan in plans} != {item.name for item in local}
+                or any(plan.namespace is not None for plan in plans)
+            ):
+                raise ValueError(
+                    "Runtime plans must match the local manifest and use the Worker's default namespace"
+                )
+            previous = {
+                item.name: item
+                for item in get_model_instance_workloads(current, self._worker_id)
+            }
+            self._preserve_registered_observations(local, previous)
+            staged = ModelInstance.model_validate(current)
+            staged.distributed_servers = staged.distributed_servers.model_copy(
+                deep=True
+            )
+            staged.distributed_servers.workloads = [
+                item
+                for item in staged.distributed_servers.workloads
+                if item.worker_id != self._worker_id
+            ] + local
+            self._hold_managed_instance(staged)
+            with self._model_instance_start_lock:
+                self._starting_model_instances.add(mi.id)
+            starting = True
+            mi = self._report_managed_workloads(staged, local)
+            registered = True
+            self._hold_managed_instance(mi)
+            observed = self._managed_runtime_workloads(mi)
+            registered_states = {
+                item.name: item.state
+                for item in get_model_instance_workloads(mi, self._worker_id)
+            }
+            if not self._create_registered_plans(
+                mi, local, plans, observed, registered_states
+            ):
+                return False
+            return key not in self._managed_stopping
+        except Exception as exc:
+            logger.warning("Cannot start managed model instance %s: %s", mi.id, exc)
+            if registered:
+                self._report_managed_launch_failure(mi)
+                self._managed_stopping.setdefault(key, False)
+            return False
+        finally:
+            if starting:
+                with self._model_instance_start_lock:
+                    self._starting_model_instances.discard(mi.id)
+            if registered and key in self._managed_stopping:
+                self._stop_model_instance(mi, delete_logs=self._managed_stopping[key])
+
+    def _component_create_invalid(self, mi, item, latest):
+        if (
+            latest.restart_count != mi.restart_count
+            or latest.cluster_id != mi.cluster_id
+            or self._worker_id not in member_worker_ids(latest)
+            or self._managed_stop_requested(latest)
+            or latest.draining_since is not None
+            or (mi.id, mi.restart_count or 0) in self._managed_stopping
+        ):
+            return True
+        return not self._component_plan_current(latest, item)
+
+    def _handle_cpu_create_failure(self, mi, item, latest):
+        if (
+            item.component is None
+            or item.component.kind != 'sglang_smg'
+            or latest.restart_count != mi.restart_count
+            or latest.cluster_id != mi.cluster_id
+            or self._worker_id not in member_worker_ids(latest)
+            or self._managed_stop_requested(latest)
+            or latest.draining_since is not None
+        ):
+            return False
+        self._stop_smg(mi, item)
+        return True
+
+    def _create_registered_plans(self, mi, local, plans, observed, states):
+        """Keep CPU plan failures outside the Engine generation stop intent."""
+        key = (mi.id, mi.restart_count or 0)
+        by_name = {item.name: item for item in local}
+        for plan in plans:
+            item = by_name[plan.name]
+            latest = mi
+            try:
+                latest = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+                if self._component_create_invalid(mi, item, latest):
+                    if self._handle_cpu_create_failure(mi, item, latest):
+                        return True
+                    self._managed_stopping.setdefault(key, False)
+                    return False
+                existing = observed[plan.name]
+                if existing:
+                    if len(existing) != 1 or existing[0].state not in (
+                        WorkloadStatusStateEnum.RUNNING,
+                        WorkloadStatusStateEnum.PENDING,
+                        WorkloadStatusStateEnum.INITIALIZING,
+                    ):
+                        raise RuntimeError(
+                            f'Registered workload {plan.name} cannot be recreated'
+                        )
+                    continue
+                if states[
+                    plan.name
+                ] != ModelInstanceWorkloadStateEnum.PENDING or latest.state in (
+                    ModelInstanceStateEnum.RUNNING,
+                    ModelInstanceStateEnum.UNREACHABLE,
+                ):
+                    raise RuntimeError(
+                        f'Workload {plan.name} needs a new generation before recovery'
+                    )
+                plan.labels = {
+                    **(plan.labels or {}),
+                    **self._managed_workload_labels(mi),
+                    **self._component_workload_labels(item),
+                }
+                create_workload(plan)
+                if item.component is not None:
+                    latest = self._clientset.model_instances.get(
+                        id=mi.id, use_cache=False
+                    )
+                    if self._component_create_invalid(mi, item, latest):
+                        if self._handle_cpu_create_failure(mi, item, latest):
+                            return True
+                        self._managed_stopping.setdefault(key, False)
+                        return False
+            except Exception:
+                if self._handle_cpu_create_failure(mi, item, latest):
+                    return True
+                raise
+        return True
+
+    def _adopt_managed_model_instance(
+        self, mi: ModelInstance, tracked: Optional[ModelInstance]
+    ) -> bool:
+        """Retain ownership, finishing any older generation before adopting this one."""
+        if tracked and tracked.restart_count != mi.restart_count:
+            if (tracked.restart_count or 0) > (mi.restart_count or 0):
+                return False
+            if not self._stop_model_instance(tracked):
+                return False
+            tracked = None
+        if not self._is_local_model_instance(mi):
+            if tracked:
+                self._stop_model_instance(tracked)
+            return False
+        local = get_model_instance_workloads(mi, self._worker_id)
+        if local is None:
+            return False
+        if (
+            tracked
+            and not local
+            and get_model_instance_workloads(tracked, self._worker_id)
+        ):
+            self._stop_model_instance(tracked)
+            return False
+        self._hold_managed_instance(mi)
+        key = (mi.id, mi.restart_count or 0)
+        if self._managed_stop_requested(mi) or key in self._managed_stopping:
+            self._stop_model_instance(mi)
+            return False
+        return True
+
+    def _observe_managed_workloads(
+        self, mi: ModelInstance
+    ) -> List[ModelInstanceWorkload]:
+        try:
+            observed = self._managed_runtime_workloads(mi)
+        except Exception as exc:
+            logger.warning("Cannot observe managed model instance %s: %s", mi.id, exc)
+            observed = None
+        states = {
+            WorkloadStatusStateEnum.RUNNING: ModelInstanceWorkloadStateEnum.RUNNING,
+            WorkloadStatusStateEnum.PENDING: ModelInstanceWorkloadStateEnum.PENDING,
+            WorkloadStatusStateEnum.INITIALIZING: ModelInstanceWorkloadStateEnum.PENDING,
+            WorkloadStatusStateEnum.UNHEALTHY: ModelInstanceWorkloadStateEnum.FAILED,
+            WorkloadStatusStateEnum.FAILED: ModelInstanceWorkloadStateEnum.FAILED,
+            WorkloadStatusStateEnum.INACTIVE: ModelInstanceWorkloadStateEnum.FAILED,
+        }
+        report = [
+            item.model_copy(deep=True)
+            for item in get_model_instance_workloads(mi, self._worker_id)
+        ]
+        for item in report:
+            if item.component is not None and item.state in (
+                ModelInstanceWorkloadStateEnum.STOPPED,
+                ModelInstanceWorkloadStateEnum.FAILED,
+            ):
+                continue
+            matches = observed.get(item.name) if observed is not None else None
+            if matches is None or len(matches) > 1:
+                item.state = ModelInstanceWorkloadStateEnum.UNKNOWN
+            elif not matches:
+                item.state = (
+                    ModelInstanceWorkloadStateEnum.PENDING
+                    if item.component is not None
+                    and item.component.kind == 'sglang_smg'
+                    and item.state == ModelInstanceWorkloadStateEnum.PENDING
+                    and item.component.attempt > 0
+                    else ModelInstanceWorkloadStateEnum.FAILED
+                )
+            else:
+                item.state = states.get(
+                    matches[0].state, ModelInstanceWorkloadStateEnum.UNKNOWN
+                )
+            if item.state != ModelInstanceWorkloadStateEnum.RUNNING:
+                if item.component is not None and item.component.api_port is not None:
+                    item.component.ready = False
+                for placement in item.dp_rank_placements:
+                    if placement.node_rank == 0:
+                        placement.ready = False
+        return report
+
+    def _report_managed_launch_failure(self, mi: ModelInstance) -> None:
+        """Publish observed failure or uncertainty before cleanup can remain pending."""
+        try:
+            observed = self._observe_managed_workloads(mi)
+            current = self._report_managed_workloads(mi, observed)
+            self._hold_managed_instance(current)
+        except Exception as exc:
+            logger.warning(
+                "Cannot report managed launch failure for %s: %s", mi.id, exc
+            )
+
+    @staticmethod
+    def _has_sglang_components(mi: ModelInstance) -> bool:
+        workloads = get_model_instance_workloads(mi) or []
+        return bool(workloads) and all(w.component is not None for w in workloads)
+
+    def _smg_key(self, mi, item):
+        return (mi.id, mi.restart_count or 0, item.name, item.component.attempt)
+
+    def _stop_smg(self, mi, item) -> bool:
+        """Confirm one exact CPU task stopped while retaining Engine ownership."""
+        key = self._smg_key(mi, item)
+        self._smg_stopping[key] = (mi.model_copy(deep=True), item.model_copy(deep=True))
+        try:
+            connection = self._managed_launches.pop(
+                (mi.id, mi.restart_count or 0), None
+            )
+            if connection is not None:
+                connection.close()
+            if self._is_provisioning(mi):
+                terminate_process_tree(self._provisioning_processes[mi.id].pid)
+                if self._is_provisioning(mi):
+                    return False
+            # Observe the old identity even when the Server has replaced it.
+            old = mi.model_copy(deep=True)
+            old.distributed_servers = old.distributed_servers.model_copy(deep=True)
+            old.distributed_servers.workloads = [item.model_copy(deep=True)]
+            observed = self._managed_runtime_workloads(old)
+            if observed[item.name]:
+                delete_workload(item.name)
+            if self._managed_runtime_workloads(old)[item.name]:
+                return False
+            worker = self._clientset.workers.get(self._worker_id, use_cache=False)
+            if worker.state not in (
+                WorkerStateEnum.READY,
+                WorkerStateEnum.MAINTENANCE,
+            ) or getattr(worker, 'unreachable', False):
+                return False
+            try:
+                current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+            except NotFoundException:
+                current = None
+            if current is not None and (current.restart_count or 0) == (
+                mi.restart_count or 0
+            ):
+                local = get_model_instance_workloads(current, self._worker_id) or []
+                report = [w.model_copy(deep=True) for w in local]
+                target = next((w for w in report if w.name == item.name), None)
+                if target is not None and target.component == item.component:
+                    target.state = ModelInstanceWorkloadStateEnum.STOPPED
+                    target.component.ready = False
+                    if report != local:
+                        current = self._report_managed_workloads(current, report)
+                        self._hold_managed_instance(current)
+            self._smg_stopping.pop(key, None)
+            return True
+        except Exception as exc:
+            logger.warning('Cannot confirm SMG %s stopped: %s', item.name, exc)
+            return False
+
+    def _smg_create_current(self, mi, item):
+        current = ModelInstance.model_validate(
+            self._clientset.model_instances.get(id=mi.id, use_cache=False)
+        )
+        if (
+            current.deleted_at is not None
+            or (current.restart_count or 0) != (mi.restart_count or 0)
+            or current.cluster_id != mi.cluster_id
+            or self._worker_id != current.worker_id
+            or current.draining_since is not None
+            or self._managed_stop_requested(current)
+            or current.state != ModelInstanceStateEnum.STARTING
+            or not self._component_plan_current(current, item)
+            or (current.id, current.restart_count or 0) in self._managed_stopping
+        ):
+            return None
+        target = next(
+            (
+                w
+                for w in get_model_instance_workloads(current, self._worker_id)
+                if w.name == item.name
+            ),
+            None,
+        )
+        if target is None or target.state != ModelInstanceWorkloadStateEnum.PENDING:
+            return None
+        model = self._clientset.models.get(current.model_id, use_cache=False)
+        if (
+            getattr(model, 'deleted_at', None) is not None
+            or model.replicas == 0
+            or not model.restart_on_error
+            or model.restarting_since is not None
+            or model.stale
+        ):
+            return None
+        worker = self._clientset.workers.get(self._worker_id, use_cache=False)
+        if (
+            worker.state != WorkerStateEnum.READY
+            or getattr(worker, 'unreachable', False)
+            or getattr(worker, 'me', None) is False
+            or getattr(worker, 'id', self._worker_id) != self._worker_id
+            or getattr(worker, 'cluster_id', current.cluster_id) != current.cluster_id
+        ):
+            return None
+        return current, model, worker
+
+    @staticmethod
+    def _smg_preparation_identity(authority):
+        current, model, worker = authority
+        return (
+            model.model_dump(
+                include={
+                    'id',
+                    'cluster_id',
+                    'owner_principal_id',
+                    'backend',
+                    'backend_version',
+                    'backend_parameters',
+                    'image_name',
+                    'run_command',
+                    'env',
+                }
+            ),
+            (
+                getattr(worker, 'id', None),
+                getattr(worker, 'cluster_id', None),
+                getattr(worker, 'me', None),
+                worker.ip,
+            ),
+            current.worker_ip,
+            [
+                w.model_dump()
+                for w in get_model_instance_workloads(current)
+                if w.component.kind == 'sglang_engine'
+            ],
+        )
+
+    def _smg_authority_matches(self, mi, item, identity):
+        authority = self._smg_create_current(mi, item)
+        return (
+            authority is not None
+            and self._smg_preparation_identity(authority) == identity
+        )
+
+    def _create_pending_smg(self, mi, item) -> None:
+        """Create only a Server-registered CPU attempt using its Engine image."""
+        authority = self._smg_create_current(mi, item)
+        if authority is None:
+            return
+        current, model, worker = authority
+        identity = self._smg_preparation_identity(authority)
+        engines = [
+            w
+            for w in get_model_instance_workloads(current)
+            if w.component.kind == 'sglang_engine'
+        ]
+        main = next((w for w in engines if w.worker_id == current.worker_id), None)
+        if (
+            len(engines) != len(member_worker_ids(current))
+            or any(w.state != ModelInstanceWorkloadStateEnum.RUNNING for w in engines)
+            or main is None
+            or not main.component.ready
+        ):
+            return
+        if not main.component.image or main.component.router_version != '0.3.2':
+            message = (
+                'SMG recovery is blocked: Engine image or compatible SMG version '
+                'is missing.'
+            )
+            if current.state_message != message:
+                current = self._report_managed_workloads(
+                    current,
+                    get_model_instance_workloads(current, self._worker_id),
+                    state_message=message,
+                )
+                self._hold_managed_instance(current)
+            return
+        observed = self._managed_runtime_workloads(current)
+        if (
+            len(observed.get(main.name, [])) != 1
+            or observed[main.name][0].state != WorkloadStatusStateEnum.RUNNING
+        ):
+            return
+        if observed.get(item.name):
+            return
+        _, policy = split_sglang_smg_parameters(
+            model.backend_parameters, {'sglang-router': main.component.router_version}
+        )
+        plan = build_sglang_smg_workload(
+            item.name,
+            main.component.image,
+            policy,
+            item.component,
+            worker.ip,
+            f'http://{current.worker_ip}:{main.component.api_port}',
+        )
+        fallback = registration.determine_default_registry(
+            self._config.system_default_container_registry
+        )
+        plan = transform_workload_plan(self._config, plan, fallback)
+        plan.labels = {
+            **(plan.labels or {}),
+            **self._managed_workload_labels(current),
+            **self._component_workload_labels(item),
+        }
+        # CPU preparation is pure and synchronous under the instance lifecycle
+        # lock; a stop cannot acknowledge absence while this create is in flight.
+        if not self._smg_authority_matches(current, item, identity):
+            return
+        try:
+            create_workload(plan)
+            if not self._smg_authority_matches(current, item, identity):
+                self._stop_smg(current, item)
+        except Exception as exc:
+            logger.warning('SMG %s creation is uncertain: %s', item.name, exc)
+            self._stop_smg(current, item)
+
+    def _same_component_epoch(self, previous, current):
+        return (
+            (previous.restart_count or 0) == (current.restart_count or 0)
+            and previous.cluster_id == current.cluster_id
+            and self._worker_id in member_worker_ids(current)
+            and self._has_sglang_components(current)
+        )
+
+    def _retire_smg_attempts(self, current, tracked, local):
+        # Retire stale CPU identities without replacing the adopted Engine.
+        for old in (
+            get_model_instance_workloads(tracked, self._worker_id) or []
+            if tracked
+            else []
+        ):
+            if (
+                old.component
+                and old.component.kind == 'sglang_smg'
+                and not any(w.name == old.name for w in local)
+            ):
+                if not self._stop_smg(tracked, old):
+                    return False
+        for key, (old_mi, old) in list(self._smg_stopping.items()):
+            if key[0] == current.id and not self._stop_smg(old_mi, old):
+                return False
+        return True
+
+    def _sync_sglang_components(self, current, tracked) -> None:
+        local = get_model_instance_workloads(current, self._worker_id)
+        if any(
+            w.component.kind == 'sglang_engine'
+            and w.state
+            in (
+                ModelInstanceWorkloadStateEnum.FAILED,
+                ModelInstanceWorkloadStateEnum.STOPPED,
+            )
+            for w in local
+        ):
+            self._stop_model_instance(current)
+            return
+        if not self._retire_smg_attempts(current, tracked, local):
+            return
+        smg = next((w for w in local if w.component.kind == 'sglang_smg'), None)
+        if smg and (
+            smg.component.stop_requested
+            or smg.state
+            in (
+                ModelInstanceWorkloadStateEnum.FAILED,
+                ModelInstanceWorkloadStateEnum.STOPPED,
+            )
+        ):
+            self._stop_smg(current, smg)
+            fresh = ModelInstance.model_validate(
+                self._clientset.model_instances.get(id=current.id, use_cache=False)
+            )
+            if not self._same_component_epoch(current, fresh):
+                return
+            current = fresh
+            local = get_model_instance_workloads(current, self._worker_id)
+            report = self._observe_managed_workloads(current)
+            if report != local:
+                current = self._report_managed_workloads(current, report)
+                self._hold_managed_instance(current)
+            self._sync_managed_rank_health(current)
+            return
+        if (
+            smg
+            and smg.state == ModelInstanceWorkloadStateEnum.PENDING
+            and smg.component.attempt > 0
+        ):
+            try:
+                self._create_pending_smg(current, smg)
+            except Exception as exc:
+                logger.warning('Cannot prepare SMG %s: %s', smg.name, exc)
+                return
+        fresh = ModelInstance.model_validate(
+            self._clientset.model_instances.get(id=current.id, use_cache=False)
+        )
+        if not self._same_component_epoch(current, fresh):
+            return
+        current = fresh
+        local = get_model_instance_workloads(current, self._worker_id)
+        if self._managed_stop_requested(current):
+            self._stop_model_instance(current)
+            return
+        report = self._observe_managed_workloads(current)
+        if report != local or tracked is None:
+            current = self._report_managed_workloads(current, report)
+            self._hold_managed_instance(current)
+        failed = [w for w in report if w.state == ModelInstanceWorkloadStateEnum.FAILED]
+        if any(w.component.kind == 'sglang_engine' for w in failed):
+            self._stop_model_instance(current)
+        elif failed:
+            self._stop_smg(current, failed[0])
+        self._sync_managed_rank_health(current)
+
+    def _resume_managed_stop(self, mi):
+        key = (mi.id, mi.restart_count or 0)
+        if key not in self._managed_stopping:
+            return False
+        self._stop_model_instance(mi, delete_logs=self._managed_stopping[key])
+        return True
+
+    @_model_lifecycle
+    def _sync_managed_model_instance(self, mi: ModelInstance) -> None:
+        tracked = self._model_instance_by_instance_id.get(mi.id)
+        if tracked and self._resume_managed_stop(tracked):
+            return
+        try:
+            current = ModelInstance.model_validate(
+                self._clientset.model_instances.get(id=mi.id, use_cache=False)
+            )
+        except NotFoundException:
+            self._stop_model_instance(tracked or mi, delete_logs=True)
+            return
+        except Exception as exc:
+            logger.warning("Cannot reconcile managed model instance %s: %s", mi.id, exc)
+            return
+        if not self._adopt_managed_model_instance(current, tracked):
+            return
+        local = get_model_instance_workloads(current, self._worker_id)
+        if not local:
+            if (
+                current.state
+                in (
+                    ModelInstanceStateEnum.SCHEDULED,
+                    ModelInstanceStateEnum.INITIALIZING,
+                    ModelInstanceStateEnum.STARTING,
+                )
+                and current.draining_since is None
+            ):
+                self._prepare_managed_model_instance(current)
+            return
+        if mi.id in self._starting_model_instances:
+            return
+        self._sync_registered_workloads(current, tracked)
+
+    def _sync_registered_workloads(self, current, tracked):
+        local = get_model_instance_workloads(current, self._worker_id)
+        if self._has_sglang_components(current):
+            try:
+                self._sync_sglang_components(current, tracked)
+            except Exception as exc:
+                logger.warning(
+                    'Cannot reconcile SGLang components %s: %s', current.id, exc
+                )
+            return
+        if any(
+            item.state
+            in (
+                ModelInstanceWorkloadStateEnum.FAILED,
+                ModelInstanceWorkloadStateEnum.STOPPED,
+            )
+            for item in local
+        ):
+            self._stop_model_instance(current)
+            return
+        report = self._observe_managed_workloads(current)
+        try:
+            if (
+                tracked is None
+                or tracked.restart_count != current.restart_count
+                or report != local
+            ):
+                current = self._report_managed_workloads(current, report)
+                self._hold_managed_instance(current)
+            if any(
+                item.state == ModelInstanceWorkloadStateEnum.FAILED for item in report
+            ):
+                self._stop_model_instance(current)
+            else:
+                self._sync_managed_rank_health(
+                    current, startup_only=tracked is not None
+                )
+        except Exception as exc:
+            logger.warning(
+                "Cannot report managed model instance %s: %s", current.id, exc
+            )
+
+    @_model_lifecycle
+    def _prepare_managed_model_instance(self, mi: ModelInstance) -> None:
+        """Receive resolved plans from the preparer; create only through T4 fences."""
+        current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+        if (
+            get_model_instance_workloads(current) is None
+            or current.restart_count != mi.restart_count
+            or get_model_instance_workloads(current, self._worker_id)
+            or self._worker_id not in member_worker_ids(current)
+            or self._managed_stop_requested(current)
+            or (current.id, current.restart_count or 0) in self._managed_stopping
+            or current.draining_since is not None
+            or current.state
+            not in (
+                ModelInstanceStateEnum.SCHEDULED,
+                ModelInstanceStateEnum.INITIALIZING,
+                ModelInstanceStateEnum.STARTING,
+            )
+        ):
+            return
+        mi = ModelInstance.model_validate(current)
+        key = (mi.id, mi.restart_count or 0)
+        connection = self._managed_launches.get(key)
+        if connection is None:
+            model = self._get_model(mi)
+            if self._managed_launcher_available(mi, model):
+                self._launch_model_instance(mi)
+            return
+        if not connection.poll():
+            if self._is_provisioning(mi):
+                return
+            self._managed_launches.pop(key).close()
+            self._handle_model_instance_launch_failure(
+                mi, RuntimeError("Model preparation ended without a workload plan")
+            )
+            return
+        try:
+            workloads, plans = connection.recv()
+            model = self._clientset.models.get(mi.model_id, use_cache=False)
+            if getattr(model, "stale", None) is True:
+                raise ValueError(
+                    "The deployment configuration has changed; restart the model instead."
+                )
+            if not self._start_managed_workloads(mi, workloads, plans):
+                self._handle_model_instance_launch_failure(
+                    mi, RuntimeError("Managed workload registration or creation failed")
+                )
+        except (EOFError, OSError, ValueError, httpx.TransportError) as exc:
+            self._handle_model_instance_launch_failure(mi, exc)
+        finally:
+            self._managed_launches.pop(key, None)
+            connection.close()
+
+    def _delete_managed_workloads(self, mi: ModelInstance) -> bool:
+        self._clear_rank_health(mi.id)
+        connection = self._managed_launches.pop((mi.id, mi.restart_count or 0), None)
+        if connection is not None:
+            connection.close()
+        if self._is_provisioning(mi):
+            terminate_process_tree(self._provisioning_processes[mi.id].pid)
+            if self._is_provisioning(mi):
+                return False
+        observed = self._managed_runtime_workloads(mi)
+        for name, matches in observed.items():
+            if matches:
+                try:
+                    delete_workload(name)
+                except Exception as exc:
+                    logger.warning(
+                        "Managed workload %s deletion is pending: %s", name, exc
+                    )
+        # Runtime deletion may only be accepted. Even INACTIVE/FAILED objects
+        # still reserve their identity until runtime reads confirm absence.
+        return not any(self._managed_runtime_workloads(mi).values())
+
+    def _confirm_managed_stop(self, mi: ModelInstance) -> bool:
+        worker = self._clientset.workers.get(self._worker_id, use_cache=False)
+        if worker.state not in (
+            WorkerStateEnum.READY,
+            WorkerStateEnum.MAINTENANCE,
+        ) or getattr(worker, "unreachable", False):
+            return False
+        try:
+            current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+        except NotFoundException:
+            current = None
+        if (
+            current is not None
+            and current.restart_count == mi.restart_count
+            and current.cluster_id == mi.cluster_id
+            and self._worker_id in member_worker_ids(current)
+        ):
+            local = get_model_instance_workloads(current, self._worker_id)
+            stopped = [item.model_copy(deep=True) for item in local]
+            for item in stopped:
+                item.state = ModelInstanceWorkloadStateEnum.STOPPED
+                if item.component is not None and item.component.api_port is not None:
+                    item.component.ready = False
+                for placement in item.dp_rank_placements:
+                    if placement.node_rank == 0:
+                        placement.ready = False
+            if stopped != local:
+                self._report_managed_workloads(mi, stopped)
+        return True
+
+    @_model_lifecycle
+    def _retry_smg_stop(self, mi, item):
+        self._stop_smg(mi, item)
+
+    def _retry_managed_stops(self) -> None:
+        """Continue accepted local teardown even when Server snapshots are unavailable."""
+        for old_mi, item in list(self._smg_stopping.values()):
+            self._retry_smg_stop(old_mi, item)
+        for (instance_id, restart_count), delete_logs in list(
+            self._managed_stopping.items()
+        ):
+            mi = self._model_instance_by_instance_id.get(instance_id)
+            if (
+                mi is not None
+                and (mi.restart_count or 0) == restart_count
+                and instance_id not in self._starting_model_instances
+            ):
+                self._stop_model_instance(mi, delete_logs=delete_logs)
+
+    def _stop_managed_model_instance(
+        self, mi: ModelInstance, delete_logs: bool
+    ) -> bool:
+        key = (mi.id, mi.restart_count or 0)
+        tracked = self._model_instance_by_instance_id.get(mi.id)
+        if tracked and tracked.restart_count != mi.restart_count:
+            self._managed_stopping.pop(key, None)
+            return (tracked.restart_count or 0) > (mi.restart_count or 0)
+        if tracked and get_model_instance_workloads(tracked, self._worker_id):
+            mi = tracked
+        self._hold_managed_instance(mi)
+        if mi.id in self._starting_model_instances:
+            return False
+        try:
+            if not self._delete_managed_workloads(mi) or not self._confirm_managed_stop(
+                mi
+            ):
+                return False
+        except Exception as exc:
+            logger.warning(
+                "Cannot confirm managed model instance %s stopped: %s", mi.id, exc
+            )
+            return False
+        self._stop_container_log_persistence(mi.id)
+        if delete_logs:
+            self._purge_instance_logs(mi.id)
+        self._forget_stopped_model_instance(mi, delete_logs=delete_logs)
+        self._managed_stopping.pop(key, None)
+        for component_key in list(self._smg_stopping):
+            if component_key[:2] == key:
+                self._smg_stopping.pop(component_key, None)
+        return True
+
+    def _legacy_preparers_absent(self, mi):
+        """Find orphaned legacy preparers without trusting a reused numeric PID."""
+        title = f"gpustack_model_instance_{mi.id}"
+        recorded = (
+            mi.pid
+            if mi.worker_id == self._worker_id
+            else next(
+                (
+                    worker.pid
+                    for worker in mi.distributed_servers.subordinate_workers or []
+                    if worker.worker_id == self._worker_id
+                ),
+                None,
+            )
+        )
+        processes = list(psutil.process_iter(["pid", "name", "cmdline", "ppid"]))
+        other_pids = self._other_legacy_preparer_pids(mi.id, processes)
+        owned, seen = [], set()
+        for process in processes:
+            seen.add(process.pid)
+            command = process.info.get("cmdline")
+            if command and command[0] == title:
+                owned.append(process)
+            elif process.pid in other_pids or process.info.get("ppid") in other_pids:
+                continue
+            elif process.pid == recorded or process.info.get("name") in (
+                title,
+                title[:15],
+            ):
+                return False
+            elif command and "--multiprocessing-fork" in command:
+                return False
+        if recorded and recorded not in seen and psutil.pid_exists(recorded):
+            return False
+        stopped = [
+            self._stop_identified_legacy_preparer(process, title) for process in owned
+        ]
+        return all(stopped)
+
+    def _other_legacy_preparer_pids(self, instance_id, processes):
+        """Identify other live preparers without relying on truncated OS names."""
+        other_pids = {
+            process.pid
+            for other_id, process in list(self._provisioning_processes.items())
+            if other_id != instance_id and process.is_alive()
+        }
+        prefix = "gpustack_model_instance_"
+        for process in processes:
+            command = process.info.get("cmdline")
+            if not command:
+                continue
+            title = command[0]
+            suffix = title.removeprefix(prefix)
+            if title in (
+                "gpustack_model_file_manager",
+                "gpustack_model_file_download",
+            ) or (
+                title.startswith(prefix)
+                and suffix.isascii()
+                and suffix.isdecimal()
+                and suffix != str(instance_id)
+            ):
+                other_pids.add(process.pid)
+        return other_pids
+
+    @staticmethod
+    def _stop_identified_legacy_preparer(process, title):
+        """Signal Process objects only after rechecking their preparer identity."""
+        try:
+            if process.cmdline()[:1] != [title]:
+                return False
+            children = process.children(recursive=True)
+            for child in children + [process]:
+                terminate_process(child)
+            return not any(child.is_running() for child in children + [process])
+        except psutil.NoSuchProcess:
+            return False
+
+    def _legacy_stop_runtime_absent(self, mi, names):
+        process = self._provisioning_processes.get(mi.id)
+        if process is not None:
+            process.join(timeout=0)
+            if process.is_alive():
+                return False
+        if not self._legacy_preparers_absent(mi):
+            return False
+        observed = list_workloads()
+        if observed is None or not names:
+            return False
+        names.update(
+            item.name
+            for item in observed
+            if (getattr(item, "labels", None) or {}).get(
+                "gpustack.ai/model-instance-id"
+            )
+            == str(mi.id)
+        )
+        for name in sorted(names):
+            current = get_workload(name)
+            owner = (getattr(current, "labels", None) or {}).get(
+                "gpustack.ai/model-instance-id"
+            )
+            if owner is not None and owner != str(mi.id):
+                return False
+            if current is not None:
+                delete_workload(name)
+            if get_workload(name) is not None:
+                return False
+        observed = list_workloads()
+        if observed is None or any(item.name in names for item in observed):
+            return False
+        return self._legacy_stop_other_workloads_known(mi, observed)
+
+    def _legacy_stop_other_workloads_known(self, mi, observed):
+        if any(
+            (getattr(item, "labels", None) or {}).get("gpustack.ai/model-instance-id")
+            == str(mi.id)
+            for item in observed
+        ):
+            return False
+        ambiguous = {
+            item.name
+            for item in observed
+            if not (getattr(item, "labels", None) or {}).get(
+                "gpustack.ai/model-instance-id"
+            )
+            and not (getattr(item, "labels", None) or {}).get(
+                "cache-service-instance-id"
+            )
+        }
+        if not ambiguous:
+            return True
+        response = self._clientset.model_instances.list(
+            params={"page": -1}, use_cache=False
+        )
+        known = set()
+        for other in response.items or []:
+            if other.id == mi.id:
+                continue
+            metadata = other.get_deployment_metadata(self._worker_id)
+            if metadata is not None:
+                known.add(metadata.name)
+            known.update(
+                item.name
+                for item in get_model_instance_workloads(other, self._worker_id) or []
+            )
+        return ambiguous <= known
+
+    def _stop_legacy_guarded_model_instance(self, mi, delete_logs):
+        """Keep legacy identity and reservations until runtime absence is acknowledged."""
+        guard = model_instance_legacy_stop(mi)
+        key = (mi.id, mi.restart_count or 0)
+        if guard is None or self._worker_id not in guard.worker_ids:
+            return False
+        self._managed_stopping[key] = delete_logs
+        self._assigned_ports.setdefault(mi.id, set()).update(
+            model_instance_ports(mi, self._worker_id)
+        )
+        names = self._legacy_stop_names.setdefault((mi.id, str(guard.token)), set())
+        for known in (mi, self._model_instance_by_instance_id.get(mi.id)):
+            metadata = known.get_deployment_metadata(self._worker_id) if known else None
+            if metadata is not None:
+                names.add(metadata.name)
+        persistence = self._log_persistence.get(mi.id)
+        if getattr(persistence, "workload_name", None):
+            names.add(persistence.workload_name)
+        self._model_instance_by_instance_id[mi.id] = mi
+        if mi.id in self._starting_model_instances:
+            return False
+        missing_allowed = False
+        try:
+            if not self._legacy_stop_runtime_absent(mi, names):
+                return False
+            missing_allowed = True
+            current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+            missing_allowed = False
+            latest = model_instance_legacy_stop(current)
+            if (
+                latest is None
+                or latest.token != guard.token
+                or current.restart_count != mi.restart_count
+            ):
+                return False
+            worker = self._clientset.workers.get(self._worker_id, use_cache=False)
+            if worker.state not in (
+                WorkerStateEnum.READY,
+                WorkerStateEnum.MAINTENANCE,
+            ) or getattr(worker, "unreachable", False):
+                return False
+            if self._worker_id not in latest.confirmed_worker_ids:
+                self._clientset.model_instances.update(
+                    id=mi.id,
+                    model_update=ModelInstanceStopUpdate(
+                        stop_report=ModelInstanceStopReport(
+                            token=guard.token, restart_count=guard.restart_count
+                        )
+                    ),
+                )
+                missing_allowed = True
+                current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+                missing_allowed = False
+                latest = model_instance_legacy_stop(current)
+            if (
+                latest is None
+                or latest.token != guard.token
+                or (current.restart_count or 0) != guard.restart_count
+                or not set(latest.worker_ids) <= set(latest.confirmed_worker_ids)
+            ):
+                return False
+        except NotFoundException:
+            if not missing_allowed:
+                return False
+        except Exception as exc:
+            logger.warning("Cannot confirm legacy stop for %s: %s", mi.id, exc)
+            return False
+        self._stop_container_log_persistence(mi.id)
+        self._forget_stopped_model_instance(mi, delete_logs=delete_logs)
+        self._managed_stopping.pop(key, None)
+        self._legacy_stop_names.pop((mi.id, str(guard.token)), None)
+        return True
 
     async def watch_models(self):
         """
@@ -523,12 +1773,14 @@ class ServeManager(ContainerLogPersister):
         - If everything is fine, update the model instance state to RUNNING.
         """
 
+        self._retry_managed_stops()
+
         # Snapshot local state BEFORE the list call. Reversing this order
         # races with CREATED events and reaps freshly-assigned instances.
         local_assigned_ids = {
             mid
             for mid, mi in self._model_instance_by_instance_id.items()
-            if mi.get_deployment_metadata(self._worker_id) is not None
+            if self._is_local_model_instance(mi)
         }
 
         # Read from the watch-backed cache. It holds the full set, so the
@@ -539,9 +1791,7 @@ class ServeManager(ContainerLogPersister):
         response = self._clientset.model_instances.list()
         all_items = response.items or []
         reap_ids = local_assigned_ids - {
-            mi.id
-            for mi in all_items
-            if mi.get_deployment_metadata(self._worker_id) is not None
+            mi.id for mi in all_items if self._is_local_model_instance(mi)
         }
 
         # Optional periodic reconciliation against DB truth even when the cache
@@ -581,9 +1831,7 @@ class ServeManager(ContainerLogPersister):
                 self._last_state_reconcile_time = now
             all_items = response.items or []
             reap_ids = local_assigned_ids - {
-                mi.id
-                for mi in all_items
-                if mi.get_deployment_metadata(self._worker_id) is not None
+                mi.id for mi in all_items if self._is_local_model_instance(mi)
             }
 
         # An empty authoritative result is legitimate (user stopped every
@@ -613,6 +1861,10 @@ class ServeManager(ContainerLogPersister):
 
         model_instances: List[ModelInstance] = []
         for model_instance in all_items:
+            if has_model_instance_stop_barrier(model_instance):
+                if self._is_local_model_instance(model_instance):
+                    model_instances.append(model_instance)
+                continue
             # if the model instance is assigned to this worker, it must be scheduled.
             # But we don't need to sync the scheduled model when it is not initialized yet.
             if (
@@ -642,7 +1894,18 @@ class ServeManager(ContainerLogPersister):
 
         # Reuse a fresh worker snapshot only within this sync pass.
         recovery_worker = None
-        for model_instance in model_instances:
+        for model_instance in sorted(
+            model_instances,
+            key=lambda mi: self._rank_health_last_dispatch.get(mi.id, 0),
+        ):
+            if model_instance_legacy_stop(model_instance) is not None:
+                self._stop_model_instance(model_instance)
+                continue
+            if get_model_instance_workloads(model_instance) is not None:
+                # A stop intent can outlive its local snapshot. Reconcile from
+                # Server authority so that cleanup can recover that ownership.
+                self._sync_managed_model_instance(model_instance)
+                continue
             # Skip if the provision process has not exited yet.
             if self._is_provisioning(model_instance):
                 logger.trace(
@@ -1130,6 +2393,7 @@ class ServeManager(ContainerLogPersister):
         worker_id: int,
         inference_backend: InferenceBackend,
         fallback_registry: Optional[str] = None,
+        launch_connection: Optional[Connection] = None,
     ):
         """
         Serve model instance in a subprocess.
@@ -1167,14 +2431,403 @@ class ServeManager(ContainerLogPersister):
                         inference_backend,
                         fallback_registry,
                     )
+                    if launch_connection is not None:
+                        server_ins._workload_plan_callback = (
+                            lambda workloads, plans: launch_connection.send(
+                                (workloads, plans)
+                            )
+                        )
                     logger.info(f"Provisioning model instance {mi.name}")
                     server_ins.start()
-                    logger.info(f"Finished provisioning model instance {mi.name}")
+                    logger.info(
+                        "Finished %s model instance %s",
+                        (
+                            "preparing"
+                            if launch_connection is not None
+                            else "provisioning"
+                        ),
+                        mi.name,
+                    )
                 except Exception as e:
                     logger.exception(
                         f"Error provisioning model instance {mi.name}: {e}"
                     )
                     raise e
+                finally:
+                    if launch_connection is not None:
+                        launch_connection.close()
+
+    def _clear_rank_health(
+        self, instance_id: int, restart_count: Optional[int] = None
+    ) -> None:
+        with self._rank_health_lock:
+            for key in list(self._rank_health_checks):
+                if key[0] == instance_id and (
+                    restart_count is None or key[1] == restart_count
+                ):
+                    check = self._rank_health_checks.pop(key)
+                    if check.future is not None:
+                        check.future.cancel()
+
+    def _rank_health_targets(self, mi: ModelInstance, model: Model) -> Dict:
+        """Only local main APIs participate; headless liveness comes from runtime."""
+        startup = mi.state != ModelInstanceStateEnum.RUNNING
+        config = _get_inference_health_check_config(model, mi.role)
+        targets = {}
+        for workload in get_model_instance_workloads(mi, self._worker_id) or []:
+            running = workload.state == ModelInstanceWorkloadStateEnum.RUNNING
+            for placement in workload.dp_rank_placements:
+                if placement.node_rank != 0:
+                    continue
+                key = (
+                    mi.id,
+                    mi.restart_count or 0,
+                    workload.name,
+                    placement.dp_rank,
+                    placement.node_rank,
+                )
+                targets[(*key, 'get')] = (
+                    placement,
+                    envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL if startup else 10,
+                    1 if startup else 15,
+                    3,
+                    running,
+                )
+                if (
+                    not startup
+                    and config['enabled']
+                    and mi.role not in ("prefill", "decode")
+                ):
+                    targets[(*key, 'inference')] = (
+                        placement,
+                        config['interval'],
+                        config['timeout'],
+                        config['threshold'],
+                        running,
+                    )
+        return targets
+
+    def _component_health_targets(self, mi):
+        targets = {}
+        for workload in get_model_instance_workloads(mi, self._worker_id) or []:
+            component = workload.component
+            if component.api_port is None or component.stop_requested:
+                continue
+            key = (
+                mi.id,
+                mi.restart_count or 0,
+                workload.name,
+                component.kind,
+                component.attempt,
+                'component',
+            )
+            check = self._rank_health_checks.get(key)
+            startup = check.startup if check else not bool(component.ready)
+            targets[key] = (
+                component,
+                envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL if startup else 10,
+                5 if startup else 15,
+                3,
+                workload.state == ModelInstanceWorkloadStateEnum.RUNNING,
+            )
+        return targets
+
+    def _collect_component_health(self, report, targets, completed):
+        diagnostic, processed = {}, []
+        by_name = {w.name: w for w in report}
+        for key in completed:
+            check = self._rank_health_checks.get(key)
+            if check is None or key not in targets:
+                continue
+            _, _, _, threshold, running = targets[key]
+            if not running:
+                processed.append((check, check.failures))
+                continue
+            healthy, reason = check.future.result()
+            failures = 0 if healthy or check.startup else check.failures + 1
+            target = by_name[key[2]]
+            target.component.ready = (
+                healthy if check.startup or healthy else target.component.ready
+            )
+            if not healthy and failures >= threshold:
+                target.component.ready = False
+                target.state = ModelInstanceWorkloadStateEnum.FAILED
+            if not healthy:
+                message = (
+                    f'{target.component.kind} health on Worker {self._worker_id}: {reason}; '
+                    + (
+                        'waiting for readiness'
+                        if check.startup
+                        else f'consecutive failures {failures}/{threshold}'
+                    )
+                )
+                if not check.startup and failures >= threshold:
+                    diagnostic['state_message'] = message
+                    logger.warning(message)
+                else:
+                    logger.debug(message)
+            processed.append((check, failures))
+        return diagnostic, processed
+
+    def _sync_component_health(self, current, model, completed):
+        targets = self._component_health_targets(current)
+        with self._rank_health_lock:
+            for key, check in list(self._rank_health_checks.items()):
+                if key[0] == current.id and key not in targets:
+                    self._rank_health_checks.pop(key)
+                    if check.future is not None:
+                        check.future.cancel()
+            report = [
+                w.model_copy(deep=True)
+                for w in get_model_instance_workloads(current, self._worker_id)
+            ]
+            diagnostic, processed = self._collect_component_health(
+                report, targets, completed
+            )
+        if diagnostic or report != get_model_instance_workloads(
+            current, self._worker_id
+        ):
+            current = self._report_managed_workloads(current, report, **diagnostic)
+            self._hold_managed_instance(current)
+        with self._rank_health_lock:
+            for check, failures in processed:
+                check.failures, check.last_check, check.future = (
+                    failures,
+                    time.monotonic(),
+                    None,
+                )
+            # Startup is local to each component, not to the instance's SMG
+            # recovery state. Keep the Engine's running failure threshold.
+            for key in targets:
+                check = self._rank_health_checks.get(key)
+                target = next(w for w in report if w.name == key[2])
+                if check is not None and target.component.ready:
+                    check.startup = False
+        worker = self._clientset.workers.get(id=self._worker_id)
+        self._schedule_rank_health(
+            current,
+            model,
+            self._component_health_targets(current),
+            worker.ip,
+            '/health',
+        )
+
+    def _collect_rank_health(self, report, targets, completed):
+        """Stage results without consuming them until the fenced report succeeds."""
+        diagnostic, processed = {}, []
+        placements = {
+            (w.name, p.dp_rank, p.node_rank): p
+            for w in report
+            for p in w.dp_rank_placements
+        }
+        for key in completed:
+            check = self._rank_health_checks.get(key)
+            if check is None or key not in targets:
+                continue
+            placement, _, _, threshold, running = targets[key]
+            if not running:
+                processed.append((check, check.failures))
+                continue
+            healthy, reason = check.future.result()
+            failures = 0 if healthy or check.startup else check.failures + 1
+            target = placements[key[2:5]]
+            first_fault = failures >= threshold and 'state' not in diagnostic
+            if check.startup:
+                target.ready = healthy
+            elif healthy and key[5] == 'get':
+                target.ready = True
+            elif not healthy and failures >= threshold:
+                target.ready = False
+                diagnostic['state'] = ModelInstanceStateEnum.ERROR
+            if not healthy:
+                message = (
+                    f"Rank health: dp_rank={key[3]} node_rank={key[4]} "
+                    f"Worker={self._worker_id} port={placement.api_port} "
+                    f"{key[5]}: {reason}; "
+                    + (
+                        'waiting for readiness'
+                        if check.startup
+                        else f'consecutive failures {failures}/{threshold}'
+                    )
+                )
+                if not check.startup and failures >= threshold:
+                    if 'state_message' not in diagnostic or first_fault:
+                        diagnostic['state_message'] = message
+                    logger.warning(message)
+                else:
+                    logger.debug(message)
+            processed.append((check, failures))
+        return diagnostic, processed
+
+    @_model_lifecycle
+    def _sync_managed_rank_health(
+        self, mi: ModelInstance, *, startup_only: bool = False
+    ) -> None:
+        """Collect completed probes and submit bounded work; never wait for HTTP."""
+        if (
+            startup_only
+            and mi.state == ModelInstanceStateEnum.RUNNING
+            and not self._has_sglang_components(mi)
+        ):
+            return
+        try:
+            # Sample completion before refreshing: the authority check must be
+            # later than the HTTP result, including after Worker adoption.
+            with self._rank_health_lock:
+                completed = [
+                    key
+                    for key, check in self._rank_health_checks.items()
+                    if key[0] == mi.id
+                    and check.future is not None
+                    and check.future.done()
+                ]
+            current = ModelInstance.model_validate(
+                self._clientset.model_instances.get(id=mi.id, use_cache=False)
+            )
+            if (
+                current.restart_count != mi.restart_count
+                or self._managed_stop_requested(current)
+                or current.draining_since is not None
+                or (current.id, current.restart_count or 0) in self._managed_stopping
+                or not self._is_local_model_instance(current)
+            ):
+                self._clear_rank_health(mi.id, mi.restart_count or 0)
+                return
+            model = self._get_model(current)
+            if self._has_sglang_components(current):
+                self._sync_component_health(current, model, completed)
+                return
+            if (
+                current.role not in (None, "prefill", "decode")
+                or get_backend(model) != BackendEnum.VLLM
+                or get_model_instance_workloads(current) is None
+                or vllm_lb_mode(model.backend_parameters) not in ('external', 'native')
+            ):
+                self._clear_rank_health(mi.id)
+                return
+            targets = self._rank_health_targets(current, model)
+            startup = current.state != ModelInstanceStateEnum.RUNNING
+            with self._rank_health_lock:
+                for key, check in list(self._rank_health_checks.items()):
+                    if key[0] == mi.id and (
+                        key not in targets or check.startup != startup
+                    ):
+                        self._rank_health_checks.pop(key)
+                        if check.future is not None:
+                            check.future.cancel()
+                report = [
+                    w.model_copy(deep=True)
+                    for w in get_model_instance_workloads(current, self._worker_id)
+                ]
+                diagnostic, processed = self._collect_rank_health(
+                    report, targets, completed
+                )
+            if diagnostic or report != get_model_instance_workloads(
+                current, self._worker_id
+            ):
+                current = self._report_managed_workloads(current, report, **diagnostic)
+                self._hold_managed_instance(current)
+            with self._rank_health_lock:
+                for check, failures in processed:
+                    check.failures = failures
+                    check.last_check = time.monotonic()
+                    check.future = None
+            if self._managed_stop_requested(current):
+                self._clear_rank_health(mi.id)
+                self._stop_model_instance(current)
+                return
+            if targets:
+                worker = self._clientset.workers.get(id=self._worker_id)
+                path = (
+                    (model.env or {}).get('GPUSTACK_MODEL_HEALTH_CHECK_PATH')
+                    or self._get_health_check_path(
+                        get_backend(model), model.owner_principal_id
+                    )
+                    or '/health'
+                )
+                self._schedule_rank_health(current, model, targets, worker.ip, path)
+        except NotFoundException:
+            self._clear_rank_health(mi.id)
+        except Exception as exc:
+            logger.warning('Cannot check managed rank health for %s: %s', mi.id, exc)
+
+    def _schedule_rank_health(self, mi, model, targets, worker_ip, path):
+        with self._rank_health_lock:
+            # Invalidated running requests still occupy a slot until they end;
+            # generation churn must not create an unbounded executor queue.
+            self._rank_health_futures = {
+                key: future
+                for key, future in self._rank_health_futures.items()
+                if not future.done()
+            }
+            for key in targets:
+                self._rank_health_checks.setdefault(
+                    key,
+                    _RankHealthCheck(
+                        startup=(
+                            not bool(targets[key][0].ready)
+                            if key[5] == 'component'
+                            else mi.state != ModelInstanceStateEnum.RUNNING
+                        )
+                    ),
+                )
+            ordered = sorted(
+                targets,
+                key=lambda key: (self._rank_health_checks[key].last_check or 0)
+                + targets[key][1],
+            )
+            for key in ordered:
+                check = self._rank_health_checks[key]
+                placement, interval, timeout, _, running = targets[key]
+                if (
+                    not running
+                    or key in self._rank_health_futures
+                    or check.future is not None
+                    or (
+                        check.last_check is not None
+                        and time.monotonic() - check.last_check < interval
+                    )
+                ):
+                    continue
+                if len(self._rank_health_futures) >= _RANK_HEALTH_CONCURRENCY:
+                    break
+                if self._rank_health_executor is None:
+                    self._rank_health_executor = ThreadPoolExecutor(
+                        max_workers=_RANK_HEALTH_CONCURRENCY,
+                        thread_name_prefix='rank-health',
+                    )
+                target = mi.model_copy(deep=True)
+                target.worker_ip, target.port = worker_ip, placement.api_port
+                if key[5] == 'component':
+                    main = next(
+                        (
+                            w.component
+                            for w in get_model_instance_workloads(mi)
+                            if w.component is not None
+                            and w.component.kind == 'sglang_engine'
+                            and w.component.api_port is not None
+                        ),
+                        None,
+                    )
+                    if main is None:
+                        logger.debug(
+                            "Waiting for the Engine API manifest before probing SMG"
+                        )
+                        continue
+                    check.future = self._rank_health_executor.submit(
+                        _probe_sglang_component_health,
+                        target,
+                        key[3],
+                        main.dp_size,
+                        f'http://{mi.worker_ip}:{main.api_port}',
+                        timeout,
+                    )
+                else:
+                    check.future = self._rank_health_executor.submit(
+                        _probe_rank_health, target, model, path, key[5], timeout
+                    )
+                self._rank_health_futures[key] = check.future
+                self._rank_health_last_dispatch[mi.id] = time.monotonic()
 
     def _probe_running_instance(
         self, mi: ModelInstance, model: Model, timeout: int
@@ -1240,12 +2893,23 @@ class ServeManager(ContainerLogPersister):
         (within the configured interval), the active health check is skipped.
         """
 
+        for mi in sorted(
+            list(self._model_instance_by_instance_id.values()),
+            key=lambda mi: self._rank_health_last_dispatch.get(mi.id, 0),
+        ):
+            if (
+                get_model_instance_workloads(mi) is not None
+                and mi.state == ModelInstanceStateEnum.RUNNING
+            ):
+                self._sync_managed_rank_health(mi)
+
         # Use the event-driven local cache instead of an API call.
         model_instances = [
             mi
             for mi in self._model_instance_by_instance_id.values()
             if mi.worker_id == self._worker_id
             and mi.state == ModelInstanceStateEnum.RUNNING
+            and get_model_instance_workloads(mi) is None
         ]
         if not model_instances:
             return
@@ -1350,6 +3014,16 @@ class ServeManager(ContainerLogPersister):
 
         """
         mi = ModelInstance.model_validate(event.data)
+
+        if model_instance_legacy_stop(mi) is not None:
+            if self._is_local_model_instance(mi):
+                self._stop_model_instance(
+                    mi, delete_logs=event.type == EventType.DELETED
+                )
+            return
+        if get_model_instance_workloads(mi) is not None:
+            self._sync_managed_model_instance(mi)
+            return
 
         logger.trace(
             f"Received event: {str(event.type)}, id: {mi.id}, name: {mi.name}, state: {str(mi.state)}"
@@ -1477,6 +3151,9 @@ class ServeManager(ContainerLogPersister):
 
     def _start_or_restart_subordinate(self, mi: ModelInstance) -> None:
         """Start a follower, respecting the deployment's recovery policy."""
+        if get_model_instance_workloads(mi) is not None:
+            self._sync_managed_model_instance(mi)
+            return
         deployment_metadata = mi.get_deployment_metadata(self._worker_id)
         workload_name = deployment_metadata.name if deployment_metadata else mi.name
         workload = get_workload(workload_name)
@@ -1673,6 +3350,7 @@ class ServeManager(ContainerLogPersister):
             name=f"log-persist-{workload_name}",
         )
         persistence = _LogPersistence(stop_event, thread, restart_count)
+        persistence.workload_name = workload_name
 
         # Sidecar discovery thread — polls until sidecar containers appear,
         # then starts additional log threads for each.
@@ -1687,6 +3365,9 @@ class ServeManager(ContainerLogPersister):
         # Retire, register and start in one critical section: a concurrent start
         # would otherwise leave one generation with nothing left to signal it.
         with self._log_persistence_lock:
+            current = self._log_persistence.get(mi.id)
+            if current and current.restart_count > restart_count:
+                return
             if not self._retire_log_persistence(mi.id):
                 stuck = self._log_persistence[mi.id]
                 if stuck.restart_count == restart_count:
@@ -1709,6 +3390,8 @@ class ServeManager(ContainerLogPersister):
             self._log_persistence[mi.id] = persistence
             thread.start()
             persistence.start_aux_thread(discovery_thread)
+        self._record_log_sources(mi, persistence)
+        self._sync_component_log_persistence(mi, persistence)
         logger.debug(f"Started container log persistence thread for {mi.name}")
 
     def _ensure_container_log_persistence(self, mi: ModelInstance):
@@ -1724,21 +3407,113 @@ class ServeManager(ContainerLogPersister):
         """
         # Only the main log thread counts: the sidecar discovery thread beside it
         # polls forever on a single-container workload.
+        restart = mi.restart_count or 0
         with self._log_persistence_lock:
             persistence = self._log_persistence.get(mi.id)
-        if persistence and persistence.main_thread.is_alive():
+            if persistence and persistence.restart_count > restart:
+                return
+            reuse = (
+                persistence is not None
+                and persistence.restart_count == restart
+                and persistence.main_thread.is_alive()
+            )
+            if reuse and persistence.stop_event.is_set():
+                return
+            if not reuse:
+                # Hold the epoch check through local directory maintenance.
+                self._align_instance_log_dir(mi)
+                self._align_legacy_main_log(mi)
+                self._migrate_flat_logs(mi)
+        if reuse:
+            self._record_log_sources(mi, persistence)
+            self._sync_component_log_persistence(mi, persistence)
             return
 
-        # The directory is renamed first: filing a legacy log under the current
-        # name beforehand would create a second directory for the same id.
-        self._align_instance_log_dir(mi)
-        self._align_legacy_main_log(mi)
-        self._migrate_flat_logs(mi)
         logger.info(
             f"Re-attaching container log persistence for adopted model instance "
             f"{mi.name}"
         )
         self._start_container_log_persistence(mi, resume=True)
+
+    def _record_log_sources(self, mi: ModelInstance, persistence=None) -> None:
+        """Publish accepted identities without making logging an Engine fault."""
+        try:
+            with self._log_persistence_lock:
+                current = self._log_persistence.get(mi.id)
+                if (persistence is not None and current is not persistence) or (
+                    current is not None
+                    and current.restart_count != (mi.restart_count or 0)
+                ):
+                    return
+                bands = mi.named_ports or {}
+                native = None
+                if '_vllm_native_supervisor' in bands:
+                    native = True
+                elif all(
+                    name in bands
+                    for name in (
+                        '_vllm_external_api',
+                        '_vllm_external_rpc',
+                        '_vllm_mp_connecting',
+                    )
+                ):
+                    native = False
+                write_log_sources(
+                    Path(self._serve_log_dir), mi, self._worker_id, native
+                )
+        except Exception as exc:
+            logger.warning("Cannot persist log sources for instance %s: %s", mi.id, exc)
+
+    def _sync_component_log_persistence(self, mi, persistence) -> None:
+        """Switch only the SMG writer, after its old writer confirms termination."""
+        task = next(
+            (
+                w
+                for w in get_model_instance_workloads(mi, self._worker_id) or []
+                if w.component and w.component.kind == 'sglang_smg'
+            ),
+            None,
+        )
+        if task is None:
+            return
+        with self._log_persistence_lock:
+            if (
+                self._log_persistence.get(mi.id) is not persistence
+                or persistence.restart_count != (mi.restart_count or 0)
+                or persistence.stop_event.is_set()
+                or task.component.attempt < persistence.component_attempt
+            ):
+                return
+            previous = persistence.component_writer
+            if previous:
+                name, thread, stopped = previous
+                if name == task.name and thread.is_alive():
+                    return
+                stopped.set()
+                thread.join(timeout=0)
+                if thread.is_alive():
+                    return
+                persistence.discard_aux_thread(thread, stopped)
+            if task.state in (
+                ModelInstanceWorkloadStateEnum.STOPPED,
+                ModelInstanceWorkloadStateEnum.FAILED,
+            ):
+                return
+            root = find_instance_log_dir(
+                Path(self._serve_log_dir), mi.id
+            ) or instance_log_dir(Path(self._serve_log_dir), mi.name, mi.id)
+            path = root / str(mi.restart_count or 0) / 'component.sglang_smg.log'
+            stopped = threading.Event()
+            thread = threading.Thread(
+                target=self._persist_container_logs,
+                args=(task.name, str(path), stopped),
+                kwargs=dict(resume=True, lineage=task.name),
+                daemon=True,
+                name=f'log-component-{task.name}',
+            )
+            if persistence.start_aux_thread(thread, stopped):
+                persistence.component_writer = (task.name, thread, stopped)
+                persistence.component_attempt = task.component.attempt
 
     def _align_legacy_main_log(self, mi: ModelInstance):
         """Rename a pre-v2.2.0 main log to carry the current restart_count.
@@ -1923,6 +3698,9 @@ class ServeManager(ContainerLogPersister):
 
     def _start_model_instance(self, mi: ModelInstance):
         """Start once, deferring periodic reaping until process creation finishes."""
+        if get_model_instance_workloads(mi) is not None:
+            self._sync_managed_model_instance(mi)
+            return
         with self._model_instance_start_lock:
             if mi.id in self._starting_model_instances:
                 return
@@ -1938,7 +3716,10 @@ class ServeManager(ContainerLogPersister):
         # A watch event may arrive after the instance has been deleted.
         # Bypass the event cache before allocating ports or creating work.
         try:
-            self._clientset.model_instances.get(id=mi.id, use_cache=False)
+            current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+            if model_instance_legacy_stop(current) is not None:
+                self._stop_model_instance(ModelInstance.model_validate(current))
+                return
         except NotFoundException:
             logger.debug(
                 "Skipping start of deleted model instance %s (id=%s).", mi.name, mi.id
@@ -1966,6 +3747,12 @@ class ServeManager(ContainerLogPersister):
             mi: The model instance to start.
 
         """
+        managed = get_model_instance_workloads(mi) is not None
+        if managed and mi.worker_id != self._worker_id and not mi.ports:
+            return
+        if managed and get_model_instance_workloads(mi, self._worker_id):
+            self._sync_managed_model_instance(mi)
+            return
         if self._is_provisioning(mi):
             logger.warning(f"Model instance {mi.name} is provisioning. Skipping start.")
             return
@@ -1998,11 +3785,34 @@ class ServeManager(ContainerLogPersister):
 
         ports_assigned = False
         try:
+            if model_instance_legacy_stop(mi) is not None:
+                self._stop_model_instance(mi)
+                return
             model = self._get_model(mi)
             backend = get_backend(model)
 
-            self._assign_ports(mi, model, backend)
+            if managed:
+                if not self._managed_launcher_available(mi, model):
+                    raise ValueError(
+                        "No managed workload launcher is available for this deployment."
+                    )
+                if backend == BackendEnum.VLLM:
+                    self._assign_external_ports(mi, model)
+                elif mi.spans_workers and not mi.ports:
+                    self._assign_distributed_ports(mi, model, backend)
+                else:
+                    self._assign_ports(mi, model, backend)
+            else:
+                self._assign_ports(mi, model, backend)
             ports_assigned = True
+
+            if managed:
+                fields = {"state": ModelInstanceStateEnum.INITIALIZING}
+                if is_main_worker:
+                    fields.update(
+                        port=mi.port, ports=mi.ports, named_ports=mi.named_ports
+                    )
+                self._update_model_instance(mi.id, **fields)
 
             logger.debug(
                 f"Starting model instance {mi.name}"
@@ -2017,6 +3827,10 @@ class ServeManager(ContainerLogPersister):
                 else None
             )
 
+            sender = None
+            if managed:
+                receiver, sender = multiprocessing.Pipe(duplex=False)
+                self._managed_launches[(mi.id, mi.restart_count or 0)] = receiver
             process = multiprocessing.Process(
                 target=ServeManager._serve_model_instance,
                 args=(
@@ -2030,10 +3844,15 @@ class ServeManager(ContainerLogPersister):
                         backend, model.owner_principal_id
                     ),
                     fallback_registry,
-                ),
+                )
+                + ((sender,) if managed else ()),
             )
             process.daemon = False
-            process.start()
+            try:
+                process.start()
+            finally:
+                if sender is not None:
+                    sender.close()
             self._provisioning_processes[mi.id] = process
 
             # Start container log persistence for containerized backends
@@ -2066,7 +3885,12 @@ class ServeManager(ContainerLogPersister):
                     f"distributed_servers.subordinate_workers.{sw_pos}": sw,
                 }
 
-            self._update_model_instance(mi.id, **patch_dict)
+            if managed:
+                self._update_model_instance(
+                    mi.id, state=ModelInstanceStateEnum.INITIALIZING, pid=process.pid
+                )
+            else:
+                self._update_model_instance(mi.id, **patch_dict)
             self._error_model_instances.pop(mi.id, None)
             self._pending_model_instance_errors.pop(mi.id, None)
             logger.info(
@@ -2089,12 +3913,120 @@ class ServeManager(ContainerLogPersister):
 
             self._handle_model_instance_launch_failure(mi, e)
 
+    def _assign_external_ports(self, mi: ModelInstance, model: Model) -> None:
+        """Reserve all local rank APIs and the shared coordination ports atomically."""
+        if mi.spans_workers and not mi.ports:
+            self._assign_distributed_ports(mi, model, BackendEnum.VLLM)
+            return
+        with self._port_reservations.allocation(
+            self._clientset, self._worker_id, model_instance_id=mi.id
+        ) as unavailable:
+            if mi.ports:
+                taken = set(mi.ports)
+                for band in (mi.named_ports or {}).values():
+                    taken.update(range(band.base, band.base + band.count))
+                if taken & unavailable:
+                    raise RuntimeError(
+                        "Managed External-LB ports are reserved by another instance."
+                    )
+            else:
+                self._select_external_ports(
+                    mi, model, unavailable, self._config.service_port_range
+                )
+                taken = model_instance_ports(mi, self._worker_id)
+            self._assigned_ports[mi.id] = taken
+
+    def _select_external_ports(self, mi, model, unavailable, port_range) -> None:
+        counts = [len(mi.gpu_indexes or [])] + [
+            len(w.gpu_indexes or [])
+            for w in mi.distributed_servers.subordinate_workers or []
+        ]
+        topology = managed_lb_parallelism(model.backend_parameters, counts)
+        bands = {}
+        requests = [
+            (_VLLM_MP_CONNECTING_BAND_NAME, _VLLM_MP_CONNECTING_BAND),
+            ("_vllm_external_api", topology.dp),
+            ("_vllm_external_rpc", 1),
+        ]
+        if topology.nnodes_within_dp > 1:
+            requests.append(("_vllm_external_store", topology.dp))
+        if vllm_lb_mode(model.backend_parameters) == "native":
+            requested = find_last_parameter(
+                model.backend_parameters, ["data-parallel-supervisor-port"]
+            )
+            if requested is None:
+                requests.append(("_vllm_native_supervisor", 1))
+            else:
+                base = int(requested)
+                low, high = (int(value) for value in port_range.split("-"))
+                if (
+                    not low <= base <= high
+                    or base in unavailable
+                    or not network.is_port_available(base, host=mi.worker_ip)
+                ):
+                    raise ValueError("Native DPS supervisor port is unavailable.")
+                bands["_vllm_native_supervisor"] = PortBand(base=base)
+                unavailable.add(base)
+        for name, count in requests:
+            base = network.get_free_band(
+                port_range=port_range,
+                count=count,
+                unavailable_ports=unavailable,
+                host=mi.worker_ip,
+            )
+            unavailable.update(range(base, base + count))
+            bands[name] = PortBand(base=base, count=count)
+        mi.port = bands["_vllm_external_api"].base
+        mi.ports = [
+            *range(mi.port, mi.port + topology.dp),
+            *[
+                band.base
+                for name, band in bands.items()
+                if name != "_vllm_external_api"
+            ],
+        ]
+        mi.named_ports = bands
+        if mi.role in ("prefill", "decode"):
+            mi.ports += self._assign_named_ports(mi, model, unavailable, port_range)
+
+    def _component_preparer_handed_off(self, mi):
+        if (mi.id, mi.restart_count or 0) in self._managed_stopping:
+            return False
+        try:
+            current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+        except Exception:
+            tracked = self._model_instance_by_instance_id.get(mi.id)
+            return self._has_sglang_components(mi) or (
+                tracked is not None and self._has_sglang_components(tracked)
+            )
+        if not self._has_sglang_components(current):
+            return False
+        if not self._same_component_epoch(mi, current):
+            return True
+        return any(
+            w.component.kind == 'sglang_engine'
+            and w.state
+            not in (
+                ModelInstanceWorkloadStateEnum.FAILED,
+                ModelInstanceWorkloadStateEnum.STOPPED,
+            )
+            for w in get_model_instance_workloads(current, self._worker_id)
+        )
+
     def _handle_model_instance_launch_failure(
         self, mi: ModelInstance, error: Exception
     ) -> None:
         """Retain launch failures until error reporting and policy reads succeed."""
+        if self._component_preparer_handed_off(mi):
+            logger.warning(
+                'Ignoring retired component preparer failure for %s: %s', mi.id, error
+            )
+            return
         message = f"Failed to start model instance: {error}"
-        if mi.worker_id == self._worker_id:
+        if (
+            mi.worker_id == self._worker_id
+            or get_model_instance_workloads(mi) is not None
+        ):
             patch_dict = {
                 "state": ModelInstanceStateEnum.ERROR,
                 "state_message": message,
@@ -2253,6 +4185,11 @@ class ServeManager(ContainerLogPersister):
             primary = next(item for item in snapshots if item.worker_id == mi.worker_id)
             claim = ModelPortClaim(
                 token=uuid4(),
+                restart_count=(
+                    (mi.restart_count or 0)
+                    if get_model_instance_workloads(mi) is not None
+                    else None
+                ),
                 generations={item.worker_id: item.generation for item in snapshots},
                 # A primary without a tentative claim can recover followers left
                 # behind by its restart, using their exact observed revisions.
@@ -2341,6 +4278,36 @@ class ServeManager(ContainerLogPersister):
                     instance_id,
                 )
 
+    @staticmethod
+    def _select_sglang_ports(mi, model, unavailable, port_range) -> None:
+        from gpustack.utils.model_instance_workers import sglang_smg_mode
+
+        if mi.role is not None or not sglang_smg_mode(model):
+            raise ValueError("Managed components require ordinary SGLang DP/DPA/EP")
+        bands = {}
+        for name in (
+            "_sglang_engine_api",
+            "_sglang_connecting",
+            "_sglang_smg_api",
+            "_sglang_smg_metrics",
+        ):
+            count = (
+                sglang_component_connecting_port_count(model, mi)
+                if name == "_sglang_connecting"
+                else 1
+            )
+            port = network.get_free_band(
+                port_range=port_range,
+                count=count,
+                unavailable_ports=unavailable,
+                host=mi.worker_ip,
+            )
+            unavailable.update(range(port, port + count))
+            bands[name] = PortBand(base=port, count=count)
+        mi.port = bands["_sglang_engine_api"].base
+        mi.ports = [band.base for band in bands.values()]
+        mi.named_ports = bands
+
     def _select_ports(
         self,
         mi: ModelInstance,
@@ -2350,6 +4317,15 @@ class ServeManager(ContainerLogPersister):
         port_range: str,
     ) -> None:
         """Select a complete layout without publishing or reserving partial results."""
+        if get_model_instance_workloads(mi) is not None and backend == BackendEnum.VLLM:
+            self._select_external_ports(mi, model, unavailable_ports, port_range)
+            return
+        if (
+            get_model_instance_workloads(mi) is not None
+            and backend == BackendEnum.SGLANG
+        ):
+            self._select_sglang_ports(mi, model, unavailable_ports, port_range)
+            return
         # Commit only a complete allocation. A retry must not mistake a
         # partially selected HTTP port for an already-published port set.
         target = mi
@@ -2695,6 +4671,12 @@ class ServeManager(ContainerLogPersister):
             mi: The model instance to restart.
         """
 
+        if model_instance_legacy_stop(mi) is not None:
+            self._stop_model_instance(mi)
+            return
+        if get_model_instance_workloads(mi) is not None:
+            self._sync_managed_model_instance(mi)
+            return
         self._stop_model_instance(mi, clear_restart_backoff=False)
         self._start_model_instance(mi)
 
@@ -2729,6 +4711,19 @@ class ServeManager(ContainerLogPersister):
 
         try:
             mi_public = self._clientset.model_instances.get(id=id)
+            if get_model_instance_workloads(mi_public) is not None:
+                current = self._clientset.model_instances.get(id=id, use_cache=False)
+                tracked = self._model_instance_by_instance_id.get(id)
+                if tracked and (current.restart_count or 0) != (
+                    tracked.restart_count or 0
+                ):
+                    raise RuntimeError("Instance generation changed during preparation")
+                return self._clientset.model_instances.update(
+                    id=id,
+                    model_update=managed_instance_update(
+                        current, self._worker_id, **kwargs
+                    ),
+                )
 
             mi = ModelInstanceUpdate(**mi_public.model_dump())
             for key, value in kwargs.items():
@@ -2740,7 +4735,6 @@ class ServeManager(ContainerLogPersister):
                 f"Model instance with ID {id} not found when trying to update."
             )
 
-    @_model_lifecycle
     def _stop_model_instance(
         self,
         mi: ModelInstance,
@@ -2758,6 +4752,27 @@ class ServeManager(ContainerLogPersister):
                 log viewer can still show the previous run.
         """
 
+        if get_model_instance_workloads(mi) is not None:
+            key = (mi.id, mi.restart_count or 0)
+            with self._model_instance_start_lock:
+                self._managed_stopping[key] = (
+                    self._managed_stopping.get(key, False) or delete_logs
+                )
+        return self._stop_assigned_model_instance(
+            mi, clear_restart_backoff, delete_logs
+        )
+
+    @_model_lifecycle
+    def _stop_assigned_model_instance(
+        self, mi: ModelInstance, clear_restart_backoff: bool, delete_logs: bool
+    ):
+        if model_instance_legacy_stop(mi) is not None:
+            return self._stop_legacy_guarded_model_instance(mi, delete_logs)
+        if get_model_instance_workloads(mi) is not None:
+            key = (mi.id, mi.restart_count or 0)
+            return self._stop_managed_model_instance(
+                mi, self._managed_stopping.get(key, delete_logs)
+            )
         logger.debug(f"Stopping model instance {mi.name or mi.id}")
 
         # Stop container log persistence thread
@@ -2775,7 +4790,15 @@ class ServeManager(ContainerLogPersister):
         if deployment_metadata:
             delete_workload(deployment_metadata.name)
 
-        # Cleanup internal states.
+        self._forget_stopped_model_instance(mi, clear_restart_backoff, delete_logs)
+
+    def _forget_stopped_model_instance(
+        self,
+        mi: ModelInstance,
+        clear_restart_backoff: bool = True,
+        delete_logs: bool = False,
+    ) -> None:
+        """Release local state only after the caller has completed workload cleanup."""
         try:
             self._release_distributed_ports(mi.id)
         except Exception:
@@ -2797,9 +4820,11 @@ class ServeManager(ContainerLogPersister):
             # restarted for the fourth time looks like one being started for
             # the first.
             self._restart_tracker.forget(mi.id)
+        self._clear_rank_health(mi.id)
         self._inference_health_check_failures.pop(mi.id, None)
         self._last_health_check_time.pop(mi.id, None)
         self._last_successful_inference.pop(mi.id, None)
+        self._rank_health_last_dispatch.pop(mi.id, None)
 
         logger.info(f"Stopped model instance {mi.name or mi.id}")
 
@@ -2811,6 +4836,12 @@ class ServeManager(ContainerLogPersister):
         Args:
             mi: The model instance to restart.
         """
+        if model_instance_legacy_stop(mi) is not None:
+            self._stop_model_instance(mi)
+            return
+        if get_model_instance_workloads(mi) is not None:
+            self._sync_managed_model_instance(mi)
+            return
         if patch_dict := self._pending_model_instance_errors.get(mi.id):
             self._update_model_instance(mi.id, **patch_dict)
             self._pending_model_instance_errors.pop(mi.id, None)
@@ -2979,7 +5010,14 @@ class ServeManager(ContainerLogPersister):
         return inference_backend.health_check_path if inference_backend else None
 
     def get_instance_port_by_model_instance_id(
-        self, model_instance_id: int
+        self,
+        model_instance_id: int,
+        *,
+        model_id: Optional[int] = None,
+        restart_count: Optional[int] = None,
+        dp_rank: Optional[int] = None,
+        component: Optional[str] = None,
+        attempt: Optional[int] = None,
     ) -> Optional[int]:
         """
         Get the port of the model instance related to the given model instance ID.
@@ -2993,12 +5031,64 @@ class ServeManager(ContainerLogPersister):
         instance = self._model_instance_by_instance_id.get(
             model_instance_id
         )  # Ensure the model instance is cached.
+        if (
+            restart_count is not None
+            or dp_rank is not None
+            or component is not None
+            or attempt is not None
+            or (instance and get_model_instance_workloads(instance) is not None)
+        ):
+            try:
+                local = instance
+                instance = self._clientset.model_instances.get_cached(model_instance_id)
+                if instance is None:
+                    return None
+                # Watch delivery and local launch observations advance independently.
+                # A stale snapshot must never route an old identity to a reused port.
+                if local is not None and (
+                    (local.restart_count or 0) != (instance.restart_count or 0)
+                    or local.state == ModelInstanceStateEnum.ERROR
+                    or local.draining_since is not None
+                    or (
+                        component == "sglang_smg"
+                        and any(
+                            w.component is not None
+                            and w.component.kind == "sglang_smg"
+                            and w.component.attempt != attempt
+                            for w in get_model_instance_workloads(
+                                local, self._worker_id
+                            )
+                            or []
+                        )
+                    )
+                ):
+                    return None
+                if (model_instance_id, instance.restart_count or 0) in getattr(
+                    self, "_managed_stopping", {}
+                ):
+                    return None
+                return resolve_model_instance_endpoint(
+                    instance,
+                    ModelInstanceTarget(
+                        model_id,
+                        model_instance_id,
+                        restart_count,
+                        dp_rank,
+                        component=component,
+                        attempt=attempt,
+                    ),
+                    worker_id=self._worker_id,
+                ).port
+            except (ValueError, NotFoundException):
+                return None
         return (
             instance.ports[0]
             if instance
             and instance.ports
+            and get_model_instance_workloads(instance) is None
             and instance.worker_id == self._worker_id
             and instance.state == ModelInstanceStateEnum.RUNNING
+            and (model_id is None or instance.model_id == model_id)
             else None
         )
 
@@ -3168,7 +5258,9 @@ def _get_inference_health_check_config(
     }
 
 
-def is_inference_ready(mi: ModelInstance, model: Model, timeout: int = 15) -> bool:
+def is_inference_ready(
+    mi: ModelInstance, model: Model, timeout: int = 15, *, allow_redirects: bool = True
+) -> bool:
     """
     Send a minimal inference request to verify the inference capability is working.
     """
@@ -3193,7 +5285,10 @@ def is_inference_ready(mi: ModelInstance, model: Model, timeout: int = 15) -> bo
     inference_url = f"http://{mi.worker_ip}:{mi.port}{endpoint_path}"
 
     try:
-        response = requests.post(inference_url, json=payload, timeout=timeout)
+        options = {} if allow_redirects else {"allow_redirects": False}
+        response = requests.post(
+            inference_url, json=payload, timeout=timeout, **options
+        )
         if response.status_code == 200:
             return True
         else:
@@ -3207,3 +5302,127 @@ def is_inference_ready(mi: ModelInstance, model: Model, timeout: int = 15) -> bo
         )
 
     return False
+
+
+def _probe_rank_health(mi, model, path, kind, timeout) -> Tuple[bool, str]:
+    """A direct rank probe; HTTP 200 does not prove generation can progress."""
+    try:
+        if kind == 'inference':
+            healthy = is_inference_ready(
+                mi, model, timeout=timeout, allow_redirects=False
+            )
+            return healthy, 'inference request failed' if not healthy else ''
+        url = f"http://{mi.worker_ip}:{mi.port}{path}"
+        response = requests.get(url, timeout=timeout, allow_redirects=False)
+        try:
+            reason = f'HTTP {response.status_code}'
+            if response.status_code == 404:
+                reason += '; configure GPUSTACK_MODEL_HEALTH_CHECK_PATH for this rank'
+            return response.status_code == 200, reason
+        finally:
+            response.close()
+    except requests.Timeout:
+        return False, f'timeout ({timeout}s)'
+    except requests.ConnectionError:
+        return False, 'connection failed'
+    except Exception as exc:
+        return False, type(exc).__name__
+
+
+def _component_get(url: str, deadline: float) -> requests.Response:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise requests.Timeout('component probe budget exhausted')
+    response = requests.get(url, timeout=remaining, allow_redirects=False)
+    if time.monotonic() >= deadline:
+        response.close()
+        raise requests.Timeout('component probe budget exhausted')
+    return response
+
+
+def _component_json(url: str, deadline: float) -> dict:
+    response = _component_get(url, deadline)
+    try:
+        if response.status_code != 200:
+            raise ValueError(f'HTTP {response.status_code}')
+        value = response.json()
+        if not isinstance(value, dict):
+            raise ValueError('expected a JSON object')
+        return value
+    finally:
+        response.close()
+
+
+def _probe_sglang_component_health(
+    mi: ModelInstance, kind: str, expected_dp: int, engine_url: str, timeout: float
+) -> Tuple[bool, str]:
+    """Probe pinned native response contracts within one absolute time budget."""
+    deadline = time.monotonic() + timeout
+    url = f'http://{mi.worker_ip}:{mi.port}'
+    try:
+        if kind == 'sglang_engine':
+            health = _component_get(f'{url}/health', deadline)
+            try:
+                if health.status_code != 200:
+                    return False, f'Engine health HTTP {health.status_code}'
+            finally:
+                health.close()
+            response = _component_get(f'{url}/server_info', deadline)
+            try:
+                fallback = response.status_code == 404
+                if not fallback and response.status_code != 200:
+                    return False, f'Engine server_info HTTP {response.status_code}'
+                info = None if fallback else response.json()
+            finally:
+                response.close()
+            if fallback:
+                info = _component_json(f'{url}/get_server_info', deadline)
+            actual = info.get('dp_size') if isinstance(info, dict) else None
+            attention_dp = (
+                info.get('attn_dp_size', 1) if isinstance(info, dict) else None
+            )
+            # Each replica exposes one routing target per attention DP rank.
+            return (
+                type(actual) is int
+                and type(attention_dp) is int
+                and actual >= 1
+                and attention_dp >= 1
+                and actual * attention_dp == expected_dp
+            ), 'Engine dp_size mismatch or invalid server_info'
+        ready = _component_json(f'{url}/readiness', deadline)
+        if ready.get('status') != 'ready' or any(
+            type(ready.get(k)) is not int or ready[k] != expected_dp
+            for k in ('healthy_workers', 'total_workers')
+        ):
+            return False, 'SMG discovery not ready'
+        data = _component_json(f'{url}/workers', deadline)
+        workers = data.get('workers')
+        if (
+            type(data.get('total')) is not int
+            or data['total'] != expected_dp
+            or not isinstance(workers, list)
+            or len(workers) != expected_dp
+        ):
+            return False, 'SMG worker count mismatch'
+        expected = {f'{engine_url}@{rank}' for rank in range(expected_dp)}
+        actual = []
+        for worker in workers:
+            if (
+                not isinstance(worker, dict)
+                or worker.get('worker_type') != 'regular'
+                or worker.get('connection_mode') != 'HTTP'
+                or worker.get('is_healthy') is not True
+                or not isinstance(worker.get('url'), str)
+            ):
+                return False, 'SMG worker metadata or health invalid'
+            actual.append(worker['url'])
+        return (
+            len(set(actual)) == expected_dp and set(actual) == expected,
+            'SMG logical worker identities mismatch',
+        )
+    except requests.Timeout:
+        return False, f'timeout ({timeout}s)'
+    except requests.ConnectionError:
+        return False, 'connection failed'
+    except Exception as exc:
+        return False, type(exc).__name__
