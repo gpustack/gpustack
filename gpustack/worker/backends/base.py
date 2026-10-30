@@ -53,6 +53,7 @@ from gpustack.schemas.models import (
     role_takes_no_accelerator,
     BackendEnum,
     Model,
+    ModelConfigSnapshot,
     ModelInstance,
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
@@ -270,6 +271,22 @@ class InferenceServer(ABC):
 
             self._until_model_instance_starting()
 
+            if self._model_instance.worker_id == worker_id:
+                try:
+                    self._update_model_instance(
+                        self._model_instance.id,
+                        model_config_snapshot=self._model_config_snapshot,
+                    )
+                except Exception as e:
+                    # Snapshot metadata is optional for serving. Exception text
+                    # can contain configuration values, so log only its type.
+                    logger.warning(
+                        "Failed to persist model configuration snapshot for %s (%s); "
+                        "continuing inference startup",
+                        self._model_instance.name,
+                        type(e).__name__,
+                    )
+
             logger.info("Model files are ready.")
         except ModelInstanceStateError:
             sys.exit(1)
@@ -329,6 +346,11 @@ class InferenceServer(ABC):
         # `{data_dir}` substitution, which they would miss the other way
         # round.
         model = role_effective_model(model, self._model_instance.role)
+        # Freeze user inputs before substitutions and command builders mutate
+        # the effective model. Reports must describe this launch's inputs.
+        self._model_config_snapshot = ModelConfigSnapshot.model_validate(
+            model, from_attributes=True
+        ).model_copy(deep=True)
         data_dir = self._config.data_dir
         for i, param in enumerate(model.backend_parameters or []):
             model.backend_parameters[i] = param.replace("{data_dir}", data_dir)
@@ -345,7 +367,9 @@ class InferenceServer(ABC):
     def _update_model_instance(self, id: int, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)
 
-        mi = ModelInstanceUpdate(**mi_public.model_dump())
+        mi = ModelInstanceUpdate(
+            **mi_public.model_dump(exclude={"model_config_snapshot"})
+        )
         for key, value in kwargs.items():
             setattr(mi, key, value)
 
@@ -384,7 +408,9 @@ class InferenceServer(ABC):
         then updates only this worker's entry.
         """
         mi_public = self._clientset.model_instances.get(id=self._model_instance.id)
-        mi = ModelInstanceUpdate(**mi_public.model_dump())
+        mi = ModelInstanceUpdate(
+            **mi_public.model_dump(exclude={"model_config_snapshot"})
+        )
         sw_pos = next(
             (
                 i

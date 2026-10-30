@@ -32,6 +32,7 @@ from gpustack.mixins.active_record import fuzzy_like
 from gpustack.schemas.cache_services import CacheService
 from gpustack.schemas.models import (
     Model,
+    ExtendedKVCacheConfig,
     ModelInstance,
     ModelInstanceStateEnum,
     RoleNameEnum,
@@ -39,7 +40,6 @@ from gpustack.schemas.models import (
     is_embedding_model,
     is_image_model,
     is_reranker_model,
-    role_effective_model,
     servable_instances,
 )
 from gpustack.schemas.clusters import Cluster
@@ -1227,20 +1227,15 @@ async def _snapshot_members(
 
 async def _attached_cache_service_name(
     session: SessionDep,
-    model: Model,
+    ext: Optional[ExtendedKVCacheConfig],
     resolved: Dict[int, Optional[str]],
 ) -> Optional[str]:
-    """The name of the shared cache service `model` attaches to, if any.
-
-    `model` here is the *effective* model of one member: `extended_kv_cache` is
-    a per-role override, so a group can point prefill and decode at different
-    services, or only one of them at a service at all.
+    """The shared cache service referenced by one benchmark member's config.
 
     The config carries only the id; the snapshot keeps the name so a report
     still says what it ran against after the service is deleted. `resolved`
     memoizes across the members of one snapshot.
     """
-    ext = model.extended_kv_cache
     if not (ext and ext.is_shared() and ext.cache_service_id):
         return None
     if ext.cache_service_id not in resolved:
@@ -1266,25 +1261,11 @@ async def get_benchmark_snapshot(
     cache_service_names: Dict[int, Optional[str]] = {}
 
     for member in await _snapshot_members(session, mi, model):
-        # Project the role's overrides before snapshotting, rather than handing
-        # every member the deployment's own values. `env` and
-        # `backend_parameters` are overridable per role precisely because
-        # prefill and decode need different ones -- on Ascend they differ down
-        # to `HCCL_CONNECT_TIMEOUT` (120 vs 1200). Reading the
-        # Model's copy for every member would freeze one intent as all of them,
-        # and the report would then attribute settings to a member that never
-        # ran with them.
-        #
-        # `role_effective_model` returns the model itself when there is no role
-        # to project, so a plain deployment snapshots the model unchanged.
-        effective = role_effective_model(model, getattr(member, "role", None))
-        instance_snapshots[member.name] = create_model_instance_snapshot(
-            member,
-            effective,
-            cache_service_name=await _attached_cache_service_name(
-                session, effective, cache_service_names
-            ),
+        instance_snapshot = create_model_instance_snapshot(member, model)
+        instance_snapshot.cache_service_name = await _attached_cache_service_name(
+            session, instance_snapshot.extended_kv_cache, cache_service_names
         )
+        instance_snapshots[member.name] = instance_snapshot
 
         if member.worker_id is None:
             continue

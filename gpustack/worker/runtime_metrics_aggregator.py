@@ -235,7 +235,9 @@ class RuntimeMetricsAggregator:
         try:
             mi_public = self._clientset.model_instances.get(id=id)
 
-            mi = ModelInstanceUpdate(**mi_public.model_dump())
+            mi = ModelInstanceUpdate(
+                **mi_public.model_dump(exclude={"model_config_snapshot"})
+            )
             for key, value in kwargs.items():
                 setattr(mi, key, value)
 
