@@ -69,7 +69,7 @@ from gpustack.schemas.api_keys import ApiKey, PermissionScope
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.schemas.model_routes import AccessPolicyEnum, ModelRoute
 from gpustack.schemas.principals import Principal, PrincipalType
-from gpustack.security import gateway_digest
+from gpustack.security import gateway_digest, is_legacy_token_access_key
 from gpustack.server.bus import EventType, event_field
 from gpustack.server.db import async_session
 
@@ -467,14 +467,10 @@ async def build_local_auth_tables(
                 # secret, so the key falls through to the server rather than
                 # being published under a digest the plugin would reject.
                 continue
-            if not access_key:
-                # The legacy cluster token's row has no access key, so there is
-                # nothing to index it by. It belongs to a SYSTEM principal and
-                # should already be gone above; this is the belt to that brace.
-                # It also has to be a skip rather than an empty-string entry:
-                # the plugin rejects an empty access_key outright, and that
-                # error fails the *whole* config, taking every other key with
-                # it.
+            if is_legacy_token_access_key(access_key):
+                # Deployment tokens use the server's legacy lookup and argon2
+                # verification. Their reserved marker is not a client access
+                # key and must never enter the gateway's digest table.
                 continue
             entry["digest"] = gateway_digest_value
             # Just the id: the plugin rebuilds "<access_key>.gpustack-<id>"
