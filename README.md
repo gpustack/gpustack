@@ -69,7 +69,7 @@ GPUStack supports a wide range of accelerators for AI inference:
 
 - **NVIDIA GPU**
 - **AMD GPU**
-- **Ascend NPU**
+- **Huawei Ascend NPU**
 - **Hygon DCU**
 - **MThreads GPU**
 - **Iluvatar GPU**
