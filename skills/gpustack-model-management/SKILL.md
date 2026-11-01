@@ -27,7 +27,9 @@ Send the key on every request as `Authorization: Bearer $GPUSTACK_API_KEY` (an `
 works). What the key can do depends on its scope and on who created it:
 
 - Scope `management` (or `*`) is needed for every `/v2/...` call in this skill, and `inference` (or `*`)
-  for `/v1/...` calls from OpenAI-compatible clients. An `inference`-only key gets `403` on `/v2`.
+  for `/v1/...` calls from OpenAI-compatible clients. An `inference`-only key gets `403` on `/v2`, and a
+  `management`-only key gets `403` on `/v1`. Use a `*` key, or set a separate inference key as
+  `GPUSTACK_INFERENCE_KEY` for section 7.
 - Models, instances and routes also require the key's user to be an **owner** of the organization (or a
   platform admin). Otherwise these calls return `403 Insufficient organization role`.
 - A platform admin key created with no organization selected sees every organization's resources. Send
@@ -158,6 +160,10 @@ gs -X PUT "$GPUSTACK_URL/v2/models/ID" -d @model.json
 **Confirm:** the number of `running` instances equals `replicas`. A stopped model has no instances and
 its model row shows `state: pending`; that is normal. The PUT response still shows the old `state`.
 
+A model with `roles` (for example prefill/decode disaggregation) is different: its `replicas` is only an
+on/off switch (`0` or `1`), each role's count is `roles[].replicas`, and you scale by changing those.
+Confirm with the model's `role_status`, where every role's `ready` should equal its `desired`.
+
 ## 5. Restart and recover
 
 - Restart every replica: note the current instance ids, then
@@ -187,7 +193,9 @@ gs -X POST "$GPUSTACK_URL/v2/model-routes" -d '{"name": "qwen3-8b", "targets": [
 ```
 
 Route names start with a letter, end with a letter or digit, and use only letters, digits, `_`, `-`, `.`
-and `:` in between.
+and `:` in between. The route belongs to the key's organization; a platform admin key with no
+organization creates it in the platform organization, so for a model owned by another organization send
+`X-Organization-Id` for that organization, or targeting the model is rejected.
 
 To change which models a route serves:
 
@@ -201,7 +209,9 @@ To change which models a route serves:
 `POST /v2/model-routes/ROUTE_ID/add-targets` also replaces the whole target set, despite its name. Write
 responses for routes in v2.3.0 can show `ready_targets` counts that are a few seconds old.
 
-**Confirm a new route:** its name appears in `gs "$GPUSTACK_URL/v1/models"`.
+**Confirm a new route:** it appears in `gs "$GPUSTACK_URL/v2/model-routes"` with the expected `targets`
+count. Once a target model is running, it is also listed by `/v1/models` (as `<org>/<route>` for a
+non-platform organization); `/v1/models` leaves out routes with no ready target.
 
 ## 7. Use the model from a client
 
@@ -209,7 +219,8 @@ GPUStack serves an OpenAI-compatible API at `$GPUSTACK_URL/v1`. Point any OpenAI
 key whose scope includes `inference`, and use the route name as the model:
 
 ```bash
-gs "$GPUSTACK_URL/v1/chat/completions" -d '{"model": "qwen3-8b", "messages": [{"role": "user", "content": "hello"}]}'
+curl -sS -H "Authorization: Bearer ${GPUSTACK_INFERENCE_KEY:-$GPUSTACK_API_KEY}" -H "Content-Type: application/json" \
+  "$GPUSTACK_URL/v1/chat/completions" -d '{"model": "qwen3-8b", "messages": [{"role": "user", "content": "hello"}]}'
 ```
 
 - `/v1/models` lists routes that have at least one ready target. A key with `allowed_model_names` only
