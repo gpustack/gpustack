@@ -24,7 +24,9 @@ to list the clusters the organization owns.
 
 The response to a PUT still shows the model's previous `state`, and the model row reports `running` as
 soon as one replica is ready. Decide whether a deploy, scale or restart worked from
-`/v2/model-instances?model_id=ID`: the number of instances in `running` should equal `replicas`.
+`/v2/model-instances?model_id=ID`: the number of instances in `running` should equal `replicas`. For a
+model with `roles`, `replicas` is only an on/off switch; check `role_status` instead, where each role's
+`ready` should equal its `desired`.
 
 ## A partial PUT can change `distributed_inference_across_workers`
 
