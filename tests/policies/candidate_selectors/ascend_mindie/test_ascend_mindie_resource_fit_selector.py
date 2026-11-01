@@ -1990,7 +1990,11 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 """- The model requires approximately 156.24 GiB VRAM and 0.5 GiB RAM.
 - With --npu-memory-fraction=0.9, all GPUs combined need to provide at least 173.60 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
 - Manual GPU selection resulted in resource overcommit.
-- Selected GPUs have 307.20 GiB allocatable VRAM, 0/8 of GPUs meet the VRAM utilization ratio, providing 276.48 GiB of allocatable VRAM."""
+- Selected GPUs have 307.20 GiB allocatable VRAM, 0/8 of GPUs meet the VRAM utilization ratio, providing 276.48 GiB of allocatable VRAM.
+- Worker ascend_0 requires 0.5 GiB of RAM, but only 0.0 GiB is allocatable.
+- Worker ascend_1 requires 0.5 GiB of RAM, but only 0.0 GiB is allocatable.
+- Worker ascend_2 requires 0.5 GiB of RAM, but only 0.0 GiB is allocatable.
+- Worker ascend_3 requires 0.5 GiB of RAM, but only 0.0 GiB is allocatable."""
             ],
         ),
         (
@@ -2083,7 +2087,27 @@ async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
         for worker in workers:
             worker.system_reserved.ram = worker.status.memory.total - 500
 
+    # Fixed hub metadata keeps scheduling diagnostics independent of remote updates.
+    is_gpt2 = m.huggingface_repo_id == "openai-community/gpt2"
+    pretrained = PretrainedConfig(
+        architectures=["GPT2LMHeadModel" if is_gpt2 else "Qwen2ForCausalLM"],
+        vocab_size=50257 if is_gpt2 else 152064,
+        hidden_size=768 if is_gpt2 else 8192,
+        num_hidden_layers=12 if is_gpt2 else 80,
+        num_attention_heads=12 if is_gpt2 else 64,
+        num_key_value_heads=12 if is_gpt2 else 8,
+        max_position_embeddings=1024 if is_gpt2 else 32768,
+        dtype="bfloat16",
+    )
     with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=pretrained),
+        ),
+        patch(
+            "gpustack.policies.candidate_selectors.ascend_mindie_resource_fit_selector.get_model_weight_size",
+            return_value=int(135.4275 * 1024**3),
+        ),
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
             return_value=model_instances,
@@ -2097,8 +2121,17 @@ async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
             return_value=workers,
         ),
     ):
-        await resource_fit_selector.select_candidates(workers)
+        candidates = await resource_fit_selector.select_candidates(workers)
         assert resource_fit_selector.get_messages() == expect_msg
+        if index == 3:
+            # Single-replica manual placement permits RAM overcommit on every node.
+            assert len(candidates) == 1
+            assert candidates[0].overcommit
+            claims = [candidates[0].computed_resource_claim] + [
+                sw.computed_resource_claim for sw in candidates[0].subordinate_workers
+            ]
+            assert len(claims) == 4
+            assert all(claim.ram == 512 * 1024**2 for claim in claims)
 
 
 @pytest.mark.parametrize(

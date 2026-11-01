@@ -237,3 +237,36 @@ def test_distributed_deployment_limit_uses_model_bindings(worker_id):
 
     assert not selector._validate_distributed_limit_per_worker(worker)
     assert "distributed-model" in selector.get_messages()[0]
+
+
+@pytest.mark.parametrize("gpu_type", [None, "cuda", "rocm"])
+@pytest.mark.parametrize(
+    "roles,expected_ram,expected_vram",
+    [("main", 30, 20), ("subordinate", 40, 10), ("both", 70, 30)],
+)
+def test_gpu_type_filter_preserves_host_ram(
+    gpu_type, roles, expected_ram, expected_vram
+):
+    main = _instance(1, ram=30, vram=20)
+    subordinate = _instance(2, ram=80, vram=90)
+    subordinate.worker_id = 2
+    subordinate.distributed_servers = SimpleNamespace(
+        subordinate_workers=[
+            SimpleNamespace(
+                worker_id=1,
+                gpu_type="cuda",
+                computed_resource_claim=ComputedResourceClaim(ram=40, vram={0: 10}),
+            )
+        ]
+    )
+    instances = {
+        "main": [main],
+        "subordinate": [subordinate],
+        "both": [main, subordinate],
+    }
+    view = ResourceView(instances[roles])
+
+    allocated = view.allocated(1, gpu_type)
+    assert allocated.ram == expected_ram
+    assert allocated.vram == ({0: expected_vram} if gpu_type != "rocm" else {})
+    assert view.allocatable(_worker(), gpu_type).ram == 90 - expected_ram

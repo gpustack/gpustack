@@ -351,6 +351,7 @@ async def estimate_model_vram(
     token: Optional[str] = None,
     workers: Optional[List[Worker]] = None,
     session: Optional[AsyncSession] = None,
+    offloaded_weights: int = 0,
 ) -> int:
     """
     Estimate the vram requirement in bytes heuristically.
@@ -413,6 +414,12 @@ async def estimate_model_vram(
         logger.warning(f"Cannot get weight size for model {model.name}: {e}")
 
     # Reference: https://blog.eleuther.ai/transformer-math/#total-inference-memory
+    if not 0 <= offloaded_weights <= weight_size:
+        logger.warning(
+            "Inconsistent lookup table size for model %s; keeping all weights in VRAM",
+            model.name,
+        )
+        offloaded_weights = 0
     activation_overhead_factor = 1.2
     if model.categories and CategoryEnum.TEXT_TO_SPEECH in model.categories:
         # Emperical factor base on Qwen3-TTS
@@ -435,7 +442,7 @@ async def estimate_model_vram(
             )
 
     return (
-        int((weight_size + lora_extra) * activation_overhead_factor)
+        int((weight_size - offloaded_weights + lora_extra) * activation_overhead_factor)
         + framework_overhead
     )
 
@@ -780,13 +787,31 @@ def ram_not_enough(ram_claim: int, allocatable: Allocatable) -> bool:
     return allocatable.ram < ram_claim
 
 
-def get_model_ram_claim(model: Model) -> int:
+def get_ram_claim_from_model_env(model: Model) -> Optional[int]:
+    """Read a nonnegative, user-declared RAM requirement in bytes."""
+    value = (getattr(model, "env", None) or {}).get("GPUSTACK_MODEL_RAM_CLAIM")
+    if value is None:
+        return None
+    try:
+        claim = int(value)
+        if claim >= 0:
+            return claim
+    except (ValueError, TypeError):
+        pass
+    logger.warning("Invalid GPUSTACK_MODEL_RAM_CLAIM; using automatic RAM estimation")
+    return None
+
+
+def get_model_ram_claim(model: Model, offloaded_ram: int = 0) -> int:
     """
     Get the RAM requirement for the model in bytes.
 
-    Only a LOCAL extended KV cache reserves host RAM here -- see
-    :func:`get_computed_ram_claim` for why "shared" must not.
+    A user declaration overrides the per-worker estimate. Otherwise, CPU weights
+    and a LOCAL extended KV cache both reserve host RAM.
     """
+    declared_ram = get_ram_claim_from_model_env(model)
+    if declared_ram is not None:
+        return declared_ram
     extended_kv_cache = model.extended_kv_cache
     if (
         extended_kv_cache
@@ -797,21 +822,25 @@ def get_model_ram_claim(model: Model) -> int:
         # The in-process cache lives in the engine's own address space, so
         # the deployment claims it. Shared mode claims nothing: the cache
         # is the cache server's, sized by the service's own capacity.
-        return extended_kv_cache.ram_size * 1024**3
-    return 0
+        return offloaded_ram + extended_kv_cache.ram_size * 1024**3
+    return offloaded_ram
 
 
 def get_computed_ram_claim(
-    model: Model, vram_claim: Dict[int, int], static_ram: Optional[int] = None
+    model: Model,
+    vram_claim: Dict[int, int],
+    static_ram: Optional[int] = None,
+    *,
+    offloaded_ram: int = 0,
 ) -> Optional[int]:
     """
     Get the computed RAM claim for the model based on the provided model and vram_claim.
     The priority is as follows:
     1. If static_ram is provided, use it.
-    2. If RAM size for a LOCAL extended KV cache is available, use it.
-    3. If RAM ratio for a LOCAL extended KV cache is set and vram_claim is available,
-       calculate RAM as ram_ratio * total_vram_claim.
-    4. If neither is available, return None.
+    2. If GPUSTACK_MODEL_RAM_CLAIM is set, use the declared per-worker total.
+    3. Add offloaded weights to the LOCAL extended KV cache's size, or its
+       RAM ratio multiplied by the total VRAM reservation.
+    4. If no host memory is required, return None.
 
     Only the in-process mode claims here. A deployment attached to a cache
     service holds no CPU cache of its own — the worker skips the sizing
@@ -822,9 +851,13 @@ def get_computed_ram_claim(
     if static_ram:
         return static_ram
 
+    declared_ram = get_ram_claim_from_model_env(model)
+    if declared_ram is not None:
+        return declared_ram
+
     ext = model.extended_kv_cache
     if not ext or not ext.is_local():
-        return None
+        return offloaded_ram or None
 
     claim = None
     # static ram size
@@ -836,7 +869,7 @@ def get_computed_ram_claim(
         total_vram_claim = sum(vram_claim.values())
         claim = int(total_vram_claim * ext.ram_ratio)
 
-    return claim
+    return (claim or 0) + offloaded_ram if claim is not None or offloaded_ram else None
 
 
 def sort_workers_by_gpu_count(workers: List[Worker]):

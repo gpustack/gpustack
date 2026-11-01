@@ -8,6 +8,19 @@ Sources are `https://huggingface.co/<repository>/resolve/<revision>/config.json`
 classification and diffusion detection. These cases test routing decisions,
 not complete model dimensions or upstream checkpoint fidelity.
 
+`qwen_ple.json` is a reduced configuration excerpt from
+[`Qwen/Qwen3.8-Flash-Next-FP8`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next-FP8/blob/main/config.json),
+inspected on 2026-10-30. It preserves PLE dimensions and the FP8 declaration;
+the exclusion list retains only the PLE projection/convolution entries relevant
+to distinguishing table precision from the rest of the module. It is not a full
+configuration snapshot.
+
+`deepseek_engram_mxfp4.json` is a reduced configuration excerpt from
+[`nvidia/DeepSeek-V4.1-Flash-NVFP4`](https://huggingface.co/nvidia/DeepSeek-V4.1-Flash-NVFP4/blob/main/config.json),
+inspected on 2026-11-03. It preserves the Engram dimensions, packed MXFP4 table
+format, and scale layout, together with the separate backbone and expert
+quantization declarations. It is not a full configuration snapshot.
+
 | File | Repository | Revision |
 | --- | --- | --- |
 | qwen2.json | Qwen/Qwen2-0.5B-Instruct | c540970f9e29518b1d8f06ab8b24cba66ad77b6d |
