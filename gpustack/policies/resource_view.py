@@ -18,9 +18,9 @@ def compute_worker_allocated(
     """Aggregate (ram, {gpu_index: vram}) for ``worker_id`` from current
     ModelInstance assignments — main worker + distributed subordinates.
 
-    For the main worker, both ram and per-GPU vram are counted. For
-    distributed subordinate workers, only vram is counted — the rpc-server
-    side doesn't consume the model's RAM.
+    Both main and subordinate workers reserve their declared RAM and VRAM.
+    Host RAM is shared across GPU types; only VRAM is filtered by GPU type.
+    Backends whose subordinate processes need no host RAM declare zero.
     """
     allocated = Allocated(ram=0, vram={})
 
@@ -29,23 +29,23 @@ def compute_worker_allocated(
             allocated.vram[gpu_index] = allocated.vram.get(gpu_index, 0) + vram
 
     for mi in all_model_instances:
-        if mi.worker_id == worker_id and (
-            gpu_type is None or mi.gpu_type is None or mi.gpu_type == gpu_type
-        ):
+        if mi.worker_id == worker_id:
             claim = mi.computed_resource_claim
             if claim is not None:
                 allocated.ram += claim.ram or 0
-                if mi.gpu_indexes:
+                if mi.gpu_indexes and (
+                    gpu_type is None or mi.gpu_type is None or mi.gpu_type == gpu_type
+                ):
                     add_vram(claim)
 
         if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
             for sw in mi.distributed_servers.subordinate_workers:
                 if sw.worker_id != worker_id:
                     continue
-                if sw.computed_resource_claim and (
-                    gpu_type is None or mi.gpu_type == gpu_type
-                ):
-                    add_vram(sw.computed_resource_claim)
+                if sw.computed_resource_claim:
+                    allocated.ram += sw.computed_resource_claim.ram or 0
+                    if gpu_type is None or mi.gpu_type == gpu_type:
+                        add_vram(sw.computed_resource_claim)
 
     return allocated
 
