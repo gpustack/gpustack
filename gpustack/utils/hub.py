@@ -180,11 +180,21 @@ def match_hugging_face_files(
     return matching_files
 
 
+def _list_repo_cache_key(repo_id: str, source: str, root_dir_only: bool) -> str:
+    return f"{source}:{repo_id}:{root_dir_only}"
+
+
 def is_repo_cached(repo_id: str, source: str) -> bool:
     if not repo_id or not source:
         return False
-    cache_key = f"{source}:{repo_id}"
-    return is_cached(LIST_REPO_CACHE_DIR, cache_key)
+    # list_repo keeps one entry per listing depth, and either one proves that the
+    # repository was reachable.
+    return any(
+        is_cached(
+            LIST_REPO_CACHE_DIR, _list_repo_cache_key(repo_id, source, root_dir_only)
+        )
+        for root_dir_only in (False, True)
+    )
 
 
 def list_repo(
@@ -194,7 +204,7 @@ def list_repo(
     cache_expiration: Optional[int] = None,
     root_dir_only: bool = False,
 ) -> List[Dict[str, any]]:
-    cache_key = f"{source}:{repo_id}:{root_dir_only}"
+    cache_key = _list_repo_cache_key(repo_id, source, root_dir_only)
     cached_result, is_succ = load_cache(
         LIST_REPO_CACHE_DIR, cache_key, cache_expiration
     )
