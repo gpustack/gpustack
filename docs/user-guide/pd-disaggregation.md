@@ -341,6 +341,11 @@ and HMA restrictions.
 - **A `custom` router is deployed exactly as written.** The built-in modes set
   the upstream router's circuit breaker to its default threshold of ten failed
   requests; a router you supply keeps whatever defaults it ships with.
+- Routers using the bundled runner image raise their `nofile` soft limit to
+  65536, capped by the available hard limit. An explicit `image_name` on the router
+  role or inherited from the deployment preserves direct execution so images
+  without a shell can start. Configure `nofile` through the container runtime for
+  these images.
 - **On the vLLM modes, a prefill member that returns errors is not taken out
   of rotation.** The upstream router treats only a transport error as a
   prefill failure, so an HTTP 500 from prefill is logged and the request
