@@ -1181,16 +1181,21 @@ def get_cluster_image_name(
     registry = determine_default_registry(
         cluster_registry or cfg.system_default_container_registry
     )
-    if worker_config is None:
-        return get_image_name(
-            image_repo=cfg.image_repo,
-            image_name_override=cfg.image_name_override,
-            registry=registry,
-        )
+    cluster_override = worker_config.image_name_override if worker_config else None
+    cluster_repo = worker_config.image_repo if worker_config else None
+    # The server-level override typically comes from the Helm chart and pins
+    # the exact image the server runs. It is the default for a cluster that
+    # pins nothing about where its own workers pull from — but a full
+    # reference, so once a cluster sets a registry or a repository those
+    # explicit settings decide the image instead of being swallowed whole.
+    server_override = (
+        cfg.image_name_override
+        if cluster_registry is None and cluster_repo is None
+        else None
+    )
     return get_image_name(
-        image_name_override=worker_config.image_name_override
-        or cfg.image_name_override,
-        image_repo=worker_config.image_repo or cfg.image_repo,
+        image_name_override=cluster_override or server_override,
+        image_repo=cluster_repo or cfg.image_repo,
         registry=registry,
     )
 
