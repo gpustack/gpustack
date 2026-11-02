@@ -2110,21 +2110,34 @@ class ServeManager(ContainerLogPersister):
         self, mi: ModelInstance, error: Exception
     ) -> bool:
         """
-        Stop a launch whose state write failed if a workload is already running.
+        Stop a launch whose state write failed unless it has no workload to keep.
 
-        A failed write says nothing about that workload, which keeps serving and
-        is reconciled by the periodic state sync once the provisioning process
-        is gone.
+        A failed write says nothing about a running workload, which keeps serving
+        and is reconciled by the periodic state sync once the provisioning process
+        is gone. A workload that cannot be looked up is left to that sync as well,
+        rather than deleted on an unknown state. A SCHEDULED instance is excluded
+        from the sync and any workload it has is being replaced, so its launch
+        fails normally.
 
         Returns:
-            True if the launch was abandoned, False if no workload is running.
+            True if the launch was abandoned, False if the launch should fail.
         """
-        workload = get_workload(mi.name)
-        if not workload or workload.state != WorkloadStatusStateEnum.RUNNING:
+        if mi.state == ModelInstanceStateEnum.SCHEDULED:
             return False
 
+        try:
+            workload = get_workload(mi.name)
+        except Exception as lookup_error:
+            logger.warning(
+                f"Failed to look up workload of model instance {mi.name}: "
+                f"{lookup_error}"
+            )
+        else:
+            if not workload or workload.state != WorkloadStatusStateEnum.RUNNING:
+                return False
+
         logger.warning(
-            f"Keeping running workload of model instance {mi.name} "
+            f"Keeping workload of model instance {mi.name} "
             f"after failing to update its state: {error}"
         )
         process = self._provisioning_processes.pop(mi.id, None)

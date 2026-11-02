@@ -415,16 +415,51 @@ def test_failed_state_write_cancels_queued_recovery_of_running_workload(manager)
     assert instance.id not in serve._pending_model_instance_errors
 
 
-def test_failed_state_write_without_running_workload_fails_launch(manager):
+def test_failed_state_write_keeps_workload_when_lookup_fails(manager):
+    serve, _ = manager
+    if serve._worker_id != 1:
+        pytest.skip("A follower's workload is torn down before it is relaunched")
+    instance = _instance()
+    instance.state = ModelInstanceStateEnum.STARTING
+    serve._update_model_instance.side_effect = ReadTimeout("update unavailable")
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=RuntimeError("runtime unavailable"),
+        ),
+        patch("gpustack.worker.serve_manager.delete_workload") as delete,
+        patch("gpustack.worker.serve_manager.terminate_process_tree") as terminate,
+    ):
+        serve._start_model_instance(instance)
+
+    delete.assert_not_called()
+    terminate.assert_called_once_with(1234)
+    assert instance.id not in serve._provisioning_processes
+
+
+@pytest.mark.parametrize(
+    "state, workload",
+    [
+        (ModelInstanceStateEnum.STARTING, None),
+        (
+            ModelInstanceStateEnum.SCHEDULED,
+            SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+    ],
+)
+def test_failed_state_write_without_workload_to_keep_fails_launch(
+    manager, state, workload
+):
     serve, _ = manager
     if serve._worker_id != 1:
         pytest.skip("Covers the main worker's state write")
     instance = _instance()
-    instance.state = ModelInstanceStateEnum.SCHEDULED
+    instance.state = state
     serve._update_model_instance.side_effect = ReadTimeout("update unavailable")
 
     with (
-        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+        patch("gpustack.worker.serve_manager.get_workload", return_value=workload),
         patch("gpustack.worker.serve_manager.delete_workload") as delete,
         pytest.raises(ReadTimeout, match="update unavailable"),
     ):
