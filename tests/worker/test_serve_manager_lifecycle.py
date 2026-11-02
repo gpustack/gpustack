@@ -374,6 +374,47 @@ def test_failed_state_write_keeps_running_workload(manager):
     assert serve._update_model_instance.call_count == 1
 
 
+def test_failed_state_write_keeps_workload_without_tracked_process(manager):
+    serve, _ = manager
+    if serve._worker_id != 1:
+        pytest.skip("A follower's workload is torn down before it is relaunched")
+    instance = _instance()
+    instance.state = ModelInstanceStateEnum.STARTING
+
+    def fail_after_process_is_untracked(*args, **kwargs):
+        serve._provisioning_processes.pop(instance.id)
+        raise ReadTimeout("update unavailable")
+
+    serve._update_model_instance.side_effect = fail_after_process_is_untracked
+
+    with (
+        patch("gpustack.worker.serve_manager.delete_workload") as delete,
+        patch("gpustack.worker.serve_manager.terminate_process_tree") as terminate,
+    ):
+        serve._start_model_instance(instance)
+
+    delete.assert_not_called()
+    terminate.assert_not_called()
+
+
+def test_failed_state_write_cancels_queued_recovery_of_running_workload(manager):
+    serve, _ = manager
+    if serve._worker_id != 1:
+        pytest.skip("A follower's workload is torn down before it is relaunched")
+    instance = _instance()
+    instance.state = ModelInstanceStateEnum.STARTING
+    serve._error_model_instances[instance.id] = instance
+    serve._pending_model_instance_errors[instance.id] = {"state_message": "unreported"}
+    serve._update_model_instance.side_effect = ReadTimeout("update unavailable")
+
+    with patch("gpustack.worker.serve_manager.delete_workload") as delete:
+        serve._start_model_instance(instance)
+
+    delete.assert_not_called()
+    assert instance.id not in serve._error_model_instances
+    assert instance.id not in serve._pending_model_instance_errors
+
+
 def test_failed_state_write_without_running_workload_fails_launch(manager):
     serve, _ = manager
     if serve._worker_id != 1:

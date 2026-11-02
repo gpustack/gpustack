@@ -2127,8 +2127,11 @@ class ServeManager(ContainerLogPersister):
             f"Keeping running workload of model instance {mi.name} "
             f"after failing to update its state: {error}"
         )
-        process = self._provisioning_processes.pop(mi.id)
-        terminate_process_tree(process.pid)
+        process = self._provisioning_processes.pop(mi.id, None)
+        if process:
+            terminate_process_tree(process.pid)
+        self._error_model_instances.pop(mi.id, None)
+        self._pending_model_instance_errors.pop(mi.id, None)
         return True
 
     def _handle_model_instance_launch_failure(
