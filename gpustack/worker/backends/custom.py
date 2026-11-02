@@ -3,10 +3,11 @@ import os
 import shlex
 from typing import Dict, List, Optional, Tuple
 
-from gpustack.schemas.models import ModelInstanceDeploymentMetadata
+from gpustack.schemas.models import ModelInstanceDeploymentMetadata, find_role
 from gpustack.utils.command import format_backend_parameters
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer
+from gpustack.worker.pd_router import is_managed_router
 
 from gpustack_runtime.deployer import (
     Container,
@@ -19,6 +20,31 @@ from gpustack_runtime.deployer import (
 )
 
 logger = logging.getLogger(__name__)
+
+# A router needs descriptors for both incoming and backend connections.
+_MANAGED_ROUTER_COMMAND_SCRIPT = r"""#!/bin/sh
+# Linux runner shells support soft/hard nofile flags.
+# shellcheck disable=SC3045
+set -e
+
+target=65536
+soft=$(ulimit -Sn)
+hard=$(ulimit -Hn)
+if [ "$hard" != unlimited ] && [ "$hard" -lt "$target" ]; then
+    echo "Warning: PD router nofile hard limit $hard is below $target;" \
+        "using the hard limit." >&2
+    target=$hard
+fi
+if [ "$soft" != unlimited ] && [ "$soft" -lt "$target" ]; then
+    if ! ulimit -Sn "$target"; then
+        echo "Failed to raise PD router nofile soft limit from $soft to $target" \
+            "(hard=$hard)." >&2
+        exit 1
+    fi
+fi
+echo "PD router nofile limits: soft=$(ulimit -Sn), hard=$(ulimit -Hn)" >&2
+exec "$@"
+"""
 
 
 class CustomServer(InferenceServer):
@@ -69,7 +95,8 @@ class CustomServer(InferenceServer):
             )
         except Exception as e:
             logger.warning(
-                f"Failed to persist injected backend parameters for {self._model_instance.name}: {e}"
+                "Failed to persist injected backend parameters for "
+                f"{self._model_instance.name}: {e}"
             )
 
         self._create_workload(
@@ -98,6 +125,31 @@ class CustomServer(InferenceServer):
 
         # Read container config from environment variables
         container_config = self._get_container_env_config(env)
+
+        role_name = getattr(self._model_instance, "role", None)
+        source_model = self._model_spec or self._model
+        role = find_role(source_model, role_name)
+        # Read image overrides before rendering fills in the default runner image.
+        # Deployment and role images may not contain a shell.
+        if (
+            is_managed_router(self._model, role_name)
+            and not source_model.image_name
+            and not (role and role.image_name)
+        ):
+            if not command and not command_args:
+                raise ValueError("Managed PD router requires an explicit command")
+            router_command = [
+                "/bin/sh",
+                "-c",
+                _MANAGED_ROUTER_COMMAND_SCRIPT,
+                "gpustack-pd-router",
+            ]
+            if command:
+                command_args = command + command_args
+                command = router_command
+            else:
+                # Keep the image's init entrypoint in front of the router.
+                command_args = router_command + command_args
 
         run_container = Container(
             image=image,
