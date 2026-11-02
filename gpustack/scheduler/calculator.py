@@ -546,6 +546,11 @@ class GGUFParserCommandMutableParameters:
         except Exception as e:
             slogger.warning(f"Failed to parse mutable parameters: {e}")
 
+        # gguf-parser rejects -1 (llama.cpp "auto"), which needs the host
+        # devices to resolve, so the draft model keeps the default estimate.
+        if self.gpu_layers_draft == -1:
+            self.gpu_layers_draft = None
+
     def extend_command(self, command: List[str]):
         internal_properties = [
             "backend_version",
@@ -596,7 +601,7 @@ async def _gguf_parser_command(
         command.extend(["--cache-path", cache_dir])
 
     if offload == GPUOffloadEnum.Full:
-        command.extend(["--gpu-layers", "-1"])
+        command.extend(["--gpu-layers", "-2"])
     elif offload == GPUOffloadEnum.Partial:
         command.extend(["--gpu-layers-step", "1"])
     elif offload == GPUOffloadEnum.Disable:

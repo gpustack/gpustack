@@ -157,7 +157,12 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 model.backend_parameters, ["ngl", "gpu-layers", "n-gpu-layers"]
             )
             if _param_gpu_layers:
-                self._param_gpu_layers = safe_int(_param_gpu_layers, default=None)
+                gpu_layers = safe_int(_param_gpu_layers, default=None)
+                # llama.cpp reads -1 as "auto", which leaves the layer count to
+                # the estimate, and -2 as "all", which _set_model_parameters
+                # resolves to the model's layer count.
+                if gpu_layers is not None and (gpu_layers >= 0 or gpu_layers == -2):
+                    self._param_gpu_layers = gpu_layers
 
             _param_ctx_size = find_parameter(
                 self._model.backend_parameters, ["ctx-size", "c"]
@@ -352,7 +357,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         return note
 
     def _set_model_parameters(self):
-        if self._param_gpu_layers and self._param_gpu_layers > self._total_layers:
+        if self._param_gpu_layers == -2 or (
+            self._param_gpu_layers and self._param_gpu_layers > self._total_layers
+        ):
             self._param_gpu_layers = self._total_layers
 
     def _set_messages(self, candidates: List[ModelInstanceScheduleCandidate]):
