@@ -176,6 +176,34 @@ async def test_prometheus_proxy_uses_configured_builtin_port(monkeypatch, tmp_pa
     assert captured["url"] == expected_url
 
 
+def test_builtin_proxy_scrape_job_presents_the_gateway_token(tmp_path, monkeypatch):
+    """Scrapes routed through the forward proxy must authenticate, so the
+    generated job carries the credential the proxy accepts — and the file
+    that embeds it is not world-readable."""
+    import stat
+    import yaml
+
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    prometheus_config = tmp_path / "prometheus" / "prometheus.yml"
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.setenv("PROMETHEUS_CONFIG_FILE", str(prometheus_config))
+    monkeypatch.setenv("GF_PATHS_PROVISIONING", str(tmp_path / "grafana"))
+
+    prepare_observability_config(cfg)
+
+    config = yaml.safe_load(prometheus_config.read_text())
+    jobs = {job["job_name"]: job for job in config["scrape_configs"]}
+    proxy_job = jobs["gpustack-proxy-worker-discovery"]
+    assert proxy_job["authorization"]["credentials"] == cfg.get_derived_gateway_token()
+
+    # Only the proxied job needs a credential; direct scrapes none.
+    for name in ("gpustack-worker-discovery", "gpustack-server"):
+        assert "authorization" not in jobs[name]
+
+    mode = stat.S_IMODE(prometheus_config.stat().st_mode)
+    assert not (mode & stat.S_IRWXO), f"prometheus.yml is world-accessible: {mode:o}"
+
+
 def test_cache_service_dashboard_json_matches_route_contract(tmp_path):
     """The bundled dashboard must carry the uid the redirect endpoint uses
     by default and the template variables the redirect query string sets."""

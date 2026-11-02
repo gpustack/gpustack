@@ -2678,3 +2678,191 @@ async def test_a_credential_failure_401_is_not_a_policy_rejection(monkeypatch):
         await authenticate_request(request, x_api_key="no-such-key")
 
     assert not is_policy_rejection(raised.value)
+
+
+# --- Forward-proxy request authentication (tunnel mode) ----------------------
+#
+# The server's forward proxy authenticates every request it relays. The
+# accepted credentials are the derived gateway token (what the built-in
+# Prometheus scrape job presents) and a principal's API key (what
+# pd_membership hops and gateway-forwarded clients present).
+
+
+_PROXY_GATEWAY_TOKEN = "derived-gateway-token"
+
+
+def _proxy_token_config(monkeypatch):
+    monkeypatch.setattr(
+        "gpustack.api.auth.get_global_config",
+        lambda: SimpleNamespace(get_derived_gateway_token=lambda: _PROXY_GATEWAY_TOKEN),
+    )
+
+
+def _proxy_api_key_lookup(monkeypatch, principal):
+    monkeypatch.setattr(
+        "gpustack.api.auth.authenticate_worker_by_request_headers",
+        AsyncMock(return_value=principal),
+    )
+
+
+@pytest.mark.asyncio
+async def test_proxy_auth_accepts_gateway_token_in_authorization(monkeypatch):
+    from gpustack.api.auth import authenticate_proxy_request_headers
+
+    _proxy_token_config(monkeypatch)
+    _proxy_api_key_lookup(monkeypatch, None)
+
+    headers = {"Authorization": f"Bearer {_PROXY_GATEWAY_TOKEN}"}
+    assert await authenticate_proxy_request_headers(headers)
+    # Authorization is end-to-end, so the proxy would forward it; the hop
+    # credential is consumed instead of travelling on to the target.
+    assert "authorization" not in {k.lower() for k in headers}
+
+
+@pytest.mark.asyncio
+async def test_proxy_auth_accepts_gateway_token_in_proxy_authorization(monkeypatch):
+    from gpustack.api.auth import authenticate_proxy_request_headers
+
+    _proxy_token_config(monkeypatch)
+    _proxy_api_key_lookup(monkeypatch, None)
+
+    headers = {"Proxy-Authorization": f"Bearer {_PROXY_GATEWAY_TOKEN}"}
+    assert await authenticate_proxy_request_headers(headers)
+    # Proxy-Authorization is hop-by-hop and stripped by the proxy before
+    # forwarding; the authenticator leaves it alone.
+    assert headers == {"Proxy-Authorization": f"Bearer {_PROXY_GATEWAY_TOKEN}"}
+
+
+@pytest.mark.asyncio
+async def test_proxy_auth_reads_the_hop_credential_first(monkeypatch):
+    # Proxy-Authorization is the credential for the proxy hop; when it is
+    # present it is the only token considered, even if Authorization holds
+    # a valid gateway token.
+    from gpustack.api.auth import authenticate_proxy_request_headers
+
+    _proxy_token_config(monkeypatch)
+    _proxy_api_key_lookup(monkeypatch, None)
+
+    assert await authenticate_proxy_request_headers(
+        {
+            "Proxy-Authorization": f"Bearer {_PROXY_GATEWAY_TOKEN}",
+            "Authorization": "Bearer something-else",
+        }
+    )
+    headers = {
+        "Proxy-Authorization": "Bearer not-the-gateway-token",
+        "Authorization": f"Bearer {_PROXY_GATEWAY_TOKEN}",
+    }
+    assert not await authenticate_proxy_request_headers(headers)
+    # The gateway token never travels on to a target, even when the
+    # request itself is being rejected on the other credential.
+    assert not any(k.lower() == "authorization" for k in headers)
+
+
+@pytest.mark.asyncio
+async def test_proxy_auth_consumes_gateway_token_even_on_api_key_hop(monkeypatch):
+    # The API key in Proxy-Authorization authenticates the hop, but a
+    # gateway token sitting in Authorization must still be consumed
+    # before the proxy forwards the request to the target.
+    from gpustack.api.auth import authenticate_proxy_request_headers
+
+    _proxy_token_config(monkeypatch)
+    principal = SimpleNamespace(id=1)
+    _proxy_api_key_lookup(monkeypatch, principal)
+
+    headers = {
+        "Proxy-Authorization": "Bearer access:secret",
+        "Authorization": f"Bearer {_PROXY_GATEWAY_TOKEN}",
+    }
+    assert await authenticate_proxy_request_headers(headers)
+    assert not any(k.lower() == "authorization" for k in headers)
+
+
+@pytest.mark.asyncio
+async def test_proxy_auth_falls_back_to_api_key_check(monkeypatch):
+    from gpustack.api.auth import authenticate_proxy_request_headers
+
+    _proxy_token_config(monkeypatch)
+    principal = SimpleNamespace(id=1)
+    _proxy_api_key_lookup(monkeypatch, principal)
+
+    assert await authenticate_proxy_request_headers(
+        {"Proxy-Authorization": "Bearer access:secret"}
+    )
+    # An API key in Authorization is the target's own credential
+    # (gateway-forwarded requests rely on it reaching the instance), so
+    # it is not consumed by the hop check.
+    headers = {"Authorization": "Bearer access:secret"}
+    assert await authenticate_proxy_request_headers(headers)
+    assert headers == {"Authorization": "Bearer access:secret"}
+
+
+@pytest.mark.asyncio
+async def test_proxy_auth_rejects_non_ascii_token_without_raising(monkeypatch):
+    # compare_digest rejects str arguments with non-ASCII characters, and
+    # a client-supplied header can carry them; the outcome must be a
+    # plain rejection, not a TypeError surfacing as a 500.
+    from gpustack.api.auth import authenticate_proxy_request_headers
+
+    _proxy_token_config(monkeypatch)
+    _proxy_api_key_lookup(monkeypatch, None)
+
+    assert not await authenticate_proxy_request_headers(
+        {"Authorization": "Bearer fälschung-nicht-ascii"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_token_never_reaches_the_proxied_target(monkeypatch):
+    # End to end over the proxy's own header filter: after a successful
+    # gateway-token authentication nothing credential-shaped survives in
+    # the headers the proxy would forward.
+    from gpustack.api.auth import authenticate_proxy_request_headers
+    from gpustack.websocket_proxy.proxy_server import _filter_headers
+
+    _proxy_token_config(monkeypatch)
+    _proxy_api_key_lookup(monkeypatch, None)
+
+    headers = {
+        "authorization": f"Bearer {_PROXY_GATEWAY_TOKEN}",
+        "accept": "text/plain",
+    }
+    assert await authenticate_proxy_request_headers(headers)
+    forwarded = _filter_headers(headers)
+    assert forwarded == [("accept", "text/plain")]
+
+
+@pytest.mark.asyncio
+async def test_proxy_auth_rejects_unknown_bearer_token(monkeypatch):
+    from gpustack.api.auth import authenticate_proxy_request_headers
+
+    _proxy_token_config(monkeypatch)
+    _proxy_api_key_lookup(monkeypatch, None)
+
+    assert not await authenticate_proxy_request_headers(
+        {"Proxy-Authorization": "Bearer not-the-gateway-token"}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Proxy-Authorization": "Basic dXNlcjpwYXNz"},
+        {"Authorization": ""},
+    ],
+)
+async def test_proxy_auth_rejects_missing_or_non_bearer_credentials(
+    monkeypatch, headers
+):
+    from gpustack.api.auth import authenticate_proxy_request_headers
+
+    _proxy_token_config(monkeypatch)
+    lookup = AsyncMock(return_value=object())
+    monkeypatch.setattr(
+        "gpustack.api.auth.authenticate_worker_by_request_headers", lookup
+    )
+
+    assert not await authenticate_proxy_request_headers(headers)
+    lookup.assert_not_awaited()

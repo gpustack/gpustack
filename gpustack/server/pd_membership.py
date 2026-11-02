@@ -572,8 +572,8 @@ async def reconcile(  # noqa: C901
     returns None for every other proxy mode, so the direct path is unchanged.
 
     `proxy_token` is not optional in practice once `proxy` is set: the
-    server's forward proxy authenticates every request that is not
-    `GET /metrics`, so an unauthenticated hop answers 401 and the read looks
+    server's forward proxy authenticates every request, so an
+    unauthenticated hop answers 401 and the read looks
     like an unreadable registry — which then trips the router restart, and no
     restart can supply a missing credential. It rides `Proxy-Authorization`
     rather than `Authorization`: the token authorises the HOP, and the router

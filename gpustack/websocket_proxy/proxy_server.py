@@ -151,6 +151,18 @@ HOP_BY_HOP_HEADERS = {
     'host',
 }
 
+# Headers whose values are credentials; they are masked in logs so a
+# trace-level capture never records a usable token.
+SENSITIVE_HEADERS = frozenset(('authorization', 'proxy-authorization'))
+
+
+def _redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    """Copy ``headers`` with credential values masked, for logging."""
+    return {
+        key: ('<redacted>' if key.lower() in SENSITIVE_HEADERS else value)
+        for key, value in headers.items()
+    }
+
 
 def _filter_headers(headers) -> list[tuple[str, str]]:
     """Filter out hop-by-hop headers that should not be forwarded.
@@ -671,13 +683,13 @@ class HTTPSProxyServer:
 
             headers = await _read_headers(reader)
             logger.debug(f"[Proxy] Received request: {method} {uri} from {client_addr}")
-            logger.trace(f"[Proxy] Headers: {headers}")
+            logger.trace(f"[Proxy] Headers: {_redact_headers(headers)}")
 
-            # Authenticate before any other processing
-            # Skip authenticator for /metrics path on non-CONNECT requests
-            result = urlparse(uri)
-            should_skip_auth = method == "GET" and result.path == "/metrics"
-            if self.authenticator and not should_skip_auth:
+            # Authenticate before any other processing. No method or path is
+            # exempt: an exemption derived from the client-controlled URI
+            # would let an unauthenticated caller reach any host behind a
+            # registered tunnel.
+            if self.authenticator:
                 if not await self.authenticator(headers):
                     await client_connection.send_error(401, "Unauthorized")
                     return

@@ -63,6 +63,19 @@ sudo docker compose -f docker-compose.external-observability.yaml up -d
        static_configs:
          - targets: ["<gpustack_server_host>:10161"]
    ```
+
+   Воркеры в режиме прокси `tunnel` достижимы только через прямой прокси-сервер GPUStack (порт по умолчанию `30079`), который аутентифицирует каждый передаваемый запрос. Чтобы собирать метрики этих воркеров, добавьте задание, которое предъявляет ключ API GPUStack (создайте его в интерфейсе и скопируйте без изменений — сгенерированный ключ выглядит как `gpustack_<access_key>_<secret_key>`) в качестве учётных данных прокси-перехода:
+
+   ```yaml
+     - job_name: gpustack-proxy-worker-discovery
+       scrape_interval: 5s
+       proxy_url: "http://<gpustack_server_host>:30079"
+       authorization:
+         credentials: "<gpustack_api_key>"
+       http_sd_configs:
+         - url: "http://<gpustack_server_host>:10161/metrics/proxy-targets"
+           refresh_interval: 1m
+   ```
 2. **Импортировать информационные панели GPUStack в Grafana**
    Используйте информационные панели, представленные в каталоге `docker-compose/grafana/grafana_dashboards/`, в качестве отправной точки.
 3. **Укажите GPUStack на свой Grafana**

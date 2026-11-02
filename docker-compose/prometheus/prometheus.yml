@@ -30,6 +30,17 @@ scrape_configs:
 - job_name: gpustack-proxy-worker-discovery
   scrape_interval: 5s
   proxy_url: 'http://gpustack-server:30079'
+  # The server's forward proxy authenticates every request it relays to a
+  # tunnel worker, metrics scrapes included. Present a GPUStack API key as
+  # the hop credential: create one in the UI, copy it unchanged (a generated
+  # key looks like gpustack_<access_key>_<secret_key>) and write it into
+  # prometheus/proxy-token — a single line; a trailing newline is fine.
+  # Prometheus does not expand environment variables here, so the token is
+  # read from a file instead of interpolated into this config. With the file
+  # absent this job alone degrades (visible on the Prometheus targets page);
+  # the direct jobs keep working.
+  authorization:
+    credentials_file: /etc/prometheus/proxy-token
   http_sd_configs:
   - url: 'http://gpustack-server:10161/metrics/proxy-targets'
     refresh_interval: 1m
