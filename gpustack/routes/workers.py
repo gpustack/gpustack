@@ -955,7 +955,9 @@ async def update_worker(
 
 
 @router.delete("/{id}")
-async def delete_worker(ctx: TenantContextDep, session: SessionDep, id: int):
+async def delete_worker(
+    request: Request, ctx: TenantContextDep, session: SessionDep, id: int
+):
     # ``Worker.system_principal`` is a ``cascade="delete"`` relationship
     # declared ``lazy="noload"``; ``_handle_cascade_delete`` reads it off the
     # instance, so it must be eager loaded or the worker's bootstrap SYSTEM
@@ -968,6 +970,7 @@ async def delete_worker(ctx: TenantContextDep, session: SessionDep, id: int):
         worker = None
     assert_resource_visible(ctx, worker, not_found_message="worker not found")
     assert_org_owned_writable(ctx, worker, resource_label="worker")
+    worker_uuid = worker.worker_uuid
     try:
         soft = worker.external_id is not None
         if soft:
@@ -975,6 +978,17 @@ async def delete_worker(ctx: TenantContextDep, session: SessionDep, id: int):
         await WorkerService(session).delete(worker, soft=soft)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete worker: {e}")
+
+    # The deleted worker's tunnel keeps its CIDR claims reserved until its
+    # socket reports a disconnect, which a half-open tunnel may never do.
+    # Free them now, or a re-registered worker on the same address is rejected
+    # as a foreign claim until the server restarts.
+    handler = getattr(request.app.state, "message_server_handler", None)
+    try:
+        if handler is not None:
+            await handler.release_client(uuid.UUID(worker_uuid))
+    except Exception as e:
+        logger.error(f"Failed to release tunnel claims for worker {worker_uuid}: {e}")
 
 
 async def create_worker_status(user: CurrentUserDep, input: WorkerStatusStored):
