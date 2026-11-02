@@ -329,6 +329,70 @@ def test_running_instance_without_ports_has_no_inference_endpoint(manager, ports
     assert serve.get_instance_port_by_model_instance_id(instance.id) is None
 
 
+@pytest.mark.parametrize(
+    "state, queued_for_recovery",
+    [
+        (ModelInstanceStateEnum.RUNNING, False),
+        (ModelInstanceStateEnum.UNREACHABLE, False),
+        (ModelInstanceStateEnum.ERROR, True),
+    ],
+)
+def test_replayed_instance_is_not_launched(manager, state, queued_for_recovery):
+    serve, _ = manager
+    if serve._worker_id != 1:
+        pytest.skip("CREATED only starts an instance on its main worker")
+    instance = _instance()
+    instance.state = state
+
+    with patch.object(serve, "_launch_model_instance") as launch:
+        serve._dispatch_model_instance_event(
+            Event(type=EventType.CREATED, data=instance)
+        )
+
+    launch.assert_not_called()
+    assert (instance.id in serve._error_model_instances) is queued_for_recovery
+
+
+def test_failed_state_write_keeps_running_workload(manager):
+    serve, _ = manager
+    if serve._worker_id != 1:
+        pytest.skip("A follower's workload is torn down before it is relaunched")
+    instance = _instance()
+    instance.state = ModelInstanceStateEnum.STARTING
+    serve._update_model_instance.side_effect = ReadTimeout("update unavailable")
+
+    with (
+        patch("gpustack.worker.serve_manager.delete_workload") as delete,
+        patch("gpustack.worker.serve_manager.terminate_process_tree") as terminate,
+    ):
+        serve._start_model_instance(instance)
+
+    delete.assert_not_called()
+    terminate.assert_called_once_with(1234)
+    assert instance.id not in serve._provisioning_processes
+    assert instance.id not in serve._error_model_instances
+    assert serve._update_model_instance.call_count == 1
+
+
+def test_failed_state_write_without_running_workload_fails_launch(manager):
+    serve, _ = manager
+    if serve._worker_id != 1:
+        pytest.skip("Covers the main worker's state write")
+    instance = _instance()
+    instance.state = ModelInstanceStateEnum.SCHEDULED
+    serve._update_model_instance.side_effect = ReadTimeout("update unavailable")
+
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=None),
+        patch("gpustack.worker.serve_manager.delete_workload") as delete,
+        pytest.raises(ReadTimeout, match="update unavailable"),
+    ):
+        serve._start_model_instance(instance)
+
+    delete.assert_called_once()
+    assert instance.id in serve._error_model_instances
+
+
 def test_successful_launch_cancels_pending_failure_recovery(manager):
     serve, clientset = manager
     instance = _instance()
