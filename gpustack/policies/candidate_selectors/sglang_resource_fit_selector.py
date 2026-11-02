@@ -548,6 +548,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         largest_single_gpu_utilization = 0
 
         for _, gpu in enumerate(worker.status.gpu_devices):
+            if not gpu.memory or not gpu.memory.total:
+                continue
+
             gpu_index = gpu.index
             allocatable_vram = allocatable.vram.get(gpu_index, 0)
             allocatable_gpu_utilization = allocatable_vram / gpu.memory.total
@@ -908,7 +911,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     continue
 
                 if not self._is_diffusion and any(
-                    allocatable.vram.get(gpu.index, 0) / gpu.memory.total
+                    not gpu.memory
+                    or not gpu.memory.total
+                    or allocatable.vram.get(gpu.index, 0) / gpu.memory.total
                     < self._mem_fraction_static_by_gpu_type.get(gpu_type)
                     for gpu in worker.status.gpu_devices
                 ):
