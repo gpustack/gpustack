@@ -63,6 +63,19 @@ sudo docker compose -f docker-compose.external-observability.yaml up -d
        static_configs:
          - targets: ["<gpustack_server_host>:10161"]
    ```
+
+   `tunnel` 代理模式的 Worker 只能通过服务端正向代理（默认端口 `30079`）访问，该代理会对中继的每个请求进行认证。要抓取这些 Worker 的指标，请添加一个把 GPUStack API 密钥（在 UI 中创建并原样复制——生成的密钥形如 `gpustack_<access_key>_<secret_key>`）作为代理跳凭证的抓取作业：
+
+   ```yaml
+     - job_name: gpustack-proxy-worker-discovery
+       scrape_interval: 5s
+       proxy_url: "http://<gpustack_server_host>:30079"
+       authorization:
+         credentials: "<gpustack_api_key>"
+       http_sd_configs:
+         - url: "http://<gpustack_server_host>:10161/metrics/proxy-targets"
+           refresh_interval: 1m
+   ```
 2. **将 GPUStack 仪表盘导入 Grafana**\
    使用 `docker-compose/grafana/grafana_dashboards/` 目录中提供的仪表盘作为起点。
 3. **将 GPUStack 指向你的 Grafana**\

@@ -63,6 +63,19 @@ Zaten harici bir Prometheus/Grafana yığınınız varsa, bunu manuel olarak yap
        static_configs:
          - targets: ["<gpustack_server_host>:10161"]
    ```
+
+   `tunnel` proxy modundaki worker'lara yalnızca sunucunun ileri vekil sunucusu (varsayılan port `30079`) üzerinden erişilebilir ve bu vekil, aktardığı her isteği doğrular. Bu worker'ların ölçümlerini kazanmak için, vekil atlama kimlik bilgisi olarak bir GPUStack API anahtarı (arayüzde oluşturun ve değiştirmeden kopyalayın — üretilen anahtar `gpustack_<access_key>_<secret_key>` biçimindedir) sunan bir iş ekleyin:
+
+   ```yaml
+     - job_name: gpustack-proxy-worker-discovery
+       scrape_interval: 5s
+       proxy_url: "http://<gpustack_server_host>:30079"
+       authorization:
+         credentials: "<gpustack_api_key>"
+       http_sd_configs:
+         - url: "http://<gpustack_server_host>:10161/metrics/proxy-targets"
+           refresh_interval: 1m
+   ```
 2. **GPUStack kontrol panellerini Grafana'ya aktarın**
    Başlangıç noktası olarak `docker-compose/grafana/grafana_dashboards/` dizininde sağlanan kontrol panellerini kullanın.
 3. **GPUStack'i Grafana'nıza yönlendirin**

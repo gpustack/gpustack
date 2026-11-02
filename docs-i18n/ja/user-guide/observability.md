@@ -59,6 +59,19 @@ sudo docker compose -f docker-compose.external-observability.yaml up -d
        static_configs:
          - targets: ["<gpustack_server_host>:10161"]
    ```
+
+   `tunnel` プロキシモードの Worker は、サーバーのフォワードプロキシ（既定ポート `30079`）を経由してのみアクセスできます。このプロキシは中継するすべてのリクエストを認証します。これらの Worker のメトリクスをスクレイプするには、プロキシホップの資格情報として GPUStack API キー（UI で作成し、そのままコピーします。生成されたキーは `gpustack_<access_key>_<secret_key>` の形式です）を提示するジョブを追加します：
+
+   ```yaml
+     - job_name: gpustack-proxy-worker-discovery
+       scrape_interval: 5s
+       proxy_url: "http://<gpustack_server_host>:30079"
+       authorization:
+         credentials: "<gpustack_api_key>"
+       http_sd_configs:
+         - url: "http://<gpustack_server_host>:10161/metrics/proxy-targets"
+           refresh_interval: 1m
+   ```
 2. **GPUStack ダッシュボードを Grafana にインポートする**  
    `docker-compose/grafana/grafana_dashboards/` ディレクトリのダッシュボードを出発点として使用します。
 3. **GPUStack の参照先を自分の Grafana に設定する**  

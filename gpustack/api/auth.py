@@ -1,12 +1,13 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import hmac
 import logging
 import aiohttp
 from aiocache import cached
 from fastapi import Depends, Request, WebSocket
 from starlette.datastructures import Headers
-from gpustack.config.config import Config
+from gpustack.config.config import Config, get_global_config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.server.db import async_session
 from typing import Annotated, Callable, Iterable, Optional, Set, Tuple, List, Dict
@@ -1025,6 +1026,58 @@ async def authenticate_worker_by_request_headers(
         # ``user.worker`` is populated by ``UserService.get_by_id`` via
         # selectinload — no extra fetch needed.
         return user
+
+
+async def authenticate_proxy_request_headers(header_dict: Dict[str, str]) -> bool:
+    """Authenticate a request to the server's forward proxy (tunnel mode).
+
+    Every proxied request must authenticate, metrics scrapes included: the
+    proxy reaches hosts the caller cannot, so a request that names its own
+    target must carry a credential the server issued.
+
+    Accepts a Bearer token in ``Proxy-Authorization`` (the hop credential,
+    preferred) or ``Authorization`` (end-to-end, as sent by Prometheus's
+    ``authorization`` scrape-config section through a forward proxy). The
+    credential is either:
+
+    * the derived gateway token — designed to be transmitted and compared
+      server-side (see ``Config.get_derived_gateway_token``), held by the
+      gateway and the built-in Prometheus scraper, or
+    * a principal's API key, the same check worker WebSocket registration
+      and ``pd_membership`` hops use (``Proxy-Authorization`` rides this
+      path too).
+
+    The gateway token authenticates the hop only, never the target.
+    Whenever it rides ``Authorization`` — an end-to-end header the proxy
+    forwards — it is consumed here, whichever credential ends up
+    authenticating the request. A token in ``Proxy-Authorization`` needs
+    no such handling: hop-by-hop headers are stripped before forwarding.
+    """
+    headers = Headers(header_dict)
+    authorization = headers.get("Proxy-Authorization") or headers.get("Authorization")
+    scheme, credentials = get_authorization_scheme_param(authorization)
+    if scheme.lower() != "bearer" or not credentials:
+        return False
+    gateway_token = get_global_config().get_derived_gateway_token()
+
+    # compare_digest raises TypeError on str arguments containing
+    # non-ASCII characters, and a client-supplied header can carry them;
+    # comparing the UTF-8 encodings keeps the comparison constant-time.
+    auth_header = headers.get("Authorization")
+    if auth_header:
+        _, auth_credentials = get_authorization_scheme_param(auth_header)
+        if auth_credentials and hmac.compare_digest(
+            auth_credentials.encode("utf-8"), gateway_token.encode("utf-8")
+        ):
+            for key in [k for k in header_dict if k.lower() == "authorization"]:
+                del header_dict[key]
+
+    if hmac.compare_digest(credentials.encode("utf-8"), gateway_token.encode("utf-8")):
+        return True
+    principal = await authenticate_worker_by_request_headers(
+        header_dict, validate_proxy=None
+    )
+    return principal is not None
 
 
 class BearerTokenAuthenticator(WebsocketAuthenticator):

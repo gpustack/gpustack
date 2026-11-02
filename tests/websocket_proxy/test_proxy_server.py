@@ -722,5 +722,178 @@ class TestHTTPProxy:
             await test_server.wait_closed()
 
 
+class TestMetricsAuthentication:
+    """Metrics scrapes through the forward proxy must authenticate.
+
+    The proxy reaches hosts the caller cannot (tunnel workers), so a
+    request that names its own target — any path, ``/metrics`` included —
+    must carry a credential before the proxy connects anywhere.
+    """
+
+    def _direct_connection_manager_getter(self, _target_ip: str):
+        from gpustack.websocket_proxy.connection_manager import ConnectionManager
+
+        return ConnectionManager(websocket=None)
+
+    async def _start_proxy(self, authenticator):
+        proxy_server = HTTPSProxyServer(
+            host="127.0.0.1",
+            port=0,
+            connection_manager_getter=self._direct_connection_manager_getter,
+            authenticator=authenticator,
+        )
+        proxy_task = asyncio.create_task(proxy_server.start())
+        await asyncio.sleep(0.5)
+        proxy_addr = proxy_server.server.sockets[0].getsockname()
+        return proxy_server, proxy_task, proxy_addr[0], proxy_addr[1]
+
+    @staticmethod
+    async def _get(
+        proxy_port: int, target_port: int, path: str, headers: dict
+    ) -> bytes:
+        """Send an absolute-URI GET to the proxy for ``target_port``."""
+        request = f"GET http://127.0.0.1:{target_port}{path} HTTP/1.1\r\n"
+        request += f"Host: 127.0.0.1:{target_port}\r\n"
+        for key, value in headers.items():
+            request += f"{key}: {value}\r\n"
+        request += "\r\n"
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+        writer.write(request.encode())
+        await writer.drain()
+        response = await asyncio.wait_for(reader.read(8192), timeout=5.0)
+        writer.close()
+        await writer.wait_closed()
+        return response
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/metrics",
+            "/metrics?debug=1",
+        ],
+    )
+    async def test_unauthenticated_metrics_scrape_is_rejected(self, path):
+        """A GET whose URI path is /metrics still requires credentials."""
+
+        async def deny_all(headers: dict) -> bool:
+            return False
+
+        proxy_server, proxy_task, _, proxy_port = await self._start_proxy(deny_all)
+
+        try:
+            # A live target proves the rejection happens before any dial.
+            test_server = await asyncio.start_server(
+                self._serve_metrics, "127.0.0.1", 0
+            )
+            test_port = test_server.sockets[0].getsockname()[1]
+
+            response = await self._get(proxy_port, test_port, path, {})
+            assert response.startswith(
+                b"HTTP/1.1 401"
+            ), f"Expected 401 for {path}, got: {response!r}"
+
+            test_server.close()
+            await test_server.wait_closed()
+        finally:
+            proxy_task.cancel()
+            try:
+                await proxy_task
+            except asyncio.CancelledError:
+                pass
+            await proxy_server.stop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "auth_header",
+        [
+            {"Proxy-Authorization": "Bearer scrape-token"},
+            {"Authorization": "Bearer scrape-token"},
+        ],
+    )
+    async def test_authenticated_metrics_scrape_is_relayed(self, auth_header):
+        """A credential the authenticator accepts still reaches the target."""
+
+        async def accept_configured_token(headers: dict) -> bool:
+            return (
+                headers.get("proxy-authorization") or headers.get("authorization")
+            ) == "Bearer scrape-token"
+
+        proxy_server, proxy_task, _, proxy_port = await self._start_proxy(
+            accept_configured_token
+        )
+
+        test_server = await asyncio.start_server(self._serve_metrics, "127.0.0.1", 0)
+        test_port = test_server.sockets[0].getsockname()[1]
+
+        try:
+            response = await self._get(proxy_port, test_port, "/metrics", auth_header)
+            assert response.startswith(
+                b"HTTP/1.1 200"
+            ), f"Expected relayed 200, got: {response!r}"
+            assert b"gpustack_worker_up 1" in response
+        finally:
+            proxy_task.cancel()
+            try:
+                await proxy_task
+            except asyncio.CancelledError:
+                pass
+            await proxy_server.stop()
+            test_server.close()
+            await test_server.wait_closed()
+
+    @staticmethod
+    async def _serve_metrics(reader, writer):
+        # Drain the request head before responding: closing a socket with
+        # unread data sends a TCP reset, which discards the response the
+        # relay has not read back yet.
+        while True:
+            line = await reader.readline()
+            if not line or line in (b"\r\n", b"\n"):
+                break
+
+        body = b"gpustack_worker_up 1\n"
+        response = (
+            f"HTTP/1.1 200 OK\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            f"Content-Type: text/plain; version=0.0.4\r\n"
+            f"\r\n"
+        ).encode() + body
+        writer.write(response)
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+
+class TestHeaderRedaction:
+    """The trace-level header log must not record credentials."""
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "authorization",
+            "proxy-authorization",
+            "Authorization",
+            "Proxy-Authorization",
+        ],
+    )
+    def test_credential_headers_are_masked(self, header):
+        from gpustack.websocket_proxy.proxy_server import _redact_headers
+
+        headers = {header: "Bearer gpustack_secret_value"}
+        redacted = _redact_headers(headers)
+
+        assert redacted[header] == "<redacted>"
+        # The caller's dict is left untouched: the real headers still
+        # travel with the request.
+        assert headers[header] == "Bearer gpustack_secret_value"
+
+    def test_other_headers_pass_through(self):
+        from gpustack.websocket_proxy.proxy_server import _redact_headers
+
+        headers = {"host": "127.0.0.1:8080", "accept": "text/plain"}
+        assert _redact_headers(headers) == headers
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

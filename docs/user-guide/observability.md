@@ -59,6 +59,19 @@ If you already have an external Prometheus/Grafana stack, you can configure it m
        static_configs:
          - targets: ["<gpustack_server_host>:10161"]
    ```
+
+   Workers in `tunnel` proxy mode are only reachable through the server's forward proxy (default port `30079`), which authenticates every request it relays. To scrape those workers, add a job that presents a GPUStack API key (create one in the UI and copy it unchanged — a generated key looks like `gpustack_<access_key>_<secret_key>`) as the credential for the proxy hop:
+
+   ```yaml
+     - job_name: gpustack-proxy-worker-discovery
+       scrape_interval: 5s
+       proxy_url: "http://<gpustack_server_host>:30079"
+       authorization:
+         credentials: "<gpustack_api_key>"
+       http_sd_configs:
+         - url: "http://<gpustack_server_host>:10161/metrics/proxy-targets"
+           refresh_interval: 1m
+   ```
 2. **Import GPUStack dashboards into Grafana**  
    Use the dashboards provided in the `docker-compose/grafana/grafana_dashboards/` directory as a starting point.
 3. **Point GPUStack to your Grafana**  
