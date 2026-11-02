@@ -37,6 +37,7 @@ def server_config(monkeypatch):
     cfg = MagicMock()
     cfg.server_external_url = "https://gpustack.test"
     cfg.system_default_container_registry = None
+    cfg.image_name_override = None
     cfg.shuihua_api_base_url = "https://api.test"
     monkeypatch.setattr(clusters, "get_global_config", lambda: cfg)
     return cfg
@@ -194,6 +195,39 @@ def test_create_accepts_the_server_level_registry(server_config):
     check_shuihua_requirements(request)
 
 
+def test_create_accepts_the_server_image_override(server_config):
+    """get_cluster_image_name hands the image to the server-level override for
+    a cluster pinning nothing about its pull location, so the host inside it —
+    not a missing registry setting — decides whether the instance can pull."""
+    server_config.image_name_override = f"{PRIVATE_REGISTRY}/gpustack/gpustack:v1"
+    request = ClusterCreate(name="c", provider=ClusterProvider.Shuihua, credential_id=1)
+
+    check_shuihua_requirements(request)
+
+
+def test_create_rejects_a_server_image_override_on_docker_hub(server_config):
+    server_config.image_name_override = "gpustack/gpustack:v1"
+    request = ClusterCreate(name="c", provider=ClusterProvider.Shuihua, credential_id=1)
+
+    with pytest.raises(InvalidException):
+        check_shuihua_requirements(request)
+
+
+def test_cluster_repo_suppresses_the_server_image_override(server_config):
+    """A cluster pinning a repository composes its image, so the server
+    override is not what gets validated even when it points at Docker Hub."""
+    server_config.image_name_override = "gpustack/gpustack:v1"
+    server_config.system_default_container_registry = PRIVATE_REGISTRY
+    request = ClusterCreate(
+        name="c",
+        provider=ClusterProvider.Shuihua,
+        credential_id=1,
+        worker_config={"image_repo": "myorg/gpustack"},
+    )
+
+    check_shuihua_requirements(request)
+
+
 @pytest.mark.parametrize("registry", ["docker.io", "index.docker.io"])
 def test_create_rejects_docker_hub(server_config, registry):
     request = ClusterCreate(
@@ -258,6 +292,20 @@ def test_update_rejects_switching_to_docker_hub(server_config):
 
     with pytest.raises(InvalidException):
         check_shuihua_requirements(request, existing=stored)
+
+
+def test_update_registry_edit_keeps_the_stored_override_deciding(server_config):
+    """A partial PUT keeps the stored worker_config, whose override — not the
+    registry column — still decides the image afterwards."""
+    stored = Cluster(
+        name="c",
+        worker_config=PredefinedConfigNoDefaults(
+            image_name_override=f"{PRIVATE_REGISTRY}/gpustack/gpustack:v1"
+        ),
+    )
+    request = ClusterUpdate(name="c", system_default_container_registry=None)
+
+    check_shuihua_requirements(request, existing=stored)
 
 
 # --------------------------------------------------------------------------

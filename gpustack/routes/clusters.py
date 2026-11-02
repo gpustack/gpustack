@@ -2,7 +2,7 @@ import logging
 import math
 import random
 import secrets
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from urllib.parse import unquote, urlencode
 
 import aiohttp
@@ -442,9 +442,98 @@ def apply_shuihua_defaults(
         input.worker_config.proxy_mode = fallback
 
 
+def _post_update_worker_config(
+    input: Union[ClusterCreate, ClusterUpdate],
+    existing: Optional[Cluster] = None,
+) -> Optional[PredefinedConfigNoDefaults]:
+    """
+    The worker_config once the update lands.
+
+    Sending one replaces it wholesale, while a partial PUT keeps what is
+    stored.
+    """
+    if isinstance(input, ClusterCreate) or "worker_config" in input.model_fields_set:
+        return input.worker_config
+    return existing.worker_config if existing is not None else None
+
+
+def _post_update_cluster_registry(
+    input: Union[ClusterCreate, ClusterUpdate],
+    existing: Optional[Cluster] = None,
+) -> Optional[str]:
+    """
+    The cluster's registry once the update lands.
+
+    Mirrors the column get_cluster_image_name reads, plus the value already on
+    the cluster: a partial PUT need not resend it, and Cluster.update keeps
+    what it doesn't touch, so ignoring the stored one would reject an update to
+    a cluster that is in fact configured. The legacy worker_config location is
+    accepted for inputs that have not been hoisted onto the column yet.
+    """
+    worker_config = input.worker_config
+    for candidate in (
+        input.system_default_container_registry,
+        worker_config.system_default_container_registry if worker_config else None,
+        existing.system_default_container_registry if existing is not None else None,
+    ):
+        if candidate:
+            return candidate
+    return None
+
+
+def _shuihua_pull_decision(
+    input: Union[ClusterCreate, ClusterUpdate],
+    existing: Optional[Cluster] = None,
+) -> Tuple[Optional[str], str, str]:
+    """
+    The (registry, source label, missing-registry message) the Shuihua check
+    validates, mirroring get_cluster_image_name.
+
+    A full image override decides the image outright — the cluster's own, or
+    the server-level one for a cluster pinning neither a registry nor a
+    repository, which a Helm install always sets. Otherwise the resolved
+    registry does, so that is what gets validated instead.
+    """
+    cfg = get_global_config()
+    effective_config = _post_update_worker_config(input, existing)
+    override = effective_config.image_name_override if effective_config else None
+    cluster_repo = effective_config.image_repo if effective_config else None
+    cluster_registry = _post_update_cluster_registry(input, existing)
+    server_override = (
+        cfg.image_name_override
+        if cluster_registry is None and cluster_repo is None
+        else None
+    )
+
+    image = override or server_override
+    if image:
+        source = (
+            f"the server-level image_name_override '{image}'"
+            if server_override and not override
+            else f"worker_config.image_name_override '{image}'"
+        )
+        return (
+            image_ref_registry(image),
+            source,
+            f"{source} carries no registry host, so it resolves to Docker Hub, "
+            f"which {ClusterProvider.Shuihua.value} instances cannot reach.",
+        )
+
+    registry = cluster_registry or cfg.system_default_container_registry
+    source = "system_default_container_registry"
+    return (
+        registry,
+        source,
+        f"{source} is required for provider {ClusterProvider.Shuihua.value}: "
+        "its instances cannot reach Docker Hub, so the registry to pull the "
+        "worker image from has to be set on the cluster or as the server's "
+        "default.",
+    )
+
+
 def check_shuihua_requirements(
     input: Union[ClusterCreate, ClusterUpdate], existing: Optional[Cluster] = None
-):
+) -> None:
     """
     Require a registry the Shuihua instances can actually pull from.
 
@@ -458,53 +547,13 @@ def check_shuihua_requirements(
     every PUT would block unrelated edits such as a rename.
     """
     is_create = isinstance(input, ClusterCreate)
-    worker_config = input.worker_config
     sends_worker_config = "worker_config" in input.model_fields_set
     sends_registry = "system_default_container_registry" in input.model_fields_set
 
     if not (is_create or sends_worker_config or sends_registry):
         return
 
-    # A full image override wins over the registry column in
-    # get_cluster_image_name, so validate whichever one actually decides where
-    # the instance pulls from.
-    override = worker_config.image_name_override if worker_config else None
-    if override:
-        registry = image_ref_registry(override)
-        source = f"worker_config.image_name_override '{override}'"
-        missing_message = (
-            f"{source} carries no registry host, so it resolves to Docker Hub, "
-            f"which {ClusterProvider.Shuihua.value} instances cannot reach."
-        )
-    else:
-        # Mirror get_cluster_image_name's resolution order, which falls back to
-        # the server-level setting — rejecting a cluster that would in fact
-        # pull from a reachable registry would be a false alarm.
-        # Mirrors get_cluster_image_name, plus the value already on the
-        # cluster: a partial PUT need not resend it, and Cluster.update keeps
-        # what it doesn't touch, so ignoring the stored one would reject an
-        # update to a cluster that is in fact configured.
-        registry = (
-            input.system_default_container_registry
-            or (
-                worker_config.system_default_container_registry
-                if worker_config
-                else None
-            )
-            or (
-                existing.system_default_container_registry
-                if existing is not None
-                else None
-            )
-            or get_global_config().system_default_container_registry
-        )
-        source = "system_default_container_registry"
-        missing_message = (
-            f"{source} is required for provider {ClusterProvider.Shuihua.value}: "
-            "its instances cannot reach Docker Hub, so the registry to pull the "
-            "worker image from has to be set on the cluster or as the server's "
-            "default."
-        )
+    registry, source, missing_message = _shuihua_pull_decision(input, existing)
 
     if not registry:
         raise InvalidException(message=missing_message)
