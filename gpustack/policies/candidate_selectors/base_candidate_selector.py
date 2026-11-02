@@ -627,7 +627,7 @@ class ScheduleCandidatesSelector(ABC):
                             wn, {}
                         )[gpu_index] = True
                     else:  # LLMs
-                        if total_vram is None or allocatable_vram is None:
+                        if not total_vram or allocatable_vram is None:
                             continue
 
                         allocatable_gpu_memory_utilization = (

@@ -596,6 +596,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         for _, gpu in enumerate(worker.status.gpu_devices):
 
+            if not gpu.memory or not gpu.memory.total:
+                continue
+
             gpu_index = gpu.index
             allocatable_vram = allocatable.vram.get(gpu_index, 0)
             allocatable_gpu_memory_utilization = allocatable_vram / gpu.memory.total
@@ -605,9 +608,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 self._largest_single_gpu_vram_utilization = (
                     allocatable_gpu_memory_utilization
                 )
-
-            if gpu.memory is None or gpu.memory.total == 0:
-                continue
 
             if self._gpu_memory_utilization > 0:
                 self._reserved_vram = max(
@@ -853,7 +853,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         satisfied_gpu_count = 0
 
         for gpu in worker.status.gpu_devices:
-            if gpu.memory is None or gpu.memory.total is None:
+            if not gpu.memory or not gpu.memory.total:
                 continue
 
             allocatable_vram = allocatable.vram.get(gpu.index, 0)
@@ -1005,8 +1005,8 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
 
                 if any(
-                    gpu.memory is None
-                    or gpu.memory.total is None
+                    not gpu.memory
+                    or not gpu.memory.total
                     or (
                         allocatable.vram.get(gpu.index, 0) / gpu.memory.total
                         < self._gpu_memory_utilization
