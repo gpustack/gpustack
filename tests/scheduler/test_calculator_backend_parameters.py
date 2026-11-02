@@ -1,6 +1,14 @@
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
-from gpustack.scheduler.calculator import GGUFParserCommandMutableParameters
+from gpustack.scheduler import calculator
+from gpustack.scheduler.calculator import (
+    GGUFParserCommandMutableParameters,
+    GPUOffloadEnum,
+)
 
 
 def _parse(backend_parameters):
@@ -89,3 +97,44 @@ def test_extend_command_keeps_flash_attention_off_for_auto():
     params.extend_command(command)
     assert '--flash-attention=false' in command
     assert '--flash-attention=true' not in command
+
+
+@pytest.mark.parametrize(
+    'backend_parameters,expected',
+    [
+        # gguf-parser rejects -1 (llama.cpp "auto"), so it is left out.
+        (['-ngld -1'], None),
+        (['--gpu-layers-draft=-1'], None),
+        (['-ngld -2'], -2),
+        (['--gpu-layers-draft=8'], 8),
+    ],
+)
+def test_from_args_reads_the_draft_gpu_layers(backend_parameters, expected):
+    params = _parse(backend_parameters)
+    assert params.gpu_layers_draft == expected
+    command = []
+    params.extend_command(command)
+    assert '--gpu-layers-draft=-1' not in command
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'offload,expected',
+    [
+        (GPUOffloadEnum.Full, ['--gpu-layers', '-2']),
+        (GPUOffloadEnum.Partial, ['--gpu-layers-step', '1']),
+        (GPUOffloadEnum.Disable, ['--gpu-layers', '0']),
+    ],
+)
+async def test_gguf_parser_command_offload_arguments(monkeypatch, offload, expected):
+    monkeypatch.setattr(
+        calculator.pkg_resources, 'files', lambda _: Path('/opt/gguf-parser')
+    )
+    monkeypatch.setattr(
+        calculator,
+        '_gguf_parser_command_args_from_source',
+        AsyncMock(return_value=[]),
+    )
+    model = SimpleNamespace(backend_version=None, backend_parameters=[])
+    command = await calculator._gguf_parser_command(model, offload)
+    assert command[-2:] == expected

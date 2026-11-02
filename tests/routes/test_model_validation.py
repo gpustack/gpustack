@@ -437,3 +437,40 @@ def test_sglang_new_dpa_component_report_matches_effective_rank_count(alias, rep
     else:
         with pytest.raises(BadRequestException):
             _validate_sglang_component_layout(instance, model, [workload])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parameters',
+    [['-ngl -1'], ['--gpu-layers=-2'], ['--gpu-layers', '0'], ['-ngl 999']],
+)
+async def test_gpu_layers_accepts_counts_and_the_llama_cpp_modes(
+    monkeypatch, parameters
+):
+    monkeypatch.setattr(models, 'validate_pd_config', AsyncMock())
+    model = ModelCreate(
+        name='gguf',
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id='org/gguf',
+        huggingface_filename='*Q4_K_M*.gguf',
+        backend_parameters=parameters,
+    )
+    await models.validate_model_in(MagicMock(), model)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parameters', [['--gpu-layers=-3'], ['-ngl 1000'], ['-ngl all'], ['-ngl 1.5']]
+)
+async def test_gpu_layers_rejects_other_values(monkeypatch, parameters):
+    monkeypatch.setattr(models, 'validate_pd_config', AsyncMock())
+    model = ModelCreate(
+        name='gguf',
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id='org/gguf',
+        huggingface_filename='*Q4_K_M*.gguf',
+        backend_parameters=parameters,
+    )
+    with pytest.raises(BadRequestException) as error:
+        await models.validate_model_in(MagicMock(), model)
+    assert 'Invalid backend parameter --gpu-layers' in error.value.message

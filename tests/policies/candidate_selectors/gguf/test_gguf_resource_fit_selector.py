@@ -1707,3 +1707,79 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
     return ModelResourceClaim(
         model=model, resource_claim_estimate=mock_estimate.estimate
     )
+
+
+@pytest.mark.parametrize("cpu_offloading", [False, True])
+@pytest.mark.parametrize(
+    "backend_parameters", [["--gpu-layers=-1"], ["-ngl", "-1"], ["--gpu-layers=-2"]]
+)
+@pytest.mark.asyncio
+async def test_negative_gpu_layers_schedule_like_the_default(
+    backend_parameters, cpu_offloading
+):
+    workers = [linux_nvidia_1_4090_24gx1()]
+    fields = dict(
+        huggingface_filename="*Q4_K_M*.gguf",
+        cpu_offloading=cpu_offloading,
+    )
+    default_model = new_model(1, "test", 1, "Meta-Llama-3-8B-Instruct-GGUF", **fields)
+    model = new_model(
+        1,
+        "test",
+        1,
+        "Meta-Llama-3-8B-Instruct-GGUF",
+        backend_parameters=backend_parameters,
+        **fields,
+    )
+
+    with patch(
+        'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
+        side_effect=mock_calculate_model_resource_claim,
+    ):
+        expected = await GGUFResourceFitSelector(
+            default_model, [], resource_view=ResourceView([])
+        ).select_candidates(workers)
+        candidates = await GGUFResourceFitSelector(
+            model, [], resource_view=ResourceView([])
+        ).select_candidates(workers)
+
+    assert [c.computed_resource_claim.offload_layers for c in expected] == [33]
+    assert [c.computed_resource_claim.offload_layers for c in candidates] == [33]
+
+
+@pytest.mark.parametrize(
+    "backend_parameters, expected_offload_layers",
+    [
+        ([], [47]),
+        (["--gpu-layers=-1"], [47]),
+        # -2 asks for every layer on the GPU, which a single 4090 cannot hold.
+        (["--gpu-layers=-2"], []),
+    ],
+)
+@pytest.mark.asyncio
+async def test_gpu_layers_all_does_not_fall_back_to_partial_offload(
+    backend_parameters, expected_offload_layers
+):
+    workers = [linux_nvidia_1_4090_24gx1()]
+    model = new_model(
+        1,
+        "test",
+        1,
+        "Meta-Llama-3-70B-Instruct-GGUF",
+        huggingface_filename="*Q4_K_M*.gguf",
+        cpu_offloading=True,
+        distributed_inference_across_workers=False,
+        backend_parameters=backend_parameters,
+    )
+
+    with patch(
+        'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
+        side_effect=mock_calculate_model_resource_claim,
+    ):
+        candidates = await GGUFResourceFitSelector(
+            model, [], resource_view=ResourceView([])
+        ).select_candidates(workers)
+
+    assert [
+        c.computed_resource_claim.offload_layers for c in candidates
+    ] == expected_offload_layers

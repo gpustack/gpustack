@@ -631,13 +631,12 @@ async def validate_model_in(
 
         if param_gpu_layers:
             int_param_gpu_layers = safe_int(param_gpu_layers, None)
-            if (
-                not param_gpu_layers.isdigit()
-                or int_param_gpu_layers < 0
-                or int_param_gpu_layers > 999
+            # llama.cpp reads -1 as "auto" and -2 as "all".
+            if param_gpu_layers not in ("-1", "-2") and (
+                not param_gpu_layers.isdigit() or int_param_gpu_layers > 999
             ):
                 raise BadRequestException(
-                    message="Invalid backend parameter --gpu-layers. Please provide an integer in the range 0-999 (inclusive)."
+                    message="Invalid backend parameter --gpu-layers. Please provide -1 (auto), -2 (all), or an integer in the range 0-999 (inclusive)."
                 )
 
             if (
