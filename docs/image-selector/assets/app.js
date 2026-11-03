@@ -12,6 +12,17 @@ const CONFIG = {
         'quay': { name: 'Quay.io', prefix: 'quay.io/gpustack/', registry: 'quay.io' },
         'china': { name: '国内镜像源', prefix: 'swr.cn-south-1.myhuaweicloud.com/gpustack/', registry: 'swr.cn-south-1.myhuaweicloud.com' }
     },
+    serverImageGroups: [
+        {comment: 'gateway', prefixes: ['gpustack/mirrored-higress-']},
+        {comment: 'gateway_plugins', names: ['gpustack/higress-plugins']},
+        {comment: 'llm_router', names: ['gpustack/llm-router']},
+        {
+            comment: 'k8s',
+            names: ['gpustack/gpustack-operator', 'gpustack/ssh-server'],
+            prefixes: ['gpustack/mirrored-'],
+            excludedPrefixes: ['gpustack/mirrored-higress-']
+        }
+    ],
     // Mapping of card types to acceleration frameworks
     cardFrameworkMap: {
         'nvidia': 'CUDA', 'amd': 'ROCm', 'ascend': 'CANN', 'hygon': 'DTK',
@@ -109,6 +120,8 @@ const CONFIG = {
                 'postgres': 'PostgreSQL - 用于独立部署外置数据库（可选组件）',
                 'monitoring': '监控套件 - 包含 Prometheus 和 Grafana（可选组件）',
                 'gateway': '网关镜像 - 仅在 Kubernetes 环境下需要',
+                'gateway_plugins': '网关插件镜像 - 提供 GPUStack AI 网关功能',
+                'llm_router': 'LLM 路由镜像 - 用于推理请求路由',
                 'k8s': 'GPU 服务镜像 - 仅在 Kubernetes 环境下需要'
             },
             'cards': {
@@ -157,6 +170,8 @@ const CONFIG = {
                 "postgres": "PostgreSQL — 外部データベースを独立してデプロイするためのオプションコンポーネントです",
                 "monitoring": "監視スイート — Prometheus と Grafana を含むオプションコンポーネントです",
                 "gateway": "ゲートウェイイメージ — Kubernetes でのデプロイにのみ必要です",
+                "gateway_plugins": "ゲートウェイプラグインのイメージ — GPUStack AI ゲートウェイの機能を提供します",
+                "llm_router": "LLM ルーターのイメージ — 推論リクエストのルーティングに使用します",
                 "k8s": "GPU サービスのイメージ — Kubernetes でのデプロイにのみ必要です"
             },
             "cards": {
@@ -318,6 +333,8 @@ docker load -i gpustack-worker-images.tar</code></pre>
                 'postgres': 'PostgreSQL - Used for independent deployment of external database (optional component)',
                 'monitoring': 'Monitoring Suite - Includes Prometheus and Grafana (optional components)',
                 'gateway': 'Gateway Images - Required for Kubernetes deployment only',
+                'gateway_plugins': 'Gateway Plugin Image - Provides GPUStack AI gateway functionality',
+                'llm_router': 'LLM Router Image - Used for inference request routing',
                 'k8s': 'GPU Service Images - Required for Kubernetes deployment only'
             },
             'cards': {
@@ -473,6 +490,8 @@ docker load -i gpustack-worker-images.tar</code></pre>
         "postgres": "PostgreSQL — дополнительный компонент для отдельного развертывания внешней базы данных",
         "monitoring": "Мониторинг — дополнительные компоненты Prometheus и Grafana",
         "gateway": "Образы шлюза — нужны только при развертывании в Kubernetes",
+        "gateway_plugins": "Образ плагинов шлюза — обеспечивает функции AI-шлюза GPUStack",
+        "llm_router": "Образ LLM-маршрутизатора — используется для маршрутизации запросов инференса",
         "k8s": "Образы GPU Service — нужны только при развертывании в Kubernetes"
     },
     "cards": {
@@ -602,6 +621,8 @@ docker load -i gpustack-worker-images.tar</code></pre>
         "postgres": "PostgreSQL — harici veritabanını ayrı dağıtmak için isteğe bağlı bileşen",
         "monitoring": "İzleme paketi — isteğe bağlı Prometheus ve Grafana bileşenleri",
         "gateway": "Ağ geçidi imajları — yalnızca Kubernetes dağıtımları için gereklidir",
+        "gateway_plugins": "Ağ geçidi eklenti imajı — GPUStack AI ağ geçidi işlevlerini sağlar",
+        "llm_router": "LLM yönlendirici imajı — çıkarım isteklerini yönlendirmek için kullanılır",
         "k8s": "GPU Service imajları — yalnızca Kubernetes dağıtımları için gereklidir"
     },
     "cards": {
@@ -851,6 +872,18 @@ function setLanguage(lang) {
     generateImageList();
 }
 
+// Share server image categories between pull commands and offline image lists.
+function getServerImageGroups() {
+    return CONFIG.serverImageGroups.map(group => ({
+        comment: group.comment,
+        images: state.images.filter(img => {
+            const name = img.split(':')[0];
+            return (group.names?.includes(name) || group.prefixes?.some(prefix => name.startsWith(prefix))) &&
+                !group.excludedPrefixes?.some(prefix => name.startsWith(prefix));
+        })
+    }));
+}
+
 // Get the current set of selected images
 function getCurrentImages(component) {
     const imgs = [];
@@ -887,13 +920,11 @@ function getCurrentImages(component) {
             state.images.filter(i => i.includes('prometheus')).forEach(i => imgs.push(getFullImageName('prometheus', i.split(':')[1], state.selectedRegistry)));
             state.images.filter(i => i.includes('grafana')).forEach(i => imgs.push(getFullImageName('grafana', i.split(':')[1], state.selectedRegistry)));
         }
-        // Gateway and GPU service images - only required for Kubernetes deployments
-        state.images.filter(img => {
-            const name = img.split(':')[0];
-            return name.startsWith('gpustack/mirrored-') || ['gpustack/higress-plugins', 'gpustack/gpustack-operator', 'gpustack/ssh-server', 'gpustack/llm-router'].includes(name);
-        }).forEach(img => {
-            const [fullName, tag] = img.split(':');
-            imgs.push(getFullImageName(fullName.split('/').pop(), tag, state.selectedRegistry));
+        getServerImageGroups().forEach(group => {
+            group.images.forEach(img => {
+                const [fullName, tag] = img.split(':');
+                imgs.push(getFullImageName(fullName.split('/').pop(), tag, state.selectedRegistry));
+            });
         });
     }
     return imgs;
@@ -1285,33 +1316,15 @@ function generateImageList() {
             state.images.filter(i => i.includes('prometheus')).forEach(i => cmds.push(`docker pull${plat} ${getFullImageName('prometheus', i.split(':')[1], state.selectedRegistry)}`));
             state.images.filter(i => i.includes('grafana')).forEach(i => cmds.push(`docker pull${plat} ${getFullImageName('grafana', i.split(':')[1], state.selectedRegistry)}`));
         }
-        // Gateway images - only required for Kubernetes deployments
-        const gatewayImgs = state.images.filter(img => {
-            const name = img.split(':')[0];
-            return name.startsWith('gpustack/mirrored-higress-') || name === 'gpustack/higress-plugins';
-        });
-        if (gatewayImgs.length) {
+        getServerImageGroups().forEach(group => {
+            if (!group.images.length) return;
             cmds.push('');
-            cmds.push(`# ${t.comments.gateway}`);
-            gatewayImgs.forEach(img => {
+            cmds.push(`# ${t.comments[group.comment]}`);
+            group.images.forEach(img => {
                 const [fullName, tag] = img.split(':');
                 cmds.push(`docker pull${plat} ${getFullImageName(fullName.split('/').pop(), tag, state.selectedRegistry)}`);
             });
-        }
-        // GPU service images - only required for Kubernetes deployments
-        const gpuServiceImgs = state.images.filter(img => {
-            const name = img.split(':')[0];
-            return ['gpustack/gpustack-operator', 'gpustack/ssh-server', 'gpustack/llm-router'].includes(name) ||
-                   (name.startsWith('gpustack/mirrored-') && !name.startsWith('gpustack/mirrored-higress-'));
         });
-        if (gpuServiceImgs.length) {
-            cmds.push('');
-            cmds.push(`# ${t.comments.k8s}`);
-            gpuServiceImgs.forEach(img => {
-                const [fullName, tag] = img.split(':');
-                cmds.push(`docker pull${plat} ${getFullImageName(fullName.split('/').pop(), tag, state.selectedRegistry)}`);
-            });
-        }
     }
     renderImageList(cmds);
     updateLanguage(); 
