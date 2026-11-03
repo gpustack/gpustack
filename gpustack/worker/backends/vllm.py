@@ -441,7 +441,7 @@ class VLLMServer(InferenceServer):
             # onto the instance; local CPU cache sizing does not apply.
             cache_config = self._model_instance.cache_config
             if cache_config and cache_config.injected:
-                env.update(cache_config.env or {})
+                env.update(self._render_cache_injection_env(cache_config.env))
             else:
                 reason = (
                     f" Reason: {cache_config.reason}"

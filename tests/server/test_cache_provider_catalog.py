@@ -1756,3 +1756,44 @@ def test_a_component_may_declare_its_own_completion_hints():
     # already its own
     assert server.common_parameters == []
     assert "--l1-size-gb" not in coordinator.common_parameters
+
+
+@pytest.mark.parametrize("backend", ["SGLang", "vLLM"])
+def test_injection_env_defers_worker_ip_to_each_worker(backend):
+    provider = CacheProvider(
+        name="runtime-env",
+        custom_version=True,
+        inference_backend_integrations=[
+            {
+                "backend": backend,
+                "injection": {
+                    "env": {"CLIENT": "{{worker_ip}}:{{port}}"},
+                },
+            }
+        ],
+    )
+    assert validate_injection_templates(provider) == []
+    env, args, files = render_injection(
+        provider, backend, {"worker_ip": "10.0.0.7", "port": 50051}
+    )
+    assert env == {"CLIENT": "{{worker_ip}}:50051"}
+    assert args == []
+    assert files == {}
+
+
+@pytest.mark.parametrize(
+    "injection",
+    [
+        {"args": ["--client", "{{worker_ip}}"]},
+        {"files": {"/tmp/client": "{{worker_ip}}"}},
+        {"env": {"CLIENT": "{{worker_ip|gib_to_bytes}}"}},
+        {"env": {"CLIENT": "{{unknown_worker_value}}"}},
+    ],
+)
+def test_injection_contract_rejects_unresolved_runtime_templates(injection):
+    provider = CacheProvider(
+        name="invalid-runtime-template",
+        custom_version=True,
+        inference_backend_integrations=[{"backend": "SGLang", "injection": injection}],
+    )
+    assert validate_injection_templates(provider)

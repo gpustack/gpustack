@@ -62,6 +62,7 @@ from gpustack.schemas.models import (
     ModelInstanceDeploymentMetadata,
     role_effective_model,
 )
+from gpustack.schemas.cache_providers import CACHE_ENV_RUNTIME_VARIABLES
 from gpustack.schemas.workers import GPUDevicesStatus
 from gpustack.server.bus import Event
 from gpustack.utils.command import flatten_to_argv, is_parameter_key
@@ -1357,6 +1358,16 @@ class InferenceServer(ABC):
             if self._model_instance.ports
             else self._model_instance.port
         )
+
+    def _render_cache_injection_env(
+        self, env: Optional[Dict[str, str]]
+    ) -> Dict[str, str]:
+        """Resolve cache env placeholders from the current worker's attributes."""
+        variables = {
+            name: getattr(self._worker, attribute)
+            for name, attribute in CACHE_ENV_RUNTIME_VARIABLES.items()
+        }
+        return render_values(env, variables) or {}
 
     def _cache_injection_files(self) -> dict[str, str]:
         """Connector config files (container path -> contents) the serving
