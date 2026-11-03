@@ -297,7 +297,7 @@ class SGLangServer(InferenceServer):
         ):
             cache_config = getattr(self._model_instance, "cache_config", None)
             if cache_config and cache_config.injected:
-                env.update(cache_config.env or {})
+                env.update(self._render_cache_injection_env(cache_config.env))
 
         return env
 

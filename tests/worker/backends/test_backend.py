@@ -630,6 +630,7 @@ def _vllm_backend_with_kv_cache(
         image_name=None,
     )
     backend._model_instance = types.SimpleNamespace(cache_config=cache_config)
+    backend._worker = types.SimpleNamespace(ip="10.0.0.7")
     backend._get_device_info = lambda: device_info
     backend._get_total_vram_claim = lambda: vram_claim
     backend._get_selected_gpu_devices = lambda: [
@@ -2498,3 +2499,67 @@ def test_managed_router_records_the_same_peers_it_renders(monkeypatch):
     server._update_model_instance.assert_called_once_with(
         3, router_peer_snapshot=router_peer_snapshot([peer], "g", {7: "10.0.0.1"})
     )
+
+
+@pytest.mark.parametrize("backend_class", [SGLangServer, VLLMServer])
+@pytest.mark.parametrize("injected", [True, False])
+def test_shared_cache_env_resolves_runtime_variables_without_mutating_snapshot(
+    backend_class, injected, monkeypatch
+):
+    from gpustack.schemas.cache_providers import (
+        CACHE_ENV_RUNTIME_VARIABLES,
+        CacheProvider,
+        render_injection,
+        validate_injection_templates,
+    )
+
+    # One registry entry must support validation and both rendering phases.
+    monkeypatch.setitem(CACHE_ENV_RUNTIME_VARIABLES, "worker_name", "name")
+    provider = CacheProvider(
+        name="runtime-env",
+        custom_version=True,
+        inference_backend_integrations=[
+            {
+                "backend": "SGLang" if backend_class is SGLangServer else "vLLM",
+                "injection": {
+                    "env": {
+                        "CACHE_CLIENT_ADDRESS": "{{worker_ip}}:{{port}}",
+                        "CACHE_CLIENT_NAME": "{{worker_name}}",
+                        "CACHE_MODE": "remote",
+                    },
+                },
+            }
+        ],
+    )
+    assert validate_injection_templates(provider) == []
+    env, _, _ = render_injection(
+        provider.inference_backend_integrations[0],
+        {"worker_ip": "leader-ip", "worker_name": "leader-name", "port": 50051},
+    )
+    assert env["CACHE_CLIENT_NAME"] == "{{worker_name}}"
+    snapshot = CacheConfigSnapshot(cache_service_id=3, injected=injected, env=env)
+    before = snapshot.model_dump()
+    monkeypatch.setattr(InferenceServer, "_get_configured_env", lambda self: {})
+    for ip in ("10.0.0.7", "10.0.0.8"):
+        backend = backend_class.__new__(backend_class)
+        backend._worker = types.SimpleNamespace(ip=ip, name=f"worker-{ip}")
+        backend._model = types.SimpleNamespace(
+            extended_kv_cache=_shared_kv_cache_config()
+        )
+        backend._model_instance = types.SimpleNamespace(cache_config=snapshot)
+        if backend_class is SGLangServer:
+            backend._set_cache_env = lambda *args: None
+            backend._get_selected_gpu_devices = lambda: []
+            env = backend._get_configured_env(is_distributed=False)
+        else:
+            env = {}
+            backend._set_lmcache_env(env)
+        if injected:
+            assert env["CACHE_CLIENT_ADDRESS"] == f"{ip}:50051"
+            assert env["CACHE_CLIENT_NAME"] == f"worker-{ip}"
+            assert env["CACHE_MODE"] == "remote"
+        else:
+            assert "CACHE_CLIENT_ADDRESS" not in env
+            assert "CACHE_CLIENT_NAME" not in env
+            assert "CACHE_MODE" not in env
+    assert snapshot.model_dump() == before
