@@ -458,7 +458,6 @@ def report_api(monkeypatch):
     )
     lookup = AsyncMock(return_value=instance)
     monkeypatch.setattr(routes.ModelInstance, "one_by_id", lookup)
-    monkeypatch.setattr(routes.ModelInstance, "one_by_id_with_refresh", lookup)
     service = MagicMock()
 
     async def persist(current, source):
@@ -479,7 +478,6 @@ def report_api(monkeypatch):
             )
         ),
     )
-    monkeypatch.setattr(routes.Model, "one_by_id_with_refresh", routes.Model.one_by_id)
     app = FastAPI()
     register_handlers(app)
     app.include_router(routes.router, prefix="/model-instances")
@@ -568,7 +566,7 @@ async def test_managed_configuration_snapshot_requires_generation_fenced_report(
 async def test_workers_merge_under_row_lock_and_get_round_trips(report_api):
     api = report_api
     assert (await put(api)).status_code == 200
-    api.lookup.assert_awaited_with(api.session, 7, for_update=True)
+    api.lookup.assert_awaited_with(api.session, 7, for_update=True, refresh=True)
     api.ctx.user.worker.id = 2
     response = await put(api, [new_model_instance_workload(worker_id=2, dp_rank=1)])
     assert response.status_code == 200, response.text
@@ -981,7 +979,7 @@ async def test_external_rank_registration_matches_allocation(report_api, monkeyp
     api.instance.named_ports = {'_vllm_external_api': PortBand(base=41000, count=2)}
     monkeypatch.setattr(
         routes.Model,
-        'one_by_id_with_refresh',
+        'one_by_id',
         AsyncMock(
             return_value=new_model(
                 1,
@@ -1119,7 +1117,7 @@ async def test_multi_port_external_rank_registration_verifies_contiguous_worker_
     api.instance.named_ports = {'_vllm_external_api': PortBand(base=41000, count=4)}
     monkeypatch.setattr(
         routes.Model,
-        'one_by_id_with_refresh',
+        'one_by_id',
         AsyncMock(
             return_value=new_model(
                 1,
@@ -1437,9 +1435,7 @@ async def test_first_component_registration_checks_model_and_reserved_ports(
         backend=backend,
         backend_parameters=parameters,
     )
-    monkeypatch.setattr(
-        routes.Model, 'one_by_id_with_refresh', AsyncMock(return_value=model)
-    )
+    monkeypatch.setattr(routes.Model, 'one_by_id', AsyncMock(return_value=model))
     report_api.instance.port = 40000
     report_api.instance.ports = [40000, 40001, 40002]
     items = [
@@ -1724,7 +1720,7 @@ async def test_dashboard_visibility_precedes_raw_target_syntax(
     response = await _dashboard_get(api, params)
     assert response.status_code == 404
     config.assert_not_called()
-    api.lookup.assert_awaited_once_with(api.session, api.instance.id)
+    api.lookup.assert_awaited_once_with(api.session, api.instance.id, refresh=True)
 
 
 @pytest.mark.asyncio
@@ -1781,7 +1777,7 @@ async def test_dashboard_empty_manifest_uses_current_identity_and_fixed_server_b
     assert actual == {key: [value] for key, value in expected.items()}
     assert actual['var-scope_legacy_enabled'] == ['0']
     assert actual['var-scope_source_kind'] == ['".*"']
-    api.lookup.assert_awaited_once_with(api.session, 7)
+    api.lookup.assert_awaited_once_with(api.session, 7, refresh=True)
 
 
 def _dashboard_sg(api):
@@ -1899,7 +1895,7 @@ async def test_dashboard_owner_binding_is_fresh_and_not_worker_health(
     elif case == 'id':
         worker.id = 2
     fresh = AsyncMock(return_value=worker)
-    monkeypatch.setattr(routes.Worker, 'one_by_id_with_refresh', fresh)
+    monkeypatch.setattr(routes.Worker, 'one_by_id', fresh)
     if case != 'unreachable':
         monkeypatch.setattr(
             routes,
@@ -1908,7 +1904,7 @@ async def test_dashboard_owner_binding_is_fresh_and_not_worker_health(
         )
     response = await _dashboard_get(api, {'dp_rank': '0'})
     assert response.status_code == (302 if case == 'unreachable' else 404)
-    fresh.assert_awaited_once_with(api.session, 1)
+    fresh.assert_awaited_once_with(api.session, 1, refresh=True)
 
 
 @pytest.mark.asyncio
@@ -1937,7 +1933,7 @@ async def test_dashboard_vllm_rank_binds_global_main_owner(dashboard_api, monkey
     ]
     worker = SimpleNamespace(id=2, cluster_id=1, deleted_at=None)
     fresh = AsyncMock(return_value=worker)
-    monkeypatch.setattr(routes.Worker, 'one_by_id_with_refresh', fresh)
+    monkeypatch.setattr(routes.Worker, 'one_by_id', fresh)
     response = await _dashboard_get(api, {'dp_rank': '5', 'worker_id': '2'})
     assert response.status_code == 302
     scope = parse_qs(
@@ -2040,10 +2036,16 @@ async def test_dashboard_current_identity_never_uses_cached_row(
     old = api.instance.model_copy(deep=True)
     old.restart_count = 2
     stale = AsyncMock(return_value=old if cached else None)
-    monkeypatch.setattr(routes.ModelInstance, 'one_by_id', stale)
+
+    async def lookup(*args, refresh=False, **kwargs):
+        if refresh:
+            return await api.lookup(*args, refresh=True, **kwargs)
+        return await stale(*args, **kwargs)
+
+    monkeypatch.setattr(routes.ModelInstance, 'one_by_id', lookup)
     assert (await _dashboard_get(api, {'restart_count': '2'})).status_code == 404
     stale.assert_not_awaited()
-    api.lookup.assert_awaited_once_with(api.session, api.instance.id)
+    api.lookup.assert_awaited_once_with(api.session, api.instance.id, refresh=True)
 
 
 @pytest.mark.asyncio
@@ -2121,9 +2123,7 @@ async def test_dashboard_source_owner_binding_preserves_tenant_visibility(
     worker = SimpleNamespace(
         id=1, cluster_id=1, deleted_at=None, system_principal_id=77
     )
-    monkeypatch.setattr(
-        routes.Worker, 'one_by_id_with_refresh', AsyncMock(return_value=worker)
-    )
+    monkeypatch.setattr(routes.Worker, 'one_by_id', AsyncMock(return_value=worker))
     assert (
         await _dashboard_get(api, {'component': 'sglang_engine'})
     ).status_code == 302
@@ -2226,9 +2226,7 @@ async def test_hybrid_reports_merge_out_of_order_and_preserve_actual_apis(
             '--dpl=1' if headless else '--dpl=2',
         ],
     )
-    monkeypatch.setattr(
-        routes.Model, 'one_by_id_with_refresh', AsyncMock(return_value=model)
-    )
+    monkeypatch.setattr(routes.Model, 'one_by_id', AsyncMock(return_value=model))
     api = report_api
     api.instance.gpu_indexes = [0, 1]
     api.instance.distributed_servers.subordinate_workers[0].gpu_indexes = [0, 1]
@@ -2280,9 +2278,7 @@ async def test_hybrid_registration_checks_mode_and_reserved_api(
             '--dp=4',
         ],
     )
-    monkeypatch.setattr(
-        routes.Model, 'one_by_id_with_refresh', AsyncMock(return_value=model)
-    )
+    monkeypatch.setattr(routes.Model, 'one_by_id', AsyncMock(return_value=model))
     report_api.instance.port = 40000
     report_api.instance.ports = [] if invalid == 'unreserved' else [40000, 40001]
     from gpustack.schemas.models import PortBand
@@ -2438,7 +2434,7 @@ async def test_hybrid_first_registration_rejects_rank_report_format(
     api.instance.named_ports = {'_vllm_external_api': PortBand(base=40000)}
     monkeypatch.setattr(
         routes.Model,
-        'one_by_id_with_refresh',
+        'one_by_id',
         AsyncMock(
             return_value=new_model(
                 1,

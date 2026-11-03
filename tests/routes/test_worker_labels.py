@@ -232,10 +232,15 @@ def test_cloud_worker_delete_locks_before_changing_state(batch, monkeypatch):
     )
     batch.session.no_autoflush = MagicMock()
     batch.session.get.return_value = worker
-    monkeypatch.setattr(Worker, 'one_by_id', AsyncMock(return_value=worker))
-    monkeypatch.setattr(
-        ModelInstance, 'all_by_field_with_refresh', AsyncMock(return_value=[])
-    )
+    read_worker = Worker.one_by_id
+
+    async def lookup(session, id, **kwargs):
+        if kwargs.get('refresh'):
+            return await read_worker(session, id, **kwargs)
+        return worker
+
+    monkeypatch.setattr(Worker, 'one_by_id', lookup)
+    monkeypatch.setattr(ModelInstance, 'all_by_field', AsyncMock(return_value=[]))
     deleted = AsyncMock()
     monkeypatch.setattr(Worker, 'delete', deleted)
     monkeypatch.setattr('gpustack.server.services.delete_cache_by_key', AsyncMock())

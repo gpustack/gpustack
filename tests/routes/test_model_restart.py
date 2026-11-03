@@ -381,7 +381,7 @@ async def test_a_teardown_that_failed_leaves_no_guard_behind(failure, expected_e
     with (
         patch("gpustack.routes.models.Model.one_by_id", AsyncMock(return_value=model)),
         patch(
-            "gpustack.routes.models.Model.one_by_id_with_refresh",
+            "gpustack.routes.models.Model.one_by_id",
             AsyncMock(return_value=model),
         ),
         patch("gpustack.routes.models.assert_resource_visible", MagicMock()),

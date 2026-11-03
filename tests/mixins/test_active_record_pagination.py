@@ -186,14 +186,51 @@ async def test_the_stream_twin_agrees_on_wildcard_characters(engine):
         assert accepted == listed, needle
 
 
-async def _refreshed(session, row_id, multiple):
+async def _read(session, row_id, multiple, **kwargs):
     if multiple == "ids":
-        rows = await GPUInstanceType.all_by_ids_with_refresh(session, [row_id])
+        rows = await GPUInstanceType.all_by_ids(session, [row_id], **kwargs)
         return rows[0] if rows else None
     if multiple:
-        rows = await GPUInstanceType.all_by_field_with_refresh(session, "id", row_id)
+        rows = await GPUInstanceType.all_by_field(session, "id", row_id, **kwargs)
         return rows[0] if rows else None
-    return await GPUInstanceType.one_by_id_with_refresh(session, row_id)
+    return await GPUInstanceType.one_by_id(session, row_id, **kwargs)
+
+
+async def _refreshed(session, row_id, multiple):
+    return await _read(session, row_id, multiple, refresh=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multiple", [False, True, "ids"])
+@pytest.mark.parametrize("kwargs", [{}, {"refresh": False}])
+async def test_refresh_is_opt_in(engine, multiple, kwargs):
+    await _seed(engine, "original")
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        row = (await GPUInstanceType.all(session))[0]
+        await session.exec(
+            update(GPUInstanceType)
+            .where(GPUInstanceType.id == row.id)
+            .values(name="database")
+            .execution_options(synchronize_session=False)
+        )
+        assert await _read(session, row.id, multiple, **kwargs) is row
+        assert row.name == "original"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multiple", [True, "ids"])
+@pytest.mark.parametrize("kwargs", [{}, {"refresh": False}])
+async def test_normal_query_preserves_autoflush(engine, multiple, kwargs):
+    await _seed(engine, "original")
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        row = (await GPUInstanceType.all(session))[0]
+        row.name = "local"
+        flushed = MagicMock()
+        event.listen(session.sync_session, "before_flush", flushed)
+        assert await _read(session, row.id, multiple, **kwargs) is row
+        assert row.name == "local"
+        flushed.assert_called_once()
+        assert not session.is_modified(row)
 
 
 @pytest.mark.asyncio
@@ -426,15 +463,15 @@ async def test_refresh_batch_locks_rows_in_primary_key_order(dialect, by_ids):
     session.exec = AsyncMock(return_value=result)
     if by_ids:
         assert (
-            await GPUInstanceType.all_by_ids_with_refresh(
-                session, [3, 1, 3], for_update=True
+            await GPUInstanceType.all_by_ids(
+                session, [3, 1, 3], for_update=True, refresh=True
             )
             == []
         )
     else:
         assert (
-            await GPUInstanceType.all_by_field_with_refresh(
-                session, "cluster_id", 1, for_update=True
+            await GPUInstanceType.all_by_field(
+                session, "cluster_id", 1, for_update=True, refresh=True
             )
             == []
         )
@@ -779,14 +816,14 @@ async def test_batch_id_refresh_orders_deduplicates_and_empty_ids_do_not_query(e
     async with AsyncSession(engine, expire_on_commit=False) as session:
         rows = await GPUInstanceType.all(session)
         ids = sorted(row.id for row in rows)
-        found = await GPUInstanceType.all_by_ids_with_refresh(
-            session, [ids[2], ids[0], ids[2], max(ids) + 100]
+        found = await GPUInstanceType.all_by_ids(
+            session, [ids[2], ids[0], ids[2], max(ids) + 100], refresh=True
         )
         assert [row.id for row in found] == [ids[0], ids[2]]
         executed = MagicMock()
         event.listen(engine.sync_engine, "before_cursor_execute", executed)
         try:
-            assert await GPUInstanceType.all_by_ids_with_refresh(session, []) == []
+            assert await GPUInstanceType.all_by_ids(session, [], refresh=True) == []
             executed.assert_not_called()
         finally:
             event.remove(engine.sync_engine, "before_cursor_execute", executed)

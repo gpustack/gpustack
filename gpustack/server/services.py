@@ -728,16 +728,17 @@ class WorkerService:
     async def delete(self, worker: Worker, **kwargs):
         # Admission and rank reports lock Worker before Instance. Preserve that
         # order while keeping its credentials until physical stopping is proven.
-        worker = await Worker.one_by_id_with_refresh(
+        worker = await Worker.one_by_id(
             self.session,
             worker.id,
             for_update=True,
             options=[selectinload(Worker.system_principal)],
+            refresh=True,
         )
         if worker is None:
             return
-        instances = await ModelInstance.all_by_field_with_refresh(
-            self.session, "cluster_id", worker.cluster_id, for_update=True
+        instances = await ModelInstance.all_by_field(
+            self.session, "cluster_id", worker.cluster_id, for_update=True, refresh=True
         )
         self.assert_model_cohort_stopped(worker, instances)
         worker_id = worker.id
@@ -1031,8 +1032,8 @@ class ModelService:
         try:
             locked = []
             for instance in sorted(instances, key=lambda item: item.id):
-                current = await ModelInstance.one_by_id_with_refresh(
-                    self.session, instance.id, for_update=True
+                current = await ModelInstance.one_by_id(
+                    self.session, instance.id, for_update=True, refresh=True
                 )
                 if current is not None and current.model_id == model.id:
                     locked.append(current)
@@ -1050,13 +1051,13 @@ class ModelService:
             await delete_cache_by_key(self.get_by_name, model.name)
 
     async def delete(self, model: Model):
-        model = await Model.one_by_id_with_refresh(
-            self.session, model.id, for_update=True
+        model = await Model.one_by_id(
+            self.session, model.id, for_update=True, refresh=True
         )
         if model is None:
             return
-        instances = await ModelInstance.all_by_field_with_refresh(
-            self.session, "model_id", model.id, for_update=True
+        instances = await ModelInstance.all_by_field(
+            self.session, "model_id", model.id, for_update=True, refresh=True
         )
         managed = (
             [
@@ -1351,8 +1352,8 @@ class ModelInstanceService:
             restart_count: Generation observed by the controller.
             allow_restart: Whether the current deployment specification permits recovery.
         """
-        instance = await ModelInstance.one_by_id_with_refresh(
-            self.session, instance_id, for_update=True
+        instance = await ModelInstance.one_by_id(
+            self.session, instance_id, for_update=True, refresh=True
         )
         source, due = {}, None
         if (
@@ -1489,7 +1490,7 @@ class ModelInstanceService:
         return await self._managed_workers_ready(members)
 
     async def _managed_workers_ready(self, members: Set[int]) -> bool:
-        workers = await Worker.all_by_ids_with_refresh(self.session, members)
+        workers = await Worker.all_by_ids(self.session, members, refresh=True)
         if {worker.id for worker in workers} != members:
             return False
         for worker in workers:
@@ -1545,7 +1546,7 @@ class ModelInstanceService:
                     "state_message": "",
                 }, None
             return {}, None
-        model = await Model.one_by_id_with_refresh(self.session, instance.model_id)
+        model = await Model.one_by_id(self.session, instance.model_id, refresh=True)
         if (
             model is None
             or model.deleted_at is not None
@@ -1636,7 +1637,7 @@ class ModelInstanceService:
             item.state != ModelInstanceWorkloadStateEnum.STOPPED for item in workloads
         ):
             return {}, None
-        model = await Model.one_by_id_with_refresh(self.session, instance.model_id)
+        model = await Model.one_by_id(self.session, instance.model_id, refresh=True)
         if (
             model is None
             or model.deleted_at is not None
@@ -1670,8 +1671,8 @@ class ModelInstanceService:
 
     async def delete(self, model_instance: ModelInstance) -> bool:
         """Return whether the row is absent, or False while stopping is pending."""
-        current = await ModelInstance.one_by_id_with_refresh(
-            self.session, model_instance.id, for_update=True
+        current = await ModelInstance.one_by_id(
+            self.session, model_instance.id, for_update=True, refresh=True
         )
         if current is None:
             return True
@@ -1700,8 +1701,8 @@ class ModelInstanceService:
             )
             for m in sorted(model_instances, key=lambda instance: instance.id):
                 expected = m.restart_count or 0
-                m = await ModelInstance.one_by_id_with_refresh(
-                    self.session, m.id, for_update=True
+                m = await ModelInstance.one_by_id(
+                    self.session, m.id, for_update=True, refresh=True
                 )
                 if m is None or (m.restart_count or 0) != expected:
                     continue
@@ -1777,7 +1778,7 @@ class ModelInstanceService:
                 for worker_id in member_worker_ids(instance)
             }
         ):
-            worker = await Worker.one_by_id_with_refresh(self.session, worker_id)
+            worker = await Worker.one_by_id(self.session, worker_id, refresh=True)
             bindings[worker_id] = getattr(worker, "system_principal_id", None)
         for instance in instances:
             source = {}

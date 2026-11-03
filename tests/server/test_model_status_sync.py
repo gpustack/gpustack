@@ -1350,9 +1350,7 @@ async def test_managed_readiness_requires_whole_manifest(monkeypatch, missing):
     elif missing == 'draining':
         mi.draining_since = datetime.now(timezone.utc)
     session = MagicMock(commit=AsyncMock())
-    monkeypatch.setattr(
-        ModelInstance, 'one_by_id_with_refresh', AsyncMock(return_value=mi)
-    )
+    monkeypatch.setattr(ModelInstance, 'one_by_id', AsyncMock(return_value=mi))
     worker_lookup = AsyncMock(
         return_value=[
             SimpleNamespace(
@@ -1369,7 +1367,7 @@ async def test_managed_readiness_requires_whole_manifest(monkeypatch, missing):
             for worker_id in (1, 2)
         ]
     )
-    monkeypatch.setattr(controllers.Worker, 'all_by_ids_with_refresh', worker_lookup)
+    monkeypatch.setattr(controllers.Worker, 'all_by_ids', worker_lookup)
     service = ModelInstanceService(session)
     service.update = AsyncMock()
     await service.reconcile_managed_instance(mi.id, 0, allow_restart=False)
@@ -1402,9 +1400,7 @@ async def test_hybrid_readiness_requires_all_tasks_and_actual_apis(
         workloads=tasks,
         subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
     )
-    monkeypatch.setattr(
-        ModelInstance, 'one_by_id_with_refresh', AsyncMock(return_value=mi)
-    )
+    monkeypatch.setattr(ModelInstance, 'one_by_id', AsyncMock(return_value=mi))
     service = ModelInstanceService(MagicMock(commit=AsyncMock()))
     service._managed_workers_ready = AsyncMock(return_value=missing != 'worker')
     service._managed_smg_reconcile = AsyncMock(

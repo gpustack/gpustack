@@ -1052,10 +1052,10 @@ async def test_router_addresses_refresh_workers_and_exclude_deleted_rows(monkeyp
             SimpleNamespace(id=3, ip=None, deleted_at=None),
         ]
     )
-    monkeypatch.setattr(Worker, 'all_by_field_with_refresh', refresh)
+    monkeypatch.setattr(Worker, 'all_by_field', refresh)
     session = object()
     assert await router_worker_ips(session, 11) == {1: '10.9.0.1'}
-    refresh.assert_awaited_once_with(session, 'cluster_id', 11)
+    refresh.assert_awaited_once_with(session, 'cluster_id', 11, refresh=True)
 
 
 @pytest.mark.asyncio
@@ -1254,7 +1254,7 @@ async def test_membership_snapshot_write_is_fenced_after_http(monkeypatch, chang
         addresses[1] = '10.9.0.1'
     monkeypatch.setattr(
         Worker,
-        'all_by_field_with_refresh',
+        'all_by_field',
         AsyncMock(
             return_value=[
                 SimpleNamespace(id=worker_id, ip=ip)
@@ -1298,10 +1298,10 @@ async def test_membership_snapshot_write_is_fenced_after_http(monkeypatch, chang
         peer.restart_count += 1
     elif changed == 'model':
         model.updated_at = 'new'
-    monkeypatch.setattr(Model, 'one_by_id_with_refresh', AsyncMock(return_value=model))
+    monkeypatch.setattr(Model, 'one_by_id', AsyncMock(return_value=model))
     monkeypatch.setattr(
         ModelInstance,
-        'all_by_field_with_refresh',
+        'all_by_field',
         AsyncMock(return_value=[peer, router]),
     )
     update = AsyncMock()
@@ -1334,7 +1334,7 @@ async def test_managed_controller_releases_connection_and_fences_http_result(
     addresses = {1: '10.0.0.1', 2: '10.0.0.2'}
     monkeypatch.setattr(
         Worker,
-        'all_by_field_with_refresh',
+        'all_by_field',
         AsyncMock(
             return_value=[
                 SimpleNamespace(id=worker_id, ip=ip)

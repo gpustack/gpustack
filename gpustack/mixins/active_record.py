@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import importlib
@@ -267,14 +268,27 @@ class ActiveRecordMixin(ImmutableFieldsMixin):
         id: int,
         for_update: bool = False,
         options: Optional[List] = None,
+        *,
+        refresh: bool = False,
     ):
         """Return the object with the given id. Return None if not found.
 
         If `for_update` is True, the row will be locked until the end of the transaction.
         If `options` is provided, it will be passed to the query for eager loading relationships.
+        If `refresh` is True, reload the row within the caller's transaction
+        without autoflush. Pending changes to this model must be flushed first.
+        In-place JSON changes must be tracked before flushing. Refresh bypasses
+        ORM identity-map reuse, not transaction isolation, and does not commit,
+        roll back or close the caller's session.
         """
-
-        return await session.get(cls, id, with_for_update=for_update, options=options)
+        load_options = {"with_for_update": for_update}
+        if not refresh or options is not None:
+            load_options["options"] = options
+        if refresh:
+            cls._check_refreshable(session)
+            load_options["populate_existing"] = True
+        with session.no_autoflush if refresh else nullcontext():
+            return await session.get(cls, id, **load_options)
 
     @classmethod
     def _check_refreshable(cls, session: AsyncSession) -> None:
@@ -292,98 +306,42 @@ class ActiveRecordMixin(ImmutableFieldsMixin):
                     )
 
     @classmethod
-    async def one_by_id_with_refresh(
+    async def all_by_ids(
         cls,
         session: AsyncSession,
-        id: int,
+        ids: Iterable[int],
         *,
         for_update: bool = False,
-        options: Optional[List] = None,
-    ) -> Optional[SQLModel]:
-        """Reload a row within the caller's transaction without implicit writes.
-
-        This bypasses ORM identity-map reuse, not transaction isolation. The
-        caller owns commit, rollback and close, including row-lock release.
-        Pending changes to this model must be flushed first. In-place JSON
-        changes must be tracked through assignment or flag_modified before
-        flushing; untracked changes cannot be protected by the ORM.
-
-        Args:
-            session: Existing caller-owned session.
-            id: Primary key to read.
-            for_update: Hold an exclusive row lock until the transaction ends.
-            options: Eager loaders needed by the caller after refreshing the row.
-        """
-        cls._check_refreshable(session)
-        load_options = {"options": options} if options is not None else {}
-        with session.no_autoflush:
-            return await session.get(
-                cls,
-                id,
-                with_for_update=for_update,
-                populate_existing=True,
-                **load_options,
-            )
-
-    @classmethod
-    async def all_by_ids_with_refresh(
-        cls, session: AsyncSession, ids: Iterable[int], *, for_update: bool = False
+        refresh: bool = False,
     ) -> List[SQLModel]:
-        """Reload distinct primary keys in order without implicit transaction writes.
+        """Read distinct primary keys in order; omit missing rows.
 
-        Uses the same dirty-target and caller-owned transaction contract as
-        one_by_id_with_refresh. An empty set performs no query or refresh.
+        An empty set performs no query or refresh. Explicit refresh uses the
+        same pending-change and transaction ownership contract as one_by_id.
 
         Args:
             session: Existing caller-owned session.
-            ids: Primary keys to reload; absent rows are omitted.
+            ids: Primary keys to read; absent rows are omitted.
             for_update: Hold row locks until the caller ends the transaction.
+            refresh: Reload existing objects without autoflush. Defaults to False.
         """
         identities = sorted(set(ids))
         if not identities:
             return []
-        cls._check_refreshable(session)
+        if refresh:
+            cls._check_refreshable(session)
         statement = (
             select(cls)
             .where(cls.id.in_(identities))
             .order_by(*cls.__mapper__.primary_key)
-            .execution_options(populate_existing=True, autoflush=False)
         )
+        if refresh:
+            statement = statement.execution_options(
+                populate_existing=True, autoflush=False
+            )
         if for_update:
             statement = statement.with_for_update()
-        with session.no_autoflush:
-            return list((await session.exec(statement)).all())
-
-    @classmethod
-    async def all_by_field_with_refresh(
-        cls,
-        session: AsyncSession,
-        field: str,
-        value: Any,
-        *,
-        for_update: bool = False,
-    ) -> List[SQLModel]:
-        """Reload matching rows in primary-key order without ending the transaction.
-
-        Uses the same pending-change and transaction ownership contract as
-        one_by_id_with_refresh. No application cache or write hooks are invoked.
-
-        Args:
-            session: Existing caller-owned session.
-            field: Model field to compare.
-            value: Exact field value.
-            for_update: Hold row locks until the caller ends the transaction.
-        """
-        cls._check_refreshable(session)
-        statement = (
-            select(cls)
-            .where(getattr(cls, field) == value)
-            .order_by(*cls.__mapper__.primary_key)
-            .execution_options(populate_existing=True, autoflush=False)
-        )
-        if for_update:
-            statement = statement.with_for_update()
-        with session.no_autoflush:
+        with session.no_autoflush if refresh else nullcontext():
             return list((await session.exec(statement)).all())
 
     @classmethod
@@ -465,18 +423,34 @@ class ActiveRecordMixin(ImmutableFieldsMixin):
 
     @classmethod
     async def all_by_field(
-        cls, session: AsyncSession, field: str, value: Any, for_update: bool = False
+        cls,
+        session: AsyncSession,
+        field: str,
+        value: Any,
+        for_update: bool = False,
+        *,
+        refresh: bool = False,
     ):
         """
         Return all objects with the given field and value.
         Return an empty list if not found.
+
+        Explicit refresh reloads rows in primary-key order without autoflush,
+        using the same pending-change and transaction contract as one_by_id.
         """
+        if refresh:
+            cls._check_refreshable(session)
         statement = select(cls).where(getattr(cls, field) == value)
+        if refresh:
+            statement = statement.order_by(
+                *cls.__mapper__.primary_key
+            ).execution_options(populate_existing=True, autoflush=False)
         if for_update:
             statement = statement.with_for_update()
 
-        result = await session.exec(statement)
-        return result.all()
+        with session.no_autoflush if refresh else nullcontext():
+            result = await session.exec(statement)
+            return result.all()
 
     @classmethod
     async def all_by_fields(

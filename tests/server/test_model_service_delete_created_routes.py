@@ -307,11 +307,11 @@ async def test_batch_stop_conflict_rolls_back_without_erasing_task_evidence(sess
     with pytest.raises(ConflictException) as error:
         await ModelInstanceService(session).batch_delete([managed, legacy])
     assert error.value.status_code == 409
-    current = await ModelInstance.one_by_id_with_refresh(session, managed_id)
+    current = await ModelInstance.one_by_id(session, managed_id, refresh=True)
     assert current.draining_since is None
     assert not current.distributed_servers.stop_requested
     assert current.distributed_servers.workloads[0].state == 'unknown'
-    current = await ModelInstance.one_by_id_with_refresh(session, legacy_id)
+    current = await ModelInstance.one_by_id(session, legacy_id, refresh=True)
     assert current.draining_since is None
     assert current.distributed_servers is None
     assert current.pid == 123

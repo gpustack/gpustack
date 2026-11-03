@@ -844,8 +844,8 @@ async def _registration_instances(session, worker):
     """Lock related model cohorts after the caller locks the current Worker."""
     if worker is None:
         return []
-    discovery = await ModelInstance.all_by_field_with_refresh(
-        session, 'cluster_id', worker.cluster_id
+    discovery = await ModelInstance.all_by_field(
+        session, 'cluster_id', worker.cluster_id, refresh=True
     )
     model_ids = sorted(
         {
@@ -857,8 +857,8 @@ async def _registration_instances(session, worker):
     instances = []
     for model_id in model_ids:
         instances.extend(
-            await ModelInstance.all_by_field_with_refresh(
-                session, 'model_id', model_id, for_update=True
+            await ModelInstance.all_by_field(
+                session, 'model_id', model_id, for_update=True, refresh=True
             )
         )
     return instances
@@ -922,8 +922,8 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                     message=f"worker with external_id {worker_in.external_id} not found"
                 )
             if existing_worker is not None:
-                existing_worker = await Worker.one_by_id_with_refresh(
-                    session, existing_worker.id, for_update=True
+                existing_worker = await Worker.one_by_id(
+                    session, existing_worker.id, for_update=True, refresh=True
                 )
                 if existing_worker is None or existing_worker.deleted_at is not None:
                     raise NotFoundException(message="Worker not found")

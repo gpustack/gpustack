@@ -76,7 +76,6 @@ def workload_api(workload_app, monkeypatch):
     save, delete = AsyncMock(), AsyncMock()
     session = MagicMock(info={})
     monkeypatch.setattr(ModelInstance, "one_by_id", lookup)
-    monkeypatch.setattr(ModelInstance, "one_by_id_with_refresh", lookup)
     monkeypatch.setattr(ModelInstance, "save", save)
     monkeypatch.setattr(ModelInstance, "delete", delete)
     monkeypatch.setattr(ModelInstance, "_publish_event_after_commit", MagicMock())

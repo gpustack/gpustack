@@ -64,11 +64,11 @@ async def test_the_single_instance_path_still_commits_its_own_row():
         patch("gpustack.scheduler.scheduler.ModelInstanceService") as service,
         patch.object(
             ModelInstance,
-            "all_by_field_with_refresh",
+            "all_by_field",
             AsyncMock(return_value=[instance]),
         ),
         patch(
-            'gpustack.scheduler.scheduler.Worker.all_by_ids_with_refresh',
+            'gpustack.scheduler.scheduler.Worker.all_by_ids',
             AsyncMock(return_value=[_protocol_worker()]),
         ),
     ):
@@ -171,9 +171,7 @@ async def test_rejected_instance_fence_rolls_back_without_committing(changed):
     else:
         current.restart_count = 1
     session = MagicMock(commit=AsyncMock(), rollback=AsyncMock())
-    with patch.object(
-        ModelInstance, 'one_by_id_with_refresh', AsyncMock(return_value=current)
-    ):
+    with patch.object(ModelInstance, 'one_by_id', AsyncMock(return_value=current)):
         assert await _lock_scheduling_instances(session, [expected]) is None
     session.rollback.assert_awaited_once()
     session.commit.assert_not_awaited()
@@ -205,7 +203,7 @@ async def test_candidate_commit_rechecks_stop_and_epoch_under_lock(change):
     with (
         patch.object(
             ModelInstance,
-            'all_by_field_with_refresh',
+            'all_by_field',
             AsyncMock(
                 side_effect=lambda *a, **kw: (
                     [current] if kw.get('for_update') else [stale]
@@ -213,14 +211,14 @@ async def test_candidate_commit_rechecks_stop_and_epoch_under_lock(change):
             ),
         ) as lookup,
         patch(
-            'gpustack.scheduler.scheduler.Worker.all_by_ids_with_refresh',
+            'gpustack.scheduler.scheduler.Worker.all_by_ids',
             AsyncMock(return_value=[_protocol_worker()]),
         ),
         patch('gpustack.scheduler.scheduler.ModelInstanceService') as service,
     ):
         service.return_value.update = AsyncMock()
         await apply_candidate_to_instance(session, _model(), stale, _candidate())
-    lookup.assert_awaited_with(session, 'model_id', 1, for_update=True)
+    lookup.assert_awaited_with(session, 'model_id', 1, for_update=True, refresh=True)
     assert current.worker_id is None
     service.return_value.update.assert_not_awaited()
 
@@ -255,11 +253,11 @@ async def test_group_rechecks_every_member_before_assigning_any_candidate():
         ),
         patch.object(
             ModelInstance,
-            'all_by_field_with_refresh',
+            'all_by_field',
             AsyncMock(return_value=list(rows.values())),
         ),
         patch(
-            'gpustack.scheduler.scheduler.Worker.all_by_ids_with_refresh',
+            'gpustack.scheduler.scheduler.Worker.all_by_ids',
             AsyncMock(return_value=[_protocol_worker()]),
         ),
         patch('gpustack.scheduler.scheduler.ModelInstanceService') as service,
@@ -321,11 +319,6 @@ def protocol_admission(monkeypatch):
         workers={7: candidate.worker},
         events=[],
     )
-    monkeypatch.setattr(
-        ModelInstance,
-        'all_by_field',
-        AsyncMock(side_effect=lambda *a, **kw: list(state.discovery)),
-    )
 
     async def lock_workers(session, ids, **kwargs):
         state.events.append(('workers', sorted(ids), kwargs))
@@ -337,12 +330,10 @@ def protocol_admission(monkeypatch):
         state.events.append(('instances', [r.id for r in state.current], kwargs))
         return state.current
 
-    monkeypatch.setattr(
-        Worker, 'all_by_ids_with_refresh', AsyncMock(side_effect=lock_workers)
-    )
+    monkeypatch.setattr(Worker, 'all_by_ids', AsyncMock(side_effect=lock_workers))
     monkeypatch.setattr(
         ModelInstance,
-        'all_by_field_with_refresh',
+        'all_by_field',
         AsyncMock(side_effect=lock_instances),
     )
     state.write = AsyncMock()
@@ -384,7 +375,7 @@ async def test_managed_admission_locks_workers_before_current_instance_cohort(
     s = protocol_admission
     assert await apply_candidate_to_instance(s.session, s.model, s.target, s.candidate)
     assert [e[0] for e in s.events] == ['workers', 'instances']
-    assert all(e[2] == {'for_update': True} for e in s.events)
+    assert all(e[2] == {'for_update': True, 'refresh': True} for e in s.events)
     assert s.target.worker_id == 7
     s.write.assert_awaited_once()
 
@@ -521,14 +512,14 @@ async def test_group_last_member_failure_has_zero_assignment_writes(
     candidate2 = _candidate()
     candidate2.worker = _protocol_worker(8)
     s.workers[8] = candidate2.worker
-    original = Worker.all_by_ids_with_refresh.side_effect
+    original = Worker.all_by_ids.side_effect
 
     async def lock(*args, **kwargs):
         if failure == 'protocol':
             s.workers[8].status.orchestration.protocol_version = None
         return await original(*args, **kwargs)
 
-    monkeypatch.setattr(Worker, 'all_by_ids_with_refresh', AsyncMock(side_effect=lock))
+    monkeypatch.setattr(Worker, 'all_by_ids', AsyncMock(side_effect=lock))
     monkeypatch.setattr(scheduler, 'is_group_forming', lambda *a: True)
     monkeypatch.setattr(
         scheduler,
@@ -584,8 +575,8 @@ async def test_complete_group_admission_locks_once_then_writes_one_batch(
         s.session, s.model, s.target, list(s.workers.values()), s.discovery
     )
     assert s.events == [
-        ('workers', [7, 8], {'for_update': True}),
-        ('instances', [1, 2], {'for_update': True}),
+        ('workers', [7, 8], {'for_update': True, 'refresh': True}),
+        ('instances', [1, 2], {'for_update': True, 'refresh': True}),
     ]
     assert [s.target.worker_id, second.worker_id] == [7, 8]
     s.write.assert_not_awaited()

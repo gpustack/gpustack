@@ -4705,11 +4705,11 @@ async def _persist_router_peer_snapshot(
     from gpustack.server.pd_router_membership import router_worker_ips
 
     try:
-        model = await Model.one_by_id_with_refresh(
-            session, model_identity[0], for_update=True
+        model = await Model.one_by_id(
+            session, model_identity[0], for_update=True, refresh=True
         )
-        members = await ModelInstance.all_by_field_with_refresh(
-            session, "model_id", model_identity[0], for_update=True
+        members = await ModelInstance.all_by_field(
+            session, "model_id", model_identity[0], for_update=True, refresh=True
         )
         current = next(
             (item for item in members if item.id == router_identity[0]), None
@@ -5608,11 +5608,11 @@ class WorkerController:
     ) -> None:
         """Retain the current generation and mark only the lost Worker's facts unknown."""
         expected = instance.restart_count or 0
-        live_worker = await Worker.one_by_id_with_refresh(
-            session, worker.id, for_update=True
+        live_worker = await Worker.one_by_id(
+            session, worker.id, for_update=True, refresh=True
         )
-        current = await ModelInstance.one_by_id_with_refresh(
-            session, instance.id, for_update=True
+        current = await ModelInstance.one_by_id(
+            session, instance.id, for_update=True, refresh=True
         )
         if (
             current is None

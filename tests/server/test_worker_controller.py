@@ -213,9 +213,7 @@ async def test_worker_sync_persists_reachability_changes_during_maintenance(
         patch.object(Worker, "all", AsyncMock(return_value=[worker])),
         patch.object(syncer, "_should_check_unreachable", return_value=True),
         patch.object(syncer, "_set_worker_unreachable", AsyncMock(side_effect=probe)),
-        patch.object(
-            Worker, "all_by_ids_with_refresh", AsyncMock(return_value=[stored])
-        ),
+        patch.object(Worker, "all_by_ids", AsyncMock(return_value=[stored])),
         patch.object(WorkerService, "batch_update", AsyncMock()) as update,
     ):
         await syncer._sync_workers_states()
@@ -994,9 +992,7 @@ async def test_worker_sync_ignores_late_identity_and_preserves_locked_admission(
     with (
         patch('gpustack.server.worker_syncer.async_session', return_value=s.cm),
         patch.object(Worker, 'all', AsyncMock(return_value=[probed])),
-        patch.object(
-            Worker, 'all_by_ids_with_refresh', AsyncMock(return_value=[stored])
-        ) as locked,
+        patch.object(Worker, 'all_by_ids', AsyncMock(return_value=[stored])) as locked,
         patch.object(
             WorkerService,
             'get_by_id',
@@ -1047,9 +1043,7 @@ async def test_worker_sync_locks_and_changes_whole_batch_before_single_save(
     with (
         patch('gpustack.server.worker_syncer.async_session', return_value=s.cm),
         patch.object(Worker, 'all', AsyncMock(return_value=probed)),
-        patch.object(
-            Worker, 'all_by_ids_with_refresh', AsyncMock(return_value=current)
-        ) as locked,
+        patch.object(Worker, 'all_by_ids', AsyncMock(return_value=current)) as locked,
         patch.object(
             WorkerService,
             'update',
@@ -1091,9 +1085,7 @@ async def test_worker_sync_preserves_concurrent_provisioning_states(
     with (
         patch('gpustack.server.worker_syncer.async_session', return_value=s.cm),
         patch.object(Worker, 'all', AsyncMock(return_value=probed)),
-        patch.object(
-            Worker, 'all_by_ids_with_refresh', AsyncMock(return_value=current)
-        ) as locked,
+        patch.object(Worker, 'all_by_ids', AsyncMock(return_value=current)) as locked,
         patch.object(WorkerService, 'batch_update', AsyncMock()) as saved,
         patch.object(syncer, '_should_check_unreachable', return_value=True),
         patch.object(syncer, '_set_worker_unreachable', AsyncMock(side_effect=probe)),
@@ -1136,7 +1128,7 @@ async def test_mixed_router_worker_deletion_requires_its_own_stop_proof(
     with (
         patch.object(
             ModelInstance,
-            'all_by_field_with_refresh',
+            'all_by_field',
             AsyncMock(return_value=[engine, router]),
         ),
         patch.object(Worker, 'delete', AsyncMock()) as deleted,
@@ -1210,7 +1202,7 @@ async def test_worker_delete_locks_worker_before_instances_and_invalidates_after
     async def lock_instances(session, field, value, **kwargs):
         assert order == ['worker']
         assert (session, field, value) == (s.session, 'cluster_id', s.main.cluster_id)
-        assert kwargs == {'for_update': True}
+        assert kwargs == {'for_update': True, 'refresh': True}
         order.append('instances')
         return []
 
@@ -1222,10 +1214,8 @@ async def test_worker_delete_locks_worker_before_instances_and_invalidates_after
         order.append('cache')
 
     with (
-        patch.object(Worker, 'one_by_id_with_refresh', side_effect=lock_worker),
-        patch.object(
-            ModelInstance, 'all_by_field_with_refresh', side_effect=lock_instances
-        ),
+        patch.object(Worker, 'one_by_id', side_effect=lock_worker),
+        patch.object(ModelInstance, 'all_by_field', side_effect=lock_instances),
         patch.object(Worker, 'delete', side_effect=delete),
         patch(
             'gpustack.server.services.delete_cache_by_key', side_effect=invalidate
@@ -1286,9 +1276,7 @@ async def test_worker_notifications_load_models_only_for_matched_instances(
 async def test_worker_delete_failure_does_not_invalidate_name_caches(managed_worker):
     s = managed_worker
     with (
-        patch.object(
-            ModelInstance, 'all_by_field_with_refresh', AsyncMock(return_value=[])
-        ),
+        patch.object(ModelInstance, 'all_by_field', AsyncMock(return_value=[])),
         patch.object(
             Worker, 'delete', AsyncMock(side_effect=RuntimeError('commit failed'))
         ),
@@ -1345,7 +1333,7 @@ async def test_worker_ready_rechecks_tasks_that_reported_before_the_worker(
         patch('gpustack.server.controllers.async_session', return_value=state.cm),
         patch.object(
             Worker,
-            'all_by_ids_with_refresh',
+            'all_by_ids',
             AsyncMock(return_value=[state.main, state.sub]),
         ),
         patch.object(
@@ -1412,10 +1400,8 @@ async def test_hybrid_worker_loss_withdraws_four_node_group_without_confirming_s
         if w.worker_id != worker_id
     ]
     with (
-        patch.object(Worker, 'one_by_id_with_refresh', AsyncMock(return_value=lost)),
-        patch.object(
-            ModelInstance, 'one_by_id_with_refresh', AsyncMock(return_value=instance)
-        ),
+        patch.object(Worker, 'one_by_id', AsyncMock(return_value=lost)),
+        patch.object(ModelInstance, 'one_by_id', AsyncMock(return_value=instance)),
         patch.object(ModelInstanceService, 'update', AsyncMock()) as update,
     ):
         await WorkerController(MagicMock())._mark_managed_instance_unreachable(

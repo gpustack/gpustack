@@ -660,7 +660,7 @@ async def test_hybrid_dashboard_refuses_changed_api_owner(monkeypatch, change):
     else:
         worker = None
     monkeypatch.setattr(
-        instances_route.Worker, 'one_by_id_with_refresh', AsyncMock(return_value=worker)
+        instances_route.Worker, 'one_by_id', AsyncMock(return_value=worker)
     )
     with pytest.raises(NotFoundException):
         await instances_route._validate_dashboard_owner(None, _hybrid_log_instance(), 3)
@@ -675,7 +675,7 @@ async def test_hybrid_dashboard_checks_tenant_before_resolving_listener(monkeypa
 
     monkeypatch.setattr(
         instances_route.ModelInstance,
-        'one_by_id_with_refresh',
+        'one_by_id',
         AsyncMock(return_value=_hybrid_log_instance()),
     )
     monkeypatch.setattr(

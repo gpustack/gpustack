@@ -143,13 +143,11 @@ async def test_managed_worker_readiness_uses_one_fresh_complete_batch(unavailabl
     session = MagicMock()
     service = ModelInstanceService(session)
     with (
-        patch.object(
-            Worker, 'all_by_ids_with_refresh', AsyncMock(return_value=rows)
-        ) as batch,
-        patch.object(Worker, 'one_by_id_with_refresh', AsyncMock()) as single,
+        patch.object(Worker, 'all_by_ids', AsyncMock(return_value=rows)) as batch,
+        patch.object(Worker, 'one_by_id', AsyncMock()) as single,
     ):
         assert await service._managed_workers_ready({1, 2}) == (unavailable == 'none')
-        batch.assert_awaited_once_with(session, {1, 2})
+        batch.assert_awaited_once_with(session, {1, 2}, refresh=True)
         single.assert_not_awaited()
 
 
@@ -992,12 +990,12 @@ async def test_mixed_stop_waits_for_legacy_router_and_reuses_its_token(
     rows = {1: engine, 2: router}
     monkeypatch.setattr(
         ModelInstance,
-        'one_by_id_with_refresh',
+        'one_by_id',
         AsyncMock(side_effect=lambda session, identity, **kw: rows[identity]),
     )
     monkeypatch.setattr(
         Worker,
-        'one_by_id_with_refresh',
+        'one_by_id',
         AsyncMock(return_value=SimpleNamespace(system_principal_id=20)),
     )
 
@@ -1096,7 +1094,7 @@ def smg_recovery(managed_recovery):
         for worker_id in (1, 2)
     ]
     with patch(
-        'gpustack.server.services.Worker.all_by_ids_with_refresh',
+        'gpustack.server.services.Worker.all_by_ids',
         AsyncMock(return_value=workers),
     ):
         yield ctx
@@ -1186,7 +1184,7 @@ async def test_smg_recovery_obeys_current_instance_and_model_fences(
         )
     elif fence == 'worker_unknown':
         with patch(
-            'gpustack.server.services.Worker.all_by_ids_with_refresh',
+            'gpustack.server.services.Worker.all_by_ids',
             AsyncMock(return_value=[]),
         ):
             await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
@@ -1267,7 +1265,7 @@ async def test_smg_readiness_requires_complete_engine_and_current_smg(
         workloads[-1].worker_id = 2
     elif missing == 'worker':
         with patch(
-            'gpustack.server.services.Worker.all_by_ids_with_refresh',
+            'gpustack.server.services.Worker.all_by_ids',
             AsyncMock(return_value=[]),
         ):
             await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
@@ -1425,9 +1423,7 @@ async def test_managed_worker_recovery_preserves_generation_and_readiness_fences
         )
         for worker_id in (1, 2)
     ]
-    with patch.object(
-        Worker, 'all_by_ids_with_refresh', AsyncMock(return_value=workers)
-    ):
+    with patch.object(Worker, 'all_by_ids', AsyncMock(return_value=workers)):
         await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
     assert ctx.instance.state == (
         ModelInstanceStateEnum.RUNNING

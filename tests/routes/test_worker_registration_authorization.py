@@ -71,9 +71,9 @@ def registration(monkeypatch):
     )
     monkeypatch.setattr(workers, "async_session", mocks.open_session)
     monkeypatch.setattr(Worker, "all_by_fields", mocks.list_workers)
-    monkeypatch.setattr(Worker, "one_by_id_with_refresh", mocks.get_worker)
+    monkeypatch.setattr(Worker, "one_by_id", mocks.get_worker)
     monkeypatch.setattr(
-        workers.ModelInstance, "all_by_field_with_refresh", AsyncMock(return_value=[])
+        workers.ModelInstance, "all_by_field", AsyncMock(return_value=[])
     )
     monkeypatch.setattr(Cluster, "one_by_id", mocks.get_cluster)
     monkeypatch.setattr(
@@ -258,10 +258,10 @@ async def test_reregistration_locks_only_complete_related_model_cohorts(
         if field == 'cluster_id':
             assert not kwargs.get('for_update')
             return discovery
-        assert field == 'model_id' and kwargs == {'for_update': True}
+        assert field == 'model_id' and kwargs == {'for_update': True, 'refresh': True}
         return {1: [second], 5: [target, peer, late]}[value]
 
-    monkeypatch.setattr(workers.ModelInstance, 'all_by_field_with_refresh', query)
+    monkeypatch.setattr(workers.ModelInstance, 'all_by_field', query)
     rows = await workers._registration_instances(MagicMock(), worker)
     assert rows == ([] if binding == 'none' else [second, target, peer, late])
     assert [value for field, value, kwargs in calls if kwargs.get('for_update')] == (
@@ -299,7 +299,7 @@ def test_registration_closes_discovery_before_locking_worker(registration, monke
 
     async def lock(session, identity, **kwargs):
         assert len(closed) == 1 and session is sessions[1]
-        assert kwargs == {'for_update': True}
+        assert kwargs == {'for_update': True, 'refresh': True}
         return worker
 
     api.get_worker.side_effect = lock
@@ -480,13 +480,13 @@ async def test_sqlite_downgrade_commits_block_before_conflict_and_late_status_ca
             assert rejected.status_code == 409
             generate.assert_not_called()
         async with AsyncSession(engine) as session:
-            stored = await Worker.one_by_id_with_refresh(session, 20)
+            stored = await Worker.one_by_id(session, 20, refresh=True)
             assert stored.status.orchestration.protocol_version == protocol
             assert stored.status.orchestration.admission_blocked
             assert stored.state == WorkerStateEnum.NOT_READY
             assert stored.token == 'existing-token' and stored.system_principal_id == 30
             assert stored.ip == '192.0.2.10' and stored.port == 10150
-            untouched = await ModelInstance.one_by_id_with_refresh(session, 1)
+            untouched = await ModelInstance.one_by_id(session, 1, refresh=True)
             assert (
                 untouched.distributed_servers.workloads == []
                 and untouched.ports == [40000]
@@ -499,7 +499,7 @@ async def test_sqlite_downgrade_commits_block_before_conflict_and_late_status_ca
         }
         await buffer.flush_worker_status()
         async with AsyncSession(engine) as session:
-            stored = await Worker.one_by_id_with_refresh(session, 20)
+            stored = await Worker.one_by_id(session, 20, refresh=True)
             assert stored.status.orchestration.admission_blocked
             assert stored.status.orchestration.protocol_version == protocol
             assert stored.state == WorkerStateEnum.NOT_READY
@@ -526,7 +526,7 @@ async def test_sqlite_downgrade_commits_block_before_conflict_and_late_status_ca
         await asyncio.sleep(0)
         publish.assert_not_awaited()
         async with AsyncSession(engine) as session:
-            unchanged = await Worker.one_by_id_with_refresh(session, 20)
+            unchanged = await Worker.one_by_id(session, 20, refresh=True)
             assert unchanged.status.orchestration.admission_blocked
             assert unchanged.status.orchestration.protocol_version == protocol
             assert unchanged.token == 'existing-token'
@@ -538,7 +538,7 @@ async def test_sqlite_downgrade_commits_block_before_conflict_and_late_status_ca
         buffer.heartbeat_flush_buffer.add(20)
         await buffer.flush_heartbeats()
         async with AsyncSession(engine) as session:
-            admitted = await Worker.one_by_id_with_refresh(session, 20)
+            admitted = await Worker.one_by_id(session, 20, refresh=True)
             assert admitted.status.orchestration.protocol_version == 1
             assert not admitted.status.orchestration.admission_blocked
         with pytest.raises(ConflictException):
@@ -598,7 +598,7 @@ def test_registration_repair_binding_obeys_only_assigned_managed_cohort(
         )
     monkeypatch.setattr(
         workers.ModelInstance,
-        'all_by_field_with_refresh',
+        'all_by_field',
         AsyncMock(return_value=[engine, router]),
     )
     payload = WorkerCreate.model_validate(_payload(100, True))

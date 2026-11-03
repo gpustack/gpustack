@@ -2412,8 +2412,8 @@ async def resolve_instance_address_from_model_header(
                 status_code=403, detail="Rank routing requires internal credentials"
             )
     async with async_session() as session:
-        instance = await ModelInstance.one_by_id_with_refresh(
-            session, target.instance_id
+        instance = await ModelInstance.one_by_id(
+            session, target.instance_id, refresh=True
         )
         if instance is None or instance.model_id != target.model_id:
             raise HTTPException(status_code=404, detail="Model destination not found")
@@ -2434,7 +2434,7 @@ async def resolve_instance_address_from_model_header(
             endpoint = resolve_model_instance_endpoint(instance, target)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        worker = await Worker.one_by_id_with_refresh(session, endpoint.worker_id)
+        worker = await Worker.one_by_id(session, endpoint.worker_id, refresh=True)
         if (
             worker is None
             or worker.deleted_at is not None
@@ -2486,7 +2486,7 @@ async def _assert_rank_destination_visible(session, principal, instance, worker)
             status_code=403, detail="Destination belongs to another Worker"
         )
     if principal.cluster is not None:
-        cluster = await Cluster.one_by_id_with_refresh(session, instance.cluster_id)
+        cluster = await Cluster.one_by_id(session, instance.cluster_id, refresh=True)
         if cluster is None or cluster.system_principal_id != principal.id:
             raise HTTPException(
                 status_code=403, detail="Cluster credential binding changed"

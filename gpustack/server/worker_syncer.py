@@ -94,10 +94,11 @@ class WorkerSyncer:
 
         state_to_worker_name = {state: [] for state in state_to_worker_name}
         async with async_session() as session:
-            current = await Worker.all_by_ids_with_refresh(
+            current = await Worker.all_by_ids(
                 session,
                 [worker.id for worker in should_update_workers],
                 for_update=True,
+                refresh=True,
             )
             observed = {worker.id: worker for worker in should_update_workers}
             changed = []

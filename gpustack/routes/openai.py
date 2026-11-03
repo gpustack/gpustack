@@ -432,7 +432,7 @@ async def _select_managed_endpoint(session, instance):
     if get_model_instance_workloads(instance) is not None:
         from gpustack.schemas.models import ModelInstance
 
-        instance = await ModelInstance.one_by_id_with_refresh(session, instance.id)
+        instance = await ModelInstance.one_by_id(session, instance.id, refresh=True)
         endpoints = model_instance_endpoints(instance) if instance is not None else []
         if not endpoints:
             raise ServiceUnavailableException(

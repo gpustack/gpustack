@@ -97,7 +97,7 @@ def _schedule_patches(model, model_instance, candidate, resolve_mock, service_mo
             AsyncMock(return_value=[worker]),
         ),
         patch(
-            "gpustack.scheduler.scheduler.Worker.all_by_ids_with_refresh",
+            "gpustack.scheduler.scheduler.Worker.all_by_ids",
             AsyncMock(return_value=[worker]),
         ),
         patch(
@@ -109,7 +109,7 @@ def _schedule_patches(model, model_instance, candidate, resolve_mock, service_mo
             AsyncMock(return_value=model_instance),
         ),
         patch(
-            "gpustack.scheduler.scheduler.ModelInstance.all_by_field_with_refresh",
+            "gpustack.scheduler.scheduler.ModelInstance.all_by_field",
             AsyncMock(return_value=[model_instance]),
         ),
         patch(

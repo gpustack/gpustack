@@ -957,14 +957,12 @@ async def test_tunnel_rank_resolver_checks_identity_and_releases_session(
         AsyncMock(return_value=principal),
     )
     monkeypatch.setattr(
-        ModelInstance, 'one_by_id_with_refresh', AsyncMock(return_value=rank_instance)
+        ModelInstance, 'one_by_id', AsyncMock(return_value=rank_instance)
     )
-    monkeypatch.setattr(
-        Worker, 'one_by_id_with_refresh', AsyncMock(return_value=worker)
-    )
+    monkeypatch.setattr(Worker, 'one_by_id', AsyncMock(return_value=worker))
     monkeypatch.setattr(
         Cluster,
-        'one_by_id_with_refresh',
+        'one_by_id',
         AsyncMock(return_value=SimpleNamespace(system_principal_id=9)),
     )
     headers = {
@@ -1005,9 +1003,9 @@ async def test_legacy_header_rejects_managed_instance_before_rank_visibility(
     worker_lookup = AsyncMock()
     monkeypatch.setattr(utils, 'async_session', lambda: session)
     monkeypatch.setattr(
-        ModelInstance, 'one_by_id_with_refresh', AsyncMock(return_value=rank_instance)
+        ModelInstance, 'one_by_id', AsyncMock(return_value=rank_instance)
     )
-    monkeypatch.setattr(Worker, 'one_by_id_with_refresh', worker_lookup)
+    monkeypatch.setattr(Worker, 'one_by_id', worker_lookup)
     monkeypatch.setattr(
         'gpustack.api.auth.authenticate_worker_by_request_headers', authenticate
     )

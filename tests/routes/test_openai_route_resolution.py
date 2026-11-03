@@ -109,7 +109,7 @@ async def test_proxy_preserves_api_path_and_selects_rank_owner(
         openai_route, 'get_model_instance_workloads', lambda _: [] if managed else None
     )
     refresh = AsyncMock(return_value=instance)
-    monkeypatch.setattr(ModelInstance, 'one_by_id_with_refresh', refresh)
+    monkeypatch.setattr(ModelInstance, 'one_by_id', refresh)
     monkeypatch.setattr(
         openai_route,
         'model_instance_endpoints',
@@ -288,9 +288,7 @@ async def test_server_proxy_sends_component_specific_payload(monkeypatch, compon
         openai_route, 'get_running_instance', AsyncMock(return_value=instance)
     )
     monkeypatch.setattr(openai_route, 'get_model_instance_workloads', lambda _: [])
-    monkeypatch.setattr(
-        ModelInstance, 'one_by_id_with_refresh', AsyncMock(return_value=instance)
-    )
+    monkeypatch.setattr(ModelInstance, 'one_by_id', AsyncMock(return_value=instance))
     monkeypatch.setattr(
         openai_route,
         'model_instance_endpoints',

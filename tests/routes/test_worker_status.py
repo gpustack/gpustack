@@ -103,7 +103,7 @@ async def test_flush_uses_locked_registration_marker_instead_of_late_packet(
     locked = AsyncMock(return_value=[fresh])
     monkeypatch.setattr(buffer, 'async_session', session)
     monkeypatch.setattr(Worker, 'all_by_fields', AsyncMock(return_value=[stale]))
-    monkeypatch.setattr(Worker, 'all_by_ids_with_refresh', locked)
+    monkeypatch.setattr(Worker, 'all_by_ids', locked)
     persist = AsyncMock()
     monkeypatch.setattr(WorkerService, 'batch_update', persist)
     await buffer.flush_worker_status()

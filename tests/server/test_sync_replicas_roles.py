@@ -215,7 +215,7 @@ async def _run(model, instances, instance_type_snapshot=None, worker_ips=None):
         ),
         patch("gpustack.server.controllers.ModelInstanceService", recorder),
         patch(
-            "gpustack.schemas.workers.Worker.all_by_field_with_refresh",
+            "gpustack.schemas.workers.Worker.all_by_field",
             AsyncMock(
                 return_value=[
                     SimpleNamespace(id=id_, ip=ip) for id_, ip in worker_ips.items()
@@ -1202,7 +1202,7 @@ async def test_static_membership_status_requires_the_rendered_peers(change, read
     if change:
         members[0].restart_count = 1
     with patch(
-        "gpustack.schemas.workers.Worker.all_by_field_with_refresh",
+        "gpustack.schemas.workers.Worker.all_by_field",
         AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")]),
     ):
         await controllers._reconcile_router_membership(_pass(), model, members)
@@ -1227,7 +1227,7 @@ async def test_static_membership_reads_worker_addresses_once_per_pass(group_id):
     if group_id == "g":
         router.router_peer_snapshot = members[-1].router_peer_snapshot
     workers = AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")])
-    with patch("gpustack.schemas.workers.Worker.all_by_field_with_refresh", workers):
+    with patch("gpustack.schemas.workers.Worker.all_by_field", workers):
         await controllers._record_static_router_membership(
             _pass(), model, [*members, router]
         )
@@ -1299,7 +1299,7 @@ async def test_static_router_serves_existing_peers_while_scale_out_is_incomplete
     added.worker_id, added.port = 1, 8004
     members.append(added)
     with patch(
-        "gpustack.schemas.workers.Worker.all_by_field_with_refresh",
+        "gpustack.schemas.workers.Worker.all_by_field",
         AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")]),
     ):
         await controllers._reconcile_router_membership(_pass(), model, members)
@@ -1624,7 +1624,7 @@ async def test_static_hybrid_scale_out_keeps_existing_router_serving():
     for member in members:
         member.spec_digest = digest
     with patch(
-        'gpustack.schemas.workers.Worker.all_by_field_with_refresh',
+        'gpustack.schemas.workers.Worker.all_by_field',
         AsyncMock(
             return_value=[
                 SimpleNamespace(id=id_, ip=ip) for id_, ip in worker_ips.items()

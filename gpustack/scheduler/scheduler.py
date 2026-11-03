@@ -690,7 +690,7 @@ async def _lock_scheduling_admission(
     """Lock Workers before current-reading the complete instance cohort."""
     identities = {row.id: _scheduling_identity(row) for row in expected}
     discovery = (
-        await ModelInstance.all_by_field_with_refresh(session, 'model_id', model.id)
+        await ModelInstance.all_by_field(session, 'model_id', model.id, refresh=True)
         if instances is None
         else _model_cohort(instances, model.id)
     )
@@ -702,7 +702,9 @@ async def _lock_scheduling_admission(
     worker_ids = set(candidate_ids)
     if required:
         worker_ids |= _cohort_worker_ids(discovery)
-    workers = await Worker.all_by_ids_with_refresh(session, worker_ids, for_update=True)
+    workers = await Worker.all_by_ids(
+        session, worker_ids, for_update=True, refresh=True
+    )
     indexed = {worker.id: worker for worker in workers}
     if set(indexed) != worker_ids or any(
         not _worker_admitted(w, model, required, require_ready=w.id in candidate_ids)
@@ -710,8 +712,8 @@ async def _lock_scheduling_admission(
     ):
         await session.rollback()
         return None
-    current = await ModelInstance.all_by_field_with_refresh(
-        session, 'model_id', model.id, for_update=True
+    current = await ModelInstance.all_by_field(
+        session, 'model_id', model.id, for_update=True, refresh=True
     )
     required = model_requires_managed_workload_protocol(current, model.id)
     rows = {row.id: row for row in current}
@@ -750,8 +752,8 @@ async def _lock_scheduling_instances(session, expected):
     identities = {row.id: _scheduling_identity(row) for row in expected}
     locked = []
     for identity in sorted(identities):
-        current = await ModelInstance.one_by_id_with_refresh(
-            session, identity, for_update=True
+        current = await ModelInstance.one_by_id(
+            session, identity, for_update=True, refresh=True
         )
         if (
             current is None

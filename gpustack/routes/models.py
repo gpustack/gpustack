@@ -2635,7 +2635,7 @@ async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
         # worst moment to answer the retry with a 409.
         # Rollback expires model attributes and releases the original row lock.
         # A later request may own a different guard by the time we read it again.
-        current = await Model.one_by_id_with_refresh(session, id, for_update=True)
+        current = await Model.one_by_id(session, id, for_update=True, refresh=True)
         if current is not None and current.restarting_since == restart_started:
             await ModelService(session).update(current, {"restarting_since": None})
         if isinstance(e, ConflictException):

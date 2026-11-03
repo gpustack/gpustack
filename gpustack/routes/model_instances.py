@@ -296,7 +296,7 @@ def _dashboard_source_scope(instance: ModelInstance, target: dict) -> dict:
 async def _validate_dashboard_owner(session, instance: ModelInstance, worker_id: int):
     if worker_id not in member_worker_ids(instance):
         raise NotFoundException(message='Dashboard source is unavailable')
-    worker = await Worker.one_by_id_with_refresh(session, worker_id)
+    worker = await Worker.one_by_id(session, worker_id, refresh=True)
     if (
         worker is None
         or worker.deleted_at is not None
@@ -318,7 +318,7 @@ async def get_model_instance_dashboard(
     component: Optional[str] = None,
     attempt: Optional[str] = None,
 ):
-    model_instance = await ModelInstance.one_by_id_with_refresh(session, id)
+    model_instance = await ModelInstance.one_by_id(session, id, refresh=True)
     assert_resource_visible(
         ctx,
         model_instance,
@@ -1482,7 +1482,7 @@ async def _validate_workload_layout(session, instance, report) -> None:
         instance, report.workloads[0].worker_id
     ):
         return
-    model = await Model.one_by_id_with_refresh(session, instance.model_id)
+    model = await Model.one_by_id(session, instance.model_id, refresh=True)
     if model is None:
         raise BadRequestException(message="Model configuration is unavailable")
     if await model_members_stale(session, model, [instance]):
@@ -1677,7 +1677,7 @@ async def _locked_reporting_worker(session, ctx):
     worker = ctx.user.worker
     if ctx.user.kind != PrincipalType.SYSTEM or worker is None:
         return None
-    return await Worker.one_by_id_with_refresh(session, worker.id, for_update=True)
+    return await Worker.one_by_id(session, worker.id, for_update=True, refresh=True)
 
 
 async def _persist_instance_update(session, instance, source):
@@ -1707,8 +1707,8 @@ async def update_model_instance(
         else None
     )
     if rank_report or stop_report:
-        model_instance = await ModelInstance.one_by_id_with_refresh(
-            session, id, for_update=True
+        model_instance = await ModelInstance.one_by_id(
+            session, id, for_update=True, refresh=True
         )
     else:
         model_instance = await ModelInstance.one_by_id(session, id, for_update=True)
