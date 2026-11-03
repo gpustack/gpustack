@@ -1476,6 +1476,7 @@ def test_sglang_starting_and_unknown_components_keep_all_reserved_ports(register
                 },
             ),
         ]
+        mi.distributed_servers.orchestration_mode = "managed"
     assert model_instance_ports(mi, 1) == set(mi.ports)
 
 

@@ -119,6 +119,7 @@ def test_managed_pd_members_never_fall_back_to_the_instance_port(unavailable):
     instance = _managed_member()
     if unavailable == "empty":
         instance.distributed_servers.workloads = []
+        instance.distributed_servers.orchestration_mode = "managed"
     elif unavailable == "pending":
         instance.distributed_servers.workloads[1].state = "pending"
     elif unavailable == "not_ready":
@@ -1097,6 +1098,7 @@ async def test_failed_managed_pd_members_are_removed_even_when_none_are_ready(
 
     instance = _managed_member()
     instance.distributed_servers.workloads = []
+    instance.distributed_servers.orchestration_mode = "managed"
     registry = {"http://10.0.0.1:41000": pd_membership.RegistryEntry("prefill")}
     monkeypatch.setattr(
         pd_membership,
@@ -1413,6 +1415,7 @@ def _hybrid_member(role='prefill', instance_id=7, port=41000):
         )
         for worker_id in (1, 2)
     ]
+    instance.distributed_servers.orchestration_mode = "managed"
     return instance
 
 

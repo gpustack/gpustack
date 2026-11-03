@@ -1,11 +1,8 @@
-from typing import Optional, Union
-
-from gpustack.api.exceptions import ServiceUnavailableException
+from gpustack.api.exceptions import raise_if_response_error
 from gpustack.schemas.models import (
     ModelInstancePublic,
-    ModelInstanceRankUpdate,
-    ModelInstanceStopUpdate,
-    ModelInstanceUpdate,
+    ModelInstanceWorkloadUpdate,
+    ModelInstanceStopReport,
 )
 
 from .generated_model_instance_client import (
@@ -14,28 +11,26 @@ from .generated_model_instance_client import (
 
 
 class ModelInstanceClient(GeneratedModelInstanceClient):
-    """Instance routing and Worker reports over the generated CRUD client."""
+    """Worker reporting operations over the generated CRUD client."""
 
-    def get_cached(self, id: int) -> Optional[ModelInstancePublic]:
-        """Resolve routing from the watch snapshot without control-plane HTTP.
-
-        A disconnected watch cannot establish current routing ownership. Fail
-        closed until it reconnects instead of occupying inference threads with
-        synchronous API calls or trusting a stale lifecycle snapshot.
-        """
-        with self._cache_lock:
-            if not self._enable_cache or not self._watch_started:
-                raise ServiceUnavailableException(
-                    message="Model instance routing cache is not synchronized"
-                )
-            return self._cache.get(id)
-
-    def update(
-        self,
-        id: int,
-        model_update: Union[
-            ModelInstanceUpdate, ModelInstanceRankUpdate, ModelInstanceStopUpdate
-        ],
+    def report_workloads(
+        self, id: int, report: ModelInstanceWorkloadUpdate
     ) -> ModelInstancePublic:
-        """Send an instance update or a fenced Worker report unchanged."""
-        return super().update(id, model_update)
+        response = self._client.get_httpx_client().put(
+            f"{self._url}/{id}/workload-report",
+            content=report.model_dump_json(),
+            headers={"Content-Type": "application/json"},
+        )
+        raise_if_response_error(response)
+        return ModelInstancePublic.model_validate(response.json())
+
+    def confirm_stop(
+        self, id: int, report: ModelInstanceStopReport
+    ) -> ModelInstancePublic:
+        response = self._client.get_httpx_client().post(
+            f"{self._url}/{id}/stop-confirmation",
+            content=report.model_dump_json(),
+            headers={"Content-Type": "application/json"},
+        )
+        raise_if_response_error(response)
+        return ModelInstancePublic.model_validate(response.json())

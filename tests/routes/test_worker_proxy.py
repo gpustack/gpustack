@@ -763,6 +763,7 @@ def test_rank_destination_never_falls_back_to_primary(rank_instance, change):
 
     if change == 'empty':
         rank_instance.distributed_servers.workloads = []
+        rank_instance.distributed_servers.orchestration_mode = "managed"
     elif change == 'draining':
         rank_instance.draining_since = datetime.now(timezone.utc)
     elif change == 'error':
@@ -1120,6 +1121,7 @@ def sglang_component_instance(rank_instance):
             },
         ),
     ]
+    rank_instance.distributed_servers.orchestration_mode = "managed"
     return rank_instance
 
 
@@ -1876,6 +1878,7 @@ def hybrid_instance(rank_instance):
         )
         for worker_id in (1, 2, 3)
     ]
+    rank_instance.distributed_servers.orchestration_mode = "managed"
     return rank_instance
 
 

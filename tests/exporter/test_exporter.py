@@ -1102,6 +1102,7 @@ async def test_info_snapshot_replaces_epoch_attempt_and_empty_managed_inventory(
     assert {s.labels['restart_count'] for s in after} == {'5'}
     assert {s.labels.get('component_attempt') for s in after} == {None, '4'}
     instance.distributed_servers.workloads = []
+    instance.distributed_servers.orchestration_mode = "managed"
     _, metrics = await _runtime_info(instance)
     assert all(
         not m.samples

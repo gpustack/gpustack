@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import re
-from typing import Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set
 
 from gpustack.schemas.models import (
     Model,
@@ -9,8 +9,10 @@ from gpustack.schemas.models import (
     ModelInstanceBase,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
-    ModelInstanceRankUpdate,
-    ModelInstanceRankReport,
+    ModelInstanceWorkloadUpdate,
+    ModelInstanceWorkloadRegistration,
+    ModelInstanceWorkloadObservations,
+    ModelInstanceWorkloadObservation,
     ModelInstancePreparation,
     ModelInstanceStateEnum,
     member_worker_ids,
@@ -80,11 +82,83 @@ def get_model_instance_workloads(
 ) -> Optional[List[ModelInstanceWorkload]]:
     """Read the manifest without turning an empty managed list into legacy mode."""
     servers = instance.distributed_servers
-    if servers is None or servers.workloads is None:
+    if (
+        servers is None
+        or getattr(
+            servers,
+            "orchestration_mode",
+            "managed" if servers.workloads is not None else "legacy",
+        )
+        == "legacy"
+    ):
         return None
     if worker_id is None:
         return servers.workloads
     return [item for item in servers.workloads if item.worker_id == worker_id]
+
+
+def workload_topology(workloads: List[ModelInstanceWorkload]) -> Dict:
+    return {
+        item.name: (
+            item.worker_id,
+            (
+                (
+                    item.component.kind,
+                    item.component.api_port,
+                    item.component.metrics_port,
+                    item.component.dp_size,
+                    item.component.image,
+                    item.component.router_version,
+                    item.component.attempt,
+                )
+                if item.component
+                else None
+            ),
+            {
+                (placement.dp_rank, placement.node_rank): (
+                    tuple(placement.gpu_indexes),
+                    placement.api_port,
+                )
+                for placement in item.dp_rank_placements
+            },
+        )
+        for item in workloads
+    }
+
+
+def worker_workload_report(instance, worker_id, workloads):
+    """Send topology only for registration; retain Server intent in its snapshot."""
+    local = get_model_instance_workloads(instance, worker_id) or []
+    if local and workload_topology(local) == workload_topology(workloads):
+        return ModelInstanceWorkloadObservations(
+            restart_count=instance.restart_count or 0,
+            observations=[
+                ModelInstanceWorkloadObservation(
+                    name=item.name,
+                    state=item.state,
+                    rank_readiness={
+                        p.dp_rank: p.ready
+                        for p in item.dp_rank_placements
+                        if p.node_rank == 0
+                    },
+                    component_ready=item.component.ready if item.component else None,
+                    component_attempt=(
+                        item.component.attempt if item.component else None
+                    ),
+                )
+                for item in workloads
+            ],
+        )
+    payload = []
+    for item in workloads:
+        value = item.model_dump()
+        if value['component'] is not None:
+            for key in ('stop_requested', 'last_restart_time'):
+                value['component'].pop(key)
+        payload.append(value)
+    return ModelInstanceWorkloadRegistration(
+        restart_count=instance.restart_count or 0, workloads=payload
+    )
 
 
 def model_instance_legacy_stop(
@@ -174,7 +248,7 @@ def model_instance_workloads_stopped(
 
 def managed_instance_update(
     instance: ModelInstance, worker_id: int, **fields
-) -> ModelInstanceRankUpdate:
+) -> ModelInstanceWorkloadUpdate:
     """Build a narrow Worker report rather than rewriting an instance snapshot."""
     preparation = None
     if fields.get("state") == ModelInstanceStateEnum.INITIALIZING:
@@ -186,10 +260,9 @@ def managed_instance_update(
                 if key in ModelInstancePreparation.model_fields
             }
         )
-    return ModelInstanceRankUpdate(
-        rank_report=ModelInstanceRankReport(
-            restart_count=instance.restart_count or 0,
-            workloads=get_model_instance_workloads(instance, worker_id) or [],
+    return ModelInstanceWorkloadUpdate(
+        workload_report=worker_workload_report(
+            instance, worker_id, get_model_instance_workloads(instance, worker_id) or []
         ),
         preparation=preparation,
         **fields,

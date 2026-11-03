@@ -357,6 +357,7 @@ async def test_registration_after_solve_prevents_candidate_writeback(
             new_model_instance_workload(worker_id=7, state='pending')
         )
     ]
+    current.distributed_servers.orchestration_mode = "managed"
     s.current = [current]
     before = current.model_dump()
     assert not await apply_candidate_to_instance(

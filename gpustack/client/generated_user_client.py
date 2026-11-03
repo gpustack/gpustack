@@ -8,6 +8,7 @@ import httpx
 from gpustack.api.exceptions import (
     raise_if_response_error,
     async_raise_if_response_error,
+    ServiceUnavailableException,
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.schemas import *
@@ -296,6 +297,19 @@ class UserClient:
                     if self._watch_started:
                         self._watch_started = False
                         self._cache.clear()
+
+    def get_cached(self, id: int) -> Optional[UserPublic]:
+        """Read the current watch snapshot without falling back to HTTP.
+
+        A disconnected or disabled cache cannot establish current ownership.
+        Callers that permit control-plane HTTP should use get() instead.
+        """
+        with self._cache_lock:
+            if not self._enable_cache or not self._watch_started:
+                raise ServiceUnavailableException(
+                    message="User cache is not synchronized"
+                )
+            return self._cache.get(id)
 
     def get(self, id: int, use_cache: bool = True) -> UserPublic:
         """

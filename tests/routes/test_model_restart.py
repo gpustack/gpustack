@@ -21,7 +21,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gpustack import envs
-from gpustack.api.exceptions import ConflictException, InternalServerErrorException
+from gpustack.api.exceptions import (
+    ConflictException,
+    ForbiddenException,
+    InternalServerErrorException,
+)
 from gpustack.routes.models import _restart_in_flight, restart_model
 from gpustack.schemas.models import (
     DistributedServers,
@@ -110,7 +114,11 @@ async def _restart(model, instances):
         patch("gpustack.routes.models.ModelInstanceService", service),
         patch("gpustack.routes.models.ModelService", model_service),
     ):
-        result = await restart_model(MagicMock(), MagicMock(), 1)
+        from fastapi import Response
+
+        response = Response(status_code=200)
+        result = await restart_model(MagicMock(), MagicMock(), 1, response)
+        assert response.status_code == (202 if instances else 200)
     return result, deleted
 
 
@@ -125,6 +133,7 @@ async def test_restart_only_waits_for_physical_stop_for_pd(pd):
     instances[0].distributed_servers = DistributedServers(workloads=[])
     result, deleted = await _restart(model, instances)
     assert result.restarted is True
+    assert result.completed is False
     assert result.deleted_instances == ([] if pd else [i.name for i in instances])
     assert deleted == ([] if pd else instances)
     assert model.restarting_since is not None
@@ -287,6 +296,7 @@ async def test_a_model_with_no_instances_reports_nothing_to_do():
     result, deleted = await _restart(_model(roles=_pd_roles()), [])
 
     assert result.restarted is False
+    assert result.completed is True
     assert deleted == []
     assert result.spec_digest == TARGET
 
@@ -310,7 +320,62 @@ def test_the_endpoint_takes_no_role_parameter():
     import inspect
 
     params = set(inspect.signature(restart_model).parameters)
-    assert params == {"session", "ctx", "id"}
+    assert params == {"session", "ctx", "id", "response"}
+
+
+@pytest.mark.parametrize('phase', ['idle', 'restarting', 'stopping', 'failed'])
+def test_model_lifecycle_is_readable_in_get_and_watch_snapshots(phase):
+    from gpustack.schemas.models import ModelPublic, ModelStateEnum
+
+    model = _model()
+    model.created_at = model.updated_at = datetime.now(timezone.utc)
+    if phase == 'restarting':
+        model.restarting_since = datetime.now(timezone.utc)
+    if phase == 'stopping':
+        model.deleted_at = datetime.now(timezone.utc)
+    if phase == 'failed':
+        model.state = ModelStateEnum.ERROR
+    public = ModelPublic.model_validate(model)
+    assert public.lifecycle.phase == phase
+    assert public.lifecycle.pending == (phase in ('restarting', 'stopping'))
+    assert (
+        ModelPublic.model_validate_json(public.model_dump_json()).lifecycle
+        == public.lifecycle
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('completed', [False, True])
+async def test_model_delete_returns_machine_readable_status(monkeypatch, completed):
+    import httpx
+    from fastapi import FastAPI
+    from gpustack.routes import models
+    from gpustack.schemas.models import ModelLifecycleResult
+    from gpustack.server.deps import get_session, get_tenant_context
+
+    result = ModelLifecycleResult(
+        completed=completed,
+        record_deleted=completed,
+        phase='completed' if completed else 'stopping',
+        observe_url='/v2/models/1',
+    )
+    remove = AsyncMock(return_value=result)
+    monkeypatch.setattr(models.Model, 'one_by_id', AsyncMock(return_value=_model()))
+    monkeypatch.setattr(models, 'assert_resource_visible', lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        models, 'ModelService', lambda _: SimpleNamespace(delete=remove)
+    )
+    app = FastAPI()
+    app.include_router(models.router, prefix='/models')
+    app.dependency_overrides[get_session] = lambda: MagicMock()
+    app.dependency_overrides[get_tenant_context] = lambda: MagicMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url='http://test'
+    ) as client:
+        response = await client.delete('/models/1')
+    assert response.status_code == (200 if completed else 202)
+    assert response.json() == result.model_dump(mode='json')
+    remove.assert_awaited_once()
 
 
 # --- a member that is not running anything --------------------------------- #
@@ -399,3 +464,56 @@ async def test_a_teardown_that_failed_leaves_no_guard_behind(failure, expected_e
             await restart_model(MagicMock(), MagicMock(), 1)
 
     assert model.restarting_since is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'operation', ['managed_restart', 'model_delete', 'instance_delete']
+)
+@pytest.mark.parametrize(
+    'error_type', [ConflictException, ForbiddenException, RuntimeError]
+)
+async def test_lifecycle_preserves_defined_api_errors(
+    monkeypatch, operation, error_type
+):
+    from gpustack.routes import models, model_instances
+
+    model = _model(roles=_pd_roles())
+    instance = _instance(1, role='prefill' if operation == 'managed_restart' else None)
+    instance.distributed_servers = DistributedServers(workloads=[])
+    failure = error_type('blocked')
+    stop = AsyncMock(side_effect=failure)
+    monkeypatch.setattr(models.Model, 'one_by_id', AsyncMock(return_value=model))
+    monkeypatch.setattr(models, 'assert_resource_visible', lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        model_instances, 'assert_resource_visible', lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(models, 'model_spec_digest', AsyncMock(return_value=TARGET))
+    monkeypatch.setattr(
+        models.ModelInstance, 'all_by_fields', AsyncMock(return_value=[instance])
+    )
+    monkeypatch.setattr(
+        models.ModelInstance, 'one_by_id', AsyncMock(return_value=instance)
+    )
+    monkeypatch.setattr(
+        models,
+        'ModelService',
+        lambda _: SimpleNamespace(stop_instances=stop, delete=stop),
+    )
+    monkeypatch.setattr(
+        model_instances, 'ModelInstanceService', lambda _: SimpleNamespace(delete=stop)
+    )
+    handler = {
+        'managed_restart': models.restart_model,
+        'model_delete': models.delete_model,
+        'instance_delete': model_instances.delete_model_instance,
+    }[operation]
+    expected = (
+        InternalServerErrorException if error_type is RuntimeError else error_type
+    )
+    with pytest.raises(expected) as raised:
+        await handler(MagicMock(), MagicMock(), 1)
+    assert raised.value.status_code == (
+        500 if error_type is RuntimeError else failure.status_code
+    )
+    stop.assert_awaited_once()

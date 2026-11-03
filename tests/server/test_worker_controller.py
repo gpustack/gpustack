@@ -117,6 +117,7 @@ async def test_managed_worker_loss_retains_the_complete_instance(
                 component=dict(kind='sglang_engine'),
             ),
         ]
+        state.instance.distributed_servers.orchestration_mode = "managed"
     worker.unreachable = True
     worker.state = WorkerStateEnum.UNREACHABLE
     unaffected = [
@@ -185,6 +186,7 @@ def test_managed_worker_membership_uses_id_instead_of_reused_name(
     state = managed_worker
     if not managed:
         state.instance.distributed_servers.workloads = None
+        state.instance.distributed_servers.orchestration_mode = "legacy"
     match = get_model_instance_worker_match(
         state.instance, worker_id=999, worker_name=state.sub.name
     )
@@ -788,6 +790,7 @@ async def test_guarded_legacy_worker_loss_cannot_retire_the_stop_barrier(
 
     s = managed_worker
     s.instance.distributed_servers.workloads = None
+    s.instance.distributed_servers.orchestration_mode = "legacy"
     s.instance.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
         token=uuid4(),
         restart_count=3,
@@ -1112,6 +1115,7 @@ async def test_mixed_router_worker_deletion_requires_its_own_stop_proof(
     engine = s.instance
     engine.distributed_servers.subordinate_workers = []
     engine.distributed_servers.workloads = [engine.distributed_servers.workloads[0]]
+    engine.distributed_servers.orchestration_mode = "managed"
     router = new_model_instance(
         2, 'router', model_id=engine.model_id, worker_id=s.sub.id
     )
@@ -1322,6 +1326,11 @@ async def test_worker_ready_rechecks_tasks_that_reported_before_the_worker(
                 ),
             )
         ]
+        state.instance.distributed_servers.orchestration_mode = (
+            "managed"
+            if state.instance.distributed_servers.workloads is not None
+            else "legacy"
+        )
     state.sub.state = WorkerStateEnum.UNREACHABLE
     state.sub.unreachable = True
 
@@ -1383,6 +1392,7 @@ async def test_hybrid_worker_loss_withdraws_four_node_group_without_confirming_s
         )
         for w in (1, 2, 3, 4)
     ]
+    instance.distributed_servers.orchestration_mode = "managed"
     for task in instance.distributed_servers.workloads:
         if task.component.api_port:
             task.component.dp_size, task.component.ready = 1, True

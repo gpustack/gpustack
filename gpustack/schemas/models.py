@@ -1368,6 +1368,33 @@ class ModelUpdate(ModelWriteBase):
     pass
 
 
+class ModelLifecycleState(BaseModel):
+    """Current resource lifecycle, available through GET and watch snapshots."""
+
+    pending: bool
+    phase: Literal["idle", "stopping", "restarting", "failed", "completed"]
+    runtime_termination_confirmed: Optional[bool] = None
+    pending_stop_worker_ids: List[int] = PydanticField(default_factory=list)
+
+
+class ModelLifecycleResult(BaseModel):
+    """Acknowledgement of a resource operation, separate from runtime absence."""
+
+    accepted: bool = True
+    completed: bool
+    phase: Literal["stopping", "starting", "completed"]
+    record_deleted: bool = False
+    runtime_termination_confirmed: Optional[bool] = None
+    observe_url: Optional[str] = None
+
+
+class ModelRestartResult(ModelLifecycleResult):
+    spec_digest: str
+    restarted: bool
+    deleted_instances: List[str] = PydanticField(default_factory=list)
+    message: Optional[str] = None
+
+
 class ModelPublic(
     ModelBase,
 ):
@@ -1386,6 +1413,26 @@ class ModelPublic(
     restarting_since: Optional[datetime] = None
     # Populated only by the detail endpoint; None on list responses.
     has_stale_lora_instances: Optional[bool] = None
+
+    deleted_at: Optional[datetime] = PydanticField(
+        default=None, json_schema_extra={"readOnly": True}
+    )
+
+    lifecycle: Optional[ModelLifecycleState] = PydanticField(
+        default=None, json_schema_extra={"readOnly": True}
+    )
+
+    @model_validator(mode="after")
+    def populate_lifecycle(self):
+        if self.lifecycle is None:
+            pending = self.deleted_at is not None or self.restarting_since is not None
+            phase = "stopping" if self.deleted_at is not None else "restarting"
+            if self.state == ModelStateEnum.ERROR:
+                phase = "failed"
+            elif not pending:
+                phase = "idle"
+            self.lifecycle = ModelLifecycleState(pending=pending, phase=phase)
+        return self
 
     @field_serializer("lora_list")
     def _strip_lora_prefix(self, lora_list, _info):
@@ -1925,7 +1972,7 @@ def validate_workload_manifest(workloads: List[ModelInstanceWorkload]) -> None:
                 ports.add(port)
 
 
-class ModelInstanceRankReport(BaseModel):
+class ModelInstanceWorkloadReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     restart_count: int = PydanticField(ge=0)
@@ -1965,12 +2012,69 @@ class ModelInstancePreparation(BaseModel):
         return self
 
 
-class ModelInstanceRankUpdate(BaseModel):
+class ModelInstanceComponentRegistration(BaseModel):
+    """Worker-discovered topology; recovery intent belongs to the Server."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["sglang_engine", "sglang_smg", "vllm_hybrid"]
+    api_port: Optional[int] = PydanticField(default=None, ge=1, le=65535)
+    metrics_port: Optional[int] = PydanticField(default=None, ge=1, le=65535)
+    ready: Optional[bool] = None
+    dp_size: Optional[int] = PydanticField(default=None, ge=1)
+    image: Optional[str] = None
+    router_version: Optional[Literal["0.3.2"]] = None
+    attempt: int = PydanticField(default=0, ge=0, description="Current attempt fence")
+
+    @model_validator(mode="after")
+    def validate_component(self):
+        component = ModelInstanceComponent.model_validate(self.model_dump())
+        self.ready = component.ready
+        return self
+
+
+class ModelInstanceWorkloadRegistrationItem(ModelInstanceWorkload):
+    component: Optional[ModelInstanceComponentRegistration] = None
+
+
+class ModelInstanceWorkloadRegistration(BaseModel):
+    """Register immutable topology once per Worker and generation."""
+
+    model_config = ConfigDict(extra="forbid")
+    restart_count: int = PydanticField(ge=0)
+    workloads: List[ModelInstanceWorkloadRegistrationItem]
+
+    @field_validator("workloads")
+    @classmethod
+    def validate_workloads(cls, value):
+        validate_workload_manifest(value)
+        return value
+
+
+class ModelInstanceWorkloadObservation(BaseModel):
+    """Update observations without resubmitting topology or recovery intent."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = PydanticField(min_length=1)
+    state: ModelInstanceWorkloadStateEnum
+    rank_readiness: Dict[int, bool] = PydanticField(default_factory=dict)
+    component_ready: Optional[bool] = None
+    component_attempt: Optional[int] = PydanticField(default=None, ge=0)
+
+
+class ModelInstanceWorkloadObservations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    restart_count: int = PydanticField(ge=0)
+    observations: List[ModelInstanceWorkloadObservation]
+
+
+class ModelInstanceWorkloadUpdate(BaseModel):
     """Worker-only request envelope; never persisted as instance fields."""
 
     model_config = ConfigDict(extra="forbid")
 
-    rank_report: ModelInstanceRankReport
+    workload_report: Union[
+        ModelInstanceWorkloadRegistration, ModelInstanceWorkloadObservations
+    ]
     model_config_snapshot: Optional[ModelConfigSnapshot] = None
     state: Optional[Literal[ModelInstanceStateEnum.ERROR]] = None
     state_message: Optional[str] = None
@@ -1980,7 +2084,10 @@ class ModelInstanceRankUpdate(BaseModel):
 
     @model_validator(mode="after")
     def validate_failure_message(self):
-        if self.preparation is not None and self.rank_report.workloads:
+        if self.preparation is not None and (
+            not isinstance(self.workload_report, ModelInstanceWorkloadRegistration)
+            or self.workload_report.workloads
+        ):
             raise ValueError("Preparation must precede task registration")
         if self.state is not None and not self.state_message:
             raise ValueError("A rank health failure requires a diagnostic message")
@@ -2016,11 +2123,6 @@ class ModelInstanceStopReport(BaseModel):
     restart_count: int = PydanticField(ge=0)
 
 
-class ModelInstanceStopUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    stop_report: ModelInstanceStopReport
-
-
 class DistributedServers(BaseModel):
     # Indicates how the distributed servers coordinate with the main worker.
     mode: DistributedServerCoordinateModeEnum = (
@@ -2031,16 +2133,37 @@ class DistributedServers(BaseModel):
     subordinate_workers: Optional[List[ModelInstanceSubordinateWorker]] = Field(
         sa_column=Column(JSON), default=[]
     )
-    # None selects legacy orchestration; an empty list is a managed instance
-    # whose Workers have not registered their tasks yet.
-    workloads: Optional[List[ModelInstanceWorkload]] = None
+    orchestration_mode: Literal["legacy", "managed"] = PydanticField(
+        default="legacy", json_schema_extra={"readOnly": True}
+    )
+    workloads: Optional[List[ModelInstanceWorkload]] = PydanticField(
+        default=None, json_schema_extra={"readOnly": True}
+    )
     # Server releases physical teardown after any traffic drain window.
-    stop_requested: bool = False
-    legacy_stop: Optional[ModelInstanceLegacyStop] = None
+    stop_requested: bool = PydanticField(
+        default=False, json_schema_extra={"readOnly": True}
+    )
+    legacy_stop: Optional[ModelInstanceLegacyStop] = PydanticField(
+        default=None, json_schema_extra={"readOnly": True}
+    )
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_legacy_mode(cls, value):
+        if isinstance(value, dict) and "orchestration_mode" not in value:
+            return {
+                **value,
+                "orchestration_mode": (
+                    "managed" if value.get("workloads") is not None else "legacy"
+                ),
+            }
+        return value
 
     @model_validator(mode="after")
     def validate_legacy_stop(self):
+        if (self.orchestration_mode == "managed") != (self.workloads is not None):
+            raise ValueError("Orchestration mode must match the workload manifest")
         if self.legacy_stop is not None and self.workloads is not None:
             raise ValueError("A legacy stop guard cannot replace a managed manifest")
         return self
@@ -2336,11 +2459,13 @@ class ModelInstanceUpdate(ModelInstanceBase):
 
     @model_validator(mode="before")
     @classmethod
-    def reject_rank_report(cls, value):
+    def reject_workload_report(cls, value):
         if isinstance(value, dict) and (
-            "rank_report" in value or "stop_report" in value
+            "workload_report" in value
+            or "rank_report" in value
+            or "stop_report" in value
         ):
-            raise ValueError("Use the rank_report request without an instance snapshot")
+            raise ValueError("Use the workload-report or stop-confirmation endpoint")
         return value
 
 
@@ -2350,6 +2475,48 @@ class ModelInstancePublic(
     id: int
     created_at: datetime
     updated_at: datetime
+
+    lifecycle: Optional[ModelLifecycleState] = PydanticField(
+        default=None, json_schema_extra={"readOnly": True}
+    )
+
+    @model_validator(mode="after")
+    def populate_lifecycle(self):
+        if self.lifecycle is None:
+            self.lifecycle = model_instance_lifecycle(self)
+        return self
+
+
+def model_instance_lifecycle(instance: ModelInstanceBase) -> ModelLifecycleState:
+    """Read stop evidence without treating retired ownership as physical absence."""
+    servers = instance.distributed_servers
+    guard = servers.legacy_stop if servers is not None else None
+    pending_workers, confirmed = set(), None
+    if guard is not None:
+        pending_workers = set(guard.worker_ids) - set(guard.confirmed_worker_ids)
+        confirmed = (
+            not pending_workers
+            and (instance.restart_count or 0) == guard.restart_count
+            and set(member_worker_ids(instance)) == set(guard.worker_ids)
+        )
+    elif servers is not None and servers.workloads is not None:
+        pending_workers = {
+            item.worker_id
+            for item in servers.workloads
+            if item.state != ModelInstanceWorkloadStateEnum.STOPPED
+        }
+        confirmed = not pending_workers
+    stopping = instance.draining_since is not None
+    return ModelLifecycleState(
+        pending=stopping,
+        phase=(
+            "stopping"
+            if stopping
+            else "failed" if instance.state == ModelInstanceStateEnum.ERROR else "idle"
+        ),
+        runtime_termination_confirmed=confirmed,
+        pending_stop_worker_ids=sorted(pending_workers) if stopping else [],
+    )
 
 
 ModelInstancesPublic = PaginatedList[ModelInstancePublic]

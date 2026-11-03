@@ -13,7 +13,7 @@ from sqlmodel import or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack import envs
-from gpustack.api.streaming import tenant_streaming
+from gpustack.api.streaming import tenant_streaming, finalize_model_lifecycle_event
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     HTTPException,
@@ -83,6 +83,8 @@ from gpustack.schemas.models import (
     ModelSpecBase,
     ModelUpdate,
     ModelPublic,
+    ModelRestartResult,
+    ModelLifecycleResult,
     ModelsPublic,
     ScalingSchedule,
 )
@@ -193,6 +195,7 @@ async def get_models(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 filter_func=_make_model_watch_filter(categories, state),
+                event_transform=finalize_model_lifecycle_event,
             ),
             media_type="text/event-stream",
         )
@@ -2528,18 +2531,14 @@ async def _apply_model_update(
     return model
 
 
-class ModelRestartResult(BaseModel):
-    """Acknowledgement and retirement details for a deployment restart request."""
-
-    spec_digest: str
-    """The generation the group is being brought onto."""
-    restarted: bool
-    deleted_instances: List[str] = []
-    message: Optional[str] = None
-
-
-@router.post("/{id}/restart", response_model=ModelRestartResult)
-async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
+@router.post(
+    "/{id}/restart",
+    response_model=ModelRestartResult,
+    responses={202: {"model": ModelRestartResult}},
+)
+async def restart_model(
+    session: SessionDep, ctx: TenantContextDep, id: int, response: Response = None
+):
     """Restart all instances on the current deployment configuration.
 
     PD deployments persist parent restart and child drain requests in one
@@ -2567,6 +2566,9 @@ async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
         return ModelRestartResult(
             spec_digest=target,
             restarted=False,
+            completed=True,
+            phase="completed",
+            observe_url=f"/v2/models/{id}",
             message="No instances to restart; the model has none running.",
         )
 
@@ -2589,11 +2591,18 @@ async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
             await ModelService(session).stop_instances(
                 model, instances, {"restarting_since": datetime.now(timezone.utc)}
             )
+        except HTTPException:
+            raise
         except Exception as exc:
             raise InternalServerErrorException(
                 message=f"Failed to restart model: {exc}"
             )
+        if response is not None:
+            response.status_code = 202
         return ModelRestartResult(
+            completed=False,
+            phase="stopping",
+            observe_url=f"/v2/models/{id}",
             spec_digest=target,
             restarted=True,
             deleted_instances=[],
@@ -2643,7 +2652,7 @@ async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
         current = await Model.one_by_id(session, id, for_update=True, refresh=True)
         if current is not None and current.restarting_since == restart_started:
             await ModelService(session).update(current, {"restarting_since": None})
-        if isinstance(e, ConflictException):
+        if isinstance(e, HTTPException):
             raise
         raise InternalServerErrorException(message=f"Failed to restart model: {e}")
 
@@ -2651,7 +2660,12 @@ async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
     # the one place that knows a group forms its GPU roles atomically and holds
     # the router back until they run, and duplicating that here would be a
     # second implementation of the rule that matters most.
+    if response is not None:
+        response.status_code = 202
     return ModelRestartResult(
+        completed=False,
+        phase="starting",
+        observe_url=f"/v2/models/{id}",
         spec_digest=target,
         restarted=True,
         deleted_instances=deleted,
@@ -2698,8 +2712,12 @@ def _restart_message(failed: List[str]) -> str:
 
 @router.delete(
     "/{id}",
+    response_model=ModelLifecycleResult,
+    responses={202: {"model": ModelLifecycleResult}},
 )
-async def delete_model(session: SessionDep, ctx: TenantContextDep, id: int):
+async def delete_model(
+    session: SessionDep, ctx: TenantContextDep, id: int, response: Response = None
+):
     model = await Model.one_by_id(
         session,
         id,
@@ -2712,6 +2730,11 @@ async def delete_model(session: SessionDep, ctx: TenantContextDep, id: int):
     assert_resource_visible(ctx, model, not_found_message="Model not found")
 
     try:
-        await ModelService(session).delete(model)
+        result = await ModelService(session).delete(model)
+    except HTTPException:
+        raise
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
+    if response is not None and not result.completed:
+        response.status_code = 202
+    return result

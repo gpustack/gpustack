@@ -1352,6 +1352,7 @@ def test_rank_registry_withdraws_complete_instance(
     instance = managed_rank_instance
     if change == 'empty':
         instance.distributed_servers.workloads = []
+        instance.distributed_servers.orchestration_mode = "managed"
     elif change == 'unready':
         instance.distributed_servers.workloads[0].dp_rank_placements[0].ready = False
     elif change == 'draining':
@@ -1425,6 +1426,7 @@ def test_rank_generation_preserves_registry_names(managed_rank_instance, rank_wo
         'model-2-7',
     }
     instance.distributed_servers.workloads = []
+    instance.distributed_servers.orchestration_mode = "managed"
     desired = [
         registry
         for _, _, registry in model_instances_registry_list([instance], rank_workers)

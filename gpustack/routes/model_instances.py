@@ -2,17 +2,16 @@ import asyncio
 import json
 import sys
 from contextlib import aclosing, suppress
-from typing import AsyncIterator, Dict, List, Optional, Tuple, Union
+from typing import AsyncIterator, List, Optional, Tuple
 import aiohttp
-from fastapi import APIRouter, Request, status, HTTPException
+from fastapi import APIRouter, Request, Response, status, HTTPException
 from fastapi.responses import (
     StreamingResponse,
     RedirectResponse,
-    JSONResponse,
 )
 from urllib.parse import urlencode
 
-from gpustack.api.streaming import tenant_streaming
+from gpustack.api.streaming import tenant_streaming, finalize_model_lifecycle_event
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.server.services import ModelInstanceService
@@ -48,9 +47,13 @@ from gpustack.schemas.models import (
     ModelInstanceLogOptions,
     ModelInstanceLogWorkerOption,
     ModelInstancePublic,
-    ModelInstanceRankReport,
-    ModelInstanceRankUpdate,
-    ModelInstanceStopUpdate,
+    ModelLifecycleResult,
+    model_instance_lifecycle,
+    ModelInstanceWorkloadReport,
+    ModelInstanceWorkloadUpdate,
+    ModelInstanceStopReport,
+    ModelInstanceWorkloadRegistration,
+    ModelInstanceWorkloadObservations,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
     member_worker_ids,
@@ -79,6 +82,7 @@ from gpustack.utils.vllm_topology import (
 from gpustack.utils.model_instance_workers import (
     get_model_instance_worker_match,
     get_model_instance_workloads,
+    workload_topology,
     model_instance_legacy_stop,
     model_instance_metrics_source_inventory,
 )
@@ -87,6 +91,7 @@ router = APIRouter()
 
 
 async def _strip_private_snapshot_changes(event: Event) -> None:
+    await finalize_model_lifecycle_event(event)
     event.changed_fields = {
         name: values
         for name, values in event.changed_fields.items()
@@ -1166,35 +1171,6 @@ async def create_model_instance(
     return model_instance
 
 
-def _workload_topology(workloads: List[ModelInstanceWorkload]) -> Dict:
-    return {
-        item.name: (
-            item.worker_id,
-            (
-                (
-                    item.component.kind,
-                    item.component.api_port,
-                    item.component.metrics_port,
-                    item.component.dp_size,
-                    item.component.image,
-                    item.component.router_version,
-                    item.component.attempt,
-                )
-                if item.component
-                else None
-            ),
-            {
-                (placement.dp_rank, placement.node_rank): (
-                    tuple(placement.gpu_indexes),
-                    placement.api_port,
-                )
-                for placement in item.dp_rank_placements
-            },
-        )
-        for item in workloads
-    }
-
-
 def _validate_local_devices(
     instance: ModelInstance, worker_id: int, workloads: List[ModelInstanceWorkload]
 ) -> None:
@@ -1284,14 +1260,79 @@ def _merge_component_observation(instance, item, old) -> None:
         component.ready = False
 
 
-def _merge_rank_report(
-    instance: ModelInstance, ctx: TenantContext, report: ModelInstanceRankReport
+def _expand_workload_observations(instance, worker_id, report):
+    if not isinstance(report, ModelInstanceWorkloadObservations):
+        return ModelInstanceWorkloadReport.model_validate(report.model_dump())
+    local = get_model_instance_workloads(instance, worker_id) or []
+    observed = {item.name: item for item in report.observations}
+    if len(observed) != len(report.observations) or set(observed) != {
+        item.name for item in local
+    }:
+        raise ConflictException(
+            message="Observations must match registered local workloads"
+        )
+    workloads = []
+    for old in local:
+        observation = observed[old.name]
+        item = old.model_copy(deep=True)
+        item.state = observation.state
+        if item.component is not None:
+            if observation.component_attempt != item.component.attempt:
+                raise ConflictException(
+                    message="Observation does not match the current component attempt"
+                )
+            if (
+                observation.rank_readiness
+                or (
+                    item.component.api_port is None
+                    and observation.component_ready is not None
+                )
+                or (
+                    item.component.api_port is not None
+                    and observation.component_ready is None
+                )
+            ):
+                raise BadRequestException(
+                    message="Invalid component readiness observation"
+                )
+            item.component.ready = observation.component_ready
+        else:
+            mains = {p.dp_rank for p in item.dp_rank_placements if p.node_rank == 0}
+            if set(observation.rank_readiness) != mains or (
+                observation.component_ready is not None
+                or observation.component_attempt is not None
+            ):
+                raise BadRequestException(message="Invalid rank readiness observation")
+            for placement in item.dp_rank_placements:
+                if placement.node_rank == 0:
+                    placement.ready = observation.rank_readiness[placement.dp_rank]
+        workloads.append(item.model_dump())
+    try:
+        return ModelInstanceWorkloadReport(
+            restart_count=report.restart_count, workloads=workloads
+        )
+    except ValueError as exc:
+        raise BadRequestException(message=str(exc)) from exc
+
+
+def _validate_repeated_registration(local, incoming, registration):
+    if not registration or not local:
+        return
+    exclude = {'component': {'stop_requested', 'last_restart_time'}}
+    if [item.model_dump(exclude=exclude) for item in local] != [
+        item.model_dump(exclude=exclude) for item in incoming
+    ]:
+        raise ConflictException(message="Use observations for registered workloads")
+
+
+def _merge_workload_report(
+    instance: ModelInstance, ctx: TenantContext, report: ModelInstanceWorkloadReport
 ) -> DistributedServers:
     """Validate and merge a local report while the caller holds the instance row lock."""
     worker = ctx.user.worker
     if ctx.user.kind != PrincipalType.SYSTEM or worker is None:
         raise ForbiddenException(
-            message="Rank reports require a bound Worker principal"
+            message="Workload reports require a bound Worker principal"
         )
     if worker.cluster_id != instance.cluster_id or worker.id not in member_worker_ids(
         instance
@@ -1299,20 +1340,25 @@ def _merge_rank_report(
         raise ForbiddenException(
             message="Worker is not assigned to this instance and cluster"
         )
-    if any(item.worker_id != worker.id for item in report.workloads):
-        raise ForbiddenException(message="A Worker may only report its own workloads")
     stored = get_model_instance_workloads(instance)
     if stored is None:
-        raise ConflictException(message="Legacy instances do not accept rank reports")
+        raise ConflictException(
+            message="Legacy instances do not accept workload reports"
+        )
     if report.restart_count != (instance.restart_count or 0):
         raise ConflictException(
-            message="Rank report does not match the current restart_count"
+            message="Workload report does not match the current restart_count"
         )
+    registration = isinstance(report, ModelInstanceWorkloadRegistration)
+    report = _expand_workload_observations(instance, worker.id, report)
+    if any(item.worker_id != worker.id for item in report.workloads):
+        raise ForbiddenException(message="A Worker may only report its own workloads")
     local = get_model_instance_workloads(instance, worker.id)
-    if local and _workload_topology(local) != _workload_topology(report.workloads):
+    if local and workload_topology(local) != workload_topology(report.workloads):
         raise ConflictException(
             message="Registered workload topology is immutable within a restart_count"
         )
+    _validate_repeated_registration(local, report.workloads, registration)
     terminal = {
         ModelInstanceWorkloadStateEnum.STOPPED,
         ModelInstanceWorkloadStateEnum.FAILED,
@@ -1599,7 +1645,7 @@ def _preserve_managed_fields(
         raise ConflictException(message="Stop barriers are server-owned")
     if incoming is not None and incoming != stored:
         raise ConflictException(
-            message="Workloads can only be changed through rank_report"
+            message="Workloads can only be changed through workload_report"
         )
     if stored is None and guard is None:
         return
@@ -1694,19 +1740,41 @@ async def update_model_instance(
     session: SessionDep,
     ctx: TenantContextDep,
     id: int,
-    model_instance_in: Union[
-        ModelInstanceStopUpdate, ModelInstanceRankUpdate, ModelInstanceUpdate
-    ],
+    model_instance_in: ModelInstanceUpdate,
 ):
-    rank_report = isinstance(model_instance_in, ModelInstanceRankUpdate)
-    stop_report = isinstance(model_instance_in, ModelInstanceStopUpdate)
-    worker = ctx.user.worker if rank_report or stop_report else None
+    return await _update_model_instance(session, ctx, id, model_instance_in)
+
+
+@router.put("/{id}/workload-report", response_model=ModelInstancePublic)
+async def report_model_instance_workloads(
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    model_instance_in: ModelInstanceWorkloadUpdate,
+):
+    return await _update_model_instance(session, ctx, id, model_instance_in)
+
+
+@router.post("/{id}/stop-confirmation", response_model=ModelInstancePublic)
+async def confirm_model_instance_stop(
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    model_instance_in: ModelInstanceStopReport,
+):
+    return await _update_model_instance(session, ctx, id, model_instance_in)
+
+
+async def _update_model_instance(session, ctx, id, model_instance_in):
+    workload_report = isinstance(model_instance_in, ModelInstanceWorkloadUpdate)
+    stop_report = isinstance(model_instance_in, ModelInstanceStopReport)
+    worker = ctx.user.worker if workload_report or stop_report else None
     current_worker = (
         await _locked_reporting_worker(session, ctx)
-        if rank_report or stop_report
+        if workload_report or stop_report
         else None
     )
-    if rank_report or stop_report:
+    if workload_report or stop_report:
         model_instance = await ModelInstance.one_by_id(
             session, id, for_update=True, refresh=True
         )
@@ -1721,10 +1789,10 @@ async def update_model_instance(
     if stop_report:
         source = {
             "distributed_servers": _merge_legacy_stop_report(
-                model_instance, ctx, model_instance_in.stop_report, current_worker
+                model_instance, ctx, model_instance_in, current_worker
             )
         }
-    elif rank_report:
+    elif workload_report:
         # Authentication can precede a concurrent Worker deletion or rebind.
         # The instance lock serializes registration with the deletion guard.
         if (
@@ -1741,12 +1809,21 @@ async def update_model_instance(
                 message="Worker identity is no longer bound to this instance and cluster"
             )
         source = {
-            "distributed_servers": _merge_rank_report(
-                model_instance, ctx, model_instance_in.rank_report
+            "distributed_servers": _merge_workload_report(
+                model_instance, ctx, model_instance_in.workload_report
             )
         }
         await _validate_workload_layout(
-            session, model_instance, model_instance_in.rank_report
+            session,
+            model_instance,
+            ModelInstanceWorkloadReport(
+                restart_count=model_instance_in.workload_report.restart_count,
+                workloads=[
+                    w
+                    for w in source['distributed_servers'].workloads
+                    if w.worker_id == worker.id
+                ],
+            ),
         )
         if model_instance_in.preparation is not None:
             source.update(
@@ -1804,9 +1881,12 @@ async def update_model_instance(
 
 @router.delete(
     "/{id}",
-    responses={202: {"description": "Stop accepted; waiting for workload cleanup"}},
+    response_model=ModelLifecycleResult,
+    responses={202: {"model": ModelLifecycleResult}},
 )
-async def delete_model_instance(session: SessionDep, ctx: TenantContextDep, id: int):
+async def delete_model_instance(
+    session: SessionDep, ctx: TenantContextDep, id: int, response: Response = None
+):
     model_instance = await ModelInstance.one_by_id(session, id, for_update=True)
     assert_resource_visible(
         ctx,
@@ -1829,12 +1909,25 @@ async def delete_model_instance(session: SessionDep, ctx: TenantContextDep, id: 
 
     try:
         deleted = await ModelInstanceService(session).delete(model_instance)
+    except APIHTTPException:
+        raise
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to delete model instance: {e}"
         )
-    if deleted is False:
-        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=None)
+    completed = deleted is not False
+    proof = model_instance_lifecycle(model_instance).runtime_termination_confirmed
+    if response is not None and not completed:
+        response.status_code = 202
+    return ModelLifecycleResult(
+        completed=completed,
+        phase="completed" if completed else "stopping",
+        record_deleted=completed,
+        runtime_termination_confirmed=(
+            True if proof is True else None if completed else proof
+        ),
+        observe_url=f"/v2/model-instances/{id}",
+    )
 
 
 async def _resolve_visible_log_source(request, instance, worker, selector):

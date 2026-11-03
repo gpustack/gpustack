@@ -1072,6 +1072,9 @@ def test_static_hybrid_router_rejects_endpoint_without_workload(monkeypatch, wor
         model_instance_workers, 'model_instance_endpoints', lambda _: endpoints
     )
     instance.distributed_servers.workloads = workloads
+    instance.distributed_servers.orchestration_mode = (
+        "managed" if instance.distributed_servers.workloads is not None else "legacy"
+    )
     with pytest.raises(ValueError, match='Hybrid endpoint.*Worker 1.*workload'):
         static_hybrid_router_variables(model, [instance], 'g')
 
@@ -1101,6 +1104,7 @@ def test_static_hybrid_router_counts_internal_api_global_scope(global_dp):
     model.roles[1].backend_parameters = ["--dp", str(global_dp), "--tp", "1"]
     decode = _static_hybrid_member("decode", 2)
     decode.distributed_servers.workloads = None
+    decode.distributed_servers.orchestration_mode = "legacy"
     if global_dp == 2:
         assert static_hybrid_router_variables(
             model, [_static_hybrid_member("prefill", 1), decode], "g"
@@ -1126,6 +1130,7 @@ def test_static_hybrid_router_keeps_original_role_scope_after_router_projection(
     prefill = _static_hybrid_member("prefill", 1)
     decode = _static_hybrid_member("decode", 2, (2,))
     decode.distributed_servers.workloads = None
+    decode.distributed_servers.orchestration_mode = "legacy"
     router = _static_hybrid_member("router", 3, ())
     server = SimpleNamespace(
         _model_spec=model,
@@ -1286,6 +1291,7 @@ def test_static_hybrid_router_infers_internal_scope_from_existing_topology(no_se
     model.roles[1].backend_parameters = ["--tp", "1"]
     decode = _static_hybrid_member("decode", 2)
     decode.distributed_servers.workloads = None
+    decode.distributed_servers.orchestration_mode = "legacy"
     if no_servers:
         decode.distributed_servers = None
         decode.gpu_indexes = [0, 1, 2, 3]

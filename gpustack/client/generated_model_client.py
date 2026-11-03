@@ -8,6 +8,7 @@ import httpx
 from gpustack.api.exceptions import (
     raise_if_response_error,
     async_raise_if_response_error,
+    ServiceUnavailableException,
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.schemas import *
@@ -141,6 +142,21 @@ class ModelClient:
                 if item is not None:
                     # Enrich so downstream callbacks (e.g. ServeManager) see
                     # a validated object instead of {"id": ...}.
+                    if item.lifecycle is not None:
+                        # Cached observations cannot prove how the current
+                        # runtime stopped when the event carries only an ID.
+                        item = item.model_copy(
+                            update={
+                                "lifecycle": item.lifecycle.model_copy(
+                                    update={
+                                        "pending": False,
+                                        "phase": "completed",
+                                        "pending_stop_worker_ids": [],
+                                        "runtime_termination_confirmed": None,
+                                    }
+                                )
+                            }
+                        )
                     event.data = item
                 logger.debug(f"Cache: removed model {event.id}")
                 return
@@ -297,6 +313,19 @@ class ModelClient:
                         self._watch_started = False
                         self._cache.clear()
 
+    def get_cached(self, id: int) -> Optional[ModelPublic]:
+        """Read the current watch snapshot without falling back to HTTP.
+
+        A disconnected or disabled cache cannot establish current ownership.
+        Callers that permit control-plane HTTP should use get() instead.
+        """
+        with self._cache_lock:
+            if not self._enable_cache or not self._watch_started:
+                raise ServiceUnavailableException(
+                    message="Model cache is not synchronized"
+                )
+            return self._cache.get(id)
+
     def get(self, id: int, use_cache: bool = True) -> ModelPublic:
         """
         Get a resource by ID.
@@ -343,6 +372,14 @@ class ModelClient:
         raise_if_response_error(response)
         return ModelPublic.model_validate(response.json())
 
-    def delete(self, id: int):
+    def delete(self, id: int) -> ModelLifecycleResult:
+        """Return whether deletion completed or still awaits runtime cleanup."""
         response = self._client.get_httpx_client().delete(f"{self._url}/{id}")
         raise_if_response_error(response)
+        return ModelLifecycleResult.model_validate(response.json())
+
+    def restart(self, id: int) -> ModelRestartResult:
+        """Request a restart; observe GET/watch for replacement readiness."""
+        response = self._client.get_httpx_client().post(f"{self._url}/{id}/restart")
+        raise_if_response_error(response)
+        return ModelRestartResult.model_validate(response.json())

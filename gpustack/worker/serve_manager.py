@@ -105,10 +105,9 @@ from gpustack.schemas.models import (
     ModelUpdate,
     ModelInstance,
     ModelInstanceUpdate,
-    ModelInstanceRankReport,
-    ModelInstanceStopUpdate,
+    ModelInstanceWorkloadReport,
     ModelInstanceStopReport,
-    ModelInstanceRankUpdate,
+    ModelInstanceWorkloadUpdate,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
     ModelInstanceStateEnum,
@@ -127,6 +126,7 @@ from gpustack.utils.model_instance_workers import (
     model_instance_legacy_stop,
     has_model_instance_stop_barrier,
     managed_instance_update,
+    worker_workload_report,
     ModelInstanceTarget,
     ModelInstanceEndpoint,
     resolve_model_instance_endpoint,
@@ -639,13 +639,13 @@ class ServeManager(ContainerLogPersister):
     def _report_managed_workloads(
         self, mi: ModelInstance, workloads: List[ModelInstanceWorkload], **diagnostic
     ) -> ModelInstance:
-        update = ModelInstanceRankUpdate(
-            rank_report=ModelInstanceRankReport(
-                restart_count=mi.restart_count or 0, workloads=workloads
-            ),
+        update = ModelInstanceWorkloadUpdate(
+            workload_report=worker_workload_report(mi, self._worker_id, workloads),
             **diagnostic,
         )
-        result = self._clientset.model_instances.update(id=mi.id, model_update=update)
+        result = self._clientset.model_instances.report_workloads(
+            id=mi.id, report=update
+        )
         return ModelInstance.model_validate(result)
 
     @staticmethod
@@ -713,7 +713,7 @@ class ServeManager(ContainerLogPersister):
                 return False
             local = [
                 item.model_copy(deep=True)
-                for item in ModelInstanceRankReport(
+                for item in ModelInstanceWorkloadReport(
                     restart_count=mi.restart_count or 0, workloads=workloads
                 ).workloads
             ]
@@ -745,7 +745,7 @@ class ServeManager(ContainerLogPersister):
             with self._model_instance_start_lock:
                 self._starting_model_instances.add(mi.id)
             starting = True
-            mi = self._report_managed_workloads(staged, local)
+            mi = self._report_managed_workloads(current, local)
             registered = True
             self._hold_managed_instance(mi)
             observed = self._managed_runtime_workloads(mi)
@@ -1693,12 +1693,10 @@ class ServeManager(ContainerLogPersister):
             ) or getattr(worker, "unreachable", False):
                 return False
             if self._worker_id not in latest.confirmed_worker_ids:
-                self._clientset.model_instances.update(
+                self._clientset.model_instances.confirm_stop(
                     id=mi.id,
-                    model_update=ModelInstanceStopUpdate(
-                        stop_report=ModelInstanceStopReport(
-                            token=guard.token, restart_count=guard.restart_count
-                        )
+                    report=ModelInstanceStopReport(
+                        token=guard.token, restart_count=guard.restart_count
                     ),
                 )
                 missing_allowed = True
@@ -4767,11 +4765,9 @@ class ServeManager(ContainerLogPersister):
                     tracked.restart_count or 0
                 ):
                     raise RuntimeError("Instance generation changed during preparation")
-                return self._clientset.model_instances.update(
+                return self._clientset.model_instances.report_workloads(
                     id=id,
-                    model_update=managed_instance_update(
-                        current, self._worker_id, **kwargs
-                    ),
+                    report=managed_instance_update(current, self._worker_id, **kwargs),
                 )
 
             mi = ModelInstanceUpdate(**mi_public.model_dump())

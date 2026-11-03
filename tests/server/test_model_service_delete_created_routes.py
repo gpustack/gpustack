@@ -40,7 +40,7 @@ from gpustack.schemas.models import (
     ModelInstanceLegacyStop,
     ModelInstanceSubordinateWorker,
     ModelInstanceWorkload,
-    ModelInstanceRankUpdate,
+    ModelInstanceWorkloadUpdate,
     RoleSpec,
     SourceEnum,
 )
@@ -245,7 +245,10 @@ async def test_managed_model_delete_preserves_children_and_routes_until_stop(
     model = await _model_with_created_route(session, "managed")
     instance = await _managed_instance(session, model, task_state)
 
-    await ModelService(session).delete(model)
+    pending = await ModelService(session).delete(model)
+    assert pending.completed is False
+    assert pending.phase == 'stopping'
+    assert pending.runtime_termination_confirmed is False
 
     assert model.deleted_at is not None
     assert model.replicas == 0
@@ -264,7 +267,9 @@ async def test_managed_model_delete_preserves_children_and_routes_until_stop(
     servers = instance.distributed_servers.model_copy(deep=True)
     servers.workloads[0].state = ModelInstanceWorkloadStateEnum.STOPPED
     await instance.update(session, {"distributed_servers": servers})
-    await ModelService(session).delete(model)
+    completed = await ModelService(session).delete(model)
+    assert completed.completed is True
+    assert completed.runtime_termination_confirmed is True
 
     assert await Model.one_by_id(session, model.id) is None
     assert await ModelInstance.one_by_id(session, instance.id) is None
@@ -322,6 +327,7 @@ async def test_deployment_teardown_retires_lost_workers_after_live_peers_stop(
     ]
     if legacy:
         servers.workloads = None
+        servers.orchestration_mode = "legacy"
         servers.legacy_stop = ModelInstanceLegacyStop(
             token=uuid4(),
             restart_count=0,
@@ -388,15 +394,21 @@ async def test_deployment_teardown_with_no_reachable_worker_releases_worker_dele
     worker = await Worker.one_by_id(session, 1)
     await worker.update(session, {'unreachable': True})
     instance_id = instance.id
-    late_report = ModelInstanceRankUpdate(
-        rank_report={
+    late_report = ModelInstanceWorkloadUpdate(
+        workload_report={
             'restart_count': instance.restart_count or 0,
-            'workloads': instance.distributed_servers.workloads,
+            'workloads': [
+                w.model_dump() for w in instance.distributed_servers.workloads
+            ],
         }
     )
     if operation == 'delete':
-        await ModelService(session).delete(model)
-        await ModelService(session).delete(model)
+        pending = await ModelService(session).delete(model)
+        assert pending.completed is False
+        completed = await ModelService(session).delete(model)
+        assert completed.completed is True
+        assert completed.record_deleted is True
+        assert completed.runtime_termination_confirmed is None
         assert await Model.one_by_id(session, model.id) is None
     else:
         await model.update(session, {'replicas': 0})
@@ -407,7 +419,7 @@ async def test_deployment_teardown_with_no_reachable_worker_releases_worker_dele
     )
     ctx = SimpleNamespace(user=SimpleNamespace(worker=worker))
     with pytest.raises(NotFoundException):
-        await instance_routes.update_model_instance(
+        await instance_routes.report_model_instance_workloads(
             session, ctx, instance_id, late_report
         )
     await WorkerService(session).delete(worker)
@@ -657,7 +669,7 @@ async def test_legacy_restart_failure_clears_guard_without_rolled_back_deletions
     monkeypatch.setattr(ModelInstanceService, "batch_delete", delete_and_replace_guard)
     with pytest.raises(InternalServerErrorException) as error:
         await model_routes.restart_model(session, SimpleNamespace(), model_id)
-    assert error.value.message.startswith("Failed to restart model:")
+    assert error.value.message.startswith("Failed to delete model instances")
     assert failed_deletions == [instance_id]
     await asyncio.sleep(0)
     await model.refresh(session)

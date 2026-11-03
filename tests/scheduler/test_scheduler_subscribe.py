@@ -27,6 +27,7 @@ def test_periodic_scheduling_waits_until_the_manifest_is_retired(state, workload
     )
     assert not scheduler._should_schedule(instance)
     instance.distributed_servers.workloads = []
+    instance.distributed_servers.orchestration_mode = "managed"
     assert scheduler._should_schedule(instance)
 
 

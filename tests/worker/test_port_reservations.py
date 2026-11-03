@@ -79,6 +79,7 @@ def test_managed_port_view_is_local_and_never_falls_back_to_primary_ports(worker
         {40000} if worker_id == 1 else set()
     )
     model.distributed_servers.workloads = []
+    model.distributed_servers.orchestration_mode = "managed"
     assert model_instance_ports(model, worker_id) == set()
 
 

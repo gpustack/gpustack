@@ -20,7 +20,7 @@ from gpustack.schemas.models import (
     DistributedServers,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
-    ModelInstanceRankUpdate,
+    ModelInstanceWorkloadUpdate,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
     PortBand,
@@ -66,6 +66,9 @@ def managed(manager, monkeypatch):
                 item["dp_rank_placements"][0]["api_port"] = 40020 + rank
             items.append(ModelInstanceWorkload.model_validate(item))
     instance.distributed_servers.workloads = items
+    instance.distributed_servers.orchestration_mode = (
+        "managed" if instance.distributed_servers.workloads is not None else "legacy"
+    )
     state = SimpleNamespace(
         serve=serve, client=client, instance=instance, runtime=[], events=[]
     )
@@ -79,10 +82,17 @@ def managed(manager, monkeypatch):
         state=WorkerStateEnum.READY, unreachable=False
     )
 
-    def report(*, id, model_update):
-        assert isinstance(model_update, ModelInstanceRankUpdate)
-        assert model_update.rank_report.restart_count == state.instance.restart_count
-        local = model_update.rank_report.workloads
+    def report(*, id, report):
+        model_update = report
+        assert isinstance(model_update, ModelInstanceWorkloadUpdate)
+        assert (
+            model_update.workload_report.restart_count == state.instance.restart_count
+        )
+        from gpustack.routes.model_instances import _expand_workload_observations
+
+        local = _expand_workload_observations(
+            state.instance, serve._worker_id, model_update.workload_report
+        ).workloads
         assert all(item.worker_id == serve._worker_id for item in local)
         state.events.append("report")
         state.instance.distributed_servers.workloads = [
@@ -90,9 +100,14 @@ def managed(manager, monkeypatch):
             for item in state.instance.distributed_servers.workloads
             if item.worker_id != serve._worker_id
         ] + [item.model_copy(deep=True) for item in local]
+        state.instance.distributed_servers.orchestration_mode = (
+            "managed"
+            if state.instance.distributed_servers.workloads is not None
+            else "legacy"
+        )
         return state.instance.model_copy(deep=True)
 
-    client.model_instances.update.side_effect = report
+    client.model_instances.report_workloads.side_effect = report
 
     def create(plan):
         state.events.append(f"create:{plan.name}")
@@ -170,8 +185,10 @@ def test_managed_registration_precedes_every_runtime_creation(managed, hybrid):
             ModelInstanceWorkload.model_validate(new_hybrid_workload(worker_id))
             for worker_id in (1, 2)
         ]
+        state.instance.distributed_servers.orchestration_mode = "managed"
     local = _local_manifest(state)
     state.instance.distributed_servers.workloads = []
+    state.instance.distributed_servers.orchestration_mode = "managed"
     assert state.serve._start_managed_workloads(
         state.instance.model_copy(deep=True), local, _managed_plans(local)
     )
@@ -196,7 +213,8 @@ def test_managed_registration_failure_never_creates_workloads(managed, error):
     state = managed
     local = _local_manifest(state)
     state.instance.distributed_servers.workloads = []
-    state.client.model_instances.update.side_effect = error
+    state.instance.distributed_servers.orchestration_mode = "managed"
+    state.client.model_instances.report_workloads.side_effect = error
     assert not state.serve._start_managed_workloads(
         state.instance, local, _managed_plans(local)
     )
@@ -231,7 +249,7 @@ def preparing_external(managed, monkeypatch):
     state.serve._sync_managed_model_instance(mi)
     assert (mi.id, mi.restart_count) in state.serve._managed_launches
     state.create.assert_not_called()
-    assert state.client.model_instances.update.call_count == 0
+    assert state.client.model_instances.report_workloads.call_count == 0
     process = state.serve._provisioning_processes[mi.id]
     process.is_alive.return_value = True
     state.receiver = receive
@@ -266,6 +284,7 @@ def test_managed_launch_payloads_precede_local_registration(managed, monkeypatch
         for item in mi.distributed_servers.workloads
         if item.worker_id != serve._worker_id
     ]
+    mi.distributed_servers.orchestration_mode = "managed"
     model = state.client.models.get.return_value
     model.backend = BackendEnum.VLLM
     model.backend_parameters = ["--data-parallel-external-lb", "--dp=2", "--tp=2"]
@@ -281,15 +300,16 @@ def test_managed_launch_payloads_precede_local_registration(managed, monkeypatch
         "gpustack.worker.serve_manager.multiprocessing.Pipe",
         MagicMock(return_value=(receiver, sender)),
     )
-    normal_report = state.client.model_instances.update.side_effect
+    normal_report = state.client.model_instances.report_workloads.side_effect
     phases = []
 
-    def report(*, id, model_update):
-        update = ModelInstanceRankUpdate.model_validate(model_update.model_dump())
+    def report(*, id, report):
+        model_update = report
+        update = ModelInstanceWorkloadUpdate.model_validate(model_update.model_dump())
         if update.preparation is None:
             phases.append("registration")
-            return normal_report(id=id, model_update=update)
-        assert not update.rank_report.workloads
+            return normal_report(id=id, report=update)
+        assert not update.workload_report.workloads
         assert not any(
             item.worker_id == serve._worker_id
             for item in mi.distributed_servers.workloads
@@ -297,12 +317,12 @@ def test_managed_launch_payloads_precede_local_registration(managed, monkeypatch
         phases.append("preparation")
         return mi.model_copy(deep=True)
 
-    state.client.model_instances.update.side_effect = report
+    state.client.model_instances.report_workloads.side_effect = report
     serve._start_model_instance(mi.model_copy(deep=True))
     assert phases == ["preparation", "preparation"]
     assert (
-        state.client.model_instances.update.call_args.kwargs[
-            "model_update"
+        state.client.model_instances.report_workloads.call_args.kwargs[
+            "report"
         ].preparation.pid
         == 1234
     )
@@ -392,7 +412,7 @@ def test_external_failed_preparation_never_creates_a_container(
     elif failure == "stale":
         state.client.models.get.return_value.stale = True
     else:
-        state.client.model_instances.update.side_effect = ConflictException(
+        state.client.model_instances.report_workloads.side_effect = ConflictException(
             "stale generation"
         )
     state.serve._sync_managed_model_instance(state.instance)
@@ -542,13 +562,14 @@ def test_managed_worker_restart_adopts_all_local_containers_without_a_new_genera
 def test_empty_managed_manifest_does_not_fall_back_to_legacy_launch_or_ports(managed):
     state = managed
     state.instance.distributed_servers.workloads = []
+    state.instance.distributed_servers.orchestration_mode = "managed"
     with patch.object(state.serve, "_launch_model_instance") as legacy_launch:
         state.serve._dispatch_model_instance_event(
             Event(type=EventType.CREATED, data=state.instance)
         )
     legacy_launch.assert_not_called()
     state.create.assert_not_called()
-    state.client.model_instances.update.assert_not_called()
+    state.client.model_instances.report_workloads.assert_not_called()
     assert not state.serve._assigned_ports.get(state.instance.id)
     assert state.serve.get_instance_port_by_model_instance_id(state.instance.id) is None
 
@@ -557,6 +578,7 @@ def test_managed_running_instance_does_not_use_legacy_health_or_proxy_port(manag
     state = managed
     state.instance.state = ModelInstanceStateEnum.RUNNING
     state.instance.distributed_servers.workloads = []
+    state.instance.distributed_servers.orchestration_mode = "managed"
     state.serve._model_instance_by_instance_id[state.instance.id] = state.instance
     state.serve._get_model.return_value.env = {
         "GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED": "true"
@@ -620,6 +642,7 @@ def test_managed_generation_change_during_creation_cannot_launch_more_old_tasks(
         normal_create(plan)
         state.instance.restart_count = 4
         state.instance.distributed_servers.workloads = []
+        state.instance.distributed_servers.orchestration_mode = "managed"
 
     state.create.side_effect = create
     assert not state.serve._start_managed_workloads(
@@ -629,7 +652,7 @@ def test_managed_generation_change_during_creation_cannot_launch_more_old_tasks(
     assert not state.runtime
     assert state.instance.restart_count == 4
     assert state.instance.distributed_servers.workloads == []
-    assert state.client.model_instances.update.call_count == 1
+    assert state.client.model_instances.report_workloads.call_count == 1
 
 
 def test_late_managed_stop_never_releases_the_new_generations_ports(managed):
@@ -755,7 +778,7 @@ def test_managed_unlisted_pending_object_cannot_be_confirmed_stopped(managed):
     state.delete.side_effect = lambda name: None
     assert not state.serve._stop_model_instance(instance)
     assert instance.id in state.serve._assigned_ports
-    state.client.model_instances.update.assert_not_called()
+    state.client.model_instances.report_workloads.assert_not_called()
 
 
 def test_managed_unlisted_pending_object_is_not_created_twice(managed):
@@ -801,7 +824,7 @@ def test_managed_unknown_runtime_snapshot_retains_resources(managed, outcome):
         state.list.return_value = None
     assert not state.serve._stop_model_instance(instance)
     assert instance.id in state.serve._assigned_ports
-    state.client.model_instances.update.assert_not_called()
+    state.client.model_instances.report_workloads.assert_not_called()
 
 
 @pytest.mark.parametrize("label", ["model-instance-id", "restart-count", "worker-id"])
@@ -837,7 +860,7 @@ def test_managed_unavailable_worker_cannot_confirm_stop(
     assert not state.serve._stop_model_instance(instance)
     assert not state.runtime
     assert instance.id in state.serve._assigned_ports
-    state.client.model_instances.update.assert_not_called()
+    state.client.model_instances.report_workloads.assert_not_called()
 
 
 def test_managed_failed_stop_report_retains_ports_until_the_server_acknowledges(
@@ -845,12 +868,14 @@ def test_managed_failed_stop_report_retains_ports_until_the_server_acknowledges(
 ):
     state = managed
     instance = _running_managed(state)
-    normal_report = state.client.model_instances.update.side_effect
-    state.client.model_instances.update.side_effect = ReadTimeout("report unavailable")
+    normal_report = state.client.model_instances.report_workloads.side_effect
+    state.client.model_instances.report_workloads.side_effect = ReadTimeout(
+        "report unavailable"
+    )
     assert not state.serve._stop_model_instance(instance)
     assert not state.runtime
     assert instance.id in state.serve._assigned_ports
-    state.client.model_instances.update.side_effect = normal_report
+    state.client.model_instances.report_workloads.side_effect = normal_report
     assert state.serve._stop_model_instance(instance)
     assert instance.id not in state.serve._assigned_ports
 
@@ -872,7 +897,7 @@ def test_managed_plans_cannot_escape_the_workers_runtime_namespace(managed):
     plans[0].namespace = "another-namespace"
     assert not state.serve._start_managed_workloads(state.instance, local, plans)
     state.create.assert_not_called()
-    state.client.model_instances.update.assert_not_called()
+    state.client.model_instances.report_workloads.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -888,27 +913,27 @@ def test_managed_confirmed_stop_does_not_generate_more_watch_updates(
         state=worker_state, unreachable=False
     )
     assert state.serve._stop_model_instance(instance)
-    assert state.client.model_instances.update.call_count == 1
+    assert state.client.model_instances.report_workloads.call_count == 1
     for _ in range(3):
         state.serve._dispatch_model_instance_event(
             Event(type=EventType.UPDATED, data=state.instance)
         )
-    assert state.client.model_instances.update.call_count == 1
+    assert state.client.model_instances.report_workloads.call_count == 1
 
 
 def test_managed_lost_stop_reply_can_be_confirmed_without_another_update(managed):
     state = managed
     instance = _running_managed(state)
-    normal_report = state.client.model_instances.update.side_effect
+    normal_report = state.client.model_instances.report_workloads.side_effect
 
     def report(**kwargs):
         normal_report(**kwargs)
         raise ReadTimeout("stop reply lost after commit")
 
-    state.client.model_instances.update.side_effect = report
+    state.client.model_instances.report_workloads.side_effect = report
     assert not state.serve._stop_model_instance(instance)
     assert state.serve._stop_model_instance(instance)
-    assert state.client.model_instances.update.call_count == 1
+    assert state.client.model_instances.report_workloads.call_count == 1
     assert instance.id not in state.serve._assigned_ports
 
 
@@ -934,7 +959,7 @@ def test_pending_managed_cleanup_retries_locally_while_server_reads_fail(
             state.serve.sync_model_instances_state()
     assert not state.runtime
     assert instance.id in state.serve._assigned_ports
-    state.client.model_instances.update.assert_not_called()
+    state.client.model_instances.report_workloads.assert_not_called()
 
 
 def _instance(instance_id=1):
@@ -1712,7 +1737,7 @@ def test_pending_configuration_blocks_member_recovery(manager, role):
     serve._restart_error_model_instance(serve._error_model_instances[instance.id])
 
     serve._update_model_instance.assert_not_called()
-    clientset.model_instances.update.assert_not_called()
+    clientset.model_instances.report_workloads.assert_not_called()
     assert instance.id not in serve._restart_backoff_counts
     clientset.models.get.assert_called_with(instance.model_id, use_cache=False)
 
@@ -1759,7 +1784,7 @@ def test_edit_during_backoff_cancels_recovery(manager, role):
     serve._restart_error_model_instance(instance)
 
     serve._update_model_instance.assert_not_called()
-    clientset.model_instances.update.assert_not_called()
+    clientset.model_instances.report_workloads.assert_not_called()
     assert serve._restart_backoff_counts[instance.id] == 1
 
 
@@ -1800,7 +1825,7 @@ def test_due_pd_recovery_checks_server_even_when_cached_config_is_current(manage
 
     clientset.models.get.assert_called_once_with(instance.model_id, use_cache=False)
     serve._update_model_instance.assert_not_called()
-    clientset.model_instances.update.assert_not_called()
+    clientset.model_instances.report_workloads.assert_not_called()
 
 
 @pytest.mark.parametrize("role", ["prefill", "decode", "router"])
@@ -2261,11 +2286,12 @@ def test_guarded_legacy_stop_holds_claims_until_proved_and_reported(
     monkeypatch.setattr(
         'gpustack.worker.serve_manager.psutil.process_iter', lambda *args, **kwargs: []
     )
-    from gpustack.schemas.models import ModelInstanceLegacyStop, ModelInstanceStopUpdate
+    from gpustack.schemas.models import ModelInstanceLegacyStop, ModelInstanceStopReport
 
     s = managed
     mi = s.instance
     mi.distributed_servers.workloads = None
+    mi.distributed_servers.orchestration_mode = "legacy"
     mi.draining_since = datetime.now(timezone.utc)
     mi.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
         token=uuid4(),
@@ -2282,14 +2308,15 @@ def test_guarded_legacy_stop_holds_claims_until_proved_and_reported(
     s.client.workers.get.return_value = SimpleNamespace(
         state=worker_state, unreachable=False
     )
-    s.client.model_instances.update.reset_mock()
+    s.client.model_instances.confirm_stop.reset_mock()
 
-    def report(*, id, model_update):
-        assert isinstance(model_update, ModelInstanceStopUpdate)
+    def report(*, id, report):
+        model_update = report
+        assert isinstance(model_update, ModelInstanceStopReport)
         mi.distributed_servers.legacy_stop.confirmed_worker_ids = [1, 2]
         return mi.model_copy(deep=True)
 
-    s.client.model_instances.update.side_effect = report
+    s.client.model_instances.confirm_stop.side_effect = report
     process = MagicMock()
     process.is_alive.return_value = blocked == 'preparer'
     s.serve._provisioning_processes[mi.id] = process
@@ -2302,15 +2329,15 @@ def test_guarded_legacy_stop_holds_claims_until_proved_and_reported(
     elif blocked == 'runtime_unknown':
         s.get.side_effect = RuntimeError('runtime unavailable')
     elif blocked == 'server':
-        s.client.model_instances.update.side_effect = ReadTimeout('reply lost')
+        s.client.model_instances.confirm_stop.side_effect = ReadTimeout('reply lost')
     assert s.serve._stop_legacy_guarded_model_instance(mi, False) is False
     assert mi.id in s.serve._assigned_ports
     if blocked != 'server':
-        s.client.model_instances.update.assert_not_called()
+        s.client.model_instances.confirm_stop.assert_not_called()
     s.runtime.clear()
     process.is_alive.return_value = False
     s.get.side_effect = lambda name: None
-    s.client.model_instances.update.side_effect = report
+    s.client.model_instances.confirm_stop.side_effect = report
     assert s.serve._stop_legacy_guarded_model_instance(mi, False) is True
     assert mi.id not in s.serve._assigned_ports
 
@@ -2327,6 +2354,7 @@ def test_legacy_stop_proves_all_known_names_and_refuses_ambiguous_objects(
     s = managed
     mi = s.instance
     mi.distributed_servers.workloads = None
+    mi.distributed_servers.orchestration_mode = "legacy"
     mi.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
         token=uuid4(),
         restart_count=mi.restart_count,
@@ -2562,6 +2590,7 @@ def _sglang_local_components(state):
 def test_sglang_component_registration_precedes_both_creates(managed):
     local = _sglang_local_components(managed)
     managed.instance.distributed_servers.workloads = []
+    managed.instance.distributed_servers.orchestration_mode = "managed"
     assert managed.serve._start_managed_workloads(
         managed.instance, local, _managed_plans(local)
     )
@@ -2580,6 +2609,7 @@ def test_sglang_create_return_rechecks_authoritative_identity(managed, change):
         pytest.skip('SMG is owned only by the primary Worker')
     local = _sglang_local_components(state)
     state.instance.distributed_servers.workloads = []
+    state.instance.distributed_servers.orchestration_mode = "managed"
     state.serve._stop_model_instance = MagicMock(return_value=False)
     original = state.create.side_effect
 
@@ -2617,8 +2647,11 @@ def test_sglang_create_return_rechecks_authoritative_identity(managed, change):
 def test_sglang_failed_or_unknown_registration_never_creates(managed, reason):
     local = _sglang_local_components(managed)
     managed.instance.distributed_servers.workloads = []
+    managed.instance.distributed_servers.orchestration_mode = "managed"
     if reason == 'registration':
-        managed.client.model_instances.update.side_effect = ConflictException('stale')
+        managed.client.model_instances.report_workloads.side_effect = ConflictException(
+            'stale'
+        )
     else:
         managed.list.return_value = None
         managed.list.side_effect = None
@@ -2634,6 +2667,7 @@ def test_managed_sglang_starts_preparer_without_waiting_for_peer_health(
     state = managed
     mi = state.instance
     mi.distributed_servers.workloads = []
+    mi.distributed_servers.orchestration_mode = "managed"
     model = new_model(
         1,
         'sg',
@@ -2698,13 +2732,18 @@ def test_managed_sglang_starts_preparer_without_waiting_for_peer_health(
     assert len(state.serve._assigned_ports[mi.id]) == 4
     assert state.serve._provisioning_processes[mi.id].start.called
     state.create.assert_not_called()
-    assert state.client.model_instances.update.call_count == 0
+    assert state.client.model_instances.report_workloads.call_count == 0
 
 
 def test_sglang_component_runtime_labels_fail_closed(managed):
     state = managed
     local = _sglang_local_components(state)
     state.instance.distributed_servers.workloads = local
+    state.instance.distributed_servers.orchestration_mode = (
+        "managed"
+        if state.instance.distributed_servers.workloads is not None
+        else "legacy"
+    )
     item = local[0]
     item.state = 'running'
     if item.component.api_port is not None:
@@ -2757,6 +2796,9 @@ def smg(managed, monkeypatch):
             ),
         )
     ]
+    s.instance.distributed_servers.orchestration_mode = (
+        "managed" if s.instance.distributed_servers.workloads is not None else "legacy"
+    )
     s.model = new_model(
         1,
         'sg',
@@ -2978,10 +3020,10 @@ def test_pending_cpu_create_obeys_fresh_model_engine_and_identity(smg, fence):
     s.create.assert_not_called()
     if fence in ('metadata', 'router_version'):
         assert any(
-            (call.kwargs['model_update'].state_message or '').startswith(
+            (call.kwargs['report'].state_message or '').startswith(
                 'SMG recovery is blocked:'
             )
-            for call in s.client.model_instances.update.call_args_list
+            for call in s.client.model_instances.report_workloads.call_args_list
         )
     assert not any(c.args[0].startswith('engine') for c in s.delete.call_args_list)
 
@@ -3035,6 +3077,7 @@ def test_initial_cpu_create_failure_keeps_already_created_engine(smg):
         w.component.ready = False
     s.instance.state = ModelInstanceStateEnum.STARTING
     s.instance.distributed_servers.workloads = []
+    s.instance.distributed_servers.orchestration_mode = "managed"
     s.runtime.clear()
     create = s.create.side_effect
 
@@ -3205,6 +3248,7 @@ def test_initial_cpu_authority_read_failure_does_not_stop_engine(smg):
         item.component.ready = False
     s.instance.state = ModelInstanceStateEnum.STARTING
     s.instance.distributed_servers.workloads = []
+    s.instance.distributed_servers.orchestration_mode = "managed"
     s.runtime.clear()
     get = s.client.model_instances.get.side_effect
     reads_after_engine = 0
@@ -3298,6 +3342,7 @@ def test_parent_uncertain_late_failure_uses_existing_handoff_fence(smg):
     s = smg
     initial = s.instance.model_copy(deep=True)
     initial.distributed_servers.workloads = []
+    initial.distributed_servers.orchestration_mode = "managed"
     s.client.model_instances.get.side_effect = ReadTimeout('authority unavailable')
     s.serve._handle_model_instance_launch_failure(initial, BrokenPipeError('closed'))
     s.serve._update_model_instance.assert_not_called()
@@ -3312,6 +3357,7 @@ def test_legacy_stop_reaps_owned_zombie_before_orphan_identity_scan(
     mi.worker_id = s.serve._worker_id
     mi.pid = 81
     mi.distributed_servers.workloads = None
+    mi.distributed_servers.orchestration_mode = "legacy"
     reaped = []
     owned = MagicMock()
     owned.join.side_effect = lambda timeout: reaped.append(True)
@@ -3347,7 +3393,7 @@ def test_ordinary_deleted_manifest_cleans_all_local_rank_tasks(managed, event_ty
     assert instance.id not in state.serve._assigned_ports
     assert instance.id not in state.serve._model_instance_by_instance_id
     state.create.assert_not_called()
-    state.client.model_instances.update.assert_not_called()
+    state.client.model_instances.report_workloads.assert_not_called()
 
 
 def test_hybrid_components_do_not_enter_sglang_reconciliation(managed):
@@ -3356,6 +3402,7 @@ def test_hybrid_components_do_not_enter_sglang_reconciliation(managed):
     managed.instance.distributed_servers.workloads = [
         ModelInstanceWorkload.model_validate(new_hybrid_workload())
     ]
+    managed.instance.distributed_servers.orchestration_mode = "managed"
     assert not ServeManager._has_sglang_components(managed.instance)
 
 
@@ -3372,6 +3419,7 @@ def test_hybrid_health_uses_shared_api_and_optional_inference_probe(managed, sta
         )
         for worker_id in (1, 2)
     ]
+    instance.distributed_servers.orchestration_mode = "managed"
     instance.distributed_servers.workloads[0].component.ready = not startup
     model = new_model(
         1,
@@ -3415,6 +3463,7 @@ def test_hybrid_completed_startup_probe_is_fenced_by_current_generation(
         new_hybrid_workload(state.serve._worker_id, state='running')
     )
     instance.distributed_servers.workloads = [local]
+    instance.distributed_servers.orchestration_mode = "managed"
     snapshot = instance.model_copy(deep=True)
     key = (
         instance.id,
@@ -3441,7 +3490,7 @@ def test_hybrid_completed_startup_probe_is_fenced_by_current_generation(
     if epoch_changed:
         instance.restart_count += 1
     state.serve._sync_managed_rank_health(snapshot)
-    assert bool(state.client.model_instances.update.called) != epoch_changed
+    assert bool(state.client.model_instances.report_workloads.called) != epoch_changed
     assert instance.distributed_servers.workloads[0].component.ready == (
         not epoch_changed
     )
@@ -3502,6 +3551,7 @@ def test_component_health_path_preserves_sglang_contract(managed, hybrid):
     if not hybrid:
         item.component.kind = 'sglang_engine'
     state.instance.distributed_servers.workloads = [item]
+    state.instance.distributed_servers.orchestration_mode = "managed"
     model = new_model(
         1,
         'model',
@@ -3538,6 +3588,7 @@ def hybrid_managed(managed):
         )
         for w in (1, 2, 3, 4)
     ]
+    state.instance.distributed_servers.orchestration_mode = "managed"
     for item in state.instance.distributed_servers.workloads:
         if item.component.api_port is not None:
             item.component.dp_size = 1
@@ -3601,7 +3652,7 @@ def test_hybrid_stop_waits_for_local_absence_and_available_worker(
     assert not state.serve._stop_model_instance(state.instance.model_copy(deep=True))
     assert state.instance.id in state.serve._assigned_ports
     assert _local_manifest(state)[0].state != ModelInstanceWorkloadStateEnum.STOPPED
-    state.client.model_instances.update.assert_not_called()
+    state.client.model_instances.report_workloads.assert_not_called()
     state.list.side_effect, state.delete.side_effect = normal_list, normal_delete
     state.client.workers.get.return_value.unreachable = False
     state.serve._retry_managed_stops()

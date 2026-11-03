@@ -3855,6 +3855,7 @@ def test_sglang_child_preparer_failure_respects_engine_handoff(handed_off):
                 ),
             )
         ]
+        current.distributed_servers.orchestration_mode = "managed"
     server._clientset.model_instances.get.return_value = current
     error = BrokenPipeError('preparation pipe closed')
     with patch.object(InferenceServer, '_handle_error', side_effect=error) as parent:
@@ -3892,6 +3893,7 @@ def test_managed_sglang_dpa_refuses_to_expand_a_published_old_layout():
 def test_legacy_single_node_sglang_dpa_keeps_native_port_selection():
     backend = _managed_sglang_backend()
     backend._model_instance.distributed_servers.workloads = None
+    backend._model_instance.distributed_servers.orchestration_mode = "legacy"
     backend._model.backend_parameters.append('--enable-dp-attention')
     assert backend._get_multinode_arguments(True) == []
 

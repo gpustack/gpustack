@@ -10,8 +10,8 @@ from gpustack.client import ClientSet
 from gpustack.client.model_instance_client import ModelInstanceClient
 from gpustack.schemas.models import (
     ModelInstancePublic,
-    ModelInstanceRankUpdate,
-    ModelInstanceStopUpdate,
+    ModelInstanceWorkloadUpdate,
+    ModelInstanceStopReport,
     ModelInstanceUpdate,
     SourceEnum,
 )
@@ -55,29 +55,128 @@ def test_cached_lookup_never_falls_back_to_http(instance, enabled, watching, pre
 
 
 @pytest.mark.parametrize(
-    'update',
+    'operation,payload,path,method',
     [
-        ModelInstanceUpdate(
-            name='updated',
-            model_name='test',
-            source=SourceEnum.HUGGING_FACE,
-            huggingface_repo_id='org/repo',
+        (
+            'update',
+            ModelInstanceUpdate(
+                name='updated',
+                model_name='test',
+                source=SourceEnum.HUGGING_FACE,
+                huggingface_repo_id='org/repo',
+            ),
+            '/model-instances/7',
+            'put',
         ),
-        ModelInstanceRankUpdate(rank_report={'restart_count': 3, 'workloads': []}),
-        ModelInstanceStopUpdate(stop_report={'token': uuid4(), 'restart_count': 3}),
+        (
+            'report_workloads',
+            ModelInstanceWorkloadUpdate(
+                workload_report={'restart_count': 3, 'workloads': []}
+            ),
+            '/model-instances/7/workload-report',
+            'put',
+        ),
+        (
+            'confirm_stop',
+            ModelInstanceStopReport(token=uuid4(), restart_count=3),
+            '/model-instances/7/stop-confirmation',
+            'post',
+        ),
     ],
-    ids=['instance', 'rank', 'stop'],
 )
-def test_update_preserves_each_request_envelope(instance, update):
+def test_requests_use_their_dedicated_endpoint(
+    instance, operation, payload, path, method
+):
     transport = MagicMock()
-    transport.get_httpx_client.return_value.put.return_value = httpx.Response(
-        200, json=instance.model_dump(mode='json')
-    )
+    send = getattr(transport.get_httpx_client.return_value, method)
+    send.return_value = httpx.Response(200, json=instance.model_dump(mode='json'))
     client = ModelInstanceClient(transport)
-
-    assert client.update(instance.id, update) == instance
-    transport.get_httpx_client.return_value.put.assert_called_once_with(
-        '/model-instances/7',
-        content=update.model_dump_json(),
+    assert getattr(client, operation)(instance.id, payload) == instance
+    send.assert_called_once_with(
+        path,
+        content=payload.model_dump_json(),
         headers={'Content-Type': 'application/json'},
     )
+
+
+@pytest.mark.parametrize('resource', ['models', 'model_instances'])
+@pytest.mark.parametrize('completed', [False, True])
+def test_sdk_exposes_deletion_acknowledgement(resource, completed):
+    clientset = ClientSet('http://server.example')
+    client = getattr(clientset, resource)
+    transport = MagicMock()
+    client._client = transport
+    body = dict(
+        accepted=True,
+        completed=completed,
+        record_deleted=completed,
+        phase='completed' if completed else 'stopping',
+        runtime_termination_confirmed=None,
+    )
+    transport.get_httpx_client.return_value.delete.return_value = httpx.Response(
+        200 if completed else 202,
+        json=body,
+    )
+    result = client.delete(7)
+    assert result.completed is completed
+    assert result.record_deleted is completed
+    assert result.runtime_termination_confirmed is None
+
+
+def test_sdk_restart_exposes_pending_replacement_startup():
+    clientset = ClientSet('http://server.example')
+    transport = MagicMock()
+    clientset.models._client = transport
+    transport.get_httpx_client.return_value.post.return_value = httpx.Response(
+        202,
+        json=dict(
+            accepted=True,
+            completed=False,
+            phase='starting',
+            spec_digest='sha1:target',
+            restarted=True,
+            deleted_instances=['old'],
+            observe_url='/v2/models/7',
+        ),
+    )
+    result = clientset.models.restart(7)
+    assert result.completed is False
+    assert result.spec_digest == 'sha1:target'
+    assert result.deleted_instances == ['old']
+    transport.get_httpx_client.return_value.post.assert_called_once_with(
+        '/models/7/restart'
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('resource', ['models', 'model_instances'])
+async def test_id_only_delete_does_not_reuse_cached_termination_proof(
+    instance, resource
+):
+    from gpustack.schemas.models import ModelPublic
+    from gpustack.server.bus import Event, EventType
+
+    clientset = ClientSet('http://server.example')
+    api = getattr(clientset, resource)
+    cached = (
+        instance
+        if resource == 'model_instances'
+        else ModelPublic(
+            id=7,
+            name='test',
+            source=SourceEnum.HUGGING_FACE,
+            huggingface_repo_id='org/repo',
+            created_at=instance.created_at,
+            updated_at=instance.updated_at,
+        )
+    )
+    cached.lifecycle.pending = True
+    cached.lifecycle.runtime_termination_confirmed = True
+    api._cache = {7: cached}
+    event = Event(type=EventType.DELETED, id=7, data={'id': 7})
+    await api._update_cache_from_event(event)
+    assert event.data.lifecycle.pending is False
+    assert event.data.lifecycle.phase == 'completed'
+    assert event.data.lifecycle.runtime_termination_confirmed is None
+    assert cached.lifecycle.pending is True
+    assert api._cache == {}

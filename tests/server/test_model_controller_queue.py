@@ -540,6 +540,7 @@ async def test_managed_restart_backoff_survives_a_new_service(
     ctx.instance.state = ModelInstanceStateEnum.ERROR
     ctx.instance.restart_count = restart_count
     ctx.instance.distributed_servers.workloads = []
+    ctx.instance.distributed_servers.orchestration_mode = "managed"
     ctx.instance.last_restart_time = datetime.now(timezone.utc) - timedelta(seconds=1)
 
     due = await ModelInstanceService(ctx.session).reconcile_managed_instance(
@@ -570,6 +571,11 @@ async def test_managed_recovery_keeps_legacy_and_empty_manifest_distinct(
     ctx = managed_recovery
     ctx.instance.state = ModelInstanceStateEnum.ERROR
     ctx.instance.distributed_servers.workloads = manifest
+    ctx.instance.distributed_servers.orchestration_mode = (
+        "managed"
+        if ctx.instance.distributed_servers.workloads is not None
+        else "legacy"
+    )
 
     await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
 
@@ -670,6 +676,7 @@ async def test_rank_manifest_event_wakes_model_recovery_without_aggregate_change
         from gpustack.schemas.models import ModelInstanceLegacyStop
 
         ctx.instance.distributed_servers.workloads = None
+        ctx.instance.distributed_servers.orchestration_mode = "legacy"
         ctx.instance.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
             token=uuid4(),
             restart_count=0,
@@ -758,6 +765,11 @@ async def test_partial_registration_can_recover_after_every_registered_task_stop
     ctx.instance.distributed_servers.workloads = (
         ctx.instance.distributed_servers.workloads[:1]
     )
+    ctx.instance.distributed_servers.orchestration_mode = (
+        "managed"
+        if ctx.instance.distributed_servers.workloads is not None
+        else "legacy"
+    )
     ctx.instance.distributed_servers.workloads[0].state = (
         ModelInstanceWorkloadStateEnum.STOPPED
     )
@@ -776,6 +788,7 @@ async def test_managed_recovery_ignores_a_stale_reconcile_snapshot(
     ctx = managed_recovery
     ctx.instance.state = ModelInstanceStateEnum.ERROR
     ctx.instance.distributed_servers.workloads = []
+    ctx.instance.distributed_servers.orchestration_mode = "managed"
     if changed == "deleted":
         ctx.instance.deleted_at = datetime.now(timezone.utc)
     elif changed == "new_generation":
@@ -797,6 +810,7 @@ async def test_new_model_controller_resumes_only_the_failed_managed_instance(
     ctx = managed_recovery
     ctx.instance.state = ModelInstanceStateEnum.ERROR
     ctx.instance.distributed_servers.workloads = []
+    ctx.instance.distributed_servers.orchestration_mode = "managed"
     healthy = ctx.instance.model_copy(deep=True)
     healthy.id = 2
     healthy.state = ModelInstanceStateEnum.RUNNING
@@ -826,6 +840,7 @@ async def test_pd_config_change_blocks_recovery_before_stale_status_is_published
     ctx.instance.group_id = "pd-group"
     ctx.instance.state = ModelInstanceStateEnum.ERROR
     ctx.instance.distributed_servers.workloads = []
+    ctx.instance.distributed_servers.orchestration_mode = "managed"
     ctx.model.stale = False
 
     with (
@@ -1021,6 +1036,11 @@ def smg_recovery(managed_recovery):
             component=dict(kind='sglang_smg', api_port=40001, metrics_port=40002),
         )
     ]
+    ctx.instance.distributed_servers.orchestration_mode = (
+        "managed"
+        if ctx.instance.distributed_servers.workloads is not None
+        else "legacy"
+    )
     workers = [
         SimpleNamespace(
             id=worker_id,
@@ -1426,6 +1446,7 @@ async def test_hybrid_task_failure_uses_complete_group_recovery(
             new_hybrid_workload(2, headless=headless, state=state)
         ),
     ]
+    ctx.instance.distributed_servers.orchestration_mode = "managed"
     await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
     assert ctx.instance.state == ModelInstanceStateEnum.ERROR
     assert 'Worker 2' in ctx.instance.state_message
@@ -1453,6 +1474,7 @@ def hybrid_recovery(managed_recovery):
         )
         for w in (1, 2, 3, 4)
     ]
+    ctx.instance.distributed_servers.orchestration_mode = "managed"
     for task in ctx.instance.distributed_servers.workloads:
         if task.component.api_port:
             task.component.dp_size, task.component.ready = 1, True

@@ -920,6 +920,7 @@ def test_hybrid_logs_preserve_current_and_previous_worker_task_without_rank_view
     instance.distributed_servers.workloads = [
         ModelInstanceWorkload.model_validate(t) for t in _hybrid_tasks()
     ]
+    instance.distributed_servers.orchestration_mode = "managed"
     write_log_sources(tmp_path, instance, worker_id)
     directory = restart_log_dir(tmp_path, instance.name, instance.id, 3)
     (directory / 'container.log').write_bytes(b'[dp0-node1] compute\ncommon\n')

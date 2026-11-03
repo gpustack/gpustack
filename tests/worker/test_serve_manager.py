@@ -3968,16 +3968,26 @@ def rank_health(monkeypatch):
     manager._get_health_check_path = MagicMock(return_value=None)
     manager._stop_model_instance = MagicMock()
 
-    def report(*, id, model_update):
+    def report(*, id, report):
+        model_update = report
         state.reports.append(model_update)
-        state.mi.distributed_servers.workloads = model_update.rank_report.workloads
+        from gpustack.routes.model_instances import _expand_workload_observations
+
+        state.mi.distributed_servers.workloads = _expand_workload_observations(
+            state.mi, manager._worker_id, model_update.workload_report
+        ).workloads
+        state.mi.distributed_servers.orchestration_mode = (
+            "managed"
+            if state.mi.distributed_servers.workloads is not None
+            else "legacy"
+        )
         if model_update.state is not None:
             state.mi.state = model_update.state
         if model_update.state_message is not None:
             state.mi.state_message = model_update.state_message
         return state.mi.model_copy(deep=True)
 
-    client.model_instances.update.side_effect = report
+    client.model_instances.report_workloads.side_effect = report
 
     def submit(fn, *args, **kwargs):
         future = Future()
@@ -4225,6 +4235,7 @@ def test_managed_late_200_is_discarded(rank_health, change):
         s.mi.draining_since = datetime.now(timezone.utc)
     else:
         s.mi.distributed_servers.workloads = []
+        s.mi.distributed_servers.orchestration_mode = "managed"
     s.sync()
     assert not s.reports
     assert not any(
@@ -4285,13 +4296,13 @@ def test_managed_report_retry_does_not_double_count(rank_health):
         s.now += 10
     s.sync()
     s.finish()
-    report = s.client.model_instances.update.side_effect
-    s.client.model_instances.update.side_effect = RuntimeError(
+    report = s.client.model_instances.report_workloads.side_effect
+    s.client.model_instances.report_workloads.side_effect = RuntimeError(
         'temporarily unavailable'
     )
     s.sync()
     s.sync()
-    s.client.model_instances.update.side_effect = report
+    s.client.model_instances.report_workloads.side_effect = report
     s.sync()
     assert s.mi.state == ModelInstanceStateEnum.ERROR
     assert all(check.failures == 3 for check in s.manager._rank_health_checks.values())
@@ -4505,6 +4516,7 @@ def component_health(rank_health):
             component=dict(kind='sglang_smg', api_port=41002, metrics_port=41003),
         ),
     ]
+    s.mi.distributed_servers.orchestration_mode = "managed"
     s.model.backend = BackendEnum.SGLANG
     s.model.backend_parameters = ['--dp=2']
     s.json = {
@@ -5154,10 +5166,14 @@ def test_component_health_waits_for_main_engine_manifest(component_health, caplo
         for w in state.mi.distributed_servers.workloads
         if w.component.kind != 'sglang_engine' or w.component.api_port is None
     ]
+    state.mi.distributed_servers.orchestration_mode = "managed"
     state.sync()
     assert not state.jobs
     state.get.assert_not_called()
     assert 'Cannot check managed rank health' not in caplog.text
     state.mi.distributed_servers.workloads = original
+    state.mi.distributed_servers.orchestration_mode = (
+        "managed" if state.mi.distributed_servers.workloads is not None else "legacy"
+    )
     state.sync()
     assert len(state.jobs) == 2

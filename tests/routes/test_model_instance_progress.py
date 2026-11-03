@@ -23,8 +23,9 @@ from gpustack.schemas.models import (
     DistributedServers,
     ModelInstance,
     ModelInstancePublic,
-    ModelInstanceRankUpdate,
-    ModelInstanceRankReport,
+    ModelInstanceWorkload,
+    ModelInstanceWorkloadUpdate,
+    ModelInstanceWorkloadReport,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
     ModelInstanceUpdate,
@@ -95,8 +96,58 @@ async def test_instance_delete_distinguishes_pending_cleanup(report_api, deleted
     ) as client:
         response = await client.delete(f'/model-instances/{api.instance.id}')
     assert response.status_code == (200 if deleted else 202)
-    assert response.json() is None
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['completed'] is deleted
+    assert body['record_deleted'] is deleted
+    assert body['phase'] == ('completed' if deleted else 'stopping')
+    assert body['observe_url'] == f'/v2/model-instances/{api.instance.id}'
     api.service.delete.assert_awaited_once_with(api.instance)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('runtime', ['legacy', 'running', 'stopped'])
+async def test_instance_retirement_does_not_imply_runtime_termination(
+    report_api, runtime
+):
+    from gpustack.server.bus import Event, EventType
+    from gpustack.api.streaming import finalize_model_lifecycle_event
+
+    instance = report_api.instance
+    instance.distributed_servers = (
+        None
+        if runtime == 'legacy'
+        else DistributedServers(workloads=[new_model_instance_workload(state=runtime)])
+    )
+    instance.draining_since = datetime.now(timezone.utc)
+    public = ModelInstancePublic.model_validate(instance)
+    assert public.lifecycle.pending is True
+    assert public.lifecycle.runtime_termination_confirmed is (
+        None if runtime == 'legacy' else runtime == 'stopped'
+    )
+    if runtime == 'running':
+        assert public.lifecycle.pending_stop_worker_ids == [1]
+    event = Event(type=EventType.DELETED, data=public)
+    await finalize_model_lifecycle_event(event)
+    restored = ModelInstancePublic.model_validate_json(event.data.model_dump_json())
+    assert restored.lifecycle.pending is False
+    assert restored.lifecycle.phase == 'completed'
+    assert restored.lifecycle.runtime_termination_confirmed is (
+        True if runtime == 'stopped' else None
+    )
+
+
+@pytest.mark.asyncio
+async def test_record_delete_with_unconfirmed_runtime_returns_unknown(report_api):
+    report_api.instance.distributed_servers = None
+    report_api.service.delete = AsyncMock(return_value=True)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=report_api.app), base_url='http://test'
+    ) as client:
+        response = await client.delete('/model-instances/7')
+    assert response.status_code == 200
+    assert response.json()['record_deleted'] is True
+    assert response.json()['runtime_termination_confirmed'] is None
 
 
 async def _apply_report(instance, report):
@@ -314,7 +365,7 @@ def test_manifest_survives_public_json_round_trip(workloads):
     assert (
         restored.distributed_servers.workloads == public.distributed_servers.workloads
     )
-    assert "rank_report" not in public.model_dump()
+    assert "workload_report" not in public.model_dump()
 
 
 def test_missing_workloads_keeps_legacy_contract():
@@ -399,27 +450,27 @@ def test_headless_report_can_arrive_before_main():
 
 
 def test_rank_update_only_requires_request_fields():
-    update = ModelInstanceRankUpdate.model_validate(
+    update = ModelInstanceWorkloadUpdate.model_validate(
         {
-            "rank_report": {
+            "workload_report": {
                 "restart_count": 0,
                 "workloads": [new_model_instance_workload()],
             }
         }
     )
-    assert update.rank_report.restart_count == 0
-    assert "rank_report" not in ModelInstancePublic.model_fields
+    assert update.workload_report.restart_count == 0
+    assert "workload_report" not in ModelInstancePublic.model_fields
 
 
 @pytest.mark.parametrize("field", ["worker_id", "cluster_id", "state"])
-def test_rank_report_rejects_extra_identity_and_state(field):
+def test_workload_report_rejects_extra_identity_and_state(field):
     with pytest.raises(ValidationError):
-        ModelInstanceRankUpdate.model_validate(
-            {"rank_report": {"restart_count": 0, "workloads": [], field: 1}}
+        ModelInstanceWorkloadUpdate.model_validate(
+            {"workload_report": {"restart_count": 0, "workloads": [], field: 1}}
         )
 
 
-def test_full_update_cannot_silently_discard_rank_report():
+def test_full_update_cannot_silently_discard_workload_report():
     instance = new_model_instance(1, "instance", 1)
     instance.source = SourceEnum.LOCAL_PATH
     instance.local_path = "/model"
@@ -427,7 +478,7 @@ def test_full_update_cannot_silently_discard_rank_report():
         ModelInstanceUpdate.model_validate(
             {
                 **instance.model_dump(),
-                "rank_report": {"restart_count": 0, "workloads": []},
+                "workload_report": {"restart_count": 0, "workloads": []},
             }
         )
 
@@ -463,7 +514,7 @@ def report_api(monkeypatch):
     async def persist(current, source):
         if not isinstance(source, dict):
             source = {key: getattr(source, key) for key in source.model_fields_set}
-        assert "rank_report" not in source
+        assert "workload_report" not in source
         for key, value in source.items():
             setattr(current, key, value)
 
@@ -503,19 +554,82 @@ def report_api(monkeypatch):
 
 
 async def put(api, items=None, generation=0, **fields):
-    payload = {
-        "rank_report": {
-            "restart_count": generation,
-            "workloads": (
-                items if items is not None else [new_model_instance_workload()]
-            ),
-        },
-        **fields,
-    }
+    from gpustack.utils.model_instance_workers import worker_workload_report
+
+    items = items if items is not None else [new_model_instance_workload()]
+    # Build the public wire contract from the facts this Worker intends to report.
+    tasks = [ModelInstanceWorkload.model_validate(item) for item in items]
+    report = worker_workload_report(
+        api.instance, getattr(api.ctx.user.worker, 'id', 1), tasks
+    )
+    payload = {'workload_report': report.model_dump(mode='json'), **fields}
+    payload['workload_report']['restart_count'] = generation
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api.app), base_url="http://test"
     ) as client:
-        return await client.put("/model-instances/7", json=payload)
+        return await client.put("/model-instances/7/workload-report", json=payload)
+
+
+@pytest.mark.parametrize('workloads,mode', [(None, 'legacy'), ([], 'managed')])
+def test_old_json_gains_explicit_orchestration_mode(workloads, mode):
+    servers = DistributedServers.model_validate({'workloads': workloads})
+    assert servers.orchestration_mode == mode
+    assert servers.model_dump()['orchestration_mode'] == mode
+    for dialect in (mysql.dialect(), postgresql.dialect()):
+        column = ModelInstance.__table__.c.distributed_servers.type
+        assert (
+            column.result_processor(dialect, None)(
+                column.bind_processor(dialect)(servers)
+            ).orchestration_mode
+            == mode
+        )
+    with pytest.raises(ValidationError, match='mode'):
+        DistributedServers(
+            orchestration_mode='managed' if mode == 'legacy' else 'legacy',
+            workloads=workloads,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('envelope', ['rank_report', 'workload_report', 'stop_report'])
+async def test_crud_rejects_worker_report_envelopes(report_api, envelope):
+    payload = report_api.instance.model_dump(mode='json')
+    payload[envelope] = {'restart_count': 0, 'workloads': []}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=report_api.app), base_url='http://test'
+    ) as client:
+        response = await client.put('/model-instances/7', json=payload)
+    assert response.status_code == 422
+    report_api.service.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'field', ['api_port', 'worker_id', 'stop_requested', 'attempt']
+)
+async def test_observation_cannot_write_topology_or_server_intent(report_api, field):
+    assert (await put(report_api)).status_code == 200
+    task = report_api.instance.distributed_servers.workloads[0]
+    payload = {
+        'workload_report': {
+            'restart_count': 0,
+            'observations': [
+                {
+                    'name': task.name,
+                    'state': 'running',
+                    'rank_readiness': {0: True},
+                    field: 1,
+                }
+            ],
+        }
+    }
+    before = report_api.instance.model_dump()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=report_api.app), base_url='http://test'
+    ) as client:
+        response = await client.put('/model-instances/7/workload-report', json=payload)
+    assert response.status_code == 422
+    assert report_api.instance.model_dump() == before
 
 
 @pytest.mark.asyncio
@@ -649,6 +763,7 @@ async def test_report_rejection_never_mutates_instance(report_api, case, status)
         generation = 1
     elif case == "legacy_instance":
         api.instance.distributed_servers.workloads = None
+        api.instance.distributed_servers.orchestration_mode = "legacy"
     elif case == "wrong_gpu":
         items[0]["dp_rank_placements"][0]["gpu_indexes"] = [3]
     before = api.instance.model_dump()
@@ -707,6 +822,8 @@ async def test_old_snapshot_cannot_reset_manifest(report_api, omitted):
         payload["distributed_servers"]["workloads"] = (
             [] if omitted == "empty_list" else None
         )
+    if omitted == "workloads":
+        payload["distributed_servers"].pop("orchestration_mode")
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api.app), base_url="http://test"
     ) as client:
@@ -721,8 +838,10 @@ async def test_old_snapshot_cannot_reset_manifest(report_api, omitted):
 async def test_legacy_update_cannot_enable_managed_path(report_api):
     api = report_api
     api.instance.distributed_servers.workloads = None
+    api.instance.distributed_servers.orchestration_mode = "legacy"
     payload = api.instance.model_dump(mode="json")
     payload["distributed_servers"]["workloads"] = []
+    payload['distributed_servers']['orchestration_mode'] = 'managed'
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api.app), base_url="http://test"
     ) as client:
@@ -841,6 +960,11 @@ def test_instance_client_preserves_manifest_and_sends_only_report(
     api.instance.distributed_servers.workloads = DistributedServers(
         workloads=workloads
     ).workloads
+    api.instance.distributed_servers.orchestration_mode = (
+        "managed"
+        if api.instance.distributed_servers.workloads is not None
+        else "legacy"
+    )
     workloads = api.instance.distributed_servers.workloads
     public = ModelInstancePublic.model_validate(api.instance)
     transport = MagicMock()
@@ -848,19 +972,19 @@ def test_instance_client_preserves_manifest_and_sends_only_report(
     transport.get_httpx_client.return_value.put.return_value = response
     transport.get_httpx_client.return_value.get.return_value = response
     client = ModelInstanceClient(transport, enable_cache=False)
-    update = ModelInstanceRankUpdate.model_validate(
+    update = ModelInstanceWorkloadUpdate.model_validate(
         {
-            "rank_report": {
+            "workload_report": {
                 "restart_count": 0,
                 "workloads": [new_model_instance_workload()],
             }
         }
     )
-    result = client.update(7, update)
+    result = client.report_workloads(7, update)
     assert result.distributed_servers.workloads == workloads
     assert client.get(7).distributed_servers.workloads == workloads
     transport.get_httpx_client.return_value.put.assert_called_once_with(
-        "/model-instances/7",
+        "/model-instances/7/workload-report",
         content=update.model_dump_json(),
         headers={"Content-Type": "application/json"},
     )
@@ -870,7 +994,7 @@ def test_instance_client_preserves_manifest_and_sends_only_report(
 @pytest.mark.parametrize(
     "change", ["deleted", "soft_deleted", "principal_changed", "cluster_changed"]
 )
-async def test_rank_report_rechecks_worker_identity_after_authentication(
+async def test_workload_report_rechecks_worker_identity_after_authentication(
     report_api, change
 ):
     api = report_api
@@ -1040,14 +1164,15 @@ async def test_manager_and_backend_preparation_use_real_report_api(report_api):
             transport=httpx.ASGITransport(app=api.app), base_url='http://test'
         ) as http:
             response = await http.put(
-                '/model-instances/7', json=update.model_dump(mode='json')
+                '/model-instances/7/workload-report',
+                json=update.model_dump(mode='json'),
             )
             assert response.status_code == 200, response.text
             return ModelInstance.model_validate_json(response.text)
 
-    client.model_instances.update.side_effect = (
-        lambda *, id, model_update: asyncio.run_coroutine_threadsafe(
-            send(model_update), loop
+    client.model_instances.report_workloads.side_effect = (
+        lambda *, id, report: asyncio.run_coroutine_threadsafe(
+            send(report), loop
         ).result(timeout=5)
     )
     await asyncio.to_thread(
@@ -1178,6 +1303,7 @@ async def test_guarded_legacy_stop_report_is_narrow_and_fenced(report_api, failu
     api = report_api
     token = uuid4()
     api.instance.distributed_servers.workloads = None
+    api.instance.distributed_servers.orchestration_mode = "legacy"
     api.instance.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
         token=token,
         restart_count=0,
@@ -1213,7 +1339,9 @@ async def test_guarded_legacy_stop_report_is_narrow_and_fenced(report_api, failu
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api.app), base_url='http://test'
     ) as client:
-        response = await client.put('/model-instances/7', json=payload)
+        response = await client.post(
+            '/model-instances/7/stop-confirmation', json=payload['stop_report']
+        )
     assert response.status_code == (
         200
         if failure in (None, 'maintenance')
@@ -1240,6 +1368,7 @@ async def test_legacy_snapshot_cannot_erase_a_stop_barrier(report_api, change):
 
     api = report_api
     api.instance.distributed_servers.workloads = None
+    api.instance.distributed_servers.orchestration_mode = "legacy"
     api.instance.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
         token=uuid4(),
         restart_count=0,
@@ -1366,23 +1495,24 @@ def test_component_report_preserves_server_recovery_state(report_api):
     smg.component.stop_requested = True
     smg.component.last_restart_time = datetime.now(timezone.utc)
     report_api.instance.distributed_servers.workloads = [item, smg]
+    report_api.instance.distributed_servers.orchestration_mode = "managed"
     payload = [item.model_copy(deep=True), smg.model_copy(deep=True)]
     payload[1].component.stop_requested = False
     payload[1].component.last_restart_time = None
     payload[1].state = 'stopped'
-    result = routes._merge_rank_report(
+    result = routes._merge_workload_report(
         report_api.instance,
         report_api.ctx,
-        ModelInstanceRankReport(restart_count=0, workloads=payload),
+        ModelInstanceWorkloadReport(restart_count=0, workloads=payload),
     )
     assert result.workloads[-1].component == smg.component
     assert result.workloads[-1].state == 'stopped'
     payload[1].component.attempt = 3
     with pytest.raises(ConflictException):
-        routes._merge_rank_report(
+        routes._merge_workload_report(
             report_api.instance,
             report_api.ctx,
-            ModelInstanceRankReport(restart_count=0, workloads=payload),
+            ModelInstanceWorkloadReport(restart_count=0, workloads=payload),
         )
 
 
@@ -1407,10 +1537,10 @@ def test_first_component_report_rejects_invalid_local_contract(report_api, chang
     else:
         items[0] = _sg_component()
     with pytest.raises((BadRequestException, ConflictException)):
-        routes._merge_rank_report(
+        routes._merge_workload_report(
             report_api.instance,
             report_api.ctx,
-            ModelInstanceRankReport(restart_count=0, workloads=items),
+            ModelInstanceWorkloadReport(restart_count=0, workloads=items),
         )
 
 
@@ -1458,6 +1588,11 @@ def test_component_registered_identity_is_immutable(report_api, change):
         _sg_component('sglang_smg', api_port=40001, metrics_port=40002),
     ]
     report_api.instance.distributed_servers.workloads = items
+    report_api.instance.distributed_servers.orchestration_mode = (
+        "managed"
+        if report_api.instance.distributed_servers.workloads is not None
+        else "legacy"
+    )
     payload = [item.model_copy(deep=True) for item in items]
     if change == 'name':
         payload[1].name = 'replacement'
@@ -1477,10 +1612,10 @@ def test_component_registered_identity_is_immutable(report_api, change):
     else:
         payload.pop(0)
     with pytest.raises((ConflictException, routes.ForbiddenException, ValidationError)):
-        routes._merge_rank_report(
+        routes._merge_workload_report(
             report_api.instance,
             report_api.ctx,
-            ModelInstanceRankReport(restart_count=0, workloads=payload),
+            ModelInstanceWorkloadReport(restart_count=0, workloads=payload),
         )
 
 
@@ -1652,6 +1787,11 @@ def test_registered_engine_image_evidence_is_immutable(report_api, change):
         _sg_component('sglang_smg', api_port=40001, metrics_port=40002),
     ]
     report_api.instance.distributed_servers.workloads = items
+    report_api.instance.distributed_servers.orchestration_mode = (
+        "managed"
+        if report_api.instance.distributed_servers.workloads is not None
+        else "legacy"
+    )
     payload = [item.model_copy(deep=True) for item in items]
     if change == 'image':
         payload[0].component.image = 'different-image'
@@ -1660,10 +1800,10 @@ def test_registered_engine_image_evidence_is_immutable(report_api, change):
     else:
         payload[0].component.image = payload[0].component.router_version = None
     with pytest.raises((ConflictException, ValidationError)):
-        routes._merge_rank_report(
+        routes._merge_workload_report(
             report_api.instance,
             report_api.ctx,
-            ModelInstanceRankReport(restart_count=0, workloads=payload),
+            ModelInstanceWorkloadReport(restart_count=0, workloads=payload),
         )
     assert items[0].component.image == 'selected-image'
 
@@ -1807,6 +1947,7 @@ def _dashboard_sg(api):
             component=dict(kind='sglang_engine'),
         ),
     ]
+    api.instance.distributed_servers.orchestration_mode = "managed"
 
 
 @pytest.mark.asyncio
@@ -1931,6 +2072,7 @@ async def test_dashboard_vllm_rank_binds_global_main_owner(dashboard_api, monkey
             )
         ),
     ]
+    api.instance.distributed_servers.orchestration_mode = "managed"
     worker = SimpleNamespace(id=2, cluster_id=1, deleted_at=None)
     fresh = AsyncMock(return_value=worker)
     monkeypatch.setattr(routes.Worker, 'one_by_id', fresh)
@@ -2153,6 +2295,7 @@ async def test_create_cannot_supply_a_server_stop_release(report_api):
     payload = api.instance.model_dump(mode="json")
     payload["distributed_servers"]["workloads"] = None
     payload["distributed_servers"]["stop_requested"] = True
+    payload['distributed_servers']['orchestration_mode'] = 'legacy'
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api.app), base_url="http://test"
     ) as client:
@@ -2303,6 +2446,7 @@ def test_hybrid_reports_preserve_owner_generation_and_registered_shape(
 
     stored = ModelInstanceWorkload.model_validate(new_hybrid_workload())
     report_api.instance.distributed_servers.workloads = [stored]
+    report_api.instance.distributed_servers.orchestration_mode = "managed"
     incoming = stored.model_copy(deep=True)
     if change == 'owner':
         incoming.worker_id = 2
@@ -2315,12 +2459,12 @@ def test_hybrid_reports_preserve_owner_generation_and_registered_shape(
     elif change == 'terminal':
         stored.state = 'failed'
         incoming.state = 'running'
-    report = ModelInstanceRankReport(
+    report = ModelInstanceWorkloadReport(
         restart_count=1 if change == 'generation' else 0,
         workloads=[] if change == 'omit' else [incoming],
     )
     with pytest.raises((ConflictException, routes.ForbiddenException)):
-        routes._merge_rank_report(report_api.instance, report_api.ctx, report)
+        routes._merge_workload_report(report_api.instance, report_api.ctx, report)
     assert report_api.instance.distributed_servers.workloads == [stored]
 
 
@@ -2350,6 +2494,9 @@ def test_hybrid_endpoints_require_complete_ready_instance(report_api, blocked):
     instance.distributed_servers.workloads = DistributedServers(
         workloads=tasks
     ).workloads
+    instance.distributed_servers.orchestration_mode = (
+        "managed" if instance.distributed_servers.workloads is not None else "legacy"
+    )
     assert model_instance_endpoints(instance) == []
 
 
@@ -2359,8 +2506,8 @@ def test_hybrid_error_observation_clears_api_readiness(report_api):
     task = ModelInstanceWorkload.model_validate(new_hybrid_workload(state='running'))
     task.component.ready = True
     report_api.instance.state = ModelInstanceStateEnum.ERROR
-    report = ModelInstanceRankReport(restart_count=0, workloads=[task])
-    merged = routes._merge_rank_report(report_api.instance, report_api.ctx, report)
+    report = ModelInstanceWorkloadReport(restart_count=0, workloads=[task])
+    merged = routes._merge_workload_report(report_api.instance, report_api.ctx, report)
     assert merged.workloads[0].component.ready is False
 
 
@@ -2421,7 +2568,7 @@ def test_hybrid_first_registration_matches_fragment_owner_and_local_dp(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('api_port', [40000, 49999])
-async def test_hybrid_first_registration_rejects_rank_report_format(
+async def test_hybrid_first_registration_rejects_workload_report_format(
     report_api, monkeypatch, api_port
 ):
     from gpustack.schemas.models import PortBand

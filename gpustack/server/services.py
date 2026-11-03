@@ -8,7 +8,11 @@ from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from gpustack.api.exceptions import ConflictException, InternalServerErrorException
+from gpustack.api.exceptions import (
+    ConflictException,
+    HTTPException,
+    InternalServerErrorException,
+)
 
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.cache_services import (
@@ -24,6 +28,8 @@ from gpustack.schemas.models import (
     ROUTER_DEFAULT_MEMORY,
     Model,
     ModelInstance,
+    ModelLifecycleResult,
+    model_instance_lifecycle,
     ModelInstanceStateEnum,
     ModelInstanceWorkload,
     ModelInstanceLegacyStop,
@@ -986,6 +992,16 @@ class ModelRouteService:
         return result
 
 
+def _runtime_termination_confirmed(instances: List[ModelInstance]) -> Optional[bool]:
+    confirmations = [
+        model_instance_lifecycle(instance).runtime_termination_confirmed
+        for instance in instances
+    ]
+    if not confirmations or None in confirmations:
+        return None
+    return all(confirmations)
+
+
 class ModelService:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -1053,12 +1069,18 @@ class ModelService:
             await delete_cache_by_key(self.get_by_id, model.id)
             await delete_cache_by_key(self.get_by_name, model.name)
 
-    async def delete(self, model: Model):
+    async def delete(self, model: Model) -> ModelLifecycleResult:
+        observe_url = f"/v2/models/{model.id}"
         model = await Model.one_by_id(
             self.session, model.id, for_update=True, refresh=True
         )
         if model is None:
-            return
+            return ModelLifecycleResult(
+                completed=True,
+                phase="completed",
+                record_deleted=True,
+                observe_url=observe_url,
+            )
         instances = await ModelInstance.all_by_field(
             self.session, "model_id", model.id, for_update=True, refresh=True
         )
@@ -1098,7 +1120,13 @@ class ModelService:
                         "replicas": 0,
                     },
                 )
-            return
+            return ModelLifecycleResult(
+                completed=False,
+                phase="stopping",
+                observe_url=observe_url,
+                runtime_termination_confirmed=_runtime_termination_confirmed(instances),
+            )
+        proof = _runtime_termination_confirmed(instances)
         # ORM cascade bypasses child service caches; collect ids and route
         # names (raw + owner-name-prefixed effective) BEFORE deleting so
         # we can invalidate them explicitly below.
@@ -1157,7 +1185,7 @@ class ModelService:
 
         for instance in instances:
             await instance.delete(self.session, auto_commit=False)
-        result = await model.delete(self.session)
+        await model.delete(self.session)
         await delete_cache_by_key(self.get_by_id, model.id)
         await delete_cache_by_key(self.get_by_name, model.name)
 
@@ -1173,7 +1201,13 @@ class ModelService:
                 route_service.get_model_auth_info_by_name, route_name
             )
 
-        return result
+        return ModelLifecycleResult(
+            completed=True,
+            phase="completed",
+            record_deleted=True,
+            runtime_termination_confirmed=True if proof else None,
+            observe_url=observe_url,
+        )
 
 
 class CacheServiceService:
@@ -1690,6 +1724,7 @@ class ModelInstanceService:
                     return source, None
             # All old tasks have stopped before the next launch changes its layout.
             servers.workloads = None
+            servers.orchestration_mode = "legacy"
             source.update(port=None, ports=None, named_ports=None)
             claim = instance.computed_resource_claim
             if claim is not None:
@@ -1781,7 +1816,7 @@ class ModelInstanceService:
             return names
         except Exception as e:
             await self.session.rollback()
-            if isinstance(e, ConflictException):
+            if isinstance(e, HTTPException):
                 raise
             raise InternalServerErrorException(
                 message=f"Failed to delete model instances {names}: {e}"

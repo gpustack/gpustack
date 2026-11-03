@@ -95,6 +95,8 @@ SYSTEM_ROUTES = frozenset(
         ("GET", model_instances.get_model_instance),
         ("POST", model_instances.create_model_instance),
         ("PUT", model_instances.update_model_instance),
+        ("PUT", model_instances.report_model_instance_workloads),
+        ("POST", model_instances.confirm_model_instance_stop),
         ("DELETE", model_instances.delete_model_instance),
         ("GET", model_instance_ports.availability),
         ("POST", model_instance_ports.reserve),
