@@ -168,6 +168,11 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("GATEWAY_NAMESPACE"),
     )
     common_group.add_argument(
+        "--trusted-proxy-cidrs",
+        action="append",
+        help="CIDR networks of proxies deployed in front of the gateway (e.g. --trusted-proxy-cidrs 10.0.0.0/8). The client IP resolution walks X-Forwarded-For through these proxies; when unset, only the address the gateway itself observed is used, so client-supplied forwarding headers cannot spoof the source address. List a subnet only when the proxy in front appends X-Forwarded-For itself.",
+    )
+    common_group.add_argument(
         "--service-discovery-name",
         type=str,
         help="the name of the service discovery service in DNS. Only useful when deployed in Kubernetes with service discovery.",
@@ -881,6 +886,7 @@ def set_common_options(args, config_data: dict):
         "gateway_mode",
         "gateway_kubeconfig",
         "gateway_namespace",
+        "trusted_proxy_cidrs",
         "service_discovery_name",
         "namespace",
     ]

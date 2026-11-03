@@ -51,6 +51,7 @@ gpustack start [OPTIONS]
 | `--gateway-mode` 値                      | `auto`                                 | ゲートウェイの動作モード。選択肢はembedded、in-cluster、external、disabled、auto（デフォルト）です。 |
 | `--gateway-kubeconfig` 値                | （空）                                | ゲートウェイ用kubeconfigファイルのパス。gateway-modeがexternalの場合のみ有効です。 |
 | `--gateway-namespace` 値                 | `higress-system`                       | ゲートウェイコンポーネントをデプロイする名前空間。 |
+| `--trusted-proxy-cidrs` 値               | (empty)                                | ゲートウェイ前方にデプロイされたプロキシの CIDR ネットワーク(複数回指定可)。クライアント IP の解決では、これらのプロキシを通じて `X-Forwarded-For` を右からたどります。未設定の場合はゲートウェイ自身が観測したアドレスのみが使用され、クライアントが送る転送ヘッダーで送信元アドレスを偽装することはできません。前方のプロキシが自身で `X-Forwarded-For` を追加する場合にのみ設定してください。 |
 | `--service-discovery-name` 値            | （空）                                | DNS上のサービスディスカバリーサービス名。サービスディスカバリーを使用してKubernetesにデプロイする場合のみ有効です。 |
 | `--namespace` 値                         | （空）                                | GPUStackがゲートウェイのルーティングルールとモデルインスタンスをデプロイするKubernetes名前空間。 |
 

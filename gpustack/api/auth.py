@@ -1,7 +1,9 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from functools import lru_cache
 import hmac
+import ipaddress
 import logging
 import aiohttp
 from aiocache import cached
@@ -10,7 +12,17 @@ from starlette.datastructures import Headers
 from gpustack.config.config import Config, get_global_config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.server.db import async_session
-from typing import Annotated, Callable, Iterable, Optional, Set, Tuple, List, Dict
+from typing import (
+    Annotated,
+    Callable,
+    Iterable,
+    Optional,
+    Set,
+    Tuple,
+    List,
+    Dict,
+    Union,
+)
 from fastapi.security import (
     APIKeyCookie,
     APIKeyHeader,
@@ -140,23 +152,96 @@ def client_ip_getter(request: Request) -> str:
     if request.app.state.server_config.gateway_mode != GatewayModeEnum.disabled:
         try:
             gateway_token_auth(request)
-            # Prefer X-Real-IP: the edge proxy (Higress/Envoy) sets it to the
-            # immediate downstream connection address, which the client cannot
-            # spoof.
-            real_ip = request.headers.get("X-Real-IP")
-            if real_ip:
-                return real_ip
-            # Fall back to X-Forwarded-For "client, proxy1, proxy2". Take the
-            # rightmost entry (the address the trusted edge proxy observed) to
-            # avoid trusting client-supplied leftmost values.
+            # X-Forwarded-For is the only forwarded header consulted, and
+            # only from the right. The gateway's Envoy listeners run with
+            # use_remote_address enabled, so Envoy itself appends the
+            # downstream address it observed to the END of X-Forwarded-For
+            # before any filter runs or anything is forwarded upstream — a
+            # client-supplied value can therefore only ever sit to the LEFT
+            # of that appended entry, which makes the rightmost entry (and,
+            # walking left, every entry a configured trusted proxy appended)
+            # a fact about the connection rather than a client-supplied
+            # claim. The gateway token checked above is what ties the
+            # request to that gateway; without it the headers are ignored
+            # entirely. X-Real-IP is deliberately not read: nothing in the
+            # gateway chain overwrites it, so preferring it would let any
+            # client assert an arbitrary source address behind a valid
+            # gateway token.
             xff = request.headers.get("X-Forwarded-For")
             if xff:
-                real_ip = xff.split(",")[-1].strip()
-                if real_ip:
-                    return real_ip
+                trusted_cidrs = getattr(
+                    request.app.state.server_config,
+                    "trusted_proxy_cidrs",
+                    None,
+                )
+                ip = _client_ip_from_xff(xff, trusted_cidrs)
+                if ip:
+                    return ip
         except UnauthorizedException:
             pass
     return request.client.host if request.client else ""
+
+
+@lru_cache(maxsize=16)
+def _trusted_proxy_networks(
+    cidrs: Optional[Tuple[str, ...]],
+) -> Tuple[Union[ipaddress.IPv4Network, ipaddress.IPv6Network], ...]:
+    return tuple(ipaddress.ip_network(cidr, strict=False) for cidr in (cidrs or ()))
+
+
+def _parse_forwarded_entry(
+    entry: str,
+) -> Optional[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]]:
+    """Parse one X-Forwarded-For entry to an address, or None.
+
+    An optional ``;params`` suffix and an optional trailing port
+    (``1.2.3.4:5678``, ``[2001:db8::1]:443``) are stripped; a bracketed IPv6
+    without a port keeps only the brackets stripped.
+    """
+    ip = entry.strip()
+    if not ip:
+        return None
+    ip = ip.split(";", 1)[0].strip()
+    if not ip:
+        return None
+    if ip.startswith("[") and "]" in ip:
+        host, _, rest = ip.partition("]")
+        if rest.startswith(":"):
+            ip = host[1:]
+        elif not rest:
+            ip = host[1:]
+        else:
+            return None
+    elif ip.count(":") == 1 and not ip.startswith(":"):
+        # An IPv4 entry with a trailing port; a bare IPv6 has more than one
+        # colon and falls through to the address parse below.
+        ip = ip.rsplit(":", 1)[0]
+    try:
+        return ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+
+
+def _client_ip_from_xff(xff: str, trusted_cidrs: Optional[List[str]]) -> Optional[str]:
+    """Resolve the client IP from X-Forwarded-For, walking from the right.
+
+    The rightmost entry is the address the nearest trusted proxy appended
+    (the gateway's own observation when the request reached it directly);
+    entries further left are only trusted when they fall inside
+    ``trusted_proxy_cidrs`` — the networks of proxies an operator declared as
+    correctly appending X-Forwarded-For. The walk stops at the first entry
+    outside them: that is the client. An unparseable entry, or a chain that
+    is trusted all the way through, cannot be verified and yields None so the
+    caller falls back to the connection address rather than guess.
+    """
+    trusted = _trusted_proxy_networks(tuple(trusted_cidrs) if trusted_cidrs else None)
+    for entry in reversed(xff.split(",")):
+        ip = _parse_forwarded_entry(entry)
+        if ip is None:
+            return None
+        if not any(ip in network for network in trusted):
+            return str(ip)
+    return None
 
 
 @asynccontextmanager
