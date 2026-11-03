@@ -19,6 +19,8 @@ from gpustack.policies.utils import (
     estimate_lora_weights_bytes,
     ListMessageBuilder,
     get_local_model_weight_size,
+    get_ram_claim_from_model_env,
+    get_vram_claim_from_model_env,
 )
 from gpustack.scheduler.model_registry import is_multimodal_model
 from gpustack.schemas.models import (
@@ -184,28 +186,24 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             VRAM = FOOTPRINT + WEIGHT + KV_CACHE + COMPUTATION
         """
 
-        # A potential workaround if the empirical resource estimation is biased greatly.
-        if self._model.env:
-            reqeust_ram = safe_int(self._model.env.get("GPUSTACK_MODEL_RAM_CLAIM", 0))
-            request_vram = safe_int(self._model.env.get("GPUSTACK_MODEL_VRAM_CLAIM", 0))
-            if request_vram > 0:
-                return RequestEstimateUsage(reqeust_ram, request_vram)
+        # RAM and VRAM declarations independently replace their estimates.
+        ram_footprint = 512 * 1024**2
+        ram_kv_cache_swappable = self._serving_params.cpu_mem_size * 1024**3
+        declared_ram = get_ram_claim_from_model_env(self._model)
+        ram = (
+            declared_ram
+            if declared_ram is not None
+            else ram_footprint + ram_kv_cache_swappable
+        )
+        request_vram = get_vram_claim_from_model_env(self._model)
+        if request_vram is not None and request_vram > 0:
+            return RequestEstimateUsage(ram, request_vram)
 
         self._validate_resource_metadata()
         is_multimodal = (
             is_multimodal_model(self._model_params.architectures)
             and compare_versions(self._model.backend_version or "0.0.0", "2.2.rc1") >= 0
         )
-
-        """
-        RAM
-        """
-
-        # Hardcode the RAM footprint for now.
-        ram_footprint = 512 * 1024**2
-
-        # Get KV cache swappable size.
-        ram_kv_cache_swappable = self._serving_params.cpu_mem_size * 1024**3
 
         """
         VRAM
@@ -353,7 +351,6 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 * (n_layers * d_head * 4)
             )
 
-        ram = ram_footprint + ram_kv_cache_swappable
         vram = vram_footprint + vram_weight + vram_kv_cache + vram_computation
 
         logger.info(

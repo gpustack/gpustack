@@ -41,13 +41,17 @@ Bu formül kaba bir tahmin sağlar ve tüm modeller için doğru olmayabilir. Ge
 
 #### Arama tablolarının CPU'ya aktarılması { #offloaded-lookup-tables }
 
+!!! note
+
+    Otomatik arama tablosu tahmini yalnızca desteklenen vLLM mimarilerini, biçimlerini ve boşaltma ayarlarını kapsar. SGLang, yerel MindIE, custom arka uçları ve henüz uyarlanmamış vLLM Ascend yolları otomatik olarak kapsanmaz. Otomatik tahminler dağıtım beklentilerinizi karşılamıyorsa [özel kaynak gereksinimleri](#custom-resource-requirements) aracılığıyla bunları ayarlayabilirsiniz.
+
 Engram ve PLE gibi arama tablolarını CPU belleğine aktaran desteklenen modellerde GPUStack, model yapılandırması ve hassasiyet meta verilerinden tablo boyutlarını tahmin eder. Yukarıdaki VRAM formülünü uygulamadan önce aktarılan baytları `WEIGHT_SIZE` değerinden çıkarır ve katılan her çalışanda, yerel genişletilmiş KV önbelleği RAM'ine ek olarak tablolar için RAM ayırır.
 
 RAM tahmini, aynı çalışandaki veri paralelliği kopyalarının tablo depolamasını paylaştığını varsayar ve paralel yerleşimin gerektirdiği bağımsız kopyaları ek pay olmadan hesaba katar. Gerçek bellek kullanımı daha yüksek olabilir. Tablo boyutu veya aktarım davranışı belirlenemiyorsa GPUStack, tam ağırlık boyutuna dayalı VRAM tahminini korur.
 
 #### Özel kaynak gereksinimleri { #custom-resource-requirements }
 
-Otomatik tahminler dağıtımınızın gereksinimleriyle uyuşmuyorsa modelin [kaynak gereksinimi ortam değişkenlerini](../environment-variables.md#model-deployment-configuration) kullanarak RAM ve VRAM gereksinimlerini bayt cinsinden belirtebilirsiniz. Belirtilen RAM değeri, tablo ve yerel önbellek belleği dahil her çalışan için toplam tahminin yerine geçer. Bu değerler planlamada kullanılır; arka ucun gerçek bellek kullanımını yapılandırmaz.
+Otomatik tahminler dağıtımınızın gereksinimleriyle uyuşmuyorsa modelin [kaynak gereksinimi ortam değişkenlerini](../environment-variables.md#model-deployment-configuration) kullanarak RAM ve VRAM gereksinimlerini bayt cinsinden belirtebilirsiniz. Belirtilen RAM değeri, tablo ve yerel önbellek belleği dahil her çalışan için toplam tahminin yerine geçer. Bu değerler planlamada kullanılır; arka ucun gerçek bellek kullanımını yapılandırmaz. RAM ve VRAM birbirinden bağımsız olarak belirtilebilir. Belirtilmeyen kaynaklar için ilgili arka ucun tahmini kullanılmaya devam eder.
 
 Örneğin, her çalışan için 64 GiB RAM ve modelin tamamı için 32 GiB VRAM gereksinimi belirtmek üzere aşağıdaki model ortam değişkenlerini ekleyin (`1 GiB = 1024^3 bytes`). VRAM değeri, GPU başına ayrılan miktarı değil, modelin kullandığı GPU'ların tamamındaki tahmini gereksinimini belirtir.
 

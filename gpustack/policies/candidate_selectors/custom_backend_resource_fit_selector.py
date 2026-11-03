@@ -19,6 +19,7 @@ from gpustack.policies.utils import (
     ListMessageBuilder,
     group_workers_by_gpu_type,
     estimate_model_vram,
+    get_ram_claim_from_model_env,
 )
 from gpustack.schemas.models import (
     ModelInstance,
@@ -237,7 +238,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
             # not merely wasted work: it is what made a router ask for the
             # weights' worth of VRAM and sit unschedulable on a full host.
             self._vram_claim = 0
-            self._ram_claim = self._declared_ram_claim or ROUTER_DEFAULT_MEMORY
+            self._ram_claim = ROUTER_DEFAULT_MEMORY
         else:
             # Estimate VRAM requirements using actual model weight
             self._vram_claim = await estimate_model_vram(
@@ -248,6 +249,15 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
             self._ram_claim = max(
                 int(self._vram_claim * 0.1), 2 * 1024**3
             )  # At least 2GB RAM
+
+        # A CPU-only role's explicit resources take priority over model-level env.
+        declared_ram = (
+            self._declared_ram_claim
+            if self._cpu_only and self._declared_ram_claim is not None
+            else get_ram_claim_from_model_env(self._model)
+        )
+        if declared_ram is not None:
+            self._ram_claim = declared_ram
 
         logger.info(
             f"Calculated resource claim for model {self._model.readable_source}, "
