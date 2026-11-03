@@ -230,6 +230,33 @@ def test_put_replaces_optional_fields_and_public_read_observes_saved_values(clie
     assert again.json()['updated_at'] == saved.json()['updated_at']
 
 
+@pytest.mark.parametrize('footer_name', [None, '', '   ', '\t\n'])
+def test_put_blank_footer_name_clears_persisted_and_public_values(client, footer_name):
+    http, app, session = client
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, name='admin', is_admin=True
+    )
+    row = SiteSettings(footer_name='Old Co.')
+    session.get.return_value = row
+    session.exec.return_value.one.return_value = row
+    saved = http.put(
+        '/v2/site-settings',
+        json={
+            'site_name': 'GPUStack',
+            'primary_color': '#007BFF',
+            'footer_name': footer_name,
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.json()['footer_name'] is None
+    assert saved.json()['updated_at'] is not None
+    assert row.footer_name is None
+    session.commit.assert_awaited_once()
+    public = http.get('/v2/site-settings/public')
+    assert public.status_code == 200
+    assert public.json()['footer_name'] is None
+
+
 @pytest.mark.asyncio
 async def test_first_save_of_defaults_creates_only_the_singleton():
     session = fake_session()
