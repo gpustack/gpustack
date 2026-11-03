@@ -43,7 +43,7 @@ $$
 
 !!! note
 
-    查找表自动估算目前仅覆盖已适配的 vLLM 架构、格式和卸载配置。SGLang、原生 MindIE、custom 后端以及尚未适配的 vLLM Ascend 路径不在自动估算范围内。如果自动估算不符合部署预期，可以通过[自定义资源需求](#custom-resource-requirements)进行调整。
+    查找表自动估算目前仅覆盖已适配的 vLLM 和 SGLang 架构、格式和卸载配置。原生 MindIE、custom 后端以及尚未适配的 vLLM Ascend 路径不在自动估算范围内。如果自动估算不符合部署预期，可以通过[自定义资源需求](#custom-resource-requirements)进行调整。
 
 对于受支持且将查找表卸载到 CPU 内存的模型（如 Engram 和 PLE），GPUStack 根据模型配置和精度元数据估算查找表大小。应用上述 VRAM 公式前，会从 `WEIGHT_SIZE` 中减去卸载的字节数，并在每个参与部署的 Worker 上预留查找表所需的 RAM，再叠加本地扩展 KV 缓存的 RAM 需求。
 
