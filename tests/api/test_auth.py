@@ -1851,7 +1851,9 @@ async def test_saml_callback_unsigned_escape_hatch_skips_toolkit(monkeypatch, ca
     )
 
 
-def _build_client_ip_request(headers, *, gateway_mode, gateway_token="tok"):
+def _build_client_ip_request(
+    headers, *, gateway_mode, gateway_token="tok", trusted_proxy_cidrs=None
+):
     request = type("Request", (), {})()
     request.headers = headers
     request.client = type("Client", (), {"host": "10.0.0.1"})()
@@ -1863,12 +1865,16 @@ def _build_client_ip_request(headers, *, gateway_mode, gateway_token="tok"):
         {
             "gateway_mode": gateway_mode,
             "get_derived_gateway_token": lambda self: gateway_token,
+            "trusted_proxy_cidrs": trusted_proxy_cidrs,
         },
     )()
     return request
 
 
-def test_client_ip_getter_prefers_x_real_ip():
+def test_client_ip_getter_ignores_x_real_ip():
+    # X-Real-IP is client-forgeable end to end (nothing overwrites it at the
+    # edge), so it must never win over X-Forwarded-For — the entry the edge
+    # proxy appended is the only address assertion worth believing.
     request = _build_client_ip_request(
         {
             GATEWAY_AUTH_TOKEN_HEADER: "tok",
@@ -1878,21 +1884,63 @@ def test_client_ip_getter_prefers_x_real_ip():
         gateway_mode=GatewayModeEnum.embedded,
     )
 
-    assert client_ip_getter(request) == "1.2.3.4"
+    assert client_ip_getter(request) == "5.6.7.8"
 
 
-def test_client_ip_getter_falls_back_to_rightmost_xff():
-    # No X-Real-IP: use the rightmost XFF entry (what the trusted edge proxy
-    # observed), not the spoofable leftmost one.
+def test_client_ip_getter_ignores_spoofed_leftmost_xff():
+    # Without trusted proxies the rightmost entry — the address the edge
+    # proxy observed — is the answer, not the client-supplied leftmost one.
     request = _build_client_ip_request(
         {
             GATEWAY_AUTH_TOKEN_HEADER: "tok",
-            "X-Forwarded-For": "1.1.1.1, 5.6.7.8",
+            "X-Forwarded-For": "192.0.2.10, 198.51.100.7",
         },
         gateway_mode=GatewayModeEnum.embedded,
     )
 
-    assert client_ip_getter(request) == "5.6.7.8"
+    assert client_ip_getter(request) == "198.51.100.7"
+
+
+def test_client_ip_getter_walks_xff_through_trusted_proxies():
+    # A declared trusted proxy (10.0.0.5 in 10.0.0.0/8) appended the
+    # rightmost entry, so the walk continues left to the client behind it.
+    request = _build_client_ip_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: "tok",
+            "X-Forwarded-For": "192.0.2.10, 10.0.0.5",
+        },
+        gateway_mode=GatewayModeEnum.embedded,
+        trusted_proxy_cidrs=["10.0.0.0/8"],
+    )
+
+    assert client_ip_getter(request) == "192.0.2.10"
+
+
+def test_client_ip_getter_all_trusted_chain_falls_back_to_connection():
+    # Every entry is a trusted proxy: the chain never reaches the client, so
+    # the unverifiable headers are discarded in favor of the peer address.
+    request = _build_client_ip_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: "tok",
+            "X-Forwarded-For": "10.0.0.5, 10.0.0.6",
+        },
+        gateway_mode=GatewayModeEnum.embedded,
+        trusted_proxy_cidrs=["10.0.0.0/8"],
+    )
+
+    assert client_ip_getter(request) == "10.0.0.1"
+
+
+def test_client_ip_getter_unparseable_xff_falls_back_to_connection():
+    request = _build_client_ip_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: "tok",
+            "X-Forwarded-For": "garbage",
+        },
+        gateway_mode=GatewayModeEnum.embedded,
+    )
+
+    assert client_ip_getter(request) == "10.0.0.1"
 
 
 def test_client_ip_getter_ignores_headers_without_valid_gateway_token():

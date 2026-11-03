@@ -17,7 +17,7 @@ from gpustack_runtime.detector import (
     available_manufacturers,
     available_backends,
 )
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from gpustack.utils import validators
 from gpustack.schemas.workers import (
@@ -205,6 +205,10 @@ class Config(WorkerConfig, BaseSettings):
         gateway_concurrency: Number of concurrent connections for the embedded gateway. Default is 16.
         gateway_namespace: The namespace where the gateway component is deployed.
         namespace: Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.
+        trusted_proxy_cidrs: CIDR networks of proxies in front of the gateway whose X-Forwarded-For
+                             appends are honored when resolving the client IP. Unset means only the
+                             entry the gateway appended is trusted, so forwarded headers cannot spoof
+                             the source address.
         disable_builtin_observability: Disable embedded Grafana and Prometheus services.
         prometheus_url: Base URL of an external Prometheus to query. When unset, the embedded one is used if it is enabled. Set this to keep the server's own metric queries working on a deployment that delegates observability to its own stack.
         grafana_url: Base URL for Grafana UI used by redirects and proxying. When unset, defaults to the embedded Grafana URL unless builtin observability is disabled.
@@ -343,6 +347,15 @@ class Config(WorkerConfig, BaseSettings):
     gateway_concurrency: int = 16
     gateway_plugin_server_url: Optional[str] = None
     gateway_ingress_class: str = "higress"
+    # CIDR networks of the proxies deployed in front of the gateway.
+    # ``client_ip_getter`` walks X-Forwarded-For from the right and skips
+    # entries inside these networks (addresses trusted proxies appended);
+    # the first entry outside them is the client. Unset means no hop is
+    # trusted, so only the entry the gateway itself appended is used and a
+    # client cannot spoof its source address with forwarded headers. List a
+    # front proxy's subnet only when that proxy appends X-Forwarded-For (or
+    # overwrites it with the address it observed) itself.
+    trusted_proxy_cidrs: Optional[List[str]] = None
     # Per-plugin overrides, keyed by the plugin's *manifest* name -- the one
     # ``supported_plugins`` and the module URL are built from, which for five of
     # the eight plugins differs from the WasmPlugin resource name they appear
@@ -482,6 +495,23 @@ class Config(WorkerConfig, BaseSettings):
         self._derive_auth_cache_key = hmac.new(
             self.jwt_secret_key.encode(), b"gateway-auth-cache", hashlib.sha256
         ).hexdigest()
+
+    @field_validator("trusted_proxy_cidrs")
+    @classmethod
+    def _validate_trusted_proxy_cidrs(cls, value):
+        # Fail at startup rather than at request time: an invalid entry here
+        # would otherwise be discovered as a client IP that silently fails to
+        # resolve.
+        if value is None:
+            return value
+        for cidr in value:
+            try:
+                ipaddress.ip_network(cidr, strict=False)
+            except ValueError:
+                raise ValueError(
+                    f'Invalid CIDR network "{cidr}" in trusted_proxy_cidrs.'
+                )
+        return value
 
     @model_validator(mode="after")
     def check_all(self):  # noqa: C901

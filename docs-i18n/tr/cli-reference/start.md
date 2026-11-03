@@ -51,6 +51,7 @@ gpustack start [OPTIONS]
 | `--gateway-mode` değer                      | `auto`                                 | Ağ geçidinin çalışma modu. Seçenekler: embedded, in-cluster, external, disabled veya auto (varsayılan). |
 | `--gateway-kubeconfig` değer                | (boş)                                | Ağ geçidi için kubeconfig dosyasının yolu. Yalnızca external gateway-mode için kullanılır. |
 | `--gateway-namespace` değer                 | `higress-system`                       | Ağ geçidi bileşeninin dağıtıldığı ad alanı. |
+| `--trusted-proxy-cidrs` değer               | (empty)                                | Ağ geçidinin önünde dağıtılan proxy'lerin CIDR ağları (birden çok ağ için bayrağı yineleyin). İstemci IP çözümlemesi `X-Forwarded-For` listesini bu proxy'ler üzerinden sağdan sola tarar; ayarlanmadığında yalnızca ağ geçidinin kendi gözlemlediği adres kullanılır, böylece istemcinin gönderdiği yönlendirme başlıkları kaynak adresi taklit edemez. Yalnızca öndeki proxy `X-Forwarded-For` başlığını kendisi ekliyorsa alt ağı belirtin. |
 | `--service-discovery-name` değer            | (boş)                                | DNS'teki servis keşfi servisinin adı. Yalnızca servis keşfi kullanılan Kubernetes dağıtımlarında geçerlidir. |
 | `--namespace` değer                         | (boş)                                | GPUStack'in ağ geçidi yönlendirme kurallarını ve model örneklerini dağıtacağı Kubernetes ad alanı. |
 

@@ -310,7 +310,17 @@ def ext_auth_default_config(
             "timeout": override.authz.timeout,
             "authorization_request": {
                 "allowed_headers": [
-                    {"exact": "X-Real-IP"},
+                    # X-Forwarded-For is the one forwarding header the server
+                    # consults for the caller's address (client_ip_getter
+                    # walks it from the right, trusting only entries the
+                    # gateway and declared trusted proxies appended). Envoy
+                    # appends the observed downstream address to
+                    # X-Forwarded-For on every gateway listener before this
+                    # plugin runs, so what is forwarded here already ends
+                    # with an entry the client did not supply.
+                    # X-Real-IP is deliberately absent: nothing overwrites it
+                    # at the edge, so forwarding it would only invite a
+                    # client-supplied value no consumer should believe.
                     {"exact": "X-Forwarded-For"},
                     {"exact": "x-higress-llm-model"},
                     {"exact": "x-api-key"},
