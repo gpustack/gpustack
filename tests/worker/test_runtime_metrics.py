@@ -1355,3 +1355,78 @@ def test_late_batch_results_cannot_be_relabelled_as_a_new_generation():
     finally:
         release.set()
         client._executor.shutdown(wait=True)
+
+
+def _hybrid_tasks():
+    return [
+        dict(
+            name=f'hybrid-{worker_id}',
+            worker_id=worker_id,
+            state='running',
+            component=dict(
+                kind='vllm_hybrid',
+                api_port=40000 if worker_id in (1, 3) else None,
+                dp_size=1 if worker_id in (1, 3) else None,
+                ready=True if worker_id in (1, 3) else None,
+            ),
+        )
+        for worker_id in (1, 2, 3, 4)
+    ]
+
+
+@pytest.mark.parametrize('worker_id,expected', [(1, 1), (2, 0), (3, 1), (4, 0)])
+def test_hybrid_scrapes_each_shared_api_once_and_preserves_all_native_engines(
+    worker_id, expected
+):
+    instance = _managed_instance(_hybrid_tasks())
+    aggregator, _ = _source_aggregator(instance, worker_id=worker_id)
+    metrics = _families(
+        '# TYPE vllm:prompt_tokens_total counter\n'
+        'vllm:prompt_tokens_total{engine="0"} 5\n'
+        'vllm:prompt_tokens_total{engine="1"} 7\n',
+        PROMETHEUS_CONTENT_TYPE,
+    )
+    calls = []
+
+    def fetch(endpoints):
+        calls.extend(endpoints)
+        return {ep: metrics for ep in endpoints}
+
+    aggregator._metrics_client.fetch_metrics_from_endpoints = fetch
+    aggregator.aggregate()
+    assert calls == ([f'10.0.0.{worker_id}:40000'] if expected else [])
+    samples = aggregator._cache['unified'].get('gpustack:prompt_tokens')
+    if not expected:
+        assert samples is None
+        return
+    assert [(s.labels['engine'], s.value) for s in samples.samples] == [
+        ('0', 5),
+        ('1', 7),
+    ]
+    assert all(s.labels['source_kind'] == 'vllm_hybrid' for s in samples.samples)
+    assert all('endpoint_dp_rank' not in s.labels for s in samples.samples)
+
+
+@pytest.mark.parametrize('change', ['epoch', 'owner', 'removed', 'unready'])
+def test_hybrid_late_metrics_cannot_relabel_replaced_shared_api(change):
+    instance = _managed_instance(_hybrid_tasks())
+    fresh = _managed_instance(_hybrid_tasks())
+    if change == 'epoch':
+        fresh.restart_count += 1
+    elif change == 'owner':
+        fresh.distributed_servers.workloads[0].worker_id = 9
+    elif change == 'unready':
+        fresh.distributed_servers.workloads[0].component.ready = False
+    aggregator, client = _source_aggregator(instance, worker_id=1)
+    client.model_instances.list.side_effect = [
+        SimpleNamespace(items=[instance]),
+        SimpleNamespace(items=[] if change == 'removed' else [fresh]),
+    ]
+    metrics = _families(
+        '# TYPE vllm:num_requests_running gauge\nvllm:num_requests_running 2\n', None
+    )
+    aggregator._metrics_client.fetch_metrics_from_endpoints = lambda endpoints: {
+        ep: metrics for ep in endpoints
+    }
+    aggregator.aggregate()
+    assert not aggregator._cache['raw'].get('vllm:num_requests_running')

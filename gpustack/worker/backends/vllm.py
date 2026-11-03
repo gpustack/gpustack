@@ -29,6 +29,7 @@ from gpustack.schemas.models import (
     is_omni_model,
     DPRankPlacement,
     ModelInstanceWorkload,
+    ModelInstanceComponent,
     ModelInstanceWorkloadStateEnum,
 )
 from gpustack.utils import network
@@ -51,8 +52,9 @@ from gpustack.utils.vllm_topology import (
     parse_user_parallelism,
     validate_multinode_topology,
     external_lb_parallelism,
-    native_lb_parallelism,
-    validate_native_lb_parameters,
+    managed_lb_parallelism,
+    multi_port_external_lb_parallelism,
+    validate_multi_port_external_lb_parameters,
     validate_managed_http_parameters,
     external_lb_fragments,
     vllm_lb_mode,
@@ -426,11 +428,11 @@ class VLLMServer(InferenceServer):
             run_as_group=container_config.group,
         )
         if managed:
-            configure = (
-                self._configure_native_workload
-                if vllm_lb_mode(self._model.backend_parameters) == "native"
-                else self._configure_external_workload
-            )
+            configure = {
+                "multi_port_external": self._configure_multi_port_external_workload,
+                "hybrid": self._configure_hybrid_workload,
+                "external": self._configure_external_workload,
+            }[vllm_lb_mode(self._model.backend_parameters)]
             manifest = configure(workload_plan, original_command, original_args)
             self._workload_plan_callback(
                 [manifest], [self._transform_workload_plan(workload_plan)]
@@ -444,15 +446,17 @@ class VLLMServer(InferenceServer):
             deployment_metadata.name,
         )
 
-    def _configure_native_workload(
+    def _configure_multi_port_external_workload(
         self, plan: WorkloadPlan, command: Optional[List[str]], arguments: List[str]
     ) -> ModelInstanceWorkload:
-        """Register native DPS child APIs while retaining its single launcher."""
+        """Register multi-port External-LB child APIs while retaining its single launcher."""
         mi = self._model_instance
         if mi.role:
-            raise ValueError("Native DPS requires an ordinary model instance.")
+            raise ValueError(
+                "Multi-port External-LB requires an ordinary model instance."
+            )
         parameters = list(command or []) + arguments
-        validate_native_lb_parameters(parameters)
+        validate_multi_port_external_lb_parameters(parameters)
         config = get_hf_text_config(self._get_pretrained_config())
         if not any(
             getattr(config, key, 0)
@@ -463,35 +467,43 @@ class VLLMServer(InferenceServer):
                 "moe_num_experts",
             )
         ):
-            raise ValueError("Native DPS requires a verified MoE model configuration.")
+            raise ValueError(
+                "Multi-port External-LB requires a verified MoE model configuration."
+            )
         devices = self._get_selected_gpu_devices()
         if (
             not devices
             or devices[0].type not in ("cuda", "cann")
             or any(device.type != devices[0].type for device in devices)
         ):
-            raise ValueError("Native DPS requires homogeneous CUDA or Ascend devices.")
+            raise ValueError(
+                "Multi-port External-LB requires homogeneous CUDA or Ascend devices."
+            )
         members = [mi] + list(mi.distributed_servers.subordinate_workers or [])
         index = [member.worker_id for member in members].index(self._worker.id)
         counts = [
             len(devices) if i == index else len(w.gpu_indexes or [])
             for i, w in enumerate(members)
         ]
-        topology = native_lb_parallelism(self._model.backend_parameters, counts)
-        if native_lb_parallelism(parameters, counts) != topology:
-            raise ValueError("Native DPS command must match the allocated parallelism.")
+        topology = multi_port_external_lb_parallelism(
+            self._model.backend_parameters, counts
+        )
+        if multi_port_external_lb_parallelism(parameters, counts) != topology:
+            raise ValueError(
+                "Multi-port External-LB command must match the allocated parallelism."
+            )
         fragments = external_lb_fragments(counts, topology, index)
         start = find_last_parameter(
             parameters, ["data-parallel-start-rank", "dpr", "dps"]
         )
         if start is not None and int(start) != fragments[0].dp_rank:
             raise ValueError(
-                "Native DPS start rank must match the allocated Worker ranks."
+                "Multi-port External-LB start rank must match the allocated Worker ranks."
             )
         bands = mi.named_ports or {}
         api = bands.get("_vllm_external_api")
         rpc = bands.get("_vllm_external_rpc")
-        supervisor = bands.get("_vllm_native_supervisor")
+        supervisor = bands.get("_vllm_multi_port_external_supervisor")
         master = bands.get("_vllm_mp_connecting")
         if (
             not api
@@ -501,15 +513,17 @@ class VLLMServer(InferenceServer):
             or not master
         ):
             raise ValueError(
-                "Native DPS API, RPC and supervisor ports must be allocated first."
+                "Multi-port External-LB API, RPC and supervisor ports must be allocated first."
             )
         requested = find_last_parameter(parameters, ["data-parallel-supervisor-port"])
         if requested is not None and int(requested) != supervisor.base:
             raise ValueError(
-                "Native DPS command must use the reserved supervisor port."
+                "Multi-port External-LB command must use the reserved supervisor port."
             )
         if api.base <= supervisor.base < api.base + api.count:
-            raise ValueError("Native DPS supervisor port overlaps rank APIs.")
+            raise ValueError(
+                "Multi-port External-LB supervisor port overlaps rank APIs."
+            )
         base = self._external_command(command, arguments)
         base += [
             "--data-parallel-multi-port-external-lb",
@@ -566,6 +580,154 @@ class VLLMServer(InferenceServer):
                 for f in fragments
             ],
         )
+
+    def _configure_hybrid_workload(
+        self, plan: WorkloadPlan, command: Optional[List[str]], arguments: List[str]
+    ) -> ModelInstanceWorkload:
+        """Run one native shared API, or supervise all allocated compute fragments."""
+        mi = self._model_instance
+        parameters = list(command or []) + arguments
+        validate_managed_http_parameters(parameters)
+        if vllm_lb_mode(parameters) not in ("internal", "hybrid"):
+            raise ValueError("The command must preserve the selected Hybrid-LB mode.")
+        devices = self._get_selected_gpu_devices()
+        members = [mi] + list(mi.distributed_servers.subordinate_workers or [])
+        index = [member.worker_id for member in members].index(self._worker.id)
+        counts = [
+            len(devices) if i == index else len(w.gpu_indexes or [])
+            for i, w in enumerate(members)
+        ]
+        topology = managed_lb_parallelism(self._model.backend_parameters, counts)
+        if vllm_lb_mode(self._model.backend_parameters) != "hybrid":
+            raise ValueError("Hybrid components require a Hybrid-LB model.")
+        fragments = external_lb_fragments(counts, topology, index)
+        api = (mi.named_ports or {}).get("_vllm_external_api")
+        rpc = (mi.named_ports or {}).get("_vllm_external_rpc")
+        if not api or api.count != 1 or not rpc or rpc.count != 1:
+            raise ValueError("Hybrid API and RPC ports must be allocated first.")
+        if (
+            not devices
+            or devices[0].type not in ("cuda", "cann")
+            or any(d.type != devices[0].type for d in devices)
+        ):
+            raise ValueError("Hybrid-LB requires homogeneous CUDA or Ascend devices.")
+        container = plan.containers[0]
+        owns_api = fragments[0].node_rank == 0
+        base = self._external_command(
+            command, arguments, keep_api_server_count=owns_api
+        )
+        if mi.role in ("prefill", "decode"):
+            base, pd_env = self._managed_pd_endpoint(base, api.base, container)
+            env = {item.name: item.value for item in container.envs or []}
+            env.update(pd_env)
+            container.envs = [
+                ContainerEnv(name=name, value=value) for name, value in env.items()
+            ]
+        if owns_api:
+            if find_last_parameter(parameters, ["api-server-count"]) == "0":
+                raise ValueError("A Hybrid API task requires API server processes.")
+            child = base + self._hybrid_launch_arguments(
+                topology, fragments[0], len(fragments)
+            )
+            child += [
+                "--data-parallel-hybrid-lb",
+                "--host",
+                self._worker.ip,
+                "--port",
+                str(api.base),
+            ]
+            container.execution.command, container.execution.args = (
+                self._override_entrypoint(child, [], container.execution.command_script)
+            )
+        else:
+            visible = (
+                "CUDA_VISIBLE_DEVICES"
+                if devices[0].type == "cuda"
+                else "ASCEND_RT_VISIBLE_DEVICES"
+            )
+            tasks = [
+                {
+                    "name": f"dp{fragment.dp_rank}-node{fragment.node_rank}",
+                    "argv": [
+                        "python3",
+                        "-c",
+                        _DEVICE_TASK_EXEC,
+                        visible,
+                        str(len(devices)),
+                        json.dumps(fragment.positions),
+                        *base,
+                        *self._hybrid_launch_arguments(topology, fragment, 1),
+                        "--headless",
+                        "--api-server-count",
+                        "0",
+                    ],
+                }
+                for fragment in fragments
+            ]
+            self._configure_rank_supervisor(plan, tasks)
+        master = (mi.named_ports or {}).get("_vllm_mp_connecting")
+        container.envs = [
+            e
+            for e in container.envs or []
+            if e.name not in ("VLLM_DP_MASTER_IP", "VLLM_DP_MASTER_PORT", "VLLM_PORT")
+        ] + [
+            ContainerEnv(
+                name="VLLM_DP_MASTER_IP", value=mi.worker_ip or self._worker.ip
+            )
+        ]
+        if master:
+            container.envs.append(
+                ContainerEnv(name="VLLM_DP_MASTER_PORT", value=str(master.base))
+            )
+        return ModelInstanceWorkload(
+            name=plan.name,
+            worker_id=self._worker.id,
+            state=ModelInstanceWorkloadStateEnum.PENDING,
+            component=ModelInstanceComponent(
+                kind="vllm_hybrid",
+                api_port=api.base if owns_api else None,
+                dp_size=len(fragments) if owns_api else None,
+            ),
+        )
+
+    def _hybrid_launch_arguments(self, topology, fragment, local_dp) -> List[str]:
+        mi = self._model_instance
+        arguments = [
+            "--data-parallel-size",
+            str(topology.dp),
+            "--data-parallel-size-local",
+            str(local_dp),
+            "--data-parallel-start-rank",
+            str(fragment.dp_rank),
+            "--tensor-parallel-size",
+            str(topology.tp),
+            "--pipeline-parallel-size",
+            str(topology.pp),
+            "--data-parallel-address",
+            mi.worker_ip or self._worker.ip,
+            "--data-parallel-rpc-port",
+            str(mi.named_ports["_vllm_external_rpc"].base),
+        ]
+        if topology.nnodes_within_dp > 1:
+            store = mi.named_ports.get("_vllm_external_store")
+            master = mi.named_ports.get("_vllm_mp_connecting")
+            if not store or store.count != topology.dp or not master:
+                raise ValueError("Cross-Worker Hybrid ranks require reserved MP ports.")
+            arguments += [
+                "--distributed-executor-backend",
+                "mp",
+                "--data-parallel-backend",
+                "mp",
+                "--nnodes",
+                str(topology.dp * topology.nnodes_within_dp),
+                "--node-rank",
+                str(fragment.dp_rank * topology.nnodes_within_dp + fragment.node_rank),
+                "--master-addr",
+                mi.worker_ip,
+                "--master-port",
+                str(store.base),
+            ]
+        return arguments
 
     def _configure_external_workload(
         self, plan: WorkloadPlan, command: Optional[List[str]], arguments: List[str]
@@ -647,6 +809,28 @@ class VLLMServer(InferenceServer):
             plan.containers[0],
         )
         container = plan.containers[0]
+        self._configure_rank_supervisor(plan, tasks)
+        container.envs = [
+            item
+            for item in container.envs or []
+            if item.name
+            not in ("VLLM_DP_MASTER_IP", "VLLM_DP_MASTER_PORT", "VLLM_PORT")
+        ] + [
+            ContainerEnv(
+                name="VLLM_DP_MASTER_IP", value=mi.worker_ip or self._worker.ip
+            ),
+            ContainerEnv(name="VLLM_DP_MASTER_PORT", value=str(master.base)),
+        ]
+        return ModelInstanceWorkload(
+            name=plan.name,
+            worker_id=self._worker.id,
+            state=ModelInstanceWorkloadStateEnum.PENDING,
+            dp_rank_placements=placements,
+        )
+
+    def _configure_rank_supervisor(self, plan, tasks) -> None:
+        """Keep every local compute child under the container's process lifecycle."""
+        container = plan.containers[0]
         shutdown_timeout = min(10, plan.termination_grace_period_seconds / 2)
         if shutdown_timeout <= 0:
             raise ValueError(
@@ -673,27 +857,13 @@ class VLLMServer(InferenceServer):
                 container.execution.command_script,
             )
         )
-        container.envs = [
-            item
-            for item in container.envs or []
-            if item.name
-            not in ("VLLM_DP_MASTER_IP", "VLLM_DP_MASTER_PORT", "VLLM_PORT")
-        ] + [
-            ContainerEnv(
-                name="VLLM_DP_MASTER_IP", value=mi.worker_ip or self._worker.ip
-            ),
-            ContainerEnv(name="VLLM_DP_MASTER_PORT", value=str(master.base)),
-        ]
-        return ModelInstanceWorkload(
-            name=plan.name,
-            worker_id=self._worker.id,
-            state=ModelInstanceWorkloadStateEnum.PENDING,
-            dp_rank_placements=placements,
-        )
 
     @staticmethod
     def _external_command(
-        command: Optional[List[str]], arguments: List[str]
+        command: Optional[List[str]],
+        arguments: List[str],
+        *,
+        keep_api_server_count=False,
     ) -> List[str]:
         """Keep non-managed options from a direct vllm serve command."""
         argv = list(arguments)
@@ -743,6 +913,8 @@ class VLLMServer(InferenceServer):
             "--master-addr",
             "--master-port",
         }
+        if keep_api_server_count:
+            managed_keys.remove("--api-server-count")
         base = []
         index = 0
         while index < len(argv):
@@ -760,6 +932,8 @@ class VLLMServer(InferenceServer):
                 "--headless",
                 "--data-parallel-multi-port-external-lb",
                 "-dpm",
+                "--data-parallel-hybrid-lb",
+                "-dph",
             ):
                 index += 1
             else:
@@ -864,7 +1038,11 @@ class VLLMServer(InferenceServer):
 
     def _external_pd_rank(self, argv, rank, port, container):
         """Render one logical engine's connector state after final argv composition."""
-        injection = self._pd_injection(dp_rank=rank, port=port)
+        return self._managed_pd_endpoint(argv, port, container, dp_rank=rank)
+
+    def _managed_pd_endpoint(self, argv, port, container, *, dp_rank=None):
+        """Validate the connector endpoint shared by managed PD launch modes."""
+        injection = self._pd_injection(dp_rank=dp_rank, port=port)
         arguments = list(argv)
         positions = [
             index
@@ -884,9 +1062,10 @@ class VLLMServer(InferenceServer):
         equal = "=" in arguments[index]
         raw = arguments[index].split("=", 1)[1] if equal else arguments[index + 1]
         descriptor = json.loads(raw)
-        self._pd_engine_identity(
-            descriptor, managed_pd_engine_id(self._model_instance, rank)
-        )
+        if dp_rank is not None:
+            self._pd_engine_identity(
+                descriptor, managed_pd_engine_id(self._model_instance, dp_rank)
+            )
         mode_name = str(
             getattr(getattr(self._model, "disaggregation", None), "mode", "")
         )
@@ -903,7 +1082,9 @@ class VLLMServer(InferenceServer):
             arguments[index] = "--kv-transfer-config=" + encoded
         else:
             arguments[index + 1] = encoded
-        variables = self._template_variables(port=port, dp_rank=rank)
+        variables = self._template_variables(port=port)
+        if dp_rank is not None:
+            variables["dp_rank"] = dp_rank
         env = dict(injection.env) if injection else {}
         supplied = render_values(self._model.env or {}, variables) or {}
         for name in (
@@ -917,7 +1098,11 @@ class VLLMServer(InferenceServer):
                 )
         env.update(supplied)
         for path, content in (injection.files if injection else {}).items():
-            rank_path = f"/gpustack/pd/dp{rank}/{path.lstrip('/')}"
+            rank_path = (
+                f"/gpustack/pd/dp{dp_rank}/{path.lstrip('/')}"
+                if dp_rank is not None
+                else path
+            )
             arguments = [value.replace(path, rank_path) for value in arguments]
             env = {key: value.replace(path, rank_path) for key, value in env.items()}
             container.files = list(container.files or []) + [
@@ -1311,7 +1496,7 @@ class VLLMServer(InferenceServer):
         topology: Optional[MultinodeTopology] = None
         if (
             is_distributed
-            and vllm_lb_mode(self._model.backend_parameters) != "native"
+            and vllm_lb_mode(self._model.backend_parameters) != "multi_port_external"
             and executor_backend == "mp"
             and deployment_metadata is not None
         ):
@@ -1357,7 +1542,7 @@ class VLLMServer(InferenceServer):
         default DP backend to ray when user-specified DP > 1.
         """
         if (
-            vllm_lb_mode(self._model.backend_parameters) == "native"
+            vllm_lb_mode(self._model.backend_parameters) == "multi_port_external"
             or not ctx.is_distributed
             or ctx.executor_backend != "ray"
         ):
@@ -1402,7 +1587,7 @@ class VLLMServer(InferenceServer):
         its own API, so ``--headless`` is not injected.
         """
         if (
-            vllm_lb_mode(self._model.backend_parameters) == "native"
+            vllm_lb_mode(self._model.backend_parameters) == "multi_port_external"
             or not ctx.is_distributed
             or ctx.executor_backend != "mp"
             or ctx.topology is None
@@ -1779,7 +1964,7 @@ def get_auto_parallelism_arguments(
     backend_version: Optional[str] = None,
     image_name: Optional[str] = None,
 ) -> List[str]:
-    if vllm_lb_mode(backend_parameters) == "native":
+    if vllm_lb_mode(backend_parameters) == "multi_port_external":
         return []
     if (
         is_distributed

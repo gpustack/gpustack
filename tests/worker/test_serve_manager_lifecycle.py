@@ -160,15 +160,23 @@ def _running_managed(state):
     return state.instance.model_copy(deep=True)
 
 
-def test_managed_registration_precedes_every_runtime_creation(managed):
+@pytest.mark.parametrize('hybrid', [False, True])
+def test_managed_registration_precedes_every_runtime_creation(managed, hybrid):
     state = managed
+    if hybrid:
+        from tests.utils.model import new_hybrid_workload
+
+        state.instance.distributed_servers.workloads = [
+            ModelInstanceWorkload.model_validate(new_hybrid_workload(worker_id))
+            for worker_id in (1, 2)
+        ]
     local = _local_manifest(state)
     state.instance.distributed_servers.workloads = []
     assert state.serve._start_managed_workloads(
         state.instance.model_copy(deep=True), local, _managed_plans(local)
     )
     assert state.events[0] == "report"
-    assert state.create.call_count == 2
+    assert state.create.call_count == (1 if hybrid else 2)
     for call in state.create.call_args_list:
         assert call.args[0].labels["gpustack.ai/restart-count"] == "3"
         assert call.args[0].labels["gpustack.ai/worker-id"] == str(
@@ -3328,3 +3336,287 @@ def test_ordinary_deleted_manifest_cleans_all_local_rank_tasks(managed, event_ty
     assert instance.id not in state.serve._model_instance_by_instance_id
     state.create.assert_not_called()
     state.client.model_instances.update.assert_not_called()
+
+
+def test_hybrid_components_do_not_enter_sglang_reconciliation(managed):
+    from tests.utils.model import new_hybrid_workload
+
+    managed.instance.distributed_servers.workloads = [
+        ModelInstanceWorkload.model_validate(new_hybrid_workload())
+    ]
+    assert not ServeManager._has_sglang_components(managed.instance)
+
+
+@pytest.mark.parametrize('startup', [False, True])
+def test_hybrid_health_uses_shared_api_and_optional_inference_probe(managed, startup):
+    from tests.utils.model import new_hybrid_workload
+
+    state = managed
+    instance = state.instance
+    instance.state = ModelInstanceStateEnum.RUNNING
+    instance.distributed_servers.workloads = [
+        ModelInstanceWorkload.model_validate(
+            new_hybrid_workload(worker_id, headless=worker_id == 2, state='running')
+        )
+        for worker_id in (1, 2)
+    ]
+    instance.distributed_servers.workloads[0].component.ready = not startup
+    model = new_model(
+        1,
+        'hybrid',
+        huggingface_repo_id='org/moe',
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--data-parallel-hybrid-lb', '--dp=2'],
+        env={'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED': 'true'},
+    )
+    state.serve._get_model = MagicMock(return_value=model)
+    state.client.workers.get.return_value.ip = '10.0.0.1'
+    state.serve._rank_health_executor = MagicMock()
+    state.serve._sync_managed_rank_health(instance)
+    submissions = state.serve._rank_health_executor.submit.call_args_list
+    assert len(submissions) == (
+        (1 if startup else 2) if state.serve._worker_id == 1 else 0
+    )
+    if not submissions:
+        return
+    from gpustack.worker.serve_manager import _probe_rank_health
+
+    assert all(call.args[0] is _probe_rank_health for call in submissions)
+    assert {call.args[4] for call in submissions} == (
+        {'get'} if startup else {'get', 'inference'}
+    )
+    assert all(call.args[1].port == 40000 for call in submissions)
+    assert all(call.args[1].worker_ip == '10.0.0.1' for call in submissions)
+
+
+@pytest.mark.parametrize('epoch_changed', [False, True])
+def test_hybrid_completed_startup_probe_is_fenced_by_current_generation(
+    managed, epoch_changed
+):
+    from concurrent.futures import Future
+    from gpustack.worker.serve_manager import _RankHealthCheck
+    from tests.utils.model import new_hybrid_workload
+
+    state = managed
+    instance = state.instance
+    local = ModelInstanceWorkload.model_validate(
+        new_hybrid_workload(state.serve._worker_id, state='running')
+    )
+    instance.distributed_servers.workloads = [local]
+    snapshot = instance.model_copy(deep=True)
+    key = (
+        instance.id,
+        instance.restart_count,
+        local.name,
+        'vllm_hybrid',
+        0,
+        'component',
+    )
+    future = Future()
+    future.set_result((True, ''))
+    state.serve._rank_health_checks[key] = _RankHealthCheck(startup=True, future=future)
+    state.serve._rank_health_executor = MagicMock()
+    state.serve._get_model = MagicMock(
+        return_value=new_model(
+            1,
+            'hybrid',
+            huggingface_repo_id='org/moe',
+            backend=BackendEnum.VLLM,
+            backend_parameters=['--data-parallel-hybrid-lb', '--dp=2'],
+        )
+    )
+    state.client.workers.get.return_value.ip = '10.0.0.1'
+    if epoch_changed:
+        instance.restart_count += 1
+    state.serve._sync_managed_rank_health(snapshot)
+    assert bool(state.client.model_instances.update.called) != epoch_changed
+    assert instance.distributed_servers.workloads[0].component.ready == (
+        not epoch_changed
+    )
+    if epoch_changed:
+        assert key not in state.serve._rank_health_checks
+        state.serve._rank_health_executor.submit.assert_not_called()
+
+
+@pytest.mark.parametrize('failing_kind', ['component', 'inference'])
+@pytest.mark.parametrize('failure_first', [False, True])
+def test_hybrid_failed_health_cannot_be_revived_by_same_batch_success(
+    managed, failing_kind, failure_first
+):
+    from concurrent.futures import Future
+    from gpustack.worker.serve_manager import _RankHealthCheck
+    from tests.utils.model import new_hybrid_workload
+
+    state = managed
+    item = ModelInstanceWorkload.model_validate(
+        new_hybrid_workload(state.serve._worker_id, state='running')
+    )
+    item.component.ready = True
+    keys, targets = [], {}
+    for kind in ('component', 'inference'):
+        key = (
+            state.instance.id,
+            state.instance.restart_count,
+            item.name,
+            'vllm_hybrid',
+            0,
+            kind,
+        )
+        keys.append(key)
+        future = Future()
+        future.set_result(
+            (kind != failing_kind, 'failed probe' if kind == failing_kind else '')
+        )
+        state.serve._rank_health_checks[key] = _RankHealthCheck(
+            startup=False, failures=2, future=future
+        )
+        targets[key] = (item.component, 10, 15, 3, True)
+    keys.sort(key=lambda key: (key[5] == failing_kind) != failure_first)
+    diagnostic, processed = state.serve._collect_component_health([item], targets, keys)
+    assert item.state == ModelInstanceWorkloadStateEnum.FAILED
+    assert item.component.ready is False
+    assert len(processed) == 2
+    assert 'failed probe' in diagnostic['state_message']
+
+
+@pytest.mark.parametrize('hybrid', [False, True])
+def test_component_health_path_preserves_sglang_contract(managed, hybrid):
+    from tests.utils.model import new_hybrid_workload
+
+    state = managed
+    item = ModelInstanceWorkload.model_validate(
+        new_hybrid_workload(state.serve._worker_id, state='running')
+    )
+    if not hybrid:
+        item.component.kind = 'sglang_engine'
+    state.instance.distributed_servers.workloads = [item]
+    model = new_model(
+        1,
+        'model',
+        huggingface_repo_id='org/model',
+        backend=BackendEnum.VLLM if hybrid else BackendEnum.SGLANG,
+        env={'GPUSTACK_MODEL_HEALTH_CHECK_PATH': '/custom-health'},
+    )
+    state.client.workers.get.return_value.ip = '10.0.0.1'
+    state.serve._schedule_rank_health = MagicMock()
+    state.serve._get_health_check_path = MagicMock(return_value='/backend-health')
+    state.serve._sync_component_health(state.instance, model, [])
+    assert state.serve._schedule_rank_health.call_args.args[-1] == (
+        '/custom-health' if hybrid else '/health'
+    )
+    assert bool(state.serve._get_health_check_path.called) == hybrid
+
+
+@pytest.fixture
+def hybrid_managed(managed):
+    from tests.utils.model import new_hybrid_workload
+
+    state = managed
+    state.instance.state = ModelInstanceStateEnum.RUNNING
+    state.instance.worker_ip = '10.0.0.1'
+    state.instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
+            worker_id=w, worker_ip=f'10.0.0.{w}', gpu_indexes=[0, 1]
+        )
+        for w in (2, 3, 4)
+    ]
+    state.instance.distributed_servers.workloads = [
+        ModelInstanceWorkload.model_validate(
+            new_hybrid_workload(w, headless=w in (2, 4), state='running')
+        )
+        for w in (1, 2, 3, 4)
+    ]
+    for item in state.instance.distributed_servers.workloads:
+        if item.component.api_port is not None:
+            item.component.dp_size = 1
+            item.component.ready = True
+    state.instance.named_ports['_vllm_external_api'] = PortBand(base=40000)
+    state.instance.named_ports['_vllm_external_rpc'] = PortBand(base=40011)
+    state.instance.named_ports['_vllm_external_store'] = PortBand(base=40012, count=2)
+    _running_managed(state)
+    for runtime in state.runtime:
+        runtime.labels.update(
+            {
+                'gpustack.ai/component-kind': 'vllm_hybrid',
+                'gpustack.ai/component-attempt': '0',
+            }
+        )
+    state.serve._hold_managed_instance(state.instance)
+    state.serve._sync_managed_rank_health = MagicMock()
+    return state
+
+
+def test_hybrid_runtime_failure_withdraws_whole_group_and_retains_pending_claims(
+    hybrid_managed,
+):
+    from gpustack.utils.model_instance_workers import model_instance_endpoints
+
+    state = hybrid_managed
+    assert len(model_instance_endpoints(state.instance)) == 2
+    state.runtime[0].state = WorkloadStatusStateEnum.UNHEALTHY
+    state.delete.side_effect = lambda name: None
+    state.serve._sync_managed_model_instance(state.instance)
+    failed = _local_manifest(state)[0]
+    assert failed.state == ModelInstanceWorkloadStateEnum.FAILED
+    assert failed.component.ready is (False if failed.component.api_port else None)
+    assert model_instance_endpoints(state.instance) == []
+    state.delete.assert_called_once_with(failed.name)
+    assert state.instance.id in state.serve._assigned_ports
+    assert state.instance.restart_count == 3
+    state.create.assert_not_called()
+
+
+@pytest.mark.parametrize('pd', [False, True])
+@pytest.mark.parametrize('unknown', ['runtime', 'worker', 'accepted'])
+def test_hybrid_stop_waits_for_local_absence_and_available_worker(
+    hybrid_managed, pd, unknown
+):
+    state = hybrid_managed
+    if pd:
+        state.instance.role, state.instance.group_id = 'prefill', 'group'
+    other = [
+        w.model_dump()
+        for w in state.instance.distributed_servers.workloads
+        if w.worker_id != state.serve._worker_id
+    ]
+    normal_list, normal_delete = state.list.side_effect, state.delete.side_effect
+    if unknown == 'runtime':
+        state.list.side_effect = OSError('runtime unavailable')
+    elif unknown == 'worker':
+        state.client.workers.get.return_value.unreachable = True
+    else:
+        state.delete.side_effect = lambda name: None
+    assert not state.serve._stop_model_instance(state.instance.model_copy(deep=True))
+    assert state.instance.id in state.serve._assigned_ports
+    assert _local_manifest(state)[0].state != ModelInstanceWorkloadStateEnum.STOPPED
+    state.client.model_instances.update.assert_not_called()
+    state.list.side_effect, state.delete.side_effect = normal_list, normal_delete
+    state.client.workers.get.return_value.unreachable = False
+    state.serve._retry_managed_stops()
+    stopped = _local_manifest(state)[0]
+    assert stopped.state == ModelInstanceWorkloadStateEnum.STOPPED
+    assert stopped.component.ready is (False if stopped.component.api_port else None)
+    assert state.instance.id not in state.serve._assigned_ports
+    assert state.instance.restart_count == 3
+    assert [
+        w.model_dump()
+        for w in state.instance.distributed_servers.workloads
+        if w.worker_id != state.serve._worker_id
+    ] == other
+
+
+def test_hybrid_worker_claim_adopts_without_recreating_or_advancing_generation(
+    hybrid_managed,
+):
+    state = hybrid_managed
+    state.serve._model_instance_by_instance_id.clear()
+    state.serve._assigned_ports.clear()
+    state.serve._dispatch_model_instance_event(
+        Event(type=EventType.CREATED, data=state.instance.model_copy(deep=True))
+    )
+    assert state.instance.id in state.serve._assigned_ports
+    assert state.instance.restart_count == 3
+    assert _local_manifest(state)[0].state == ModelInstanceWorkloadStateEnum.RUNNING
+    state.create.assert_not_called()
+    state.delete.assert_not_called()
+    state.serve._update_model_instance.assert_not_called()

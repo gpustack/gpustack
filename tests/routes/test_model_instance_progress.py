@@ -37,7 +37,12 @@ from gpustack.server.controllers import (
     sync_main_worker_model_file_state,
 )
 from tests.server.test_model_file_state_sync import _distributed_instance, _patched
-from tests.utils.model import new_model, new_model_instance, new_model_instance_workload
+from tests.utils.model import (
+    new_model,
+    new_model_instance,
+    new_model_instance_workload,
+    new_hybrid_workload,
+)
 
 
 @pytest.mark.asyncio
@@ -295,7 +300,9 @@ async def test_worker_runtime_and_restart_transitions_are_allowed(
     assert instance.state_message == "Worker status"
 
 
-@pytest.mark.parametrize("workloads", [None, [], [new_model_instance_workload()]])
+@pytest.mark.parametrize(
+    "workloads", [None, [], [new_model_instance_workload()], [new_hybrid_workload()]]
+)
 def test_manifest_survives_public_json_round_trip(workloads):
     instance = new_model_instance(1, "instance", 1)
     instance.source = SourceEnum.LOCAL_PATH
@@ -321,6 +328,7 @@ def test_missing_workloads_keeps_legacy_contract():
         None,
         [],
         [new_model_instance_workload()],
+        [new_hybrid_workload(), new_hybrid_workload(2, headless=True)],
         [
             {
                 "name": "smg",
@@ -827,12 +835,15 @@ async def test_failed_task_can_report_confirmed_stop(report_api):
     assert response.status_code == 200, response.text
 
 
-@pytest.mark.parametrize("workloads", [None, []])
+@pytest.mark.parametrize("workloads", [None, [], [new_hybrid_workload()]])
 def test_instance_client_preserves_manifest_and_sends_only_report(
     report_api, workloads
 ):
     api = report_api
-    api.instance.distributed_servers.workloads = workloads
+    api.instance.distributed_servers.workloads = DistributedServers(
+        workloads=workloads
+    ).workloads
+    workloads = api.instance.distributed_servers.workloads
     public = ModelInstancePublic.model_validate(api.instance)
     transport = MagicMock()
     response = httpx.Response(200, json=public.model_dump(mode="json"))
@@ -1097,7 +1108,7 @@ async def test_subordinate_preparation_cannot_change_shared_ports(report_api):
 
 
 @pytest.mark.asyncio
-async def test_native_rank_registration_verifies_contiguous_worker_apis(
+async def test_multi_port_external_rank_registration_verifies_contiguous_worker_apis(
     report_api, monkeypatch
 ):
     from gpustack.schemas.models import BackendEnum, PortBand
@@ -2147,3 +2158,311 @@ async def test_create_cannot_supply_a_server_stop_release(report_api):
     ) as client:
         response = await client.post("/model-instances", json=payload)
     assert response.status_code == 400, response.text
+
+
+@pytest.mark.parametrize('headless', [False, True])
+def test_hybrid_component_reuses_existing_fields(headless):
+    servers = DistributedServers(workloads=[new_hybrid_workload(headless=headless)])
+    task = servers.workloads[0]
+    assert task.dp_rank_placements == []
+    assert task.component.ready is (None if headless else False)
+    assert task.component.attempt == 0
+    assert task.component.metrics_port is None
+
+
+@pytest.mark.parametrize(
+    'fields',
+    [
+        {'api_port': None},
+        {'dp_size': None},
+        {'dp_size': 0},
+        {'metrics_port': 40001},
+        {'image': 'image'},
+        {'router_version': '0.3.2'},
+        {'attempt': 1},
+        {'stop_requested': True},
+        {'last_restart_time': '2026-11-02T00:00:00Z'},
+    ],
+)
+def test_hybrid_component_rejects_smg_or_incomplete_fields(fields):
+    task = new_hybrid_workload()
+    task['component'].update(fields)
+    with pytest.raises(ValidationError):
+        DistributedServers(workloads=[task])
+
+
+@pytest.mark.parametrize('other', ['sglang_engine', 'rank', 'duplicate'])
+def test_hybrid_manifest_cannot_mix_families_or_duplicate_worker(other):
+    task = new_hybrid_workload()
+    second = (
+        _sg_component(worker_id=2)
+        if other == 'sglang_engine'
+        else (
+            new_model_instance_workload(worker_id=2)
+            if other == 'rank'
+            else {**task, 'name': 'duplicate'}
+        )
+    )
+    with pytest.raises(ValidationError):
+        DistributedServers(workloads=[task, second])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('headless', [False, True])
+async def test_hybrid_reports_merge_out_of_order_and_preserve_actual_apis(
+    report_api, monkeypatch, headless
+):
+    from gpustack.utils.model_instance_workers import model_instance_endpoints
+
+    model = new_model(
+        1,
+        'hybrid',
+        huggingface_repo_id='org/model',
+        backend='vLLM',
+        backend_parameters=[
+            '--data-parallel-hybrid-lb',
+            '--dp=1' if headless else '--dp=4',
+            '--tp=4' if headless else '--tp=1',
+            '--dpl=1' if headless else '--dpl=2',
+        ],
+    )
+    monkeypatch.setattr(
+        routes.Model, 'one_by_id_with_refresh', AsyncMock(return_value=model)
+    )
+    api = report_api
+    api.instance.gpu_indexes = [0, 1]
+    api.instance.distributed_servers.subordinate_workers[0].gpu_indexes = [0, 1]
+    api.instance.port = 40000
+    api.instance.ports = [40000]
+    from gpustack.schemas.models import PortBand
+
+    api.instance.named_ports = {'_vllm_external_api': PortBand(base=40000, count=1)}
+    api.instance.state = ModelInstanceStateEnum.RUNNING
+    for worker_id in (2, 1):
+        api.ctx.user.worker.id = worker_id
+        task = new_hybrid_workload(
+            worker_id, headless=headless and worker_id == 2, state='running'
+        )
+        if not (headless and worker_id == 2):
+            task['component']['ready'] = True
+            task['component']['dp_size'] = 1 if headless else 2
+        response = await put(api, [task])
+        assert response.status_code == 200, response.text
+        if worker_id == 2:
+            assert model_instance_endpoints(api.instance) == []
+    endpoints = model_instance_endpoints(api.instance)
+    assert {e.worker_id for e in endpoints} == ({1} if headless else {1, 2})
+    assert all(
+        e.port == 40000
+        and e.component == 'vllm_hybrid'
+        and e.dp_rank is None
+        and e.attempt is None
+        for e in endpoints
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('invalid', ['backend', 'mode', 'api', 'band', 'unreserved'])
+async def test_hybrid_registration_checks_mode_and_reserved_api(
+    report_api, monkeypatch, invalid
+):
+    model = new_model(
+        1,
+        'hybrid',
+        huggingface_repo_id='org/model',
+        backend='SGLang' if invalid == 'backend' else 'vLLM',
+        backend_parameters=[
+            (
+                '--data-parallel-external-lb'
+                if invalid == 'mode'
+                else '--data-parallel-hybrid-lb'
+            ),
+            '--dp=4',
+        ],
+    )
+    monkeypatch.setattr(
+        routes.Model, 'one_by_id_with_refresh', AsyncMock(return_value=model)
+    )
+    report_api.instance.port = 40000
+    report_api.instance.ports = [] if invalid == 'unreserved' else [40000, 40001]
+    from gpustack.schemas.models import PortBand
+
+    report_api.instance.named_ports = {
+        '_vllm_external_api': PortBand(base=40000, count=2 if invalid == 'band' else 1)
+    }
+    task = new_hybrid_workload()
+    if invalid == 'api':
+        task['component']['api_port'] = 40001
+    response = await put(report_api, [task])
+    assert response.status_code == 400, response.text
+
+
+@pytest.mark.parametrize(
+    'change', ['owner', 'generation', 'api', 'dp', 'name', 'terminal', 'omit']
+)
+def test_hybrid_reports_preserve_owner_generation_and_registered_shape(
+    report_api, change
+):
+    from gpustack.schemas.models import ModelInstanceWorkload
+
+    stored = ModelInstanceWorkload.model_validate(new_hybrid_workload())
+    report_api.instance.distributed_servers.workloads = [stored]
+    incoming = stored.model_copy(deep=True)
+    if change == 'owner':
+        incoming.worker_id = 2
+    elif change == 'api':
+        incoming.component.api_port = 41000
+    elif change == 'dp':
+        incoming.component.dp_size = 3
+    elif change == 'name':
+        incoming.name = 'replacement'
+    elif change == 'terminal':
+        stored.state = 'failed'
+        incoming.state = 'running'
+    report = ModelInstanceRankReport(
+        restart_count=1 if change == 'generation' else 0,
+        workloads=[] if change == 'omit' else [incoming],
+    )
+    with pytest.raises((ConflictException, routes.ForbiddenException)):
+        routes._merge_rank_report(report_api.instance, report_api.ctx, report)
+    assert report_api.instance.distributed_servers.workloads == [stored]
+
+
+@pytest.mark.parametrize(
+    'blocked', ['api', 'task', 'member', 'headless', 'error', 'draining']
+)
+def test_hybrid_endpoints_require_complete_ready_instance(report_api, blocked):
+    from gpustack.utils.model_instance_workers import model_instance_endpoints
+
+    tasks = [new_hybrid_workload(w, headless=w == 2, state='running') for w in (1, 2)]
+    tasks[0]['component']['ready'] = blocked != 'api'
+    if blocked == 'task':
+        tasks[0]['state'] = 'unknown'
+        tasks[0]['component']['ready'] = False
+    elif blocked == 'member':
+        tasks.pop()
+    elif blocked == 'headless':
+        tasks[1]['state'] = 'unknown'
+    instance = report_api.instance
+    instance.state = (
+        ModelInstanceStateEnum.ERROR
+        if blocked == 'error'
+        else ModelInstanceStateEnum.RUNNING
+    )
+    if blocked == 'draining':
+        instance.draining_since = datetime.now(timezone.utc)
+    instance.distributed_servers.workloads = DistributedServers(
+        workloads=tasks
+    ).workloads
+    assert model_instance_endpoints(instance) == []
+
+
+def test_hybrid_error_observation_clears_api_readiness(report_api):
+    from gpustack.schemas.models import ModelInstanceWorkload
+
+    task = ModelInstanceWorkload.model_validate(new_hybrid_workload(state='running'))
+    task.component.ready = True
+    report_api.instance.state = ModelInstanceStateEnum.ERROR
+    report = ModelInstanceRankReport(restart_count=0, workloads=[task])
+    merged = routes._merge_rank_report(report_api.instance, report_api.ctx, report)
+    assert merged.workloads[0].component.ready is False
+
+
+@pytest.mark.parametrize('cross_worker', [False, True])
+@pytest.mark.parametrize('worker_id', [1, 2, 3, 4])
+@pytest.mark.parametrize('wrong', [None, 'api', 'local_dp'])
+def test_hybrid_first_registration_matches_fragment_owner_and_local_dp(
+    report_api, cross_worker, worker_id, wrong
+):
+    from gpustack.schemas.models import PortBand
+
+    instance = report_api.instance
+    instance.gpu_indexes = [0, 1]
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=i, gpu_indexes=[0, 1])
+        for i in (2, 3, 4)
+    ]
+    instance.ports = [40000]
+    instance.named_ports = {'_vllm_external_api': PortBand(base=40000)}
+    model = new_model(
+        1,
+        'hybrid',
+        huggingface_repo_id='org/moe',
+        backend='vLLM',
+        backend_parameters=[
+            '--data-parallel-hybrid-lb',
+            '--dp=2' if cross_worker else '--dp=4',
+            '--tp=4' if cross_worker else '--tp=2',
+        ],
+    )
+    headless = cross_worker and worker_id in (2, 4)
+    task = new_hybrid_workload(worker_id, headless=headless)
+    if not headless:
+        task['component']['dp_size'] = 1
+    if wrong == 'api':
+        task['component'] = (
+            {'kind': 'vllm_hybrid'}
+            if not headless
+            else {'kind': 'vllm_hybrid', 'api_port': 40000, 'dp_size': 1}
+        )
+    elif wrong == 'local_dp':
+        if headless:
+            task['component']['dp_size'] = 2
+        else:
+            task['component']['dp_size'] = 2
+    workload = SimpleNamespace(
+        component=SimpleNamespace(
+            **{'api_port': None, 'dp_size': None, **task['component']}
+        ),
+        worker_id=worker_id,
+    )
+    if wrong:
+        with pytest.raises(BadRequestException):
+            routes._validate_hybrid_component_layout(instance, model, [workload])
+    else:
+        routes._validate_hybrid_component_layout(instance, model, [workload])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('api_port', [40000, 49999])
+async def test_hybrid_first_registration_rejects_rank_report_format(
+    report_api, monkeypatch, api_port
+):
+    from gpustack.schemas.models import PortBand
+
+    api = report_api
+    api.instance.gpu_indexes = [0, 1, 2, 3]
+    api.instance.distributed_servers = DistributedServers(workloads=[])
+    api.instance.port = 40000
+    api.instance.ports = [40000]
+    api.instance.named_ports = {'_vllm_external_api': PortBand(base=40000)}
+    monkeypatch.setattr(
+        routes.Model,
+        'one_by_id_with_refresh',
+        AsyncMock(
+            return_value=new_model(
+                1,
+                'hybrid',
+                huggingface_repo_id='org/moe',
+                backend='vLLM',
+                backend_parameters=['--data-parallel-hybrid-lb', '--tp=2', '--dp=2'],
+            )
+        ),
+    )
+    workload = new_model_instance_workload(
+        worker_id=1,
+        state='running',
+        dp_rank_placements=[
+            dict(
+                dp_rank=0,
+                node_rank=0,
+                gpu_indexes=[0, 1, 2, 3],
+                api_port=api_port,
+                ready=True,
+            )
+        ],
+    )
+    response = await put(api, [workload])
+    assert response.status_code == 400, response.text
+    assert api.instance.distributed_servers.workloads == []
+    api.service.update.assert_not_awaited()

@@ -2104,7 +2104,8 @@ async def _sync_replicas_legacy(session: AsyncSession, model: Model):
 
             if (
                 get_backend(model) == BackendEnum.VLLM
-                and vllm_lb_mode(model.backend_parameters) in ("external", "native")
+                and vllm_lb_mode(model.backend_parameters)
+                in ("external", "multi_port_external", "hybrid")
             ) or sglang_smg_mode(model):
                 instance.distributed_servers = DistributedServers(workloads=[])
                 instance.spec_digest = await model_spec_digest(session, model)
@@ -2547,7 +2548,7 @@ async def _build_instance_create(
             if model.disaggregation is not None
             and role.name in ("prefill", "decode")
             and get_backend(effective) == BackendEnum.VLLM
-            and vllm_lb_mode(effective.backend_parameters) == "external"
+            and vllm_lb_mode(effective.backend_parameters) in ("external", "hybrid")
             else None
         ),
     )

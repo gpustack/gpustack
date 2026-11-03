@@ -769,3 +769,104 @@ async def test_source_worker_rpc_starts_only_after_database_session_exits(operat
         else:
             await get_model_instance_log_options(MagicMock(), MagicMock(), 7)
     assert state['rpc'] == 1
+
+
+def _hybrid_log_instance():
+    from gpustack.schemas.models import (
+        DistributedServers,
+        ModelInstanceSubordinateWorker,
+    )
+    from tests.worker.test_runtime_metrics import _hybrid_tasks
+
+    instance = _instance()
+    instance.restart_count = 3
+    instance.distributed_servers = DistributedServers(
+        workloads=_hybrid_tasks(),
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(worker_id=i) for i in (2, 3, 4)
+        ],
+    )
+    return instance
+
+
+@pytest.mark.asyncio
+async def test_hybrid_download_includes_every_api_and_compute_worker_once():
+    from gpustack.schemas.models import ModelInstanceLogSource
+
+    instance = _hybrid_log_instance()
+    options = {}
+    logs = {}
+    for worker_id in (1, 2, 3, 4):
+        source = ModelInstanceLogSource(
+            id=f'engine-{worker_id}',
+            worker_id=worker_id,
+            restart_count=3,
+            kind='workload',
+            component_kind='vllm_hybrid',
+            workload_name=f'hybrid-{worker_id}',
+            label='Engine',
+            available=True,
+        )
+        options[f'worker-{worker_id}'] = ServeLogOptionsResponse(
+            restarts=[ModelInstanceLogRestartEntry(sources=[source])]
+        )
+        logs[(f'worker-{worker_id}', source.id)] = (
+            200,
+            [f'worker-{worker_id}\n'.encode()],
+        )
+    response, body = await _download(
+        instance,
+        [_target(i, f'worker-{i}') for i in (1, 2, 3, 4)],
+        options=options,
+        logs=logs,
+    )
+    with zipfile.ZipFile(io.BytesIO(body)) as archive:
+        assert sorted(archive.read(name) for name in archive.namelist()) == [
+            f'worker-{i}\n'.encode() for i in (1, 2, 3, 4)
+        ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('worker_id', [1, 2, 3, 4])
+@pytest.mark.parametrize('previous', [False, True])
+async def test_hybrid_selected_logs_bind_worker_current_or_previous_generation(
+    worker_id, previous
+):
+    from gpustack.schemas.models import ModelInstanceLogSource
+    from gpustack.routes.model_instances import _resolve_visible_log_source
+    from gpustack.api.exceptions import NotFoundException
+
+    instance = _hybrid_log_instance()
+    source = ModelInstanceLogSource(
+        id='opaque',
+        worker_id=worker_id,
+        restart_count=2 if previous else 3,
+        previous=previous,
+        kind='workload',
+        label='Engine',
+        available=True,
+        component_kind='vllm_hybrid',
+        workload_name=f'hybrid-{worker_id}',
+    )
+    payload = ServeLogOptionsResponse(
+        restarts=[ModelInstanceLogRestartEntry(previous=previous, sources=[source])]
+    )
+    worker = SimpleNamespace(id=worker_id, cluster_id=1)
+    with patch(
+        f'{MODULE}.fetch_serve_log_options_from_worker', AsyncMock(return_value=payload)
+    ):
+        _, descriptor = await _resolve_visible_log_source(
+            MagicMock(), instance, worker, 'opaque'
+        )
+        assert descriptor == source
+        for changes in (
+            {'worker_id': 9},
+            {'restart_count': 0},
+            {'previous': not previous},
+        ):
+            invalid = source.model_copy(update=changes)
+            payload.restarts[0].sources = [invalid]
+            with pytest.raises(NotFoundException):
+                await _resolve_visible_log_source(
+                    MagicMock(), instance, worker, 'opaque'
+                )

@@ -1341,7 +1341,7 @@ class ModelInstanceService:
     async def reconcile_managed_instance(
         self, instance_id: int, restart_count: int, *, allow_restart: bool = True
     ) -> Optional[float]:
-        """Recover a failed SMG alone, or stop and advance a failed Engine generation.
+        """Recover an SMG alone, or stop and advance a failed communication group.
 
         Returns the remaining restart backoff, if a timer is needed. This owns
         its transaction; callers must not have pending writes in the session.
@@ -1368,7 +1368,7 @@ class ModelInstanceService:
                         for item in workloads
                         if (
                             item.component is None
-                            or item.component.kind == "sglang_engine"
+                            or item.component.kind != "sglang_smg"
                         )
                         and (
                             item.state == ModelInstanceWorkloadStateEnum.FAILED
@@ -1401,7 +1401,10 @@ class ModelInstanceService:
                     and allow_restart
                 ):
                     source, due = await self._managed_restart(instance, workloads)
-                elif any(item.component is not None for item in workloads):
+                elif any(
+                    item.component is not None and item.component.kind == "sglang_smg"
+                    for item in workloads
+                ):
                     source, due = await self._managed_smg_reconcile(
                         instance, workloads, allow_restart=allow_restart
                     )
@@ -1433,7 +1436,21 @@ class ModelInstanceService:
         members = set(member_worker_ids(instance))
         if not workloads or {item.worker_id for item in workloads} != members:
             return False
-        if any(item.component is not None for item in workloads):
+        if any(
+            item.component is not None and item.component.kind == "vllm_hybrid"
+            for item in workloads
+        ):
+            apis = [w for w in workloads if w.component and w.component.api_port]
+            ready = (
+                len(workloads) == len(members)
+                and all(
+                    w.component is not None and w.component.kind == "vllm_hybrid"
+                    for w in workloads
+                )
+                and bool(apis)
+                and all(w.component.ready for w in apis)
+            )
+        elif any(item.component is not None for item in workloads):
             engines = [
                 w
                 for w in workloads

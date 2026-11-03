@@ -63,7 +63,7 @@ from tests.utils.model import new_model, new_model_instance
         ([], "internal"),
         (["--data-parallel-size 4"], "internal"),
         (["--data-parallel-external-lb"], "external"),
-        (["--data-parallel-multi-port-external-lb"], "native"),
+        (["--data-parallel-multi-port-external-lb"], "multi_port_external"),
         (["--data-parallel-hybrid-lb"], "hybrid"),
     ],
 )
@@ -350,21 +350,35 @@ def test_external_unsupported_device_or_executor_overrides_are_rejected(paramete
         )
 
 
-@pytest.mark.parametrize("mode", ["external", "internal", "native", "native_managed"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "external",
+        "internal",
+        "multi_port_external",
+        "multi_port_external_managed",
+        "hybrid",
+    ],
+)
 def test_vllm_workload_creation_uses_the_selected_lifecycle(monkeypatch, mode):
     backend, plan = _external_backend()
-    if mode == "native_managed":
+    if mode == "hybrid":
+        backend._model.backend_parameters[0] = '--data-parallel-hybrid-lb'
+        backend._model_instance.named_ports['_vllm_external_api'] = PortBand(base=40000)
+    elif mode == "multi_port_external_managed":
         backend._model.backend_parameters[0] = '-dpm'
         backend._model_instance.named_ports['_vllm_external_api'] = PortBand(
             base=40000, count=2
         )
-        backend._model_instance.named_ports['_vllm_native_supervisor'] = PortBand(
-            base=40030
+        backend._model_instance.named_ports['_vllm_multi_port_external_supervisor'] = (
+            PortBand(base=40030)
         )
     elif mode != "external":
         backend._model_instance.distributed_servers = None
         backend._model.backend_parameters = (
-            ["--data-parallel-multi-port-external-lb"] if mode == "native" else []
+            ["--data-parallel-multi-port-external-lb"]
+            if mode == "multi_port_external"
+            else []
         ) + ["--data-parallel-size=2"]
     from unittest.mock import MagicMock
 
@@ -385,13 +399,13 @@ def test_vllm_workload_creation_uses_the_selected_lifecycle(monkeypatch, mode):
         '#!/bin/sh\nexec "$@"',
         (
             ["/models/moe", *backend._model.backend_parameters]
-            if mode == 'native_managed'
+            if mode in ('multi_port_external_managed', 'hybrid')
             else ["/models/moe"]
         ),
         {},
         "image",
     )
-    if mode not in ("external", "native_managed"):
+    if mode not in ("external", "multi_port_external_managed", "hybrid"):
         create.assert_called_once()
         backend._workload_plan_callback.assert_not_called()
         assert create.call_args.args[0].containers[0].files == []
@@ -403,7 +417,12 @@ def test_vllm_workload_creation_uses_the_selected_lifecycle(monkeypatch, mode):
     assert "1,3,5,7" in plans[0].containers[0].resources.values()
     cloned = pickle.loads(pickle.dumps((manifests, plans)))
     assert cloned[0][0] == manifests[0]
-    if mode == 'native_managed':
+    if mode == 'hybrid':
+        assert manifests[0].component.kind == 'vllm_hybrid'
+        assert '--data-parallel-hybrid-lb' in cloned[1][0].containers[0].execution.args
+        assert cloned[1][0].containers[0].files == []
+        return
+    if mode == 'multi_port_external_managed':
         argv = cloned[1][0].containers[0].execution.args
         assert '--data-parallel-multi-port-external-lb' in argv
         assert cloned[1][0].containers[0].files == []
@@ -2871,6 +2890,8 @@ def test_managed_router_records_the_same_peers_it_renders(monkeypatch):
         group_id="g",
         worker_id=7,
         port=8000,
+        ports=[8000],
+        distributed_servers=None,
         state="running",
         named_ports={"bootstrap": PortBand(base=9000)},
         draining_since=None,
@@ -2902,6 +2923,7 @@ def test_managed_router_records_the_same_peers_it_renders(monkeypatch):
     assert apply.call_args.kwargs["peers"] == {
         "prefill": [renderer.PeerAddress("10.0.0.1", 8000, {"bootstrap": 9000})]
     }
+    assert "intra_node_data_parallel_size" not in apply.call_args.kwargs["variables"]
     server._update_model_instance.assert_called_once_with(
         3, router_peer_snapshot=router_peer_snapshot([peer], "g", {7: "10.0.0.1"})
     )
@@ -3083,31 +3105,31 @@ def test_managed_backend_version_conflict_stops_preparation_before_model_write()
 @pytest.mark.parametrize(
     'parameters, mode',
     [
-        (['-dpm', '-dpr', '2'], 'native'),
+        (['-dpm', '-dpr', '2'], 'multi_port_external'),
         (
             ['--data-parallel-multi-port-external-lb', '--data-parallel-start-rank=0'],
-            'native',
+            'multi_port_external',
         ),
         (['-dpe'], 'external'),
     ],
 )
-def test_native_mode_preserves_start_rank_alias(parameters, mode):
+def test_multi_port_external_mode_preserves_start_rank_alias(parameters, mode):
     assert vllm_lb_mode(parameters) == mode
 
 
 @pytest.mark.parametrize('vendor', ['NVIDIA', 'Huawei'])
-def test_native_plan_uses_original_dps_and_contiguous_apis(vendor):
+def test_multi_port_external_plan_uses_vllm_launcher_and_contiguous_apis(vendor):
     backend, plan = _external_backend(vendor=vendor)
     backend._model.backend_parameters = ['-dpm', '--dp=2', '--tp=2']
     backend._model_instance.gpu_indexes = [1, 3, 5, 7]
     backend._model_instance.named_ports['_vllm_external_api'] = PortBand(
         base=40000, count=2
     )
-    backend._model_instance.named_ports['_vllm_native_supervisor'] = PortBand(
-        base=40030
+    backend._model_instance.named_ports['_vllm_multi_port_external_supervisor'] = (
+        PortBand(base=40030)
     )
     backend._override_entrypoint = lambda command, args, script: (command, args)
-    manifest = backend._configure_native_workload(
+    manifest = backend._configure_multi_port_external_workload(
         plan, ['vllm', 'serve'], ['/models/moe', *backend._model.backend_parameters]
     )
     argv = plan.containers[0].execution.command + plan.containers[0].execution.args
@@ -3122,7 +3144,7 @@ def test_native_plan_uses_original_dps_and_contiguous_apis(vendor):
 
 
 @pytest.mark.parametrize('worker_index', [0, 1])
-def test_native_dps_cross_worker_apis_have_real_global_ranks(worker_index):
+def test_multi_port_external_cross_worker_apis_have_real_global_ranks(worker_index):
     from gpustack.schemas.models import ModelInstanceSubordinateWorker
 
     backend, plan = _external_backend()
@@ -3136,10 +3158,10 @@ def test_native_dps_cross_worker_apis_have_real_global_ranks(worker_index):
         )
     ]
     mi.named_ports['_vllm_external_api'] = PortBand(base=40000, count=4)
-    mi.named_ports['_vllm_native_supervisor'] = PortBand(base=40030)
+    mi.named_ports['_vllm_multi_port_external_supervisor'] = PortBand(base=40030)
     backend._worker.id = 7 + worker_index
     backend._worker.ip = f'10.0.0.{7 + worker_index}'
-    manifest = backend._configure_native_workload(
+    manifest = backend._configure_multi_port_external_workload(
         plan, ['vllm', 'serve'], ['/models/moe', *backend._model.backend_parameters]
     )
     argv = plan.containers[0].execution.command
@@ -3155,15 +3177,15 @@ def test_native_dps_cross_worker_apis_have_real_global_ranks(worker_index):
     assert env['VLLM_DP_MASTER_IP'] == '10.0.0.7'
 
 
-@pytest.mark.parametrize('native', [False, True])
+@pytest.mark.parametrize('multi_port_external', [False, True])
 @pytest.mark.parametrize('flag', ['--ssl-keyfile=key.pem', '--ssl-certfile=cert.pem'])
-def test_managed_rank_http_contract_rejects_tls(native, flag):
+def test_managed_rank_http_contract_rejects_tls(multi_port_external, flag):
     backend, plan = _external_backend()
-    if native:
+    if multi_port_external:
         backend._model.backend_parameters[0] = '-dpm'
     configure = (
-        backend._configure_native_workload
-        if native
+        backend._configure_multi_port_external_workload
+        if multi_port_external
         else backend._configure_external_workload
     )
     with pytest.raises(ValueError, match='routes and health checks.*HTTP'):
@@ -3183,13 +3205,13 @@ def test_external_command_cannot_switch_to_another_load_balancing_mode(parameter
         )
 
 
-def test_native_custom_command_retains_supported_dps_parameters():
+def test_multi_port_external_custom_command_retains_supervisor_parameters():
     backend, plan = _external_backend()
     backend._model.backend_parameters[0] = '-dpm'
     mi = backend._model_instance
     mi.named_ports['_vllm_external_api'] = PortBand(base=40000, count=2)
-    mi.named_ports['_vllm_native_supervisor'] = PortBand(base=40030)
-    manifest = backend._configure_native_workload(
+    mi.named_ports['_vllm_multi_port_external_supervisor'] = PortBand(base=40030)
+    manifest = backend._configure_multi_port_external_workload(
         plan,
         [
             'vllm',
@@ -3406,7 +3428,7 @@ def test_managed_pd_dense_tp_across_workers_keeps_one_engine_identity():
     assert identities == ['gpustack-1-r3-dp0'] * 2
 
 
-def _managed_pd_backend_case(mode, env=None):
+def _managed_pd_backend_case(mode, env=None, *, hybrid=False):
     from gpustack.schemas.models import (
         Model,
         RoleSpec,
@@ -3418,6 +3440,9 @@ def _managed_pd_backend_case(mode, env=None):
         vendor='Huawei' if mode == 'vllm-ascend-mooncake' else 'NVIDIA'
     )
     parameters = list(backend._model.backend_parameters)
+    if hybrid:
+        parameters[0] = '--data-parallel-hybrid-lb'
+        backend._model_instance.named_ports['_vllm_external_api'] = PortBand(base=40000)
     model = Model(
         id=1,
         name='pd',
@@ -3452,6 +3477,7 @@ def _managed_pd_backend_case(mode, env=None):
     return backend, plan
 
 
+@pytest.mark.parametrize('hybrid', [False, True])
 @pytest.mark.parametrize(
     'mode,key,value',
     [
@@ -3460,10 +3486,15 @@ def _managed_pd_backend_case(mode, env=None):
         ('vllm-ascend-mooncake', 'HCCL_IF_IP', '10.99.0.1'),
     ],
 )
-def test_managed_pd_rejects_reserved_endpoint_env_conflicts(mode, key, value):
-    backend, plan = _managed_pd_backend_case(mode, {key: value})
+def test_managed_pd_rejects_reserved_endpoint_env_conflicts(mode, key, value, hybrid):
+    backend, plan = _managed_pd_backend_case(mode, {key: value}, hybrid=hybrid)
+    configure = (
+        backend._configure_hybrid_workload
+        if hybrid
+        else backend._configure_external_workload
+    )
     with pytest.raises(ValueError, match='reserved connector'):
-        backend._configure_external_workload(plan, ['vllm', 'serve'], ['/models/moe'])
+        configure(plan, ['vllm', 'serve'], ['/models/moe'])
 
 
 @pytest.mark.parametrize('port', [None, 40200, 49999])
@@ -3896,3 +3927,236 @@ def test_legacy_single_node_sglang_dpa_keeps_native_port_selection():
     backend._model_instance.distributed_servers.workloads = None
     backend._model.backend_parameters.append('--enable-dp-attention')
     assert backend._get_multinode_arguments(True) == []
+
+
+@pytest.mark.parametrize('worker_index', [0, 1])
+@pytest.mark.parametrize('vendor', ['NVIDIA', 'Huawei'])
+def test_hybrid_native_launcher_keeps_one_shared_api_and_local_engine_pool(
+    worker_index, vendor
+):
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+
+    backend, plan = _external_backend(vendor=vendor)
+    mi = backend._model_instance
+    mi.worker_ip = '10.0.0.7'
+    mi.gpu_indexes = [1, 3, 5, 7]
+    mi.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
+            worker_id=8, worker_ip='10.0.0.8', gpu_indexes=[1, 3, 5, 7]
+        )
+    ]
+    mi.ports = [40000, 40010]
+    mi.named_ports = {
+        '_vllm_external_api': PortBand(base=40000),
+        '_vllm_external_rpc': PortBand(base=40010),
+    }
+    backend._model.backend_parameters = [
+        '--data-parallel-hybrid-lb',
+        '--dp=4',
+        '--tp=2',
+        '--api-server-count=3',
+    ]
+    backend._worker.id = 7 + worker_index
+    backend._worker.ip = f'10.0.0.{7 + worker_index}'
+    manifest = backend._configure_hybrid_workload(
+        plan,
+        ['vllm', 'serve'],
+        ['/models/moe', *backend._model.backend_parameters, '--port=1234'],
+    )
+    argv = plan.containers[0].execution.command + (
+        plan.containers[0].execution.args or []
+    )
+    assert argv[:3] == ['vllm', 'serve', '/models/moe']
+    assert '--data-parallel-hybrid-lb' in argv
+    assert '--data-parallel-external-lb' not in argv
+    assert '--api-server-count=3' in argv
+    assert argv[argv.index('--data-parallel-size-local') + 1] == '2'
+    assert argv[argv.index('--data-parallel-start-rank') + 1] == str(worker_index * 2)
+    assert argv[argv.index('--port') + 1] == '40000'
+    assert argv[argv.index('--host') + 1] == backend._worker.ip
+    assert '--headless' not in argv
+    assert manifest.component.kind == 'vllm_hybrid'
+    assert manifest.component.api_port == 40000
+    assert manifest.component.dp_size == 2
+    assert manifest.dp_rank_placements == []
+    assert not plan.containers[0].files
+
+
+@pytest.mark.parametrize('worker_index', [0, 1, 2, 3])
+def test_hybrid_cross_worker_single_fragment_has_true_api_owner(worker_index):
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+
+    backend, plan = _external_backend(dp=1)
+    mi = backend._model_instance
+    mi.worker_ip = '10.0.0.7'
+    mi.gpu_indexes = [1, 3]
+    mi.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
+            worker_id=7 + i, worker_ip=f'10.0.0.{7+i}', gpu_indexes=[1, 3]
+        )
+        for i in (1, 2, 3)
+    ]
+    mi.ports = [40000, 40010, 40020, 40100]
+    mi.named_ports = {
+        '_vllm_external_api': PortBand(base=40000),
+        '_vllm_external_rpc': PortBand(base=40010),
+        '_vllm_mp_connecting': PortBand(base=40020, count=10),
+        '_vllm_external_store': PortBand(base=40100, count=2),
+    }
+    backend._model.backend_parameters = [
+        '--data-parallel-hybrid-lb',
+        '--dp=2',
+        '--tp=4',
+        '--api-server-count=2',
+    ]
+    backend._worker.id = 7 + worker_index
+    backend._worker.ip = f'10.0.0.{7 + worker_index}'
+    manifest = backend._configure_hybrid_workload(
+        plan, ['vllm', 'serve'], ['/models/moe', *backend._model.backend_parameters]
+    )
+    if worker_index % 2:
+        config = json.loads(
+            next(
+                f.content
+                for f in plan.containers[0].files
+                if f.path.endswith('tasks.json')
+            )
+        )
+        assert len(config['tasks']) == 1
+        argv = config['tasks'][0]['argv'][6:]
+        assert '--headless' in argv
+        assert '--data-parallel-hybrid-lb' not in argv
+        assert manifest.component.api_port is None
+        assert manifest.component.dp_size is None
+    else:
+        argv = plan.containers[0].execution.command + (
+            plan.containers[0].execution.args or []
+        )
+        assert '--headless' not in argv
+        assert '--data-parallel-hybrid-lb' in argv
+        assert manifest.component.api_port == 40000
+        assert manifest.component.dp_size == 1
+    assert argv[argv.index('--nnodes') + 1] == '4'
+    assert argv[argv.index('--node-rank') + 1] == str(worker_index)
+    assert argv[argv.index('--master-addr') + 1] == '10.0.0.7'
+    assert argv[argv.index('--master-port') + 1] == '40100'
+    assert argv[argv.index('--data-parallel-start-rank') + 1] == str(worker_index // 2)
+
+
+@pytest.mark.parametrize('equal', [False, True])
+@pytest.mark.parametrize('composed', [False, True])
+@pytest.mark.parametrize('port', [None, 40200, 49999])
+def test_hybrid_pd_validates_final_connector_json_without_fixing_engine_identity(
+    equal, composed, port
+):
+    backend, plan = _managed_pd_backend_case('vllm-ascend-mooncake', hybrid=True)
+    connector = {
+        'kv_connector': 'MooncakeHybridConnector',
+        'kv_role': 'kv_producer',
+    }
+    if port is not None:
+        connector['kv_port'] = port
+    descriptor = (
+        {
+            'kv_connector': 'MultiConnector',
+            'kv_connector_extra_config': {
+                'connectors': [
+                    connector,
+                    {'kv_connector': 'SimpleCPUOffloadConnector'},
+                ],
+            },
+        }
+        if composed
+        else connector
+    )
+    raw = json.dumps(descriptor)
+    arguments = ['/models/moe'] + (
+        ['--kv-transfer-config=' + raw] if equal else ['--kv-transfer-config', raw]
+    )
+    backend._pd_engine_identity = lambda *args: pytest.fail(
+        'shared API pinned engine identity'
+    )
+    if port == 49999:
+        with pytest.raises(ValueError, match='reserved connector'):
+            backend._configure_hybrid_workload(plan, ['vllm', 'serve'], arguments)
+        return
+    manifest = backend._configure_hybrid_workload(plan, ['vllm', 'serve'], arguments)
+    argv = plan.containers[0].execution.command + (
+        plan.containers[0].execution.args or []
+    )
+    actual_raw = next(
+        (
+            arg.split('=', 1)[1]
+            for arg in argv
+            if arg.startswith('--kv-transfer-config=')
+        ),
+        None,
+    )
+    if actual_raw is None:
+        actual_raw = argv[argv.index('--kv-transfer-config') + 1]
+    actual = json.loads(actual_raw)
+    connector['kv_port'] = 40200
+    assert actual == descriptor
+    assert manifest.component.dp_size == 2
+    assert {env.name: env.value for env in plan.containers[0].envs}[
+        'HCCL_IF_IP'
+    ] == '10.0.0.7'
+
+
+@pytest.mark.parametrize('mode', ['vllm-nixl', 'vllm-ascend-mooncake'])
+@pytest.mark.parametrize('worker_index', [0, 1])
+def test_hybrid_pd_cross_worker_api_and_compute_tasks_keep_local_connector_address(
+    mode, worker_index
+):
+    from gpustack.schemas.models import (
+        ModelInstanceSubordinateWorker,
+        role_effective_model,
+    )
+
+    backend, plan = _managed_pd_backend_case(mode, hybrid=True)
+    for role in backend._model_spec.roles:
+        role.backend_parameters = ['--data-parallel-hybrid-lb', '--dp=2', '--tp=4']
+    backend._model = role_effective_model(backend._model_spec, 'prefill')
+    instance = backend._model_instance
+    instance.worker_ip = '10.0.0.7'
+    instance.gpu_indexes = [1, 3]
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
+            worker_id=7 + index, worker_ip=f'10.0.0.{7 + index}', gpu_indexes=[1, 3]
+        )
+        for index in (1, 2, 3)
+    ]
+    instance.named_ports['_vllm_external_store'] = PortBand(base=40300, count=2)
+    instance.named_ports['kv_port'] = PortBand(base=40200, count=8)
+    devices = backend._get_selected_gpu_devices()
+    backend._get_selected_gpu_devices = lambda: devices[:2]
+    backend._worker.id = 7 + worker_index
+    backend._worker.ip = f'10.0.0.{7 + worker_index}'
+    manifest = backend._configure_hybrid_workload(
+        plan, ['vllm', 'serve'], ['/models/moe']
+    )
+    container = plan.containers[0]
+    if worker_index:
+        tasks = json.loads(
+            next(
+                file.content
+                for file in container.files
+                if file.path.endswith('tasks.json')
+            )
+        )['tasks']
+        assert len(tasks) == 1
+        argv = tasks[0]['argv']
+    else:
+        argv = container.execution.command + (container.execution.args or [])
+    descriptor = json.loads(argv[argv.index('--kv-transfer-config') + 1])
+    assert 'engine_id' not in descriptor
+    assert argv[argv.index('--data-parallel-size') + 1] == '2'
+    assert argv[argv.index('--data-parallel-size-local') + 1] == '1'
+    env = {item.name: item.value for item in container.envs}
+    key = (
+        'HCCL_IF_IP'
+        if mode == 'vllm-ascend-mooncake'
+        else 'VLLM_NIXL_SIDE_CHANNEL_HOST'
+    )
+    assert env[key] == backend._worker.ip
+    assert manifest.component.api_port == (40000 if worker_index == 0 else None)

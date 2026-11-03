@@ -836,8 +836,10 @@ def _runtime_instance(workloads, **overrides):
     return ModelInstance(**fields)
 
 
-async def _runtime_info(instance):
-    model = _pd_model(None, disaggregation=None, instances=[instance])
+async def _runtime_info(instance, **model_overrides):
+    model = _pd_model(
+        None, disaggregation=None, instances=[instance], **model_overrides
+    )
     exporter = MetricExporter(SimpleNamespace(metrics_port=10161))
     cluster = _cluster_with_model(model)
     cluster.cluster_workers = [
@@ -1149,3 +1151,135 @@ async def test_incomplete_new_info_does_not_discard_existing_instance_metrics():
         if m.name
         in ('gpustack:model_instance_source', 'gpustack:model_instance_placement')
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cross_worker', [False, True])
+async def test_hybrid_shared_api_device_info_uses_existing_topology(cross_worker):
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+    from tests.worker.test_runtime_metrics import _hybrid_tasks
+
+    tasks = _hybrid_tasks()
+    if not cross_worker:
+        tasks = [tasks[0], tasks[2]]
+        for task in tasks:
+            task['component']['dp_size'] = 2
+    instance = _runtime_instance(tasks, gpu_indexes=[0, 2, 4, 6])
+    allocations = {2: [1, 3, 5, 7], 3: [0, 1, 2, 3], 4: [4, 5, 6, 7]}
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=i, gpu_indexes=gpus)
+        for i, gpus in allocations.items()
+        if cross_worker or i == 3
+    ]
+    _, metrics = await _runtime_info(
+        instance,
+        backend_parameters=[
+            '--data-parallel-hybrid-lb',
+            '--tensor-parallel-size',
+            '8' if cross_worker else '2',
+            '--data-parallel-size',
+            '2' if cross_worker else '4',
+            '--data-parallel-size-local',
+            '1' if cross_worker else '2',
+        ],
+    )
+    sources = next(
+        m for m in metrics if m.name == 'gpustack:model_instance_source'
+    ).samples
+    placements = next(
+        m for m in metrics if m.name == 'gpustack:model_instance_placement'
+    ).samples
+    assert {s.labels['worker_id'] for s in sources} == {'1', '3'}
+    assert len(sources) == 2
+    expected = {
+        (str(worker), str(gpu), str(1 if worker in (1, 2) else 3))
+        for worker, gpus in {1: [0, 2, 4, 6], **allocations}.items()
+        if cross_worker or worker in (1, 3)
+        for gpu in gpus
+    }
+    assert {
+        (
+            s.labels['placement_worker_id'],
+            s.labels['gpu_index'],
+            s.labels['source_worker_id'],
+        )
+        for s in placements
+    } == expected
+    assert all(s.labels['source_kind'] == 'vllm_hybrid' for s in placements)
+    assert all(
+        not ({'endpoint_dp_rank', 'dp_rank', 'engine'} & s.labels.keys())
+        for s in placements
+    )
+
+
+@pytest.mark.parametrize(
+    'parameters',
+    [None, [], ['--data-parallel-hybrid-lb', '--tensor-parallel-size', '99']],
+)
+def test_hybrid_device_mapping_requires_model_and_valid_topology(parameters):
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+    from gpustack.utils.model_instance_workers import (
+        model_instance_metrics_source_inventory,
+        model_instance_metrics_placements,
+    )
+    from tests.worker.test_runtime_metrics import _hybrid_tasks
+    from tests.utils.model import make_model
+
+    instance = _runtime_instance(_hybrid_tasks(), gpu_indexes=[0, 1, 2, 3])
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=i, gpu_indexes=[0, 1, 2, 3])
+        for i in (2, 3, 4)
+    ]
+    model = (
+        None
+        if parameters is None
+        else make_model(backend='vLLM', backend_parameters=parameters)
+    )
+    assert (
+        model_instance_metrics_placements(
+            instance, model_instance_metrics_source_inventory(instance), model
+        )
+        == []
+    )
+
+
+def test_hybrid_device_mapping_uses_pd_role_parameters():
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker, RoleSpec
+    from gpustack.utils.model_instance_workers import (
+        model_instance_metrics_source_inventory,
+        model_instance_metrics_placements,
+    )
+    from tests.worker.test_runtime_metrics import _hybrid_tasks
+    from tests.utils.model import make_model
+
+    instance = _runtime_instance(
+        _hybrid_tasks(), gpu_indexes=[0, 1, 2, 3], role='prefill'
+    )
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=i, gpu_indexes=[0, 1, 2, 3])
+        for i in (2, 3, 4)
+    ]
+    model = make_model(
+        backend='vLLM', backend_parameters=['--tensor-parallel-size', '99']
+    )
+    model.roles = [
+        RoleSpec(
+            name='prefill',
+            backend_parameters=[
+                '--data-parallel-hybrid-lb',
+                '--tensor-parallel-size',
+                '8',
+                '--data-parallel-size',
+                '2',
+            ],
+        )
+    ]
+    sources = model_instance_metrics_source_inventory(instance)
+    placements = model_instance_metrics_placements(instance, sources, model)
+    assert len(placements) == 16
+    assert {(p.worker_id, p.source.worker_id) for p in placements} == {
+        (1, 1),
+        (2, 1),
+        (3, 3),
+        (4, 3),
+    }

@@ -450,7 +450,7 @@ def test_component_log_file_has_a_distinct_source_namespace(tmp_path):
     assert component.kind != sidecar.kind
 
 
-def _rank_source_archive(tmp_path, native=False):
+def _rank_source_archive(tmp_path, multi_port_external=False):
     from tests.utils.model import new_model_instance
     from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
     from gpustack.worker.log_sources import (
@@ -474,7 +474,7 @@ def _rank_source_archive(tmp_path, native=False):
             )
         ]
     )
-    write_log_sources(tmp_path, instance, 7, native)
+    write_log_sources(tmp_path, instance, 7, multi_port_external)
     directory = restart_log_dir(tmp_path, instance.name, 42, 3)
     (directory / 'container.log').write_bytes(
         b'[dp0-node0] first\ncommon\n[dp1-node1] headless\n[dp0-node0] last\n'
@@ -511,8 +511,8 @@ def test_archived_rank_views_use_trusted_generation_metadata(tmp_path):
     )
 
 
-def test_native_logs_only_attribute_explicit_api_prefix(tmp_path):
-    _, _, sources = _rank_source_archive(tmp_path, native=True)
+def test_multi_port_external_logs_only_attribute_explicit_api_prefix(tmp_path):
+    _, _, sources = _rank_source_archive(tmp_path, multi_port_external=True)
     rank = next(
         s for s in sources if s.descriptor.kind == 'rank' and s.descriptor.dp_rank == 0
     )
@@ -900,3 +900,41 @@ async def test_cancelling_snapshot_read_tolerates_an_executing_generator(monkeyp
         release.set()
         assert await asyncio.to_thread(finished.wait, 2)
         await reader.aclose()
+
+
+@pytest.mark.parametrize('worker_id', [1, 2, 3, 4])
+def test_hybrid_logs_preserve_current_and_previous_worker_task_without_rank_views(
+    tmp_path, worker_id
+):
+    from tests.routes.test_worker_proxy import rank_instance
+    from tests.worker.test_runtime_metrics import _hybrid_tasks
+    from gpustack.schemas.models import ModelInstanceWorkload
+    from gpustack.worker.log_sources import (
+        write_log_sources,
+        restart_log_dir,
+        list_log_sources,
+        resolve_log_source,
+    )
+
+    instance = rank_instance.__wrapped__()
+    instance.distributed_servers.workloads = [
+        ModelInstanceWorkload.model_validate(t) for t in _hybrid_tasks()
+    ]
+    write_log_sources(tmp_path, instance, worker_id)
+    directory = restart_log_dir(tmp_path, instance.name, instance.id, 3)
+    (directory / 'container.log').write_bytes(b'[dp0-node1] compute\ncommon\n')
+    for current in (3, 4):
+        sources = list_log_sources(tmp_path, instance.id, worker_id, current)
+        workload = next(s for s in sources if s.descriptor.kind == 'workload')
+        assert workload.descriptor.component_kind == 'vllm_hybrid'
+        assert workload.descriptor.workload_name == f'hybrid-{worker_id}'
+        assert workload.descriptor.main == (worker_id in (1, 3))
+        assert workload.descriptor.previous == (current == 4)
+        assert not any(s.descriptor.kind == 'rank' for s in sources)
+        assert (
+            resolve_log_source(
+                tmp_path, instance.id, worker_id, current, workload.descriptor.id
+            ).paths
+            == workload.paths
+        )
+    assert list_log_sources(tmp_path, instance.id, worker_id, 5) == []

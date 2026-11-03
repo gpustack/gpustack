@@ -190,7 +190,7 @@ def test_static_external_pd_rejects_new_config_but_preserves_sparse_legacy_edits
 
 
 @pytest.mark.parametrize('backend', ['vLLM', 'SGLang'])
-def test_native_multiport_pd_is_rejected_only_for_vllm(backend):
+def test_multi_port_external_pd_is_rejected_only_for_vllm(backend):
     from gpustack.validation.pd.roles import validate_external_pd_membership
 
     if backend == 'vLLM':

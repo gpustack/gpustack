@@ -1645,7 +1645,7 @@ async def monitor_container_content(
 
 
 def write_log_sources(
-    log_dir: Path, instance, worker_id: int, native: Optional[bool] = None
+    log_dir: Path, instance, worker_id: int, multi_port_external: Optional[bool] = None
 ) -> None:
     """Persist only this generation's accepted local identities beside its logs."""
     from gpustack.utils.model_instance_workers import get_model_instance_workloads
@@ -1687,9 +1687,9 @@ def write_log_sources(
             ),
             attribution=(
                 (
-                    'native_api_rank'
-                    if native is True
-                    else 'supervisor_rank' if native is False else 'all'
+                    'multi_port_external_api_rank'
+                    if multi_port_external is True
+                    else 'supervisor_rank' if multi_port_external is False else 'all'
                 )
                 if task.dp_rank_placements
                 else 'all'
@@ -1787,12 +1787,17 @@ def _valid_log_source_record(record: dict) -> bool:
         ('sglang_smg', 'component'),
     ):
         return False
-    if record.get('component_kind') not in (None, 'sglang_engine', 'sglang_smg'):
+    if record.get('component_kind') not in (
+        None,
+        'sglang_engine',
+        'sglang_smg',
+        'vllm_hybrid',
+    ):
         return False
     if record.get('attribution', 'all') not in (
         'all',
         'supervisor_rank',
-        'native_api_rank',
+        'multi_port_external_api_rank',
     ):
         return False
     for name in ('workload_name', 'active_workload_name'):
@@ -1831,7 +1836,7 @@ class ResolvedLogSource:
         if self.attribution == 'supervisor_rank':
             match = re.match(r'^\[dp([0-9]+)-node([0-9]+)\] ', text)
             rank = (int(match[1]), int(match[2])) if match else None
-        elif self.attribution == 'native_api_rank':
+        elif self.attribution == 'multi_port_external_api_rank':
             match = re.match(r'^\(APIServer_DP([0-9]+) pid=[0-9]+\) ', text)
             rank = (int(match[1]), 0) if match else None
         else:
@@ -1913,7 +1918,10 @@ def list_log_sources(
             views = [base]
             placements = record.get('placements', [])
             attribution = record.get('attribution', 'all')
-            if placements and attribution in ('supervisor_rank', 'native_api_rank'):
+            if placements and attribution in (
+                'supervisor_rank',
+                'multi_port_external_api_rank',
+            ):
                 views += [
                     dict(
                         base,

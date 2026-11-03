@@ -436,6 +436,7 @@ def get_model_instance_info_from_model_name(
         dp_rank=target.dp_rank,
         component=target.component,
         attempt=target.attempt,
+        worker_id=target.worker_id,
     )
     if not port:
         raise NotFoundException(

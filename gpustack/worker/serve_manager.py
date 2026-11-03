@@ -550,8 +550,16 @@ class ServeManager(ContainerLogPersister):
         return (
             get_backend(model) == BackendEnum.VLLM
             and mi.role in (None, "prefill", "decode")
-            and vllm_lb_mode(model.backend_parameters) in ("external", "native")
+            and vllm_lb_mode(model.backend_parameters)
+            in ("external", "multi_port_external", "hybrid")
         ) or (mi.role is None and sglang_smg_mode(model))
+
+    @staticmethod
+    def _has_hybrid_components(mi: ModelInstance) -> bool:
+        return any(
+            w.component is not None and w.component.kind == "vllm_hybrid"
+            for w in get_model_instance_workloads(mi) or []
+        )
 
     @staticmethod
     def _component_plan_current(mi, item) -> bool:
@@ -937,7 +945,11 @@ class ServeManager(ContainerLogPersister):
     @staticmethod
     def _has_sglang_components(mi: ModelInstance) -> bool:
         workloads = get_model_instance_workloads(mi) or []
-        return bool(workloads) and all(w.component is not None for w in workloads)
+        return bool(workloads) and all(
+            w.component is not None
+            and w.component.kind in ("sglang_engine", "sglang_smg")
+            for w in workloads
+        )
 
     def _smg_key(self, mi, item):
         return (mi.id, mi.restart_count or 0, item.name, item.component.attempt)
@@ -2507,7 +2519,7 @@ class ServeManager(ContainerLogPersister):
                     )
         return targets
 
-    def _component_health_targets(self, mi):
+    def _component_health_targets(self, mi, model=None):
         targets = {}
         for workload in get_model_instance_workloads(mi, self._worker_id) or []:
             component = workload.component
@@ -2530,6 +2542,21 @@ class ServeManager(ContainerLogPersister):
                 3,
                 workload.state == ModelInstanceWorkloadStateEnum.RUNNING,
             )
+            if (
+                component.kind == 'vllm_hybrid'
+                and not startup
+                and model is not None
+                and mi.role is None
+            ):
+                config = _get_inference_health_check_config(model, mi.role)
+                if config['enabled']:
+                    targets[(*key[:5], 'inference')] = (
+                        component,
+                        config['interval'],
+                        config['timeout'],
+                        config['threshold'],
+                        workload.state == ModelInstanceWorkloadStateEnum.RUNNING,
+                    )
         return targets
 
     def _collect_component_health(self, report, targets, completed):
@@ -2540,12 +2567,12 @@ class ServeManager(ContainerLogPersister):
             if check is None or key not in targets:
                 continue
             _, _, _, threshold, running = targets[key]
-            if not running:
+            target = by_name[key[2]]
+            if not running or target.state != ModelInstanceWorkloadStateEnum.RUNNING:
                 processed.append((check, check.failures))
                 continue
             healthy, reason = check.future.result()
             failures = 0 if healthy or check.startup else check.failures + 1
-            target = by_name[key[2]]
             target.component.ready = (
                 healthy if check.startup or healthy else target.component.ready
             )
@@ -2570,7 +2597,7 @@ class ServeManager(ContainerLogPersister):
         return diagnostic, processed
 
     def _sync_component_health(self, current, model, completed):
-        targets = self._component_health_targets(current)
+        targets = self._component_health_targets(current, model)
         with self._rank_health_lock:
             for key, check in list(self._rank_health_checks.items()):
                 if key[0] == current.id and key not in targets:
@@ -2604,12 +2631,22 @@ class ServeManager(ContainerLogPersister):
                 if check is not None and target.component.ready:
                     check.startup = False
         worker = self._clientset.workers.get(id=self._worker_id)
+        path = '/health'
+        if self._has_hybrid_components(current):
+            path = (
+                self._get_health_check_path(
+                    get_backend(model), model.owner_principal_id
+                )
+                or '/health'
+            )
+            if model.env and 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in model.env:
+                path = model.env['GPUSTACK_MODEL_HEALTH_CHECK_PATH']
         self._schedule_rank_health(
             current,
             model,
-            self._component_health_targets(current),
+            self._component_health_targets(current, model),
             worker.ip,
-            '/health',
+            path,
         )
 
     def _collect_rank_health(self, report, targets, completed):
@@ -2668,6 +2705,7 @@ class ServeManager(ContainerLogPersister):
             startup_only
             and mi.state == ModelInstanceStateEnum.RUNNING
             and not self._has_sglang_components(mi)
+            and not self._has_hybrid_components(mi)
         ):
             return
         try:
@@ -2694,14 +2732,17 @@ class ServeManager(ContainerLogPersister):
                 self._clear_rank_health(mi.id, mi.restart_count or 0)
                 return
             model = self._get_model(current)
-            if self._has_sglang_components(current):
+            if self._has_sglang_components(current) or self._has_hybrid_components(
+                current
+            ):
                 self._sync_component_health(current, model, completed)
                 return
             if (
                 current.role not in (None, "prefill", "decode")
                 or get_backend(model) != BackendEnum.VLLM
                 or get_model_instance_workloads(current) is None
-                or vllm_lb_mode(model.backend_parameters) not in ('external', 'native')
+                or vllm_lb_mode(model.backend_parameters)
+                not in ('external', 'multi_port_external')
             ):
                 self._clear_rank_health(mi.id)
                 return
@@ -2798,7 +2839,7 @@ class ServeManager(ContainerLogPersister):
                     )
                 target = mi.model_copy(deep=True)
                 target.worker_ip, target.port = worker_ip, placement.api_port
-                if key[5] == 'component':
+                if key[5] == 'component' and key[3] != 'vllm_hybrid':
                     main = next(
                         (
                             w.component
@@ -2824,7 +2865,12 @@ class ServeManager(ContainerLogPersister):
                     )
                 else:
                     check.future = self._rank_health_executor.submit(
-                        _probe_rank_health, target, model, path, key[5], timeout
+                        _probe_rank_health,
+                        target,
+                        model,
+                        path,
+                        'get' if key[5] == 'component' else key[5],
+                        timeout,
                     )
                 self._rank_health_futures[key] = check.future
                 self._rank_health_last_dispatch[mi.id] = time.monotonic()
@@ -3446,9 +3492,9 @@ class ServeManager(ContainerLogPersister):
                 ):
                     return
                 bands = mi.named_ports or {}
-                native = None
-                if '_vllm_native_supervisor' in bands:
-                    native = True
+                multi_port_external = None
+                if '_vllm_multi_port_external_supervisor' in bands:
+                    multi_port_external = True
                 elif all(
                     name in bands
                     for name in (
@@ -3457,9 +3503,9 @@ class ServeManager(ContainerLogPersister):
                         '_vllm_mp_connecting',
                     )
                 ):
-                    native = False
+                    multi_port_external = False
                 write_log_sources(
-                    Path(self._serve_log_dir), mi, self._worker_id, native
+                    Path(self._serve_log_dir), mi, self._worker_id, multi_port_external
                 )
         except Exception as exc:
             logger.warning("Cannot persist log sources for instance %s: %s", mi.id, exc)
@@ -3943,19 +3989,24 @@ class ServeManager(ContainerLogPersister):
         ]
         topology = managed_lb_parallelism(model.backend_parameters, counts)
         bands = {}
+        hybrid = vllm_lb_mode(model.backend_parameters) == "hybrid"
+        api_count = 1 if hybrid else topology.dp
         requests = [
-            (_VLLM_MP_CONNECTING_BAND_NAME, _VLLM_MP_CONNECTING_BAND),
-            ("_vllm_external_api", topology.dp),
+            ("_vllm_external_api", api_count),
             ("_vllm_external_rpc", 1),
         ]
+        if not hybrid or topology.nnodes_within_dp > 1:
+            requests.insert(
+                0, (_VLLM_MP_CONNECTING_BAND_NAME, _VLLM_MP_CONNECTING_BAND)
+            )
         if topology.nnodes_within_dp > 1:
             requests.append(("_vllm_external_store", topology.dp))
-        if vllm_lb_mode(model.backend_parameters) == "native":
+        if vllm_lb_mode(model.backend_parameters) == "multi_port_external":
             requested = find_last_parameter(
                 model.backend_parameters, ["data-parallel-supervisor-port"]
             )
             if requested is None:
-                requests.append(("_vllm_native_supervisor", 1))
+                requests.append(("_vllm_multi_port_external_supervisor", 1))
             else:
                 base = int(requested)
                 low, high = (int(value) for value in port_range.split("-"))
@@ -3964,8 +4015,10 @@ class ServeManager(ContainerLogPersister):
                     or base in unavailable
                     or not network.is_port_available(base, host=mi.worker_ip)
                 ):
-                    raise ValueError("Native DPS supervisor port is unavailable.")
-                bands["_vllm_native_supervisor"] = PortBand(base=base)
+                    raise ValueError(
+                        "Multi-port External-LB supervisor port is unavailable."
+                    )
+                bands["_vllm_multi_port_external_supervisor"] = PortBand(base=base)
                 unavailable.add(base)
         for name, count in requests:
             base = network.get_free_band(
@@ -3978,7 +4031,7 @@ class ServeManager(ContainerLogPersister):
             bands[name] = PortBand(base=base, count=count)
         mi.port = bands["_vllm_external_api"].base
         mi.ports = [
-            *range(mi.port, mi.port + topology.dp),
+            *range(mi.port, mi.port + api_count),
             *[
                 band.base
                 for name, band in bands.items()
@@ -5018,6 +5071,7 @@ class ServeManager(ContainerLogPersister):
         dp_rank: Optional[int] = None,
         component: Optional[str] = None,
         attempt: Optional[int] = None,
+        worker_id: Optional[int] = None,
     ) -> Optional[int]:
         """
         Get the port of the model instance related to the given model instance ID.
@@ -5036,6 +5090,7 @@ class ServeManager(ContainerLogPersister):
             or dp_rank is not None
             or component is not None
             or attempt is not None
+            or worker_id is not None
             or (instance and get_model_instance_workloads(instance) is not None)
         ):
             try:
@@ -5076,6 +5131,7 @@ class ServeManager(ContainerLogPersister):
                         dp_rank,
                         component=component,
                         attempt=attempt,
+                        worker_id=worker_id,
                     ),
                     worker_id=self._worker_id,
                 ).port

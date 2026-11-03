@@ -824,7 +824,10 @@ class TestEnrichFromMeta:
 
 
 @pytest.mark.asyncio
-async def test_rank_candidates_keep_deployment_weight_and_counter_identity(monkeypatch):
+@pytest.mark.parametrize('hybrid', [False, True])
+async def test_rank_candidates_keep_deployment_weight_and_counter_identity(
+    monkeypatch, hybrid
+):
     from gpustack.gateway.utils import model_instances_registry_list
     from gpustack.routes.plugins.lb import reconciler
     from gpustack.schemas.model_routes import (
@@ -838,6 +841,10 @@ async def test_rank_candidates_keep_deployment_weight_and_counter_identity(monke
     from unittest.mock import AsyncMock
 
     managed = rank_instance.__wrapped__()
+    if hybrid:
+        from tests.routes.test_worker_proxy import hybrid_instance
+
+        managed = hybrid_instance.__wrapped__(managed)
     worker = Worker(id=1, ip='10.0.0.1', port=10150, proxy_mode='worker')
     legacy = ModelInstance(id=1, model_id=2, worker_ip='10.0.0.1', port=8000)
     targets = [
@@ -862,7 +869,9 @@ async def test_rank_candidates_keep_deployment_weight_and_counter_identity(monke
                 [legacy], downstream_model_name='other'
             )
         return model_instances_registry_list(
-            [managed], {1: worker}, downstream_model_name='moe:adapter'
+            [managed],
+            {1: worker, 2: worker.model_copy(update={'id': 2})},
+            downstream_model_name='moe:adapter',
         )
 
     monkeypatch.setattr(reconciler, '_destinations_for_target', destinations)
@@ -890,4 +899,5 @@ async def test_rank_candidates_keep_deployment_weight_and_counter_identity(monke
         (candidate['cluster'], candidate['targetId']) for candidate in candidates[1:]
     }
     assert alias_keys.isdisjoint(new_keys)
-    assert all('-r4-dp' in candidate['cluster'] for candidate in candidates[1:])
+    identity = '-r4-hybrid-w' if hybrid else '-r4-dp'
+    assert all(identity in candidate['cluster'] for candidate in candidates[1:])

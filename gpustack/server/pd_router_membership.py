@@ -69,7 +69,8 @@ def router_refresh_ready(
     wait until the requested counts are ready to coalesce router replacements.
     """
     counts = {
-        name: sum(p["role"] == name for p in snapshot) for name in ("prefill", "decode")
+        name: len({p["id"] for p in snapshot if p["role"] == name})
+        for name in ("prefill", "decode")
     }
     if not all(counts.values()):
         return False

@@ -1369,3 +1369,71 @@ async def test_worker_ready_rechecks_tasks_that_reported_before_the_worker(
         )
     assert state.instance.state == ModelInstanceStateEnum.RUNNING
     assert state.instance.restart_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('worker_id', [1, 2, 3, 4])
+async def test_hybrid_worker_loss_withdraws_four_node_group_without_confirming_stop(
+    managed_worker, worker_id
+):
+    from gpustack.utils.model_instance_workers import model_instance_endpoints
+    from tests.utils.model import new_hybrid_workload
+
+    state = managed_worker
+    instance = state.instance
+    instance.worker_id = 1
+    instance.worker_ip = '10.0.0.1'
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
+            worker_id=w, worker_ip=f'10.0.0.{w}', gpu_indexes=[0]
+        )
+        for w in (2, 3, 4)
+    ]
+    instance.distributed_servers.workloads = [
+        ModelInstanceWorkload.model_validate(
+            new_hybrid_workload(w, headless=w in (2, 4), state='running')
+        )
+        for w in (1, 2, 3, 4)
+    ]
+    for task in instance.distributed_servers.workloads:
+        if task.component.api_port:
+            task.component.dp_size, task.component.ready = 1, True
+    assert len(model_instance_endpoints(instance)) == 2
+    lost = SimpleNamespace(
+        id=worker_id,
+        cluster_id=instance.cluster_id,
+        deleted_at=None,
+        unreachable=True,
+        state=WorkerStateEnum.UNREACHABLE,
+    )
+    other = [
+        w.model_dump()
+        for w in instance.distributed_servers.workloads
+        if w.worker_id != worker_id
+    ]
+    with (
+        patch.object(Worker, 'one_by_id_with_refresh', AsyncMock(return_value=lost)),
+        patch.object(
+            ModelInstance, 'one_by_id_with_refresh', AsyncMock(return_value=instance)
+        ),
+        patch.object(ModelInstanceService, 'update', AsyncMock()) as update,
+    ):
+        await WorkerController(MagicMock())._mark_managed_instance_unreachable(
+            state.session, instance, lost
+        )
+    patch_dict = update.await_args.args[1]
+    updated = instance.model_copy(deep=True, update=patch_dict)
+    assert updated.state == ModelInstanceStateEnum.UNREACHABLE
+    assert updated.restart_count == 3
+    assert model_instance_endpoints(updated) == []
+    local = next(
+        w for w in updated.distributed_servers.workloads if w.worker_id == worker_id
+    )
+    assert local.state == ModelInstanceWorkloadStateEnum.UNKNOWN
+    assert local.component.ready is (False if local.component.api_port else None)
+    assert [
+        w.model_dump()
+        for w in updated.distributed_servers.workloads
+        if w.worker_id != worker_id
+    ] == other
+    assert updated.computed_resource_claim == instance.computed_resource_claim

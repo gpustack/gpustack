@@ -3,6 +3,7 @@ import re
 from typing import Iterable, List, Optional, Set
 
 from gpustack.schemas.models import (
+    Model,
     ModelInstance,
     ModelInstanceLegacyStop,
     ModelInstanceBase,
@@ -13,6 +14,7 @@ from gpustack.schemas.models import (
     ModelInstancePreparation,
     ModelInstanceStateEnum,
     member_worker_ids,
+    role_effective_model,
 )
 
 from gpustack.schemas.workers import Worker
@@ -193,6 +195,7 @@ class ModelInstanceTarget:
     dp_rank: Optional[int] = None
     component: Optional[str] = None
     attempt: Optional[int] = None
+    worker_id: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -209,6 +212,8 @@ class ModelInstanceEndpoint:
     @property
     def registry_name(self) -> str:
         name = f"model-{self.model_id}-{self.instance_id}"
+        if self.component == "vllm_hybrid":
+            return name + f"-r{self.restart_count}-hybrid-w{self.worker_id}"
         if self.component == "sglang_smg":
             return name + f"-r{self.restart_count}-smg-a{self.attempt}"
         if self.component == "sglang_engine":
@@ -355,10 +360,15 @@ class ModelInstanceMetricsPlacement:
 
 
 def model_instance_metrics_placements(
-    instance: ModelInstanceBase, sources: List[ModelInstanceMetricsSource]
+    instance: ModelInstanceBase,
+    sources: List[ModelInstanceMetricsSource],
+    model: Optional[Model] = None,
 ) -> List[ModelInstanceMetricsPlacement]:
     """Associate allocated devices with real sources, never with token samples."""
     workloads = get_model_instance_workloads(instance)
+    hybrid = {s.worker_id: s for s in sources if s.kind == "vllm_hybrid"}
+    if hybrid:
+        return _hybrid_metrics_placements(instance, workloads, hybrid, model)
     ranks = {s.dp_rank: s for s in sources if s.kind == "vllm_engine"}
     if ranks:
         return [
@@ -396,8 +406,58 @@ def model_instance_metrics_placements(
     ]
 
 
+def _hybrid_metrics_placements(instance, workloads, sources, model):
+    """Reuse the launch topology to attach every device to its shared API."""
+    from gpustack.utils.vllm_topology import (
+        managed_lb_parallelism,
+        external_lb_fragments,
+        vllm_lb_mode,
+    )
+
+    if model is None:
+        return []
+    members = [instance] + list(instance.distributed_servers.subordinate_workers or [])
+    counts = [len(member.gpu_indexes or []) for member in members]
+    try:
+        model = role_effective_model(model, instance.role)
+        parameters = getattr(model, "backend_parameters", None)
+        if vllm_lb_mode(parameters) != "hybrid":
+            return []
+        topology = managed_lb_parallelism(parameters, counts)
+    except ValueError:
+        return []
+    tasks = {task.worker_id: task.name for task in workloads or []}
+    return [
+        ModelInstanceMetricsPlacement(
+            sources[members[fragment.main_worker_index].worker_id],
+            member.worker_id,
+            tasks.get(member.worker_id, ""),
+            member.gpu_indexes[position],
+            fragment.node_rank,
+        )
+        for worker_index, member in enumerate(members)
+        for fragment in external_lb_fragments(counts, topology, worker_index)
+        if members[fragment.main_worker_index].worker_id in sources
+        for position in fragment.positions
+    ]
+
+
 def parse_model_instance_target(destination: str) -> ModelInstanceTarget:
     """Parse a registry identity, never a user-supplied IP or port."""
+    hybrid_match = re.fullmatch(
+        r"model-(\d+)-(\d+)-r(\d+)-hybrid-w(\d+)(?:-l[a-zA-Z0-9]+)?"
+        r"\.[a-zA-Z0-9_-]+",
+        destination,
+    )
+    if hybrid_match is not None:
+        model_id, instance_id, generation, worker_id = map(int, hybrid_match.groups())
+        return ModelInstanceTarget(
+            model_id,
+            instance_id,
+            generation,
+            component="vllm_hybrid",
+            worker_id=worker_id,
+        )
     component_match = re.fullmatch(
         r"model-(\d+)-(\d+)-r(\d+)-(?:smg-a(\d+)|engine-dp(\d+))(?:-l[a-zA-Z0-9]+)?"
         r"\.[a-zA-Z0-9_-]+",
@@ -415,7 +475,7 @@ def parse_model_instance_target(destination: str) -> ModelInstanceTarget:
         )
     match = re.fullmatch(
         r"model-(\d+)-(\d+)(?:-r(\d+)-dp(\d+))?"
-        r"(?:-(?!(?:r\d|engine|smg))[a-zA-Z0-9-]+)?\.[a-zA-Z0-9_-]+",
+        r"(?:-(?!(?:r\d|engine|smg|hybrid))[a-zA-Z0-9-]+)?\.[a-zA-Z0-9_-]+",
         destination,
     )
     if match is None:
@@ -447,6 +507,33 @@ def model_instance_endpoints(
             else []
         )
     if workloads and workloads[0].component is not None:
+        if workloads[0].component.kind == "vllm_hybrid":
+            members = set(member_worker_ids(instance))
+            if (
+                len(workloads) != len(members)
+                or {w.worker_id for w in workloads} != members
+                or any(
+                    w.component is None
+                    or w.component.kind != "vllm_hybrid"
+                    or w.state != ModelInstanceWorkloadStateEnum.RUNNING
+                    for w in workloads
+                )
+            ):
+                return []
+            apis = [w for w in workloads if w.component.api_port is not None]
+            if not apis or any(not w.component.ready for w in apis):
+                return []
+            return [
+                ModelInstanceEndpoint(
+                    instance.model_id,
+                    instance.id,
+                    w.worker_id,
+                    w.component.api_port,
+                    instance.restart_count or 0,
+                    component="vllm_hybrid",
+                )
+                for w in apis
+            ]
         engines = _sglang_engine_workloads(instance)
         smgs = [w for w in workloads if w.component.kind == "sglang_smg"]
         if (
@@ -519,6 +606,11 @@ def resolve_model_instance_endpoint(
             and endpoint.component == target.component
             and endpoint.attempt == target.attempt
             and endpoint.dp_rank == target.dp_rank
+            and (
+                endpoint.worker_id == target.worker_id
+                if endpoint.component == "vllm_hybrid"
+                else target.worker_id is None
+            )
             and (worker_id is None or endpoint.worker_id == worker_id)
         ):
             return endpoint

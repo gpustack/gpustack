@@ -168,8 +168,8 @@ def test_world_size_decode_cp_alone_does_not_size():
     assert strategies is None
 
 
-def test_world_size_hybrid_lb_sizes_by_dpl():
-    """Hybrid-LB: --data-parallel-size is global; local world sizes by dpl."""
+def test_world_size_hybrid_lb_sizes_by_global_dp():
+    """Hybrid-LB reserves the complete global DP group."""
     params = [
         "--data-parallel-hybrid-lb",
         "--data-parallel-size",
@@ -180,27 +180,27 @@ def test_world_size_hybrid_lb_sizes_by_dpl():
     world_size, strategies = (
         VLLMResourceFitSelector.get_world_size_from_backend_parameters(_model(params))
     )
-    assert world_size == 8
-    assert strategies == ["dp"]
+    assert world_size == 16
+    assert strategies == ["dp", "dpl"]
 
 
 def test_world_size_hybrid_lb_with_tp():
-    """Hybrid-LB local world = tp * dpl, ignoring the global dp."""
+    """Hybrid-LB world size includes global DP and TP."""
     params = ["--data-parallel-hybrid-lb", "--tp", "2", "--dp", "16", "--dpl", "4"]
     world_size, _ = VLLMResourceFitSelector.get_world_size_from_backend_parameters(
         _model(params)
     )
-    assert world_size == 8
+    assert world_size == 32
 
 
 def test_world_size_hybrid_lb_without_dpl():
-    """Hybrid-LB without dpl: local world cannot be inferred, leave it unset."""
+    """Hybrid-LB can size the global group before deriving local DP."""
     params = ["--data-parallel-hybrid-lb", "--data-parallel-size", "16"]
     world_size, strategies = (
         VLLMResourceFitSelector.get_world_size_from_backend_parameters(_model(params))
     )
-    assert world_size is None
-    assert strategies is None
+    assert world_size == 16
+    assert strategies == ["dp"]
 
 
 # ---------------------------------------------------------------------------
@@ -975,10 +975,10 @@ def test_external_selector_accepts_multiple_local_rank_fragments():
         ([4, 4], ['--dp=4', '--tp=2'], (4, 2, 1)),
     ],
 )
-def test_native_dps_complete_local_rank_topology(counts, params, expected):
-    from gpustack.utils.vllm_topology import native_lb_parallelism
+def test_multi_port_external_complete_local_rank_topology(counts, params, expected):
+    from gpustack.utils.vllm_topology import multi_port_external_lb_parallelism
 
-    topology = native_lb_parallelism(['-dpm', *params], counts)
+    topology = multi_port_external_lb_parallelism(['-dpm', *params], counts)
     assert (topology.dp, topology.tp, topology.pp) == expected
     assert topology.nnodes_within_dp == 1
     assert min(topology.dpl_per_node) >= 2
@@ -1001,11 +1001,11 @@ def test_native_dps_complete_local_rank_topology(counts, params, expected):
         ([4], ['--dp=2', '-dpr=-1']),
     ],
 )
-def test_native_dps_rejects_unrepresentable_rank_layout(counts, params):
-    from gpustack.utils.vllm_topology import native_lb_parallelism
+def test_multi_port_external_rejects_unrepresentable_rank_layout(counts, params):
+    from gpustack.utils.vllm_topology import multi_port_external_lb_parallelism
 
     with pytest.raises(ValueError):
-        native_lb_parallelism(['-dpm', *params], counts)
+        multi_port_external_lb_parallelism(['-dpm', *params], counts)
 
 
 @pytest.mark.parametrize(
@@ -1019,7 +1019,9 @@ def test_native_dps_rejects_unrepresentable_rank_layout(counts, params):
         ([4], ['--dp=2', '--tp=2', '--distributed-executor-backend=uni'], False),
     ],
 )
-def test_native_selector_uses_worker_topology_contract(counts, params, accepted):
+def test_multi_port_external_selector_uses_worker_topology_contract(
+    counts, params, accepted
+):
     from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
         _create_candidate,
     )
@@ -1053,3 +1055,129 @@ def test_external_explicit_local_slices_preserve_cross_worker_ranks(
     )
     assert result.dpl_per_node == [local] * len(counts)
     assert result.nnodes_within_dp == nodes
+
+
+@pytest.mark.parametrize(
+    'counts,params,local,nodes,shape,coordinates',
+    [
+        (
+            [4, 4],
+            ['--tp=2', '--dp=4'],
+            [2, 2],
+            1,
+            'dp_only',
+            [[(0, 0), (1, 0)], [(2, 0), (3, 0)]],
+        ),
+        (
+            [4, 4],
+            ['--tp=2', '--dp=4', '--dpl=2'],
+            [2, 2],
+            1,
+            'dp_only',
+            [[(0, 0), (1, 0)], [(2, 0), (3, 0)]],
+        ),
+        (
+            [4, 2],
+            ['--tp=2', '--dp=3'],
+            [2, 1],
+            1,
+            'dp_only',
+            [[(0, 0), (1, 0)], [(2, 0)]],
+        ),
+        (
+            [2, 4],
+            ['--tp=2', '--dp=3'],
+            [1, 2],
+            1,
+            'dp_only',
+            [[(0, 0)], [(1, 0), (2, 0)]],
+        ),
+        (
+            [2, 2, 2, 2],
+            ['--tp=4', '--dp=2'],
+            [1, 1, 1, 1],
+            2,
+            'nested',
+            [[(0, 0)], [(0, 1)], [(1, 0)], [(1, 1)]],
+        ),
+        (
+            [4, 4, 4, 4],
+            ['--tp=4', '--pp=2', '--dp=2', '--dpl=1'],
+            [1, 1, 1, 1],
+            2,
+            'nested',
+            [[(0, 0)], [(0, 1)], [(1, 0)], [(1, 1)]],
+        ),
+        ([2, 2], ['--tp=4', '--dp=1'], [1, 1], 2, 'mp_only', [[(0, 0)], [(0, 1)]]),
+    ],
+)
+def test_hybrid_topology_uses_complete_group_and_saved_node_order(
+    counts, params, local, nodes, shape, coordinates
+):
+    from gpustack.utils.vllm_topology import (
+        external_lb_fragments,
+        hybrid_lb_parallelism,
+        managed_lb_parallelism,
+        parse_user_parallelism,
+    )
+
+    parameters = ['--data-parallel-hybrid-lb', *params]
+    result = hybrid_lb_parallelism(parameters, counts)
+    assert result == managed_lb_parallelism(parameters, counts)
+    assert result == validate_multinode_topology(
+        counts, parse_user_parallelism(parameters)
+    )
+    assert result.dpl_per_node == local
+    assert result.nnodes_within_dp == nodes
+    assert result.shape == shape
+    assert [
+        [
+            (fragment.dp_rank, fragment.node_rank)
+            for fragment in external_lb_fragments(counts, result, index)
+        ]
+        for index in range(len(counts))
+    ] == coordinates
+
+
+@pytest.mark.parametrize(
+    'counts,params',
+    [
+        ([4], ['--tp=2', '--dp=4']),
+        ([4, 4], ['--tp=2', '--dp=4', '--dpl=1']),
+        ([4, 2], ['--tp=2', '--dp=3', '--dpl=2']),
+        ([4, 4], ['--tp=4', '--dp=2', '--dpl=2']),
+    ],
+)
+def test_hybrid_selector_rejects_incomplete_or_inconsistent_group(counts, params):
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+
+    candidate, reason = _create_candidate(
+        _mock_model(['--data-parallel-hybrid-lb', *params]),
+        [_mock_worker(str(index), count) for index, count in enumerate(counts)],
+    )
+    assert candidate is None
+    assert reason
+
+
+@pytest.mark.parametrize(
+    'counts,params',
+    [
+        ([2, 2, 2, 2], ['--tp=4', '--dp=2']),
+        ([4, 4, 4, 4], ['--tp=4', '--pp=2', '--dp=2', '--dpl=1']),
+    ],
+)
+def test_hybrid_selector_preserves_cross_worker_rank_allocations(counts, params):
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+
+    candidate, reason = _create_candidate(
+        _mock_model(['--data-parallel-hybrid-lb', *params]),
+        [_mock_worker(str(index), count) for index, count in enumerate(counts)],
+    )
+    assert candidate is not None, reason
+    assert [len(candidate.gpu_indexes)] + [
+        len(worker.gpu_indexes) for worker in candidate.subordinate_workers
+    ] == counts

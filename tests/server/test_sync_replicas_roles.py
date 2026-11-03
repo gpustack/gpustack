@@ -167,8 +167,10 @@ async def test_managed_restart_deletes_all_old_rows_before_building():
     assert result.created == []
 
 
-async def _run(model, instances, instance_type_snapshot=None):
+async def _run(model, instances, instance_type_snapshot=None, worker_ips=None):
     recorder = _Recorder()
+    if worker_ips is None:
+        worker_ips = {1: "10.0.0.1"}
     matched = (
         [SimpleNamespace(snapshot=instance_type_snapshot)]
         if instance_type_snapshot
@@ -214,7 +216,11 @@ async def _run(model, instances, instance_type_snapshot=None):
         patch("gpustack.server.controllers.ModelInstanceService", recorder),
         patch(
             "gpustack.schemas.workers.Worker.all_by_field_with_refresh",
-            AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")]),
+            AsyncMock(
+                return_value=[
+                    SimpleNamespace(id=id_, ip=ip) for id_, ip in worker_ips.items()
+                ]
+            ),
         ),
         # Soft scale-down marks the surplus instead of deleting it, and the
         # mark is a row write. Recorded rather than performed, for the same
@@ -257,6 +263,7 @@ async def test_role_less_still_fans_out_by_model_replicas():
         (["--data-parallel-size=2"], False),
         (["--data-parallel-multi-port-external-lb", "--data-parallel-size=2"], True),
         (["-dpm", "--data-parallel-size=2"], True),
+        (["--data-parallel-hybrid-lb", "--data-parallel-size=4"], True),
         (["--data-parallel-rank=1", "--data-parallel-size=2"], False),
     ],
 )
@@ -1360,6 +1367,7 @@ def test_managed_draining_instance_leaves_gateway_during_the_window():
     [
         (['--dp=2'], False),
         (['--data-parallel-external-lb', '--dp=2'], True),
+        (['--data-parallel-hybrid-lb', '--dp=2'], True),
         ([], False),
     ],
 )
@@ -1442,7 +1450,7 @@ async def test_only_new_ordinary_sglang_instances_activate_components(
 
 
 @pytest.mark.asyncio
-async def test_pd_admission_rejects_native_multiport_before_creating_instance():
+async def test_pd_admission_rejects_multi_port_external_before_creating_instance():
     from gpustack.api.exceptions import BadRequestException
     from gpustack.schemas.models import DisaggregationSpec
     from gpustack.server.controllers import _build_instance_create
@@ -1546,3 +1554,117 @@ async def test_stale_pd_drain_still_releases_stop_without_deleting_old_rows():
     assert stop.await_args.args == (model, [instance])
     assert not result.created
     assert not result.deleted
+
+
+def _hybrid_static_member(id):
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker, PortBand
+    from tests.utils.model import new_hybrid_workload
+
+    instance = _instance(id, 'prefill', 'g', CURRENT)
+    instance.worker_id, instance.worker_ip, instance.port = 1, '10.0.0.1', 8000 + id
+    instance.gpu_indexes = [0, 1, 2, 3]
+    instance.named_ports = {'bootstrap': PortBand(base=9000 + id)}
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=2, worker_ip='10.0.0.2', gpu_indexes=[0, 1, 2, 3]
+            )
+        ],
+        workloads=[
+            new_hybrid_workload(worker_id, state='running') for worker_id in (1, 2)
+        ],
+    )
+    for task in instance.distributed_servers.workloads:
+        task.name = f'{instance.name}-{task.name}'
+        task.component.api_port, task.component.ready = instance.port, True
+    return instance
+
+
+@pytest.mark.asyncio
+async def test_static_hybrid_scale_out_counts_complete_instances_before_refresh():
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    worker_ips = {1: '10.0.0.1', 2: '10.0.0.2'}
+    model, members = await _static_group(prefill=3)
+    members[0] = _hybrid_static_member(1)
+    router = members[-1]
+    router.router_peer_snapshot = router_peer_snapshot(members, 'g', worker_ips)
+    members.append(_hybrid_static_member(4))
+    result = await _run(model, members, worker_ips=worker_ips)
+    assert [i.role for i in result.created] == ['prefill']
+    assert not result.deleted
+    third = _hybrid_static_member(5)
+    third.distributed_servers.workloads[1].component.ready = False
+    members.append(third)
+    result = await _run(model, members, worker_ips=worker_ips)
+    assert not result.deleted
+    assert not result.created
+    third.distributed_servers.workloads[1].component.ready = True
+    peers_before = [peer.model_dump() for peer in members if peer.role != 'router']
+    result = await _run(model, members, worker_ips=worker_ips)
+    assert result.deleted == [router]
+    assert not result.created
+    assert [
+        peer.model_dump() for peer in members if peer.role != 'router'
+    ] == peers_before
+
+
+@pytest.mark.asyncio
+async def test_static_hybrid_scale_out_keeps_existing_router_serving():
+    from gpustack.server import controllers, pd_membership
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    worker_ips = {1: '10.0.0.1', 2: '10.0.0.2'}
+    model, members = await _static_group(prefill=3)
+    members[0] = _hybrid_static_member(1)
+    router = members[-1]
+    router.router_peer_snapshot = router_peer_snapshot(members, 'g', worker_ips)
+    members.append(_hybrid_static_member(4))
+    digest = await model_spec_digest(_pass(), model)
+    for member in members:
+        member.spec_digest = digest
+    with patch(
+        'gpustack.schemas.workers.Worker.all_by_field_with_refresh',
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(id=id_, ip=ip) for id_, ip in worker_ips.items()
+            ]
+        ),
+    ):
+        await controllers._record_static_router_membership(_pass(), model, members)
+    try:
+        assert pd_membership.outcome_for(model.id).ok
+        assert router.state == ModelInstanceStateEnum.RUNNING
+    finally:
+        pd_membership.forget(model.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['restart', 'bootstrap', 'removed'])
+async def test_static_hybrid_peer_change_refreshes_only_router_while_scale_out_waits(
+    change,
+):
+    from gpustack.schemas.models import PortBand
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    worker_ips = {1: '10.0.0.1', 2: '10.0.0.2'}
+    model, members = await _static_group(prefill=3)
+    members[0] = _hybrid_static_member(1)
+    router = members[-1]
+    removed = _hybrid_static_member(4)
+    router.router_peer_snapshot = router_peer_snapshot(
+        [*members, removed] if change == 'removed' else members, 'g', worker_ips
+    )
+    if change == 'restart':
+        members[0].restart_count = 1
+    elif change == 'bootstrap':
+        members[0].named_ports['bootstrap'] = PortBand(base=9500)
+    digest = await model_spec_digest(_pass(), model)
+    for member in members:
+        member.spec_digest = digest
+    healthy_before = [peer.model_dump() for peer in members if peer.role != 'router']
+    result = await _run(model, members, worker_ips=worker_ips)
+    assert result.deleted == [router]
+    assert [
+        peer.model_dump() for peer in members if peer.role != 'router'
+    ] == healthy_before

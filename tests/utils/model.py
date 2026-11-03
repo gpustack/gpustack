@@ -106,3 +106,16 @@ def new_model_instance_workload(
         ],
         **changes,
     }
+
+
+def new_hybrid_workload(worker_id: int = 1, *, headless=False, **changes: Any):
+    return {
+        'name': f'instance-hybrid-{worker_id}',
+        'worker_id': worker_id,
+        'state': 'pending',
+        'component': {
+            'kind': 'vllm_hybrid',
+            **({} if headless else {'api_port': 40000, 'dp_size': 2}),
+        },
+        **changes,
+    }

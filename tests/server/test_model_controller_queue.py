@@ -1475,3 +1475,142 @@ async def test_unreleased_drain_retry_has_a_nonzero_delay():
     add_after = await _reconcile_once(_controller(), drain_due=0)
     delay = add_after.call_args.args[1]
     assert 0.8 < delay <= 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('headless', [False, True])
+@pytest.mark.parametrize('state', ['failed', 'stopped'])
+async def test_hybrid_task_failure_uses_complete_group_recovery(
+    managed_recovery, headless, state
+):
+    from tests.utils.model import new_hybrid_workload
+
+    ctx = managed_recovery
+    ctx.instance.distributed_servers.workloads = [
+        ModelInstanceWorkload.model_validate(new_hybrid_workload(1, state='running')),
+        ModelInstanceWorkload.model_validate(
+            new_hybrid_workload(2, headless=headless, state=state)
+        ),
+    ]
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+    assert ctx.instance.state == ModelInstanceStateEnum.ERROR
+    assert 'Worker 2' in ctx.instance.state_message
+    assert ctx.instance.restart_count == 0
+
+
+@pytest.fixture
+def hybrid_recovery(managed_recovery):
+    from tests.utils.model import new_hybrid_workload
+
+    ctx = managed_recovery
+    ctx.model.backend = 'vLLM'
+    ctx.model.backend_parameters = ['--data-parallel-hybrid-lb', '--tp=4', '--dp=2']
+    ctx.instance.worker_ip = '10.0.0.1'
+    ctx.instance.gpu_indexes = [0, 1]
+    ctx.instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
+            worker_id=w, worker_ip=f'10.0.0.{w}', gpu_indexes=[0, 1]
+        )
+        for w in (2, 3, 4)
+    ]
+    ctx.instance.distributed_servers.workloads = [
+        ModelInstanceWorkload.model_validate(
+            new_hybrid_workload(w, headless=w in (2, 4), state='running')
+        )
+        for w in (1, 2, 3, 4)
+    ]
+    for task in ctx.instance.distributed_servers.workloads:
+        if task.component.api_port:
+            task.component.dp_size, task.component.ready = 1, True
+    return ctx
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('worker_id', [1, 2, 3, 4])
+@pytest.mark.parametrize('failure', ['failed', 'stopped'])
+async def test_hybrid_any_required_task_failure_withdraws_all_apis(
+    hybrid_recovery, worker_id, failure
+):
+    from gpustack.utils.model_instance_workers import model_instance_endpoints
+
+    ctx = hybrid_recovery
+    assert len(model_instance_endpoints(ctx.instance)) == 2
+    task = ctx.instance.distributed_servers.workloads[worker_id - 1]
+    task.state = ModelInstanceWorkloadStateEnum(failure)
+    resources = ctx.instance.computed_resource_claim.model_copy(deep=True)
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+    assert ctx.instance.state == ModelInstanceStateEnum.ERROR
+    assert f'Worker {worker_id}' in ctx.instance.state_message
+    assert model_instance_endpoints(ctx.instance) == []
+    assert ctx.instance.restart_count == 0
+    assert len(ctx.instance.distributed_servers.workloads) == 4
+    assert ctx.instance.computed_resource_claim == resources
+    assert ctx.instance.ports == [40000]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('worker_id', [1, 2, 3, 4])
+@pytest.mark.parametrize('pending', ['pending', 'running', 'failed', 'unknown'])
+async def test_hybrid_recovery_waits_for_every_task_then_advances_once(
+    hybrid_recovery, worker_id, pending
+):
+    ctx = hybrid_recovery
+    ctx.instance.state = ModelInstanceStateEnum.ERROR
+    for task in ctx.instance.distributed_servers.workloads:
+        task.state = ModelInstanceWorkloadStateEnum.STOPPED
+        task.component.ready = False if task.component.api_port else None
+    last = ctx.instance.distributed_servers.workloads[worker_id - 1]
+    last.state = ModelInstanceWorkloadStateEnum(pending)
+    resources = ctx.instance.computed_resource_claim.model_copy(deep=True)
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+    ctx.write.assert_not_awaited()
+    assert ctx.instance.restart_count == 0
+    last.state = ModelInstanceWorkloadStateEnum.STOPPED
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 1)
+    assert ctx.instance.restart_count == 1
+    assert ctx.instance.state == ModelInstanceStateEnum.SCHEDULED
+    assert ctx.instance.distributed_servers.workloads == []
+    assert ctx.instance.computed_resource_claim == resources
+    assert [
+        w.worker_id for w in ctx.instance.distributed_servers.subordinate_workers
+    ] == [2, 3, 4]
+    ctx.write.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pd', [False, True])
+async def test_hybrid_user_delete_keeps_ordinary_fast_path_and_pd_stop_barrier(
+    hybrid_recovery, monkeypatch, pd
+):
+    from gpustack.server import services
+
+    ctx = hybrid_recovery
+    if pd:
+        ctx.instance.role, ctx.instance.group_id = 'prefill', 'group'
+    deleted = AsyncMock()
+    monkeypatch.setattr(ModelInstance, 'delete', deleted)
+    monkeypatch.setattr(ModelInstance, '_invalidate_cached_all', AsyncMock())
+    monkeypatch.setattr(services, 'delete_cache_by_key', AsyncMock())
+    monkeypatch.setattr(services, 'invalidate_workers_allocated', AsyncMock())
+
+    async def apply(row, session, source=None, **kwargs):
+        for key, value in (source or {}).items():
+            setattr(row, key, value)
+
+    monkeypatch.setattr(ModelInstance, 'update', apply)
+    assert await ctx.service.delete(ctx.instance) is (not pd)
+    assert deleted.await_count == int(not pd)
+    if pd:
+        assert ctx.instance.draining_since is not None
+        assert ctx.instance.distributed_servers.stop_requested
+        assert len(ctx.instance.distributed_servers.workloads) == 4
+        for task in ctx.instance.distributed_servers.workloads:
+            task.state = ModelInstanceWorkloadStateEnum.STOPPED
+            task.component.ready = False if task.component.api_port else None
+        assert await ctx.service.delete(ctx.instance)
+        deleted.assert_awaited_once()
+    else:
+        assert ctx.instance.draining_since is None
+        assert not ctx.instance.distributed_servers.stop_requested

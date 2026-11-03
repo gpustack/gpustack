@@ -106,6 +106,7 @@ def model_dashboard_scope_params(
         None,
         "legacy",
         "vllm_engine",
+        "vllm_hybrid",
         "sglang_engine",
         "sglang_smg",
     ):

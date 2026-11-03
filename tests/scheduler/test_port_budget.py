@@ -97,6 +97,28 @@ class TestMemberDemand:
         assert demand == expected
         assert port_budget.port_capacity("40000-40063", demand, 40) == 24 // expected
 
+    @pytest.mark.parametrize(
+        'nodes,parameters,mode,expected',
+        [
+            ([4], ['--tp=2', '--dp=2'], None, 2),
+            ([4, 4], ['--tp=2', '--dp=4'], None, 2),
+            ([4, 4], ['--tp=2', '--dp=4', '--dpl=2'], MOONCAKE, 10),
+            ([4, 4], ['--tp=2', '--dp=4'], 'vllm-nixl', 6),
+            ([2, 2, 2, 2], ['--tp=4', '--dp=2'], None, 14),
+            ([4, 4, 4, 4], ['--tp=4', '--pp=2', '--dp=2', '--dpl=1'], MOONCAKE, 30),
+        ],
+    )
+    def test_hybrid_demand_counts_shared_api_and_cross_rank_coordination(
+        self, nodes, parameters, mode, expected
+    ):
+        model = _model(mode, ['--data-parallel-hybrid-lb', *parameters])
+        assert (
+            port_budget.member_port_demand(
+                model, 'prefill' if mode else None, nodes[0], gpu_per_node=nodes
+            )
+            == expected
+        )
+
     @pytest.mark.parametrize("parameters", [["--tp=16"], ["--dp=0"]])
     def test_invalid_spanning_topology_leaves_the_band_unresolved(self, parameters):
         model = _model("vllm-nixl", parameters + ["--distributed-executor-backend=mp"])

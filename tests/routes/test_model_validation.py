@@ -148,7 +148,7 @@ async def test_vllm_conflicting_load_balancing_is_rejected_before_scheduling(
 @pytest.mark.parametrize(
     'parameter', ['--headless', '--api-server-count=0', '--pcp=2', '--dp=1', '-dpn=0']
 )
-async def test_native_dps_invalid_parameters_are_rejected_before_scheduling(
+async def test_multi_port_external_invalid_parameters_are_rejected_before_scheduling(
     monkeypatch, parameter
 ):
     monkeypatch.setattr(models, 'validate_pd_config', AsyncMock())

@@ -266,8 +266,8 @@ async def test_a_distributed_placement_keeps_its_other_halves_visible():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("managed", [False, True])
-async def test_distributed_capacity_keeps_backend_and_managed_identity(managed):
+@pytest.mark.parametrize("mode", ["internal", "external", "hybrid"])
+async def test_distributed_capacity_keeps_backend_and_managed_identity(mode):
     from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
     from gpustack.policies.resource_view import ResourceView
     from gpustack.schemas.models import BackendEnum, Model
@@ -277,7 +277,7 @@ async def test_distributed_capacity_keeps_backend_and_managed_identity(managed):
         source="local_path",
         local_path="/models/moe",
         backend=BackendEnum.VLLM,
-        backend_parameters=["--data-parallel-external-lb"] if managed else [],
+        backend_parameters=[f"--data-parallel-{mode}-lb"] if mode != "internal" else [],
     )
 
     class Distributed(FakeSelector):
@@ -310,7 +310,7 @@ async def test_distributed_capacity_keeps_backend_and_managed_identity(managed):
     result = await count_offer_slots(Distributed, [worker(), worker(2)], [], limit=2)
 
     assert result.unavailable is None
-    assert result.slots == (2 if managed else 1)
+    assert result.slots == (1 if mode == "internal" else 2)
 
 
 @pytest.mark.asyncio
@@ -472,3 +472,23 @@ async def test_a_selector_that_prices_nothing_is_not_a_member_that_costs_nothing
     )
 
     assert result.claim is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('free_gpus,expected', [([0], 10), ([], 1)])
+async def test_capacity_keeps_measured_claim_and_uses_fallback_when_nothing_fits(
+    free_gpus, expected
+):
+    class Priced(FakeSelector):
+        def get_resource_claim(self):
+            measured = len(self._instances) < len(self._free)
+            return MemberResourceClaim(vram=10 if measured else 1, ram=0)
+
+    result = await count_offer_slots(
+        lambda instances: Priced(instances, free_gpus=free_gpus),
+        [worker()],
+        [],
+        limit=2,
+    )
+    assert result.claim.vram == expected
+    assert result.slots == len(free_gpus)

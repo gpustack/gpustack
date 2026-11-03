@@ -217,7 +217,7 @@ def _dashboard_query_target(raw: dict) -> dict:
         value = raw.get(key)
         if value is not None:
             if key == 'component':
-                if value not in ('sglang_engine', 'sglang_smg'):
+                if value not in ('sglang_engine', 'sglang_smg', 'vllm_hybrid'):
                     raise BadRequestException(message='Invalid dashboard component')
             else:
                 if not value or not value.isascii() or not value.isdigit():
@@ -232,7 +232,8 @@ def _dashboard_query_target(raw: dict) -> dict:
                     raise BadRequestException(message='Invalid dashboard worker_id')
         target[key] = value
     if (target['attempt'] is not None and target['component'] != 'sglang_smg') or (
-        target['component'] == 'sglang_smg' and target['dp_rank'] is not None
+        target['component'] in ('sglang_smg', 'vllm_hybrid')
+        and target['dp_rank'] is not None
     ):
         raise BadRequestException(message='Invalid dashboard source filters')
     return target
@@ -1198,6 +1199,12 @@ def _validate_local_devices(
     instance: ModelInstance, worker_id: int, workloads: List[ModelInstanceWorkload]
 ) -> None:
     if workloads and workloads[0].component is not None:
+        if workloads[0].component.kind == "vllm_hybrid":
+            if len(workloads) != 1:
+                raise BadRequestException(
+                    message="A Worker must report exactly one Hybrid component"
+                )
+            return
         engines = [w for w in workloads if w.component.kind == "sglang_engine"]
         smgs = [w for w in workloads if w.component.kind == "sglang_smg"]
         primary = worker_id == instance.worker_id
@@ -1434,7 +1441,42 @@ def _validate_sglang_component_layout(instance, model, workloads) -> None:
             raise BadRequestException(message="Component port was not reserved")
 
 
-async def _validate_external_rank_layout(session, instance, report) -> None:
+def _validate_hybrid_component_layout(instance, model, workloads) -> None:
+    """Match each shared API to its allocated rank owner and local DP count."""
+    try:
+        if (
+            get_backend(model) != BackendEnum.VLLM
+            or vllm_lb_mode(model.backend_parameters) != "hybrid"
+        ):
+            raise ValueError("Hybrid components require vLLM Hybrid-LB")
+    except ValueError as exc:
+        raise BadRequestException(message=str(exc)) from exc
+    api = (instance.named_ports or {}).get("_vllm_external_api")
+    if api is None or api.count != 1 or api.base not in (instance.ports or []):
+        raise BadRequestException(message="Hybrid API port was not reserved")
+    for workload in workloads:
+        component = workload.component
+        if component is None or component.kind != "vllm_hybrid":
+            raise BadRequestException(message="Mixed Hybrid component report")
+        members = [instance] + list(
+            instance.distributed_servers.subordinate_workers or []
+        )
+        try:
+            index = [member.worker_id for member in members].index(workload.worker_id)
+            counts = [len(member.gpu_indexes or []) for member in members]
+            topology = managed_lb_parallelism(model.backend_parameters, counts)
+            fragments = external_lb_fragments(counts, topology, index)
+        except ValueError as exc:
+            raise BadRequestException(message=str(exc)) from exc
+        owns_api = fragments[0].node_rank == 0
+        expected = (api.base, len(fragments)) if owns_api else (None, None)
+        if (component.api_port, component.dp_size) != expected:
+            raise BadRequestException(
+                message="Hybrid API/local DP differs from allocation"
+            )
+
+
+async def _validate_workload_layout(session, instance, report) -> None:
     """Validate a first registration against the allocated, deterministic layout."""
     if not report.workloads or get_model_instance_workloads(
         instance, report.workloads[0].worker_id
@@ -1448,16 +1490,30 @@ async def _validate_external_rank_layout(session, instance, report) -> None:
             message="The deployment configuration changed before registration"
         )
     model = role_effective_model(model, instance.role)
-    if any(w.component is not None for w in report.workloads):
-        _validate_sglang_component_layout(instance, model, report.workloads)
+    if (
+        get_backend(model) == BackendEnum.VLLM
+        and vllm_lb_mode(model.backend_parameters) == "hybrid"
+    ):
+        _validate_hybrid_component_layout(instance, model, report.workloads)
         return
+    if any(w.component is not None for w in report.workloads):
+        if report.workloads[0].component.kind == "vllm_hybrid":
+            _validate_hybrid_component_layout(instance, model, report.workloads)
+        else:
+            _validate_sglang_component_layout(instance, model, report.workloads)
+        return
+    _validate_external_rank_layout(instance, model, report.workloads)
+
+
+def _validate_external_rank_layout(instance, model, workloads) -> None:
+    """Match rank devices and APIs to the allocated External-LB layout."""
     if get_backend(model) != BackendEnum.VLLM or vllm_lb_mode(
         model.backend_parameters
-    ) not in ("external", "native"):
+    ) not in ("external", "multi_port_external"):
         return
     members = [instance] + list(instance.distributed_servers.subordinate_workers or [])
     counts = [len(w.gpu_indexes or []) for w in members]
-    worker_id = report.workloads[0].worker_id
+    worker_id = workloads[0].worker_id
     index = [w.worker_id for w in members].index(worker_id)
     try:
         topology = managed_lb_parallelism(model.backend_parameters, counts)
@@ -1475,7 +1531,7 @@ async def _validate_external_rank_layout(session, instance, report) -> None:
     }
     actual = {
         (p.dp_rank, p.node_rank): (p.gpu_indexes, p.api_port)
-        for w in report.workloads
+        for w in workloads
         for p in w.dp_rank_placements
     }
     if api is None or api.count != topology.dp or actual != expected:
@@ -1689,7 +1745,7 @@ async def update_model_instance(
                 model_instance, ctx, model_instance_in.rank_report
             )
         }
-        await _validate_external_rank_layout(
+        await _validate_workload_layout(
             session, model_instance, model_instance_in.rank_report
         )
         if model_instance_in.preparation is not None:

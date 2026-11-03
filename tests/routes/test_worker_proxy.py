@@ -831,7 +831,17 @@ async def test_rank_middleware_uses_selected_port(rank_instance):
         )
     assert response.json() == {'port': '41001'}
     assert calls == [
-        (7, dict(model_id=1, restart_count=3, dp_rank=1, component=None, attempt=None))
+        (
+            7,
+            dict(
+                model_id=1,
+                restart_count=3,
+                dp_rank=1,
+                component=None,
+                attempt=None,
+                worker_id=None,
+            ),
+        )
     ]
 
 
@@ -880,9 +890,11 @@ def test_rank_registry_construction_uses_actual_owner(rank_instance, mode):
         'unbound_system',
     ],
 )
+@pytest.mark.parametrize('kind', ['rank_instance', 'hybrid_instance'])
 async def test_tunnel_rank_resolver_checks_identity_and_releases_session(
-    rank_instance, monkeypatch, case
+    request, monkeypatch, case, kind
 ):
+    rank_instance = request.getfixturevalue(kind)
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from gpustack.gateway import utils
@@ -955,7 +967,13 @@ async def test_tunnel_rank_resolver_checks_identity_and_releases_session(
         'one_by_id_with_refresh',
         AsyncMock(return_value=SimpleNamespace(system_principal_id=9)),
     )
-    headers = {utils.router_header_key: 'model-1-7-r3-dp1.static'}
+    headers = {
+        utils.router_header_key: (
+            'model-1-7-r3-hybrid-w1.static'
+            if kind == 'hybrid_instance'
+            else 'model-1-7-r3-dp1.static'
+        )
+    }
     if case in ('worker', 'cluster'):
         assert await utils.resolve_instance_address_from_model_header(headers) == (
             '10.0.0.2',
@@ -1143,6 +1161,11 @@ def test_sglang_engine_diagnostic_survives_smg_recovery(
         'model-1-7-engine-dp1.static',
         'model-1-7-smg-a0.static',
         'model-1-7-r3-engine-dp0-alias.static',
+        'model-1-7-hybrid-w1.static',
+        'model-1-7-r3-hybrid.static',
+        'model-1-7-r3-hybrid-w.static',
+        'model-1-7-r3-hybrid-w-1.static',
+        'model-1-7-r3-hybrid-w1-alias.static',
     ],
 )
 def test_component_reserved_target_shapes_cannot_be_legacy_aliases(destination):
@@ -1276,7 +1299,7 @@ def test_versioned_getter_cannot_fall_back_to_cached_legacy_port(component_gette
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('component', ['smg-a2', 'engine-dp3'])
+@pytest.mark.parametrize('component', ['smg-a2', 'engine-dp3', 'hybrid-w1'])
 @pytest.mark.parametrize(
     'token,status',
     [('worker-token', 200), ('registration-token', 200), ('user-token', 401)],
@@ -1288,7 +1311,11 @@ async def test_component_middleware_carries_validated_target_through_existing_au
     from unittest.mock import MagicMock
     from fastapi import Depends
 
-    manager, authority, _ = component_getter
+    manager, authority, instance = component_getter
+    if component == 'hybrid-w1':
+        authority.model_instances.get_cached.return_value = hybrid_instance.__wrapped__(
+            instance
+        )
     delegated = MagicMock()
     monkeypatch.setattr('gpustack.api.auth.make_auth_token_via_server', delegated)
     app = FastAPI()
@@ -1330,16 +1357,24 @@ async def test_component_middleware_carries_validated_target_through_existing_au
     expected = dict(
         model_id=1,
         restart_count=3,
-        dp_rank=None if component == 'smg-a2' else 3,
-        component='sglang_smg' if component == 'smg-a2' else 'sglang_engine',
+        dp_rank=3 if component == 'engine-dp3' else None,
+        component={
+            'smg-a2': 'sglang_smg',
+            'engine-dp3': 'sglang_engine',
+            'hybrid-w1': 'vllm_hybrid',
+        }[component],
         attempt=2 if component == 'smg-a2' else None,
     )
-    getter.assert_called_once_with(7, **expected)
+    getter.assert_called_once_with(
+        7, **expected, worker_id=1 if component == 'hybrid-w1' else None
+    )
     delegated.assert_not_called()
     assert len(forwards) == int(status == 200)
     if status == 200:
         assert response.json() == dict(
-            port='42001' if component == 'smg-a2' else '42000',
+            port={'smg-a2': '42001', 'engine-dp3': '42000', 'hybrid-w1': '41001'}[
+                component
+            ],
             instance_id=7,
             **expected,
         )
@@ -1401,7 +1436,9 @@ async def test_component_middleware_does_not_forward_unavailable_default_smg(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('component', ['sglang_smg', 'sglang_engine', None])
+@pytest.mark.parametrize(
+    'component', ['sglang_smg', 'sglang_engine', 'vllm_hybrid', None]
+)
 @pytest.mark.parametrize('chunked', [False, True])
 async def test_component_proxy_sends_transformed_unicode_body(
     component, chunked, monkeypatch
@@ -1463,8 +1500,8 @@ async def test_component_proxy_sends_transformed_unicode_body(
             )
     assert response.status_code == 200
     data, headers, sent = received[0]
-    assert len(transformed_bodies) == int(component is not None)
-    if component:
+    assert len(transformed_bodies) == int(component in ('sglang_smg', 'sglang_engine'))
+    if component in ('sglang_smg', 'sglang_engine'):
         expected = {'prompt': '你好'}
         if component == 'sglang_engine':
             expected['routed_dp_rank'] = 1
@@ -1701,3 +1738,101 @@ def test_routing_watch_cannot_override_newer_local_runtime_identity(
         is None
     )
     client.model_instances.get.assert_not_called()
+
+
+@pytest.fixture
+def hybrid_instance(rank_instance):
+    from gpustack.schemas.models import (
+        ModelInstanceSubordinateWorker,
+        ModelInstanceWorkload,
+    )
+
+    rank_instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=worker_id) for worker_id in (2, 3)
+    ]
+    rank_instance.distributed_servers.workloads = [
+        ModelInstanceWorkload(
+            name=f'engine-{worker_id}',
+            worker_id=worker_id,
+            state='running',
+            component={
+                'kind': 'vllm_hybrid',
+                'api_port': 41000 + worker_id if worker_id != 3 else None,
+                'dp_size': 2 if worker_id != 3 else None,
+                'ready': True if worker_id != 3 else None,
+            },
+        )
+        for worker_id in (1, 2, 3)
+    ]
+    return rank_instance
+
+
+def test_hybrid_target_identity_roundtrip_and_actual_api_owners(hybrid_instance):
+    from gpustack.utils.model_instance_workers import (
+        model_instance_endpoints,
+        parse_model_instance_target,
+        resolve_model_instance_endpoint,
+    )
+
+    endpoints = model_instance_endpoints(hybrid_instance)
+    assert [endpoint.registry_name for endpoint in endpoints] == [
+        'model-1-7-r3-hybrid-w1',
+        'model-1-7-r3-hybrid-w2',
+    ]
+    for endpoint in endpoints:
+        target = parse_model_instance_target(
+            endpoint.registry_name + '-labcdef12.static'
+        )
+        assert target.worker_id == endpoint.worker_id
+        assert target.component == 'vllm_hybrid'
+        assert target.dp_rank is None and target.attempt is None
+        assert resolve_model_instance_endpoint(hybrid_instance, target) == endpoint
+        assert (
+            resolve_model_instance_endpoint(
+                hybrid_instance, target, worker_id=endpoint.worker_id
+            )
+            == endpoint
+        )
+        with pytest.raises(ValueError):
+            resolve_model_instance_endpoint(hybrid_instance, target, worker_id=3)
+    for name in (
+        'model-1-7-r2-hybrid-w1.static',
+        'model-1-7-r3-hybrid-w3.static',
+        'model-2-7-r3-hybrid-w1.static',
+        'model-1-7.static',
+    ):
+        with pytest.raises(ValueError):
+            resolve_model_instance_endpoint(
+                hybrid_instance, parse_model_instance_target(name)
+            )
+
+
+@pytest.mark.parametrize(
+    'change', ['headless', 'unready', 'generation', 'worker', 'stopping', 'local_epoch']
+)
+def test_hybrid_getter_checks_watch_worker_and_local_fences(hybrid_instance, change):
+    from unittest.mock import MagicMock
+    from gpustack.worker.serve_manager import ServeManager
+
+    manager = ServeManager.__new__(ServeManager)
+    manager._worker_id_getter = lambda: 2
+    manager._model_instance_by_instance_id = {7: hybrid_instance.model_copy(deep=True)}
+    client = MagicMock()
+    manager._clientset_getter = lambda: client
+    client.model_instances.get_cached.return_value = hybrid_instance
+    kwargs = dict(model_id=1, restart_count=3, component='vllm_hybrid', worker_id=2)
+    assert manager.get_instance_port_by_model_instance_id(7, **kwargs) == 41002
+    if change == 'headless':
+        manager._worker_id_getter = lambda: 3
+        kwargs['worker_id'] = 3
+    elif change == 'unready':
+        hybrid_instance.distributed_servers.workloads[0].component.ready = False
+    elif change == 'generation':
+        kwargs['restart_count'] = 2
+    elif change == 'worker':
+        kwargs['worker_id'] = 1
+    elif change == 'stopping':
+        manager._managed_stopping = {(7, 3): True}
+    else:
+        manager._model_instance_by_instance_id[7].restart_count = 2
+    assert manager.get_instance_port_by_model_instance_id(7, **kwargs) is None

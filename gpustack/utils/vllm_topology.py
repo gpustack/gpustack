@@ -27,22 +27,22 @@ VLLM_MP_CONNECTING_PORT_COUNT = 10
 def vllm_lb_mode(parameters: Optional[List[str]]) -> str:
     """Identify explicitly selected load balancing and reject conflicting modes."""
     external = find_bool_parameter(parameters, ["data-parallel-external-lb", "dpe"])
-    native = find_bool_parameter(
+    multi_port_external = find_bool_parameter(
         parameters, ["data-parallel-multi-port-external-lb", "dpm"]
     )
     hybrid = find_bool_parameter(parameters, ["data-parallel-hybrid-lb", "dph"]) or (
-        not native
+        not multi_port_external
         and find_last_parameter(parameters, ["data-parallel-start-rank", "dpr", "dps"])
         is not None
     )
-    if sum((external, native, hybrid)) > 1 or (
-        native
+    if sum((external, multi_port_external, hybrid)) > 1 or (
+        multi_port_external
         and find_last_parameter(parameters, ["data-parallel-rank", "dpn"]) is not None
     ):
         raise ValueError("Choose only one vLLM data parallel load balancing mode.")
     for mode, enabled in (
         ("external", external),
-        ("native", native),
+        ("multi_port_external", multi_port_external),
         ("hybrid", hybrid),
     ):
         if enabled:
@@ -107,14 +107,16 @@ def validate_managed_http_parameters(parameters: Optional[List[str]]) -> None:
         )
 
 
-def validate_native_lb_parameters(parameters: Optional[List[str]]) -> None:
-    """Reject native DPS options that cannot represent managed rank APIs."""
-    if vllm_lb_mode(parameters) != "native":
-        raise ValueError("Native DPS requires multi-port external load balancing.")
+def validate_multi_port_external_lb_parameters(parameters: Optional[List[str]]) -> None:
+    """Reject multi-port External-LB options that cannot represent managed rank APIs."""
+    if vllm_lb_mode(parameters) != "multi_port_external":
+        raise ValueError(
+            "Multi-port External-LB requires --data-parallel-multi-port-external-lb."
+        )
     for names in (["api-server-count"], ["prefill-context-parallel-size", "pcp"]):
         raw = find_last_parameter(parameters, names)
         if raw is not None and find_last_int_parameter(parameters, names) != 1:
-            raise ValueError(f"Native DPS requires --{names[0]}=1.")
+            raise ValueError(f"Multi-port External-LB requires --{names[0]}=1.")
     for names, minimum in (
         (["data-parallel-size", "dp"], 2),
         (["data-parallel-size-local", "dpl"], 2),
@@ -122,35 +124,39 @@ def validate_native_lb_parameters(parameters: Optional[List[str]]) -> None:
         if find_last_parameter(parameters, names) is not None:
             value = find_last_int_parameter(parameters, names)
             if value is None or value < minimum:
-                raise ValueError(f"Native DPS requires --{names[0]} >= {minimum}.")
+                raise ValueError(
+                    f"Multi-port External-LB requires --{names[0]} >= {minimum}."
+                )
     nnodes = find_last_parameter(parameters, ["nnodes"])
     if nnodes is not None and find_last_int_parameter(parameters, ["nnodes"]) != 1:
-        raise ValueError("Native DPS requires every rank to fit on one Worker.")
+        raise ValueError(
+            "Multi-port External-LB requires every rank to fit on one Worker."
+        )
     for flag in ("headless", "grpc"):
         if find_bool_parameter(parameters, [flag]):
-            raise ValueError(f"Native DPS does not support --{flag}.")
+            raise ValueError(f"Multi-port External-LB does not support --{flag}.")
     if find_last_parameter(parameters, ["uds"]) is not None:
-        raise ValueError("Native DPS does not support --uds.")
+        raise ValueError("Multi-port External-LB does not support --uds.")
     validate_managed_http_parameters(parameters)
     for name, allowed in (
         ("distributed-executor-backend", ("mp", "uni")),
         ("data-parallel-backend", ("mp",)),
     ):
         if find_last_parameter(parameters, [name]) not in (None, *allowed):
-            raise ValueError(f"Native DPS requires a local --{name}.")
+            raise ValueError(f"Multi-port External-LB requires a local --{name}.")
 
 
 def validate_managed_lb_parameters(parameters: Optional[List[str]]) -> None:
     """Validate an explicit LB mode before scheduling without device assumptions."""
-    if vllm_lb_mode(parameters) == "native":
-        validate_native_lb_parameters(parameters)
+    if vllm_lb_mode(parameters) == "multi_port_external":
+        validate_multi_port_external_lb_parameters(parameters)
 
 
-def native_lb_parallelism(
+def multi_port_external_lb_parallelism(
     parameters: List[str], gpu_count: Union[int, List[int]]
 ) -> "ValidatedTopology":
-    """Resolve native DPS with complete, evenly allocated local DP replicas."""
-    validate_native_lb_parameters(parameters)
+    """Resolve multi-port External-LB with complete, evenly allocated local DP replicas."""
+    validate_multi_port_external_lb_parameters(parameters)
     counts = [gpu_count] if isinstance(gpu_count, int) else gpu_count
     result = external_lb_parallelism(parameters, counts)
     if find_last_parameter(parameters, ["data-parallel-size-local", "dpl"]) is None:
@@ -158,36 +164,58 @@ def native_lb_parallelism(
         local = counts[0] // width
         if counts[0] % width or local < 2:
             raise ValueError(
-                "Native DPS requires complete local ranks and local DP >= 2."
+                "Multi-port External-LB requires complete local ranks and local DP >= 2."
             )
         result = external_lb_parallelism(
             [*parameters, "--data-parallel-size-local", str(local)], counts
         )
     if result.dp < 2 or min(result.dpl_per_node) < 2:
-        raise ValueError("Native DPS requires DP > 1 and local DP >= 2.")
+        raise ValueError("Multi-port External-LB requires DP > 1 and local DP >= 2.")
     if result.nnodes_within_dp != 1 or len(set(result.dpl_per_node)) != 1:
-        raise ValueError("Native DPS requires every rank to fit on one Worker.")
+        raise ValueError(
+            "Multi-port External-LB requires every rank to fit on one Worker."
+        )
     if (
         find_last_parameter(parameters, ["distributed-executor-backend"]) == "uni"
         and result.tp * result.pp > 1
     ):
-        raise ValueError("Native DPS TP/PP ranks require multiprocessing executors.")
+        raise ValueError(
+            "Multi-port External-LB TP/PP ranks require multiprocessing executors."
+        )
     start = find_last_parameter(parameters, ["data-parallel-start-rank", "dpr", "dps"])
     if start is not None:
         value = find_last_int_parameter(
             parameters, ["data-parallel-start-rank", "dpr", "dps"]
         )
         if value is None or value < 0 or value + result.dpl_per_node[0] > result.dp:
-            raise ValueError("Native DPS start rank exceeds the allocated DP world.")
+            raise ValueError(
+                "Multi-port External-LB start rank exceeds the allocated DP world."
+            )
     return result
+
+
+def hybrid_lb_parallelism(
+    parameters: List[str], gpu_count: Union[int, List[int]]
+) -> "ValidatedTopology":
+    """Resolve a complete Hybrid-LB group with the MP topology constraints.
+
+    Omitted local DP is derived from the allocation. Node roles and rank starts
+    use ``external_lb_fragments`` in persisted allocation order.
+    """
+    counts = [gpu_count] if isinstance(gpu_count, int) else gpu_count
+    external_lb_parallelism(parameters, counts)
+    return validate_multinode_topology(counts, parse_user_parallelism(parameters))
 
 
 def managed_lb_parallelism(
     parameters: List[str], gpu_count: Union[int, List[int]]
 ) -> "ValidatedTopology":
     """Resolve the topology for the explicitly selected managed LB mode."""
-    if vllm_lb_mode(parameters) == "native":
-        return native_lb_parallelism(parameters, gpu_count)
+    mode = vllm_lb_mode(parameters)
+    if mode == "multi_port_external":
+        return multi_port_external_lb_parallelism(parameters, gpu_count)
+    if mode == "hybrid":
+        return hybrid_lb_parallelism(parameters, gpu_count)
     return external_lb_parallelism(parameters, gpu_count)
 
 

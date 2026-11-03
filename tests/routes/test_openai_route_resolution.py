@@ -80,7 +80,7 @@ async def test_deployed_model_with_no_active_target_is_unavailable(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('managed', [False, True])
+@pytest.mark.parametrize('managed', [False, 'rank', 'hybrid'])
 @pytest.mark.parametrize('deleted', [False, True])
 async def test_proxy_preserves_api_path_and_selects_rank_owner(
     monkeypatch, managed, deleted
@@ -113,7 +113,17 @@ async def test_proxy_preserves_api_path_and_selects_rank_owner(
     monkeypatch.setattr(
         openai_route,
         'model_instance_endpoints',
-        lambda _: [ModelInstanceEndpoint(1, 7, 2, 41001, 3, 1)],
+        lambda _: [
+            ModelInstanceEndpoint(
+                1,
+                7,
+                2,
+                41001,
+                3,
+                None if managed == 'hybrid' else 1,
+                component='vllm_hybrid' if managed == 'hybrid' else None,
+            )
+        ],
     )
     get_worker = AsyncMock(
         return_value=SimpleNamespace(
@@ -156,7 +166,9 @@ async def test_proxy_preserves_api_path_and_selects_rank_owner(
     assert transformed_on and transformed_on[0] != event_loop_thread
     assert forward.call_args.kwargs['path'] == 'v1/chat/completions'
     assert forward.call_args.kwargs['headers'][openai_route.router_header_key] == (
-        'model-1-7-r3-dp1.static' if managed else 'model-1-7.static'
+        'model-1-7-r3-hybrid-w2.static'
+        if managed == 'hybrid'
+        else ('model-1-7-r3-dp1.static' if managed else 'model-1-7.static')
     )
     get_worker.assert_awaited_once_with(2 if managed else 1)
     if managed:
@@ -235,7 +247,7 @@ async def test_component_input_errors_use_openai_response_format(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('component', ['sglang_smg', None])
+@pytest.mark.parametrize('component', ['sglang_smg', 'vllm_hybrid', None])
 async def test_server_proxy_sends_component_specific_payload(monkeypatch, component):
     import json
     from aiohttp import ClientSession, web
@@ -284,7 +296,13 @@ async def test_server_proxy_sends_component_specific_payload(monkeypatch, compon
         'model_instance_endpoints',
         lambda _: [
             ModelInstanceEndpoint(
-                1, 7, 1, 41000, 3, component=component, attempt=2 if component else None
+                1,
+                7,
+                1,
+                41000,
+                3,
+                component=component,
+                attempt=2 if component == 'sglang_smg' else None,
             )
         ],
     )
@@ -316,6 +334,10 @@ async def test_server_proxy_sends_component_specific_payload(monkeypatch, compon
     assert response.status_code == 200
     data, headers, raw, path = received[0]
     assert path == '/v1/chat/completions'
-    assert data == ({'model': 'qwen3', 'prompt': '你好'} if component else payload)
-    assert headers.get('X-Data-Parallel-Rank') == (None if component else '9')
+    assert data == (
+        {'model': 'qwen3', 'prompt': '你好'} if component == 'sglang_smg' else payload
+    )
+    assert headers.get('X-Data-Parallel-Rank') == (
+        None if component == 'sglang_smg' else '9'
+    )
     assert int(headers['Content-Length']) == len(raw)

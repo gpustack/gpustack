@@ -15,7 +15,7 @@ from gpustack.schemas.models import (
     RoleNameEnum,
 )
 from gpustack.server.pd_mode_catalog import get_pd_mode
-from gpustack.utils.command import flatten_to_argv
+from gpustack.utils.command import find_last_int_parameter, flatten_to_argv
 from gpustack.utils.vllm_topology import vllm_lb_mode
 from gpustack.validation.pd.common import model_field
 
@@ -201,6 +201,7 @@ def validate_roles(  # noqa: C901
                     else field("backend_parameters")
                 ),
             )
+    _reject_static_hybrid_local_dp(field, roles, disaggregation)
 
     # A recipe injects one engine's connector configuration into every role,
     # so a role on a different engine would receive settings it cannot read.
@@ -226,6 +227,44 @@ def validate_roles(  # noqa: C901
                 )
 
 
+def _reject_static_hybrid_local_dp(field, roles, disaggregation) -> None:
+    """Reject known API scopes that one static Mooncake DP setting cannot express."""
+    if disaggregation.mode != PDModeEnum.VLLM_MOONCAKE:
+        return
+    router = next((role for role in roles if role.name == "router"), None)
+    if router is not None and router.run_command:
+        return
+    sizes, hybrid = set(), False
+    for role in roles:
+        if role.name not in ("prefill", "decode"):
+            continue
+        parameters = (
+            role.backend_parameters
+            if role.backend_parameters is not None
+            else field("backend_parameters")
+        )
+        try:
+            mode = vllm_lb_mode(parameters)
+        except ValueError as exc:
+            raise BadRequestException(message=str(exc)) from exc
+        if mode == "hybrid":
+            hybrid = True
+            size = find_last_int_parameter(
+                parameters, ["data-parallel-size-local", "dpl"]
+            )
+        elif mode == "internal":
+            size = find_last_int_parameter(parameters, ["data-parallel-size", "dp"])
+        else:
+            size = 1
+        if size is not None:
+            sizes.add(size)
+    if hybrid and len(sizes) > 1:
+        raise BadRequestException(
+            message="CUDA Mooncake shared APIs must have the same local DP size; "
+            "the static router has only one --intra-node-data-parallel-size."
+        )
+
+
 def validate_external_pd_membership(
     mode_name: str, backend: Optional[str], parameters: Optional[List[str]]
 ) -> None:
@@ -236,9 +275,9 @@ def validate_external_pd_membership(
         lb_mode = vllm_lb_mode(parameters)
     except ValueError as exc:
         raise BadRequestException(message=str(exc)) from exc
-    if lb_mode == "native":
+    if lb_mode == "multi_port_external":
         raise BadRequestException(
-            message="Native multi-port vLLM is supported only for ordinary instances, not PD roles."
+            message="Multi-port External-LB for vLLM is supported only for ordinary instances, not PD roles."
         )
     if lb_mode != "external":
         return

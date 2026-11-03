@@ -4448,12 +4448,14 @@ def test_managed_successful_optional_probe_never_reports_failure(
     assert s.mi.state == ModelInstanceStateEnum.RUNNING
 
 
-def test_native_dps_health_checks_each_child_and_excludes_supervisor(rank_health):
+def test_multi_port_external_health_checks_each_child_and_excludes_supervisor(
+    rank_health,
+):
     from gpustack.schemas.models import PortBand
 
     s = rank_health
     s.model.backend_parameters = ['-dpm', '--dp=2']
-    s.mi.named_ports = {'_vllm_native_supervisor': PortBand(base=41999)}
+    s.mi.named_ports = {'_vllm_multi_port_external_supervisor': PortBand(base=41999)}
     s.sync()
     assert len(s.jobs) == 2
     s.finish()
@@ -4929,9 +4931,9 @@ def test_smg_lineage_switch_appends_a_boundary_and_replays_new_runtime_from_star
     assert not list(tmp_path.glob('*a0*')) and not list(tmp_path.glob('*a1*'))
 
 
-@pytest.mark.parametrize('native', [True, False, None])
+@pytest.mark.parametrize('multi_port_external', [True, False, None])
 def test_log_launcher_comes_from_registered_generation_not_desired_model(
-    tmp_path, native
+    tmp_path, multi_port_external
 ):
     from gpustack.schemas.models import (
         DistributedServers,
@@ -4948,7 +4950,7 @@ def test_log_launcher_comes_from_registered_generation_not_desired_model(
             backend_parameters=[
                 (
                     '--data-parallel-external-lb'
-                    if native
+                    if multi_port_external
                     else '--data-parallel-multi-port-external-lb'
                 )
             ]
@@ -4968,9 +4970,9 @@ def test_log_launcher_comes_from_registered_generation_not_desired_model(
             )
         ]
     )
-    if native is True:
-        mi.named_ports = {'_vllm_native_supervisor': PortBand(base=8100)}
-    elif native is False:
+    if multi_port_external is True:
+        mi.named_ports = {'_vllm_multi_port_external_supervisor': PortBand(base=8100)}
+    elif multi_port_external is False:
         mi.named_ports = {
             name: PortBand(base=8100 + i)
             for i, name in enumerate(
@@ -4980,11 +4982,11 @@ def test_log_launcher_comes_from_registered_generation_not_desired_model(
     manager._record_log_sources(mi)
     sources = list_log_sources(tmp_path, 42, 7, 3)
     ranks = [s for s in sources if s.descriptor.kind == 'rank']
-    if native is None:
+    if multi_port_external is None:
         assert ranks == []
     else:
         assert ranks[0].descriptor.attribution == (
-            'native_api_rank' if native else 'supervisor_rank'
+            'multi_port_external_api_rank' if multi_port_external else 'supervisor_rank'
         )
         mi.named_ports = {}
         manager._record_log_sources(mi)

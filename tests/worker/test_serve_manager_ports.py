@@ -1323,7 +1323,7 @@ def test_managed_worker_port_claim_checks_instance_epoch(epoch):
 
 
 @pytest.mark.parametrize('supervisor', [None, 40000])
-def test_native_dps_reserves_supervisor_separately_from_rank_apis(
+def test_multi_port_external_reserves_supervisor_separately_from_rank_apis(
     monkeypatch, supervisor
 ):
     manager = _manager()
@@ -1342,7 +1342,7 @@ def test_native_dps_reserves_supervisor_separately_from_rank_apis(
     monkeypatch.setattr(network, 'is_port_available', lambda *args, **kwargs: True)
     manager._assign_external_ports(mi, model)
     bands = mi.named_ports
-    port = bands['_vllm_native_supervisor'].base
+    port = bands['_vllm_multi_port_external_supervisor'].base
     assert port not in range(
         bands['_vllm_external_api'].base, bands['_vllm_external_api'].base + 2
     )
@@ -1518,3 +1518,37 @@ def test_sglang_dpa_requires_the_complete_internal_band_before_publishing():
     with pytest.raises(network.PortRangeExhaustedError):
         manager._select_ports(mi, model, BackendEnum.SGLANG, set(), '40000-40015')
     assert mi.port is None and not mi.ports and not mi.named_ports
+
+
+@pytest.mark.parametrize('cross_worker', [False, True])
+def test_hybrid_ports_match_shared_api_and_cross_worker_budget(
+    monkeypatch, cross_worker
+):
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    manager = _manager()
+    mi = _instance(role=None, cards=4)
+    mi.distributed_servers = DistributedServers(workloads=[])
+    parameters = ['--data-parallel-hybrid-lb', '--dp=2', '--tp=2']
+    if cross_worker:
+        mi.distributed_servers.subordinate_workers = [
+            ModelInstanceSubordinateWorker(
+                worker_id=2, worker_ip='127.0.0.2', gpu_indexes=[0, 1, 2, 3]
+            )
+        ]
+        parameters = ['--data-parallel-hybrid-lb', '--dp=1', '--tp=8']
+    model = new_model(
+        1,
+        'hybrid',
+        huggingface_repo_id='org/moe',
+        backend=BackendEnum.VLLM,
+        backend_parameters=parameters,
+    )
+    monkeypatch.setattr(network, 'is_port_available', lambda *args, **kwargs: True)
+    manager._select_external_ports(mi, model, set(), PORT_RANGE)
+    assert mi.named_ports['_vllm_external_api'].count == 1
+    assert mi.named_ports['_vllm_external_rpc'].count == 1
+    assert ('_vllm_mp_connecting' in mi.named_ports) == cross_worker
+    assert ('_vllm_external_store' in mi.named_ports) == cross_worker
+    assert len(model_instance_ports(mi, 1)) == (13 if cross_worker else 2)
+    assert manager._managed_launcher_available(mi, model)

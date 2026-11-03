@@ -150,12 +150,13 @@ async def count_offer_slots(
             result.unavailable = f"{type(e).__name__}: {e}"
             return result
 
-        # Taken on every round rather than only on the one that finds no room:
-        # a role that fits still has to appear in a group's breakdown, priced
-        # the same way as the role that did not.
-        result.claim = _claim_of(selector) or result.claim
-
         candidate = _usable(candidates)
+        # A successful placement prices the actual reservation. An exhausted
+        # selector may only know the weights estimate, so keep the measured
+        # claim once a placement has supplied one.
+        if candidate is not None or result.claim is None:
+            result.claim = _claim_of(selector) or result.claim
+
         if candidate is None:
             # The round that found no room is the one worth quoting, and it is
             # always this one: the loop stops here. Asked of the selector
@@ -256,7 +257,8 @@ def _subordinates_of(candidate, model=None):
     managed = (
         model is not None
         and get_backend(model) == BackendEnum.VLLM
-        and vllm_lb_mode(model.backend_parameters) in ("external", "native")
+        and vllm_lb_mode(model.backend_parameters)
+        in ("external", "multi_port_external", "hybrid")
     )
     return _Subordinates(
         subordinate_workers=list(subordinates), workloads=[] if managed else None

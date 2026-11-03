@@ -473,3 +473,100 @@ def test_sglang_never_touched_that_flag_and_is_unaffected():
             disaggregation=_pd(mode=PDModeEnum.SGLANG_MOONCAKE),
         )
     )
+
+
+@pytest.mark.parametrize(
+    "prefill_params,decode_params",
+    [
+        (["--data-parallel-size-local", "2"], ["--dpl=1"]),
+        (["--dpl=2"], ["--data-parallel-size-local=4"]),
+    ],
+)
+def test_static_hybrid_roles_refuse_explicit_different_local_dp(
+    prefill_params, decode_params
+):
+    with rejects("same local DP"):
+        validate_roles(
+            _model(
+                roles=[
+                    RoleSpec(
+                        name="prefill", backend_parameters=["--dph", *prefill_params]
+                    ),
+                    RoleSpec(
+                        name="decode",
+                        backend_parameters=[
+                            "--data-parallel-hybrid-lb",
+                            *decode_params,
+                        ],
+                    ),
+                    RoleSpec(name="router"),
+                ],
+                disaggregation=_pd(PDModeEnum.VLLM_MOONCAKE),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "mode", [PDModeEnum.VLLM_NIXL, PDModeEnum.VLLM_ASCEND_MOONCAKE]
+)
+def test_dynamic_hybrid_roles_keep_independent_local_dp(mode):
+    validate_roles(
+        _model(
+            roles=[
+                RoleSpec(name="prefill", backend_parameters=["--dph", "--dpl=2"]),
+                RoleSpec(name="decode", backend_parameters=["--dph", "--dpl=1"]),
+                RoleSpec(name="router"),
+            ],
+            disaggregation=_pd(mode),
+        )
+    )
+
+
+def test_static_hybrid_roles_use_inherited_parameters_on_sparse_update():
+    model = Model.model_validate(
+        _model(
+            backend_parameters=["--dph", "--dpl=2"],
+            roles=[
+                RoleSpec(name="prefill"),
+                RoleSpec(name="decode"),
+                RoleSpec(name="router"),
+            ],
+            disaggregation=_pd(PDModeEnum.VLLM_MOONCAKE),
+        ).model_dump()
+    )
+    validate_roles(
+        ModelUpdate(
+            name=model.name,
+            source=model.source,
+            local_path=model.local_path,
+            description="unchanged layout",
+        ),
+        model,
+    )
+    with rejects("same local DP"):
+        validate_roles(
+            ModelUpdate(
+                name=model.name,
+                source=model.source,
+                local_path=model.local_path,
+                roles=[
+                    RoleSpec(name="prefill"),
+                    RoleSpec(name="decode", backend_parameters=["--dph", "--dpl=1"]),
+                    RoleSpec(name="router"),
+                ],
+            ),
+            model,
+        )
+
+
+def test_static_hybrid_hand_written_router_keeps_independent_role_parameters():
+    validate_roles(
+        _model(
+            roles=[
+                RoleSpec(name="prefill", backend_parameters=["--dph", "--dpl=2"]),
+                RoleSpec(name="decode", backend_parameters=["--dph", "--dpl=1"]),
+                RoleSpec(name="router", run_command="my-router"),
+            ],
+            disaggregation=_pd(PDModeEnum.VLLM_MOONCAKE),
+        )
+    )

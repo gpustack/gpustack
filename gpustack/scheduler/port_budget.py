@@ -78,17 +78,24 @@ def member_port_demand(
     allocation = gpu_per_node or [cards]
     if (
         role in (None, "prefill", "decode")
-        and mode in ("external", "native")
+        and mode in ("external", "multi_port_external", "hybrid")
         and min(allocation) > 0
     ):
         topology = managed_lb_parallelism(model.backend_parameters, allocation)
-        demand = (
-            VLLM_MP_CONNECTING_PORT_COUNT
-            + topology.dp
-            + 1  # Shared DP RPC.
-            + (topology.dp if topology.nnodes_within_dp > 1 else 0)
-            + (1 if mode == "native" else 0)
-        )
+        if mode == "hybrid":
+            # One shared API and DP RPC, plus the existing MP protection/store
+            # bands when ranks span Workers. Connector bands remain global.
+            demand = 2
+            if topology.nnodes_within_dp > 1:
+                demand += VLLM_MP_CONNECTING_PORT_COUNT + topology.dp
+        else:
+            demand = (
+                VLLM_MP_CONNECTING_PORT_COUNT
+                + topology.dp
+                + 1  # Shared DP RPC.
+                + (topology.dp if topology.nnodes_within_dp > 1 else 0)
+                + (1 if mode == "multi_port_external" else 0)
+            )
     for spec in band_specs_for(model, role, context=f"Role {role!r}"):
         if spec.scope == PDPortScopeEnum.ROLE:
             # Refused outright on the worker. Budgeting for it would be

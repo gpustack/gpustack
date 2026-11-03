@@ -1321,3 +1321,108 @@ def test_managed_ascend_decode_pp_warns_without_refusing(caplog):
         )
     assert _connector(injection)["engine_id"] == "gpustack-1-r0-dp0"
     assert "pipeline parallelism" in caplog.text
+
+
+@pytest.mark.parametrize('role', ['prefill', 'decode'])
+def test_hybrid_pd_uses_the_same_topology_constraints_as_its_launcher(role):
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        backend_parameters=['--data-parallel-hybrid-lb', '--tp=4', '--dp=2', '--dpl=2']
+    )
+    instance = _instance(
+        role=role,
+        gpu_indexes=[0, 1, 2, 3],
+        distributed_servers=DistributedServers(
+            workloads=[],
+            subordinate_workers=[{'worker_id': 2, 'gpu_indexes': [0, 1, 2, 3]}],
+        ),
+    )
+    with pytest.raises(PDInjectionError, match='data-parallel-size-local'):
+        render_pd_injection(model, instance, _variables(role=role))
+
+
+@pytest.mark.parametrize('role,cards', [('prefill', 4), ('decode', 1)])
+@pytest.mark.parametrize('worker_ip', ['192.168.50.10', '192.168.50.11'])
+def test_hybrid_ascend_pd_keeps_each_roles_global_parallelism_and_local_address(
+    role, cards, worker_ip
+):
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        backend_parameters=['--tp=16'],
+        roles=[
+            RoleSpec(
+                name='prefill',
+                replicas=1,
+                backend_parameters=[
+                    '--data-parallel-hybrid-lb',
+                    '--tp=2',
+                    '--dp=4',
+                    '--dpl=2',
+                ],
+            ),
+            RoleSpec(
+                name='decode',
+                replicas=1,
+                backend_parameters=[
+                    '--data-parallel-hybrid-lb',
+                    '--tp=1',
+                    '--dp=2',
+                    '--dpl=1',
+                ],
+            ),
+            RoleSpec(name='router', replicas=1),
+        ],
+    )
+    instance = _instance(
+        role=role,
+        gpu_indexes=list(range(cards)),
+        distributed_servers=DistributedServers(
+            workloads=[],
+            subordinate_workers=[{'worker_id': 2, 'gpu_indexes': list(range(cards))}],
+        ),
+        named_ports={'kv_port': PortBand(base=5600, count=cards * 2)},
+    )
+    injection = render_pd_injection(
+        model, instance, _variables(role=role, worker_ip=worker_ip)
+    )
+    descriptor = _connector(injection)
+    assert descriptor['kv_connector_extra_config'] == {
+        'prefill': {'tp_size': 2, 'dp_size': 4},
+        'decode': {'tp_size': 1, 'dp_size': 2},
+    }
+    assert 'engine_id' not in descriptor
+    assert descriptor['kv_port'] == 5600
+    assert injection.env['HCCL_IF_IP'] == worker_ip
+    assert injection.env['HCCL_SOCKET_IFNAME'] == 'eth0'
+    assert model.backend_parameters == ['--tp=16']
+
+
+@pytest.mark.parametrize('role', ['prefill', 'decode'])
+@pytest.mark.parametrize('worker_ip', ['192.168.50.10', '192.168.50.11'])
+def test_hybrid_nixl_pd_keeps_shared_engine_identity_and_global_port_band(
+    role, worker_ip
+):
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        backend_parameters=['--data-parallel-hybrid-lb', '--tp=2', '--dp=4', '--dpl=2']
+    )
+    instance = _instance(
+        role=role,
+        gpu_indexes=[0, 1, 2, 3],
+        distributed_servers=DistributedServers(
+            workloads=[],
+            subordinate_workers=[{'worker_id': 2, 'gpu_indexes': [0, 1, 2, 3]}],
+        ),
+        named_ports={'kv_side_channel': PortBand(base=5600, count=4)},
+    )
+    injection = render_pd_injection(
+        model, instance, _variables(role=role, worker_ip=worker_ip)
+    )
+    descriptor = _connector(injection)
+    assert 'engine_id' not in descriptor
+    assert injection.env['VLLM_NIXL_SIDE_CHANNEL_HOST'] == worker_ip
+    assert injection.env['VLLM_NIXL_SIDE_CHANNEL_PORT'] == '5600'

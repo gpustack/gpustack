@@ -672,6 +672,7 @@ class InferenceServer(ABC):
             apply_managed_router,
             group_peer_addresses,
             is_managed_router,
+            static_hybrid_router_variables,
         )
 
         instance = self._model_instance
@@ -698,6 +699,13 @@ class InferenceServer(ABC):
 
         peers = group_peer_addresses(members, instance.group_id, worker_ips)
         variables = self._template_variables(**self._pd_template_variables())
+        variables.update(
+            static_hybrid_router_variables(
+                getattr(self, "_model_spec", None) or model,
+                members,
+                instance.group_id,
+            )
+        )
         # A router's own named bands. The engine roles get these from the
         # injector, which builds its own context; the router does not go
         # through the injector at all, so without this its

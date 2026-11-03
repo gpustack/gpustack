@@ -411,6 +411,7 @@ class MetricExporter(Collector):
                         workers_by_id,
                         source_info,
                         placement_info,
+                        model=model,
                     )
                     worker_id = str(mi.worker_id) if mi.worker_id else "unknown"
                     worker_name = mi.worker_name if mi.worker_name else "unknown"
@@ -455,13 +456,13 @@ class MetricExporter(Collector):
         return metrics
 
     def _collect_instance_runtime_info(
-        self, instance, model_labels, workers, source_info, placement_info
+        self, instance, model_labels, workers, source_info, placement_info, model=None
     ):
         if getattr(instance, "id", None) is None:
             return
         try:
             sources = model_instance_metrics_source_inventory(instance)
-            placements = model_instance_metrics_placements(instance, sources)
+            placements = model_instance_metrics_placements(instance, sources, model)
         except (AttributeError, TypeError):
             logger.debug(
                 "Skipping incomplete runtime info for instance %s", instance.id

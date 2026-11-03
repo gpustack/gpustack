@@ -599,3 +599,94 @@ def test_manifest_dashboard_legends_use_exported_labels():
             assert '{{worker}}' not in target['legendFormat']
             assert '{{policy}}' not in target['legendFormat']
     assert '{{status}}' in panels[61]['targets'][0]['legendFormat']
+
+
+@pytest.mark.parametrize('worker_id', [1, 3])
+def test_hybrid_dashboard_binds_shared_api_and_never_synthetic_rank(worker_id):
+    from gpustack.routes.model_instances import (
+        _dashboard_query_target,
+        _dashboard_source_scope,
+    )
+    from gpustack.utils.grafana import model_dashboard_scope_params
+    from tests.worker.test_runtime_metrics import _managed_instance, _hybrid_tasks
+    from gpustack.api.exceptions import NotFoundException
+
+    instance = _managed_instance(_hybrid_tasks())
+    raw = dict(component='vllm_hybrid', worker_id=str(worker_id), restart_count='3')
+    scope = _dashboard_source_scope(instance, _dashboard_query_target(raw))
+    params = model_dashboard_scope_params(**scope)
+    assert params['var-scope_source_kind'] == '"^vllm_hybrid$"'
+    assert params['var-scope_worker_id'] == f'"{worker_id}"'
+    assert params['var-scope_endpoint_dp_rank'] == '".*"'
+    assert params['var-scope_scheduler_dp_rank'] == '".*"'
+    for changes in ({'worker_id': '2'}, {'worker_id': '9'}, {'restart_count': '2'}):
+        with pytest.raises(NotFoundException):
+            _dashboard_source_scope(
+                instance, _dashboard_query_target({**raw, **changes})
+            )
+
+
+@pytest.mark.parametrize('filters', [{'dp_rank': '0'}, {'attempt': '0'}])
+def test_hybrid_dashboard_rejects_rank_and_smg_attempt(filters):
+    from gpustack.routes.model_instances import _dashboard_query_target
+    from gpustack.api.exceptions import BadRequestException
+    from gpustack.utils.grafana import model_dashboard_scope_params
+
+    with pytest.raises(BadRequestException):
+        _dashboard_query_target(dict(component='vllm_hybrid', **filters))
+    with pytest.raises(ValueError):
+        model_dashboard_scope_params(
+            source_kind='vllm_hybrid',
+            **{
+                'dp_rank' if 'dp_rank' in filters else 'component_attempt': 0,
+            },
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['deleted', 'cluster', 'missing', 'identity'])
+async def test_hybrid_dashboard_refuses_changed_api_owner(monkeypatch, change):
+    from gpustack.routes import model_instances as instances_route
+    from gpustack.api.exceptions import NotFoundException
+    from tests.routes.test_model_instance_log_download import _hybrid_log_instance
+
+    worker = SimpleNamespace(id=3, cluster_id=1, deleted_at=None)
+    if change == 'deleted':
+        worker.deleted_at = 'deleted'
+    elif change == 'cluster':
+        worker.cluster_id = 2
+    elif change == 'identity':
+        worker.id = 4
+    else:
+        worker = None
+    monkeypatch.setattr(
+        instances_route.Worker, 'one_by_id_with_refresh', AsyncMock(return_value=worker)
+    )
+    with pytest.raises(NotFoundException):
+        await instances_route._validate_dashboard_owner(None, _hybrid_log_instance(), 3)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_dashboard_checks_tenant_before_resolving_listener(monkeypatch):
+    from gpustack.routes import model_instances as instances_route
+    from gpustack.api.exceptions import NotFoundException
+    from tests.routes.test_model_instance_log_download import _hybrid_log_instance
+    from unittest.mock import Mock
+
+    monkeypatch.setattr(
+        instances_route.ModelInstance,
+        'one_by_id_with_refresh',
+        AsyncMock(return_value=_hybrid_log_instance()),
+    )
+    monkeypatch.setattr(
+        instances_route,
+        'assert_resource_visible',
+        Mock(side_effect=NotFoundException(message='Model instance not found')),
+    )
+    resolve = Mock()
+    monkeypatch.setattr(instances_route, '_dashboard_source_scope', resolve)
+    with pytest.raises(NotFoundException):
+        await instances_route.get_model_instance_dashboard(
+            None, None, 7, None, component='vllm_hybrid', worker_id='3'
+        )
+    resolve.assert_not_called()

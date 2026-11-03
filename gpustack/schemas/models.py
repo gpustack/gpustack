@@ -1797,11 +1797,11 @@ class DPRankPlacement(BaseModel):
 
 
 class ModelInstanceComponent(BaseModel):
-    """An ordinary SGLang task sharing its Engine's existing device allocation."""
+    """A managed task sharing the instance's existing device allocation."""
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["sglang_engine", "sglang_smg"]
+    kind: Literal["sglang_engine", "sglang_smg", "vllm_hybrid"]
     api_port: Optional[int] = PydanticField(default=None, ge=1, le=65535)
     metrics_port: Optional[int] = PydanticField(default=None, ge=1, le=65535)
     ready: Optional[bool] = None
@@ -1814,7 +1814,11 @@ class ModelInstanceComponent(BaseModel):
 
     @model_validator(mode="after")
     def validate_component(self):
-        if self.kind == "sglang_engine":
+        if self.kind in ("sglang_engine", "vllm_hybrid"):
+            if self.kind == "vllm_hybrid" and (
+                self.image is not None or self.router_version is not None
+            ):
+                raise ValueError("Hybrid components cannot carry Engine image evidence")
             if (self.image is None) != (self.router_version is None):
                 raise ValueError(
                     "Engine image and router version must be recorded together"
@@ -1826,11 +1830,13 @@ class ModelInstanceComponent(BaseModel):
                 or self.stop_requested
                 or self.last_restart_time is not None
             ):
-                raise ValueError("Engine components cannot carry SMG recovery state")
+                raise ValueError(
+                    "Engine and Hybrid components cannot carry SMG recovery state"
+                )
             if self.metrics_port is not None:
-                raise ValueError("Engine metrics share the Engine API")
+                raise ValueError("Engine and Hybrid metrics share their API")
             if (self.api_port is None) != (self.dp_size is None):
-                raise ValueError("A main Engine requires its API and logical DP size")
+                raise ValueError("A serving component requires its API and DP size")
         elif (
             self.api_port is None
             or self.metrics_port is None
@@ -1842,7 +1848,7 @@ class ModelInstanceComponent(BaseModel):
             raise ValueError("SMG requires separate API/metrics ports and no DP size")
         if self.api_port is None:
             if self.ready is not None:
-                raise ValueError("A headless Engine cannot report API readiness")
+                raise ValueError("A headless component cannot report API readiness")
         elif self.ready is None:
             self.ready = False
         return self
@@ -1879,12 +1885,11 @@ class ModelInstanceWorkload(BaseModel):
 def validate_workload_manifest(workloads: List[ModelInstanceWorkload]) -> None:
     """Reject ambiguous task names, rank coordinates, devices, and local ports."""
     names, coordinates, devices, ports = set(), set(), set(), set()
-    if (
-        workloads
-        and any(w.component is not None for w in workloads)
-        and any(w.component is None for w in workloads)
-    ):
-        raise ValueError("Component and rank workloads cannot share a manifest")
+    kinds = {w.component.kind if w.component is not None else None for w in workloads}
+    if len(kinds) > 1 and (None in kinds or "vllm_hybrid" in kinds):
+        raise ValueError(
+            "Component families and rank workloads cannot share a manifest"
+        )
     components = set()
     for workload in workloads:
         if workload.component is not None:
@@ -2364,14 +2369,16 @@ class ModelInstanceLogSource(BaseModel):
     previous: bool = False
     kind: Literal["preparation", "workload", "rank", "public"]
     label: str
-    component_kind: Optional[Literal["sglang_engine", "sglang_smg"]] = None
+    component_kind: Optional[Literal["sglang_engine", "sglang_smg", "vllm_hybrid"]] = (
+        None
+    )
     workload_name: Optional[str] = None
     container_name: Optional[str] = None
     dp_rank: Optional[int] = None
     node_rank: Optional[int] = None
     main: Optional[bool] = None
     attribution: Literal[
-        "all", "supervisor_rank", "native_api_rank", "unattributed"
+        "all", "supervisor_rank", "multi_port_external_api_rank", "unattributed"
     ] = "all"
     available: bool = False
     active_workload_name: Optional[str] = None

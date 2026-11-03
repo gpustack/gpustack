@@ -1795,3 +1795,47 @@ def test_component_conversion_bounds_body_and_preserves_rank_under_connection_to
             {'content-type': 'application/json'}, b'{"a":1}', component='sglang_smg'
         )
     assert exc.value.status_code == 413
+
+
+@pytest.mark.parametrize('mode', ['direct', 'worker', 'tunnel'])
+def test_hybrid_registries_keep_api_owners_generation_and_lora(rank_workers, mode):
+    from tests.routes.test_worker_proxy import hybrid_instance, rank_instance
+    from gpustack.schemas.workers import ModelInstanceProxyModeEnum
+    from gpustack.utils.model_instance_workers import model_instance_endpoints
+
+    instance = hybrid_instance.__wrapped__(rank_instance.__wrapped__())
+    for worker in rank_workers.values():
+        worker.proxy_mode = ModelInstanceProxyModeEnum(mode)
+        worker.proxy_address = f'http://127.0.0.1:{10160 + worker.id}'
+    suffix = lora_registry_name_suffix('moe:adapter')
+    destinations = model_instances_registry_list(
+        [instance],
+        rank_workers,
+        downstream_model_name='moe:adapter',
+        registry_name_suffix=suffix,
+    )
+    assert [registry.name for _, _, registry in destinations] == [
+        f'model-1-7-r3-hybrid-w{worker_id}-{suffix}' for worker_id in (1, 2)
+    ]
+    assert [name for _, name, _ in destinations] == ['moe:adapter'] * 2
+    if mode == 'direct':
+        assert [registry.domain for _, _, registry in destinations] == [
+            '10.0.0.1:41001',
+            '10.0.0.2:41002',
+        ]
+    for endpoint in model_instance_endpoints(instance):
+        assert (
+            model_instance_registry(
+                instance, worker=rank_workers[3 - endpoint.worker_id], endpoint=endpoint
+            )
+            is None
+        )
+    old_names = {registry.name for _, _, registry in destinations}
+    instance.restart_count += 1
+    current = model_instances_registry_list(
+        [instance], rank_workers, registry_name_suffix=suffix
+    )
+    assert len(current) == 2
+    assert old_names.isdisjoint(registry.name for _, _, registry in current)
+    del rank_workers[2]
+    assert model_instances_registry_list([instance], rank_workers) == []

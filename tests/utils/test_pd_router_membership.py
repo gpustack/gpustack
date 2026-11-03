@@ -52,3 +52,45 @@ def test_snapshot_is_order_independent_and_requires_resolved_addresses():
         router_peer_snapshot(peers[::-1], "g", {1: "10.0.0.1"})
     )
     assert router_peer_snapshot(peers, "g", {}) == []
+
+
+def test_hybrid_snapshot_preserves_two_worker_addresses_and_shared_bootstrap_on_restart():
+    from gpustack.schemas.models import (
+        DistributedServers,
+        ModelInstanceSubordinateWorker,
+        PortBand,
+    )
+    from tests.utils.model import new_hybrid_workload, new_model_instance
+
+    instance = new_model_instance(
+        7, 'hybrid', 1, worker_id=1, state='running', gpu_indexes=[0, 1, 2, 3]
+    )
+    instance.role, instance.group_id, instance.worker_ip = 'prefill', 'g', '10.0.0.1'
+    instance.named_ports = {'bootstrap': PortBand(base=9000)}
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=2, worker_ip='10.0.0.2', gpu_indexes=[0, 1, 2, 3]
+            )
+        ],
+        workloads=[new_hybrid_workload(w, state='running') for w in (1, 2)],
+    )
+    for task in instance.distributed_servers.workloads:
+        task.component.api_port, task.component.ready = 8000, True
+    worker_ips = {1: '10.0.0.1', 2: '10.0.0.2'}
+    before = router_peer_snapshot([instance], 'g', worker_ips)
+    assert before == [
+        dict(
+            id=7,
+            role='prefill',
+            ip=ip,
+            port=8000,
+            ports={'bootstrap': 9000},
+            restart_count=0,
+            last_restart_time=None,
+        )
+        for ip in ('10.0.0.1', '10.0.0.2')
+    ]
+    instance.restart_count = 1
+    after = router_peer_snapshot([instance], 'g', worker_ips)
+    assert after == [dict(peer, restart_count=1) for peer in before]

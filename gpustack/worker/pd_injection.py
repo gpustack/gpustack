@@ -56,7 +56,7 @@ from gpustack.utils.command import (
 )
 from gpustack.utils.vllm_topology import (
     ValidatedTopology,
-    external_lb_parallelism,
+    managed_lb_parallelism,
     parse_user_parallelism,
     validate_multinode_topology,
 )
@@ -489,7 +489,7 @@ def _managed_parallelism(
         for worker in getattr(servers, "subordinate_workers", None) or []
     ]
     try:
-        topology = external_lb_parallelism(effective.backend_parameters or [], counts)
+        topology = managed_lb_parallelism(effective.backend_parameters or [], counts)
     except ValueError as exc:
         raise PDInjectionError(
             f"Cannot resolve managed PD rank topology: {exc}"
