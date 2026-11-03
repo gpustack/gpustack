@@ -76,6 +76,7 @@ from gpustack.schemas.cluster_access import ClusterAccess
 from gpustack.schemas.gpu_instances import GPUInstance
 from gpustack.schemas.models import Model
 from gpustack.schemas.principals import (
+    OrgRole,
     PrincipalType,
     get_authenticated_principal_id,
     platform_principal_id,
@@ -166,8 +167,7 @@ def _is_cluster_visible(cluster: Cluster, ctx: TenantContext) -> bool:
 
 
 def _is_cluster_manageable(cluster: Cluster, ctx: TenantContext) -> bool:
-    """Manageability mirror: drops cross-Org grants. Bypass for admin
-    in "All" mode (sees everything regardless)."""
+    """Match cluster write permissions, including ownership and Org role."""
     if cluster_scoped_system(ctx):
         return event_field(cluster, "id") == ctx.scoped_cluster_id
     if bypass_tenant_filter(ctx):
@@ -175,6 +175,10 @@ def _is_cluster_manageable(cluster: Cluster, ctx: TenantContext) -> bool:
     return (
         ctx.current_principal_id is not None
         and cluster.owner_principal_id == ctx.current_principal_id
+        and (
+            ctx.is_platform_admin
+            or (not ctx.current_is_personal_scope and ctx.org_role == OrgRole.OWNER)
+        )
     )
 
 
@@ -184,7 +188,10 @@ def _cluster_manageable_conditions(ctx: TenantContext) -> List[Any]:
         return [Cluster.id == ctx.scoped_cluster_id]
     if bypass_tenant_filter(ctx):
         return []
-    if ctx.current_principal_id is None:
+    if ctx.current_principal_id is None or (
+        not ctx.is_platform_admin
+        and (ctx.current_is_personal_scope or ctx.org_role != OrgRole.OWNER)
+    ):
         return [Cluster.id == -1]
     return [Cluster.owner_principal_id == ctx.current_principal_id]
 
@@ -226,10 +233,10 @@ async def get_clusters(
     Default visibility is "everything the caller can use" — own-Org
     clusters plus clusters granted via ``cluster_access``.
 
-    ``mine=true`` restricts to clusters owned by the caller's current
-    principal — drops grants from other Orgs, so management pages
-    don't surface read-only rows the caller can't actually edit.
-    Platform admin still sees everything (bypass).
+    ``mine=true`` restricts to clusters the caller can manage: ownership
+    must match the current principal and the caller must be an Org owner
+    or platform admin. Cluster-scoped system accounts see their own cluster;
+    platform admin in "All" mode sees everything.
 
     ``gpu_instance_enabled`` partitions visible clusters by purpose so
     the deploy picker and the GPU-instance picker each see only the
