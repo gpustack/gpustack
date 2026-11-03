@@ -1,6 +1,5 @@
 import re
 import json
-import hashlib
 import logging
 import copy
 import math
@@ -385,23 +384,9 @@ def model_instance_prefix(
     return f"{model_prefix(model_instance.model_id)}{model_instance.id}"
 
 
-def lora_registry_name_suffix(lora_route_name: str) -> str:
-    """Stable RFC1123-safe suffix identifying a LoRA adapter's aliased registry.
-
-    Derived from the LoRA route name (``<base>:<lora>``) by hashing, so the same
-    LoRA always yields the same suffix regardless of position in ``lora_list`` or
-    of characters in the LoRA name. Both the McpBridge registration side and the
-    destination side compute it independently and must agree, otherwise the alias
-    service would dangle (503).
-    """
-    digest = hashlib.sha256(lora_route_name.encode("utf-8")).hexdigest()[:8]
-    return f"l{digest}"
-
-
 def model_instance_registry(
     model_instance: Union[ModelInstance, ModelInstancePublic],
     worker: Optional[Worker] = None,
-    name_suffix: Optional[str] = None,
     endpoint: Optional[ModelInstanceEndpoint] = None,
 ) -> Optional[McpBridgeRegistry]:
     if (
@@ -419,14 +404,7 @@ def model_instance_registry(
             )
         ):
             return None
-        try:
-            resolved = resolve_model_instance_endpoint(
-                model_instance,
-                parse_model_instance_target(endpoint.registry_name + ".static"),
-            )
-            if resolved != endpoint:
-                return None
-        except ValueError:
+        if endpoint not in model_instance_endpoints(model_instance):
             return None
         model_instance = model_instance.model_copy(
             update={
@@ -438,8 +416,6 @@ def model_instance_registry(
     name = model_instance_prefix(model_instance)
     if endpoint is not None:
         name = endpoint.registry_name
-    if name_suffix:
-        name = f"{name}-{name_suffix}"
     if worker is not None:
         if worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER:
             return _worker_reserve_proxy_registry(worker, name)
@@ -1096,7 +1072,6 @@ def model_instances_registry_list(
     model_instances: List[Union[ModelInstance, ModelInstancePublic]],
     workers: Optional[Dict[int, Worker]] = None,
     downstream_model_name: Optional[str] = None,
-    registry_name_suffix: Optional[str] = None,
 ) -> DestinationTupleList:
     registries: DestinationTupleList = []
     for model_instance in model_instances:
@@ -1106,7 +1081,6 @@ def model_instances_registry_list(
                 model_instance_registry(
                     model_instance,
                     worker=(workers or {}).get(endpoint.worker_id),
-                    name_suffix=registry_name_suffix,
                     endpoint=endpoint,
                 )
                 for endpoint in endpoints
@@ -1118,7 +1092,6 @@ def model_instances_registry_list(
             registry = model_instance_registry(
                 model_instance,
                 worker=(workers or {}).get(model_instance.worker_id),
-                name_suffix=registry_name_suffix,
             )
             instance_registries = [registry] if registry is not None else []
         registries.extend(
@@ -1376,24 +1349,16 @@ async def ensure_model_mcp_bridge(
     namespace: str,
     cluster_id: int,
     workers: Optional[Dict[int, Worker]] = None,
-    lora_route_names: Optional[List[str]] = None,
 ) -> List[McpBridgeRegistry]:
     desired_registry: List[McpBridgeRegistry] = []
     to_delete_prefix: Optional[str] = model_prefix(model_id)
-    # Each LoRA gets its own registry aliasing the same instance address under a
-    # distinct service name, so the gateway can weight traffic across LoRAs and the
-    # model-mapper can rewrite per LoRA (both key on service). See calculate_model_destinations.
-    name_suffixes = [None] + [
-        lora_registry_name_suffix(name) for name in lora_route_names or []
-    ]
     if event_type != EventType.DELETED:
-        for name_suffix in name_suffixes:
-            desired_registry.extend(
-                registry
-                for _, _, registry in model_instances_registry_list(
-                    model_instances, workers, registry_name_suffix=name_suffix
-                )
+        desired_registry = [
+            registry
+            for _, _, registry in model_instances_registry_list(
+                model_instances, workers
             )
+        ]
     await ensure_mcp_bridge(
         client=networking_higress_api,
         namespace=namespace,
@@ -2132,11 +2097,8 @@ def ai_proxy_diff_spec(
 def get_instance_id_from_header(headers: Mapping[str, str]) -> int:
     """Parse the model instance ID from the ``x-gpustack-model-instance`` routing header.
 
-    The header value follows the pattern
-    ``model-<model_id>-<instance_id>[-l<lora>].<type>`` injected by the API
-    gateway. The instance ID is the second numeric segment; LoRA targets append
-    an extra ``-l<hash>`` alias segment (see ``lora_registry_name_suffix``) which
-    must be skipped.
+    The gateway selects the instance's sole serving endpoint, a DP rank, or a
+    Worker API. LoRA names travel in the model mapping, not the service name.
 
     Raises:
         HTTPException (400): if the header is absent.
@@ -2245,8 +2207,8 @@ async def resolve_instance_address_from_model_header(
 ) -> Tuple[Optional[str], int]:
     """Resolve a model identity; recognized invalid targets never use URI fallback.
 
-    Non-model requests retain URI-based routing. Rank targets require internal
-    credentials and are rechecked against the current generation and Worker.
+    Non-model requests retain URI-based routing. Managed targets require internal
+    credentials and are rechecked against the current endpoints and Worker.
     The read session closes before any tunnel connection or response stream.
     """
     destination = Headers(headers).get(router_header_key)
@@ -2258,16 +2220,6 @@ async def resolve_instance_address_from_model_header(
         raise HTTPException(
             status_code=404, detail="Invalid model destination"
         ) from exc
-    principal = None
-    if target.restart_count is not None:
-        from gpustack.api.auth import authenticate_worker_by_request_headers
-        from gpustack.schemas.principals import PrincipalType
-
-        principal = await authenticate_worker_by_request_headers(headers)
-        if principal is None or principal.kind != PrincipalType.SYSTEM:
-            raise HTTPException(
-                status_code=403, detail="Rank routing requires internal credentials"
-            )
     async with async_session() as session:
         instance = await ModelInstance.one_by_id(
             session, target.instance_id, refresh=True
@@ -2279,7 +2231,8 @@ async def resolve_instance_address_from_model_header(
             or instance.distributed_servers.workloads is None
         ):
             if (
-                target.restart_count is not None
+                target.dp_rank is not None
+                or target.worker_id is not None
                 or not instance.worker_ip
                 or not instance.ports
             ):
@@ -2291,6 +2244,14 @@ async def resolve_instance_address_from_model_header(
             endpoint = resolve_model_instance_endpoint(instance, target)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        from gpustack.api.auth import authenticate_worker_by_request_headers
+        from gpustack.schemas.principals import PrincipalType
+
+        principal = await authenticate_worker_by_request_headers(headers)
+        if principal is None or principal.kind != PrincipalType.SYSTEM:
+            raise HTTPException(
+                status_code=403, detail="Managed routing requires internal credentials"
+            )
         worker = await Worker.one_by_id(session, endpoint.worker_id, refresh=True)
         if (
             worker is None

@@ -201,10 +201,7 @@ def managed_instance_update(
 class ModelInstanceTarget:
     model_id: int
     instance_id: int
-    restart_count: Optional[int] = None
     dp_rank: Optional[int] = None
-    component: Optional[str] = None
-    attempt: Optional[int] = None
     worker_id: Optional[int] = None
 
 
@@ -223,13 +220,9 @@ class ModelInstanceEndpoint:
     def registry_name(self) -> str:
         name = f"model-{self.model_id}-{self.instance_id}"
         if self.component == "vllm_hybrid":
-            return name + f"-r{self.restart_count}-hybrid-w{self.worker_id}"
-        if self.component == "sglang_smg":
-            return name + f"-r{self.restart_count}-smg-a{self.attempt}"
-        if self.component == "sglang_engine":
-            return name + f"-r{self.restart_count}-engine-dp{self.dp_rank}"
+            return name + f"-w{self.worker_id}"
         if self.dp_rank is not None:
-            name += f"-r{self.restart_count}-dp{self.dp_rank}"
+            name += f"-dp{self.dp_rank}"
         return name
 
 
@@ -454,38 +447,8 @@ def _hybrid_metrics_placements(instance, workloads, sources, model):
 
 def parse_model_instance_target(destination: str) -> ModelInstanceTarget:
     """Parse a registry identity, never a user-supplied IP or port."""
-    hybrid_match = re.fullmatch(
-        r"model-(\d+)-(\d+)-r(\d+)-hybrid-w(\d+)(?:-l[a-zA-Z0-9]+)?"
-        r"\.[a-zA-Z0-9_-]+",
-        destination,
-    )
-    if hybrid_match is not None:
-        model_id, instance_id, generation, worker_id = map(int, hybrid_match.groups())
-        return ModelInstanceTarget(
-            model_id,
-            instance_id,
-            generation,
-            component="vllm_hybrid",
-            worker_id=worker_id,
-        )
-    component_match = re.fullmatch(
-        r"model-(\d+)-(\d+)-r(\d+)-(?:smg-a(\d+)|engine-dp(\d+))(?:-l[a-zA-Z0-9]+)?"
-        r"\.[a-zA-Z0-9_-]+",
-        destination,
-    )
-    if component_match is not None:
-        model_id, instance_id, generation, attempt, rank = component_match.groups()
-        return ModelInstanceTarget(
-            int(model_id),
-            int(instance_id),
-            int(generation),
-            int(rank) if rank is not None else None,
-            "sglang_smg" if attempt is not None else "sglang_engine",
-            int(attempt) if attempt is not None else None,
-        )
     match = re.fullmatch(
-        r"model-(\d+)-(\d+)(?:-r(\d+)-dp(\d+))?"
-        r"(?:-(?!(?:r\d|engine|smg|hybrid))[a-zA-Z0-9-]+)?\.[a-zA-Z0-9_-]+",
+        r"model-(\d+)-(\d+)(?:-dp(\d+)|-w([1-9]\d*))?\.(?:static|dns)",
         destination,
     )
     if match is None:
@@ -609,27 +572,34 @@ def resolve_model_instance_endpoint(
     *,
     worker_id: Optional[int] = None,
 ) -> ModelInstanceEndpoint:
-    """Reject missing, foreign and obsolete rank targets without a fallback."""
+    """Resolve a stable identity against the currently available endpoints."""
     if instance.id != target.instance_id or instance.model_id != target.model_id:
         raise ValueError("Model destination identity mismatch")
-    if target.component == "sglang_engine":
+    workloads = get_model_instance_workloads(instance) or []
+    if target.dp_rank is not None and any(
+        task.component is not None and task.component.kind == "sglang_engine"
+        for task in workloads
+    ):
         return _resolve_sglang_engine_endpoint(instance, target, worker_id)
-    for endpoint in model_instance_endpoints(instance):
-        if (
-            endpoint.restart_count == target.restart_count
-            and endpoint.component == target.component
-            and endpoint.attempt == target.attempt
-            and endpoint.dp_rank == target.dp_rank
-            and (
-                endpoint.worker_id == target.worker_id
-                if endpoint.component == "vllm_hybrid"
-                else target.worker_id is None
-            )
-            and (worker_id is None or endpoint.worker_id == worker_id)
-        ):
+    endpoints = model_instance_endpoints(instance)
+    if target.dp_rank is None and target.worker_id is None:
+        endpoints = endpoints if len(endpoints) == 1 else []
+    elif target.worker_id is not None:
+        endpoints = [
+            endpoint
+            for endpoint in endpoints
+            if endpoint.component == "vllm_hybrid"
+            and endpoint.worker_id == target.worker_id
+        ]
+    else:
+        endpoints = [
+            endpoint for endpoint in endpoints if endpoint.dp_rank == target.dp_rank
+        ]
+    for endpoint in endpoints:
+        if worker_id is None or endpoint.worker_id == worker_id:
             return endpoint
     raise ValueError(
-        "Model destination is unavailable or belongs to another generation or Worker"
+        "Model destination is unavailable, ambiguous or belongs to another Worker"
     )
 
 
@@ -788,8 +758,7 @@ def _resolve_sglang_engine_endpoint(instance, target, worker_id):
         instance.state
         not in (ModelInstanceStateEnum.RUNNING, ModelInstanceStateEnum.STARTING)
         or instance.draining_since is not None
-        or target.restart_count != (instance.restart_count or 0)
-        or target.attempt is not None
+        or target.worker_id is not None
     ):
         raise ValueError("Engine diagnostic destination is unavailable")
     engines = _sglang_engine_workloads(instance)

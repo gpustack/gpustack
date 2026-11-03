@@ -501,7 +501,7 @@ async def test_legacy_registry_failure_does_not_block_existing_target_notificati
     monkeypatch.setattr(
         controllers,
         '_model_gateway_registry_inputs',
-        AsyncMock(return_value=([], {}, [])),
+        AsyncMock(return_value=([], {})),
     )
     monkeypatch.setattr(
         controllers,
@@ -538,9 +538,9 @@ async def test_legacy_registry_failure_does_not_block_existing_target_notificati
 @pytest.mark.asyncio
 async def test_managed_rank_and_component_services_use_cluster_credentials(monkeypatch):
     services = [
-        'model-5-1-r3-dp0.static',
-        'model-5-1-r3-dp1.static',
-        'model-5-2-r3-smg-a2.static',
+        'model-5-1-dp0.static',
+        'model-5-1-dp1.static',
+        'model-5-2.static',
     ]
     captured = await _run_sync(
         monkeypatch,

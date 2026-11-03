@@ -898,6 +898,6 @@ async def test_rank_candidates_keep_deployment_weight_and_counter_identity(
     new_keys = {
         (candidate['cluster'], candidate['targetId']) for candidate in candidates[1:]
     }
-    assert alias_keys.isdisjoint(new_keys)
-    identity = '-r4-hybrid-w' if hybrid else '-r4-dp'
+    assert alias_keys == new_keys
+    identity = '-w' if hybrid else '-dp'
     assert all(identity in candidate['cluster'] for candidate in candidates[1:])

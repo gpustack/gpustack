@@ -2738,7 +2738,7 @@ async def test_rank_proxy_requires_internal_credentials(monkeypatch, token, allo
 
     request = SimpleNamespace(
         headers={
-            'X-GPUStack-Model-Instance': 'model-1-7-r3-dp1.static',
+            'X-GPUStack-Model-Instance': 'model-1-7-dp1.static',
             'X-Higress-Llm-Model': 'my-model',
         },
         app=SimpleNamespace(
@@ -2761,6 +2761,9 @@ async def test_legacy_proxy_keeps_delegated_model_authorization(monkeypatch):
     from gpustack.api.auth import worker_proxy_auth
 
     request = SimpleNamespace(
+        state=SimpleNamespace(
+            model_instance_endpoint=SimpleNamespace(restart_count=None)
+        ),
         headers={
             'X-GPUStack-Model-Instance': 'model-1-7.static',
             'X-Higress-Llm-Model': 'my-model',

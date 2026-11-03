@@ -317,11 +317,7 @@ async def _model_gateway_registry_inputs(session: AsyncSession, model: Model):
         )
         worker_by_id = {worker.id: worker for worker in workers}
 
-    lora_route_names = [
-        lora_route_name_for(model.name, entry.lora_name)
-        for entry in normalized_lora_list(model)
-    ]
-    return model_instances, worker_by_id, lora_route_names
+    return model_instances, worker_by_id
 
 
 class ModelController:
@@ -487,8 +483,8 @@ class ModelController:
     ):
         if self._disable_gateway:
             return
-        model_instances, worker_by_id, lora_route_names = (
-            await _model_gateway_registry_inputs(session, model)
+        model_instances, worker_by_id = await _model_gateway_registry_inputs(
+            session, model
         )
         await mcp_handler.ensure_model_mcp_bridge(
             event_type=event_type,
@@ -498,7 +494,6 @@ class ModelController:
             namespace=self._config.gateway_namespace,
             cluster_id=model.cluster_id,
             workers=worker_by_id,
-            lora_route_names=lora_route_names,
         )
 
     async def _sync_model_gateway(self, session, model, event):

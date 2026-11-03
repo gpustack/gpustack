@@ -23,7 +23,6 @@ from gpustack.gateway.utils import (
     get_expected_match_list,
     get_instance_id_from_header,
     higress_metadata_equal,
-    lora_registry_name_suffix,
     mirror_from_anchor_ingress,
     model_instance_registry,
     model_instances_registry_list,
@@ -614,60 +613,6 @@ def test_included_proxy_route_off_has_no_proxy_paths():
     assert not any("model/proxy" in p for p in paths)
 
 
-def test_lora_registry_name_suffix_stable_distinct_and_safe():
-    suffix = lora_registry_name_suffix("qwen3-0.6b:french")
-    # Stable: same LoRA route name always yields the same suffix.
-    assert lora_registry_name_suffix("qwen3-0.6b:french") == suffix
-    # Distinct: different LoRA route names do not collide.
-    assert lora_registry_name_suffix("qwen3-0.6b:german") != suffix
-    # RFC1123 label safe (lowercase alphanumeric + hyphen, starts/ends alnum).
-    assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", suffix)
-
-
-def test_model_instance_registry_name_suffix_static():
-    instance = ModelInstance(id=12, model_id=5, worker_ip="1.2.3.4", port=8000)
-    base = model_instance_registry(instance)
-    suffix = lora_registry_name_suffix("qwen3-0.6b:french")
-    alias = model_instance_registry(instance, name_suffix=suffix)
-    # Distinct service name, same upstream address/port/type.
-    assert base.name == "model-5-12"
-    assert alias.name == f"model-5-12-{suffix}"
-    assert alias.get_service_name() != base.get_service_name()
-    assert alias.domain == base.domain == "1.2.3.4:8000"
-    assert alias.port == base.port == 80
-    assert alias.type == base.type == "static"
-
-
-def test_model_instance_registry_name_suffix_dns():
-    instance = ModelInstance(
-        id=7, model_id=3, worker_ip="worker.example.com", port=8001
-    )
-    base = model_instance_registry(instance)
-    alias = model_instance_registry(instance, name_suffix="labcdef12")
-    assert base.type == "dns"
-    assert alias.name == "model-3-7-labcdef12"
-    assert alias.domain == base.domain == "worker.example.com"
-    assert alias.port == base.port == 8001
-    assert alias.type == "dns"
-
-
-def test_get_instance_id_from_header_base_and_lora_alias():
-    # Base service name: instance id is the second numeric segment.
-    assert get_instance_id_from_header({router_header_key: "model-1-2.static"}) == 2
-    # LoRA alias service name (extra -l<hash> segment) must still resolve to the
-    # underlying instance id, not the alias.
-    suffix = lora_registry_name_suffix("qwen3-0.6b:french")
-    assert (
-        get_instance_id_from_header({router_header_key: f"model-1-2-{suffix}.static"})
-        == 2
-    )
-    # Multi-digit model/instance ids.
-    assert (
-        get_instance_id_from_header({router_header_key: "model-10-234-labcdef12.dns"})
-        == 234
-    )
-
-
 def test_get_instance_id_from_header_invalid():
     with pytest.raises(HTTPException):
         get_instance_id_from_header({})
@@ -675,24 +620,22 @@ def test_get_instance_id_from_header_invalid():
         get_instance_id_from_header({router_header_key: "cluster-gateway.static"})
 
 
-def test_model_instances_registry_list_threads_suffix():
+def test_lora_destinations_reuse_instance_registries():
     instances = [
         ModelInstance(id=1, model_id=5, worker_ip="1.2.3.4", port=8000),
         ModelInstance(id=2, model_id=5, worker_ip="1.2.3.5", port=8000),
     ]
-    suffix = lora_registry_name_suffix("qwen3-0.6b:french")
     dests = model_instances_registry_list(
         instances,
         downstream_model_name="qwen3-0.6b:french",
-        registry_name_suffix=suffix,
     )
     assert [model_name for _, model_name, _ in dests] == [
         "qwen3-0.6b:french",
         "qwen3-0.6b:french",
     ]
     assert [registry.name for _, _, registry in dests] == [
-        f"model-5-1-{suffix}",
-        f"model-5-2-{suffix}",
+        "model-5-1",
+        "model-5-2",
     ]
 
 
@@ -1204,15 +1147,13 @@ def test_registry_list_expands_ranks_and_keeps_lora_identity(
     managed_rank_instance, rank_workers
 ):
     instance = managed_rank_instance
-    suffix = lora_registry_name_suffix('moe:adapter')
     destinations = model_instances_registry_list(
         [instance],
         rank_workers,
         downstream_model_name='moe:adapter',
-        registry_name_suffix=suffix,
     )
     assert [registry.name for _, _, registry in destinations] == [
-        f'model-1-7-r3-dp{rank}-{suffix}' for rank in (0, 1)
+        f'model-1-7-dp{rank}' for rank in (0, 1)
     ]
     assert [registry.domain for _, _, registry in destinations] == [
         '10.0.0.1:41000',
@@ -1252,7 +1193,7 @@ async def test_managed_registry_reconciliation_uses_same_rank_set(
         )
     registries = ensure.call_args.kwargs['desired_registries']
     assert [registry.name for registry in registries] == (
-        [] if operation == 'deleted' else ['model-1-7-r3-dp0', 'model-1-7-r3-dp1']
+        [] if operation == 'deleted' else ['model-1-7-dp0', 'model-1-7-dp1']
     )
     assert ensure.call_args.kwargs['to_delete_prefix'] == (
         'model-' if operation == 'startup' else 'model-1-'
@@ -1438,9 +1379,29 @@ def test_rank_registry_withdraws_complete_instance(
     assert model_instances_registry_list([instance], rank_workers) == []
 
 
-def test_rank_generation_replaces_old_registry_names(
+def test_registry_reconcile_removes_generation_and_lora_aliases(
     managed_rank_instance, rank_workers
 ):
+    desired = [
+        registry
+        for _, _, registry in model_instances_registry_list(
+            [managed_rank_instance], rank_workers
+        )
+    ]
+    existing = [
+        desired[0].model_copy(update={'name': name})
+        for name in ('model-1-7-r3-dp0', 'model-1-7-r3-dp0-labcd', 'model-2-8')
+    ]
+    changed, current = diff_registries(existing, desired, to_delete_prefix='model-1-')
+    assert changed
+    assert {registry.name for registry in current} == {
+        'model-1-7-dp0',
+        'model-1-7-dp1',
+        'model-2-8',
+    }
+
+
+def test_rank_generation_preserves_registry_names(managed_rank_instance, rank_workers):
     instance = managed_rank_instance
     old = [
         registry
@@ -1457,10 +1418,10 @@ def test_rank_generation_replaces_old_registry_names(
     changed, current = diff_registries(
         old + [unrelated], desired, to_delete_prefix='model-1-'
     )
-    assert changed
+    assert not changed
     assert {registry.name for registry in current} == {
-        'model-1-7-r4-dp0',
-        'model-1-7-r4-dp1',
+        'model-1-7-dp0',
+        'model-1-7-dp1',
         'model-2-7',
     }
     instance.distributed_servers.workloads = []
@@ -1613,7 +1574,9 @@ def test_component_conversion_bounds_body_and_preserves_rank_under_connection_to
 
 
 @pytest.mark.parametrize('mode', ['direct', 'worker', 'tunnel'])
-def test_hybrid_registries_keep_api_owners_generation_and_lora(rank_workers, mode):
+def test_hybrid_registries_keep_owners_and_lora_mapping_across_restart(
+    rank_workers, mode
+):
     from tests.routes.test_worker_proxy import hybrid_instance, rank_instance
     from gpustack.schemas.workers import ModelInstanceProxyModeEnum
     from gpustack.utils.model_instance_workers import model_instance_endpoints
@@ -1622,15 +1585,13 @@ def test_hybrid_registries_keep_api_owners_generation_and_lora(rank_workers, mod
     for worker in rank_workers.values():
         worker.proxy_mode = ModelInstanceProxyModeEnum(mode)
         worker.proxy_address = f'http://127.0.0.1:{10160 + worker.id}'
-    suffix = lora_registry_name_suffix('moe:adapter')
     destinations = model_instances_registry_list(
         [instance],
         rank_workers,
         downstream_model_name='moe:adapter',
-        registry_name_suffix=suffix,
     )
     assert [registry.name for _, _, registry in destinations] == [
-        f'model-1-7-r3-hybrid-w{worker_id}-{suffix}' for worker_id in (1, 2)
+        f'model-1-7-w{worker_id}' for worker_id in (1, 2)
     ]
     assert [name for _, name, _ in destinations] == ['moe:adapter'] * 2
     if mode == 'direct':
@@ -1647,11 +1608,9 @@ def test_hybrid_registries_keep_api_owners_generation_and_lora(rank_workers, mod
         )
     old_names = {registry.name for _, _, registry in destinations}
     instance.restart_count += 1
-    current = model_instances_registry_list(
-        [instance], rank_workers, registry_name_suffix=suffix
-    )
+    current = model_instances_registry_list([instance], rank_workers)
     assert len(current) == 2
-    assert old_names.isdisjoint(registry.name for _, _, registry in current)
+    assert old_names == {registry.name for _, _, registry in current}
     del rank_workers[2]
     assert model_instances_registry_list([instance], rank_workers) == []
 

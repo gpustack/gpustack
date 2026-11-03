@@ -300,9 +300,6 @@ async def proxy_request_by_model(
             extra_headers,
             add_stream_options=stream,
         )
-        headers, data = await asyncio.to_thread(
-            _prepare_component_request, request, rank_endpoint, headers, data, form_data
-        )
         if stream:
             return StreamingResponseWithStatusCode(
                 _stream_response(
@@ -441,28 +438,6 @@ async def _select_managed_endpoint(session, instance):
             )
         rank_endpoint = random.choice(endpoints)
     return instance, rank_endpoint
-
-
-def _prepare_component_request(request, endpoint, headers, data, form_data):
-    if endpoint is None or endpoint.component != "sglang_engine":
-        return headers, data
-    from gpustack.gateway.utils import transform_sglang_component_request
-
-    # Validate original framing before proxy normalization can discard duplicates.
-    transform_sglang_component_request(
-        request.headers,
-        None,
-        component=endpoint.component,
-        dp_rank=endpoint.dp_rank,
-    )
-    if form_data is not None:
-        raise HTTPException(415, "Use application/json for this request")
-    return transform_sglang_component_request(
-        headers,
-        data or b"",
-        component=endpoint.component,
-        dp_rank=endpoint.dp_rank,
-    )
 
 
 def _prepare_proxy_request(

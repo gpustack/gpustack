@@ -916,7 +916,7 @@ async def test_model_target_is_resolved_once_without_uri_fallback(monkeypatch, c
     reader = asyncio.StreamReader()
     method = 'CONNECT' if case == 'connect' else 'GET'
     reader.feed_data(
-        f'{method} http://other-worker:49999/v1/models HTTP/1.1\r\nX-GPUStack-Model-Instance: model-1-7-r3-dp1.static\r\n\r\n'.encode()
+        f'{method} http://other-worker:49999/v1/models HTTP/1.1\r\nX-GPUStack-Model-Instance: model-1-7-dp1.static\r\n\r\n'.encode()
     )
     reader.feed_eof()
     connection = MagicMock(send_error=AsyncMock(), close=AsyncMock())

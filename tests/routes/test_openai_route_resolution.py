@@ -137,17 +137,6 @@ async def test_proxy_preserves_api_path_and_selects_rank_owner(
         '_prepare_proxy_request',
         lambda request, body, form, headers, **kwargs: (headers, b'{}'),
     )
-    import threading
-
-    event_loop_thread = threading.get_ident()
-    prepare_component = openai_route._prepare_component_request
-    transformed_on = []
-
-    def transform(*args):
-        transformed_on.append(threading.get_ident())
-        return prepare_component(*args)
-
-    monkeypatch.setattr(openai_route, '_prepare_component_request', transform)
     forward = AsyncMock(return_value=(SimpleNamespace(status=200, headers={}), b'{}'))
     monkeypatch.setattr(openai_route, 'request_to_worker', forward)
     if deleted:
@@ -163,87 +152,15 @@ async def test_proxy_preserves_api_path_and_selects_rank_owner(
     await openai_route.proxy_request_by_model(
         request=_request(), user=SimpleNamespace(id=1)
     )
-    assert transformed_on and transformed_on[0] != event_loop_thread
     assert forward.call_args.kwargs['path'] == 'v1/chat/completions'
     assert forward.call_args.kwargs['headers'][openai_route.router_header_key] == (
-        'model-1-7-r3-hybrid-w2.static'
+        'model-1-7-w2.static'
         if managed == 'hybrid'
-        else ('model-1-7-r3-dp1.static' if managed else 'model-1-7.static')
+        else ('model-1-7-dp1.static' if managed else 'model-1-7.static')
     )
     get_worker.assert_awaited_once_with(2 if managed else 1)
     if managed:
         refresh.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    'headers,code',
-    [
-        ({'content-length': '-1'}, 400),
-        ({'content-length': str(17 * 1024**2)}, 413),
-        ({'content-encoding': 'gzip'}, 415),
-    ],
-)
-async def test_component_input_errors_use_openai_response_format(
-    monkeypatch, headers, code
-):
-    import httpx
-    from fastapi import FastAPI, Request
-    from gpustack.api.exceptions import register_handlers
-    from gpustack.utils.model_instance_workers import ModelInstanceEndpoint
-
-    _stub_resolution(monkeypatch, route=SimpleNamespace(id=7, name='qwen3'))
-    target = SimpleNamespace(weight=100, model_id=1, overridden_model_name=None)
-    monkeypatch.setattr(
-        openai_route.ModelRouteService,
-        'resolve_route_targets',
-        AsyncMock(return_value=[target]),
-    )
-    monkeypatch.setattr(
-        openai_route.ModelService,
-        'get_by_id',
-        AsyncMock(return_value=SimpleNamespace(id=1)),
-    )
-    instance = SimpleNamespace(id=7, worker_id=1, worker_ip='10.0.0.1', port=41000)
-    monkeypatch.setattr(
-        openai_route, 'get_running_instance', AsyncMock(return_value=instance)
-    )
-    endpoint = ModelInstanceEndpoint(
-        1, 7, 1, 41000, 3, dp_rank=1, component='sglang_engine'
-    )
-    monkeypatch.setattr(
-        openai_route,
-        '_select_managed_endpoint',
-        AsyncMock(return_value=(instance, endpoint)),
-    )
-    monkeypatch.setattr(
-        openai_route.WorkerService,
-        'get_by_id',
-        AsyncMock(return_value=SimpleNamespace(id=1, deleted_at=None)),
-    )
-    monkeypatch.setattr(openai_route, 'mutate_request', MagicMock())
-    forward = AsyncMock()
-    monkeypatch.setattr(openai_route, 'request_to_worker', forward)
-    app = FastAPI()
-    register_handlers(app)
-
-    @app.post('/v1/chat/completions')
-    async def proxy(request: Request):
-        return await openai_route.proxy_request_by_model(request, SimpleNamespace(id=1))
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url='http://test'
-    ) as client:
-        response = await client.post(
-            '/v1/chat/completions',
-            content=b'{}',
-            headers={'content-type': 'application/json', **headers},
-        )
-    assert response.status_code == code
-    assert 'detail' not in response.json()
-    assert response.json()['error']['code'] == code
-    assert response.json()['error']['message']
-    forward.assert_not_awaited()
 
 
 @pytest.mark.asyncio

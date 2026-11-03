@@ -1020,9 +1020,17 @@ async def worker_proxy_auth(
     if destination:
         try:
             target = parse_model_instance_target(destination)
-        except ValueError:
-            target = None
-        if target is not None and target.restart_count is not None:
+        except ValueError as exc:
+            raise UnauthorizedException(message="Invalid model destination") from exc
+        endpoint = getattr(
+            getattr(request, "state", None), "model_instance_endpoint", None
+        )
+        if (
+            target.dp_rank is not None
+            or target.worker_id is not None
+            or endpoint is None
+            or endpoint.restart_count is not None
+        ):
             raise UnauthorizedException(
                 message="Rank routing requires Worker or registration credentials"
             )

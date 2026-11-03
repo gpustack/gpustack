@@ -128,6 +128,7 @@ from gpustack.utils.model_instance_workers import (
     has_model_instance_stop_barrier,
     managed_instance_update,
     ModelInstanceTarget,
+    ModelInstanceEndpoint,
     resolve_model_instance_endpoint,
 )
 from gpustack.utils.vllm_topology import (
@@ -5066,90 +5067,71 @@ class ServeManager(ContainerLogPersister):
         return inference_backend.health_check_path if inference_backend else None
 
     def get_instance_port_by_model_instance_id(
+        self, model_instance_id: int
+    ) -> Optional[int]:
+        """Return the current local serving port for a single-entry instance."""
+        endpoint = self.get_instance_endpoint_by_model_instance_id(model_instance_id)
+        return endpoint.port if endpoint is not None else None
+
+    def get_instance_endpoint_by_model_instance_id(
         self,
         model_instance_id: int,
         *,
         model_id: Optional[int] = None,
-        restart_count: Optional[int] = None,
         dp_rank: Optional[int] = None,
-        component: Optional[str] = None,
-        attempt: Optional[int] = None,
         worker_id: Optional[int] = None,
-    ) -> Optional[int]:
-        """
-        Get the port of the model instance related to the given model instance ID.
-
-        Args:
-            model_instance_id: The model instance ID to get the port for.
-
-        Returns:
-            The port of the model instance if it exists and is running, else None.
-        """
-        instance = self._model_instance_by_instance_id.get(
-            model_instance_id
-        )  # Ensure the model instance is cached.
+    ) -> Optional[ModelInstanceEndpoint]:
+        """Resolve a stable target while fencing local and watched launch state."""
+        local = self._model_instance_by_instance_id.get(model_instance_id)
+        instance = local
         if (
-            restart_count is not None
+            model_id is not None
             or dp_rank is not None
-            or component is not None
-            or attempt is not None
             or worker_id is not None
-            or (instance and get_model_instance_workloads(instance) is not None)
+            or (local is not None and get_model_instance_workloads(local) is not None)
         ):
-            try:
-                local = instance
-                instance = self._clientset.model_instances.get_cached(model_instance_id)
-                if instance is None:
-                    return None
-                # Watch delivery and local launch observations advance independently.
-                # A stale snapshot must never route an old identity to a reused port.
-                if local is not None and (
-                    (local.restart_count or 0) != (instance.restart_count or 0)
-                    or local.state == ModelInstanceStateEnum.ERROR
-                    or local.draining_since is not None
-                    or (
-                        component == "sglang_smg"
-                        and any(
-                            w.component is not None
-                            and w.component.kind == "sglang_smg"
-                            and w.component.attempt != attempt
-                            for w in get_model_instance_workloads(
-                                local, self._worker_id
-                            )
-                            or []
-                        )
-                    )
-                ):
-                    return None
-                if (model_instance_id, instance.restart_count or 0) in getattr(
-                    self, "_managed_stopping", {}
-                ):
-                    return None
-                return resolve_model_instance_endpoint(
-                    instance,
-                    ModelInstanceTarget(
-                        model_id,
-                        model_instance_id,
-                        restart_count,
-                        dp_rank,
-                        component=component,
-                        attempt=attempt,
-                        worker_id=worker_id,
-                    ),
-                    worker_id=self._worker_id,
-                ).port
-            except (ValueError, NotFoundException):
+            instance = self._clientset.model_instances.get_cached(model_instance_id)
+        if instance is None:
+            return None
+        if get_model_instance_workloads(instance) is None and not instance.ports:
+            return None
+        try:
+            endpoint = resolve_model_instance_endpoint(
+                instance,
+                ModelInstanceTarget(
+                    instance.model_id if model_id is None else model_id,
+                    model_instance_id,
+                    dp_rank=dp_rank,
+                    worker_id=worker_id,
+                ),
+                worker_id=self._worker_id,
+            )
+        except (ValueError, NotFoundException):
+            return None
+        if get_model_instance_workloads(instance) is not None:
+            if (model_instance_id, instance.restart_count or 0) in getattr(
+                self, "_managed_stopping", {}
+            ):
                 return None
-        return (
-            instance.ports[0]
-            if instance
-            and instance.ports
-            and get_model_instance_workloads(instance) is None
-            and instance.worker_id == self._worker_id
-            and instance.state == ModelInstanceStateEnum.RUNNING
-            and (model_id is None or instance.model_id == model_id)
-            else None
-        )
+            # Watch delivery and local launch observations advance independently.
+            # Resolve the same target locally before forwarding to a current port.
+            if local is not None:
+                try:
+                    observed = resolve_model_instance_endpoint(
+                        local,
+                        ModelInstanceTarget(
+                            instance.model_id,
+                            model_instance_id,
+                            dp_rank=dp_rank,
+                            worker_id=worker_id,
+                        ),
+                        worker_id=self._worker_id,
+                    )
+                except ValueError:
+                    return None
+                if observed != endpoint:
+                    return None
+        return endpoint
 
 
 def is_ready(

@@ -248,7 +248,7 @@ async def proxy(path: str, request: Request):  # noqa: C901
         headers.pop("host", None)
         # Read the header while popping it: aiohttp sets its own framing, and
         # checking after the pop would never see a chunked upload.
-        component_target = getattr(request.state, "model_instance_target", None)
+        component_target = getattr(request.state, "model_instance_endpoint", None)
         component = getattr(component_target, "component", None)
         transformed = component == "sglang_engine"
         if transformed:
@@ -429,22 +429,21 @@ def get_model_instance_info_from_model_name(
     except ValueError as exc:
         raise NotFoundException(message="Invalid model destination") from exc
     model_instance_id = target.instance_id
-    port: Optional[int] = request.app.state.get_instance_port_by_model_instance_id(
+    endpoint = request.app.state.get_instance_endpoint_by_model_instance_id(
         model_instance_id,
         model_id=target.model_id,
-        restart_count=target.restart_count,
         dp_rank=target.dp_rank,
-        component=target.component,
-        attempt=target.attempt,
         worker_id=target.worker_id,
     )
-    if not port:
+    if endpoint is None:
         raise NotFoundException(
             message=f"No running model instance found for model name: {model_instance_id}",
         )
-    request.state.model_instance_target = target
-    logger.debug(f"Found port {port} from model instance id {model_instance_id}")
-    return port, model_instance_id
+    request.state.model_instance_endpoint = endpoint
+    logger.debug(
+        f"Found port {endpoint.port} from model instance id {model_instance_id}"
+    )
+    return endpoint.port, model_instance_id
 
 
 async def set_port_from_model_name(request: Request, call_next):

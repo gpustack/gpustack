@@ -172,7 +172,9 @@ def _build_worker_app(port: int, instance_id: Optional[int] = None) -> FastAPI:
         # the gateway's routing header and rewrites the path onto /proxy.
         request.scope["path"] = f"/proxy{request.url.path}"
         request.state.x_target_port = str(port)
-        request.state.model_instance_target = getattr(app.state, "routed_target", None)
+        request.state.model_instance_endpoint = getattr(
+            app.state, "routed_target", None
+        )
         if instance_id is not None:
             request.state.x_target_instance_id = instance_id
         return await call_next(request)
@@ -700,20 +702,42 @@ def rank_instance():
     return instance
 
 
+@pytest.mark.parametrize('suffix', ['static', 'dns'])
+@pytest.mark.parametrize('selector', ['', '-dp0', '-w2'])
+def test_model_target_contains_only_endpoint_identity(suffix, selector):
+    from gpustack.utils.model_instance_workers import parse_model_instance_target
+
+    target = parse_model_instance_target(f'model-1-7{selector}.{suffix}')
+    assert target.model_id == 1 and target.instance_id == 7
+    assert target.dp_rank == (0 if selector == '-dp0' else None)
+    assert target.worker_id == (2 if selector == '-w2' else None)
+
+
+@pytest.mark.parametrize(
+    'selector',
+    ['-r3-dp0', '-r3-smg-a2', '-engine-dp0', '-hybrid-w2', '-labcd', '-dp0-w2'],
+)
+def test_model_target_rejects_noncanonical_names(selector):
+    from gpustack.utils.model_instance_workers import parse_model_instance_target
+
+    with pytest.raises(ValueError):
+        parse_model_instance_target(f'model-1-7{selector}.static')
+
+
 def test_rank_destination_resolves_selected_port_and_epoch(rank_instance):
     from gpustack.utils.model_instance_workers import (
         parse_model_instance_target,
         resolve_model_instance_endpoint,
     )
 
-    target = parse_model_instance_target('model-1-7-r3-dp1-labcdef12.static')
+    target = parse_model_instance_target('model-1-7-dp1.static')
     endpoint = resolve_model_instance_endpoint(rank_instance, target, worker_id=1)
     assert endpoint.port == 41001
     assert endpoint.dp_rank == 1
     assert endpoint.restart_count == 3
     for name in (
         'model-1-7-r2-dp1.static',
-        'model-1-7-r3-dp9.static',
+        'model-1-7-dp9.static',
         'model-2-7-r3-dp1.static',
         'model-1-7.static',
     ):
@@ -753,7 +777,7 @@ def test_rank_destination_never_falls_back_to_primary(rank_instance, change):
         )
     with pytest.raises(ValueError):
         resolve_model_instance_endpoint(
-            rank_instance, parse_model_instance_target('model-1-7-r3-dp1.static')
+            rank_instance, parse_model_instance_target('model-1-7-dp1.static')
         )
 
 
@@ -764,28 +788,38 @@ def test_rank_getter_reads_watch_generation(rank_instance, cache_present):
 
     manager = ServeManager.__new__(ServeManager)
     manager._worker_id_getter = lambda: 1
-    manager._model_instance_by_instance_id = {7: rank_instance} if cache_present else {}
+    manager._model_instance_by_instance_id = (
+        {7: rank_instance.model_copy(deep=True)} if cache_present else {}
+    )
     clientset = MagicMock()
     manager._clientset_getter = lambda: clientset
     manager._clientset.model_instances.get_cached.return_value = rank_instance
     assert (
-        manager.get_instance_port_by_model_instance_id(
-            7, model_id=1, restart_count=3, dp_rank=1
+        getattr(
+            manager.get_instance_endpoint_by_model_instance_id(
+                7, model_id=1, dp_rank=1
+            ),
+            'port',
+            None,
         )
         == 41001
     )
     manager._clientset.model_instances.get_cached.assert_called_once_with(7)
     rank_instance.restart_count = 4
-    assert (
-        manager.get_instance_port_by_model_instance_id(
-            7, model_id=1, restart_count=3, dp_rank=1
-        )
-        is None
+    endpoint = manager.get_instance_endpoint_by_model_instance_id(
+        7, model_id=1, dp_rank=1
     )
+    assert (endpoint is None) == cache_present
+    if endpoint is not None:
+        assert endpoint.restart_count == 4
     manager._worker_id_getter = lambda: 2
     assert (
-        manager.get_instance_port_by_model_instance_id(
-            7, model_id=1, restart_count=4, dp_rank=1
+        getattr(
+            manager.get_instance_endpoint_by_model_instance_id(
+                7, model_id=1, dp_rank=1
+            ),
+            'port',
+            None,
         )
         is None
     )
@@ -810,13 +844,12 @@ async def test_rank_middleware_uses_selected_port(rank_instance):
             ModelInstanceTarget(
                 kwargs['model_id'],
                 instance_id,
-                kwargs['restart_count'],
-                kwargs['dp_rank'],
+                dp_rank=kwargs['dp_rank'],
             ),
             worker_id=1,
-        ).port
+        )
 
-    app.state.get_instance_port_by_model_instance_id = get_port
+    app.state.get_instance_endpoint_by_model_instance_id = get_port
 
     @app.get('/proxy/v1/models')
     def target(request: Request):
@@ -827,22 +860,10 @@ async def test_rank_middleware_uses_selected_port(rank_instance):
     ) as client:
         response = await client.get(
             '/v1/models',
-            headers={'X-GPUStack-Model-Instance': 'model-1-7-r3-dp1.static'},
+            headers={'X-GPUStack-Model-Instance': 'model-1-7-dp1.static'},
         )
     assert response.json() == {'port': '41001'}
-    assert calls == [
-        (
-            7,
-            dict(
-                model_id=1,
-                restart_count=3,
-                dp_rank=1,
-                component=None,
-                attempt=None,
-                worker_id=None,
-            ),
-        )
-    ]
+    assert calls == [(7, dict(model_id=1, dp_rank=1, worker_id=None))]
 
 
 @pytest.mark.parametrize('mode', ['direct', 'worker', 'tunnel'])
@@ -859,10 +880,8 @@ def test_rank_registry_construction_uses_actual_owner(rank_instance, mode):
         proxy_mode=ModelInstanceProxyModeEnum(mode),
     )
     endpoint = model_instance_endpoints(rank_instance)[1]
-    registry = model_instance_registry(
-        rank_instance, worker=worker, endpoint=endpoint, name_suffix='labcdef12'
-    )
-    assert registry.name == 'model-1-7-r3-dp1-labcdef12'
+    registry = model_instance_registry(rank_instance, worker=worker, endpoint=endpoint)
+    assert registry.name == 'model-1-7-dp1'
     if mode == 'direct':
         assert registry.domain == '10.0.0.2:41001'
     assert model_instance_registry(rank_instance, worker=worker) is None
@@ -972,13 +991,13 @@ async def test_tunnel_rank_resolver_checks_identity_and_releases_session(
     )
     headers = {
         utils.router_header_key: {
-            'rank_instance': 'model-1-7-r3-dp1.static',
-            'hybrid_instance': 'model-1-7-r3-hybrid-w1.static',
-            'sglang_component_instance': 'model-1-7-r3-smg-a2.static',
-            'sglang_engine': 'model-1-7-r3-engine-dp1.static',
+            'rank_instance': 'model-1-7-dp1.static',
+            'hybrid_instance': 'model-1-7-w1.static',
+            'sglang_component_instance': 'model-1-7.static',
+            'sglang_engine': 'model-1-7-dp1.static',
         }[kind]
     }
-    if case in ('worker', 'cluster'):
+    if case in ('worker', 'cluster', 'stale_epoch'):
         resolved = await utils.resolve_instance_address_from_model_header(headers)
         assert resolved == (
             '10.0.0.2',
@@ -992,7 +1011,7 @@ async def test_tunnel_rank_resolver_checks_identity_and_releases_session(
             await utils.resolve_instance_address_from_model_header(headers)
         if case in ('null_cluster', 'foreign_owner', 'null_owner', 'unbound_system'):
             assert exc.value.status_code == {'unbound_system': 403}.get(case, 404)
-    assert closed == ([] if case == 'user' else [True])
+    assert closed == [True]
 
 
 @pytest.mark.asyncio
@@ -1114,17 +1133,22 @@ def test_sglang_default_endpoint_is_single_smg(sglang_component_instance):
     instance = sglang_component_instance
     endpoints = model_instance_endpoints(instance)
     assert len(endpoints) == 1
-    assert endpoints[0].registry_name == 'model-1-7-r3-smg-a2'
+    assert endpoints[0].registry_name == 'model-1-7'
     assert endpoints[0].port == 42001
-    target = parse_model_instance_target('model-1-7-r3-smg-a2-labcd.static')
+    target = parse_model_instance_target('model-1-7.static')
     assert resolve_model_instance_endpoint(instance, target) == endpoints[0]
+    instance.restart_count += 1
+    instance.distributed_servers.workloads[1].component.attempt += 1
+    recovered = resolve_model_instance_endpoint(instance, target)
+    assert recovered.registry_name == endpoints[0].registry_name
+    assert recovered.restart_count == 4 and recovered.attempt == 3
     with pytest.raises(ValueError):
         resolve_model_instance_endpoint(
             instance, parse_model_instance_target('model-1-7-r3-smg-a1.static')
         )
 
 
-@pytest.mark.parametrize('alias', ['', '-labcd'])
+@pytest.mark.parametrize('alias', [''])
 def test_sglang_engine_diagnostic_survives_smg_recovery(
     sglang_component_instance, alias
 ):
@@ -1139,16 +1163,16 @@ def test_sglang_engine_diagnostic_survives_smg_recovery(
     instance.distributed_servers.workloads[1].state = 'failed'
     instance.distributed_servers.workloads[1].component.ready = False
     assert model_instance_endpoints(instance) == []
-    target = parse_model_instance_target(f'model-1-7-r3-engine-dp3{alias}.static')
+    target = parse_model_instance_target(f'model-1-7-dp3{alias}.static')
     endpoint = resolve_model_instance_endpoint(instance, target)
     assert endpoint.port == 42000
     assert endpoint.component == 'sglang_engine'
     assert endpoint.dp_rank == 3
     for destination in (
-        'model-1-7-r3-engine-dp4.static',
+        'model-1-7-dp4.static',
         'model-1-7-r2-engine-dp0.static',
         'model-1-7.static',
-        'model-1-7-r3-dp0.static',
+        'model-1-7-w1.static',
     ):
         with pytest.raises(ValueError):
             resolve_model_instance_endpoint(
@@ -1165,15 +1189,15 @@ def test_sglang_engine_diagnostic_survives_smg_recovery(
         'model-1-7-r3-smg.static',
         'model-1-7-r3-smg-a.static',
         'model-1-7-r3-smg-a-1.static',
-        'model-1-7-r3-engine-dp.static',
+        'model-1-7-dp.static',
         'model-1-7-engine-dp1.static',
         'model-1-7-smg-a0.static',
-        'model-1-7-r3-engine-dp0-alias.static',
+        'model-1-7-dp0-alias.static',
         'model-1-7-hybrid-w1.static',
         'model-1-7-r3-hybrid.static',
-        'model-1-7-r3-hybrid-w.static',
-        'model-1-7-r3-hybrid-w-1.static',
-        'model-1-7-r3-hybrid-w1-alias.static',
+        'model-1-7-w.static',
+        'model-1-7-w-1.static',
+        'model-1-7-w1-alias.static',
     ],
 )
 def test_component_reserved_target_shapes_cannot_be_legacy_aliases(destination):
@@ -1234,12 +1258,13 @@ def test_component_getter_resolves_smg_without_rank_from_watch(
             deep=True
         )
     assert (
-        manager.get_instance_port_by_model_instance_id(
-            7,
-            model_id=1,
-            restart_count=3,
-            component='sglang_smg',
-            attempt=2,
+        getattr(
+            manager.get_instance_endpoint_by_model_instance_id(
+                7,
+                model_id=1,
+            ),
+            'port',
+            None,
         )
         == 42001
     )
@@ -1249,16 +1274,20 @@ def test_component_getter_resolves_smg_without_rank_from_watch(
 @pytest.mark.parametrize('change', ['attempt', 'generation', 'worker', 'model'])
 def test_component_getter_rejects_obsolete_or_foreign_smg(component_getter, change):
     manager, client, instance = component_getter
-    kwargs = dict(model_id=1, restart_count=3, component='sglang_smg', attempt=2)
+    local = instance.model_copy(deep=True)
+    manager._model_instance_by_instance_id[instance.id] = local
+    model_id = 1
     if change == 'attempt':
-        kwargs['attempt'] = 1
+        local.distributed_servers.workloads[1].component.attempt = 1
     elif change == 'generation':
-        kwargs['restart_count'] = 2
+        local.restart_count = 2
     elif change == 'worker':
         manager._worker_id_getter = lambda: 2
     else:
-        kwargs['model_id'] = 2
-    assert manager.get_instance_port_by_model_instance_id(7, **kwargs) is None
+        model_id = 2
+    assert (
+        manager.get_instance_endpoint_by_model_instance_id(7, model_id=model_id) is None
+    )
     client.model_instances.get_cached.assert_called_once_with(7)
 
 
@@ -1271,22 +1300,25 @@ def test_component_getter_engine_diagnostic_during_smg_starting(
     instance.distributed_servers.workloads[1].state = 'failed'
     instance.distributed_servers.workloads[1].component.ready = False
     assert (
-        manager.get_instance_port_by_model_instance_id(
-            7,
-            model_id=1,
-            restart_count=3,
-            dp_rank=rank,
-            component='sglang_engine',
+        getattr(
+            manager.get_instance_endpoint_by_model_instance_id(
+                7,
+                model_id=1,
+                dp_rank=rank,
+            ),
+            'port',
+            None,
         )
         == port
     )
     assert (
-        manager.get_instance_port_by_model_instance_id(
-            7,
-            model_id=1,
-            restart_count=3,
-            component='sglang_smg',
-            attempt=2,
+        getattr(
+            manager.get_instance_endpoint_by_model_instance_id(
+                7,
+                model_id=1,
+            ),
+            'port',
+            None,
         )
         is None
     )
@@ -1297,12 +1329,25 @@ def test_versioned_getter_cannot_fall_back_to_cached_legacy_port(component_gette
     instance.distributed_servers = None
     manager._model_instance_by_instance_id[instance.id] = instance
     assert (
-        manager.get_instance_port_by_model_instance_id(7, model_id=1, restart_count=3)
+        getattr(
+            manager.get_instance_endpoint_by_model_instance_id(
+                7, model_id=1, dp_rank=0
+            ),
+            'port',
+            None,
+        )
         is None
     )
     client.model_instances.get_cached.assert_called_once_with(7)
     client.model_instances.get_cached.reset_mock()
-    assert manager.get_instance_port_by_model_instance_id(7, model_id=1) == 49999
+    assert (
+        getattr(
+            manager.get_instance_endpoint_by_model_instance_id(7, model_id=1),
+            'port',
+            None,
+        )
+        == 49999
+    )
     client.model_instances.get.assert_not_called()
 
 
@@ -1331,13 +1376,13 @@ async def test_component_middleware_carries_validated_target_through_existing_au
     app.state.token = 'worker-token'
     app.state.config = SimpleNamespace(token='registration-token')
     app.middleware('http')(worker_proxy.set_port_from_model_name)
-    getter = MagicMock(side_effect=manager.get_instance_port_by_model_instance_id)
-    app.state.get_instance_port_by_model_instance_id = getter
+    getter = MagicMock(side_effect=manager.get_instance_endpoint_by_model_instance_id)
+    app.state.get_instance_endpoint_by_model_instance_id = getter
     forwards = []
 
     @app.get('/proxy/v1/models', dependencies=[Depends(worker_proxy_auth)])
     def target(request: Request):
-        parsed = request.state.model_instance_target
+        parsed = request.state.model_instance_endpoint
         forwards.append(parsed)
         return dict(
             port=request.state.x_target_port,
@@ -1355,7 +1400,11 @@ async def test_component_middleware_carries_validated_target_through_existing_au
         response = await client.get(
             '/v1/models',
             headers={
-                'X-GPUStack-Model-Instance': f'model-1-7-r3-{component}.static',
+                'X-GPUStack-Model-Instance': {
+                    'smg-a2': 'model-1-7.static',
+                    'engine-dp3': 'model-1-7-dp3.static',
+                    'hybrid-w1': 'model-1-7-w1.static',
+                }[component],
                 'Authorization': f'Bearer {token}',
                 'X-Higress-Llm-Model': 'sg',
             },
@@ -1374,7 +1423,10 @@ async def test_component_middleware_carries_validated_target_through_existing_au
         attempt=2 if component == 'smg-a2' else None,
     )
     getter.assert_called_once_with(
-        7, **expected, worker_id=1 if component == 'hybrid-w1' else None
+        7,
+        model_id=1,
+        dp_rank=expected['dp_rank'],
+        worker_id=1 if component == 'hybrid-w1' else None,
     )
     delegated.assert_not_called()
     assert len(forwards) == int(status == 200)
@@ -1397,12 +1449,13 @@ def test_component_getter_ignores_cached_obsolete_identity(component_getter, cha
     else:
         instance.restart_count = 4
     assert (
-        manager.get_instance_port_by_model_instance_id(
-            7,
-            model_id=1,
-            restart_count=3,
-            component='sglang_smg',
-            attempt=2,
+        getattr(
+            manager.get_instance_endpoint_by_model_instance_id(
+                7,
+                model_id=1,
+            ),
+            'port',
+            None,
         )
         is None
     )
@@ -1421,8 +1474,8 @@ async def test_component_middleware_does_not_forward_unavailable_default_smg(
     app = FastAPI()
     register_handlers(app)
     app.middleware('http')(worker_proxy.set_port_from_model_name)
-    app.state.get_instance_port_by_model_instance_id = (
-        manager.get_instance_port_by_model_instance_id
+    app.state.get_instance_endpoint_by_model_instance_id = (
+        manager.get_instance_endpoint_by_model_instance_id
     )
     forward = MagicMock()
 
@@ -1436,7 +1489,7 @@ async def test_component_middleware_does_not_forward_unavailable_default_smg(
     ) as client:
         response = await client.get(
             '/v1/models',
-            headers={'X-GPUStack-Model-Instance': 'model-1-7-r3-smg-a2.static'},
+            headers={'X-GPUStack-Model-Instance': 'model-1-7.static'},
         )
     assert response.status_code == 404
     forward.assert_not_called()
@@ -1451,7 +1504,7 @@ async def test_component_middleware_does_not_forward_unavailable_default_smg(
 async def test_component_proxy_sends_transformed_unicode_body(
     component, chunked, monkeypatch
 ):
-    from gpustack.utils.model_instance_workers import ModelInstanceTarget
+    from gpustack.utils.model_instance_workers import ModelInstanceEndpoint
     import threading
 
     loop_thread = threading.get_ident()
@@ -1483,9 +1536,11 @@ async def test_component_proxy_sends_transformed_unicode_body(
     async with _fake_inference_server(handler) as port:
         async with _worker_client(port) as (client, app):
             if component:
-                app.state.routed_target = ModelInstanceTarget(
+                app.state.routed_target = ModelInstanceEndpoint(
                     1,
                     7,
+                    1,
+                    port,
                     3,
                     1 if component == 'sglang_engine' else None,
                     component,
@@ -1534,7 +1589,7 @@ async def test_component_proxy_sends_transformed_unicode_body(
 async def test_component_proxy_rejects_unsupported_request_without_forwarding(
     headers, status
 ):
-    from gpustack.utils.model_instance_workers import ModelInstanceTarget
+    from gpustack.utils.model_instance_workers import ModelInstanceEndpoint
 
     received = []
 
@@ -1544,8 +1599,8 @@ async def test_component_proxy_rejects_unsupported_request_without_forwarding(
 
     async with _fake_inference_server(handler) as port:
         async with _worker_client(port) as (client, app):
-            app.state.routed_target = ModelInstanceTarget(
-                1, 7, 3, dp_rank=1, component='sglang_engine'
+            app.state.routed_target = ModelInstanceEndpoint(
+                1, 7, 1, port, 3, dp_rank=1, component='sglang_engine'
             )
             response = await client.post(
                 '/v1/chat/completions',
@@ -1559,7 +1614,7 @@ async def test_component_proxy_rejects_unsupported_request_without_forwarding(
 @pytest.mark.asyncio
 async def test_component_proxy_bounds_chunked_upload_before_forwarding(monkeypatch):
     from gpustack.gateway import utils
-    from gpustack.utils.model_instance_workers import ModelInstanceTarget
+    from gpustack.utils.model_instance_workers import ModelInstanceEndpoint
 
     monkeypatch.setattr(utils, 'SG_ROUTING_MAX_BODY_BYTES', 32)
     received = []
@@ -1573,8 +1628,8 @@ async def test_component_proxy_bounds_chunked_upload_before_forwarding(monkeypat
 
     async with _fake_inference_server(handler) as port:
         async with _worker_client(port) as (client, app):
-            app.state.routed_target = ModelInstanceTarget(
-                1, 7, 3, dp_rank=1, component='sglang_engine'
+            app.state.routed_target = ModelInstanceEndpoint(
+                1, 7, 1, port, 3, dp_rank=1, component='sglang_engine'
             )
             response = await client.post(
                 '/v1/chat/completions',
@@ -1590,7 +1645,7 @@ async def test_component_proxy_bounds_chunked_upload_before_forwarding(monkeypat
 @pytest.mark.parametrize('body', [b'not-json', b'x' * 33])
 async def test_smg_proxy_preserves_body_and_backend_error(monkeypatch, chunked, body):
     from gpustack.gateway import utils
-    from gpustack.utils.model_instance_workers import ModelInstanceTarget
+    from gpustack.utils.model_instance_workers import ModelInstanceEndpoint
 
     monkeypatch.setattr(utils, 'SG_ROUTING_MAX_BODY_BYTES', 32)
     received = []
@@ -1606,8 +1661,8 @@ async def test_smg_proxy_preserves_body_and_backend_error(monkeypatch, chunked, 
 
     async with _fake_inference_server(handler) as port:
         async with _worker_client(port) as (client, app):
-            app.state.routed_target = ModelInstanceTarget(
-                1, 7, 3, component='sglang_smg', attempt=2
+            app.state.routed_target = ModelInstanceEndpoint(
+                1, 7, 1, port, 3, component='sglang_smg', attempt=2
             )
             response = await client.post(
                 '/v1/chat/completions',
@@ -1656,8 +1711,8 @@ async def test_engine_diagnostic_proxy_keeps_rank_during_smg_recovery(component_
         app.include_router(worker_proxy.router)
         app.dependency_overrides[worker_proxy_auth] = lambda: None
         app.state.worker_ip_getter = lambda: '127.0.0.1'
-        app.state.get_instance_port_by_model_instance_id = (
-            manager.get_instance_port_by_model_instance_id
+        app.state.get_instance_endpoint_by_model_instance_id = (
+            manager.get_instance_endpoint_by_model_instance_id
         )
         app.middleware('http')(worker_proxy.set_port_from_model_name)
         async with ClientSession() as upstream:
@@ -1668,7 +1723,7 @@ async def test_engine_diagnostic_proxy_keeps_rank_during_smg_recovery(component_
                 response = await client.post(
                     '/v1/completions',
                     headers={
-                        'X-GPUStack-Model-Instance': f'model-{instance.model_id}-{instance.id}-r{instance.restart_count}-engine-dp1.static',
+                        'X-GPUStack-Model-Instance': f'model-{instance.model_id}-{instance.id}-dp1.static',
                         'X-Data-Parallel-Rank': '9',
                     },
                     json={'prompt': 'hi', 'routed_dp_rank': 8, 'data_parallel_rank': 9},
@@ -1710,20 +1765,32 @@ def test_managed_routing_uses_only_live_watch_cache(rank_instance, watching, pre
     # A lifecycle snapshot cannot override watch deletion or disconnect.
     manager._model_instance_by_instance_id = {7: rank_instance}
     if watching:
-        assert manager.get_instance_port_by_model_instance_id(
-            7, model_id=1, restart_count=3, dp_rank=1
+        assert getattr(
+            manager.get_instance_endpoint_by_model_instance_id(
+                7, model_id=1, dp_rank=1
+            ),
+            'port',
+            None,
         ) == (41001 if present else None)
         cached.restart_count = 4
         assert (
-            manager.get_instance_port_by_model_instance_id(
-                7, model_id=1, restart_count=3, dp_rank=1
+            getattr(
+                manager.get_instance_endpoint_by_model_instance_id(
+                    7, model_id=1, dp_rank=1
+                ),
+                'port',
+                None,
             )
             is None
         )
     else:
         with pytest.raises(ServiceUnavailableException):
-            manager.get_instance_port_by_model_instance_id(
-                7, model_id=1, restart_count=3, dp_rank=1
+            getattr(
+                manager.get_instance_endpoint_by_model_instance_id(
+                    7, model_id=1, dp_rank=1
+                ),
+                'port',
+                None,
             )
     transport.get_httpx_client.assert_not_called()
 
@@ -1735,7 +1802,7 @@ async def test_rank_middleware_reports_unsynchronized_watch_as_503():
 
     app = FastAPI()
     app.middleware('http')(worker_proxy.set_port_from_model_name)
-    app.state.get_instance_port_by_model_instance_id = MagicMock(
+    app.state.get_instance_endpoint_by_model_instance_id = MagicMock(
         side_effect=ServiceUnavailableException(message='Routing cache unavailable')
     )
     forwarded = MagicMock()
@@ -1750,7 +1817,7 @@ async def test_rank_middleware_reports_unsynchronized_watch_as_503():
     ) as client:
         response = await client.get(
             '/v1/models',
-            headers={'X-GPUStack-Model-Instance': 'model-1-7-r3-dp1.static'},
+            headers={'X-GPUStack-Model-Instance': 'model-1-7-dp1.static'},
         )
     assert response.status_code == 503
     forwarded.assert_not_called()
@@ -1772,8 +1839,13 @@ def test_routing_watch_cannot_override_newer_local_runtime_identity(
     else:
         manager._managed_stopping = {(instance.id, instance.restart_count): False}
     assert (
-        manager.get_instance_port_by_model_instance_id(
-            instance.id, model_id=1, restart_count=3, component='sglang_smg', attempt=2
+        getattr(
+            manager.get_instance_endpoint_by_model_instance_id(
+                instance.id,
+                model_id=1,
+            ),
+            'port',
+            None,
         )
         is None
     )
@@ -1816,16 +1888,13 @@ def test_hybrid_target_identity_roundtrip_and_actual_api_owners(hybrid_instance)
 
     endpoints = model_instance_endpoints(hybrid_instance)
     assert [endpoint.registry_name for endpoint in endpoints] == [
-        'model-1-7-r3-hybrid-w1',
-        'model-1-7-r3-hybrid-w2',
+        'model-1-7-w1',
+        'model-1-7-w2',
     ]
     for endpoint in endpoints:
-        target = parse_model_instance_target(
-            endpoint.registry_name + '-labcdef12.static'
-        )
+        target = parse_model_instance_target(endpoint.registry_name + '.static')
         assert target.worker_id == endpoint.worker_id
-        assert target.component == 'vllm_hybrid'
-        assert target.dp_rank is None and target.attempt is None
+        assert target.dp_rank is None
         assert resolve_model_instance_endpoint(hybrid_instance, target) == endpoint
         assert (
             resolve_model_instance_endpoint(
@@ -1837,7 +1906,7 @@ def test_hybrid_target_identity_roundtrip_and_actual_api_owners(hybrid_instance)
             resolve_model_instance_endpoint(hybrid_instance, target, worker_id=3)
     for name in (
         'model-1-7-r2-hybrid-w1.static',
-        'model-1-7-r3-hybrid-w3.static',
+        'model-1-7-w3.static',
         'model-2-7-r3-hybrid-w1.static',
         'model-1-7.static',
     ):
@@ -1861,18 +1930,42 @@ def test_hybrid_getter_checks_watch_worker_and_local_fences(hybrid_instance, cha
     manager._clientset_getter = lambda: client
     client.model_instances.get_cached.return_value = hybrid_instance
     kwargs = dict(model_id=1, restart_count=3, component='vllm_hybrid', worker_id=2)
-    assert manager.get_instance_port_by_model_instance_id(7, **kwargs) == 41002
+    assert (
+        getattr(
+            manager.get_instance_endpoint_by_model_instance_id(
+                7,
+                model_id=kwargs['model_id'],
+                dp_rank=kwargs.get('dp_rank'),
+                worker_id=kwargs.get('worker_id'),
+            ),
+            'port',
+            None,
+        )
+        == 41002
+    )
     if change == 'headless':
         manager._worker_id_getter = lambda: 3
         kwargs['worker_id'] = 3
     elif change == 'unready':
         hybrid_instance.distributed_servers.workloads[0].component.ready = False
     elif change == 'generation':
-        kwargs['restart_count'] = 2
+        hybrid_instance.restart_count = 4
     elif change == 'worker':
         kwargs['worker_id'] = 1
     elif change == 'stopping':
         manager._managed_stopping = {(7, 3): True}
     else:
         manager._model_instance_by_instance_id[7].restart_count = 2
-    assert manager.get_instance_port_by_model_instance_id(7, **kwargs) is None
+    assert (
+        getattr(
+            manager.get_instance_endpoint_by_model_instance_id(
+                7,
+                model_id=kwargs['model_id'],
+                dp_rank=kwargs.get('dp_rank'),
+                worker_id=kwargs.get('worker_id'),
+            ),
+            'port',
+            None,
+        )
+        is None
+    )
