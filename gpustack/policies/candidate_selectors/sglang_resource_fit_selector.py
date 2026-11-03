@@ -47,6 +47,7 @@ from gpustack.utils.command import (
     find_int_parameter,
 )
 from gpustack.utils.unit import byte_to_gib, byte_to_mib
+from gpustack.utils.model_instance_workers import sglang_parallelism
 
 
 def reserve_sglang_smg_ram(
@@ -154,9 +155,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         dp = find_int_parameter(
             model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
         )
-        dp_attention = find_bool_parameter(
-            model.backend_parameters, ["enable-dp-attention"]
-        )
+        ranks, _, dp_attention = sglang_parallelism(model.backend_parameters)
+        if dp is not None:
+            dp = ranks
         if dp_attention:
             # For DP attention, it's using the TP group GPUs for data parallelism.
             # So we don't need to consider DP size for GPU count calculation.
@@ -213,11 +214,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             )
             or 1
         )
-        self._dp_size = (
-            find_int_parameter(
-                model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
-            )
-            or 1
+        self._dp_size, _, _enable_dp_attention = sglang_parallelism(
+            model.backend_parameters
         )
 
         enable_mixed_chunk_param = find_parameter(
@@ -246,9 +244,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     "Pipeline parallelism is not compatible with overlap schedule, speculative decoding, mixed chunked prefill."
                 )
 
-        _enable_dp_attention = find_bool_parameter(
-            model.backend_parameters, ["enable-dp-attention"]
-        )
         if self._dp_size and int(self._dp_size) > 1 and nnodes != 1:
             if not _enable_dp_attention:
                 raise ValueError(
@@ -1087,8 +1082,8 @@ class MemFractionStaticCalculator:
         self._cuda_graph_max_bs = find_int_parameter(
             self._model.backend_parameters, ["cuda-graph-max-bs"]
         )
-        self._enable_dp_attention = find_bool_parameter(
-            model.backend_parameters, ["enable-dp-attention"]
+        self._dp_size, _, self._enable_dp_attention = sglang_parallelism(
+            model.backend_parameters
         )
         self._speculative_algorithm = find_parameter(
             model.backend_parameters, ["speculative-algorithm"]
@@ -1105,13 +1100,6 @@ class MemFractionStaticCalculator:
             )
             or 1
         )
-        self._dp_size = (
-            find_int_parameter(
-                model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
-            )
-            or 1
-        )
-
         self._max_pp_size = max(
             self._pp_size,
             len(

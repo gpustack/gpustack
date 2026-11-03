@@ -639,18 +639,20 @@ SGLANG_SMG_POLICIES = frozenset(
 
 
 def sglang_parallelism(parameters: Optional[List[str]]) -> tuple[int, int, bool]:
-    """Read effective native DP/EP options without deriving DP from devices or EP."""
+    """Read routing-rank count, EP size and DPA intent from native options."""
     from gpustack.utils.command import flatten_to_argv
 
     aliases = {
         '--data-parallel-size': 'dp',
         '--dp-size': 'dp',
         '--dp': 'dp',
+        '--attn-dp-size': 'attention_dp',
+        '--attention-data-parallel-size': 'attention_dp',
         '--expert-parallel-size': 'ep',
         '--ep-size': 'ep',
         '--ep': 'ep',
     }
-    values = {'dp': 1, 'ep': 1}
+    values = {'dp': 1, 'attention_dp': 1, 'ep': 1}
     attention = False
     tokens = flatten_to_argv(parameters)
     index = 0
@@ -672,7 +674,38 @@ def sglang_parallelism(parameters: Optional[List[str]]) -> tuple[int, int, bool]
                 raise ValueError('--enable-dp-attention is a flag without a value')
             attention = True
         index += 1
-    return values['dp'], values['ep'], attention
+    return (
+        values['dp'] * values['attention_dp'],
+        values['ep'],
+        attention or values['attention_dp'] > 1,
+    )
+
+
+def validate_sglang_dpa_version(model: Model) -> None:
+    """Check new DPA syntax against a known Runner-selected Engine version."""
+    from packaging.version import InvalidVersion, Version
+    from gpustack.schemas.models import BackendEnum, get_backend
+    from gpustack.utils.command import find_last_parameter
+
+    if (
+        get_backend(model) != BackendEnum.SGLANG
+        or model.image_name
+        or not model.backend_version
+        or find_last_parameter(
+            model.backend_parameters, ['attn-dp-size', 'attention-data-parallel-size']
+        )
+        is None
+    ):
+        return
+    try:
+        version = Version(model.backend_version)
+    except InvalidVersion:
+        return
+    if version < Version('0.5.22'):
+        raise ValueError(
+            '--attn-dp-size and --attention-data-parallel-size require SGLang '
+            '0.5.22 or later; use --dp-size N --enable-dp-attention on older Runners.'
+        )
 
 
 def sglang_smg_mode(model) -> bool:

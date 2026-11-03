@@ -280,32 +280,30 @@ def _reject_static_hybrid_local_dp(field, roles, disaggregation) -> None:
 def validate_external_pd_membership(
     mode_name: str, backend: Optional[str], parameters: Optional[List[str]]
 ) -> None:
-    """Reject unsupported PD layouts and static-only router membership."""
+    """Reject PD combinations without a managed connector launch path."""
     if backend != BackendEnum.VLLM:
         return
     try:
         lb_mode = vllm_lb_mode(parameters)
     except ValueError as exc:
         raise BadRequestException(message=str(exc)) from exc
-    if lb_mode == "multi_port_external":
-        raise BadRequestException(
-            message="Multi-port External-LB for vLLM is supported only for ordinary instances, not PD roles."
-        )
-    if lb_mode != "external":
+    if lb_mode != "multi_port_external" or mode_name == "vllm-nixl":
         return
-    mode = get_pd_mode(mode_name)
-    if (
-        mode is not None
-        and mode.router is not None
-        and mode.router.membership_update.value == "restart"
-        and not mode.router.membership_api_usable
-    ):
+    if mode_name == "vllm-mooncake":
+        # Supervisor children share bootstrap configuration and register the
+        # same local rank. Track the upstream contract before enabling it:
+        # https://github.com/vllm-project/vllm/issues/51531
+        # https://github.com/vllm-project/vllm/pull/51532
         raise BadRequestException(
-            message=(
-                f"Managed External-LB PD requires dynamic router membership; "
-                f"mode '{mode_name}' only supports router restart."
-            )
+            message="Multi-port External-LB with CUDA Mooncake PD is not supported: "
+            "Supervisor children share bootstrap configuration and local ranks. "
+            "See https://github.com/vllm-project/vllm/issues/51531."
         )
+    detail = "Ascend PD" if mode_name == "vllm-ascend-mooncake" else mode_name
+    raise BadRequestException(
+        message=f"Multi-port External-LB with {detail} is not supported by GPUStack; "
+        "only CUDA NIXL PD has a managed Multi-port integration."
+    )
 
 
 def _reject_router_params_the_platform_owns(roles, disaggregation) -> None:

@@ -56,6 +56,7 @@ from gpustack.utils.model_instance_workers import (
     sglang_policy_parameters,
     sglang_smg_mode,
     sglang_parallelism,
+    validate_sglang_dpa_version,
 )
 
 
@@ -66,7 +67,7 @@ def sglang_component_connecting_port_count(
     if (
         get_model_instance_workloads(instance) is not None
         and not (instance.distributed_servers.subordinate_workers or [])
-        and find_bool_parameter(model.backend_parameters, ["enable-dp-attention"])
+        and sglang_parallelism(model.backend_parameters)[2]
     ):
         # Rendezvous at +0, derived ZMQ at +1..6, NCCL at +7, and
         # the DP-controller handshake at +13 (also bound on one node).
@@ -264,6 +265,8 @@ class SGLangServer(InferenceServer):
         image = self._get_configured_image()
         if not image:
             raise ValueError("Can't find compatible SGLang image")
+
+        validate_sglang_dpa_version(self._model)
 
         if managed:
             self._smg_image_dependencies = dict(self._resolved_image_dependencies or {})

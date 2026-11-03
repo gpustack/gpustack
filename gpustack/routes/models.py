@@ -527,11 +527,16 @@ def _is_schedule_pause_only_update(
 
 
 def _validate_sglang_smg_policy(model_in, stored=None) -> None:
-    from gpustack.utils.model_instance_workers import validate_sglang_smg_policy
+    from gpustack.utils.model_instance_workers import (
+        validate_sglang_smg_policy,
+        validate_sglang_dpa_version,
+    )
     from gpustack.validation.pd.common import effective_model_spec
 
     try:
-        validate_sglang_smg_policy(effective_model_spec(model_in, stored))
+        effective = effective_model_spec(model_in, stored)
+        validate_sglang_dpa_version(effective)
+        validate_sglang_smg_policy(effective)
     except ValueError as exc:
         raise BadRequestException(message=str(exc)) from exc
 

@@ -23,6 +23,7 @@ NIXL = "sglang-nixl"
 
 def _model(mode=None, backend_parameters=None):
     return SimpleNamespace(
+        roles=[],
         backend=(
             BackendEnum.SGLANG
             if mode and mode.startswith("sglang")
@@ -467,3 +468,41 @@ class TestPortsCommittedDuringOneSolve:
         assert cap._within_port_budget(
             "decode", 1, SimpleNamespace(slots=2), 4, gpu_per_node=[4, 4]
         ) == (13 - demand) // (5 if mode == "vllm-nixl" else 9)
+
+
+@pytest.mark.parametrize('counts', [[4], [2, 2]])
+@pytest.mark.parametrize('explicit', [False, True])
+def test_cuda_mooncake_external_budget_includes_each_bootstrap_listener(
+    counts, explicit
+):
+    params = ['--data-parallel-external-lb', '--tp=1'] + (
+        ['--dp=4'] if explicit else []
+    )
+    ordinary = _model(None, params)
+    mooncake = _model('vllm-mooncake', params)
+    assert (
+        port_budget.member_port_demand(
+            mooncake, 'prefill', sum(counts), gpu_per_node=counts
+        )
+        == port_budget.member_port_demand(
+            ordinary, 'prefill', sum(counts), gpu_per_node=counts
+        )
+        + 4
+    )
+
+
+@pytest.mark.parametrize('counts', [[4], [4, 4]])
+def test_multi_port_nixl_budget_includes_global_side_channel_band(counts):
+    params = ['--data-parallel-multi-port-external-lb', '--tp=2']
+    ordinary = _model(None, params)
+    nixl = _model('vllm-nixl', params)
+    dp = sum(counts) // 2
+    assert (
+        port_budget.member_port_demand(
+            nixl, 'prefill', sum(counts), gpu_per_node=counts
+        )
+        == port_budget.member_port_demand(
+            ordinary, 'prefill', sum(counts), gpu_per_node=counts
+        )
+        + dp
+    )

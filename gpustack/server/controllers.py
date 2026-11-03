@@ -2480,7 +2480,8 @@ async def _build_instance_create(
             if model.disaggregation is not None
             and role.name in ("prefill", "decode")
             and get_backend(effective) == BackendEnum.VLLM
-            and vllm_lb_mode(effective.backend_parameters) in ("external", "hybrid")
+            and vllm_lb_mode(effective.backend_parameters)
+            in ("external", "multi_port_external", "hybrid")
             else None
         ),
     )

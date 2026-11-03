@@ -20,6 +20,7 @@ from gpustack_runtime.deployer import (
 from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack_runtime.detector import ManufacturerEnum, manufacturer_to_backend
 from gpustack.schemas.models import (
+    BackendEnum,
     ModelInstance,
     SpeculativeAlgorithmEnum,
     SpeculativeConfig,
@@ -452,8 +453,12 @@ class VLLMServer(InferenceServer):
         """Register multi-port External-LB child APIs while retaining its single launcher."""
         mi = self._model_instance
         if mi.role:
-            raise ValueError(
-                "Multi-port External-LB requires an ordinary model instance."
+            from gpustack.validation.pd.roles import validate_external_pd_membership
+
+            validate_external_pd_membership(
+                str(self._model.disaggregation.mode),
+                BackendEnum.VLLM,
+                self._model.backend_parameters,
             )
         parameters = list(command or []) + arguments
         validate_multi_port_external_lb_parameters(parameters)
@@ -479,6 +484,8 @@ class VLLMServer(InferenceServer):
             raise ValueError(
                 "Multi-port External-LB requires homogeneous CUDA or Ascend devices."
             )
+        if mi.role and devices[0].type != "cuda":
+            raise ValueError("Multi-port External-LB PD supports only CUDA NIXL.")
         members = [mi] + list(mi.distributed_servers.subordinate_workers or [])
         index = [member.worker_id for member in members].index(self._worker.id)
         counts = [
@@ -551,6 +558,13 @@ class VLLMServer(InferenceServer):
             str(api.base + fragments[0].dp_rank),
         ]
         container = plan.containers[0]
+        if mi.role in ("prefill", "decode"):
+            base, pd_env = self._managed_pd_endpoint(base, api.base, container)
+            env = {item.name: item.value for item in container.envs or []}
+            env.update(pd_env)
+            container.envs = [
+                ContainerEnv(name=name, value=value) for name, value in env.items()
+            ]
         container.envs = [
             item
             for item in container.envs or []
@@ -1112,6 +1126,7 @@ class VLLMServer(InferenceServer):
         for name in (
             "VLLM_NIXL_SIDE_CHANNEL_HOST",
             "VLLM_NIXL_SIDE_CHANNEL_PORT",
+            "VLLM_MOONCAKE_BOOTSTRAP_PORT",
             "HCCL_IF_IP",
         ):
             if name in env and name in supplied and supplied[name] != env[name]:

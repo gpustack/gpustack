@@ -73,8 +73,18 @@ def instance_router_peers(
             missing,
         )
         return
+    bootstrap = (getattr(instance, "named_ports", None) or {}).get("bootstrap")
+    ranked_bootstrap = bootstrap is not None and getattr(bootstrap, "count", 1) > 1
+    if ranked_bootstrap and any(
+        endpoint.dp_rank is None or not 0 <= endpoint.dp_rank < bootstrap.count
+        for endpoint in endpoints
+    ):
+        return
     for endpoint in endpoints:
-        yield addresses[endpoint.worker_id], endpoint.port, ports
+        peer_ports = dict(ports)
+        if ranked_bootstrap:
+            peer_ports["bootstrap"] = bootstrap.base + endpoint.dp_rank
+        yield addresses[endpoint.worker_id], endpoint.port, peer_ports
 
 
 def active_router_peers(

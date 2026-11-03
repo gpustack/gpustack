@@ -59,6 +59,7 @@ from gpustack.utils.vllm_topology import (
     managed_lb_parallelism,
     parse_user_parallelism,
     validate_multinode_topology,
+    vllm_lb_mode,
 )
 from gpustack.utils.template import render, render_values
 from gpustack.worker.kv_transfer import KV_TRANSFER_CONFIG_FLAG
@@ -136,7 +137,23 @@ def band_specs_for(model, role: Optional[str], *, context: str = "") -> List:
     # A router's declaration lives on `mode.router`, not in `mode.roles` -- it
     # is a command line, not an engine.
     holder = mode.router if role == RoleNameEnum.ROUTER.value else mode.role(role)
-    return list(getattr(holder, "ports", None) or [])
+    specs = list(getattr(holder, "ports", None) or [])
+    if (
+        mode.name == "vllm-mooncake"
+        and role == "prefill"
+        and vllm_lb_mode(role_effective_model(model, role).backend_parameters)
+        == "external"
+    ):
+        # Each separately launched Prefill rank owns a bootstrap listener.
+        specs = [
+            (
+                spec.model_copy(update={"count": "{{data_parallel_size}}"})
+                if spec.name == "bootstrap"
+                else spec
+            )
+            for spec in specs
+        ]
+    return specs
 
 
 def band_count_key(spec) -> Optional[str]:
@@ -229,6 +246,12 @@ def member_band_width(
     the vLLM command builder; the Ray path defaults to DP1.
     """
     parameters = list(getattr(model, "backend_parameters", None) or [])
+    if (
+        band_count_key(spec) == "data_parallel_size"
+        and get_backend(model) == BackendEnum.VLLM
+        and vllm_lb_mode(parameters) in ("external", "multi_port_external", "hybrid")
+    ):
+        return managed_lb_parallelism(parameters, gpu_per_node).dp
     if (
         len(gpu_per_node) > 1
         and band_count_key(spec) == "data_parallel_size"
@@ -373,6 +396,14 @@ def render_pd_injection(
     context = _pd_variables(
         model, mode, instance, effective, rank_variables, topology=topology
     )
+    if mode.name == "vllm-mooncake" and role_name == "prefill" and dp_rank is not None:
+        band = (instance.named_ports or {}).get("bootstrap")
+        if band is None or band.count != topology.dp:
+            raise PDInjectionError(
+                "External-LB Mooncake requires a bootstrap port for every DP rank; "
+                "recreate the instance to reserve the complete band."
+            )
+        context["ports.bootstrap"] = band.base + dp_rank
     where = f"PD mode '{mode.name}' role '{role_name}'"
 
     env = dict(render_values(role.env, context) or {})
@@ -494,6 +525,17 @@ def _managed_parallelism(
         raise PDInjectionError(
             f"Cannot resolve managed PD rank topology: {exc}"
         ) from exc
+    if (
+        str(effective.disaggregation.mode) == "vllm-mooncake"
+        and vllm_lb_mode(effective.backend_parameters) == "external"
+        and topology.nnodes_within_dp > 1
+    ):
+        # Native External-LB workers register with a node-local bootstrap
+        # service. A remote TP/PP fragment cannot reach its rank's listener.
+        raise PDInjectionError(
+            "CUDA Mooncake External-LB requires each DP rank to fit on one Worker; "
+            "cross-Worker TP/PP needs a separately managed bootstrap service."
+        )
     if dp_rank is not None and not 0 <= dp_rank < topology.dp:
         raise PDInjectionError(
             f'Managed PD rank {dp_rank} is outside the allocated DP world '

@@ -220,3 +220,67 @@ def test_sglang_pd_policy_is_outside_ordinary_component_validation():
     )
     validate_sglang_smg_policy(model)
     assert model.backend_parameters == ['--policy=', '--dp=4']
+
+
+@pytest.mark.parametrize(
+    'version,image,rejected',
+    [
+        ('0.5.21', None, True),
+        ('0.5.22', None, False),
+        ('0.5.23', None, False),
+        (None, None, False),
+        ('custom', None, False),
+        ('0.5.21', 'custom/sglang:latest', False),
+    ],
+)
+@pytest.mark.parametrize('alias', ['--attn-dp-size', '--attention-data-parallel-size'])
+def test_sglang_dpa_version_is_checked_for_known_runner_images(
+    version, image, rejected, alias
+):
+    from gpustack.routes import models
+    from tests.utils.model import new_model
+
+    model = new_model(
+        1,
+        'sglang',
+        huggingface_repo_id='org/model',
+        backend='SGLang',
+        backend_version=version,
+        image_name=image,
+        backend_parameters=[alias, '8', '--tp=8'],
+    )
+    if rejected:
+        with pytest.raises(BadRequestException) as error:
+            models._validate_sglang_smg_policy(model)
+        assert '0.5.22' in error.value.message
+    else:
+        models._validate_sglang_smg_policy(model)
+
+
+@pytest.mark.parametrize('alias', ['--attn-dp-size', '--attention-data-parallel-size'])
+@pytest.mark.parametrize('reported', [1, 8])
+def test_sglang_new_dpa_component_report_matches_effective_rank_count(alias, reported):
+    from gpustack.routes.model_instances import _validate_sglang_component_layout
+    from gpustack.schemas.models import ModelInstanceWorkload
+    from tests.utils.model import new_model, new_model_instance
+
+    model = new_model(
+        1,
+        'dpa',
+        huggingface_repo_id='org/model',
+        backend='SGLang',
+        backend_parameters=['--tp=8', f'{alias}=8'],
+    )
+    instance = new_model_instance(1, 'engine', 1, worker_id=1)
+    instance.port, instance.ports = 40000, [40000]
+    workload = ModelInstanceWorkload(
+        name='engine',
+        worker_id=1,
+        state='pending',
+        component={'kind': 'sglang_engine', 'api_port': 40000, 'dp_size': reported},
+    )
+    if reported == 8:
+        _validate_sglang_component_layout(instance, model, [workload])
+    else:
+        with pytest.raises(BadRequestException):
+            _validate_sglang_component_layout(instance, model, [workload])

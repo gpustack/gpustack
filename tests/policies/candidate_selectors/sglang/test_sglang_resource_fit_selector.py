@@ -2210,3 +2210,42 @@ async def test_sglang_selector_adds_smg_ram_only_with_managed_context(
         )
     elif managed:
         assert any(f'{reserve_gib} GiB' in message for message in selector._messages)
+
+
+@pytest.mark.parametrize(
+    'parameters',
+    [
+        ['--tp=8', '--dp=8', '--enable-dp-attention'],
+        ['--tp=8', '--attn-dp-size=8'],
+        ['--tp=8', '--attention-data-parallel-size=8', '--ep=8'],
+    ],
+)
+def test_dpa_syntax_has_the_same_gpu_width_and_memory_padding(parameters):
+    model = new_model(
+        1,
+        'dpa',
+        huggingface_repo_id='org/model',
+        backend='SGLang',
+        backend_parameters=parameters,
+    )
+    assert SGLangResourceFitSelector.get_world_size_from_backend_parameters(model) == (
+        8,
+        ['tp'],
+    )
+    calculator = _calculator(model)
+    assert calculator._enable_dp_attention
+    assert calculator._dp_size == 8
+
+
+def test_sglang_scheduler_uses_the_last_dp_alias():
+    model = new_model(
+        1,
+        'dp',
+        huggingface_repo_id='org/model',
+        backend='SGLang',
+        backend_parameters=['--dp=4', '--data-parallel-size=1'],
+    )
+    assert SGLangResourceFitSelector.get_world_size_from_backend_parameters(model) == (
+        1,
+        ['dp'],
+    )

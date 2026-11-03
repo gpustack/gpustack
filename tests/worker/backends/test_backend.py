@@ -4208,3 +4208,252 @@ def test_shared_cache_env_resolves_runtime_variables_without_mutating_snapshot(
             assert "CACHE_CLIENT_NAME" not in env
             assert "CACHE_MODE" not in env
     assert snapshot.model_dump() == before
+
+
+@pytest.mark.parametrize('alias', ['--attn-dp-size', '--attention-data-parallel-size'])
+@pytest.mark.parametrize('ep', [False, True])
+@pytest.mark.parametrize('equal', [False, True])
+def test_sglang_dpa_syntax_has_consistent_ranks_and_reserved_ports(alias, ep, equal):
+    from gpustack.utils.model_instance_workers import (
+        sglang_parallelism,
+        sglang_smg_mode,
+    )
+    from gpustack.worker.backends.sglang import sglang_component_connecting_port_count
+    from gpustack.policies.candidate_selectors.sglang_resource_fit_selector import (
+        SGLangResourceFitSelector,
+    )
+
+    backend = _managed_sglang_backend()
+    parameters = ['--tp=8', f'{alias}=8'] if equal else ['--tp', '8', alias, '8']
+    if ep:
+        parameters += ['--ep=8']
+    backend._model.backend_parameters = parameters
+    assert sglang_parallelism(parameters) == (8, 8 if ep else 1, True)
+    assert sglang_smg_mode(backend._model)
+    assert (
+        sglang_component_connecting_port_count(backend._model, backend._model_instance)
+        == 14
+    )
+    assert SGLangResourceFitSelector.get_world_size_from_backend_parameters(
+        backend._model
+    ) == (8, ['tp'])
+    backend._model_instance.named_ports['_sglang_connecting'].count = 14
+    captured = []
+    backend._workload_plan_callback = lambda manifests, plans: captured.extend(
+        manifests
+    )
+    plan = WorkloadPlan(
+        name='engine',
+        containers=[
+            Container(
+                name='engine', image='test/sglang', execution=ContainerExecution()
+            )
+        ],
+    )
+    backend._prepare_component_workloads(plan, 'test/sglang')
+    assert captured[0].component.dp_size == 8
+
+
+@pytest.mark.parametrize('role', ['prefill', 'decode'])
+@pytest.mark.parametrize('worker_index', [0, 1])
+def test_multi_port_nixl_pd_inherits_connector_and_reports_global_rank_apis(
+    role, worker_index
+):
+    from gpustack.schemas.models import (
+        ModelInstanceSubordinateWorker,
+        role_effective_model,
+    )
+
+    backend, plan = _managed_pd_backend_case('vllm-nixl')
+    for spec in backend._model_spec.roles:
+        spec.backend_parameters = [
+            '--data-parallel-multi-port-external-lb',
+            '--dp=4',
+            '--tp=2',
+            '--dpl=2',
+        ]
+    backend._model = role_effective_model(backend._model_spec, role)
+    mi = backend._model_instance
+    mi.role, mi.worker_ip = role, '10.0.0.7'
+    mi.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
+            worker_id=8, worker_ip='10.0.0.8', gpu_indexes=[1, 3, 5, 7]
+        )
+    ]
+    mi.named_ports['_vllm_external_api'] = PortBand(base=40000, count=4)
+    mi.named_ports['_vllm_multi_port_external_supervisor'] = PortBand(base=40030)
+    mi.named_ports['kv_side_channel'].count = 4
+    backend._worker.id, backend._worker.ip = (
+        7 + worker_index,
+        f'10.0.0.{7 + worker_index}',
+    )
+    backend._override_entrypoint = lambda command, args, script: (command, args)
+    manifest = backend._configure_multi_port_external_workload(
+        plan, ['vllm', 'serve'], ['/models/moe', *backend._model.backend_parameters]
+    )
+    container = plan.containers[0]
+    argv = container.execution.command + (container.execution.args or [])
+    descriptor = json.loads(argv[argv.index('--kv-transfer-config') + 1])
+    assert descriptor['kv_connector'] == 'NixlConnector'
+    assert descriptor['kv_role'] == (
+        'kv_producer' if role == 'prefill' else 'kv_consumer'
+    )
+    assert 'engine_id' not in descriptor
+    env = {item.name: item.value for item in container.envs}
+    assert env['VLLM_NIXL_SIDE_CHANNEL_HOST'] == backend._worker.ip
+    assert env['VLLM_NIXL_SIDE_CHANNEL_PORT'] == '40100'
+    assert [(p.dp_rank, p.api_port) for p in manifest.dp_rank_placements] == [
+        (rank, 40000 + rank) for rank in range(worker_index * 2, worker_index * 2 + 2)
+    ]
+
+
+def test_external_mooncake_rank_tasks_have_distinct_bootstrap_ports():
+    backend, plan = _managed_pd_backend_case('vllm-mooncake')
+    backend._model_instance.named_ports['bootstrap'] = PortBand(base=40300, count=2)
+    backend._configure_external_workload(
+        plan, ['vllm', 'serve'], ['/models/moe', *backend._model.backend_parameters]
+    )
+    tasks = json.loads(
+        next(
+            file.content
+            for file in plan.containers[0].files
+            if file.path.endswith('tasks.json')
+        )
+    )['tasks']
+    assert [task['env']['VLLM_MOONCAKE_BOOTSTRAP_PORT'] for task in tasks] == [
+        '40300',
+        '40301',
+    ]
+
+
+@pytest.mark.parametrize('alias', ['--attn-dp-size', '--attention-data-parallel-size'])
+def test_sglang_resolved_old_runner_refuses_new_dpa_before_container_creation(
+    monkeypatch, alias
+):
+    backend = _managed_sglang_backend()
+    backend._model.backend_parameters = ['--tp=8', f'{alias}=8']
+    backend._get_deployment_metadata = lambda: types.SimpleNamespace(distributed=False)
+    backend._get_configured_env = lambda **kwargs: {}
+
+    def resolve_image():
+        backend._model.backend_version = '0.5.21'
+        return 'gpustack/runner:sglang0.5.21'
+
+    backend._get_configured_image = resolve_image
+    monkeypatch.setattr(
+        'gpustack.worker.backends.sglang.create_workload',
+        lambda *args: pytest.fail('unsupported Runner created a container'),
+    )
+    with pytest.raises(ValueError, match='0.5.22'):
+        backend._start()
+
+
+@pytest.mark.parametrize('alias', ['--attn-dp-size', '--attention-data-parallel-size'])
+@pytest.mark.parametrize('value', ['0', '-1', 'wrong'])
+def test_sglang_dpa_requires_a_positive_rank_count(alias, value):
+    from gpustack.utils.model_instance_workers import sglang_parallelism
+
+    with pytest.raises(ValueError, match='positive integer'):
+        sglang_parallelism([alias, value])
+
+
+@pytest.mark.parametrize('worker_index', [0, 1])
+def test_external_mooncake_cross_worker_bootstrap_ports_follow_global_ranks(
+    worker_index,
+):
+    from gpustack.schemas.models import (
+        ModelInstanceSubordinateWorker,
+        role_effective_model,
+    )
+
+    backend, plan = _managed_pd_backend_case('vllm-mooncake')
+    for role in backend._model_spec.roles:
+        role.backend_parameters = ['--data-parallel-external-lb', '--dp=4', '--tp=2']
+    backend._model = role_effective_model(backend._model_spec, 'prefill')
+    mi = backend._model_instance
+    mi.worker_ip = '10.0.0.7'
+    mi.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
+            worker_id=8, worker_ip='10.0.0.8', gpu_indexes=[1, 3, 5, 7]
+        )
+    ]
+    mi.named_ports['bootstrap'] = PortBand(base=40300, count=4)
+    mi.ports = [40000, 40001, 40002, 40003, 40010, 40020]
+    backend._worker.id, backend._worker.ip = (
+        7 + worker_index,
+        f'10.0.0.{7 + worker_index}',
+    )
+    backend._configure_external_workload(
+        plan, ['vllm', 'serve'], ['/models/moe', *backend._model.backend_parameters]
+    )
+    tasks = json.loads(
+        next(
+            f.content for f in plan.containers[0].files if f.path.endswith('tasks.json')
+        )
+    )['tasks']
+    assert [t['env']['VLLM_MOONCAKE_BOOTSTRAP_PORT'] for t in tasks] == [
+        str(40300 + rank) for rank in range(worker_index * 2, worker_index * 2 + 2)
+    ]
+
+
+def test_multi_port_pd_refuses_ascend_even_with_a_nixl_mode():
+    backend, plan = _managed_pd_backend_case('vllm-nixl')
+    for role in backend._model_spec.roles:
+        role.backend_parameters = [
+            '--data-parallel-multi-port-external-lb',
+            '--dp=2',
+            '--tp=2',
+        ]
+    from gpustack.schemas.models import role_effective_model
+
+    backend._model = role_effective_model(backend._model_spec, 'prefill')
+    devices = backend._get_selected_gpu_devices()
+    for device in devices:
+        device.type = 'cann'
+    backend._get_selected_gpu_devices = lambda: devices
+    with pytest.raises(ValueError, match='only CUDA NIXL'):
+        backend._configure_multi_port_external_workload(
+            plan, ['vllm', 'serve'], ['/models/moe', *backend._model.backend_parameters]
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('role', ['prefill', 'decode'])
+async def test_new_pd_multi_port_members_start_with_managed_workloads(
+    monkeypatch, role
+):
+    from unittest.mock import AsyncMock, MagicMock
+    from gpustack.schemas.models import Model, RoleSpec, DisaggregationSpec
+    from gpustack.server import controllers
+
+    model = Model(
+        id=1,
+        name='pd',
+        source='huggingface',
+        huggingface_repo_id='org/moe',
+        backend='vLLM',
+        disaggregation=DisaggregationSpec(mode='vllm-nixl'),
+        roles=[
+            RoleSpec(
+                name=n,
+                backend_parameters=[
+                    '--data-parallel-multi-port-external-lb',
+                    '--dp=2',
+                    '--tp=1',
+                ],
+            )
+            for n in ['prefill', 'decode']
+        ],
+    )
+    monkeypatch.setattr(
+        controllers, 'get_draft_model_source', AsyncMock(return_value=None)
+    )
+    row = await controllers._build_instance_create(
+        MagicMock(),
+        model,
+        next(r for r in model.roles if r.name == role),
+        'g1',
+        'digest',
+    )
+    assert row.distributed_servers is not None
+    assert row.distributed_servers.workloads == []

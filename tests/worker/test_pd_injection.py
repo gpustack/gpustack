@@ -1426,3 +1426,70 @@ def test_hybrid_nixl_pd_keeps_shared_engine_identity_and_global_port_band(
     assert 'engine_id' not in descriptor
     assert injection.env['VLLM_NIXL_SIDE_CHANNEL_HOST'] == worker_ip
     assert injection.env['VLLM_NIXL_SIDE_CHANNEL_PORT'] == '5600'
+
+
+@pytest.mark.parametrize('counts', [[4], [2, 2]])
+@pytest.mark.parametrize('explicit', [False, True])
+def test_external_cuda_mooncake_bootstrap_budget_matches_global_rank_injection(
+    counts, explicit
+):
+    from gpustack.schemas.models import DistributedServers
+    from gpustack.worker.pd_injection import band_specs_for, member_band_width
+
+    parameters = ['--data-parallel-external-lb', '--tp=1']
+    if explicit:
+        parameters.append('--dp=4')
+    model = _model(mode='vllm-mooncake', backend='vLLM', backend_parameters=parameters)
+    instance = _instance(
+        gpu_indexes=list(range(counts[0])),
+        named_ports={'bootstrap': PortBand(base=5600, count=4)},
+        distributed_servers=DistributedServers(
+            workloads=[],
+            subordinate_workers=[
+                dict(worker_id=i + 2, gpu_indexes=list(range(n)))
+                for i, n in enumerate(counts[1:])
+            ],
+        ),
+    )
+    spec = band_specs_for(model, 'prefill')[0]
+    assert member_band_width(spec, model, counts) == 4
+    for rank in range(4):
+        injection = render_pd_injection(model, instance, _variables(), dp_rank=rank)
+        assert injection.env['VLLM_MOONCAKE_BOOTSTRAP_PORT'] == str(5600 + rank)
+        assert _connector(injection)['engine_id'].endswith(f'-dp{rank}')
+
+
+def test_external_mooncake_refuses_an_undersized_bootstrap_band():
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        mode='vllm-mooncake',
+        backend='vLLM',
+        backend_parameters=['--data-parallel-external-lb', '--dp=2', '--tp=1'],
+    )
+    instance = _instance(
+        gpu_indexes=[0, 1],
+        named_ports={'bootstrap': PortBand(base=5600)},
+        distributed_servers=DistributedServers(workloads=[]),
+    )
+    with pytest.raises(PDInjectionError, match='bootstrap'):
+        render_pd_injection(model, instance, _variables(), dp_rank=1)
+
+
+def test_cuda_mooncake_external_rejects_remote_fragments_of_one_rank():
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        mode='vllm-mooncake',
+        backend='vLLM',
+        backend_parameters=['--data-parallel-external-lb', '--dp=1', '--tp=2'],
+    )
+    instance = _instance(
+        gpu_indexes=[0],
+        named_ports={'bootstrap': PortBand(base=5600)},
+        distributed_servers=DistributedServers(
+            workloads=[], subordinate_workers=[dict(worker_id=2, gpu_indexes=[0])]
+        ),
+    )
+    with pytest.raises(PDInjectionError, match='each DP rank to fit on one Worker'):
+        render_pd_injection(model, instance, _variables(), dp_rank=0)
