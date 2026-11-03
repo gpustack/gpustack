@@ -996,6 +996,9 @@ def test_multi_port_external_complete_local_rank_topology(counts, params, expect
         ([4], ['--dp=2', '-dpn=0']),
         ([4], ['--dp=2', '--grpc']),
         ([4], ['--dp=2', '--uds=/tmp/vllm']),
+        ([4], ['--dp=2', '--uds']),
+        ([4], ['--dp=2', '--uds', '--tp=2']),
+        ([4], ['--dp=2', '--uds=false']),
         ([4], ['--dp=2', '--distributed-executor-backend=ray']),
         ([4], ['--dp=2', '--nnodes=2']),
         ([4], ['--dp=2', '-dpr=-1']),
@@ -1140,6 +1143,18 @@ def test_hybrid_topology_uses_complete_group_and_saved_node_order(
 
 
 @pytest.mark.parametrize(
+    'duplicate',
+    ['--tensor-parallel-size=4', '--pp=2', '--pcp=2', '--dp=4', '--dpl=2'],
+)
+def test_hybrid_topology_uses_last_parallelism_values(duplicate):
+    from gpustack.utils.vllm_topology import hybrid_lb_parallelism
+
+    parameters = ['--tp=2', '--pp=1', '--pcp=1', '--dp=8', '--dpl=4']
+    expected = hybrid_lb_parallelism(parameters, [8, 8])
+    assert hybrid_lb_parallelism([duplicate, *parameters], [8, 8]) == expected
+
+
+@pytest.mark.parametrize(
     'counts,params',
     [
         ([4], ['--tp=2', '--dp=4']),
@@ -1181,3 +1196,22 @@ def test_hybrid_selector_preserves_cross_worker_rank_allocations(counts, params)
     assert [len(candidate.gpu_indexes)] + [
         len(worker.gpu_indexes) for worker in candidate.subordinate_workers
     ] == counts
+
+
+@pytest.mark.parametrize('flag', ['headless', 'grpc'])
+@pytest.mark.parametrize('enabled', [False, True])
+def test_multi_port_validation_uses_effective_boolean_value(flag, enabled):
+    from gpustack.utils.vllm_topology import multi_port_external_lb_parallelism
+
+    parameters = [
+        '-dpm',
+        '--dp=2',
+        '--tp=2',
+        f'--{flag}={str(not enabled).lower()}',
+        f'--{flag}={str(enabled).lower()}',
+    ]
+    if enabled:
+        with pytest.raises(ValueError, match=flag):
+            multi_port_external_lb_parallelism(parameters, [4])
+    else:
+        assert multi_port_external_lb_parallelism(parameters, [4]).dp == 2

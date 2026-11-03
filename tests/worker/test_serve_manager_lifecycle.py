@@ -635,11 +635,23 @@ def test_managed_generation_change_during_creation_cannot_launch_more_old_tasks(
 def test_late_managed_stop_never_releases_the_new_generations_ports(managed):
     state = managed
     old = state.instance.model_copy(deep=True)
+    old_key = (old.id, old.restart_count)
+    old_connection = MagicMock()
+    state.serve._managed_launches[old_key] = old_connection
+    state.serve._managed_stopping[old_key] = False
     state.instance.restart_count = 4
     for item in state.instance.distributed_servers.workloads:
         item.name = item.name.replace("-r3-", "-r4-")
     current = _running_managed(state)
+    current_key = (current.id, current.restart_count)
+    current_connection = MagicMock()
+    state.serve._managed_launches[current_key] = current_connection
     assert state.serve._stop_model_instance(old)
+    old_connection.close.assert_called_once_with()
+    assert old_key not in state.serve._managed_launches
+    assert old_key not in state.serve._managed_stopping
+    assert state.serve._managed_launches[current_key] is current_connection
+    current_connection.close.assert_not_called()
     state.delete.assert_not_called()
     assert current.id in state.serve._assigned_ports
     assert state.serve._model_instance_by_instance_id[current.id].restart_count == 4

@@ -1472,6 +1472,9 @@ class ServeManager(ContainerLogPersister):
         tracked = self._model_instance_by_instance_id.get(mi.id)
         if tracked and tracked.restart_count != mi.restart_count:
             self._managed_stopping.pop(key, None)
+            connection = self._managed_launches.pop(key, None)
+            if connection is not None:
+                connection.close()
             return (tracked.restart_count or 0) > (mi.restart_count or 0)
         if tracked and get_model_instance_workloads(tracked, self._worker_id):
             mi = tracked

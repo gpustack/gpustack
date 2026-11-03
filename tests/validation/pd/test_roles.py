@@ -230,17 +230,19 @@ def test_disaggregation_requires_one_prefill_and_one_decode(roles, expected):
             validate_roles(model)
 
 
-def test_mismatched_role_backend_is_rejected():
-    # vllm-nixl expands into NixlConnector plus VLLM_NIXL_* env; handing that
-    # to another engine fails silently at run time, so reject it at submit.
-    with rejects("pd mode 'vllm-nixl' cannot configure"):
+@pytest.mark.parametrize('mode', [PDModeEnum.VLLM_NIXL, PDModeEnum.VLLM_MOONCAKE])
+def test_mismatched_role_backend_is_rejected(mode):
+    # A recipe supplies backend-specific connector settings to every role.
+    with rejects(f"pd mode '{mode.value}' cannot configure"):
         validate_roles(
             _model(
                 roles=[
-                    RoleSpec(name="prefill"),
-                    RoleSpec(name="decode", backend="SGLang"),
+                    RoleSpec(name="prefill", backend_parameters=['--dph', '--dpl=2']),
+                    RoleSpec(
+                        name="decode", backend="SGLang", backend_parameters=['--dp=8']
+                    ),
                 ],
-                disaggregation=_pd(),
+                disaggregation=_pd(mode),
                 replicas=1,
             )
         )
@@ -500,6 +502,33 @@ def test_static_hybrid_roles_refuse_explicit_different_local_dp(
                         ],
                     ),
                     RoleSpec(name="router"),
+                ],
+                disaggregation=_pd(PDModeEnum.VLLM_MOONCAKE),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    'flag,hybrid',
+    [
+        ('data-parallel-size-local', True),
+        ('dpl', True),
+        ('data-parallel-size', False),
+        ('dp', False),
+    ],
+)
+@pytest.mark.parametrize('value', ['invalid', '0', '-1'])
+def test_static_hybrid_roles_reject_invalid_explicit_api_dp_size(flag, hybrid, value):
+    parameters = [f'--{flag}={value}']
+    if hybrid:
+        parameters.insert(0, '--dph')
+    with rejects('positive integer'):
+        validate_roles(
+            _model(
+                roles=[
+                    RoleSpec(name='prefill', backend_parameters=parameters),
+                    RoleSpec(name='decode', backend_parameters=['--dph', '--dpl=2']),
+                    RoleSpec(name='router'),
                 ],
                 disaggregation=_pd(PDModeEnum.VLLM_MOONCAKE),
             )

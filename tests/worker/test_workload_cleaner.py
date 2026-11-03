@@ -61,6 +61,33 @@ def test_cleanup_preserves_every_registered_local_managed_workload(worker_id):
     )
 
 
+@pytest.mark.parametrize('worker_id', [1, 2])
+def test_reconnected_worker_removes_retired_tasks_and_preserves_replacements(worker_id):
+    cleaner, client = _build_cleaner(worker_id)
+    replacement = new_model_instance(8, 'replacement', 1, worker_id=worker_id)
+    current_name = f'replacement-worker-{worker_id}'
+    replacement.distributed_servers = DistributedServers(
+        workloads=[new_model_instance_workload(worker_id=worker_id, name=current_name)]
+    )
+    client.model_instances.list.return_value = SimpleNamespace(items=[replacement])
+    retired_name = f'retired-worker-{worker_id}'
+    workloads = [
+        SimpleNamespace(name=name, labels={}, created_at='2020-01-01T00:00:00Z')
+        for name in (retired_name, current_name)
+    ]
+    with (
+        patch(
+            'gpustack.worker.workload_cleaner.list_workloads', return_value=workloads
+        ),
+        patch('gpustack.worker.workload_cleaner.delete_workload') as delete,
+    ):
+        cleaner.cleanup_orphan_workloads()
+    delete.assert_called_once_with(retired_name)
+    client.model_instances.list.assert_called_once_with(
+        params={'page': -1}, use_cache=False
+    )
+
+
 def test_empty_managed_manifest_does_not_protect_a_legacy_workload_name():
     cleaner, client = _build_cleaner()
     instance = new_model_instance(7, "model", 1, worker_id=1)

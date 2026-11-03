@@ -268,7 +268,8 @@ class RuntimeMetricsAggregator:
             for api, (mi, key) in items.items():
                 detected_version = detected.get(api)
                 value = detected_version or mi.backend_version
-                self._runtime_version_cache[key] = value
+                if detected_version:
+                    self._runtime_version_cache[key] = detected_version
                 versions[mi.id] = value
                 if detected_version and get_model_instance_workloads(mi) is None:
                     self._update_model_instance(

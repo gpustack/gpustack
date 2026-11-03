@@ -2213,13 +2213,21 @@ async def test_a_member_is_priced_by_what_it_reserves_not_by_its_weights(config)
 @pytest.mark.asyncio
 @pytest.mark.parametrize('manual', [False, True])
 @pytest.mark.parametrize('local,accepted', [(None, True), (2, True), (1, False)])
-async def test_hybrid_manual_and_auto_require_the_same_complete_group(
-    config, manual, local, accepted
+@pytest.mark.parametrize(
+    'flag',
+    [
+        '--data-parallel-external-lb',
+        '--data-parallel-multi-port-external-lb',
+        '--data-parallel-hybrid-lb',
+    ],
+)
+async def test_managed_manual_and_auto_require_the_same_complete_group(
+    config, manual, local, accepted, flag
 ):
     workers = [linux_nvidia_22_H100_80gx8(), linux_nvidia_23_H100_80gx8()]
     for worker in workers:
         worker.status.gpu_devices = worker.status.gpu_devices[:4]
-    parameters = ['--data-parallel-hybrid-lb', '--tp=2', '--dp=4']
+    parameters = [flag, '--tp=2', '--dp=4']
     if local is not None:
         parameters.append(f'--dpl={local}')
     ids = [
@@ -2227,6 +2235,8 @@ async def test_hybrid_manual_and_auto_require_the_same_complete_group(
         for worker in workers
         for gpu in worker.status.gpu_devices
     ]
+    if manual:
+        workers = [linux_nvidia_22_H100_80gx8(), linux_nvidia_23_H100_80gx8()]
     model = make_model(
         8,
         ids if manual else None,
@@ -2254,7 +2264,7 @@ async def test_hybrid_manual_and_auto_require_the_same_complete_group(
         assert candidate.subordinate_workers[0].worker_id == workers[1].id
         assert candidate.subordinate_workers[0].gpu_indexes == [0, 1, 2, 3]
         assert sum(candidate.computed_resource_claim.vram.values()) == sum(
-            int(gpu.memory.total * 0.9) for gpu in workers[0].status.gpu_devices
+            int(gpu.memory.total * 0.9) for gpu in workers[0].status.gpu_devices[:4]
         )
 
 

@@ -148,18 +148,28 @@ def assigned_managed_workload_worker_ids(
     }
 
 
-def model_instance_workloads_stopped(instance: ModelInstanceBase) -> bool:
-    """Require explicit stop confirmation for every registered managed task."""
+def model_instance_workloads_stopped(
+    instance: ModelInstanceBase,
+    *,
+    retired_worker_ids: Optional[Set[int]] = None,
+) -> bool:
+    """Check stop reports, allowing explicitly retired Worker ownership."""
+    retired_worker_ids = retired_worker_ids or set()
     guard = model_instance_legacy_stop(instance)
     if guard is not None:
+        confirmed = set(guard.confirmed_worker_ids) | (
+            retired_worker_ids & set(guard.worker_ids)
+        )
         return (
             (instance.restart_count or 0) == guard.restart_count
             and set(member_worker_ids(instance)) == set(guard.worker_ids)
-            and set(guard.confirmed_worker_ids) == set(guard.worker_ids)
+            and confirmed == set(guard.worker_ids)
         )
     workloads = get_model_instance_workloads(instance)
     return workloads is not None and all(
-        item.state == ModelInstanceWorkloadStateEnum.STOPPED for item in workloads
+        item.state == ModelInstanceWorkloadStateEnum.STOPPED
+        or item.worker_id in retired_worker_ids
+        for item in workloads
     )
 
 
@@ -535,7 +545,11 @@ def model_instance_endpoints(
                 for w in apis
             ]
         engines = _sglang_engine_workloads(instance)
-        smgs = [w for w in workloads if w.component.kind == "sglang_smg"]
+        smgs = [
+            w
+            for w in workloads
+            if w.component is not None and w.component.kind == "sglang_smg"
+        ]
         if (
             not engines
             or len(smgs) != 1

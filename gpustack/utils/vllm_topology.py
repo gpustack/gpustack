@@ -17,6 +17,7 @@ from gpustack.utils.command import (
     find_last_int_parameter,
     find_last_parameter,
     find_bool_parameter,
+    flatten_to_argv,
 )
 
 # vLLM excludes this window from automatic ports when VLLM_DP_MASTER_PORT
@@ -26,11 +27,15 @@ VLLM_MP_CONNECTING_PORT_COUNT = 10
 
 def vllm_lb_mode(parameters: Optional[List[str]]) -> str:
     """Identify explicitly selected load balancing and reject conflicting modes."""
-    external = find_bool_parameter(parameters, ["data-parallel-external-lb", "dpe"])
-    multi_port_external = find_bool_parameter(
-        parameters, ["data-parallel-multi-port-external-lb", "dpm"]
+    external = find_bool_parameter(
+        parameters, ["data-parallel-external-lb", "dpe"], last_wins=True
     )
-    hybrid = find_bool_parameter(parameters, ["data-parallel-hybrid-lb", "dph"]) or (
+    multi_port_external = find_bool_parameter(
+        parameters, ["data-parallel-multi-port-external-lb", "dpm"], last_wins=True
+    )
+    hybrid = find_bool_parameter(
+        parameters, ["data-parallel-hybrid-lb", "dph"], last_wins=True
+    ) or (
         not multi_port_external
         and find_last_parameter(parameters, ["data-parallel-start-rank", "dpr", "dps"])
         is not None
@@ -133,9 +138,9 @@ def validate_multi_port_external_lb_parameters(parameters: Optional[List[str]]) 
             "Multi-port External-LB requires every rank to fit on one Worker."
         )
     for flag in ("headless", "grpc"):
-        if find_bool_parameter(parameters, [flag]):
+        if find_bool_parameter(parameters, [flag], last_wins=True):
             raise ValueError(f"Multi-port External-LB does not support --{flag}.")
-    if find_last_parameter(parameters, ["uds"]) is not None:
+    if any(token.partition("=")[0] == "--uds" for token in flatten_to_argv(parameters)):
         raise ValueError("Multi-port External-LB does not support --uds.")
     validate_managed_http_parameters(parameters)
     for name, allowed in (
@@ -204,7 +209,9 @@ def hybrid_lb_parallelism(
     """
     counts = [gpu_count] if isinstance(gpu_count, int) else gpu_count
     external_lb_parallelism(parameters, counts)
-    return validate_multinode_topology(counts, parse_user_parallelism(parameters))
+    return validate_multinode_topology(
+        counts, parse_user_parallelism(parameters, last_wins=True)
+    )
 
 
 def managed_lb_parallelism(
@@ -431,14 +438,15 @@ def validate_multinode_topology(  # noqa: C901
 
 def parse_user_parallelism(
     backend_parameters: Optional[List[str]],
+    *,
+    last_wins: bool = False,
 ) -> MultinodeUserParallelism:
     """Extract MultinodeUserParallelism from user-provided backend_parameters."""
+    read = find_last_int_parameter if last_wins else find_int_parameter
     return MultinodeUserParallelism(
-        tp=find_int_parameter(backend_parameters, ["tensor-parallel-size", "tp"]),
-        pp=find_int_parameter(backend_parameters, ["pipeline-parallel-size", "pp"]),
-        dp=find_int_parameter(backend_parameters, ["data-parallel-size", "dp"]),
-        dpl=find_int_parameter(backend_parameters, ["data-parallel-size-local", "dpl"]),
-        pcp=find_int_parameter(
-            backend_parameters, ["prefill-context-parallel-size", "pcp"]
-        ),
+        tp=read(backend_parameters, ["tensor-parallel-size", "tp"]),
+        pp=read(backend_parameters, ["pipeline-parallel-size", "pp"]),
+        dp=read(backend_parameters, ["data-parallel-size", "dp"]),
+        dpl=read(backend_parameters, ["data-parallel-size-local", "dpl"]),
+        pcp=read(backend_parameters, ["prefill-context-parallel-size", "pcp"]),
     )

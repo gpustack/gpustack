@@ -1070,12 +1070,11 @@ class ModelService:
             )
             else []
         )
+        pending = await ModelInstanceService(self.session).pending_stop_instances(
+            managed, retire_unreachable=True
+        )
         if managed and (
-            model.deleted_at is None
-            or any(
-                not model_instance_workloads_stopped(instance) for instance in managed
-            )
-            or len(managed) != len(instances)
+            model.deleted_at is None or pending or len(managed) != len(instances)
         ):
             if (
                 model.deleted_at is None
@@ -1687,7 +1686,11 @@ class ModelInstanceService:
         return True
 
     async def batch_delete(
-        self, model_instances: List[ModelInstance], *, require_all_stopped: bool = False
+        self,
+        model_instances: List[ModelInstance],
+        *,
+        require_all_stopped: bool = False,
+        retire_unreachable: bool = False,
     ):
         if not model_instances:
             return []
@@ -1712,13 +1715,13 @@ class ModelInstanceService:
             )
             if guarded:
                 await self.request_stop(locked, auto_commit=False)
-            pending = [
-                m
-                for m in locked
+            pending = (
+                await self.pending_stop_instances(
+                    locked, retire_unreachable=retire_unreachable
+                )
                 if guarded
-                and has_model_instance_stop_barrier(m)
-                and not model_instance_workloads_stopped(m)
-            ]
+                else []
+            )
             await self.request_stop(pending, auto_commit=False)
             deletable = (
                 []
@@ -1753,6 +1756,50 @@ class ModelInstanceService:
             raise InternalServerErrorException(
                 message=f"Failed to delete model instances {names}: {e}"
             )
+
+    async def pending_stop_instances(
+        self,
+        instances: List[ModelInstance],
+        *,
+        retire_unreachable: bool = False,
+    ) -> List[ModelInstance]:
+        """Wait for live Workers; explicit deployment teardown may retire lost ones.
+
+        Retired ownership is only used to delete the old records. It does not
+        fabricate stop reports or permit automatic recovery of disconnected runs.
+        Reconnecting Workers clean up tasks no longer owned by an instance.
+        """
+        pending = [
+            instance
+            for instance in instances
+            if has_model_instance_stop_barrier(instance)
+            and not model_instance_workloads_stopped(instance)
+        ]
+        if not retire_unreachable or not pending:
+            return pending
+        members = {
+            worker_id
+            for instance in pending
+            for worker_id in member_worker_ids(instance)
+        }
+        workers = await Worker.all_by_ids(self.session, members, refresh=True)
+        available = {
+            worker.id
+            for worker in workers
+            if worker.deleted_at is None
+            and not worker.unreachable
+            and worker.state != WorkerStateEnum.UNREACHABLE
+            and not is_offline(
+                worker.heartbeat_time, envs.WORKER_HEARTBEAT_GRACE_PERIOD
+            )[0]
+        }
+        return [
+            instance
+            for instance in pending
+            if not model_instance_workloads_stopped(
+                instance, retired_worker_ids=members - available
+            )
+        ]
 
     async def request_stop(
         self, instances: List[ModelInstance], *, auto_commit: bool = True

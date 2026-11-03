@@ -889,6 +889,26 @@ def test_managed_version_probe_is_once_per_epoch_batch_and_never_persisted():
     assert not hasattr(client.model_instances, 'update')
 
 
+@pytest.mark.parametrize('fallback', [None, '0.18.0'])
+def test_managed_version_probe_retries_failure_and_caches_success(fallback):
+    instance = _managed_instance(
+        [_rank_task(2, 0)],
+        api_detected_backend_version=None,
+        backend_version=fallback,
+    )
+    aggregator, _ = _source_aggregator(instance)
+    aggregator._metrics_client.fetch_metrics_from_endpoints = lambda endpoints: {
+        ep: _families(PROMETHEUS_TEXT, None) for ep in endpoints
+    }
+    probe = Mock(side_effect=[None, '0.19.0'])
+    aggregator._metrics_client.fetch_runtime_version_from_endpoint = probe
+    aggregator.aggregate()
+    aggregator.aggregate()
+    aggregator.aggregate()
+    assert probe.call_count == 2
+    assert list(aggregator._runtime_version_cache.values()) == ['0.19.0']
+
+
 def test_conflicting_socket_ownership_is_rejected_instead_of_overwritten():
     instance = _managed_instance([_rank_task(2, 0)])
     other = _managed_instance([_rank_task(2, 0)], id=1000)

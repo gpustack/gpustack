@@ -1,5 +1,6 @@
 """Canonical startup peers for managed PD routers."""
 
+import logging
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -16,6 +17,8 @@ from gpustack.schemas.pd_modes import PDMode, PDRouterMembershipUpdateEnum
 
 if TYPE_CHECKING:
     from gpustack.schemas.models import Model
+
+logger = logging.getLogger(__name__)
 
 
 def instance_router_peers(
@@ -56,7 +59,19 @@ def instance_router_peers(
         endpoints = model_instance_endpoints(instance)
     except (AttributeError, TypeError, ValueError):
         return
-    if any(not addresses.get(endpoint.worker_id) for endpoint in endpoints):
+    missing = sorted(
+        {
+            endpoint.worker_id
+            for endpoint in endpoints
+            if not addresses.get(endpoint.worker_id)
+        }
+    )
+    if missing:
+        logger.debug(
+            "Skipping managed PD instance %s: no current address for Workers %s",
+            getattr(instance, "id", None),
+            missing,
+        )
         return
     for endpoint in endpoints:
         yield addresses[endpoint.worker_id], endpoint.port, ports

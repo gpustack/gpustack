@@ -1058,6 +1058,24 @@ def test_static_hybrid_router_uses_one_local_dp_for_all_actual_apis(
     }
 
 
+@pytest.mark.parametrize('workloads', [None, []])
+def test_static_hybrid_router_rejects_endpoint_without_workload(monkeypatch, workloads):
+    from gpustack.schemas.models import PDModeEnum
+    from gpustack.utils import model_instance_workers
+    from gpustack.worker.pd_router import static_hybrid_router_variables
+
+    model = _pd_model()
+    model.disaggregation.mode = PDModeEnum.VLLM_MOONCAKE
+    instance = _static_hybrid_member('prefill', 1)
+    endpoints = model_instance_workers.model_instance_endpoints(instance)
+    monkeypatch.setattr(
+        model_instance_workers, 'model_instance_endpoints', lambda _: endpoints
+    )
+    instance.distributed_servers.workloads = workloads
+    with pytest.raises(ValueError, match='Hybrid endpoint.*Worker 1.*workload'):
+        static_hybrid_router_variables(model, [instance], 'g')
+
+
 @pytest.mark.parametrize("local_sizes", [(1, 1), (2, 4)])
 def test_static_hybrid_router_refuses_different_actual_api_scopes(local_sizes):
     from gpustack.schemas.models import PDModeEnum
@@ -1258,7 +1276,8 @@ def test_static_hybrid_router_counts_external_rank_api_as_one_engine():
     ) == {"intra_node_data_parallel_size": 1}
 
 
-def test_static_hybrid_router_infers_internal_scope_from_existing_topology():
+@pytest.mark.parametrize('no_servers', [False, True])
+def test_static_hybrid_router_infers_internal_scope_from_existing_topology(no_servers):
     from gpustack.schemas.models import PDModeEnum
     from gpustack.worker.pd_router import static_hybrid_router_variables
 
@@ -1267,7 +1286,26 @@ def test_static_hybrid_router_infers_internal_scope_from_existing_topology():
     model.roles[1].backend_parameters = ["--tp", "1"]
     decode = _static_hybrid_member("decode", 2)
     decode.distributed_servers.workloads = None
+    if no_servers:
+        decode.distributed_servers = None
+        decode.gpu_indexes = [0, 1, 2, 3]
     with pytest.raises(ValueError, match="same local DP"):
         static_hybrid_router_variables(
             model, [_static_hybrid_member("prefill", 1), decode], "g"
         )
+
+
+@pytest.mark.parametrize(
+    'parameters',
+    [
+        ['--intra-node-data-parallel-size'],
+        ['--intra-node-data-parallel-size', '--prefill', 'http://peer'],
+        ['--intra-node-data-parallel-size='],
+        ['--intra-node-data-parallel-size', 'bad'],
+    ],
+)
+def test_static_router_reports_a_malformed_local_dp_value(parameters):
+    from gpustack.worker.pd_router import _static_hybrid_router_parameters
+
+    with pytest.raises(ValueError, match='requires an integer value'):
+        _static_hybrid_router_parameters(parameters, 2)

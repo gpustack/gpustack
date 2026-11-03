@@ -135,13 +135,20 @@ def static_hybrid_router_variables(
     sizes = set()
     for instance, endpoint in endpoints:
         if endpoint.component == "vllm_hybrid":
-            sizes.add(
-                next(
-                    task.component.dp_size
-                    for task in get_model_instance_workloads(instance)
+            task = next(
+                (
+                    task
+                    for task in get_model_instance_workloads(instance) or []
                     if task.worker_id == endpoint.worker_id
-                )
+                ),
+                None,
             )
+            if task is None:
+                raise ValueError(
+                    f"Hybrid endpoint for instance {instance.id} on "
+                    f"Worker {endpoint.worker_id} has no matching workload."
+                )
+            sizes.add(task.component.dp_size)
         elif endpoint.dp_rank is not None:
             sizes.add(1)
         else:
@@ -193,7 +200,7 @@ def _static_hybrid_router_parameters(parameters, expected: int) -> List[str]:
             try:
                 overrides.append(int(value))
             except ValueError as exc:
-                raise ValueError(f"{flag} must match the shared API local DP.") from exc
+                raise ValueError(f"{flag} requires an integer value.") from exc
         else:
             result.append(token)
         index += 1

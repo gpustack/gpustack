@@ -170,7 +170,9 @@ def find_last_int_parameter(
     return None
 
 
-def find_bool_parameter(parameters: List[str], param_names: List[str]) -> bool:
+def find_bool_parameter(
+    parameters: List[str], param_names: List[str], *, last_wins: bool = False
+) -> bool:
     """
     Return whether any parameter whose key is in ``param_names`` is "enabled".
 
@@ -182,19 +184,17 @@ def find_bool_parameter(parameters: List[str], param_names: List[str]) -> bool:
       validates the value itself, GPUStack should not silently treat unrecognized
       values as "off")
 
-    Values are matched case-insensitively. The first occurrence wins.
+    Values are matched case-insensitively. The first occurrence wins unless
+    ``last_wins`` is set to follow argparse override semantics.
     """
-    if parameters is None:
-        return False
-    for key, value in _iter_param_pairs(parameters):
+    enabled = False
+    for key, value in _iter_param_pairs(parameters or []):
         if key not in param_names:
             continue
-        if value is None:
-            return True
-        if value.lower() in _FALSY_VALUES:
-            return False
-        return True
-    return False
+        enabled = value is None or value.lower() not in _FALSY_VALUES
+        if not last_wins:
+            return enabled
+    return enabled
 
 
 # The value words llama.cpp accepts for a boolean flag that takes a value,

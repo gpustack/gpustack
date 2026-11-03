@@ -212,10 +212,13 @@ def test_managed_failure_reporting_preserves_original_error_on_generation_race(
     assert error.value is original
 
 
-def test_external_plan_rejects_empty_worker_devices_before_device_type_lookup():
+@pytest.mark.parametrize('device_types', [[], ['rocm'], ['cuda', 'cann']])
+def test_external_plan_rejects_missing_or_incompatible_devices(device_types):
     backend, plan = _external_backend()
-    backend._get_selected_gpu_devices = lambda: []
-    with pytest.raises(ValueError, match="allocated devices"):
+    backend._get_selected_gpu_devices = lambda: [
+        types.SimpleNamespace(type=device_type) for device_type in device_types
+    ]
+    with pytest.raises(ValueError, match="homogeneous CUDA or Ascend devices"):
         backend._configure_external_workload(plan, ["vllm", "serve"], ["/models/moe"])
 
 
@@ -321,6 +324,32 @@ def test_external_ambiguous_command_is_rejected(argv):
     backend, plan = _external_backend()
     with pytest.raises(ValueError, match="directly executable"):
         backend._configure_external_workload(plan, argv, [])
+
+
+@pytest.mark.parametrize(
+    'flag',
+    [
+        '--headless',
+        '--data-parallel-external-lb',
+        '-dpe',
+        '--data-parallel-multi-port-external-lb',
+        '-dpm',
+        '--data-parallel-hybrid-lb',
+        '-dph',
+    ],
+)
+@pytest.mark.parametrize('value', ['false', 'true', '0', 'YES'])
+def test_managed_command_consumes_explicit_boolean_values(flag, value):
+    assert VLLMServer._external_command(
+        ['vllm', 'serve'], ['/models/moe', flag, value, '--dtype', 'float16']
+    ) == ['vllm', 'serve', '/models/moe', '--dtype', 'float16']
+
+
+@pytest.mark.parametrize('flag', ['--headless', '--data-parallel-external-lb', '-dph'])
+def test_managed_command_bare_boolean_preserves_following_model_path(flag):
+    assert VLLMServer._external_command(
+        ['vllm', 'serve'], [flag, '/models/moe', '--dtype', 'float16']
+    ) == ['vllm', 'serve', '/models/moe', '--dtype', 'float16']
 
 
 def test_external_ports_cannot_treat_control_ports_as_extra_rank_apis():
@@ -2929,70 +2958,6 @@ def test_managed_router_records_the_same_peers_it_renders(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("backend_class", [SGLangServer, VLLMServer])
-@pytest.mark.parametrize("injected", [True, False])
-def test_shared_cache_env_resolves_runtime_variables_without_mutating_snapshot(
-    backend_class, injected, monkeypatch
-):
-    from gpustack.schemas.cache_providers import (
-        CACHE_ENV_RUNTIME_VARIABLES,
-        CacheProvider,
-        render_injection,
-        validate_injection_templates,
-    )
-
-    # One registry entry must support validation and both rendering phases.
-    monkeypatch.setitem(CACHE_ENV_RUNTIME_VARIABLES, "worker_name", "name")
-    provider = CacheProvider(
-        name="runtime-env",
-        custom_version=True,
-        inference_backend_integrations=[
-            {
-                "backend": "SGLang" if backend_class is SGLangServer else "vLLM",
-                "injection": {
-                    "env": {
-                        "CACHE_CLIENT_ADDRESS": "{{worker_ip}}:{{port}}",
-                        "CACHE_CLIENT_NAME": "{{worker_name}}",
-                        "CACHE_MODE": "remote",
-                    },
-                },
-            }
-        ],
-    )
-    assert validate_injection_templates(provider) == []
-    env, _, _ = render_injection(
-        provider.inference_backend_integrations[0],
-        {"worker_ip": "leader-ip", "worker_name": "leader-name", "port": 50051},
-    )
-    assert env["CACHE_CLIENT_NAME"] == "{{worker_name}}"
-    snapshot = CacheConfigSnapshot(cache_service_id=3, injected=injected, env=env)
-    before = snapshot.model_dump()
-    monkeypatch.setattr(InferenceServer, "_get_configured_env", lambda self: {})
-    for ip in ("10.0.0.7", "10.0.0.8"):
-        backend = backend_class.__new__(backend_class)
-        backend._worker = types.SimpleNamespace(ip=ip, name=f"worker-{ip}")
-        backend._model = types.SimpleNamespace(
-            extended_kv_cache=_shared_kv_cache_config()
-        )
-        backend._model_instance = types.SimpleNamespace(cache_config=snapshot)
-        if backend_class is SGLangServer:
-            backend._set_cache_env = lambda *args: None
-            backend._get_selected_gpu_devices = lambda: []
-            env = backend._get_configured_env(is_distributed=False)
-        else:
-            env = {}
-            backend._set_lmcache_env(env)
-        if injected:
-            assert env["CACHE_CLIENT_ADDRESS"] == f"{ip}:50051"
-            assert env["CACHE_CLIENT_NAME"] == f"worker-{ip}"
-            assert env["CACHE_MODE"] == "remote"
-        else:
-            assert "CACHE_CLIENT_ADDRESS" not in env
-            assert "CACHE_CLIENT_NAME" not in env
-            assert "CACHE_MODE" not in env
-    assert snapshot.model_dump() == before
-
-
 @pytest.mark.parametrize('worker_index', [0, 1])
 @pytest.mark.parametrize('vendor', ['NVIDIA', 'Huawei'])
 def test_external_cross_worker_rank_commands_and_device_slices(worker_index, vendor):
@@ -3992,7 +3957,7 @@ def test_hybrid_cross_worker_single_fragment_has_true_api_owner(worker_index):
     mi.gpu_indexes = [1, 3]
     mi.distributed_servers.subordinate_workers = [
         ModelInstanceSubordinateWorker(
-            worker_id=7 + i, worker_ip=f'10.0.0.{7+i}', gpu_indexes=[1, 3]
+            worker_id=7 + i, worker_ip=f'10.0.0.{7 + i}', gpu_indexes=[1, 3]
         )
         for i in (1, 2, 3)
     ]
@@ -4160,3 +4125,86 @@ def test_hybrid_pd_cross_worker_api_and_compute_tasks_keep_local_connector_addre
     )
     assert env[key] == backend._worker.ip
     assert manifest.component.api_port == (40000 if worker_index == 0 else None)
+
+
+@pytest.mark.parametrize(
+    'flag,alias,mode',
+    [
+        ('--data-parallel-external-lb', '-dpe', 'external'),
+        ('--data-parallel-multi-port-external-lb', '-dpm', 'multi_port_external'),
+        ('--data-parallel-hybrid-lb', '-dph', 'hybrid'),
+    ],
+)
+@pytest.mark.parametrize('enabled', [False, True])
+def test_managed_lb_modes_use_the_last_boolean_value(flag, alias, mode, enabled):
+    parameters = [
+        f'{flag}={str(not enabled).lower()}',
+        f'{alias}={str(enabled).lower()}',
+    ]
+    assert vllm_lb_mode(parameters) == (mode if enabled else 'internal')
+    parameters = [f'{flag}=false', alias]
+    assert vllm_lb_mode(parameters) == mode
+
+
+@pytest.mark.parametrize("backend_class", [SGLangServer, VLLMServer])
+@pytest.mark.parametrize("injected", [True, False])
+def test_shared_cache_env_resolves_runtime_variables_without_mutating_snapshot(
+    backend_class, injected, monkeypatch
+):
+    from gpustack.schemas.cache_providers import (
+        CACHE_ENV_RUNTIME_VARIABLES,
+        CacheProvider,
+        render_injection,
+        validate_injection_templates,
+    )
+
+    # One registry entry must support validation and both rendering phases.
+    monkeypatch.setitem(CACHE_ENV_RUNTIME_VARIABLES, "worker_name", "name")
+    provider = CacheProvider(
+        name="runtime-env",
+        custom_version=True,
+        inference_backend_integrations=[
+            {
+                "backend": "SGLang" if backend_class is SGLangServer else "vLLM",
+                "injection": {
+                    "env": {
+                        "CACHE_CLIENT_ADDRESS": "{{worker_ip}}:{{port}}",
+                        "CACHE_CLIENT_NAME": "{{worker_name}}",
+                        "CACHE_MODE": "remote",
+                    },
+                },
+            }
+        ],
+    )
+    assert validate_injection_templates(provider) == []
+    env, _, _ = render_injection(
+        provider.inference_backend_integrations[0],
+        {"worker_ip": "leader-ip", "worker_name": "leader-name", "port": 50051},
+    )
+    assert env["CACHE_CLIENT_NAME"] == "{{worker_name}}"
+    snapshot = CacheConfigSnapshot(cache_service_id=3, injected=injected, env=env)
+    before = snapshot.model_dump()
+    monkeypatch.setattr(InferenceServer, "_get_configured_env", lambda self: {})
+    for ip in ("10.0.0.7", "10.0.0.8"):
+        backend = backend_class.__new__(backend_class)
+        backend._worker = types.SimpleNamespace(ip=ip, name=f"worker-{ip}")
+        backend._model = types.SimpleNamespace(
+            extended_kv_cache=_shared_kv_cache_config()
+        )
+        backend._model_instance = types.SimpleNamespace(cache_config=snapshot)
+        if backend_class is SGLangServer:
+            backend._set_cache_env = lambda *args: None
+            backend._get_selected_gpu_devices = lambda: []
+            env = backend._get_configured_env(is_distributed=False)
+        else:
+            env = {}
+            backend._set_lmcache_env(env)
+        if injected:
+            assert env["CACHE_CLIENT_ADDRESS"] == f"{ip}:50051"
+            assert env["CACHE_CLIENT_NAME"] == f"worker-{ip}"
+            assert env["CACHE_MODE"] == "remote"
+        else:
+            assert "CACHE_CLIENT_ADDRESS" not in env
+            assert "CACHE_CLIENT_NAME" not in env
+            assert "CACHE_MODE" not in env
+    assert snapshot.model_dump() == before

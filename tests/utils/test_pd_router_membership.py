@@ -54,7 +54,9 @@ def test_snapshot_is_order_independent_and_requires_resolved_addresses():
     assert router_peer_snapshot(peers, "g", {}) == []
 
 
-def test_hybrid_snapshot_preserves_two_worker_addresses_and_shared_bootstrap_on_restart():
+def test_hybrid_snapshot_preserves_two_worker_addresses_and_shared_bootstrap_on_restart(
+    caplog,
+):
     from gpustack.schemas.models import (
         DistributedServers,
         ModelInstanceSubordinateWorker,
@@ -91,6 +93,9 @@ def test_hybrid_snapshot_preserves_two_worker_addresses_and_shared_bootstrap_on_
         )
         for ip in ('10.0.0.1', '10.0.0.2')
     ]
+    with caplog.at_level('DEBUG', logger='gpustack.utils.pd_router_membership'):
+        assert router_peer_snapshot([instance], 'g', {1: '10.0.0.1'}) == []
+    assert 'instance 7: no current address for Workers [2]' in caplog.text
     instance.restart_count = 1
     after = router_peer_snapshot([instance], 'g', worker_ips)
     assert after == [dict(peer, restart_count=1) for peer in before]

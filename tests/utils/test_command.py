@@ -770,3 +770,19 @@ def test_rewrite_value_bool_flags(argv, expected, expected_unrecognized):
 )
 def test_parse_bool_flag_value(value, expected):
     assert parse_bool_flag_value(value) == expected
+
+
+@pytest.mark.parametrize(
+    'parameters,expected',
+    [
+        (None, False),
+        ([], False),
+        (['--foo=false', '--foo'], True),
+        (['--foo', '--foo=false'], False),
+        (['--foo=false --bar true'], True),
+        (['--bar=true', '--foo', 'OFF'], False),
+        (['--foo', '--bar=unknown'], True),
+    ],
+)
+def test_find_bool_parameter_can_use_the_last_alias(parameters, expected):
+    assert find_bool_parameter(parameters, ['foo', 'bar'], last_wins=True) == expected

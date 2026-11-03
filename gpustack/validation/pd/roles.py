@@ -15,7 +15,11 @@ from gpustack.schemas.models import (
     RoleNameEnum,
 )
 from gpustack.server.pd_mode_catalog import get_pd_mode
-from gpustack.utils.command import find_last_int_parameter, flatten_to_argv
+from gpustack.utils.command import (
+    find_last_int_parameter,
+    find_last_parameter,
+    flatten_to_argv,
+)
 from gpustack.utils.vllm_topology import vllm_lb_mode
 from gpustack.validation.pd.common import model_field
 
@@ -238,6 +242,8 @@ def _reject_static_hybrid_local_dp(field, roles, disaggregation) -> None:
     for role in roles:
         if role.name not in ("prefill", "decode"):
             continue
+        if (role.backend or field("backend") or BackendEnum.VLLM) != BackendEnum.VLLM:
+            continue
         parameters = (
             role.backend_parameters
             if role.backend_parameters is not None
@@ -249,13 +255,19 @@ def _reject_static_hybrid_local_dp(field, roles, disaggregation) -> None:
             raise BadRequestException(message=str(exc)) from exc
         if mode == "hybrid":
             hybrid = True
-            size = find_last_int_parameter(
-                parameters, ["data-parallel-size-local", "dpl"]
-            )
+            names = ["data-parallel-size-local", "dpl"]
         elif mode == "internal":
-            size = find_last_int_parameter(parameters, ["data-parallel-size", "dp"])
+            names = ["data-parallel-size", "dp"]
         else:
-            size = 1
+            sizes.add(1)
+            continue
+        size = find_last_int_parameter(parameters, names)
+        if find_last_parameter(parameters, names) is not None and (
+            size is None or size <= 0
+        ):
+            raise BadRequestException(
+                message=f"Role {role.name} --{names[0]} must be a positive integer."
+            )
         if size is not None:
             sizes.add(size)
     if hybrid and len(sizes) > 1:

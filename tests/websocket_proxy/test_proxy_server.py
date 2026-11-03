@@ -761,7 +761,13 @@ class TestMetricsAuthentication:
         reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
         writer.write(request.encode())
         await writer.drain()
-        response = await asyncio.wait_for(reader.read(8192), timeout=5.0)
+        response = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5.0)
+        for line in response.split(b"\r\n"):
+            if line.lower().startswith(b"content-length:"):
+                response += await asyncio.wait_for(
+                    reader.readexactly(int(line.split(b":", 1)[1])), timeout=5.0
+                )
+                break
         writer.close()
         await writer.wait_closed()
         return response

@@ -746,6 +746,14 @@ class VLLMServer(InferenceServer):
                 "Managed External-LB requires an External-LB engine instance."
             )
         devices = self._get_selected_gpu_devices()
+        if (
+            not devices
+            or devices[0].type not in ("cuda", "cann")
+            or any(d.type != devices[0].type for d in devices)
+        ):
+            raise ValueError(
+                "Managed External-LB requires homogeneous CUDA or Ascend devices."
+            )
         members = [mi] + list(mi.distributed_servers.subordinate_workers or [])
         worker_index = [w.worker_id for w in members].index(self._worker.id)
         counts = [
@@ -769,12 +777,6 @@ class VLLMServer(InferenceServer):
                 )
         fragments = external_lb_fragments(counts, topology, worker_index)
         device_type = devices[0].type
-        if device_type not in ("cuda", "cann") or any(
-            d.type != device_type for d in devices
-        ):
-            raise ValueError(
-                "Managed External-LB requires homogeneous CUDA or Ascend devices."
-            )
         visible_env = (
             "CUDA_VISIBLE_DEVICES"
             if device_type == "cuda"
@@ -936,6 +938,26 @@ class VLLMServer(InferenceServer):
                 "-dph",
             ):
                 index += 1
+                if (
+                    not sep
+                    and index < len(argv)
+                    and argv[index].lower()
+                    in (
+                        "true",
+                        "false",
+                        "1",
+                        "0",
+                        "yes",
+                        "no",
+                        "on",
+                        "off",
+                        "t",
+                        "f",
+                        "y",
+                        "n",
+                    )
+                ):
+                    index += 1
             else:
                 base.append(token)
                 index += 1

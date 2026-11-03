@@ -182,12 +182,13 @@ async def test_worker_restart_rejects_claim_from_an_earlier_generation(app):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('restart_count', [None, 0, 6, 7])
+@pytest.mark.parametrize('instance_restart_count', [None, 0, 7])
 async def test_managed_port_claim_requires_current_instance_generation(
-    app, restart_count
+    app, restart_count, instance_restart_count
 ):
     manager = app.state.serve_manager
     instance = manager._clientset.model_instances.get.return_value
-    instance.restart_count = 7
+    instance.restart_count = instance_restart_count
     instance.distributed_servers = DistributedServers(workloads=[])
     async with _client(app) as client:
         snapshot = (await client.get('/port-reservations/7')).json()
@@ -199,7 +200,7 @@ async def test_managed_port_claim_requires_current_instance_generation(
         if restart_count is not None:
             payload['restart_count'] = restart_count
         response = await client.post('/port-reservations/7', json=payload)
-    if restart_count == 7:
+    if restart_count == (instance_restart_count or 0):
         assert response.status_code == 200
         assert response.json()['accepted']
         assert manager._port_reservations.model_claims[7][1] == {40020}

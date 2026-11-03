@@ -841,7 +841,7 @@ async def _persist_worker_registration(
 
 
 async def _registration_instances(session, worker):
-    """Lock related model cohorts after the caller locks the current Worker."""
+    """Lock related cohorts by instance ID after the caller locks the Worker."""
     if worker is None:
         return []
     discovery = await ModelInstance.all_by_field(
@@ -854,14 +854,18 @@ async def _registration_instances(session, worker):
             if get_model_instance_worker_match(instance, worker_id=worker.id).matched
         }
     )
-    instances = []
-    for model_id in model_ids:
-        instances.extend(
-            await ModelInstance.all_by_field(
-                session, 'model_id', model_id, for_update=True, refresh=True
-            )
-        )
-    return instances
+    if not model_ids:
+        return []
+    statement = (
+        select(ModelInstance)
+        .where(ModelInstance.model_id.in_(model_ids))
+        .order_by(ModelInstance.id)
+        .execution_options(populate_existing=True, autoflush=False)
+        .with_for_update()
+    )
+    with session.no_autoflush:
+        result = await session.exec(statement)
+        return result.all()
 
 
 async def _registration_orchestration(session, existing, incoming, instances):

@@ -7,7 +7,7 @@ kept instead, with ``created_model_id`` intact.
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,7 +20,11 @@ import pytest
 import pytest_asyncio
 
 import gpustack.schemas  # noqa: F401  (registers every table)
-from gpustack.api.exceptions import ConflictException, InternalServerErrorException
+from gpustack.api.exceptions import (
+    ConflictException,
+    InternalServerErrorException,
+    NotFoundException,
+)
 from gpustack.routes import models as model_routes
 from gpustack.schemas.model_routes import (
     ModelRoute,
@@ -33,14 +37,21 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
     ModelInstanceWorkloadStateEnum,
+    ModelInstanceLegacyStop,
+    ModelInstanceSubordinateWorker,
+    ModelInstanceWorkload,
+    ModelInstanceRankUpdate,
+    RoleSpec,
     SourceEnum,
 )
+from gpustack.schemas.clusters import Cluster, ClusterProvider
+from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.schemas.principals import (
     Principal,
     PrincipalType,
     platform_principal_id,
 )
-from gpustack.server.services import ModelService, ModelInstanceService
+from gpustack.server.services import ModelService, ModelInstanceService, WorkerService
 from gpustack.server.bus import EventType, event_bus
 from tests.utils.model import new_model_instance_workload
 
@@ -62,6 +73,30 @@ async def session():
     async with AsyncSession(engine, expire_on_commit=False) as s:
         s.add(Principal(id=ORG_ID, name="default", kind=PrincipalType.ORG))
         await s.commit()
+        await Cluster.create(
+            s,
+            Cluster(
+                id=1,
+                name='cluster',
+                provider=ClusterProvider.Docker,
+                owner_principal_id=ORG_ID,
+            ),
+        )
+        await Worker.create(
+            s,
+            Worker(
+                id=1,
+                name='worker-1',
+                hostname='worker-1',
+                ip='192.0.2.1',
+                ifname='eth0',
+                port=10150,
+                worker_uuid='worker-1',
+                cluster_id=1,
+                state=WorkerStateEnum.READY,
+                heartbeat_time=datetime.now(timezone.utc),
+            ),
+        )
         yield s
     await engine.dispose()
 
@@ -192,6 +227,7 @@ async def _managed_instance(session, model, state="running", group_id="pd-group"
             source=SourceEnum.HUGGING_FACE,
             huggingface_repo_id="org/repo",
             worker_id=1,
+            cluster_id=1,
             gpu_indexes=[0],
             state=ModelInstanceStateEnum.RUNNING,
             distributed_servers=DistributedServers(
@@ -233,6 +269,169 @@ async def test_managed_model_delete_preserves_children_and_routes_until_stop(
     assert await Model.one_by_id(session, model.id) is None
     assert await ModelInstance.one_by_id(session, instance.id) is None
     assert await _route(session, model.name) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['stop', 'delete'])
+@pytest.mark.parametrize('lost', ['missing', 'deleted', 'heartbeat', 'unreachable'])
+@pytest.mark.parametrize('legacy', [False, True])
+async def test_deployment_teardown_retires_lost_workers_after_live_peers_stop(
+    session, operation, lost, legacy
+):
+    from uuid import uuid4
+    from gpustack.server.controllers import sync_replicas
+
+    model = await _model_with_created_route(session, 'lost-worker')
+    await model.update(
+        session,
+        {
+            'cluster_id': 1,
+            'roles': [RoleSpec(name='prefill'), RoleSpec(name='decode')],
+        },
+    )
+    instance = await _managed_instance(session, model, 'unknown')
+    worker = await Worker.one_by_id(session, 1)
+    if lost == 'missing':
+        await worker.delete(session)
+    elif lost == 'deleted':
+        await worker.update(session, {'deleted_at': datetime.now(timezone.utc)})
+    elif lost == 'heartbeat':
+        await worker.update(
+            session, {'heartbeat_time': datetime.now(timezone.utc) - timedelta(days=1)}
+        )
+    else:
+        await worker.update(session, {'unreachable': True})
+    await Worker.create(
+        session,
+        Worker(
+            id=2,
+            name='worker-2',
+            hostname='worker-2',
+            ip='192.0.2.2',
+            ifname='eth0',
+            port=10150,
+            worker_uuid='worker-2',
+            cluster_id=1,
+            state=WorkerStateEnum.READY,
+            heartbeat_time=datetime.now(timezone.utc),
+        ),
+    )
+    servers = instance.distributed_servers.model_copy(deep=True)
+    servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=2, gpu_indexes=[0])
+    ]
+    if legacy:
+        servers.workloads = None
+        servers.legacy_stop = ModelInstanceLegacyStop(
+            token=uuid4(),
+            restart_count=0,
+            worker_ids=[1, 2],
+            worker_principal_ids={1: None, 2: None},
+        )
+    else:
+        servers.workloads.append(
+            ModelInstanceWorkload.model_validate(
+                new_model_instance_workload(worker_id=2, node_rank=1, state='running')
+            )
+        )
+    await instance.update(session, {'distributed_servers': servers})
+
+    async def reconcile():
+        if operation == 'delete':
+            await ModelService(session).delete(model)
+        else:
+            await sync_replicas(session, model)
+
+    if operation == 'stop':
+        await model.update(session, {'replicas': 0})
+    await reconcile()
+    assert await ModelInstance.one_by_id(session, instance.id) is instance
+    assert instance.draining_since is not None
+    servers = instance.distributed_servers.model_copy(deep=True)
+    if legacy:
+        servers.legacy_stop.confirmed_worker_ids = [2]
+    else:
+        assert servers.workloads[0].state == ModelInstanceWorkloadStateEnum.UNKNOWN
+        servers.workloads[1].state = ModelInstanceWorkloadStateEnum.STOPPED
+    await instance.update(session, {'distributed_servers': servers})
+    instance_id = instance.id
+    await reconcile()
+    assert await ModelInstance.one_by_id(session, instance_id) is None
+
+    if operation == 'delete':
+        assert await Model.one_by_id(session, model.id) is None
+        assert await _route(session, model.name) is None
+        replacement = await _model_with_created_route(session, 'lost-worker')
+        assert replacement is not None
+    else:
+        assert await Model.one_by_id(session, model.id) is model
+        await model.update(session, {'replicas': 1})
+        await sync_replicas(session, model)
+        replacements = await ModelInstance.all_by_field(session, 'model_id', model.id)
+        assert len(replacements) == 2
+        assert all(
+            item.state == ModelInstanceStateEnum.PENDING for item in replacements
+        )
+        assert all(item.draining_since is None for item in replacements)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['stop', 'delete'])
+async def test_deployment_teardown_with_no_reachable_worker_releases_worker_deletion(
+    session, operation, monkeypatch
+):
+    from gpustack.server.controllers import sync_replicas
+    from gpustack.routes import model_instances as instance_routes
+
+    model = await _model_with_created_route(session, 'all-lost')
+    instance = await _managed_instance(session, model, 'unknown')
+    worker = await Worker.one_by_id(session, 1)
+    await worker.update(session, {'unreachable': True})
+    instance_id = instance.id
+    late_report = ModelInstanceRankUpdate(
+        rank_report={
+            'restart_count': instance.restart_count or 0,
+            'workloads': instance.distributed_servers.workloads,
+        }
+    )
+    if operation == 'delete':
+        await ModelService(session).delete(model)
+        await ModelService(session).delete(model)
+        assert await Model.one_by_id(session, model.id) is None
+    else:
+        await model.update(session, {'replicas': 0})
+        await sync_replicas(session, model)
+    assert await ModelInstance.one_by_id(session, instance_id) is None
+    monkeypatch.setattr(
+        instance_routes, '_locked_reporting_worker', AsyncMock(return_value=worker)
+    )
+    ctx = SimpleNamespace(user=SimpleNamespace(worker=worker))
+    with pytest.raises(NotFoundException):
+        await instance_routes.update_model_instance(
+            session, ctx, instance_id, late_report
+        )
+    await WorkerService(session).delete(worker)
+    assert await Worker.one_by_id(session, 1) is None
+
+
+@pytest.mark.asyncio
+async def test_stopping_one_deployment_preserves_other_lost_worker_instances(session):
+    from gpustack.server.controllers import sync_replicas
+
+    model = await _model_with_created_route(session, 'stopped')
+    instance = await _managed_instance(session, model, 'unknown')
+    other = await _model_with_created_route(session, 'unaffected')
+    other_instance = await _managed_instance(session, other, 'unknown')
+    worker = await Worker.one_by_id(session, 1)
+    await worker.update(session, {'unreachable': True})
+    await model.update(session, {'replicas': 0})
+    await sync_replicas(session, model)
+    assert await ModelInstance.one_by_id(session, instance.id) is None
+    assert await ModelInstance.one_by_id(session, other_instance.id) is other_instance
+    assert other_instance.draining_since is None
+    assert other.replicas == 1
+    with pytest.raises(ConflictException):
+        await WorkerService(session).delete(worker)
 
 
 @pytest.mark.asyncio

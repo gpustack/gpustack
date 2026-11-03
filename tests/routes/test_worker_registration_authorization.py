@@ -62,6 +62,7 @@ def registration(monkeypatch):
         return worker
 
     mocks = SimpleNamespace(
+        session=session,
         open_session=MagicMock(side_effect=session_context),
         list_workers=AsyncMock(return_value=[]),
         get_worker=AsyncMock(),
@@ -255,18 +256,28 @@ async def test_reregistration_locks_only_complete_related_model_cohorts(
 
     async def query(session, field, value, **kwargs):
         calls.append((field, value, kwargs))
-        if field == 'cluster_id':
-            assert not kwargs.get('for_update')
-            return discovery
-        assert field == 'model_id' and kwargs == {'for_update': True, 'refresh': True}
-        return {1: [second], 5: [target, peer, late]}[value]
+        assert field == 'cluster_id' and value == 100 and kwargs == {'refresh': True}
+        return discovery
 
     monkeypatch.setattr(workers.ModelInstance, 'all_by_field', query)
-    rows = await workers._registration_instances(MagicMock(), worker)
-    assert rows == ([] if binding == 'none' else [second, target, peer, late])
-    assert [value for field, value, kwargs in calls if kwargs.get('for_update')] == (
-        [] if binding == 'none' else [1, 5]
-    )
+    session = MagicMock()
+    result = MagicMock()
+    result.all.return_value = [target, peer, second, late]
+    session.exec = AsyncMock(return_value=result)
+    rows = await workers._registration_instances(session, worker)
+    assert rows == ([] if binding == 'none' else [target, peer, second, late])
+    assert len(calls) == 1
+    if binding == 'none':
+        session.exec.assert_not_awaited()
+    else:
+        session.exec.assert_awaited_once()
+        statement = session.exec.call_args.args[0]
+        assert statement.compile().params == {'model_id_1': [1, 5]}
+        assert str(statement).endswith('ORDER BY model_instances.id FOR UPDATE')
+        assert statement.get_execution_options() == {
+            'populate_existing': True,
+            'autoflush': False,
+        }
 
 
 def test_registration_closes_discovery_before_locking_worker(registration, monkeypatch):
@@ -601,6 +612,8 @@ def test_registration_repair_binding_obeys_only_assigned_managed_cohort(
         'all_by_field',
         AsyncMock(return_value=[engine, router]),
     )
+    registration.session.exec.return_value = MagicMock()
+    registration.session.exec.return_value.all.return_value = [engine, router]
     payload = WorkerCreate.model_validate(_payload(100, True))
     payload.status.orchestration = WorkerOrchestrationStatus(protocol_version=1)
     with TestClient(registration.app) as client:

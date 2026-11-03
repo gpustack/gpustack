@@ -1972,6 +1972,13 @@ async def sync_replicas(session: AsyncSession, model: Model) -> Optional[float]:
         return None
 
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
+    if model.replicas == 0:
+        # Stopping a deployment retires disconnected ownership; live Workers
+        # still confirm teardown before their instance records are released.
+        await ModelInstanceService(session).batch_delete(
+            instances, retire_unreachable=True
+        )
+        return None
     managed_draining = [
         instance
         for instance in instances

@@ -359,8 +359,12 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             )
 
             candidates = candidate_func(workers)
-            if vllm_lb_mode(self._model.backend_parameters) == "hybrid":
-                candidates = self._validate_hybrid_candidates(candidates)
+            if vllm_lb_mode(self._model.backend_parameters) in (
+                "external",
+                "multi_port_external",
+                "hybrid",
+            ):
+                candidates = self._validate_managed_candidates(candidates)
             for candidate in candidates:
                 self._finalize_candidate_ram(candidate)
 
@@ -375,7 +379,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._set_messages()
         return []
 
-    def _validate_hybrid_candidates(
+    def _validate_managed_candidates(
         self, candidates: List[ModelInstanceScheduleCandidate]
     ) -> List[ModelInstanceScheduleCandidate]:
         """Apply the complete-group layout to manual and automatic placements."""

@@ -1839,3 +1839,20 @@ def test_hybrid_registries_keep_api_owners_generation_and_lora(rank_workers, mod
     assert old_names.isdisjoint(registry.name for _, _, registry in current)
     del rank_workers[2]
     assert model_instances_registry_list([instance], rank_workers) == []
+
+
+def test_smg_endpoint_rejects_a_missing_component(managed_rank_instance):
+    from gpustack.schemas.models import DistributedServers
+    from gpustack.utils.model_instance_workers import model_instance_endpoints
+    from tests.routes.test_model_instance_progress import _sg_component
+
+    instance = managed_rank_instance
+    engine = _sg_component(api_port=41000, dp_size=2)
+    smg = _sg_component('sglang_smg', api_port=42000, metrics_port=42001)
+    for workload in (engine, smg):
+        workload.state = 'running'
+        workload.component.ready = True
+    instance.distributed_servers = DistributedServers(workloads=[engine, smg])
+    assert len(model_instance_endpoints(instance)) == 1
+    instance.distributed_servers.workloads[-1].component = None
+    assert model_instance_endpoints(instance) == []
