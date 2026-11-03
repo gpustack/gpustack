@@ -410,9 +410,9 @@ tenant_routers = model_routers + [
     },
     # Dashboard sub-routes gate themselves inside the handler. The
     # per-cluster ``GET /dashboard?cluster_id=X`` accepts anyone who
-    # can see the cluster (cluster-detail audience); the aggregate
-    # ``GET /dashboard`` and the ``/usage`` endpoints stay platform
-    # admin only.
+    # can see the cluster for infrastructure statistics. Model activity,
+    # aggregate ``GET /dashboard``, and ``/usage`` require platform admin
+    # or Org owner permissions and use the caller's tenant scope.
     {"router": dashboard.router, "prefix": "/dashboard", "tags": ["Dashboard"]},
     # cluster_access GET is open to anyone who can see the cluster
     # (cluster-detail audience); POST / DELETE gate inside the
