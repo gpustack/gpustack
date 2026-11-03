@@ -27,6 +27,7 @@ from gpustack.schemas.config import (
     PredefinedConfigNoDefaults,
 )
 from gpustack import envs
+from gpustack.extension import before_worker_registration
 from gpustack.routes import config as route_config, debug, probes
 from gpustack.routes.worker import (
     logs,
@@ -189,6 +190,7 @@ class Worker:
         ),
     )
     async def _register(self):
+        await before_worker_registration(self._config)
         self._clientset, self._default_config = (
             await self._worker_manager.register_with_server()
         )
