@@ -2207,7 +2207,7 @@ async def resolve_instance_address_from_model_header(
 ) -> Tuple[Optional[str], int]:
     """Resolve a model identity; recognized invalid targets never use URI fallback.
 
-    Non-model requests retain URI-based routing. Managed targets require internal
+    Non-model requests retain URI-based routing. Model targets require internal
     credentials and are rechecked against the current endpoints and Worker.
     The read session closes before any tunnel connection or response stream.
     """
@@ -2226,20 +2226,6 @@ async def resolve_instance_address_from_model_header(
         )
         if instance is None or instance.model_id != target.model_id:
             raise HTTPException(status_code=404, detail="Model destination not found")
-        if (
-            instance.distributed_servers is None
-            or instance.distributed_servers.workloads is None
-        ):
-            if (
-                target.dp_rank is not None
-                or target.worker_id is not None
-                or not instance.worker_ip
-                or not instance.ports
-            ):
-                raise HTTPException(
-                    status_code=404, detail="Model destination is unavailable"
-                )
-            return instance.worker_ip, instance.ports[0]
         try:
             endpoint = resolve_model_instance_endpoint(instance, target)
         except ValueError as exc:
@@ -2250,7 +2236,7 @@ async def resolve_instance_address_from_model_header(
         principal = await authenticate_worker_by_request_headers(headers)
         if principal is None or principal.kind != PrincipalType.SYSTEM:
             raise HTTPException(
-                status_code=403, detail="Managed routing requires internal credentials"
+                status_code=403, detail="Model routing requires internal credentials"
             )
         worker = await Worker.one_by_id(session, endpoint.worker_id, refresh=True)
         if (
@@ -2283,7 +2269,7 @@ async def resolve_instance_address_from_model_header(
 
 
 async def _assert_rank_destination_visible(session, principal, instance, worker):
-    """Fence rank routing to the current internal principal binding."""
+    """Fence model routing to the current internal principal binding."""
     from fastapi import Request
     from gpustack.api.tenant import resolve_tenant_context, assert_resource_visible
 

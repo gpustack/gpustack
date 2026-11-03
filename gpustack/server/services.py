@@ -1399,6 +1399,8 @@ class ModelInstanceService:
         ):
             workloads = get_model_instance_workloads(instance)
             if workloads is not None:
+                # A non-SMG failure withdraws the generation before surviving
+                # tasks stop; the restart fence advances only after teardown.
                 failure = next(
                     (
                         item

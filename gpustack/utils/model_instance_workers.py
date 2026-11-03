@@ -536,7 +536,12 @@ def parse_model_instance_target(destination: str) -> ModelInstanceTarget:
 def model_instance_endpoints(
     instance: ModelInstanceBase,
 ) -> List[ModelInstanceEndpoint]:
-    """Return only a complete serving instance's real main APIs."""
+    """Publish a complete managed generation as one serving/recovery unit.
+
+    External mode exposes multiple APIs, but its surviving tasks are stopped
+    together when the generation fails. Withdraw all APIs during that recovery
+    so requests cannot enter siblings that are about to stop.
+    """
     if (
         instance.state != ModelInstanceStateEnum.RUNNING
         or instance.draining_since is not None
@@ -582,6 +587,8 @@ def model_instance_endpoints(
                 )
                 for w in apis
             ]
+        # Engine failure retires the full generation; SMG-only recovery retains
+        # the Engines but withholds the router until its complete set is ready.
         engines = _sglang_engine_workloads(instance)
         smgs = [
             w

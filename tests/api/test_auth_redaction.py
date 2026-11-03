@@ -102,29 +102,18 @@ async def test_api_key_authentication_logs_no_credentials(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("credential", ["abcd", "long-inference-only-key"])
-@pytest.mark.parametrize("allowed", [False, True])
 async def test_proxy_authorization_logs_no_credential_and_management_stays_denied(
-    monkeypatch, caplog, credential, allowed
+    monkeypatch, caplog, credential
 ):
     request = _request()
-    authorize = AsyncMock(return_value=allowed)
-    factory = MagicMock(return_value=authorize)
-    monkeypatch.setattr(auth_module, "make_auth_token_via_server", factory)
+    request.app.state.http_client_no_proxy = MagicMock()
     caplog.set_level(TRACE_LEVEL, logger=auth_module.__name__)
 
     with pytest.raises(UnauthorizedException):
         await worker_auth(request, x_api_key=credential)
-    factory.assert_not_called()
-    assert caplog.records == []
-
-    if allowed:
+    with pytest.raises(UnauthorizedException):
         await worker_proxy_auth(request, x_api_key=credential)
-    else:
-        with pytest.raises(UnauthorizedException):
-            await worker_proxy_auth(request, x_api_key=credential)
 
-    authorize.assert_awaited_once_with("http://server", credential, "allowed-model")
-    assert [record.getMessage() for record in caplog.records] == [
-        "Verifying inference proxy credentials via server authentication"
-    ]
+    request.app.state.http_client_no_proxy.get.assert_not_called()
+    assert caplog.records == []
     assert credential not in caplog.text

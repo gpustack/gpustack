@@ -5418,6 +5418,8 @@ def _probe_sglang_component_health(
                 and attention_dp >= 1
                 and actual * attention_dp == expected_dp
             ), 'Engine dp_size mismatch or invalid server_info'
+        # Publication follows complete-group recovery, even when the native
+        # router could still reach a healthy subset of logical ranks.
         ready = _component_json(f'{url}/readiness', deadline)
         if ready.get('status') != 'ready' or any(
             type(ready.get(k)) is not int or ready[k] != expected_dp

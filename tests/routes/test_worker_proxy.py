@@ -907,28 +907,43 @@ def test_rank_registry_construction_uses_actual_owner(rank_instance, mode):
         'foreign_owner',
         'null_owner',
         'deleted_worker',
+        'missing_worker',
         'unbound_system',
     ],
 )
 @pytest.mark.parametrize(
     'kind',
-    ['rank_instance', 'hybrid_instance', 'sglang_component_instance', 'sglang_engine'],
+    [
+        'rank_instance',
+        'hybrid_instance',
+        'sglang_component_instance',
+        'sglang_engine',
+        'legacy_instance',
+        'legacy_distributed_instance',
+    ],
 )
-async def test_tunnel_rank_resolver_checks_identity_and_releases_session(
+async def test_tunnel_model_resolver_checks_identity_and_releases_session(
     request, monkeypatch, case, kind
 ):
-    rank_instance = request.getfixturevalue(
-        'sglang_component_instance' if kind == 'sglang_engine' else kind
-    )
+    fixture = {
+        'sglang_engine': 'sglang_component_instance',
+        'legacy_instance': 'rank_instance',
+        'legacy_distributed_instance': 'rank_instance',
+    }.get(kind, kind)
+    rank_instance = request.getfixturevalue(fixture)
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from gpustack.gateway import utils
     from gpustack.schemas.principals import PrincipalType
-    from gpustack.schemas.models import ModelInstance
+    from gpustack.schemas.models import DistributedServers, ModelInstance
     from gpustack.schemas.workers import Worker
     from gpustack.schemas.clusters import Cluster
     from fastapi import HTTPException
 
+    rank_instance.distributed_servers = {
+        'legacy_instance': None,
+        'legacy_distributed_instance': DistributedServers(),
+    }.get(kind, rank_instance.distributed_servers)
     rank_instance.cluster_id = 11
     rank_instance.owner_principal_id = 20
     worker = SimpleNamespace(
@@ -984,7 +999,11 @@ async def test_tunnel_rank_resolver_checks_identity_and_releases_session(
     monkeypatch.setattr(
         ModelInstance, 'one_by_id', AsyncMock(return_value=rank_instance)
     )
-    monkeypatch.setattr(Worker, 'one_by_id', AsyncMock(return_value=worker))
+    monkeypatch.setattr(
+        Worker,
+        'one_by_id',
+        AsyncMock(return_value=None if case == 'missing_worker' else worker),
+    )
     monkeypatch.setattr(
         Cluster,
         'one_by_id',
@@ -996,15 +1015,20 @@ async def test_tunnel_rank_resolver_checks_identity_and_releases_session(
             'hybrid_instance': 'model-1-7-w1.static',
             'sglang_component_instance': 'model-1-7.static',
             'sglang_engine': 'model-1-7-dp1.static',
+            'legacy_instance': 'model-1-7.static',
+            'legacy_distributed_instance': 'model-1-7.static',
         }[kind]
     }
     if case in ('worker', 'cluster', 'stale_epoch'):
         resolved = await utils.resolve_instance_address_from_model_header(headers)
         assert resolved == (
             '10.0.0.2',
-            {'sglang_component_instance': 42001, 'sglang_engine': 42000}.get(
-                kind, 41001
-            ),
+            {
+                'sglang_component_instance': 42001,
+                'sglang_engine': 42000,
+                'legacy_instance': 49999,
+                'legacy_distributed_instance': 49999,
+            }.get(kind, 41001),
         )
         assert hasattr(resolved, 'request_transform') == (kind == 'sglang_engine')
     else:
@@ -1072,6 +1096,35 @@ def test_headless_worker_never_becomes_a_rank_api(rank_instance):
     ]
     headless.state = 'unknown'
     assert model_instance_endpoints(rank_instance) == []
+
+
+@pytest.mark.parametrize(
+    'fixture_name', ['rank_instance', 'sglang_component_instance', 'hybrid_instance']
+)
+def test_runtime_degradation_withdraws_the_generation_until_full_recovery(
+    request, fixture_name
+):
+    from gpustack.schemas.models import ModelInstanceStateEnum
+    from gpustack.utils.model_instance_workers import model_instance_endpoints
+
+    instance = request.getfixturevalue(fixture_name)
+    healthy = instance.model_copy(deep=True)
+    expected = len(model_instance_endpoints(instance))
+    assert expected > 0
+    task = instance.distributed_servers.workloads[0]
+    if task.component is None:
+        task.dp_rank_placements[-1].ready = False
+    else:
+        task.state = 'unknown'
+        task.component.ready = False
+    assert model_instance_endpoints(instance) == []
+
+    instance = healthy.model_copy(deep=True)
+    instance.restart_count += 1
+    instance.state = ModelInstanceStateEnum.STARTING
+    assert model_instance_endpoints(instance) == []
+    instance.state = ModelInstanceStateEnum.RUNNING
+    assert len(model_instance_endpoints(instance)) == expected
 
 
 def test_rank_without_main_api_is_not_partially_routable(rank_instance):
@@ -1371,8 +1424,6 @@ async def test_component_middleware_carries_validated_target_through_existing_au
         authority.model_instances.get_cached.return_value = hybrid_instance.__wrapped__(
             instance
         )
-    delegated = MagicMock()
-    monkeypatch.setattr('gpustack.api.auth.make_auth_token_via_server', delegated)
     app = FastAPI()
     register_handlers(app)
     app.state.token = 'worker-token'
@@ -1430,7 +1481,6 @@ async def test_component_middleware_carries_validated_target_through_existing_au
         dp_rank=expected['dp_rank'],
         worker_id=1 if component == 'hybrid-w1' else None,
     )
-    delegated.assert_not_called()
     assert len(forwards) == int(status == 200)
     if status == 200:
         assert response.json() == dict(
