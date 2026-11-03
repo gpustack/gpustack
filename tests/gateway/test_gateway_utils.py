@@ -1500,9 +1500,6 @@ async def test_model_registry_controller_collects_secondary_workers(
     controller._config = SimpleNamespace(gateway_namespace='default')
     controller._higress_network_api = MagicMock()
     controller._higress_extension_api = MagicMock()
-    monkeypatch.setattr(
-        controllers.mcp_handler, 'ensure_sglang_smg_transformer', AsyncMock()
-    )
     await controller._ensure_model_mcp_bridge(None, EventType.UPDATED, model)
     assert set(workers.call_args.kwargs['extra_conditions'][0].right.value) == {1, 2}
     assert set(ensure.call_args.kwargs['workers']) == {1, 2}
@@ -1528,193 +1525,6 @@ async def test_remote_cluster_gateway_is_selected_before_rank_expansion(monkeypa
     instances.assert_not_awaited()
 
 
-def test_smg_transformer_diff_replaces_only_one_model_owner():
-    from gpustack.gateway import sglang_smg_transformer_plugin
-    from gpustack.gateway import utils
-    from tests.gateway.test_gateway_plugins import make_cfg
-
-    cfg = make_cfg('http://plugins')
-    _, base = sglang_smg_transformer_plugin(cfg)
-    foreign = WasmPluginMatchRule(service=['foreign'], config={'reqRules': []})
-    other = WasmPluginMatchRule(
-        service=['other'], config={'x-gpustack-owner': 'sglang-smg:2'}
-    )
-    old = WasmPluginMatchRule(
-        service=['old-attempt'], config={'x-gpustack-owner': 'sglang-smg:1'}
-    )
-    current = base.model_copy(update={'matchRules': [foreign, other, old]})
-    result = utils.sglang_smg_transformer_spec_diff(
-        current, model_id=1, service_names={'model-1-7-r3-smg-a1.static'}, cfg=cfg
-    )
-    assert foreign in result.matchRules and other in result.matchRules
-    owned = [
-        r
-        for r in result.matchRules
-        if r.config.get('x-gpustack-owner') == 'sglang-smg:1'
-    ]
-    assert len(owned) == 1
-    assert owned[0].service == ['model-1-7-r3-smg-a1.static']
-    assert owned[0].ingress == []
-    removed = utils.sglang_smg_transformer_spec_diff(
-        result, model_id=1, service_names=set(), cfg=cfg
-    )
-    assert removed.matchRules == [foreign, other]
-    assert current.matchRules == [foreign, other, old]
-    assert (
-        utils.sglang_smg_transformer_spec_diff(
-            None, model_id=1, service_names=set(), cfg=cfg
-        )
-        is None
-    )
-
-
-def test_smg_transformer_orphans_preserve_live_and_foreign_rules():
-    from gpustack.gateway import utils
-
-    rules = [
-        WasmPluginMatchRule(config={'x-gpustack-owner': owner})
-        for owner in ('sglang-smg:1', 'sglang-smg:2', 'mapper', 'sglang-smg:bad')
-    ]
-    manual = WasmPluginMatchRule(service=['manual'], config={'reqRules': []})
-    current = WasmPluginSpec(matchRules=rules + [manual])
-    result = utils.sglang_smg_transformer_orphan_diff(current, live_model_ids={2})
-    assert result.matchRules == rules[1:] + [manual]
-    assert len(current.matchRules) == 5
-    assert utils.sglang_smg_transformer_orphan_diff(None, live_model_ids=set()) is None
-
-
-def test_smg_services_use_real_ready_registry_identity(
-    managed_rank_instance, rank_workers
-):
-    from gpustack.gateway import utils
-    from gpustack.schemas.models import DistributedServers
-    from tests.routes.test_model_instance_progress import _sg_component
-
-    instance = managed_rank_instance
-    engine = _sg_component(api_port=41000, dp_size=2)
-    smg = _sg_component('sglang_smg', api_port=42000, metrics_port=42001)
-    for workload in (engine, smg):
-        workload.state = 'running'
-        workload.component.ready = True
-    instance.distributed_servers = DistributedServers(workloads=[engine, smg])
-    names = utils.sglang_smg_service_names([instance], rank_workers, ['moe:adapter'])
-    assert names == {
-        'model-1-7-r3-smg-a0.static',
-        f'model-1-7-r3-smg-a0-{lora_registry_name_suffix("moe:adapter")}.static',
-    }
-    smg.component.ready = False
-    assert (
-        utils.sglang_smg_service_names([instance], rank_workers, ['moe:adapter'])
-        == set()
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('failure', ['conflict', 'foreign_owner'])
-async def test_smg_declaration_does_not_swallow_publication_failure(
-    failure, monkeypatch
-):
-    from gpustack.gateway import utils, sglang_smg_transformer_plugin
-    from tests.gateway.test_gateway_plugins import make_cfg
-
-    monkeypatch.setattr(
-        utils, 'ensure_wasm_plugin', utils.ensure_wasm_plugin.__wrapped__
-    )
-    cfg = make_cfg('http://plugins')
-    cfg.gateway_namespace = 'default'
-    _, base = sglang_smg_transformer_plugin(cfg)
-    api = MagicMock()
-    api.get_wasmplugin = AsyncMock(
-        return_value={
-            'metadata': {
-                'labels': managed_labels if failure == 'conflict' else {},
-                'resourceVersion': '7',
-            },
-            'spec': base.model_dump(exclude_none=True),
-        }
-    )
-    api.edit_wasmplugin = AsyncMock(side_effect=ApiException(status=409))
-    with pytest.raises(ApiException if failure == 'conflict' else ValueError):
-        await utils.ensure_sglang_smg_transformer(
-            model_id=1,
-            service_names={'model-1-7-r3-smg-a0.static'},
-            cfg=cfg,
-            extensions_api=api,
-        )
-    if failure == 'conflict':
-        assert (
-            api.edit_wasmplugin.call_args.kwargs['body'].metadata['resourceVersion']
-            == '7'
-        )
-    else:
-        api.edit_wasmplugin.assert_not_awaited()
-
-
-def test_smg_initial_diff_is_idempotent_and_creates_one_rule():
-    from gpustack.gateway import utils
-    from tests.gateway.test_gateway_plugins import make_cfg
-
-    cfg = make_cfg('http://plugins')
-    services = {'model-1-7-r3-smg-a0.static'}
-    initial = utils.sglang_smg_transformer_spec_diff(
-        None, model_id=1, service_names=services, cfg=cfg
-    )
-    assert len(initial.matchRules) == 1
-    assert (
-        utils.sglang_smg_transformer_spec_diff(
-            initial, model_id=1, service_names=services, cfg=cfg
-        )
-        == initial
-    )
-
-
-@pytest.mark.asyncio
-async def test_smg_conflict_retry_merges_fresh_other_model_rules(monkeypatch):
-    from tenacity import stop_after_attempt, wait_none
-    from gpustack.gateway import utils, sglang_smg_transformer_plugin
-    from tests.gateway.test_gateway_plugins import make_cfg
-
-    cfg = make_cfg('http://plugins')
-    cfg.gateway_namespace = 'default'
-    _, base = sglang_smg_transformer_plugin(cfg)
-    fresh = utils.sglang_smg_transformer_spec_diff(
-        base, model_id=2, service_names={'model-2-8-r0-smg-a0.static'}, cfg=cfg
-    )
-    api = MagicMock()
-    api.get_wasmplugin = AsyncMock(
-        side_effect=[
-            {
-                'metadata': {'labels': managed_labels, 'resourceVersion': '1'},
-                'spec': base.model_dump(),
-            },
-            {
-                'metadata': {'labels': managed_labels, 'resourceVersion': '2'},
-                'spec': fresh.model_dump(),
-            },
-        ]
-    )
-    api.edit_wasmplugin = AsyncMock(side_effect=[ApiException(status=409), None])
-    monkeypatch.setattr(
-        utils,
-        'ensure_wasm_plugin',
-        utils.ensure_wasm_plugin.retry_with(
-            wait=wait_none(), stop=stop_after_attempt(2)
-        ),
-    )
-    await utils.ensure_sglang_smg_transformer(
-        model_id=1,
-        service_names={'model-1-7-r3-smg-a0.static'},
-        cfg=cfg,
-        extensions_api=api,
-    )
-    body = api.edit_wasmplugin.call_args.kwargs['body']
-    assert body.metadata['resourceVersion'] == '2'
-    assert {r.config['x-gpustack-owner'] for r in body.spec.matchRules} == {
-        'sglang-smg:1',
-        'sglang-smg:2',
-    }
-
-
 @pytest.mark.parametrize('component,rank', [('sglang_smg', None), ('sglang_engine', 2)])
 def test_component_request_conversion_removes_conflicting_rank_fields(component, rank):
     import json
@@ -1737,10 +1547,10 @@ def test_component_request_conversion_removes_conflicting_rank_fields(component,
     assert json.loads(transformed) == (
         {'prompt': '你好', 'routed_dp_rank': rank}
         if rank is not None
-        else {'prompt': '你好'}
+        else {'prompt': '你好', 'routed_dp_rank': 9, 'data_parallel_rank': 8}
     )
     assert headers.get('x-data-parallel-rank') == (
-        str(rank) if rank is not None else None
+        str(rank) if rank is not None else '9'
     )
     assert headers['content-length'] == str(len(transformed))
 
@@ -1769,7 +1579,9 @@ def test_component_conversion_rejects_unsafe_bodies(body, headers, status):
     from gpustack.gateway.utils import transform_sglang_component_request
 
     with pytest.raises(HTTPException) as exc:
-        transform_sglang_component_request(headers, body, component='sglang_smg')
+        transform_sglang_component_request(
+            headers, body, component='sglang_engine', dp_rank=1
+        )
     assert exc.value.status_code == status
 
 
@@ -1792,7 +1604,10 @@ def test_component_conversion_bounds_body_and_preserves_rank_under_connection_to
     monkeypatch.setattr(utils, 'SG_ROUTING_MAX_BODY_BYTES', 3)
     with pytest.raises(HTTPException) as exc:
         utils.transform_sglang_component_request(
-            {'content-type': 'application/json'}, b'{"a":1}', component='sglang_smg'
+            {'content-type': 'application/json'},
+            b'{"a":1}',
+            component='sglang_engine',
+            dp_rank=1,
         )
     assert exc.value.status_code == 413
 

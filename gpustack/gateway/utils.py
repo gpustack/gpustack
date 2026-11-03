@@ -1128,144 +1128,6 @@ def model_instances_registry_list(
     return registries
 
 
-def sglang_smg_service_names(
-    model_instances: List[Union[ModelInstance, ModelInstancePublic]],
-    workers: Optional[Dict[int, Worker]],
-    lora_route_names: Optional[List[str]] = None,
-) -> Set[str]:
-    """Actual ready ordinary-SMG services, including their registry aliases."""
-    instances = [
-        instance
-        for instance in model_instances
-        if not instance.role
-        and any(
-            endpoint.component == "sglang_smg"
-            for endpoint in model_instance_endpoints(instance)
-        )
-    ]
-    suffixes = [None] + [
-        lora_registry_name_suffix(name) for name in lora_route_names or []
-    ]
-    return {
-        registry.get_service_name()
-        for suffix in suffixes
-        for _, _, registry in model_instances_registry_list(
-            instances, workers, registry_name_suffix=suffix
-        )
-    }
-
-
-def sglang_smg_transformer_spec_diff(
-    current_spec: Optional[WasmPluginSpec],
-    *,
-    model_id: int,
-    service_names: Set[str],
-    cfg: Config,
-) -> Optional[WasmPluginSpec]:
-    """Replace one model's service-only candidate declarations, never other owners."""
-    from gpustack.gateway import (
-        sglang_smg_transformer_plugin,
-        sglang_smg_transformer_init_spec_diff,
-    )
-    from gpustack.routes.plugins.artifacts import RULE_OWNER_KEY
-
-    if current_spec is None and not service_names:
-        return None
-    scopes = (
-        [WasmPluginMatchRule(service=sorted(service_names))] if service_names else []
-    )
-    _, expected = sglang_smg_transformer_plugin(cfg, scopes)
-    result = sglang_smg_transformer_init_spec_diff(
-        current_spec, expected.model_copy(deep=True, update={"matchRules": []})
-    )
-    owner = f"sglang-smg:{model_id}"
-    kept = [
-        rule
-        for rule in result.matchRules or []
-        if (rule.config or {}).get(RULE_OWNER_KEY) != owner
-    ]
-    for rule in expected.matchRules:
-        rule.config[RULE_OWNER_KEY] = owner
-        kept.append(rule)
-    kept.sort(
-        key=lambda rule: (
-            str((rule.config or {}).get(RULE_OWNER_KEY, "")),
-            tuple(rule.service or []),
-            tuple(rule.ingress or []),
-        )
-    )
-    result.matchRules = kept
-    return result
-
-
-def sglang_smg_transformer_orphan_diff(
-    current_spec: Optional[WasmPluginSpec], *, live_model_ids: Set[int]
-) -> Optional[WasmPluginSpec]:
-    """Retire only feature-stamped owners whose model no longer exists."""
-    from gpustack.routes.plugins.artifacts import RULE_OWNER_KEY
-
-    if current_spec is None:
-        return None
-    result = current_spec.model_copy(deep=True)
-    result.matchRules = [
-        rule
-        for rule in result.matchRules or []
-        if not (
-            (
-                match := re.fullmatch(
-                    r"sglang-smg:(\d+)",
-                    str((rule.config or {}).get(RULE_OWNER_KEY, "")),
-                )
-            )
-            and int(match.group(1)) not in live_model_ids
-        )
-    ]
-    return result
-
-
-async def ensure_sglang_smg_transformer(
-    *,
-    model_id: int,
-    service_names: Set[str],
-    cfg: Config,
-    extensions_api: ExtensionsHigressIoV1Api,
-) -> None:
-    """Declare exact SMG services; publication does not prove data-plane matching."""
-    from gpustack.gateway import sglang_smg_transformer_name
-
-    await ensure_wasm_plugin(
-        api=extensions_api,
-        name=sglang_smg_transformer_name,
-        namespace=cfg.gateway_namespace,
-        spec_diff=partial(
-            sglang_smg_transformer_spec_diff,
-            model_id=model_id,
-            service_names=service_names,
-            cfg=cfg,
-        ),
-        require_managed=bool(service_names),
-    )
-
-
-async def cleanup_sglang_smg_transformer(
-    *,
-    live_model_ids: Set[int],
-    cfg: Config,
-    extensions_api: ExtensionsHigressIoV1Api,
-) -> None:
-    """Leader-only orphan sweep; leave foreign and manually declared rules intact."""
-    from gpustack.gateway import sglang_smg_transformer_name
-
-    await ensure_wasm_plugin(
-        api=extensions_api,
-        name=sglang_smg_transformer_name,
-        namespace=cfg.gateway_namespace,
-        spec_diff=partial(
-            sglang_smg_transformer_orphan_diff, live_model_ids=live_model_ids
-        ),
-    )
-
-
 @retry(stop=stop_after_attempt(5), wait=wait_fixed(2))
 async def ensure_model_ingress(
     ingress_name: str,
@@ -1390,7 +1252,6 @@ async def ensure_wasm_plugin(
     namespace: str,
     spec_diff: Callable[[Optional[WasmPluginSpec]], WasmPluginSpec],
     extra_labels: Optional[Dict[str, str]] = None,
-    require_managed: bool = False,
 ):
     labels = copy.deepcopy(managed_labels)
     if extra_labels:
@@ -1440,8 +1301,6 @@ async def ensure_wasm_plugin(
                 body=current_plugin,
             )
             logger.info(f"Updated WasmPlugin {name} in namespace {namespace}.")
-    elif require_managed:
-        raise ValueError(f"WasmPlugin {name} is not managed by GPUStack")
 
 
 async def cleanup_model_mapper(
@@ -2329,20 +2188,19 @@ def transform_sglang_component_request(
     component: str,
     dp_rank: Optional[int] = None,
 ) -> Tuple[Dict[str, str], Optional[bytes]]:
-    """Prepare a resolved SMG or Engine request without conflicting rank hints."""
+    """Inject the authorized Engine diagnostic rank without conflicting hints."""
+    if component != "sglang_engine":
+        return {key.lower(): value for key, value in headers.items()}, body
     if hasattr(headers, "getlist") and any(
         len(headers.getlist(key)) > 1 for key in ("content-length", "transfer-encoding")
     ):
         raise HTTPException(400, "Use one request framing header")
     result = {key.lower(): value for key, value in headers.items()}
-    if component not in ("sglang_smg", "sglang_engine"):
-        return result, body
     content_type = _validate_sglang_request_headers(result)
     result.pop("x-data-parallel-rank", None)
-    if component == "sglang_engine":
-        if dp_rank is None or dp_rank < 0:
-            raise HTTPException(400, "A valid Engine rank is required")
-        result["x-data-parallel-rank"] = str(dp_rank)
+    if dp_rank is None or dp_rank < 0:
+        raise HTTPException(400, "A valid Engine rank is required")
+    result["x-data-parallel-rank"] = str(dp_rank)
     if body is None:
         return result, None
     if len(body) > SG_ROUTING_MAX_BODY_BYTES:
@@ -2358,8 +2216,7 @@ def transform_sglang_component_request(
             raise HTTPException(400, "Send a valid JSON object")
         data.pop("routed_dp_rank", None)
         data.pop("data_parallel_rank", None)
-        if component == "sglang_engine":
-            data["routed_dp_rank"] = dp_rank
+        data["routed_dp_rank"] = dp_rank
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         if len(body) > SG_ROUTING_MAX_BODY_BYTES:
             raise HTTPException(413, "Reduce the request body to 16 MiB or less")
@@ -2373,7 +2230,7 @@ def transform_sglang_component_request(
 
 
 async def read_sglang_component_body(request) -> bytes:
-    """Bound component JSON buffering without changing other upload paths."""
+    """Bound Engine diagnostic JSON buffering without changing other uploads."""
     chunks, size = [], 0
     async for chunk in request.stream():
         size += len(chunk)
@@ -2448,7 +2305,7 @@ async def resolve_instance_address_from_model_header(
                 status_code=404, detail="Destination Worker is unavailable"
             )
         await _assert_rank_destination_visible(session, principal, instance, worker)
-        if endpoint.component in ("sglang_smg", "sglang_engine"):
+        if endpoint.component == "sglang_engine":
             from gpustack.websocket_proxy.proxy_server import RoutedAddress
 
             return RoutedAddress(

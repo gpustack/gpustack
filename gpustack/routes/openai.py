@@ -444,7 +444,7 @@ async def _select_managed_endpoint(session, instance):
 
 
 def _prepare_component_request(request, endpoint, headers, data, form_data):
-    if endpoint is None or endpoint.component not in ("sglang_smg", "sglang_engine"):
+    if endpoint is None or endpoint.component != "sglang_engine":
         return headers, data
     from gpustack.gateway.utils import transform_sglang_component_request
 

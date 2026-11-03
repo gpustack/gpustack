@@ -52,68 +52,6 @@ def _controller() -> ModelController:
 
 
 @pytest.mark.asyncio
-async def test_smg_orphan_cleanup_serializes_and_throttles_cross_model_retries(
-    monkeypatch,
-):
-    from gpustack.server import controllers
-
-    controller = _controller()
-    controller._smg_cleanup_pending = True
-    controller._higress_extension_api = MagicMock()
-    now = [100.0]
-    monkeypatch.setattr(controllers, 'monotonic', lambda: now[0], raising=False)
-    failure = RuntimeError('gateway unavailable')
-
-    async def failed_sweep(**kwargs):
-        await asyncio.sleep(0)
-        raise failure
-
-    sweep = AsyncMock(side_effect=failed_sweep)
-    discover = AsyncMock(return_value=[])
-
-    @asynccontextmanager
-    async def session():
-        yield MagicMock()
-
-    with (
-        patch.object(controllers, 'async_session', session),
-        patch.object(Model, 'all_by_fields', discover),
-        patch.object(controllers.mcp_handler, 'cleanup_sglang_smg_transformer', sweep),
-    ):
-        results = await asyncio.gather(
-            *(controller._cleanup_smg_transformer_orphans() for _ in range(5))
-        )
-        assert results[0] is failure
-        assert results[1:] == [None] * 4
-        assert controller._smg_cleanup_pending
-        assert discover.await_count == sweep.await_count == 1
-        now[0] += 1
-        assert isinstance(
-            await controller._cleanup_smg_transformer_orphans(), RuntimeError
-        )
-        assert sweep.await_count == 1
-        now[0] += 60
-        sweep.side_effect = None
-        assert await controller._cleanup_smg_transformer_orphans() is None
-        assert not controller._smg_cleanup_pending
-        assert discover.await_count == sweep.await_count == 2
-        assert await controller._cleanup_smg_transformer_orphans() is None
-        assert sweep.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_busy_smg_cleanup_does_not_hold_other_model_sessions():
-    controller = _controller()
-    controller._smg_cleanup_pending = True
-    async with controller._smg_cleanup_lock:
-        result = await asyncio.wait_for(
-            controller._cleanup_smg_transformer_orphans(), 1
-        )
-    assert result is None
-    assert controller._smg_cleanup_pending
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'unavailable', ['none', 'missing', 'deleted', 'unreachable', 'offline', 'not_ready']
 )

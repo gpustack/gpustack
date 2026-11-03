@@ -250,7 +250,7 @@ async def proxy(path: str, request: Request):  # noqa: C901
         # checking after the pop would never see a chunked upload.
         component_target = getattr(request.state, "model_instance_target", None)
         component = getattr(component_target, "component", None)
-        transformed = component in ("sglang_smg", "sglang_engine")
+        transformed = component == "sglang_engine"
         if transformed:
             transform_sglang_component_request(
                 request.headers,

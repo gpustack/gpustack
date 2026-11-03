@@ -7,7 +7,6 @@ import asyncio
 from datetime import datetime, timezone
 from importlib.resources import files
 from functools import partial
-from time import monotonic
 from typing import (
     Any,
     Dict,
@@ -377,9 +376,6 @@ class ModelController:
         # (the startup replay delivers one CREATED per surviving row)
         # re-notifies once.
         self._decision_entry_cache: Dict[int, Optional[Dict[str, Any]]] = {}
-        self._smg_cleanup_pending = False
-        self._smg_cleanup_lock = asyncio.Lock()
-        self._smg_cleanup_retry_at = 0.0
 
     @staticmethod
     def _merge_events(existing: WorkEvent, incoming: WorkEvent) -> WorkEvent:
@@ -426,36 +422,6 @@ class ModelController:
         new_event.changed_fields = merged
         return incoming
 
-    async def _cleanup_smg_transformer_orphans(self):
-        # Different models share this sweep. Preserve its error during the
-        # cooldown so the existing work queue keeps an eventual retry booked.
-        if self._smg_cleanup_lock.locked():
-            return None
-        async with self._smg_cleanup_lock:
-            if not self._smg_cleanup_pending:
-                return None
-            if monotonic() < self._smg_cleanup_retry_at:
-                return RuntimeError("SMG orphan cleanup is pending retry")
-            try:
-                async with async_session() as session:
-                    models = await Model.all_by_fields(
-                        session, fields={"deleted_at": None}
-                    )
-                    live_ids = {model.id for model in models}
-                await mcp_handler.cleanup_sglang_smg_transformer(
-                    live_model_ids=live_ids,
-                    cfg=self._config,
-                    extensions_api=self._higress_extension_api,
-                )
-                self._smg_cleanup_pending = False
-            except Exception as exc:
-                self._smg_cleanup_retry_at = monotonic() + 10
-                logger.exception(
-                    "SMG orphan cleanup failed; retrying on model reconciliation"
-                )
-                return exc
-            return None
-
     async def start(self):
         """
         Start the controller.
@@ -464,8 +430,6 @@ class ModelController:
             base_client = k8s_client.ApiClient(configuration=self._k8s_config)
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
             self._higress_extension_api = ExtensionsHigressIoV1Api(base_client)
-            self._smg_cleanup_pending = True
-            await self._cleanup_smg_transformer_orphans()
 
         self._dispatch_task = asyncio.create_task(self._dispatch())
         try:
@@ -520,14 +484,11 @@ class ModelController:
         session: AsyncSession,
         event_type: EventType,
         model: Model,
-        registry_inputs=None,
     ):
         if self._disable_gateway:
             return
         model_instances, worker_by_id, lora_route_names = (
-            registry_inputs
-            if registry_inputs is not None
-            else await _model_gateway_registry_inputs(session, model)
+            await _model_gateway_registry_inputs(session, model)
         )
         await mcp_handler.ensure_model_mcp_bridge(
             event_type=event_type,
@@ -541,52 +502,16 @@ class ModelController:
         )
 
     async def _sync_model_gateway(self, session, model, event):
-        orphan_error = (
-            await self._cleanup_smg_transformer_orphans()
-            if getattr(self, "_smg_cleanup_pending", False)
-            else None
-        )
-        registry_inputs = None
-        cleanup_error = None
         event_type = EventType.DELETED if model.deleted_at is not None else event.type
-        if not self._disable_gateway:
-            registry_inputs = await _model_gateway_registry_inputs(session, model)
-            model_instances, worker_by_id, lora_route_names = registry_inputs
-            services = (
-                mcp_handler.sglang_smg_service_names(
-                    model_instances, worker_by_id, lora_route_names
-                )
-                if event_type != EventType.DELETED
-                else set()
-            )
-            try:
-                await mcp_handler.ensure_sglang_smg_transformer(
-                    model_id=model.id,
-                    service_names=services,
-                    cfg=self._config,
-                    extensions_api=self._higress_extension_api,
-                )
-            except Exception as exc:
-                if services:
-                    raise
-                cleanup_error = exc
-                logger.exception(
-                    "SMG rule cleanup failed; withdrawing model registries"
-                )
         await notify_model_route_target(session=session, model=model, event=event)
         await sync_categories_and_meta(session, model, event)
         await self._ensure_model_mcp_bridge(
             session,
             event_type,
             model,
-            registry_inputs=registry_inputs,
         )
         await self._sync_model_ai_proxy(session, model)
         await self._sync_decision_catalogue(session, model, event)
-        # Retire unavailable candidates before retrying housekeeping failures.
-        for error in (cleanup_error, orphan_error):
-            if isinstance(error, Exception):
-                raise error
 
     async def _reconcile(self, event: Event):
         """
@@ -5168,39 +5093,6 @@ async def sync_model_ai_proxy(
     )
 
 
-async def _ensure_route_smg_transformers(session, cfg, extensions_api, destinations):
-    services_by_model = {}
-    for _, _, registry in destinations:
-        try:
-            target = mcp_handler.parse_model_instance_target(
-                registry.get_service_name()
-            )
-        except ValueError:
-            continue
-        if target.component == "sglang_smg":
-            services_by_model.setdefault(target.model_id, set()).add(
-                registry.get_service_name()
-            )
-    for model_id, selected in sorted(services_by_model.items()):
-        model = await Model.one_by_id(session, model_id)
-        if model is None or model.deleted_at is not None:
-            raise ValueError("SMG model changed while preparing route declarations")
-        instances, workers, aliases = await _model_gateway_registry_inputs(
-            session, model
-        )
-        services = mcp_handler.sglang_smg_service_names(instances, workers, aliases)
-        if not selected.issubset(services):
-            raise ValueError(
-                "SMG destinations changed while preparing route declarations"
-            )
-        await mcp_handler.ensure_sglang_smg_transformer(
-            model_id=model_id,
-            service_names=services,
-            cfg=cfg,
-            extensions_api=extensions_api,
-        )
-
-
 async def sync_gateway(
     session: AsyncSession,
     event: Event,
@@ -5224,9 +5116,6 @@ async def sync_gateway(
         destinations, fallback_destinations = await calculate_destinations(
             session, model_route
         )
-    await _ensure_route_smg_transformers(
-        session, cfg, extensions_api, destinations + fallback_destinations
-    )
     # Effective model name = `<owner-name>/<route.name>` for non-platform
     # Orgs (so two Orgs can use the same `route.name` without colliding
     # in Higress's AI proxy match rules), unprefixed for the platform Org

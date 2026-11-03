@@ -890,11 +890,16 @@ def test_rank_registry_construction_uses_actual_owner(rank_instance, mode):
         'unbound_system',
     ],
 )
-@pytest.mark.parametrize('kind', ['rank_instance', 'hybrid_instance'])
+@pytest.mark.parametrize(
+    'kind',
+    ['rank_instance', 'hybrid_instance', 'sglang_component_instance', 'sglang_engine'],
+)
 async def test_tunnel_rank_resolver_checks_identity_and_releases_session(
     request, monkeypatch, case, kind
 ):
-    rank_instance = request.getfixturevalue(kind)
+    rank_instance = request.getfixturevalue(
+        'sglang_component_instance' if kind == 'sglang_engine' else kind
+    )
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from gpustack.gateway import utils
@@ -966,17 +971,22 @@ async def test_tunnel_rank_resolver_checks_identity_and_releases_session(
         AsyncMock(return_value=SimpleNamespace(system_principal_id=9)),
     )
     headers = {
-        utils.router_header_key: (
-            'model-1-7-r3-hybrid-w1.static'
-            if kind == 'hybrid_instance'
-            else 'model-1-7-r3-dp1.static'
-        )
+        utils.router_header_key: {
+            'rank_instance': 'model-1-7-r3-dp1.static',
+            'hybrid_instance': 'model-1-7-r3-hybrid-w1.static',
+            'sglang_component_instance': 'model-1-7-r3-smg-a2.static',
+            'sglang_engine': 'model-1-7-r3-engine-dp1.static',
+        }[kind]
     }
     if case in ('worker', 'cluster'):
-        assert await utils.resolve_instance_address_from_model_header(headers) == (
+        resolved = await utils.resolve_instance_address_from_model_header(headers)
+        assert resolved == (
             '10.0.0.2',
-            41001,
+            {'sglang_component_instance': 42001, 'sglang_engine': 42000}.get(
+                kind, 41001
+            ),
         )
+        assert hasattr(resolved, 'request_transform') == (kind == 'sglang_engine')
     else:
         with pytest.raises(HTTPException) as exc:
             await utils.resolve_instance_address_from_model_header(headers)
@@ -1494,24 +1504,22 @@ async def test_component_proxy_sends_transformed_unicode_body(
                 headers={
                     'Content-Type': 'application/json',
                     'X-Data-Parallel-Rank': '9',
+                    'X-SMG-Routing-Key': 'conversation-123',
                 },
             )
     assert response.status_code == 200
     data, headers, sent = received[0]
-    assert len(transformed_bodies) == int(component in ('sglang_smg', 'sglang_engine'))
-    if component in ('sglang_smg', 'sglang_engine'):
-        expected = {'prompt': '你好'}
-        if component == 'sglang_engine':
-            expected['routed_dp_rank'] = 1
-        assert data == expected
-        assert headers.get('x-data-parallel-rank') == (
-            '1' if component == 'sglang_engine' else None
-        )
+    assert headers['x-smg-routing-key'] == 'conversation-123'
+    assert len(transformed_bodies) == int(component == 'sglang_engine')
+    if component == 'sglang_engine':
+        assert data == {'prompt': '你好', 'routed_dp_rank': 1}
+        assert headers.get('x-data-parallel-rank') == '1'
         assert int(headers['content-length']) == len(sent)
         assert 'transfer-encoding' not in headers
     else:
         assert data == payload
         assert headers['x-data-parallel-rank'] == '9'
+        assert sent == raw
 
 
 @pytest.mark.asyncio
@@ -1537,7 +1545,7 @@ async def test_component_proxy_rejects_unsupported_request_without_forwarding(
     async with _fake_inference_server(handler) as port:
         async with _worker_client(port) as (client, app):
             app.state.routed_target = ModelInstanceTarget(
-                1, 7, 3, component='sglang_smg', attempt=2
+                1, 7, 3, dp_rank=1, component='sglang_engine'
             )
             response = await client.post(
                 '/v1/chat/completions',
@@ -1566,7 +1574,7 @@ async def test_component_proxy_bounds_chunked_upload_before_forwarding(monkeypat
     async with _fake_inference_server(handler) as port:
         async with _worker_client(port) as (client, app):
             app.state.routed_target = ModelInstanceTarget(
-                1, 7, 3, component='sglang_smg', attempt=2
+                1, 7, 3, dp_rank=1, component='sglang_engine'
             )
             response = await client.post(
                 '/v1/chat/completions',
@@ -1575,6 +1583,40 @@ async def test_component_proxy_bounds_chunked_upload_before_forwarding(monkeypat
             )
     assert response.status_code == 413
     assert received == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('chunked', [False, True])
+@pytest.mark.parametrize('body', [b'not-json', b'x' * 33])
+async def test_smg_proxy_preserves_body_and_backend_error(monkeypatch, chunked, body):
+    from gpustack.gateway import utils
+    from gpustack.utils.model_instance_workers import ModelInstanceTarget
+
+    monkeypatch.setattr(utils, 'SG_ROUTING_MAX_BODY_BYTES', 32)
+    received = []
+    error = {'error': {'message': 'native backend validation error'}}
+
+    async def handler(request):
+        received.append(await request.read())
+        return web.json_response(error, status=422)
+
+    async def chunks():
+        yield body[:3]
+        yield body[3:]
+
+    async with _fake_inference_server(handler) as port:
+        async with _worker_client(port) as (client, app):
+            app.state.routed_target = ModelInstanceTarget(
+                1, 7, 3, component='sglang_smg', attempt=2
+            )
+            response = await client.post(
+                '/v1/chat/completions',
+                content=chunks() if chunked else body,
+                headers={'Content-Type': 'application/octet-stream'},
+            )
+    assert received == [body]
+    assert response.status_code == 422
+    assert response.json() == error
 
 
 @pytest.mark.asyncio

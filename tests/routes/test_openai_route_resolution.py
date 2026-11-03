@@ -209,7 +209,7 @@ async def test_component_input_errors_use_openai_response_format(
         openai_route, 'get_running_instance', AsyncMock(return_value=instance)
     )
     endpoint = ModelInstanceEndpoint(
-        1, 7, 1, 41000, 3, component='sglang_smg', attempt=0
+        1, 7, 1, 41000, 3, dp_rank=1, component='sglang_engine'
     )
     monkeypatch.setattr(
         openai_route,
@@ -247,8 +247,13 @@ async def test_component_input_errors_use_openai_response_format(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('component', ['sglang_smg', 'vllm_hybrid', None])
-async def test_server_proxy_sends_component_specific_payload(monkeypatch, component):
+@pytest.mark.parametrize(
+    'component,status',
+    [('sglang_smg', 200), ('sglang_smg', 422), ('vllm_hybrid', 200), (None, 200)],
+)
+async def test_server_proxy_sends_component_specific_payload(
+    monkeypatch, component, status
+):
     import json
     from aiohttp import ClientSession, web
     from gpustack.schemas.models import ModelInstance
@@ -310,7 +315,7 @@ async def test_server_proxy_sends_component_specific_payload(monkeypatch, compon
     async def handler(request):
         raw = await request.read()
         received.append((json.loads(raw), request.headers, raw, request.path))
-        return web.json_response({'ok': True})
+        return web.json_response({'message': 'native response'}, status=status)
 
     async with _fake_inference_server(handler) as port:
         worker = Worker(id=1, ip='127.0.0.1', port=port, token='worker-token')
@@ -322,6 +327,7 @@ async def test_server_proxy_sends_component_specific_payload(monkeypatch, compon
         request.headers = {
             'Content-Type': 'application/json',
             'X-Data-Parallel-Rank': '9',
+            'X-SMG-Routing-Key': 'conversation-123',
         }
         async with ClientSession() as client:
             request.app.state.http_client = client
@@ -329,13 +335,11 @@ async def test_server_proxy_sends_component_specific_payload(monkeypatch, compon
             response = await openai_route.proxy_request_by_model(
                 request, SimpleNamespace(id=1)
             )
-    assert response.status_code == 200
+    assert response.status_code == status
+    assert json.loads(response.body) == {'message': 'native response'}
     data, headers, raw, path = received[0]
     assert path == '/v1/chat/completions'
-    assert data == (
-        {'model': 'qwen3', 'prompt': '你好'} if component == 'sglang_smg' else payload
-    )
-    assert headers.get('X-Data-Parallel-Rank') == (
-        None if component == 'sglang_smg' else '9'
-    )
+    assert data == payload
+    assert headers.get('X-Data-Parallel-Rank') == '9'
+    assert headers.get('X-SMG-Routing-Key') == 'conversation-123'
     assert int(headers['Content-Length']) == len(raw)

@@ -964,8 +964,9 @@ async def _component_tunnel_client(port, component):
         reader, writer = await asyncio.open_connection('127.0.0.1', port)
         return ChunkConnection(reader, writer)
 
-    route = AsyncMock(
-        return_value=RoutedAddress(
+    target = ('127.0.0.1', port)
+    if component == 'sglang_engine':
+        target = RoutedAddress(
             '127.0.0.1',
             port,
             request_transform=partial(
@@ -975,7 +976,7 @@ async def _component_tunnel_client(port, component):
             ),
             body_limit=SG_ROUTING_MAX_BODY_BYTES,
         )
-    )
+    route = AsyncMock(return_value=target)
     proxy = HTTPSProxyServer(
         '127.0.0.1', 0, lambda ip: SimpleNamespace(connect=connect), header_router=route
     )
@@ -1041,30 +1042,66 @@ async def test_component_tunnel_sends_selected_payload_once(
                 headers={
                     'Content-Type': 'application/json; charset=utf-8',
                     'X-Data-Parallel-Rank': '9',
+                    'X-SMG-Routing-Key': 'conversation-123',
                 },
             )
     assert response.status_code == 200
-    assert response.headers.get('connection') == 'close'
+    if component == 'sglang_engine':
+        assert response.headers.get('connection') == 'close'
     data, headers, sent = received[0]
+    assert headers['x-smg-routing-key'] == 'conversation-123'
     assert data == (
         {'prompt': '你好', 'routed_dp_rank': 1}
         if component == 'sglang_engine'
-        else {'prompt': '你好'}
+        else {'prompt': '你好', 'routed_dp_rank': 9, 'data_parallel_rank': 8}
     )
     assert headers.get('x-data-parallel-rank') == (
-        '1' if component == 'sglang_engine' else None
+        '1' if component == 'sglang_engine' else '9'
     )
-    assert int(headers['content-length']) == len(sent)
-    assert 'transfer-encoding' not in headers
+    if component == 'sglang_engine' or not chunked:
+        assert int(headers['content-length']) == len(sent)
+        assert 'transfer-encoding' not in headers
+    else:
+        assert headers['transfer-encoding'] == 'chunked'
     route.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('component', ['sglang_smg', 'sglang_engine'])
+@pytest.mark.parametrize('chunked', [False, True])
+@pytest.mark.parametrize('body', [b'not-json', b'x' * 33])
+async def test_smg_tunnel_preserves_body_and_backend_error(monkeypatch, chunked, body):
+    from aiohttp import web
+    from gpustack.gateway import utils
+    from tests.routes.test_worker_proxy import _fake_inference_server
+
+    monkeypatch.setattr(utils, 'SG_ROUTING_MAX_BODY_BYTES', 32)
+    received = []
+    error = {'error': {'message': 'native backend validation error'}}
+
+    async def handler(request):
+        received.append(await request.read())
+        return web.json_response(error, status=422)
+
+    async def chunks():
+        yield body[:3]
+        yield body[3:]
+
+    async with _fake_inference_server(handler) as port:
+        async with _component_tunnel_client(port, 'sglang_smg') as (client, route, _):
+            response = await client.post(
+                'http://unselected/v1/chat/completions',
+                content=chunks() if chunked else body,
+                headers={'Content-Type': 'application/octet-stream'},
+            )
+    assert received == [body]
+    assert response.status_code == 422
+    assert response.json() == error
+    route.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('kind', ['json', 'chunked', 'head', 'empty'])
-async def test_component_tunnel_advertises_close_and_accepts_sequential_requests(
-    component, kind
-):
+async def test_component_tunnel_advertises_close_and_accepts_sequential_requests(kind):
     from aiohttp import web
     from tests.routes.test_worker_proxy import _fake_inference_server
 
@@ -1083,7 +1120,11 @@ async def test_component_tunnel_advertises_close_and_accepts_sequential_requests
         return web.json_response({'ok': True}, headers=headers)
 
     async with _fake_inference_server(handler) as port:
-        async with _component_tunnel_client(port, component) as (client, route, _):
+        async with _component_tunnel_client(port, 'sglang_engine') as (
+            client,
+            route,
+            _,
+        ):
             for _ in range(2):
                 response = await client.request(
                     'HEAD' if kind == 'head' else 'POST',
@@ -1115,7 +1156,7 @@ async def test_component_tunnel_advertises_close_and_accepts_sequential_requests
 async def test_component_tunnel_rejects_unsupported_body_before_connect(
     headers, status
 ):
-    async with _component_tunnel_client(1, 'sglang_smg') as (client, route, _):
+    async with _component_tunnel_client(1, 'sglang_engine') as (client, route, _):
         response = await client.post(
             'http://unselected/v1/chat/completions',
             content=b'{}',
@@ -1166,7 +1207,7 @@ async def test_component_tunnel_disconnect_releases_upstream_stream():
     ],
 )
 async def test_component_tunnel_rejects_ambiguous_or_oversized_framing(framing, status):
-    async with _component_tunnel_client(1, 'sglang_smg') as (_, route, port):
+    async with _component_tunnel_client(1, 'sglang_engine') as (_, route, port):
         reader, writer = await asyncio.open_connection('127.0.0.1', port)
         writer.write(
             f'POST http://unselected/v1/chat/completions HTTP/1.1\r\nHost: unselected\r\nContent-Type: application/json\r\n{framing}\r\n'.encode()
