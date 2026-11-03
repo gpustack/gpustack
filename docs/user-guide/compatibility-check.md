@@ -39,7 +39,7 @@ This formula provides a rough estimate and may not be accurate for all models. T
 
 !!! note
 
-    Automatic lookup-table estimation currently covers only supported vLLM architectures, formats, and offload settings. SGLang, native MindIE, custom backends, and vLLM Ascend paths that have not been adapted are not automatically covered. If automatic estimates do not meet your deployment expectations, you can adjust them through [custom resource requirements](#custom-resource-requirements).
+    Automatic lookup-table estimation currently covers only supported vLLM and SGLang architectures, formats, and offload settings. Native MindIE, custom backends, and vLLM Ascend paths that have not been adapted are not automatically covered. If automatic estimates do not meet your deployment expectations, you can adjust them through [custom resource requirements](#custom-resource-requirements).
 
 For supported models with CPU-offloaded lookup tables, such as Engram and PLE, GPUStack estimates the table sizes from model configuration and precision metadata. It subtracts the offloaded bytes from `WEIGHT_SIZE` before applying the VRAM formula above, and reserves RAM for the tables on each participating Worker in addition to any local extended KV cache RAM.
 

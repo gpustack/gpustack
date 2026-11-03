@@ -43,7 +43,7 @@ Bu formül kaba bir tahmin sağlar ve tüm modeller için doğru olmayabilir. Ge
 
 !!! note
 
-    Otomatik arama tablosu tahmini yalnızca desteklenen vLLM mimarilerini, biçimlerini ve boşaltma ayarlarını kapsar. SGLang, yerel MindIE, custom arka uçları ve henüz uyarlanmamış vLLM Ascend yolları otomatik olarak kapsanmaz. Otomatik tahminler dağıtım beklentilerinizi karşılamıyorsa [özel kaynak gereksinimleri](#custom-resource-requirements) aracılığıyla bunları ayarlayabilirsiniz.
+    Otomatik arama tablosu tahmini yalnızca desteklenen vLLM ve SGLang mimarilerini, biçimlerini ve boşaltma ayarlarını kapsar. Yerel MindIE, custom arka uçları ve henüz uyarlanmamış vLLM Ascend yolları otomatik olarak kapsanmaz. Otomatik tahminler dağıtım beklentilerinizi karşılamıyorsa [özel kaynak gereksinimleri](#custom-resource-requirements) aracılığıyla bunları ayarlayabilirsiniz.
 
 Engram ve PLE gibi arama tablolarını CPU belleğine aktaran desteklenen modellerde GPUStack, model yapılandırması ve hassasiyet meta verilerinden tablo boyutlarını tahmin eder. Yukarıdaki VRAM formülünü uygulamadan önce aktarılan baytları `WEIGHT_SIZE` değerinden çıkarır ve katılan her çalışanda, yerel genişletilmiş KV önbelleği RAM'ine ek olarak tablolar için RAM ayırır.
 

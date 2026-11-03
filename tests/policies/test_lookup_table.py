@@ -2078,3 +2078,330 @@ async def test_removed_offload_env_does_not_suppress_ram_accounting(
     assert bool(candidates) == (ram * GIB >= offloaded)
     if candidates:
         assert (candidates[0].computed_resource_claim.ram or 0) == offloaded
+
+
+@pytest.mark.parametrize(
+    "architecture,parameters,expected",
+    [
+        ("Qwen4ExpForCausalLM", [], TABLE_BYTES),
+        ("Qwen4ExpForConditionalGeneration", [], TABLE_BYTES),
+        ("Qwen4ExpForCausalLM", ["--no-ple-offload-embedding"], 0),
+        ("Qwen4ExpForCausalLM", ["--ple-offload-embedding"], TABLE_BYTES),
+        (
+            "Qwen4ExpForConditionalGeneration",
+            ["--ple-offload-embedding", "--ple-offload-backend=pinned"],
+            TABLE_BYTES,
+        ),
+        (
+            "Qwen4ExpForCausalLM",
+            ["--ple-offload-embedding", "--ple-offload-backend=file"],
+            TABLE_BYTES,
+        ),
+        ("Qwen4ExpForCausalLM", ["--ple-offload-backend=file"], TABLE_BYTES),
+        (
+            "Qwen4ExpForCausalLM",
+            ["--ple-offload-embedding", "--no-ple-offload-embedding"],
+            0,
+        ),
+        (
+            "Qwen4ExpForCausalLM",
+            ["--no-ple-offload-embedding", "--ple-offload-embedding"],
+            TABLE_BYTES,
+        ),
+        (
+            "Qwen4ExpForCausalLM",
+            ["--ple-offload-embedding", "--ple-offload-backend=unknown"],
+            0,
+        ),
+        ("DeepseekV41ForCausalLM", [], 0),
+        (
+            "DeepseekV41ForCausalLM",
+            ['--engram-config={"placement":"cpu"}'],
+            TABLE_BYTES,
+        ),
+        (
+            "DeepseekV41ForCausalLM",
+            ['--engram-config', '{"placement":"cpu","replication":"per_node"}'],
+            TABLE_BYTES,
+        ),
+        ("DeepseekV41ForCausalLM", ['--engram-config={"placement":"gpu"}'], 0),
+        ("DeepseekV41ForCausalLM", ['--engram-config={"cpu_offload":true}'], 0),
+        ("DeepseekV41ForCausalLM", ['--engram-config=[]'], 0),
+        ("DeepseekV41ForCausalLM", ['--engram-config=invalid'], 0),
+        (
+            "DeepseekV41ForCausalLM",
+            ['--engram-config={"placement":"cpu"}', '--engram-config={}'],
+            0,
+        ),
+    ],
+)
+def test_sglang_lookup_offload_settings(architecture, parameters, expected):
+    m = model(backend_parameters=parameters)
+    m.backend = BackendEnum.SGLANG
+    assert estimate_offloaded_lookup_bytes(m, lookup_config(architecture)) == expected
+
+
+@pytest.mark.parametrize("as_dict", [False, True])
+@pytest.mark.parametrize(
+    "text_dtype,root_dtype,dtype_args,offloaded",
+    [
+        ("bfloat16", None, [], True),
+        ("torch.bfloat16", None, [], True),
+        ("float16", None, [], False),
+        ("half", None, [], False),
+        ("float32", None, [], False),
+        (None, None, [], False),
+        ("unknown", None, [], False),
+        (None, "bfloat16", [], True),
+        ("float16", "bfloat16", [], False),
+        ("bfloat16", "float16", [], True),
+        ("bfloat16", None, ["--dtype=auto"], True),
+        ("float32", None, ["--dtype=auto"], False),
+        ("bfloat16", None, ["--dtype=half"], False),
+        ("bfloat16", None, ["--dtype=float"], False),
+        ("float16", None, ["--dtype", "bfloat16"], True),
+        (None, None, ["--dtype=BFLOAT16"], True),
+        ("bfloat16", None, ["--dtype=unknown"], False),
+        ("bfloat16", None, ["--dtype=bfloat16", "--dtype=float16"], False),
+        ("float16", None, ["--dtype=float16", "--dtype=bfloat16"], True),
+    ],
+)
+def test_sglang_ple_default_uses_runtime_dtype(
+    as_dict, text_dtype, root_dtype, dtype_args, offloaded
+):
+    m = model(backend_parameters=dtype_args)
+    m.backend = BackendEnum.SGLANG
+    metadata = lookup_config("Qwen4ExpForCausalLM")
+    metadata.dtype = root_dtype
+    metadata.text_config.dtype = text_dtype
+    # FP8 table storage does not determine the runtime dtype or offload default.
+    metadata.text_config.ple_embedding_dtype = "float8_e4m3fn"
+    if as_dict:
+        metadata = {**vars(metadata), "text_config": vars(metadata.text_config)}
+    assert estimate_offloaded_lookup_bytes(m, metadata) == (
+        TABLE_BYTES if offloaded else 0
+    )
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_sglang_ple_default_accepts_legacy_torch_dtype(nested):
+    m = model()
+    m.backend = BackendEnum.SGLANG
+    metadata = lookup_config("Qwen4ExpForCausalLM")
+    del metadata.text_config.dtype
+    metadata.text_config.torch_dtype = "bfloat16"
+    if not nested:
+        metadata = {**vars(metadata), **vars(metadata.text_config)}
+        del metadata["text_config"]
+    assert estimate_offloaded_lookup_bytes(m, metadata) == TABLE_BYTES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "dtype,flag,offloaded",
+    [
+        ("bfloat16", None, True),
+        ("float16", None, False),
+        ("bfloat16", "--no-ple-offload-embedding", False),
+        ("float16", "--ple-offload-embedding", True),
+    ],
+)
+async def test_sglang_ple_dtype_and_flags_control_scheduling(
+    config, dtype, flag, offloaded
+):
+    worker = linux_nvidia_1_4090_24gx1()
+    worker.status.memory.total = 64 * GIB
+    worker.system_reserved.ram = 0
+    parameters = [f"--dtype={dtype}", "--mem-fraction-static=0.9"]
+    if flag:
+        parameters.append(flag)
+    m = model(backend_parameters=parameters)
+    m.backend = BackendEnum.SGLANG
+    selector = SGLangResourceFitSelector(config, m, [], resource_view=ResourceView([]))
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=lookup_config("Qwen4ExpForCausalLM")),
+        ),
+        patch("gpustack.policies.utils.get_model_weight_size", return_value=20 * GIB),
+    ):
+        candidates = await selector.select_candidates([worker])
+    table_bytes = TABLE_BYTES if offloaded else 0
+    assert selector._vram_claim == int((20 * GIB - table_bytes) * 1.2 + 2 * GIB)
+    assert selector._ram_claim == table_bytes
+    assert bool(candidates) is offloaded
+    if candidates:
+        assert candidates[0].computed_resource_claim.ram == TABLE_BYTES
+
+
+@pytest.mark.parametrize("override", ["{}", '{"ple_embed_dim":128}'])
+def test_sglang_model_overrides_disable_lookup_estimation(override):
+    m = model(
+        backend_parameters=[
+            "--ple-offload-embedding",
+            "--json-model-override-args",
+            override,
+        ]
+    )
+    m.backend = BackendEnum.SGLANG
+    assert estimate_offloaded_lookup_bytes(m, lookup_config("Qwen4ExpForCausalLM")) == 0
+
+
+def test_sglang_engram_precision_must_match_runtime_storage():
+    m = model(backend_parameters=['--engram-config={"placement":"cpu"}'])
+    m.backend = BackendEnum.SGLANG
+    metadata = lookup_config()
+    metadata.quantization_config["engram_embed_quant"] = "mxfp4"
+    assert estimate_offloaded_lookup_bytes(m, metadata) == 0
+
+
+@pytest.mark.parametrize(
+    "quantization,embedding_dtype,expected",
+    [
+        ({}, None, 2 * TABLE_BYTES),
+        (
+            {
+                "quant_method": "fp8",
+                "ignored_layers": ["model.layers.1.ple.ple_embedding.ngram_embedding"],
+            },
+            None,
+            TABLE_BYTES,
+        ),
+        ({"quant_method": "modelopt"}, "float8_e4m3fn", TABLE_BYTES),
+        ({"quant_method": "unknown"}, None, 0),
+    ],
+)
+def test_sglang_ple_storage_precision(quantization, embedding_dtype, expected):
+    m = model(backend_parameters=["--ple-offload-embedding"])
+    m.backend = BackendEnum.SGLANG
+    metadata = lookup_config("Qwen4ExpForCausalLM")
+    metadata.quantization_config = quantization
+    metadata.text_config.ple_embedding_dtype = embedding_dtype
+    assert estimate_offloaded_lookup_bytes(m, metadata) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("storage", ["default", "pinned", "file", "engram"])
+@pytest.mark.parametrize("layout", ["single_gpu", "single_worker", "multi_worker"])
+@pytest.mark.parametrize("manual", [False, True])
+@pytest.mark.parametrize("cache", [None, "size", "ratio"])
+@pytest.mark.parametrize("shortage", [False, True])
+async def test_sglang_lookup_ram_accounting_and_admission(
+    config, storage, layout, manual, cache, shortage
+):
+    workers = [linux_nvidia_1_4090_24gx1()]
+    if layout == "single_worker":
+        workers = [linux_nvidia_5_a100_80gx2()]
+    elif layout == "multi_worker":
+        workers.append(linux_nvidia_3_4090_24gx1())
+    for worker in workers:
+        worker.system_reserved.ram = 0
+        worker.system_reserved.vram = 0
+        for gpu in worker.status.gpu_devices:
+            gpu.memory.total = 24 * GIB
+    gpu_count = 1 if layout == "single_gpu" else 2
+    reserved_per_worker = int(24 * GIB * 0.9) * (2 if layout == "single_worker" else 1)
+    expected_ram = TABLE_BYTES + (
+        4 * GIB if cache == "size" else reserved_per_worker if cache == "ratio" else 0
+    )
+    for worker in workers:
+        worker.status.memory.total = expected_ram - int(shortage)
+    parameters = (
+        ['--engram-config={"placement":"cpu"}']
+        if storage == "engram"
+        else (
+            []
+            if storage == "default"
+            else ["--ple-offload-embedding", f"--ple-offload-backend={storage}"]
+        )
+    )
+    m = model(
+        backend_parameters=parameters
+        + ["--mem-fraction-static=0.9", f"--tp={gpu_count}"],
+        distributed_inference_across_workers=True,
+        extended_kv_cache=(
+            ExtendedKVCacheConfig(enabled=True, ram_size=4)
+            if cache == "size"
+            else (
+                ExtendedKVCacheConfig(enabled=True, ram_ratio=1)
+                if cache == "ratio"
+                else None
+            )
+        ),
+    )
+    m.backend = BackendEnum.SGLANG
+    if manual:
+        m.gpu_selector = GPUSelector(
+            gpu_ids=[
+                f"{worker.name}:cuda:{gpu.index}"
+                for worker in workers
+                for gpu in worker.status.gpu_devices
+            ],
+            gpus_per_replica=gpu_count,
+        )
+    selector = SGLangResourceFitSelector(config, m, [], resource_view=ResourceView([]))
+    architecture = (
+        "DeepseekV41ForCausalLM" if storage == "engram" else "Qwen4ExpForCausalLM"
+    )
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=lookup_config(architecture)),
+        ),
+        patch(
+            "gpustack.policies.utils.get_model_weight_size",
+            return_value=20 * gpu_count * GIB,
+        ),
+    ):
+        candidates = await selector.select_candidates(workers)
+    assert selector._vram_claim == int(
+        (20 * gpu_count * GIB - TABLE_BYTES) * 1.2 + 2 * GIB
+    )
+    if shortage and not manual:
+        assert candidates == []
+        assert "The model requires approximately" in selector.get_messages()[0]
+        return
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert bool(candidate.overcommit) is (manual and shortage)
+    claims = [candidate.computed_resource_claim] + [
+        worker.computed_resource_claim for worker in candidate.subordinate_workers or []
+    ]
+    assert len(claims) == len(workers)
+    assert all(claim.ram == expected_ram for claim in claims)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ram", [None, 0, 3 * GIB])
+@pytest.mark.parametrize("vram", [None, 10 * GIB])
+async def test_sglang_lookup_resource_overrides_are_independent(config, ram, vram):
+    worker = linux_nvidia_1_4090_24gx1()
+    worker.status.memory.total = 64 * GIB
+    worker.system_reserved.ram = 0
+    env = {}
+    if ram is not None:
+        env["GPUSTACK_MODEL_RAM_CLAIM"] = str(ram)
+    if vram is not None:
+        env["GPUSTACK_MODEL_VRAM_CLAIM"] = str(vram)
+    m = model(
+        backend_parameters=["--ple-offload-embedding", "--mem-fraction-static=0.9"],
+        env=env,
+        extended_kv_cache=ExtendedKVCacheConfig(enabled=True, ram_size=4),
+    )
+    m.backend = BackendEnum.SGLANG
+    selector = SGLangResourceFitSelector(config, m, [], resource_view=ResourceView([]))
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=lookup_config("Qwen4ExpForCausalLM")),
+        ),
+        patch("gpustack.policies.utils.get_model_weight_size", return_value=20 * GIB),
+    ):
+        candidates = await selector.select_candidates([worker])
+    assert len(candidates) == 1
+    assert candidates[0].computed_resource_claim.ram == (
+        TABLE_BYTES + 4 * GIB if ram is None else ram
+    )
+    assert selector._vram_claim == (
+        int((20 * GIB - TABLE_BYTES) * 1.2 + 2 * GIB) if vram is None else vram
+    )

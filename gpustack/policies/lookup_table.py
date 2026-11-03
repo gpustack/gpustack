@@ -62,10 +62,11 @@ def _verified_lookup_version(model: Model) -> bool:
 
 
 def get_offloaded_lookup_table_kind(
-    model: Model, architectures: Optional[List[str]]
+    model: Model, architectures: Optional[List[str]], config: Any = None
 ) -> Optional[LookupTableKind]:
-    """Resolve supported vLLM table offload settings without guessing custom defaults."""
-    if get_backend(model) != BackendEnum.VLLM:
+    """Resolve supported backend offload settings without guessing custom defaults."""
+    backend = get_backend(model)
+    if backend not in (BackendEnum.VLLM, BackendEnum.SGLANG):
         return None
     kind = next(
         (
@@ -78,13 +79,75 @@ def get_offloaded_lookup_table_kind(
     if kind is None:
         return None
     try:
-        enabled = _vllm_cpu_offload_enabled(model)
+        enabled = (
+            _sglang_cpu_offload_enabled(model, kind, config)
+            if backend == BackendEnum.SGLANG
+            else _vllm_cpu_offload_enabled(model)
+        )
     except (ValueError, TypeError):
         logger.warning(
             "Cannot interpret lookup table offload settings for %s", model.name
         )
         return None
     return kind if enabled else None
+
+
+def _sglang_cpu_offload_enabled(
+    model: Model, kind: LookupTableKind, config: Any
+) -> bool:
+    """Resolve SGLang offload settings for resource estimation.
+
+    PLE follows the CUDA default of offloading when the runtime dtype is BF16,
+    with explicit flags taking precedence. Platform-specific defaults are not
+    modeled; deployments with different behavior can override resource claims.
+    Engram requires explicit CPU placement.
+    """
+    parameters = model.backend_parameters
+    if kind == "ple":
+        storage = find_last_parameter(parameters, ["ple-offload-backend"])
+        if storage not in (None, "pinned", "file"):
+            raise ValueError("Unsupported PLE storage")
+        enabled = None
+        # BooleanOptionalAction uses the last positive or negative flag.
+        for arg in flatten_to_argv(parameters):
+            if arg == "--ple-offload-embedding":
+                enabled = True
+            elif arg == "--no-ple-offload-embedding":
+                enabled = False
+        if enabled is not None:
+            return enabled
+        return _sglang_ple_dtype(model, config) == "bfloat16"
+    value = find_last_parameter(parameters, ["engram-config"])
+    config = json.loads(value) if value is not None else {}
+    if not isinstance(config, dict):
+        raise ValueError("Invalid Engram configuration")
+    return config.get("placement") == "cpu" and config.get("lookup") != "peer_read"
+
+
+def _sglang_ple_dtype(model: Model, config: Any) -> str:
+    """Resolve the runtime dtype used by SGLang's PLE offload default.
+
+    Explicit dtype overrides model metadata. Auto preserves BF16/FP16 and
+    downcasts FP32 (also the missing-metadata default) to FP16 for Qwen.
+    Weight quantization and the PLE embedding's storage dtype are independent
+    of this runtime dtype.
+    """
+    dtype = find_last_parameter(model.backend_parameters, ["dtype"])
+    auto = dtype is None or dtype.lower() == "auto"
+    if auto:
+        text_config = _get(config, "text_config") or config
+        dtype = (
+            _get(text_config, "dtype")
+            or _get(text_config, "torch_dtype")
+            or _get(config, "dtype")
+            or _get(config, "torch_dtype")
+            or "float32"
+        )
+    dtype = str(dtype).removeprefix("torch.").lower()
+    dtype = {"half": "float16", "float": "float32"}.get(dtype, dtype)
+    if dtype not in ("bfloat16", "float16", "float32"):
+        raise ValueError("Unsupported SGLang runtime dtype")
+    return "float16" if auto and dtype == "float32" else dtype
 
 
 def _engram_config(model: Model) -> Dict[str, Any]:
@@ -156,7 +219,7 @@ def estimate_offloaded_lookup_bytes(model: Model, config: Any) -> int:
     Unsupported formats or incomplete dimensions retain the full-weight VRAM
     estimate. No weight files or additional model metadata are requested.
 
-    The estimate assumes the common CUDA/ROCm offload behavior in vLLM v0.32.0;
+    For vLLM, the estimate assumes the common CUDA/ROCm behavior in v0.32.0;
     it does not model older platform-specific storage paths. For example,
     v0.30 ROCm can keep PLE tables on the GPU, so this deduction may understate
     VRAM needs and reserve table RAM unnecessarily. For such deployments, set
@@ -178,7 +241,7 @@ def estimate_offloaded_lookup_bytes(model: Model, config: Any) -> int:
         and get_ram_claim_from_model_env(model) is not None
     ):
         return 0
-    kind = get_offloaded_lookup_table_kind(model, _get(config, "architectures"))
+    kind = get_offloaded_lookup_table_kind(model, _get(config, "architectures"), config)
     if kind is None:
         return 0
     try:
@@ -191,6 +254,11 @@ def estimate_offloaded_lookup_bytes(model: Model, config: Any) -> int:
         _validate_overrides(model, quantization)
         _validate_custom_table_format(model, config, text_config, quantization)
         if kind == "engram":
+            if (
+                get_backend(model) == BackendEnum.SGLANG
+                and quantization.get("engram_embed_quant", "fp8") != "fp8"
+            ):
+                raise ValueError("Unsupported SGLang Engram precision")
             return _estimate_engram(text_config, quantization)
         return _estimate_ple(model, config, text_config, quantization)
     except (ValueError, TypeError, KeyError):
@@ -236,7 +304,9 @@ def _validate_overrides(model: Model, quantization: Dict) -> None:
         if arg.startswith("--")
     )
     if any(
-        name == "--hf-overrides" or name.startswith("--hf-overrides.") for name in names
+        name in ("--hf-overrides", "--json-model-override-args")
+        or name.startswith("--hf-overrides.")
+        for name in names
     ):
         raise ValueError("Architecture overrides require an explicit resource claim")
 
@@ -355,7 +425,10 @@ def _ple_bytes_per_parameter(
     method = quantization.get("quant_method")
     if (quantization and method is None) or method not in (None, "fp8"):
         raise ValueError("Unsupported PLE quantization")
-    if method == "fp8" and not _ple_excluded(quantization, layer):
+    if method == "fp8" and (
+        get_backend(model) == BackendEnum.SGLANG
+        or not _ple_excluded(quantization, layer)
+    ):
         # The global FP8 scale remains on GPU and is not deducted here.
         return 1
     dtype = (
