@@ -269,7 +269,8 @@ Object.assign(page.state, {
     images: [
         'gpustack/runtime:pause', 'gpustack/benchmark-runner:1', 'postgres:16',
         'prom/prometheus:v3', 'grafana/grafana:12',
-        'gpustack/mirrored-higress:v1', 'gpustack/gpustack-operator:v1',
+        'gpustack/mirrored-higress-gateway:v1', 'gpustack/gpustack-operator:v1',
+        'gpustack/ssh-server:v1', 'gpustack/mirrored-kueue:v1',
         'gpustack/llm-router:v0.3.1', 'gpustack/higress-plugins:0.5.0.post2'
     ],
     runnerImages: ['gpustack/runner:cuda12.8-vllm0.9.0'],
@@ -286,13 +287,27 @@ for (const component of ['all', 'server', 'worker']) {
             for (const language of ['en', 'zh', 'ja', 'ru', 'tr']) {
                 page.state.currentLang = language;
                 page.generateImageList();
+                const lines = page.nodes['image-list'].textContent.split('\n');
+                for (const [image, category] of [
+                    ['llm-router:v0.3.1', 'llm_router'],
+                    ['higress-plugins:0.5.0.post2', 'gateway_plugins']
+                ]) {
+                    const index = lines.findIndex(line => line.startsWith('docker ') && line.endsWith(`/${image}`));
+                    if (component !== 'worker') {
+                        assert.ok(index > 0);
+                        assert.equal(lines[index - 1], `# ${page.CONFIG.i18n[language].comments[category]}`);
+                        assert.notEqual(page.CONFIG.i18n[language].comments[category], undefined);
+                    } else {
+                        assert.equal(index, -1);
+                    }
+                }
                 commands.push(
                     page.nodes['image-list'].textContent.split('\n').filter(
                         line => line.startsWith('docker ')
                     )
                 );
             }
-            for (const image of ['llm-router:v0.3.1', 'higress-plugins:0.5.0.post2']) {
+            for (const image of ['llm-router:v0.3.1', 'higress-plugins:0.5.0.post2', 'ssh-server:v1', 'gpustack-operator:v1', 'mirrored-higress-gateway:v1', 'mirrored-kueue:v1']) {
                 const expected = `${page.CONFIG.registries[registry].prefix}${image}`;
                 const included = component !== 'worker';
                 assert.equal(commands[0].some(command => command.endsWith(expected)),
