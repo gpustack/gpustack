@@ -21,6 +21,7 @@ def fake_session(row=None):
     session.get = AsyncMock(return_value=row)
     session.exec = AsyncMock(return_value=MagicMock())
     session.exec.return_value.first.return_value = row
+    session.exec.return_value.one.return_value = row
     for method in ['flush', 'commit', 'rollback']:
         setattr(session, method, AsyncMock())
 
@@ -105,7 +106,10 @@ async def test_concurrent_first_save_uses_existing_singleton():
     values = SiteSettingsUpdate(site_name='Lab', primary_color='#123456')
     result = await site_settings.update_site_settings(values, session, Response())
     assert result.site_name == 'Lab'
-    assert session.exec.await_count == 2
+    assert session.exec.await_count == 1
+    session.get.assert_awaited_once_with(SiteSettings, 1)
+    calls = [call[0] for call in session.mock_calls]
+    assert calls.index('flush') < calls.index('exec')
     session.commit.assert_awaited_once()
 
 
@@ -207,6 +211,7 @@ def test_put_replaces_optional_fields_and_public_read_observes_saved_values(clie
         site_name='Old', logo='old-logo', footer_name='Old Co.', footer_url='/old'
     )
     session.exec.return_value.first.return_value = row
+    session.exec.return_value.one.return_value = row
     session.get.return_value = row
     saved = http.put(
         '/v2/site-settings', json={'site_name': 'Lab', 'primary_color': '#123456'}
@@ -241,7 +246,7 @@ async def test_first_save_of_defaults_creates_only_the_singleton():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('phase', ['exec', 'flush'])
+@pytest.mark.parametrize('phase', ['get', 'exec', 'flush'])
 async def test_database_errors_before_commit_roll_back(phase):
     session = fake_session(SiteSettings())
     getattr(session, phase).side_effect = SQLAlchemyError('database unavailable')
@@ -275,3 +280,70 @@ def test_administrator_api_keys_require_management_scope(client, scope, status):
         == status
     )
     assert http.get('/v2/site-settings/public').status_code == 200
+
+
+@pytest.mark.parametrize('persisted', [False, True])
+@pytest.mark.parametrize('validator', ['weak', 'strong', 'list', 'wildcard'])
+def test_public_settings_revalidation_avoids_resending_assets(
+    client, persisted, validator
+):
+    http, app, session = client
+    if persisted:
+        session.get.return_value = SiteSettings(site_name='Lab', logo='large-asset')
+    initial = http.get('/v2/site-settings/public')
+    etag = initial.headers['etag']
+    headers = {
+        'weak': etag,
+        'strong': etag[2:],
+        'list': f'"unrelated", {etag}',
+        'wildcard': '*',
+    }
+    cached = http.get(
+        '/v2/site-settings/public', headers={'If-None-Match': headers[validator]}
+    )
+    assert cached.status_code == 304
+    assert cached.content == b''
+    assert cached.headers['etag'] == etag
+    assert cached.headers['cache-control'] == 'no-cache'
+    session.commit.assert_not_awaited()
+
+
+def test_public_etag_tracks_content_including_images_and_other_replica_changes(client):
+    http, app, session = client
+    initial = http.get('/v2/site-settings/public')
+    # A different replica can populate the row after an initial default read.
+    row = SiteSettings()
+    session.get.return_value = row
+    cached = http.get(
+        '/v2/site-settings/public', headers={'If-None-Match': initial.headers['etag']}
+    )
+    assert cached.status_code == 304
+    row.logo = 'changed-asset'
+    changed = http.get(
+        '/v2/site-settings/public', headers={'If-None-Match': initial.headers['etag']}
+    )
+    assert changed.status_code == 200
+    assert changed.json()['logo'] == 'changed-asset'
+    assert changed.headers['etag'] != initial.headers['etag']
+
+
+@pytest.mark.asyncio
+async def test_update_refreshes_values_after_acquiring_the_existing_row_lock():
+    stale = SiteSettings()
+    latest = SiteSettings(site_name='Concurrent writer')
+    session = fake_session(stale)
+    session.exec.return_value.one.return_value = latest
+    result = await site_settings.update_site_settings(
+        SiteSettingsUpdate(site_name='GPUStack', primary_color='#007BFF'),
+        session,
+        Response(),
+    )
+    assert result.site_name == 'GPUStack'
+    assert result.updated_at is not None
+    statement = session.exec.call_args.args[0]
+    assert statement.get_execution_options()['populate_existing'] is True
+    from sqlalchemy.dialects import mysql, postgresql
+
+    for dialect in [mysql.dialect(), postgresql.dialect()]:
+        assert 'FOR UPDATE' in str(statement.compile(dialect=dialect))
+    session.add.assert_not_called()

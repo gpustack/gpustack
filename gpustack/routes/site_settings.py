@@ -1,8 +1,9 @@
 """Public branding reads and platform-admin configuration writes."""
 
 from datetime import datetime, timezone
+from hashlib import sha256
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlmodel import select
 
@@ -39,12 +40,25 @@ async def get_site_settings(
 
 @public_router.get("/public", response_model=SiteSettingsPublic)
 async def get_public_site_settings(
-    session: SessionDep, response: Response
-) -> SiteSettingsPublic:
+    session: SessionDep, request: Request, response: Response
+) -> SiteSettingsPublic | Response:
     # Browsers must revalidate on reload so saved branding does not stay stale.
     response.headers["Cache-Control"] = "no-cache"
     try:
-        return await _read_settings(session)
+        settings = await _read_settings(session)
+        digest = sha256(settings.model_dump_json().encode()).hexdigest()
+        etag = f'W/"{digest}"'
+        response.headers['ETag'] = etag
+        candidates = request.headers.get('If-None-Match', '').split(',')
+        if any(
+            tag.strip() == '*' or tag.strip().removeprefix('W/') == etag[2:]
+            for tag in candidates
+        ):
+            return Response(
+                status_code=304,
+                headers={'Cache-Control': 'no-cache', 'ETag': etag},
+            )
+        return settings
     except SQLAlchemyError as exc:
         raise ServiceUnavailableException(
             message="Site settings are temporarily unavailable."
@@ -56,9 +70,16 @@ async def update_site_settings(
     values: SiteSettingsUpdate, session: SessionDep, response: Response
 ) -> SiteSettingsPublic:
     response.headers["Cache-Control"] = "no-store"
-    statement = select(SiteSettings).where(SiteSettings.id == 1).with_for_update()
+    statement = (
+        select(SiteSettings)
+        .where(SiteSettings.id == 1)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     try:
-        row = (await session.exec(statement)).first()
+        # A non-locking existence check avoids InnoDB gap locks on a missing
+        # singleton. Insert contenders are serialized by the primary key.
+        row = await session.get(SiteSettings, 1)
         if row is None:
             # The primary key arbitrates simultaneous first saves. A savepoint
             # keeps the outer transaction usable after the losing insert.
@@ -69,6 +90,10 @@ async def update_site_settings(
                     await session.flush()
             except IntegrityError:
                 row = (await session.exec(statement)).one()
+        else:
+            # Refresh the instance loaded before the lock: another writer may
+            # have committed while this transaction waited to acquire it.
+            row = (await session.exec(statement)).one()
         changes = values.model_dump()
         if any(getattr(row, key) != value for key, value in changes.items()):
             for key, value in changes.items():

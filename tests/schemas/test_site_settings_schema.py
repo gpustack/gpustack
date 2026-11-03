@@ -167,3 +167,22 @@ def test_text_is_normalized_before_saving():
     assert result.footer_name == 'Lab Inc.'
     assert result.footer_url == 'https://example.com/about'
     assert result.primary_color == '#aBc123'
+
+
+@pytest.mark.parametrize('value', [None, '', ' ', '\t\n'])
+def test_blank_footer_name_clears_the_setting(value):
+    assert settings(footer_name=value).footer_name is None
+
+
+@pytest.mark.parametrize(
+    'url',
+    ['https://example.com:abc', 'https://example.com:65536', 'http://[::1]:-1'],
+)
+def test_invalid_footer_ports_are_rejected(url):
+    with pytest.raises(ValidationError):
+        settings(footer_url=url)
+
+
+@pytest.mark.parametrize('url', ['http://[::1]:8080', 'https://example.com:65535'])
+def test_valid_footer_ports_are_preserved(url):
+    assert settings(footer_url=url).footer_url == url

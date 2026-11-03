@@ -62,6 +62,8 @@ def _validate_link(value: Optional[str]) -> Optional[str]:
     if _is_local_path(value):
         return value
     parsed = urlsplit(value)
+    # urlsplit defers malformed/out-of-range port validation to this property.
+    _ = parsed.port
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.hostname
@@ -104,6 +106,11 @@ class SiteSettingsUpdate(BaseModel):
     )(_validate_asset)
 
     _validate_links = field_validator("footer_url")(_validate_link)
+
+    @field_validator("footer_name")
+    @classmethod
+    def normalize_footer_name(cls, value: Optional[str]) -> Optional[str]:
+        return value or None
 
 
 class SiteSettingsPublic(BaseModel):

@@ -16,6 +16,8 @@ Images must be PNG, JPEG, or WebP, at most 512 KiB each. Assets are stored in th
 
 Branding is public, including before sign-in. Do not include confidential information in these fields.
 
+Public reads include an ETag and require cache revalidation. A matching `If-None-Match` request receives an empty `304 Not Modified` response, avoiding repeated downloads of unchanged images. Each read still checks the database so changes made by another server replica are visible immediately.
+
 ## API
 
 | Method | Endpoint | Access |
