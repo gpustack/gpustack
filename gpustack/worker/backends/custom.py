@@ -7,6 +7,7 @@ from gpustack.schemas.models import ModelInstanceDeploymentMetadata
 from gpustack.utils.command import format_backend_parameters
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer
+from gpustack.worker.pd_router import ROUTER_NOFILE_SCRIPT, is_managed_router
 
 from gpustack_runtime.deployer import (
     Container,
@@ -69,7 +70,8 @@ class CustomServer(InferenceServer):
             )
         except Exception as e:
             logger.warning(
-                f"Failed to persist injected backend parameters for {self._model_instance.name}: {e}"
+                "Failed to persist injected backend parameters for "
+                f"{self._model_instance.name}: {e}"
             )
 
         self._create_workload(
@@ -99,6 +101,15 @@ class CustomServer(InferenceServer):
         # Read container config from environment variables
         container_config = self._get_container_env_config(env)
 
+        command_script = None
+        if is_managed_router(
+            self._model_spec or self._model, getattr(self._model_instance, "role", None)
+        ):
+            command_script = ROUTER_NOFILE_SCRIPT
+            command, command_args = self._override_entrypoint(
+                command, command_args, command_script
+            )
+
         run_container = Container(
             image=image,
             name="default",
@@ -107,6 +118,7 @@ class CustomServer(InferenceServer):
             execution=ContainerExecution(
                 privileged=True,
                 command=command,
+                command_script=command_script,
                 args=command_args,
                 run_as_user=container_config.user,
                 run_as_group=container_config.group,

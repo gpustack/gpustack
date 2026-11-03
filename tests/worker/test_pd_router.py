@@ -985,3 +985,116 @@ def test_a_role_less_model_has_no_router_path():
         owner_principal_id=1,
     )
     assert managed_router_health_path(plain, None) is None
+
+
+@pytest.mark.parametrize(
+    "soft, hard, expected, warns",
+    [
+        (1024, 524288, 65536, False),
+        (1024, 65536, 65536, False),
+        (131072, 524288, 131072, False),
+        (1024, 4096, 4096, True),
+    ],
+)
+def test_router_bootstrap_raises_soft_limit_and_executes_argv(
+    soft, hard, expected, warns
+):
+    import json
+    import subprocess
+    import sys
+
+    resource = pytest.importorskip("resource")
+    from gpustack.worker.pd_router import ROUTER_NOFILE_SCRIPT
+
+    parent_hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+    if parent_hard != resource.RLIM_INFINITY and parent_hard < hard:
+        pytest.skip("parent hard limit is too low for this case")
+    probe = (
+        "import json,resource,sys;"
+        "print(json.dumps([list(resource.getrlimit(resource.RLIMIT_NOFILE)),sys.argv[1:]]))"
+    )
+    arguments = ["--prefill", "http://example.com:40001", "a b; $(echo injected)"]
+    launcher = (
+        "import os,resource,sys;"
+        "resource.setrlimit(resource.RLIMIT_NOFILE,(int(sys.argv[1]),int(sys.argv[2])));"
+        "os.execvp(sys.argv[3],sys.argv[3:])"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            launcher,
+            str(soft),
+            str(hard),
+            "/bin/sh",
+            "-c",
+            ROUTER_NOFILE_SCRIPT,
+            "gpustack-router",
+            sys.executable,
+            "-c",
+            probe,
+            *arguments,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    limits, actual_arguments = json.loads(result.stdout)
+    assert limits == [expected, hard]
+    assert actual_arguments == arguments
+    assert ("WARNING:" in result.stderr) is warns
+    assert f"soft={expected} hard={hard}" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "role, custom_router",
+    [
+        ("router", False),
+        ("router", True),
+        ("prefill", False),
+        ("decode", False),
+        (None, False),
+    ],
+)
+@pytest.mark.parametrize("entrypoint", [None, ["/usr/bin/env"]])
+def test_only_managed_router_workloads_receive_nofile_bootstrap(
+    monkeypatch, role, custom_router, entrypoint
+):
+    from types import SimpleNamespace
+
+    from gpustack.worker.backends.custom import CustomServer
+    from gpustack.worker.pd_router import ROUTER_NOFILE_SCRIPT, apply_managed_router
+    from gpustack.schemas.models import RoleSpec
+
+    backend = CustomServer.__new__(CustomServer)
+    backend._model_spec = _pd_model(
+        RoleSpec(name="router", image_name="custom:test", run_command="custom-router")
+        if custom_router
+        else None
+    )
+    backend._model = apply_managed_router(
+        backend._model_spec, role, peers=PEERS, variables=VARIABLES
+    )
+    backend._model_instance = SimpleNamespace(role=role)
+    backend._get_configured_image = lambda: "router:test"
+    backend._get_configured_resources = lambda: {}
+    backend._get_configured_mounts = lambda: []
+    backend._get_configured_ports = lambda: []
+    backend._host_ipc_enabled = lambda: False
+    backend._transform_workload_plan = lambda plan: plan
+    captured = []
+    monkeypatch.setattr(
+        "gpustack.worker.backends.custom.create_workload", captured.append
+    )
+    args = ["vllm-router", "--prefill", "http://example.com:40001"]
+    backend._create_workload(SimpleNamespace(name="test"), entrypoint, args, {})
+
+    execution = captured[0].containers[0].execution
+    if role == "router" and not custom_router:
+        assert execution.command_script == ROUTER_NOFILE_SCRIPT
+        assert execution.command is None
+        assert execution.args == (entrypoint or []) + args
+    else:
+        assert execution.command_script is None
+        assert execution.command == entrypoint
+        assert execution.args == args

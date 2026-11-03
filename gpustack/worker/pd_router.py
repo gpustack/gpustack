@@ -32,6 +32,30 @@ from gpustack.utils.template import render
 
 logger = logging.getLogger(__name__)
 
+# A router holds client and engine sockets concurrently. Raise only the soft
+# limit so this works without additional container privileges, and keep the
+# runtime's hard limit and any higher operator-provided soft limit intact.
+ROUTER_NOFILE_SCRIPT = '''#!/bin/sh
+soft=$(ulimit -Sn)
+hard=$(ulimit -Hn)
+target=65536
+if [ "$hard" != unlimited ] && [ "$hard" -lt "$target" ]; then
+    target=$hard
+fi
+if [ "$soft" != unlimited ] && [ "$soft" -lt "$target" ]; then
+    if ! ulimit -Sn "$target"; then
+        echo "WARNING: GPUStack PD router could not raise nofile soft limit" >&2
+    fi
+fi
+soft=$(ulimit -Sn)
+echo "GPUStack PD router nofile: soft=$soft hard=$hard" >&2
+if [ "$soft" != unlimited ] && [ "$soft" -lt 65536 ]; then
+    echo "WARNING: GPUStack PD router nofile is below 65536" >&2
+    echo "Increase the container hard limit to support high concurrency" >&2
+fi
+exec "$@"
+'''
+
 
 class PeerAddress(NamedTuple):
     """One member of the group, as the router needs to address it.
