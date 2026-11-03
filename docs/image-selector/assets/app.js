@@ -122,7 +122,7 @@ const CONFIG = {
                 'gateway': '网关镜像 - 仅在 Kubernetes 环境下需要',
                 'gateway_plugins': '网关插件镜像 - 提供 GPUStack AI 网关功能',
                 'llm_router': 'LLM 路由镜像 - 用于推理请求路由',
-                'k8s': 'GPU 服务镜像 - 仅在 Kubernetes 环境下需要'
+                'k8s': 'GPUStack Operator 模型服务镜像 - 仅在 Kubernetes 环境下需要'
             },
             'cards': {
                 'nvidia': 'NVIDIA', 'amd': 'AMD', 'ascend': '昇腾', 'hygon': '海光',
@@ -172,7 +172,7 @@ const CONFIG = {
                 "gateway": "ゲートウェイイメージ — Kubernetes でのデプロイにのみ必要です",
                 "gateway_plugins": "ゲートウェイプラグインのイメージ — GPUStack AI ゲートウェイの機能を提供します",
                 "llm_router": "LLM ルーターのイメージ — 推論リクエストのルーティングに使用します",
-                "k8s": "GPU サービスのイメージ — Kubernetes でのデプロイにのみ必要です"
+                "k8s": "GPUStack Operator モデルサービスのイメージ — Kubernetes でのデプロイにのみ必要です"
             },
             "cards": {
                 "nvidia": "NVIDIA",
@@ -335,7 +335,7 @@ docker load -i gpustack-worker-images.tar</code></pre>
                 'gateway': 'Gateway Images - Required for Kubernetes deployment only',
                 'gateway_plugins': 'Gateway Plugin Image - Provides GPUStack AI gateway functionality',
                 'llm_router': 'LLM Router Image - Used for inference request routing',
-                'k8s': 'GPU Service Images - Required for Kubernetes deployment only'
+                'k8s': 'GPUStack Operator Model Service Images - Required for Kubernetes deployment only'
             },
             'cards': {
                 'nvidia': 'NVIDIA', 'amd': 'AMD', 'ascend': 'Ascend', 'hygon': 'Hygon',
@@ -492,7 +492,7 @@ docker load -i gpustack-worker-images.tar</code></pre>
         "gateway": "Образы шлюза — нужны только при развертывании в Kubernetes",
         "gateway_plugins": "Образ плагинов шлюза — обеспечивает функции AI-шлюза GPUStack",
         "llm_router": "Образ LLM-маршрутизатора — используется для маршрутизации запросов инференса",
-        "k8s": "Образы GPU Service — нужны только при развертывании в Kubernetes"
+        "k8s": "Образы сервисов моделей GPUStack Operator — нужны только при развертывании в Kubernetes"
     },
     "cards": {
         "nvidia": "NVIDIA",
@@ -623,7 +623,7 @@ docker load -i gpustack-worker-images.tar</code></pre>
         "gateway": "Ağ geçidi imajları — yalnızca Kubernetes dağıtımları için gereklidir",
         "gateway_plugins": "Ağ geçidi eklenti imajı — GPUStack AI ağ geçidi işlevlerini sağlar",
         "llm_router": "LLM yönlendirici imajı — çıkarım isteklerini yönlendirmek için kullanılır",
-        "k8s": "GPU Service imajları — yalnızca Kubernetes dağıtımları için gereklidir"
+        "k8s": "GPUStack Operator model hizmeti imajları — yalnızca Kubernetes dağıtımları için gereklidir"
     },
     "cards": {
         "nvidia": "NVIDIA",
