@@ -1278,6 +1278,12 @@ async def find_candidate(
         candidates = proximity.narrow_to_tightest_internal_spread(candidates)
 
     # Score candidates.
+    from gpustack.scheduler import port_budget
+
+    candidates, port_messages = await port_budget.filter_candidates(
+        session, model, role, candidates, workers, model_instances, exclude_instance_id
+    )
+    messages.extend(port_messages)
     candidate_scorers = [
         PlacementScorer(model, model_instances, resource_view=resource_view),
     ]

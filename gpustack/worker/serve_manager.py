@@ -134,6 +134,7 @@ from gpustack.utils.model_instance_workers import (
 from gpustack.utils.vllm_topology import (
     VLLM_MP_CONNECTING_PORT_COUNT as _VLLM_MP_CONNECTING_BAND,
     managed_lb_parallelism,
+    managed_lb_port_requests,
     vllm_lb_mode,
 )
 from gpustack.schemas.workers import WorkerStateEnum
@@ -3995,23 +3996,12 @@ class ServeManager(ContainerLogPersister):
         bands = {}
         hybrid = vllm_lb_mode(model.backend_parameters) == "hybrid"
         api_count = 1 if hybrid else topology.dp
-        requests = [
-            ("_vllm_external_api", api_count),
-            ("_vllm_external_rpc", 1),
-        ]
-        if not hybrid or topology.nnodes_within_dp > 1:
-            requests.insert(
-                0, (_VLLM_MP_CONNECTING_BAND_NAME, _VLLM_MP_CONNECTING_BAND)
-            )
-        if topology.nnodes_within_dp > 1:
-            requests.append(("_vllm_external_store", topology.dp))
+        requests = managed_lb_port_requests(model.backend_parameters, counts)
         if vllm_lb_mode(model.backend_parameters) == "multi_port_external":
             requested = find_last_parameter(
                 model.backend_parameters, ["data-parallel-supervisor-port"]
             )
-            if requested is None:
-                requests.append(("_vllm_multi_port_external_supervisor", 1))
-            else:
+            if requested is not None:
                 base = int(requested)
                 low, high = (int(value) for value in port_range.split("-"))
                 if (
@@ -4340,7 +4330,9 @@ class ServeManager(ContainerLogPersister):
         from gpustack.utils.model_instance_workers import sglang_smg_mode
 
         if mi.role is not None or not sglang_smg_mode(model):
-            raise ValueError("Managed components require ordinary SGLang DP/DPA/EP")
+            raise ValueError(
+                "Managed components require ordinary multi-rank SGLang DP/DPA"
+            )
         bands = {}
         for name in (
             "_sglang_engine_api",

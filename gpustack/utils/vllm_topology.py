@@ -10,7 +10,7 @@ side — see ``gpustack.worker.backends.vllm.cal_multinode_topology``.
 from dataclasses import dataclass
 from functools import reduce
 from math import gcd
-from typing import List, Literal, Optional, Union
+from typing import List, Literal, Optional, Tuple, Union
 
 from gpustack.utils.command import (
     find_int_parameter,
@@ -23,6 +23,29 @@ from gpustack.utils.command import (
 # vLLM excludes this window from automatic ports when VLLM_DP_MASTER_PORT
 # is set. Both placement budgeting and Worker reservations protect it.
 VLLM_MP_CONNECTING_PORT_COUNT = 10
+
+
+def managed_lb_port_requests(
+    parameters: Optional[List[str]], gpu_per_node: List[int]
+) -> List[Tuple[str, int]]:
+    """Ordered platform port bands shared by scheduling and Worker allocation."""
+    topology = managed_lb_parallelism(parameters, gpu_per_node)
+    mode = vllm_lb_mode(parameters)
+    hybrid = mode == "hybrid"
+    requests = [
+        ("_vllm_external_api", 1 if hybrid else topology.dp),
+        ("_vllm_external_rpc", 1),
+    ]
+    if not hybrid or topology.nnodes_within_dp > 1:
+        requests.insert(0, ("_vllm_mp_connecting", VLLM_MP_CONNECTING_PORT_COUNT))
+    if topology.nnodes_within_dp > 1:
+        requests.append(("_vllm_external_store", topology.dp))
+    if (
+        mode == "multi_port_external"
+        and find_last_parameter(parameters, ["data-parallel-supervisor-port"]) is None
+    ):
+        requests.append(("_vllm_multi_port_external_supervisor", 1))
+    return requests
 
 
 def vllm_lb_mode(parameters: Optional[List[str]]) -> str:

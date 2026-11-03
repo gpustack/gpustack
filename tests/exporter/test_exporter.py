@@ -1171,6 +1171,21 @@ async def test_hybrid_shared_api_device_info_uses_existing_topology(cross_worker
         for i, gpus in allocations.items()
         if cross_worker or i == 3
     ]
+    from gpustack.schemas.models import ModelConfigSnapshot, ModelInstanceLaunchIdentity
+
+    instance.pid = 123
+    instance.model_config_snapshot = ModelConfigSnapshot(
+        backend_parameters=[
+            '--data-parallel-hybrid-lb',
+            '--tensor-parallel-size',
+            '8' if cross_worker else '2',
+            '--data-parallel-size',
+            '2' if cross_worker else '4',
+            '--data-parallel-size-local',
+            '1' if cross_worker else '2',
+        ],
+        launch_identity=ModelInstanceLaunchIdentity.from_instance(instance),
+    )
     _, metrics = await _runtime_info(
         instance,
         backend_parameters=[
@@ -1243,7 +1258,8 @@ def test_hybrid_device_mapping_requires_model_and_valid_topology(parameters):
     )
 
 
-def test_hybrid_device_mapping_uses_pd_role_parameters():
+@pytest.mark.parametrize("edited", [["--tensor-parallel-size", "4"], []])
+def test_hybrid_device_mapping_uses_launch_snapshot_after_role_edit(edited):
     from gpustack.schemas.models import ModelInstanceSubordinateWorker, RoleSpec
     from gpustack.utils.model_instance_workers import (
         model_instance_metrics_source_inventory,
@@ -1275,6 +1291,14 @@ def test_hybrid_device_mapping_uses_pd_role_parameters():
         )
     ]
     sources = model_instance_metrics_source_inventory(instance)
+    from gpustack.schemas.models import ModelConfigSnapshot, ModelInstanceLaunchIdentity
+
+    instance.pid = 123
+    instance.model_config_snapshot = ModelConfigSnapshot(
+        backend_parameters=list(model.roles[0].backend_parameters),
+        launch_identity=ModelInstanceLaunchIdentity.from_instance(instance),
+    )
+    model.roles[0].backend_parameters = edited
     placements = model_instance_metrics_placements(instance, sources, model)
     assert len(placements) == 16
     assert {(p.worker_id, p.source.worker_id) for p in placements} == {
@@ -1283,3 +1307,32 @@ def test_hybrid_device_mapping_uses_pd_role_parameters():
         (3, 3),
         (4, 3),
     }
+
+
+@pytest.mark.parametrize('change', ['missing', 'generation', 'worker', 'pid'])
+def test_hybrid_mapping_rejects_unmatched_launch_snapshot(change):
+    from gpustack.schemas.models import ModelConfigSnapshot, ModelInstanceLaunchIdentity
+    from gpustack.utils.model_instance_workers import (
+        model_instance_metrics_source_inventory,
+        model_instance_metrics_placements,
+    )
+    from tests.worker.test_runtime_metrics import _hybrid_tasks
+
+    instance = _runtime_instance(_hybrid_tasks(), pid=123)
+    snapshot = ModelConfigSnapshot(
+        backend_parameters=['--data-parallel-hybrid-lb'],
+        launch_identity=ModelInstanceLaunchIdentity.from_instance(instance),
+    )
+    instance.model_config_snapshot = None if change == 'missing' else snapshot
+    if change == 'generation':
+        instance.restart_count += 1
+    elif change == 'worker':
+        instance.worker_id = 2
+    elif change == 'pid':
+        instance.pid += 1
+    assert (
+        model_instance_metrics_placements(
+            instance, model_instance_metrics_source_inventory(instance)
+        )
+        == []
+    )

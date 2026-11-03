@@ -690,3 +690,270 @@ async def test_hybrid_dashboard_checks_tenant_before_resolving_listener(monkeypa
             None, None, 7, None, component='vllm_hybrid', worker_id='3'
         )
     resolve.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pd_dashboard_propagates_server_base_for_instance_links():
+    from urllib.parse import parse_qs, urlsplit
+    from gpustack.utils.grafana import build_model_dashboard_url
+
+    location = build_model_dashboard_url(
+        _cfg(server_external_url='https://gpustack.example/prefix'),
+        'https://grafana.example',
+        _model(disaggregation=DisaggregationSpec(mode=PDModeEnum.VLLM_NIXL)),
+    )
+    assert parse_qs(urlsplit(location).query)['var-gpustack_base_url'] == [
+        'https://gpustack.example/prefix'
+    ]
+
+
+@pytest.mark.parametrize(
+    'panel_id,selector', [(58, 'dp_rank'), (59, 'component=vllm_hybrid')]
+)
+def test_pd_endpoint_links_preserve_identity_and_shared_api_semantics(
+    panel_id, selector
+):
+    dashboard = json.loads(
+        (
+            Path(__file__).parents[2]
+            / 'docker-compose/grafana/grafana_dashboards/gpustack-pd.json'
+        ).read_text()
+    )
+    panel = next(p for p in dashboard['panels'] if p['id'] == panel_id)
+    assert (
+        'source_kind="vllm_engine"' in panel['targets'][0]['expr']
+        if panel_id == 58
+        else 'source_kind="vllm_hybrid"' in panel['targets'][0]['expr']
+    )
+    properties = panel['fieldConfig']['overrides'][0]['properties']
+    url = next(p['value'][0]['url'] for p in properties if p['id'] == 'links')
+    assert '/v2/model-instances/${__data.fields.model_instance_id}/dashboard' in url
+    assert 'restart_count=${__data.fields.restart_count}' in url
+    assert 'worker_id=${__data.fields.worker_id}' in url
+    assert selector in url
+    assert ('dp_rank=' in url) == (panel_id == 58)
+    assert panel['targets'][0]['instant'] and not panel['targets'][0]['range']
+    assert panel['transformations'][0]['options']['renameByName'] == {}
+    for identity in ('model_instance_id', 'restart_count'):
+        assert not panel['transformations'][0]['options']['excludeByName'].get(identity)
+        override = next(
+            item
+            for item in panel['fieldConfig']['overrides']
+            if item['matcher'] == {'id': 'byName', 'options': identity}
+        )
+        assert {'id': 'custom.hidden', 'value': True} in override['properties']
+
+
+@pytest.mark.parametrize('kind', ['vllm_engine', 'vllm_hybrid'])
+@pytest.mark.parametrize('rank_count', [1, 2, 4])
+def test_pd_queries_aggregate_normalized_rank_metrics_once(tmp_path, kind, rank_count):
+    import os
+    import shutil
+    import subprocess
+    import yaml
+    from prometheus_client.exposition import CONTENT_TYPE_LATEST
+    from tests.worker.test_runtime_metrics import (
+        _source_aggregator,
+        _managed_instance,
+        _families,
+    )
+    from gpustack.schemas.models import BackendEnum
+
+    promtool = os.environ.get('PROMTOOL') or shutil.which('promtool')
+    if not promtool:
+        pytest.skip('Set PROMTOOL to validate dashboard queries with Prometheus')
+    aggregator, _ = _source_aggregator(_managed_instance())
+    unified = {}
+    local_size = 1 if kind == 'vllm_engine' else min(2, rank_count)
+    for role in ('prefill', 'decode'):
+        for first in range(0, rank_count, local_size):
+            ranks = (
+                range(rank_count)
+                if kind == 'vllm_engine'
+                else range(first, first + local_size)
+            )
+            definitions = {
+                'prompt_tokens_total': ('counter', [('', 60)]),
+                'generation_tokens_total': ('counter', [('', 120)]),
+                'e2e_request_latency_seconds': (
+                    'histogram',
+                    [
+                        ('_bucket', 30, '0.1'),
+                        ('_bucket', 60, '1'),
+                        ('_bucket', 60, '+Inf'),
+                        ('_sum', 30),
+                        ('_count', 60),
+                    ],
+                ),
+                'nixl_xfer_time_seconds': (
+                    'histogram',
+                    [
+                        ('_bucket', 30, '0.1'),
+                        ('_bucket', 60, '1'),
+                        ('_bucket', 60, '+Inf'),
+                        ('_sum', 30),
+                        ('_count', 60),
+                    ],
+                ),
+                'nixl_bytes_transferred': (
+                    'summary',
+                    [('_sum', 61440), ('_count', 60)],
+                ),
+                'kv_cache_usage_perc': ('gauge', [('', 0.25)]),
+            }
+            text = []
+            for name, (type_, samples) in definitions.items():
+                text.append(f'# TYPE vllm:{name} {type_}')
+                for rank in ranks:
+                    engine = rank if kind == 'vllm_engine' else rank - first
+                    for suffix, value, *le in samples:
+                        labels = f'engine="{engine}"' + (f',le="{le[0]}"' if le else '')
+                        value = value + rank * 0.1 if type_ == 'gauge' else value
+                        text.append(f'vllm:{name}{suffix}{{{labels}}} {value}')
+            labels = dict(
+                cluster_name='x1',
+                model_name='m',
+                role=role,
+                model_instance_name=f'{role}-instance',
+                worker_id=str(first + 1),
+                source_kind=kind,
+            )
+            if kind == 'vllm_engine':
+                labels['endpoint_dp_rank'] = str(first)
+            aggregator._process_endpoint_metrics(
+                _families('\n'.join(text) + '\n', CONTENT_TYPE_LATEST),
+                labels,
+                BackendEnum.VLLM,
+                '0.19.0',
+                unified,
+                {},
+                aggregator._metrics_config_cache['config'],
+            )
+    inputs = []
+    for family in unified.values():
+        for sample in family.samples:
+            labels = ','.join(
+                f'{k}={json.dumps(v)}' for k, v in sorted(sample.labels.items())
+            )
+            inputs.append(
+                {
+                    'series': sample.name + '{' + labels + '}',
+                    'values': (
+                        f'{sample.value}x5'
+                        if family.type == 'gauge'
+                        else f'0+{sample.value}x5'
+                    ),
+                }
+            )
+    dashboard = json.loads(
+        (
+            Path(__file__).parents[2]
+            / 'docker-compose/grafana/grafana_dashboards/gpustack-pd.json'
+        ).read_text()
+    )
+    checks = []
+    for panel_id, ref, expected in [
+        (44, 'A', rank_count),
+        (44, 'C', rank_count * 2),
+        (45, 'D', 0.5),
+        (14, 'A', 0.5),
+        (15, 'A', 1024),
+        (20, 'B', 0.1 + (1 - 0.1) * (0.95 - 0.5) / 0.5),
+    ]:
+        panel = next(p for p in dashboard['panels'] if p['id'] == panel_id)
+        expr = next(t['expr'] for t in panel['targets'] if t['refId'] == ref)
+        for key, value in [
+            ('cluster_name', 'x1'),
+            ('model_name', 'm'),
+            ('counted_role', 'decode'),
+            ('role', 'prefill|decode'),
+            ('__rate_interval', '2m'),
+            ('__range', '5m'),
+        ]:
+            expr = expr.replace('$' + key, value)
+        checks.append(
+            {
+                'expr': expr,
+                'eval_time': '5m',
+                'exp_samples': [{'labels': '{}', 'value': expected}],
+            }
+        )
+    kv = next(p for p in dashboard['panels'] if p['id'] == 49)['targets'][0]['expr']
+    for key, value in [
+        ('cluster_name', 'x1'),
+        ('model_name', 'm'),
+        ('role', 'prefill|decode'),
+    ]:
+        kv = kv.replace('$' + key, value)
+    checks.append(
+        {
+            'expr': kv,
+            'eval_time': '5m',
+            'exp_samples': [
+                {
+                    'labels': '{role="'
+                    + role
+                    + '",model_instance_name="'
+                    + role
+                    + '-instance"}',
+                    'value': 0.25 + (rank_count - 1) * 0.1,
+                }
+                for role in ('prefill', 'decode')
+            ],
+        }
+    )
+    case = {
+        'evaluation_interval': '1m',
+        'tests': [
+            {'interval': '1m', 'input_series': inputs, 'promql_expr_test': checks}
+        ],
+    }
+    path = tmp_path / 'pd-rank-queries.yml'
+    path.write_text(yaml.safe_dump(case))
+    result = subprocess.run(
+        [promtool, 'test', 'rules', str(path)], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_all_pd_dashboard_expressions_parse_in_prometheus(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    import yaml
+
+    promtool = os.environ.get('PROMTOOL') or shutil.which('promtool')
+    if not promtool:
+        pytest.skip('Set PROMTOOL to validate dashboard queries with Prometheus')
+    dashboard = json.loads(
+        (
+            Path(__file__).parents[2]
+            / 'docker-compose/grafana/grafana_dashboards/gpustack-pd.json'
+        ).read_text()
+    )
+    rules = []
+    for panel in dashboard['panels']:
+        for target in panel.get('targets', []):
+            expr = target.get('expr')
+            if not expr:
+                continue
+            for key, value in [
+                ('cluster_name', 'x1'),
+                ('model_name', 'm'),
+                ('counted_role', 'decode'),
+                ('role', 'prefill|decode'),
+                ('__rate_interval', '2m'),
+                ('__range', '5m'),
+            ]:
+                expr = expr.replace('$' + key, value)
+            rules.append(
+                {'record': f"pd_panel_{panel['id']}_{target['refId']}", 'expr': expr}
+            )
+    path = tmp_path / 'pd-dashboard-rules.yml'
+    path.write_text(
+        yaml.safe_dump({'groups': [{'name': 'pd-dashboard', 'rules': rules}]})
+    )
+    result = subprocess.run(
+        [promtool, 'check', 'rules', str(path)], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

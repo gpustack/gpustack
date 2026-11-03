@@ -19,6 +19,9 @@ from gpustack.schemas.cache_services import (
 from gpustack.schemas.links import ModelRoutePrincipalLink
 from gpustack.schemas.model_files import ModelFile
 from gpustack.schemas.models import (
+    BackendEnum,
+    get_backend,
+    ROUTER_DEFAULT_MEMORY,
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
@@ -1660,13 +1663,40 @@ class ModelInstanceService:
         # running; late reports for this generation fail after the locked bump.
         servers = instance.distributed_servers.model_copy(deep=True)
         servers.workloads = []
-        return {
+        source = {
             "restart_count": count + 1,
             "last_restart_time": now,
             "state": ModelInstanceStateEnum.SCHEDULED,
             "state_message": "",
             "distributed_servers": servers,
-        }, None
+        }
+        from gpustack.utils.model_instance_workers import sglang_smg_mode
+
+        if (
+            instance.role is None
+            and get_backend(model) == BackendEnum.SGLANG
+            and model.disaggregation is None
+            and not model.stale
+            and not sglang_smg_mode(model)
+            and any(
+                item.component is not None and item.component.kind == "sglang_engine"
+                for item in workloads
+            )
+        ):
+            if instance.spec_digest:
+                from gpustack.server.controllers import model_members_stale
+
+                if await model_members_stale(self.session, model, [instance]):
+                    return source, None
+            # All old tasks have stopped before the next launch changes its layout.
+            servers.workloads = None
+            source.update(port=None, ports=None, named_ports=None)
+            claim = instance.computed_resource_claim
+            if claim is not None:
+                source["computed_resource_claim"] = claim.model_copy(
+                    update={"ram": max(0, (claim.ram or 0) - ROUTER_DEFAULT_MEMORY)}
+                )
+        return source, None
 
     async def delete(self, model_instance: ModelInstance) -> bool:
         """Return whether the row is absent, or False while stopping is pending."""

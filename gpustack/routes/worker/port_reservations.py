@@ -1,7 +1,7 @@
-from typing import Annotated
-from uuid import UUID
+from typing import Annotated, Optional
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
 from gpustack.api.auth import worker_auth
 from gpustack.schemas.models import member_worker_ids
@@ -30,23 +30,33 @@ def _instance(request: Request, instance_id: int):
     return manager, instance
 
 
-@router.get("/port-reservations/{instance_id}")
-def availability(instance_id: int, request: Request) -> WorkerPortAvailability:
-    manager, _ = _instance(request, instance_id)
+def _availability(
+    manager, request, instance_id=None, *, reservation=False
+) -> WorkerPortAvailability:
     port_range = manager._config.service_port_range
     start, end = network.parse_port_range(port_range)
     host = request.app.state.worker_ip_getter()
-    generation, claim_version = manager._port_reservations.claim_state(instance_id)
-    with manager._port_reservations.allocation(
-        manager._clientset, manager._worker_id, model_instance_id=instance_id
-    ) as taken:
-        busy = set(taken)
+    generation, claim_version = (
+        manager._port_reservations.claim_state(instance_id)
+        if reservation
+        else (uuid4(), None)
+    )
+    pending_cleanup = False
+    if reservation:
+        with manager._port_reservations.allocation(
+            manager._clientset, manager._worker_id, model_instance_id=instance_id
+        ) as taken:
+            busy = set(taken)
+            pending_cleanup = taken.pending_cleanup
+    else:
+        busy = manager._port_reservations.local_ports(instance_id)
     # Claims recheck occupancy under the lock; the advisory socket scan must
     # leave allocations and cleanup free to proceed while it probes the range.
+    occupied = set(busy)
     busy.update(
         port
         for port in range(start, end + 1)
-        if port not in taken and not network.is_port_available(port, host)
+        if port not in occupied and not network.is_port_available(port, host)
     )
     return WorkerPortAvailability(
         worker_id=manager._worker_id,
@@ -54,8 +64,22 @@ def availability(instance_id: int, request: Request) -> WorkerPortAvailability:
         claim_version=claim_version,
         port_range=port_range,
         unavailable_ports=sorted(busy),
-        pending_cleanup=taken.pending_cleanup,
+        pending_cleanup=pending_cleanup,
     )
+
+
+@router.get("/port-reservations")
+def scheduling_availability(
+    request: Request, exclude_instance_id: Optional[int] = Query(default=None, ge=1)
+) -> WorkerPortAvailability:
+    """Read advisory capacity before a scheduler binds an instance to this Worker."""
+    return _availability(request.app.state.serve_manager, request, exclude_instance_id)
+
+
+@router.get("/port-reservations/{instance_id}")
+def availability(instance_id: int, request: Request) -> WorkerPortAvailability:
+    manager, _ = _instance(request, instance_id)
+    return _availability(manager, request, instance_id, reservation=True)
 
 
 @router.post("/port-reservations/{instance_id}")

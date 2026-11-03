@@ -1548,3 +1548,36 @@ async def test_hybrid_user_delete_keeps_ordinary_fast_path_and_pd_stop_barrier(
     else:
         assert ctx.instance.draining_since is None
         assert not ctx.instance.distributed_servers.stop_requested
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stopped', [False, True])
+async def test_ep_only_switches_to_single_entry_only_after_all_tasks_stop(
+    managed_recovery, stopped
+):
+    from gpustack.schemas.models import BackendEnum, ModelInstanceComponent
+
+    ctx = managed_recovery
+    ctx.model.backend = BackendEnum.SGLANG
+    ctx.model.backend_parameters = ['--ep-size', '2']
+    ctx.instance.computed_resource_claim.ram = 3 * 1024**3
+    ctx.instance.state = ModelInstanceStateEnum.ERROR
+    for item in ctx.instance.distributed_servers.workloads:
+        item.component = ModelInstanceComponent(kind='sglang_engine')
+        item.dp_rank_placements = []
+        item.state = ModelInstanceWorkloadStateEnum.STOPPED
+    if not stopped:
+        ctx.instance.distributed_servers.workloads[0].state = (
+            ModelInstanceWorkloadStateEnum.RUNNING
+        )
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+    if stopped:
+        assert ctx.instance.distributed_servers.workloads is None
+        assert ctx.instance.port is None and ctx.instance.ports is None
+        assert ctx.instance.named_ports is None
+        assert ctx.instance.computed_resource_claim.ram == 1024**3
+        assert ctx.instance.restart_count == 1
+    else:
+        ctx.write.assert_not_awaited()
+        assert ctx.instance.computed_resource_claim.ram == 3 * 1024**3
+        assert ctx.instance.distributed_servers.workloads

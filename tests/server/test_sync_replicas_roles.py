@@ -1397,24 +1397,37 @@ async def test_new_pd_marker_follows_role_parameters_without_merging(
 
 
 @pytest.mark.asyncio
-async def test_new_external_pd_refuses_static_only_router_catalog():
-    from gpustack.api.exceptions import BadRequestException
+@pytest.mark.parametrize(
+    'mode,parameters',
+    [
+        ('vllm-mooncake', ['--data-parallel-external-lb', '--dp=2']),
+        ('vllm-nixl', ['--dpm', '--dp=2']),
+    ],
+)
+async def test_new_external_pd_registers_managed_role_with_platform_router(
+    mode, parameters
+):
     from gpustack.schemas.models import DisaggregationSpec
     from gpustack.server.controllers import _build_instance_create
 
     model = _model(
         backend=BackendEnum.VLLM,
-        backend_parameters=['--data-parallel-external-lb', '--dp=2'],
-        disaggregation=DisaggregationSpec(mode='vllm-mooncake'),
-        roles=_pd_roles(),
+        disaggregation=DisaggregationSpec(mode=mode),
+        roles=[
+            RoleSpec(name='prefill', replicas=1, backend_parameters=list(parameters))
+        ],
     )
     with patch(
         'gpustack.server.controllers.get_draft_model_source',
         AsyncMock(return_value=None),
     ):
-        with pytest.raises(BadRequestException) as error:
-            await _build_instance_create(_pass(), model, model.roles[0], 'g1', 'digest')
-        assert 'dynamic router membership' in error.value.message
+        row = await _build_instance_create(
+            _pass(), model, model.roles[0], 'g1', 'digest'
+        )
+    assert row.distributed_servers.workloads == []
+    assert row.spec_digest == 'digest'
+    assert row.role == 'prefill'
+    assert model.roles[0].backend_parameters == parameters
 
 
 @pytest.mark.asyncio
@@ -1423,7 +1436,8 @@ async def test_new_external_pd_refuses_static_only_router_catalog():
     [
         (['--dp=2'], None, True),
         (['--dp-size=2', '--enable-dp-attention'], None, True),
-        (['--ep-size=2'], None, True),
+        (['--ep-size=2'], None, False),
+        (['--ep-size=2', '--dp=2'], None, True),
         (['--dp=1'], None, False),
         (['--dp=2'], ['image'], False),
     ],
@@ -1447,28 +1461,6 @@ async def test_only_new_ordinary_sglang_instances_activate_components(
     else:
         assert created.distributed_servers is None
     assert existing.distributed_servers is None
-
-
-@pytest.mark.asyncio
-async def test_pd_admission_rejects_multi_port_external_before_creating_instance():
-    from gpustack.api.exceptions import BadRequestException
-    from gpustack.schemas.models import DisaggregationSpec
-    from gpustack.server.controllers import _build_instance_create
-
-    model = _model(
-        backend=BackendEnum.VLLM,
-        disaggregation=DisaggregationSpec(mode='vllm-nixl'),
-        roles=[
-            RoleSpec(name='prefill', replicas=1, backend_parameters=['--dpm', '--dp=2'])
-        ],
-    )
-    with patch(
-        'gpustack.server.controllers.get_draft_model_source',
-        AsyncMock(return_value=None),
-    ):
-        with pytest.raises(BadRequestException) as error:
-            await _build_instance_create(_pass(), model, model.roles[0], 'g1', 'digest')
-    assert 'ordinary instances' in error.value.message
 
 
 @pytest.mark.asyncio

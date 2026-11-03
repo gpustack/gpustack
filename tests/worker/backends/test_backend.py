@@ -3494,7 +3494,9 @@ def test_managed_ascend_final_kv_json_uses_reserved_port(port):
     [
         (['--dp-size=4'], True),
         (['--enable-dp-attention', '--dp', '2'], True),
-        (['--ep-size', '8'], True),
+        (['--ep-size', '8'], False),
+        (['--ep-size', '8', '--dp-size', '2'], True),
+        (['--enable-dp-attention', '--dp-size', '1'], False),
         (['--tp', '8'], False),
         (['--dp-size=1'], False),
         (['--policy=random'], False),

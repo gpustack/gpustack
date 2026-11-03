@@ -1421,7 +1421,7 @@ def _validate_sglang_component_layout(instance, model, workloads) -> None:
 
     try:
         if instance.role is not None or not sglang_smg_mode(model):
-            raise ValueError("Components require ordinary SGLang DP/DPA/EP")
+            raise ValueError("Components require ordinary multi-rank SGLang DP/DPA")
         expected_dp, _, _ = sglang_parallelism(model.backend_parameters)
     except ValueError as exc:
         raise BadRequestException(message=str(exc)) from exc

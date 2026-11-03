@@ -436,3 +436,41 @@ async def test_cohort_protocol_precheck_does_not_require_existing_sibling_ready(
     assert 'protocol v1' in scheduler._incompatible_cohort_message(
         model, [worker], [pending, sibling], True
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('role', [None, 'prefill'])
+async def test_port_admission_filters_candidates_before_the_score_chain(
+    harness, monkeypatch, role
+):
+    from gpustack.scheduler import port_budget
+
+    candidates = [object(), object()]
+    model = _pd_model() if role else _model()
+    for selector in harness.selectors.values():
+        monkeypatch.setattr(
+            selector, 'select_candidates', AsyncMock(return_value=candidates)
+        )
+    order = []
+
+    async def admit(
+        session, effective, requested_role, found, workers, instances, excluded
+    ):
+        assert found == candidates and requested_role == role
+        order.append('ports')
+        return [candidates[1]], ['port shortage']
+
+    class ScoreChain:
+        def __init__(self, scorers):
+            pass
+
+        async def score(self, found):
+            assert found == [candidates[1]]
+            order.append('score')
+            return found
+
+    monkeypatch.setattr(port_budget, 'filter_candidates', admit)
+    monkeypatch.setattr(scheduler, 'CandidateScoreChain', ScoreChain)
+    _, messages = await _run(model, role)
+    assert order == ['ports', 'score']
+    assert 'port shortage' in messages

@@ -14,7 +14,6 @@ from gpustack.schemas.models import (
     ModelInstancePreparation,
     ModelInstanceStateEnum,
     member_worker_ids,
-    role_effective_model,
 )
 
 from gpustack.schemas.workers import Worker
@@ -371,7 +370,7 @@ def model_instance_metrics_placements(
     workloads = get_model_instance_workloads(instance)
     hybrid = {s.worker_id: s for s in sources if s.kind == "vllm_hybrid"}
     if hybrid:
-        return _hybrid_metrics_placements(instance, workloads, hybrid, model)
+        return _hybrid_metrics_placements(instance, workloads, hybrid)
     ranks = {s.dp_rank: s for s in sources if s.kind == "vllm_engine"}
     if ranks:
         return [
@@ -409,7 +408,7 @@ def model_instance_metrics_placements(
     ]
 
 
-def _hybrid_metrics_placements(instance, workloads, sources, model):
+def _hybrid_metrics_placements(instance, workloads, sources):
     """Reuse the launch topology to attach every device to its shared API."""
     from gpustack.utils.vllm_topology import (
         managed_lb_parallelism,
@@ -417,13 +416,16 @@ def _hybrid_metrics_placements(instance, workloads, sources, model):
         vllm_lb_mode,
     )
 
-    if model is None:
+    from gpustack.schemas.models import ModelInstanceLaunchIdentity
+
+    snapshot = instance.model_config_snapshot
+    launch = ModelInstanceLaunchIdentity.from_instance(instance)
+    if snapshot is None or launch is None or snapshot.launch_identity != launch:
         return []
     members = [instance] + list(instance.distributed_servers.subordinate_workers or [])
     counts = [len(member.gpu_indexes or []) for member in members]
     try:
-        model = role_effective_model(model, instance.role)
-        parameters = getattr(model, "backend_parameters", None)
+        parameters = snapshot.backend_parameters
         if vllm_lb_mode(parameters) != "hybrid":
             return []
         topology = managed_lb_parallelism(parameters, counts)
@@ -679,7 +681,7 @@ def validate_sglang_dpa_version(model: Model) -> None:
 
 
 def sglang_smg_mode(model) -> bool:
-    """Identify ordinary SGLang DP/DPA/EP intent, excluding PD and diffusion."""
+    """Use a DP-aware SMG only when the Engine has multiple routing ranks."""
     from gpustack.schemas.models import BackendEnum, CategoryEnum, get_backend
 
     if (
@@ -688,8 +690,8 @@ def sglang_smg_mode(model) -> bool:
         or CategoryEnum.IMAGE in (model.categories or [])
     ):
         return False
-    dp, ep, attention = sglang_parallelism(model.backend_parameters)
-    return dp > 1 or ep > 1 or attention
+    dp, _, _ = sglang_parallelism(model.backend_parameters)
+    return dp > 1
 
 
 def sglang_policy_parameters(
@@ -729,7 +731,9 @@ def validate_sglang_smg_policy(model) -> None:
         return
     _, _, found = sglang_policy_parameters(model.backend_parameters)
     if found and not sglang_smg_mode(model):
-        raise ValueError('--policy requires an ordinary SGLang DP/DPA/EP SMG component')
+        raise ValueError(
+            '--policy requires an ordinary multi-rank SGLang DP/DPA SMG component'
+        )
 
 
 def _sglang_engine_workloads(

@@ -506,3 +506,196 @@ def test_multi_port_nixl_budget_includes_global_side_channel_band(counts):
         )
         + dp
     )
+
+
+def _snapshot(worker_id=1, port_range='40000-40063', busy=()):
+    from uuid import uuid4
+    from gpustack.schemas.port_reservations import WorkerPortAvailability
+
+    return WorkerPortAvailability(
+        worker_id=worker_id,
+        generation=uuid4(),
+        port_range=port_range,
+        unavailable_ports=list(busy),
+    )
+
+
+@pytest.mark.parametrize(
+    'snapshots,expected',
+    [
+        ([_snapshot(port_range='40000-40011')], False),
+        ([_snapshot()], True),
+        ([_snapshot(busy=range(40009, 40064, 10))], False),
+        ([_snapshot(), _snapshot(2, '40100-40163')], False),
+        ([_snapshot(), _snapshot(2, busy=range(40009, 40064, 10))], False),
+        ([_snapshot(), _snapshot(2, '40000-40031')], True),
+    ],
+)
+def test_external_layout_checks_capacity_fragmentation_and_common_bands(
+    snapshots, expected
+):
+    model = _model(
+        backend_parameters=['--data-parallel-external-lb', '--dp', '4', '--tp', '1']
+    )
+    requests = port_budget.member_port_requests(model, None, [4])
+    assert sum(count for count, _ in requests) == 15
+    assert port_budget.fits_port_layout(snapshots, requests) is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('role', [None, 'prefill', 'decode'])
+@pytest.mark.parametrize('mode', ['external', 'hybrid'])
+async def test_candidate_admission_checks_ports_before_scoring(monkeypatch, role, mode):
+    from unittest.mock import AsyncMock
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+
+    workers = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+    model = _model(
+        backend_parameters=[f'--data-parallel-{mode}-lb', '--dp', '4', '--tp', '1']
+    )
+    candidates = [
+        ModelInstanceScheduleCandidate(w, [0, 1, 2, 3], None) for w in workers
+    ]
+    snapshots = AsyncMock(
+        return_value={
+            1: _snapshot(1, '40000-40000'),
+            2: _snapshot(2),
+        }
+    )
+    monkeypatch.setattr(port_budget, 'worker_port_snapshots', snapshots)
+    accepted, messages = await port_budget.filter_candidates(
+        None, model, role, candidates, workers, [], 7
+    )
+    assert accepted == [candidates[1]]
+    assert messages and 'service ports' in messages[0]
+    snapshots.assert_awaited_once_with(workers, 7)
+
+
+@pytest.mark.asyncio
+async def test_missing_worker_port_snapshot_does_not_admit_candidate(monkeypatch):
+    from unittest.mock import AsyncMock
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+
+    worker = SimpleNamespace(id=1)
+    model = _model(backend_parameters=['--data-parallel-external-lb', '--dp', '4'])
+    monkeypatch.setattr(
+        port_budget, 'worker_port_snapshots', AsyncMock(return_value={})
+    )
+    accepted, messages = await port_budget.filter_candidates(
+        None,
+        model,
+        None,
+        [ModelInstanceScheduleCandidate(worker, [0, 1, 2, 3], None)],
+        [worker],
+        [],
+    )
+    assert accepted == []
+    assert 'Cannot establish' in messages[0]
+
+
+@pytest.mark.asyncio
+async def test_worker_snapshots_use_worker_transport_once_and_exclude_retry(
+    monkeypatch,
+):
+    from unittest.mock import AsyncMock
+
+    workers = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+
+    async def read(**kwargs):
+        return (
+            SimpleNamespace(status=200),
+            _snapshot(kwargs['worker'].id).model_dump_json().encode(),
+        )
+
+    rpc = AsyncMock(side_effect=read)
+    monkeypatch.setattr(port_budget, 'request_to_worker', rpc)
+    snapshots = await port_budget.worker_port_snapshots(workers, 7)
+    assert set(snapshots) == {1, 2}
+    assert rpc.await_count == 2
+    for call in rpc.call_args_list:
+        assert call.kwargs['path'] == 'port-reservations'
+        assert call.kwargs['params'] == {'exclude_instance_id': 7}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['model', 'cache'])
+async def test_port_admission_includes_persisted_reservations(monkeypatch, owner):
+    from unittest.mock import AsyncMock
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+
+    worker = SimpleNamespace(id=1)
+    model = _model(backend_parameters=['--data-parallel-external-lb', '--dp', '4'])
+    model.cluster_id = 11
+    occupied = list(range(40000, 40012))
+    cache = _cache_instance(1, ports={'api': 40000}, port=40001)
+    cache.ports = {str(port): port for port in occupied}
+    lookup = AsyncMock(return_value=[cache] if owner == 'cache' else [])
+    monkeypatch.setattr(port_budget.CacheServiceInstance, 'all_by_fields', lookup)
+    monkeypatch.setattr(
+        port_budget,
+        'worker_port_snapshots',
+        AsyncMock(return_value={1: _snapshot(1, '40000-40020')}),
+    )
+    instances = [_instance(1, occupied)] if owner == 'model' else []
+    session = object()
+    accepted, _ = await port_budget.filter_candidates(
+        session,
+        model,
+        None,
+        [ModelInstanceScheduleCandidate(worker, [0, 1, 2, 3], None)],
+        [worker],
+        instances,
+    )
+    assert accepted == []
+    lookup.assert_awaited_once_with(session, {'cluster_id': 11})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('role', ['prefill', 'router'])
+async def test_pd_single_listener_still_requires_a_free_port(monkeypatch, role):
+    from unittest.mock import AsyncMock
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+
+    worker = SimpleNamespace(id=1)
+    candidate = ModelInstanceScheduleCandidate(worker, [], None)
+    monkeypatch.setattr(
+        port_budget,
+        'worker_port_snapshots',
+        AsyncMock(return_value={1: _snapshot(1, '40000-40000', [40000])}),
+    )
+    accepted, _ = await port_budget.filter_candidates(
+        None, _model(), role, [candidate], [worker], []
+    )
+    assert accepted == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('conflicting', [False, True])
+async def test_spanning_hybrid_candidate_requires_common_contiguous_bands(
+    monkeypatch, conflicting
+):
+    from unittest.mock import AsyncMock
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+
+    workers = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+    candidate = ModelInstanceScheduleCandidate(
+        workers[0],
+        list(range(4)),
+        None,
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(worker_id=2, gpu_indexes=list(range(4)))
+        ],
+    )
+    model = _model(backend_parameters=['--data-parallel-hybrid-lb', '--tp=8', '--dp=1'])
+    snapshots = {
+        1: _snapshot(1, '40000-40031', [40010, 40021]),
+        2: _snapshot(2, '40000-40031', [40000, 40011, 40022] if conflicting else []),
+    }
+    monkeypatch.setattr(
+        port_budget, 'worker_port_snapshots', AsyncMock(return_value=snapshots)
+    )
+    accepted, _ = await port_budget.filter_candidates(
+        None, model, None, [candidate], workers, []
+    )
+    assert bool(accepted) is not conflicting

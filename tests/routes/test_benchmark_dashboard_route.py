@@ -173,8 +173,6 @@ async def test_external_grafana_benchmark_retains_request_root_and_time_window(p
     assert params['to'] == [
         str(int((_ENDED + route._DASHBOARD_PADDING).timestamp() * 1000))
     ]
+    assert params['var-gpustack_base_url'] == ['https://api.example/platform']
     if pd:
-        assert 'var-gpustack_base_url' not in params
         assert 'var-counted_role' in params
-    else:
-        assert params['var-gpustack_base_url'] == ['https://api.example/platform']

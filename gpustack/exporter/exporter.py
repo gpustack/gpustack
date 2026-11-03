@@ -476,6 +476,8 @@ class MetricExporter(Collector):
             "model_instance_name": instance.name,
             "restart_count": str(instance.restart_count or 0),
         }
+        if instance.role is not None:
+            common["role"] = instance.role
         for source in sources:
             labels = {
                 **common,

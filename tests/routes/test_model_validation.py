@@ -168,6 +168,8 @@ async def test_multi_port_external_invalid_parameters_are_rejected_before_schedu
     'parameters,categories',
     [
         (['--policy=random'], None),
+        (['--ep-size=8', '--policy=cache_aware'], None),
+        (['--enable-dp-attention', '--dp-size=1', '--policy=random'], None),
         (['--dp=4', '--policy=consistent_hashing'], None),
         (['--dp=4', '--policy'], None),
         (['--dp=4', '--policy=random'], ['image']),
@@ -194,7 +196,7 @@ async def test_sglang_policy_requires_supported_paired_smg(
     [
         ['--dp=4', '--policy=random'],
         ['--enable-dp-attention', '--dp-size=4', '--policy=manual'],
-        ['--ep-size=8', '--policy=cache_aware'],
+        ['--ep-size=8', '--dp-size=2', '--policy=cache_aware'],
     ],
 )
 def test_sglang_valid_policy_preserves_saved_argv(parameters):

@@ -245,7 +245,9 @@ class SGLangServer(InferenceServer):
 
         managed = get_model_instance_workloads(self._model_instance) is not None
         if managed and not sglang_smg_mode(self._model):
-            raise ValueError("Managed components require ordinary SGLang DP/DPA/EP")
+            raise ValueError(
+                "Managed components require ordinary multi-rank SGLang DP/DPA"
+            )
         if not managed and self._model.disaggregation is None:
             _, _, policy_requested = sglang_policy_parameters(
                 self._model.backend_parameters
@@ -409,7 +411,9 @@ class SGLangServer(InferenceServer):
     ) -> None:
         """Return the complete local task set without creating runtime objects."""
         if not sglang_smg_mode(self._model):
-            raise ValueError("Managed components require ordinary SGLang DP/DPA/EP")
+            raise ValueError(
+                "Managed components require ordinary multi-rank SGLang DP/DPA"
+            )
         callback = getattr(self, "_workload_plan_callback", None)
         if not callable(callback):
             raise ValueError("Managed SGLang requires the parent preparation channel")

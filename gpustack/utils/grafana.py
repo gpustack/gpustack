@@ -201,6 +201,9 @@ def build_model_dashboard_url(
     if cluster_name:
         query_params["var-cluster_name"] = _re2_literal(cluster_name)
     query_params["var-model_name"] = _re2_literal(model.name)
+    server_base = resolve_server_base_url(cfg, request)
+    if server_base:
+        query_params["var-gpustack_base_url"] = server_base
     if pd:
         # PD selectors use exact matches inside quoted PromQL strings.
         query_params["var-model_name"] = json.dumps(model.name, ensure_ascii=False)[
@@ -226,9 +229,6 @@ def build_model_dashboard_url(
                 model_name=model.name,
             )
         )
-        server_base = resolve_server_base_url(cfg, request)
-        if server_base:
-            query_params["var-gpustack_base_url"] = server_base
     query_params.update(extra_params or {})
 
     slug = "gpustack-pd" if pd else "gpustack-model"

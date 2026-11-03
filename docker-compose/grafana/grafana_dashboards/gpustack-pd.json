@@ -314,6 +314,361 @@
       ]
     },
     {
+      "id": 58,
+      "title": "Prefill / Decode — External DP rank details",
+      "description": "One row per registered External-LB rank API. Open the instance name to inspect that rank. GPU placement is separate from token accounting.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (role, model_instance_id, model_instance_name, restart_count, worker_id, worker_name, source_name, endpoint_dp_rank) (gpustack:model_instance_source_info{cluster_name=\"$cluster_name\", model_name=\"$model_name\", role=~\"prefill|decode\", source_kind=\"vllm_engine\"})",
+          "format": "table",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "model_instance_name"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open instance rank monitoring",
+                    "url": "${gpustack_base_url:raw}/v2/model-instances/${__data.fields.model_instance_id}/dashboard?restart_count=${__data.fields.restart_count}&worker_id=${__data.fields.worker_id}&dp_rank=${__data.fields.endpoint_dp_rank}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "role"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Role"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "model_instance_name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Instance"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "worker_name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Worker"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "worker_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Worker ID"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "source_name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Source"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "endpoint_dp_rank"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "DP rank"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "model_instance_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "restart_count"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true
+            },
+            "indexByName": {
+              "role": 0,
+              "model_instance_id": 1,
+              "model_instance_name": 2,
+              "restart_count": 3,
+              "worker_id": 4,
+              "worker_name": 5,
+              "source_name": 6,
+              "endpoint_dp_rank": 7
+            },
+            "renameByName": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": 59,
+      "title": "Prefill / Decode — Hybrid shared API details",
+      "description": "One row per shared Worker API. Native engine ranks remain separate metric series within that API; this endpoint is not a single DP rank.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (role, model_instance_id, model_instance_name, restart_count, worker_id, worker_name, source_name) (gpustack:model_instance_source_info{cluster_name=\"$cluster_name\", model_name=\"$model_name\", role=~\"prefill|decode\", source_kind=\"vllm_hybrid\"})",
+          "format": "table",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "model_instance_name"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open shared API monitoring",
+                    "url": "${gpustack_base_url:raw}/v2/model-instances/${__data.fields.model_instance_id}/dashboard?restart_count=${__data.fields.restart_count}&worker_id=${__data.fields.worker_id}&component=vllm_hybrid",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "role"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Role"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "model_instance_name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Instance"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "worker_name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Worker"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "worker_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Worker ID"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "source_name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Source"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "endpoint_dp_rank"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "DP rank"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "model_instance_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "restart_count"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true
+            },
+            "indexByName": {
+              "role": 0,
+              "model_instance_id": 1,
+              "model_instance_name": 2,
+              "restart_count": 3,
+              "worker_id": 4,
+              "worker_name": 5,
+              "source_name": 6
+            },
+            "renameByName": {}
+          }
+        }
+      ]
+    },
+    {
       "collapsed": false,
       "id": 42,
       "type": "row",
@@ -323,7 +678,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 15
       },
       "panels": []
     },
@@ -340,7 +695,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 7
+        "y": 16
       },
       "fieldConfig": {
         "defaults": {
@@ -419,7 +774,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 7
+        "y": 16
       },
       "fieldConfig": {
         "defaults": {
@@ -509,7 +864,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 15
+        "y": 24
       },
       "fieldConfig": {
         "defaults": {
@@ -610,7 +965,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 15
+        "y": 24
       },
       "fieldConfig": {
         "defaults": {
@@ -722,7 +1077,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 23
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -823,7 +1178,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 23
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -913,7 +1268,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 31
+        "y": 40
       },
       "fieldConfig": {
         "defaults": {
@@ -981,7 +1336,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 31
+        "y": 40
       },
       "fieldConfig": {
         "defaults": {
@@ -1049,7 +1404,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 39
+        "y": 48
       },
       "fieldConfig": {
         "defaults": {
@@ -1117,7 +1472,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 39
+        "y": 48
       },
       "fieldConfig": {
         "defaults": {
@@ -1196,7 +1551,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 47
+        "y": 56
       },
       "fieldConfig": {
         "defaults": {
@@ -1283,7 +1638,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 47
+        "y": 56
       },
       "fieldConfig": {
         "defaults": {
@@ -1370,7 +1725,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 55
+        "y": 64
       },
       "fieldConfig": {
         "defaults": {
@@ -1438,7 +1793,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 55
+        "y": 64
       },
       "fieldConfig": {
         "defaults": {
@@ -1506,7 +1861,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 63
+        "y": 72
       },
       "fieldConfig": {
         "defaults": {
@@ -1600,7 +1955,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 71
+        "y": 80
       },
       "id": 1,
       "panels": [],
@@ -1621,7 +1976,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 72
+        "y": 81
       },
       "fieldConfig": {
         "defaults": {
@@ -1689,7 +2044,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 72
+        "y": 81
       },
       "fieldConfig": {
         "defaults": {
@@ -1757,7 +2112,7 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 72
+        "y": 81
       },
       "fieldConfig": {
         "defaults": {
@@ -1825,7 +2180,7 @@
         "h": 5,
         "w": 6,
         "x": 18,
-        "y": 72
+        "y": 81
       },
       "fieldConfig": {
         "defaults": {
@@ -1893,7 +2248,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 77
+        "y": 86
       },
       "fieldConfig": {
         "defaults": {
@@ -1965,7 +2320,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 77
+        "y": 86
       },
       "fieldConfig": {
         "defaults": {
@@ -2048,7 +2403,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 85
+        "y": 94
       },
       "id": 8,
       "panels": [],
@@ -2069,7 +2424,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 86
+        "y": 95
       },
       "fieldConfig": {
         "defaults": {
@@ -2137,7 +2492,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 86
+        "y": 95
       },
       "fieldConfig": {
         "defaults": {
@@ -2198,7 +2553,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 94
+        "y": 103
       },
       "id": 13,
       "panels": [],
@@ -2219,7 +2574,7 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 95
+        "y": 104
       },
       "fieldConfig": {
         "defaults": {
@@ -2287,7 +2642,7 @@
         "h": 5,
         "w": 4,
         "x": 4,
-        "y": 95
+        "y": 104
       },
       "fieldConfig": {
         "defaults": {
@@ -2355,7 +2710,7 @@
         "h": 5,
         "w": 4,
         "x": 8,
-        "y": 95
+        "y": 104
       },
       "fieldConfig": {
         "defaults": {
@@ -2423,7 +2778,7 @@
         "h": 5,
         "w": 4,
         "x": 12,
-        "y": 95
+        "y": 104
       },
       "fieldConfig": {
         "defaults": {
@@ -2499,7 +2854,7 @@
         "h": 5,
         "w": 4,
         "x": 16,
-        "y": 95
+        "y": 104
       },
       "fieldConfig": {
         "defaults": {
@@ -2571,7 +2926,7 @@
         "h": 5,
         "w": 4,
         "x": 20,
-        "y": 95
+        "y": 104
       },
       "fieldConfig": {
         "defaults": {
@@ -2643,7 +2998,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 100
+        "y": 109
       },
       "fieldConfig": {
         "defaults": {
@@ -2744,7 +3099,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 100
+        "y": 109
       },
       "fieldConfig": {
         "defaults": {
@@ -2812,7 +3167,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 108
+        "y": 117
       },
       "fieldConfig": {
         "defaults": {
@@ -2877,7 +3232,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 116
+        "y": 125
       },
       "panels": []
     },
@@ -2894,7 +3249,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 117
+        "y": 126
       },
       "fieldConfig": {
         "defaults": {
@@ -2973,7 +3328,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 117
+        "y": 126
       },
       "fieldConfig": {
         "defaults": {
@@ -3052,7 +3407,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 125
+        "y": 134
       },
       "fieldConfig": {
         "defaults": {
@@ -3120,7 +3475,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 125
+        "y": 134
       },
       "fieldConfig": {
         "defaults": {
@@ -3221,7 +3576,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 133
+        "y": 142
       },
       "fieldConfig": {
         "defaults": {
@@ -3311,7 +3666,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 141
+        "y": 150
       },
       "fieldConfig": {
         "defaults": {
@@ -3383,7 +3738,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 141
+        "y": 150
       },
       "fieldConfig": {
         "defaults": {
@@ -3455,7 +3810,7 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 141
+        "y": 150
       },
       "fieldConfig": {
         "defaults": {
@@ -3527,7 +3882,7 @@
         "h": 5,
         "w": 6,
         "x": 18,
-        "y": 141
+        "y": 150
       },
       "fieldConfig": {
         "defaults": {
@@ -3592,7 +3947,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 146
+        "y": 155
       },
       "panels": []
     },
@@ -3609,7 +3964,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 147
+        "y": 156
       },
       "fieldConfig": {
         "defaults": {
@@ -3688,7 +4043,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 147
+        "y": 156
       },
       "fieldConfig": {
         "defaults": {
@@ -3767,7 +4122,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 155
+        "y": 164
       },
       "fieldConfig": {
         "defaults": {
@@ -3934,6 +4289,23 @@
           ]
         },
         "options": []
+      },
+      {
+        "name": "gpustack_base_url",
+        "type": "textbox",
+        "hide": 2,
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ]
       }
     ]
   },

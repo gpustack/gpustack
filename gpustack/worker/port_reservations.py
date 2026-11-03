@@ -96,6 +96,20 @@ class WorkerPortReservations:
         self._claim_versions: Dict[int, UUID] = {}
         self._generation = 0
 
+    def local_ports(self, model_instance_id: Optional[int] = None) -> Set[int]:
+        """Read pending and active local reservations without a server callback."""
+        with self.lock:
+            ports = set()
+            for instance_id, owned in self.model_ports.items():
+                if instance_id != model_instance_id:
+                    ports.update(owned)
+            for instance_id, (_, owned) in self.model_claims.items():
+                if instance_id != model_instance_id:
+                    ports.update(owned)
+            for owned in self.cache_ports.values():
+                ports.update(owned)
+            return ports
+
     @contextmanager
     def allocation(
         self,
