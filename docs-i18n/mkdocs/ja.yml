@@ -6,6 +6,7 @@ theme_translations:
   Switch to dark mode: ダークモードに切り替え
   Switch to system preference: システム設定に合わせる
 nav_translations:
+  Site Settings: サイト設定
   Home: ホーム
   Overview: 概要
   Quickstart: クイックスタート

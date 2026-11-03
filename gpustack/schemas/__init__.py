@@ -1,3 +1,4 @@
+from gpustack.schemas.site_settings import SiteSettings  # noqa: F401 table registration
 from gpustack.schemas.clusters import (
     CloudCredential,
     CloudCredentialCreate,

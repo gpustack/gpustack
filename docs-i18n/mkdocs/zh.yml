@@ -6,6 +6,7 @@ theme_translations:
   Switch to dark mode: 切换到深色模式
   Switch to system preference: 跟随系统设置
 nav_translations:
+  Site Settings: 站点设置
   Home: 首页
   Overview: 概览
   Quickstart: 快速入门

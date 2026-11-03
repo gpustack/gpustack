@@ -61,3 +61,34 @@ def test_downgrade_only_drops_an_existing_column(
         migration.op.drop_column.assert_called_once_with(
             "model_instances", "model_config_snapshot"
         )
+
+
+@pytest.mark.parametrize("dialect", [postgresql.dialect(), mysql.dialect()])
+def test_site_settings_table_upgrade_is_portable_and_idempotent(
+    migration, monkeypatch, dialect
+):
+    import sqlalchemy as sa
+    from sqlalchemy.schema import CreateTable
+
+    monkeypatch.setattr(migration, "table_exists", lambda name: name != "site_settings")
+    migration.upgrade()
+    name, *columns = migration.op.create_table.call_args.args
+    table = sa.Table(name, sa.MetaData(), *columns)
+    ddl = str(CreateTable(table).compile(dialect=dialect))
+    assert "id = 1" in ddl
+    assert table.c.site_name.type.length == 128
+    assert table.c.updated_at.nullable
+    assert "MEDIUMTEXT" in ddl if dialect.name == "mysql" else "TEXT" in ddl
+    migration.op.create_table.reset_mock()
+    monkeypatch.setattr(migration, "table_exists", lambda name: True)
+    migration.upgrade()
+    migration.op.create_table.assert_not_called()
+
+
+def test_site_settings_downgrade_only_drops_existing_table(migration, monkeypatch):
+    migration.downgrade()
+    migration.op.drop_table.assert_called_once_with("site_settings")
+    migration.op.drop_table.reset_mock()
+    monkeypatch.setattr(migration, "table_exists", lambda name: False)
+    migration.downgrade()
+    migration.op.drop_table.assert_not_called()
