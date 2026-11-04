@@ -1606,19 +1606,18 @@ class ServeManager(ContainerLogPersister):
             logger.trace(f"Model instance {mi.name} is already provisioning.")
             return
 
-        active = [
-            sw.worker_ip
-            for sw in (
-                mi.distributed_servers.subordinate_workers
-                if mi.distributed_servers
-                and mi.distributed_servers.mode
-                == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
-                and mi.distributed_servers.subordinate_workers
-                else []
-            )
-            if sw.state not in _SUBORDINATE_UNSTARTED_STATES
-            and sw.state != ModelInstanceStateEnum.UNREACHABLE
-        ]
+        active = []
+        servers = mi.distributed_servers
+        if (
+            servers
+            and servers.mode == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+        ):
+            active = [
+                sw.worker_ip
+                for sw in servers.subordinate_workers or []
+                if sw.state not in _SUBORDINATE_UNSTARTED_STATES
+                and sw.state != ModelInstanceStateEnum.UNREACHABLE
+            ]
         if active:
             now = time.monotonic()
             waiting_since = self._deferred_group_restarts.setdefault(mi.id, now)
@@ -1633,8 +1632,9 @@ class ServeManager(ContainerLogPersister):
                 f"{active} did not stop in time."
             )
 
-        self._deferred_group_restarts.pop(mi.id, None)
         self._restart_model_instance(mi)
+        # Only now: a restart that raised has to stay eligible for a retry.
+        self._deferred_group_restarts.pop(mi.id, None)
         logger.trace(f"Restarted scheduled model instance {mi.name}.")
 
     def _retry_deferred_group_restarts(self) -> None:
@@ -1644,16 +1644,22 @@ class ServeManager(ContainerLogPersister):
                 mi = self._clientset.model_instances.get(
                     id=instance_id, use_cache=False
                 )
+                if (
+                    mi.state != ModelInstanceStateEnum.SCHEDULED
+                    or mi.worker_id != self._worker_id
+                ):
+                    self._deferred_group_restarts.pop(instance_id, None)
+                    continue
+                self._restart_scheduled_model_instance(mi)
             except NotFoundException:
                 self._deferred_group_restarts.pop(instance_id, None)
-                continue
-            if (
-                mi.state != ModelInstanceStateEnum.SCHEDULED
-                or mi.worker_id != self._worker_id
-            ):
-                self._deferred_group_restarts.pop(instance_id, None)
-                continue
-            self._restart_scheduled_model_instance(mi)
+            except Exception as e:
+                # Stay deferred, and do not hold up other instances' recovery,
+                # which runs later in the same pass of the watch loop.
+                logger.warning(
+                    f"Failed to retry deferred restart of model instance "
+                    f"{instance_id}: {e}"
+                )
 
     def _get_numbered_log_path(self, mi: ModelInstance) -> str:
         """Get log file path with restart count.

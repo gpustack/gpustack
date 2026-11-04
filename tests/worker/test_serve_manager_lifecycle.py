@@ -918,6 +918,34 @@ def test_deferred_restart_retries_from_live_state(manager):
 
 
 @pytest.mark.parametrize("manager", [1], indirect=True)
+@pytest.mark.parametrize("failing_call", ["read", "restart"])
+def test_deferred_restart_failure_does_not_block_other_instances(manager, failing_call):
+    serve, clientset = manager
+    failing = _scheduled_on_main(ModelInstanceStateEnum.SCHEDULED)
+    healthy = _scheduled_on_main(ModelInstanceStateEnum.SCHEDULED)
+    healthy.id = 2
+
+    def get_instance(id, use_cache):
+        if id == failing.id and failing_call == "read":
+            raise ReadTimeout("API unavailable")
+        return failing if id == failing.id else healthy
+
+    def restart(mi):
+        if mi.id == failing.id:
+            raise ReadTimeout("API unavailable")
+
+    clientset.model_instances.get.side_effect = get_instance
+    serve._deferred_group_restarts[failing.id] = 0.0
+    serve._deferred_group_restarts[healthy.id] = 0.0
+    with patch.object(serve, "_restart_model_instance", side_effect=restart) as restart:
+        serve._retry_deferred_group_restarts()
+    assert healthy in [call.args[0] for call in restart.call_args_list]
+    # A failed retry stays deferred for the next pass.
+    assert failing.id in serve._deferred_group_restarts
+    assert healthy.id not in serve._deferred_group_restarts
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
 @pytest.mark.parametrize("reason", ["deleted", "moved-on", "reassigned"])
 def test_deferred_restart_is_dropped_when_no_longer_due(manager, reason):
     serve, clientset = manager
