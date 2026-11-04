@@ -483,6 +483,36 @@ model_sets:
     - apache-2.0
   release_date: "2026-08-14"
   specs:
+    - mode: Hygon-BW1000-TP2
+      gpu_filters:
+        vendor: hygon
+      source: model_scope
+      backend: SGLang
+      image_name: harbor.sourcefind.cn:5443/dcu/admin/base/sglang:0.5.12-ubuntu22.04-dtk2604-py3.10
+      backend_parameters:
+      - --attention-backend=fa3
+      - --mm-attention-backend=fa3
+      - --speculative-algorithm=NEXTN
+      - --speculative-num-steps=3
+      - --speculative-eagle-topk=1
+      - --speculative-num-draft-tokens=4
+      - --tp-size=2
+      - --pp-size=1
+      - --max-running-requests=8
+      - --cuda-graph-max-bs=8
+      - --page-size=64
+      - --mamba-scheduler-strategy=extra_buffer
+      - --tool-call-parser=qwen3_coder
+      - --reasoning-parser=qwen3
+      - --trust-remote-code
+      env:
+        SGLANG_ENABLE_SPEC_V2: '1'
+        SGLANG_USE_FUSED_TOPK_SOFTMAX: '1'
+        SGLANG_USE_LIGHTOP: '1'
+        SGLANG_USE_CAUSAL_CONV1D: '1'
+        SGLANG_USE_AITER_LINEAR_ATTN: '1'
+        GLOO_SOCKET_IFNAME: lo
+      model_scope_model_id: Qwen/Qwen3.8-27B
     - mode: standard
       quantization: BF16
       gpu_filters:
