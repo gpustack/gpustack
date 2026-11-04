@@ -174,6 +174,36 @@ class TestValidateLoadConfig:
         _validate_load_config(benchmark)
         assert benchmark.stages[0]["rate"] == rate
 
+    @pytest.mark.parametrize("load_type", ["fixed_rate", None])
+    @pytest.mark.parametrize("rate", [0.0009999999999999998, 0.0001, 1e-12, 1e-309])
+    def test_manual_request_rates_below_minimum_are_refused(self, load_type, rate):
+        with pytest.raises(BadRequestException) as exc:
+            _validate_load_config(
+                _create(
+                    load_type=load_type, stages=[{"rate": rate, "max_requests": 10}]
+                )
+            )
+        assert "0.001" in exc.value.message
+
+    @pytest.mark.parametrize("rate", [0.001, 0.0011])
+    def test_manual_request_rate_minimum_preserves_precision(self, rate):
+        benchmark = _create(
+            load_type="fixed_rate", stages=[{"rate": rate, "max_requests": 10}]
+        )
+        _validate_load_config(benchmark)
+        assert benchmark.stages[0]["rate"] == rate
+
+    def test_stage_minimum_does_not_apply_to_search_bounds_or_legacy_rate(self):
+        _validate_load_config(
+            _create(
+                load_type="fixed_rate",
+                auto_tune=True,
+                lower_bound=0.0001,
+                upper_bound=0.0002,
+                request_rate=-1,
+            )
+        )
+
     @pytest.mark.parametrize("field", ["lower_bound", "upper_bound", "stages"])
     @pytest.mark.parametrize("rate", [float("nan"), float("inf"), float("-inf")])
     def test_non_finite_loads_are_refused(self, field, rate):
