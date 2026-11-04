@@ -17,6 +17,8 @@ from gpustack.schemas.models import (
     CategoryEnum,
     SourceEnum,
     is_llm_model,
+    get_backend,
+    BackendEnum,
 )
 from gpustack.schemas.workers import Worker, GPUDevicesStatus, GPUDeviceStatus
 from pydantic import BaseModel
@@ -27,6 +29,7 @@ from gpustack.utils.lora_model_source import (
     lora_entry_to_model_source,
     normalized_lora_list,
 )
+from gpustack.utils.vllm_topology import manual_dp_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -236,13 +239,15 @@ def get_vram_claim_from_model_env(model: Model) -> Optional[int]:
 
 def should_skip_gpu_count_check(model: Model) -> bool:
     """
-    Whether to bypass the world-size-vs-selected-gpu-count check (GPUSTACK_SKIP_GPU_COUNT_CHECK).
+    Whether manual DP or GPUSTACK_SKIP_GPU_COUNT_CHECK bypasses the world-size check.
     Only honored when GPUs are manually selected; auto-scheduling is unaffected.
     """
     if not (model.gpu_selector and model.gpu_selector.gpu_ids):
         return False
     if not model.env:
         return False
+    if get_backend(model) == BackendEnum.VLLM and manual_dp_enabled(model.env):
+        return True
     value = model.env.get("GPUSTACK_SKIP_GPU_COUNT_CHECK")
     if value is None:
         return False

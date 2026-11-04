@@ -1510,6 +1510,8 @@ class VLLMServer(InferenceServer):
                 ctx.deployment_metadata,
                 self._model.backend_version,
                 self._model.image_name,
+                legacy_launch=get_model_instance_workloads(self._model_instance)
+                is None,
             )
         )
         arguments.extend(self._get_speculative_arguments())
@@ -1578,7 +1580,10 @@ class VLLMServer(InferenceServer):
         topology: Optional[MultinodeTopology] = None
         if (
             is_distributed
-            and vllm_lb_mode(self._model.backend_parameters) != "multi_port_external"
+            and (
+                get_model_instance_workloads(self._model_instance) is None
+                or vllm_lb_mode(self._model.backend_parameters) != "multi_port_external"
+            )
             and executor_backend == "mp"
             and deployment_metadata is not None
         ):
@@ -1624,7 +1629,11 @@ class VLLMServer(InferenceServer):
         default DP backend to ray when user-specified DP > 1.
         """
         if (
-            vllm_lb_mode(self._model.backend_parameters) == "multi_port_external"
+            (
+                get_model_instance_workloads(self._model_instance) is not None
+                and vllm_lb_mode(self._model.backend_parameters)
+                == "multi_port_external"
+            )
             or not ctx.is_distributed
             or ctx.executor_backend != "ray"
         ):
@@ -1669,7 +1678,11 @@ class VLLMServer(InferenceServer):
         its own API, so ``--headless`` is not injected.
         """
         if (
-            vllm_lb_mode(self._model.backend_parameters) == "multi_port_external"
+            (
+                get_model_instance_workloads(self._model_instance) is not None
+                and vllm_lb_mode(self._model.backend_parameters)
+                == "multi_port_external"
+            )
             or not ctx.is_distributed
             or ctx.executor_backend != "mp"
             or ctx.topology is None
@@ -2045,8 +2058,10 @@ def get_auto_parallelism_arguments(
     deployment_metadata: Optional[ModelInstanceDeploymentMetadata] = None,
     backend_version: Optional[str] = None,
     image_name: Optional[str] = None,
+    *,
+    legacy_launch: bool = False,
 ) -> List[str]:
-    if vllm_lb_mode(backend_parameters) == "multi_port_external":
+    if not legacy_launch and vllm_lb_mode(backend_parameters) == "multi_port_external":
         return []
     if (
         is_distributed

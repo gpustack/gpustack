@@ -63,11 +63,28 @@ After they join, confirm on the `Workers` page in the GPUStack UI that both node
     If automatic scheduling cannot allocate resources because a condition is not met (for example, the GPU memory does not satisfy `gpu_memory_utilization`), switch `Scheduling Mode` to `Manual` or `Specify GPU`, and then use the `GPU Selector` to select 8 GPUs on each of the two workers (16 in total). See [Built-in Inference Backends](../user-guide/built-in-inference-backends.md) for the full conditions of automatic scheduling.
 
 
-!!! note "When splitting into multiple deployments manually: use `GPUSTACK_SKIP_GPU_COUNT_CHECK` to skip the GPU count check"
+!!! note "Manual DP across separate deployments"
 
-    In some scenarios, you may want to create one deployment per node (for example, to manage an external load balancer yourself), selecting GPUs manually and setting `--data-parallel-size-local 1` by hand. In this case, each deployment selects only 8 GPUs, while `tensor-parallel-size × data-parallel-size = 16`, so GPUStack reports an error because the GPU count does not match the world size: `the selected gpu count (8) does not match the world size (16)`.
+    Added after GPUStack 2.3.1, `GPUSTACK_MANUAL_DP` preserves the manual workflow of composing a DP group from multiple deployments with newer vLLM MP versions. Set the following in each deployment's `Environment Variables`:
 
-    If this is your intended layout, set `GPUSTACK_SKIP_GPU_COUNT_CHECK=1` in each deployment's `Environment Variables` to skip the check and keep your manually selected GPU count. This switch **takes effect only when GPUs are selected manually** (`Scheduling Mode` is `Manual` or `Specify GPU`) and does not affect automatic scheduling.
+    ```bash
+    GPUSTACK_MANUAL_DP=1
+    ```
+
+    For example, with two nodes of 8 GPUs each, create two deployments, manually select each node's 8 GPUs, and configure these `Backend Parameters`:
+
+    ```bash
+    --distributed-executor-backend=mp
+    --tensor-parallel-size=8
+    --data-parallel-size=2
+    --data-parallel-size-local=1
+    --data-parallel-external-lb
+    --data-parallel-rank=0
+    --data-parallel-address=<your-dp-coordinator-ip>
+    --data-parallel-rpc-port=13345
+    ```
+
+    Replace `<your-dp-coordinator-ip>` with the first node's IP. Use the same parameters for the second deployment, changing `--data-parallel-rank` to `1`. There is no need to additionally set `GPUSTACK_SKIP_GPU_COUNT_CHECK`.
 
 ## Step 3: Monitor Deployment
 

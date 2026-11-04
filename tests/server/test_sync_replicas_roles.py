@@ -267,15 +267,21 @@ async def test_role_less_still_fans_out_by_model_replicas():
         (["--data-parallel-rank=1", "--data-parallel-size=2"], False),
     ],
 )
+@pytest.mark.parametrize('manual_dp', [None, '0', '1', ' TRUE '])
 async def test_only_new_ordinary_explicit_lb_instances_receive_managed_marker(
-    parameters, managed
+    parameters, managed, manual_dp
 ):
-    model = _model(replicas=2, backend=BackendEnum.VLLM, backend_parameters=parameters)
+    model = _model(
+        replicas=2,
+        backend=BackendEnum.VLLM,
+        backend_parameters=parameters,
+        env={'GPUSTACK_MANUAL_DP': manual_dp} if manual_dp is not None else {},
+    )
     existing = _instance(1)
     recorder = await _run(model, [existing])
     assert len(recorder.created) == 1
     created = recorder.created[0]
-    if managed:
+    if managed and manual_dp not in ('1', ' TRUE '):
         assert created.distributed_servers.workloads == []
         assert created.spec_digest is not None
     else:

@@ -858,3 +858,27 @@ async def test_internal_pd_admission_preserves_the_connector_gap(monkeypatch):
 
     assert accepted == [candidate]
     assert messages == []
+
+
+@pytest.mark.parametrize('mode', ['external', 'hybrid', 'multi-port-external'])
+def test_manual_dp_port_budget_uses_single_legacy_entry(mode):
+    from gpustack.utils.model_ports import model_port_requests
+
+    model = _model(
+        backend_parameters=[f'--data-parallel-{mode}-lb', '--tp=8', '--dp=2', '--dpl=1']
+    )
+    model.env = {'GPUSTACK_MANUAL_DP': '1'}
+    assert model_port_requests(model, None, [8]) == [('_api', 1, None)]
+    assert port_budget.member_port_requests(model, None, [8]) == [(1, None)]
+
+
+def test_running_managed_port_plan_is_not_changed_by_manual_dp_edit():
+    from gpustack.utils.model_ports import model_port_requests
+
+    model = _model(
+        backend_parameters=['--data-parallel-external-lb', '--tp=2', '--dp=2']
+    )
+    model.env = {'GPUSTACK_MANUAL_DP': '1'}
+    assert ('_vllm_external_api', 2, None) in model_port_requests(
+        model, None, [4], managed=True
+    )

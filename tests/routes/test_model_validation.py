@@ -183,6 +183,74 @@ async def test_managed_http_modes_reject_uds_before_scheduling(monkeypatch, mode
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['external', 'hybrid', 'multi-port-external'])
+async def test_manual_dp_preserves_native_parameters_without_managed_validation(
+    monkeypatch, mode
+):
+    monkeypatch.setattr(models, 'validate_pd_config', AsyncMock())
+    model = ModelCreate(
+        name='manual',
+        source='local_path',
+        local_path='/models/moe',
+        backend='vLLM',
+        backend_parameters=[f'--data-parallel-{mode}-lb', '--uds=/tmp/model.sock'],
+        env={'GPUSTACK_MANUAL_DP': '1'},
+    )
+    await models.validate_model_in(MagicMock(), model)
+
+
+@pytest.mark.parametrize('backend', ['SGLang', 'custom'])
+def test_manual_dp_rejects_other_backends(backend):
+    model = ModelCreate(
+        name='manual',
+        source='local_path',
+        local_path='/models/moe',
+        backend=backend,
+        env={'GPUSTACK_MANUAL_DP': '1'},
+    )
+    with pytest.raises(BadRequestException) as exc:
+        models._validate_manual_dp_config(model)
+    assert 'ordinary vLLM' in exc.value.message
+
+
+@pytest.mark.parametrize('role_env', [False, True])
+def test_manual_dp_rejects_pd_and_role_environment(role_env):
+    from gpustack.schemas.models import RoleSpec
+
+    model = ModelCreate(
+        name='manual',
+        source='local_path',
+        local_path='/models/moe',
+        backend='vLLM',
+        env={} if role_env else {'GPUSTACK_MANUAL_DP': '1'},
+        roles=[
+            RoleSpec(
+                name='prefill', env={'GPUSTACK_MANUAL_DP': '1'} if role_env else {}
+            )
+        ],
+    )
+    with pytest.raises(BadRequestException) as exc:
+        models._validate_manual_dp_config(model)
+    assert 'ordinary vLLM' in exc.value.message
+
+
+def test_manual_dp_uses_merged_environment_for_sparse_updates():
+    stored = Model(id=1, name='manual', backend='vLLM', env={'GPUSTACK_MANUAL_DP': '1'})
+    assert models._validate_manual_dp_config(
+        ModelUpdate(
+            name='manual', source='local_path', local_path='/models/moe', replicas=2
+        ),
+        stored,
+    )
+    assert not models._validate_manual_dp_config(
+        ModelUpdate(
+            name='manual', source='local_path', local_path='/models/moe', env={}
+        ),
+        stored,
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'parameters,categories',
     [

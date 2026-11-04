@@ -20,6 +20,7 @@ from gpustack.utils.vllm_topology import (
     parse_user_parallelism,
     validate_multinode_topology,
     vllm_lb_mode,
+    manual_dp_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ def model_port_requests(
     role: Optional[str],
     allocation: List[int],
     *,
-    managed: bool = True,
+    managed: Optional[bool] = None,
 ) -> List[Tuple[str, int, Optional[int]]]:
     """Return named bands in first-fit allocation order, including fixed listeners.
 
@@ -84,6 +85,11 @@ def model_port_requests(
     from this allocation order.
     """
     backend = get_backend(model)
+    if managed is None:
+        managed = not (
+            backend == BackendEnum.VLLM
+            and manual_dp_enabled(getattr(model, 'env', None))
+        )
     if managed and role is None and sglang_smg_mode(model):
         return [
             (name, count, None)
@@ -96,7 +102,7 @@ def model_port_requests(
     ]
     mode = (
         vllm_lb_mode(model.backend_parameters)
-        if backend == BackendEnum.VLLM
+        if managed and backend == BackendEnum.VLLM
         else "internal"
     )
     if (

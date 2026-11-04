@@ -781,6 +781,23 @@ async def test_partial_registration_can_recover_after_every_registered_task_stop
 
 
 @pytest.mark.asyncio
+async def test_manual_dp_edit_keeps_managed_recovery_until_explicit_rebuild(
+    managed_recovery,
+):
+    ctx = managed_recovery
+    ctx.model.env = {'GPUSTACK_MANUAL_DP': '1'}
+    ctx.instance.state = ModelInstanceStateEnum.ERROR
+    for task in ctx.instance.distributed_servers.workloads:
+        task.state = ModelInstanceWorkloadStateEnum.STOPPED
+
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+
+    assert ctx.instance.restart_count == 1
+    assert ctx.instance.distributed_servers.orchestration_mode == 'managed'
+    assert ctx.instance.distributed_servers.workloads == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("changed", ["deleted", "new_generation", "missing"])
 async def test_managed_recovery_ignores_a_stale_reconcile_snapshot(
     managed_recovery, changed

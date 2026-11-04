@@ -542,6 +542,24 @@ def _validate_sglang_smg_policy(model_in, stored=None) -> None:
         raise BadRequestException(message=str(exc)) from exc
 
 
+def _validate_manual_dp_config(model_in, stored=None) -> bool:
+    from gpustack.utils.vllm_topology import manual_dp_enabled
+    from gpustack.validation.pd.common import effective_model_spec
+
+    effective = effective_model_spec(model_in, stored)
+    enabled = manual_dp_enabled(effective.env)
+    role_enabled = any(manual_dp_enabled(role.env) for role in effective.roles or [])
+    if (enabled or role_enabled) and (
+        get_backend(effective) != BackendEnum.VLLM
+        or effective.roles
+        or effective.disaggregation is not None
+    ):
+        raise BadRequestException(
+            message='GPUSTACK_MANUAL_DP is supported only for ordinary vLLM deployments.'
+        )
+    return enabled
+
+
 async def validate_model_in(
     session: SessionDep,
     model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
@@ -552,6 +570,7 @@ async def validate_model_in(
     # `stored` is the row being updated, so a sparse PUT is judged against the
     # merged state rather than against the handful of fields it happened to
     # send. Absent on create, where there is nothing to merge.
+    manual_dp = _validate_manual_dp_config(model_in, stored)
     await validate_pd_config(session, model_in, cluster_id=cluster_id, stored=stored)
 
     # API responses use short LoRA names; compare their stored form when
@@ -574,7 +593,7 @@ async def validate_model_in(
         logger.info("Skip model validation for custom backend")
         return
 
-    if get_backend(model_in) == BackendEnum.VLLM:
+    if get_backend(model_in) == BackendEnum.VLLM and not manual_dp:
         from gpustack.utils.vllm_topology import validate_managed_lb_parameters
 
         try:

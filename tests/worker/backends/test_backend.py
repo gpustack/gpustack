@@ -387,11 +387,36 @@ def test_external_unsupported_device_or_executor_overrides_are_rejected(paramete
         "multi_port_external",
         "multi_port_external_managed",
         "hybrid",
+        "manual_external",
+        "manual_hybrid",
+        "manual_mixed",
     ],
 )
-def test_vllm_workload_creation_uses_the_selected_lifecycle(monkeypatch, mode):
+@pytest.mark.parametrize('manual_dp', ['0', '1'])
+def test_vllm_workload_creation_uses_the_selected_lifecycle(
+    monkeypatch, mode, manual_dp
+):
     backend, plan = _external_backend()
-    if mode == "hybrid":
+    backend._model.env = {'GPUSTACK_MANUAL_DP': manual_dp}
+    if mode.startswith('manual_'):
+        backend._model_instance.distributed_servers = None
+        backend._model.backend_parameters = [
+            '--data-parallel-size=2',
+            '--data-parallel-size-local=1',
+            '--tensor-parallel-size=2',
+            '--data-parallel-address=10.0.0.9',
+            '--data-parallel-rpc-port=13345',
+            '--data-parallel-rank=1',
+            '--headless',
+            (
+                '--data-parallel-hybrid-lb'
+                if mode == 'manual_hybrid'
+                else '--data-parallel-external-lb'
+            ),
+        ]
+        if mode == 'manual_mixed':
+            backend._model.backend_parameters.append('--data-parallel-start-rank=1')
+    elif mode == "hybrid":
         backend._model.backend_parameters[0] = '--data-parallel-hybrid-lb'
         backend._model_instance.named_ports['_vllm_external_api'] = PortBand(base=40000)
     elif mode == "multi_port_external_managed":
@@ -429,6 +454,7 @@ def test_vllm_workload_creation_uses_the_selected_lifecycle(monkeypatch, mode):
         (
             ["/models/moe", *backend._model.backend_parameters]
             if mode in ('multi_port_external_managed', 'hybrid')
+            or mode.startswith('manual_')
             else ["/models/moe"]
         ),
         {},
@@ -438,6 +464,14 @@ def test_vllm_workload_creation_uses_the_selected_lifecycle(monkeypatch, mode):
         create.assert_called_once()
         backend._workload_plan_callback.assert_not_called()
         assert create.call_args.args[0].containers[0].files == []
+        if mode.startswith('manual_'):
+            container = create.call_args.args[0].containers[0]
+            argv = (container.execution.command or []) + (
+                container.execution.args or []
+            )
+            for parameter in backend._model.backend_parameters:
+                assert parameter in argv
+            backend._workload_plan_callback.assert_not_called()
         return
     create.assert_not_called()
     manifests, plans = backend._workload_plan_callback.call_args.args
@@ -1494,6 +1528,7 @@ def test_vllm_command_args_include_late_system_flags_as_injected():
     backend._worker = types.SimpleNamespace(ip="192.168.50.10")
     backend._model_instance = types.SimpleNamespace(
         model_name="llm",
+        distributed_servers=None,
         gpu_indexes=[],
         ports=[4000],
         computed_resource_claim=None,
@@ -1542,6 +1577,7 @@ def test_vllm_command_args_exclude_user_backend_parameters_from_injected():
     backend._worker = types.SimpleNamespace(ip="192.168.50.10")
     backend._model_instance = types.SimpleNamespace(
         model_name="llm",
+        distributed_servers=None,
         gpu_indexes=[],
         ports=[4000],
         computed_resource_claim=None,
@@ -2606,6 +2642,7 @@ def _vllm_backend_for_composition(role, cache_args, pd_args):
     backend._worker = types.SimpleNamespace(ip="192.168.50.10")
     backend._model_instance = types.SimpleNamespace(
         model_name="llm",
+        distributed_servers=None,
         gpu_indexes=[],
         ports=[4000],
         computed_resource_claim=None,
@@ -4596,3 +4633,34 @@ async def test_new_pd_multi_port_members_start_with_managed_workloads(
     )
     assert row.distributed_servers is not None
     assert row.distributed_servers.workloads == []
+
+
+@pytest.mark.parametrize('manual_dp', ['0', '1'])
+@pytest.mark.parametrize(
+    'parameters',
+    [
+        ['--data-parallel-external-lb', '--data-parallel-rank=1'],
+        ['--data-parallel-hybrid-lb', '--data-parallel-start-rank=1'],
+        ['--data-parallel-external-lb', '--data-parallel-start-rank=1'],
+    ],
+)
+def test_legacy_vllm_arguments_preserve_user_dp_group(manual_dp, parameters):
+    backend = _vllm_backend_for_composition(None, [], [])
+    backend._model.env = {'GPUSTACK_MANUAL_DP': manual_dp}
+    backend._model.backend_parameters = [
+        *parameters,
+        '--tp=8',
+        '--dp=2',
+        '--dpl=1',
+        '--data-parallel-address=10.0.0.9',
+        '--data-parallel-rpc-port=13345',
+        '--master-addr=10.0.0.9',
+        '--master-port=29500',
+    ]
+    backend._flatten_backend_param = lambda: list(backend._model.backend_parameters)
+    arguments, injected = backend._build_command_args(port=4000, is_distributed=False)
+    for parameter in backend._model.backend_parameters:
+        assert arguments.count(parameter) == 1
+        assert parameter not in injected
+    assert '--data-parallel-rank' not in injected
+    assert '--nnodes' not in injected

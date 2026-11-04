@@ -3961,7 +3961,7 @@ class ServeManager(ContainerLogPersister):
             len(w.gpu_indexes or [])
             for w in mi.distributed_servers.subordinate_workers or []
         ]
-        requests = model_port_requests(model, mi.role, counts)
+        requests = model_port_requests(model, mi.role, counts, managed=True)
         bands = self._allocate_port_plan(mi, requests, unavailable, port_range)
         mi.port = bands["_vllm_external_api"].base
         api_count = bands["_vllm_external_api"].count

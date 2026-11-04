@@ -10,7 +10,7 @@ side — see ``gpustack.worker.backends.vllm.cal_multinode_topology``.
 from dataclasses import dataclass
 from functools import reduce
 from math import gcd
-from typing import List, Literal, Optional, Tuple, Union
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from gpustack.utils.command import (
     find_int_parameter,
@@ -23,6 +23,16 @@ from gpustack.utils.command import (
 # vLLM excludes this window from automatic ports when VLLM_DP_MASTER_PORT
 # is set. Both placement budgeting and Worker reservations protect it.
 VLLM_MP_CONNECTING_PORT_COUNT = 10
+
+
+def manual_dp_enabled(env: Optional[Dict[str, str]]) -> bool:
+    """Whether the operator owns the ordinary vLLM deployment's DP group."""
+    return str((env or {}).get('GPUSTACK_MANUAL_DP', '')).strip().lower() in {
+        '1',
+        'true',
+        'yes',
+        'on',
+    }
 
 
 def managed_lb_port_requests(

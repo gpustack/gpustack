@@ -411,7 +411,7 @@ class ScheduleCandidatesSelector(ABC):
                     logger.warning(
                         f"Model {model.name}: world size ({world_size}) does not match "
                         f"selected gpu count ({self._gpu_count}); skipping the check due "
-                        f"to GPUSTACK_SKIP_GPU_COUNT_CHECK. Keeping the selected gpu count."
+                        f"to GPUSTACK_MANUAL_DP or GPUSTACK_SKIP_GPU_COUNT_CHECK. Keeping the selected gpu count."
                     )
                     return
                 strategies_str = "/".join(strategies) if strategies else "parallelism"

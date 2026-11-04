@@ -1239,3 +1239,119 @@ def test_managed_http_modes_reject_unix_socket_parameters(flag, uds):
         validate_managed_lb_parameters(parameters)
     with pytest.raises(ValueError, match='--uds'):
         managed_lb_parallelism(parameters, [4])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'mode', ['external', 'hybrid', 'implicit_hybrid', 'multi_port_external']
+)
+@pytest.mark.parametrize('manual', [False, True])
+async def test_manual_dp_candidate_preserves_partial_global_world(
+    mode, manual, monkeypatch
+):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+    from tests.utils.model import make_model
+
+    flag = {
+        'external': '--data-parallel-external-lb',
+        'hybrid': '--data-parallel-hybrid-lb',
+        'implicit_hybrid': '--data-parallel-start-rank=1',
+        'multi_port_external': '--data-parallel-multi-port-external-lb',
+    }[mode]
+    model = make_model(
+        gpu_ids=[f'w:cuda:{i}' for i in range(8)],
+        gpus_per_replica=8,
+        backend='vLLM',
+        backend_parameters=[flag, '--tp=8', '--dp=2', '--dpl=1'],
+        env={'GPUSTACK_MANUAL_DP': '1' if manual else '0'},
+    )
+    selector = VLLMResourceFitSelector.__new__(VLLMResourceFitSelector)
+    selector._model = model
+    selector._reserved_vram = 0
+    selector._init_model_parameters = AsyncMock()
+    selector._pretrained_config = SimpleNamespace()
+    selector._gpu_memory_utilization = 0
+    selector._config = SimpleNamespace(huggingface_token=None)
+    monkeypatch.setattr(
+        'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram',
+        AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr(
+        'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_offloaded_lookup_bytes',
+        lambda *_: 0,
+    )
+    selector.should_skip_candidate_func = lambda fn: False
+    candidate = SimpleNamespace(
+        gpu_indexes=list(range(8)), subordinate_workers=[], overcommit=False
+    )
+    selector.find_manual_gpu_selection_candidates = lambda workers: [candidate]
+    selector.find_single_worker_single_gpu_full_offloading_candidates = (
+        lambda workers: []
+    )
+    selector.find_single_worker_multi_gpu_full_offloading_candidates = (
+        lambda workers: []
+    )
+    selector.find_multi_worker_multi_gpu_candidates = lambda workers: []
+    selector._event_collector = MagicMock()
+    selector._finalize_candidate_ram = MagicMock()
+    selector._set_messages = MagicMock()
+    assert await selector.select_candidates([]) == ([candidate] if manual else [])
+
+
+@pytest.mark.parametrize(
+    'parameters',
+    [
+        ['--data-parallel-external-lb', '--data-parallel-rank=1'],
+        ['--data-parallel-hybrid-lb', '--data-parallel-start-rank=1'],
+        ['--data-parallel-external-lb', '--data-parallel-start-rank=1'],
+    ],
+)
+def test_legacy_parallelism_keeps_explicit_rank_parameters(parameters):
+    from gpustack.worker.backends.vllm import get_auto_parallelism_arguments
+    from tests.utils.model import new_model_instance
+
+    parameters = [*parameters, '--tp=8', '--dp=2', '--dpl=1']
+    original = list(parameters)
+    assert (
+        get_auto_parallelism_arguments(
+            parameters, new_model_instance(1, 'manual', 1), False, legacy_launch=True
+        )
+        == []
+    )
+    assert parameters == original
+
+
+@pytest.mark.parametrize(
+    'flag',
+    [
+        '--data-parallel-external-lb',
+        '--data-parallel-hybrid-lb',
+        '--data-parallel-start-rank=1',
+    ],
+)
+@pytest.mark.parametrize('manual', [False, True])
+def test_manual_dp_local_candidate_retains_only_its_selected_gpus(flag, manual):
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+    from tests.fixtures.workers.fixtures import linux_nvidia_22_H100_80gx8
+    from tests.utils.model import make_model
+
+    worker = linux_nvidia_22_H100_80gx8()
+    model = make_model(
+        gpus_per_replica=8,
+        backend='vLLM',
+        backend_parameters=[flag, '--tp=8', '--dp=2', '--dpl=1'],
+        env={'GPUSTACK_MANUAL_DP': '1' if manual else '0'},
+    )
+    candidate, reason = _create_candidate(model, [worker])
+    if manual:
+        assert reason is None
+        assert candidate.worker.id == worker.id
+        assert candidate.gpu_indexes == list(range(8))
+        assert candidate.subordinate_workers == []
+        assert len(candidate.computed_resource_claim.vram) == 8
+    else:
+        assert candidate is None
+        assert 'data-parallel-size' in reason

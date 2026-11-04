@@ -52,6 +52,7 @@ from gpustack.utils.vllm_topology import (
     validate_multinode_topology,
     vllm_lb_mode,
     managed_lb_parallelism,
+    manual_dp_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -360,7 +361,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             )
 
             candidates = candidate_func(workers)
-            if vllm_lb_mode(self._model.backend_parameters) in (
+            if not manual_dp_enabled(self._model.env) and vllm_lb_mode(
+                self._model.backend_parameters
+            ) in (
                 "external",
                 "multi_port_external",
                 "hybrid",
@@ -1162,7 +1165,11 @@ def _create_candidate(
     may still satisfy the requirements.
     """
     try:
-        mode = vllm_lb_mode(model.backend_parameters)
+        mode = (
+            'internal'
+            if manual_dp_enabled(model.env)
+            else vllm_lb_mode(model.backend_parameters)
+        )
         if mode in ("external", "multi_port_external", "hybrid") or (
             len(selected_workers) > 1
             and (

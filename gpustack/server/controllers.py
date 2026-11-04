@@ -29,7 +29,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from gpustack.server.cache_service_resources import load_resource_view
 from gpustack.schemas.models import DistributedServers
-from gpustack.utils.vllm_topology import vllm_lb_mode
+from gpustack.utils.vllm_topology import vllm_lb_mode, manual_dp_enabled
 from gpustack.config.config import (
     Config,
     get_cluster_image_name,
@@ -2031,6 +2031,7 @@ async def _sync_replicas_legacy(session: AsyncSession, model: Model):
 
             if (
                 get_backend(model) == BackendEnum.VLLM
+                and not manual_dp_enabled(model.env)
                 and vllm_lb_mode(model.backend_parameters)
                 in ("external", "multi_port_external", "hybrid")
             ) or sglang_smg_mode(model):
