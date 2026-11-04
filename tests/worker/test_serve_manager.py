@@ -4330,9 +4330,22 @@ def test_managed_rank_health_uses_existing_periodic_entrypoints(rank_health, run
     )
 
 
-def test_managed_worker_adoption_immediately_rechecks_without_restart(rank_health):
+@pytest.mark.parametrize('role', [None, 'prefill', 'decode'])
+@pytest.mark.parametrize('mode', ['external', 'internal', 'hybrid'])
+def test_managed_worker_adoption_immediately_rechecks_without_restart(
+    rank_health, role, mode
+):
     s = rank_health
     s.mi.state = ModelInstanceStateEnum.RUNNING
+    s.mi.backend = BackendEnum.VLLM
+    s.mi.role = role
+    for workload in s.mi.distributed_servers.workloads:
+        workload.dp_rank_placements[0].ready = True
+    s.model.backend_parameters = (
+        [] if mode == 'internal' else [f'--data-parallel-{mode}-lb']
+    )
+    s.client.models.get.return_value = s.model
+    s.manager._model_cache_by_instance.clear()
     s.manager._model_instance_by_instance_id.clear()
     s.manager._observe_managed_workloads = MagicMock(
         side_effect=lambda mi: mi.distributed_servers.workloads
@@ -4341,6 +4354,19 @@ def test_managed_worker_adoption_immediately_rechecks_without_restart(rank_healt
     assert len(s.jobs) == 2
     assert s.mi.restart_count == 3
     s.manager._stop_model_instance.assert_not_called()
+
+    s.get.return_value.status_code = 503
+    for _ in range(3):
+        s.finish()
+        s.sync()
+        s.now += 10
+        s.sync()
+    assert s.mi.state == ModelInstanceStateEnum.ERROR
+    assert not any(
+        p.ready
+        for w in s.mi.distributed_servers.workloads
+        for p in w.dp_rank_placements
+    )
 
 
 def test_managed_runtime_success_resets_only_its_rank(rank_health):

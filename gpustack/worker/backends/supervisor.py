@@ -14,7 +14,6 @@ import sys
 import time
 from typing import Dict, List, Optional
 
-
 _SUPERVISOR_NAME = "gpustack-supervisor"
 _LOG_FRAGMENT_SIZE = 4096
 _LOG_BUFFER_SIZE = 512 * 1024
@@ -63,16 +62,26 @@ def _load_config(path: str):
     tasks = [_parse_task(item) for item in config["tasks"]]
     if not tasks or len({task.name for task in tasks}) != len(tasks):
         raise ValueError("At least one task with a unique name is required")
-    timeout = config.get("shutdown_timeout", 10)
-    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("shutdown_timeout must be a finite positive number")
-    return tasks, float(timeout)
+    timeouts = []
+    for name, default in (("shutdown_timeout", 10), ("cleanup_timeout", 5)):
+        timeout = config.get(name, default)
+        if (
+            type(timeout) not in (int, float)
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError(f"{name} must be a finite positive number")
+        timeouts.append(float(timeout))
+    return tasks, *timeouts
 
 
 class GPUStackSupervisor:
-    def __init__(self, tasks: List[_Task], shutdown_timeout: float):
+    def __init__(
+        self, tasks: List[_Task], shutdown_timeout: float, cleanup_timeout: float = 5
+    ):
         self.tasks = tasks
         self.shutdown_timeout = shutdown_timeout
+        self.cleanup_timeout = cleanup_timeout
         self.stop_signal = 0
         self.selector = selectors.DefaultSelector()
         self.output = bytearray()
@@ -221,11 +230,20 @@ class GPUStackSupervisor:
 
     def _cleanup(self) -> bool:
         started = time.monotonic()
-        deadline = started + self.shutdown_timeout
-        graceful_deadline = started + self.shutdown_timeout * 0.8
+        graceful_deadline = started + self.shutdown_timeout
+        deadline = graceful_deadline + self.cleanup_timeout
+        self._emit(
+            _SUPERVISOR_NAME,
+            f"shutdown: graceful={self.shutdown_timeout}s, cleanup={self.cleanup_timeout}s",
+        )
         self._signal_groups(self.stop_signal or signal.SIGTERM)
         while time.monotonic() < graceful_deadline and self._groups_alive():
             self._read_logs(min(0.05, max(0, graceful_deadline - time.monotonic())))
+        if self._groups_alive():
+            self._emit(
+                _SUPERVISOR_NAME,
+                "shutdown grace expired; killing remaining process groups",
+            )
         self._signal_groups(signal.SIGKILL)
         stopped = True
         for task in self.tasks:
@@ -289,10 +307,10 @@ def main() -> int:
     if not hasattr(os, "waitid"):
         parser.error("Process supervision requires os.waitid")
     try:
-        tasks, timeout = _load_config(args.config)
+        tasks, timeout, cleanup_timeout = _load_config(args.config)
     except (OSError, ValueError) as exc:
         parser.error(f"Invalid supervisor configuration: {exc}")
-    return GPUStackSupervisor(tasks, timeout).run()
+    return GPUStackSupervisor(tasks, timeout, cleanup_timeout).run()
 
 
 if __name__ == "__main__":

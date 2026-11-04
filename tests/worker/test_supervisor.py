@@ -12,7 +12,6 @@ import time
 import psutil
 import pytest
 
-
 SUPERVISOR = (
     Path(__file__).resolve().parents[2] / "gpustack/worker/backends/supervisor.py"
 )
@@ -58,7 +57,13 @@ def start_supervisor(tmp_path):
             pytest.skip('Requires non-reaping waitid')
         config = tmp_path / "tasks.json"
         config.write_text(
-            json.dumps({"tasks": tasks, "shutdown_timeout": shutdown_timeout})
+            json.dumps(
+                {
+                    "tasks": tasks,
+                    "shutdown_timeout": shutdown_timeout,
+                    "cleanup_timeout": 1,
+                }
+            )
         )
         command = [sys.executable, "-I", "-S", str(SUPERVISOR), str(config)]
         if subreaper:
@@ -487,3 +492,61 @@ def test_confirmed_dead_group_is_never_probed_or_signalled_again(monkeypatch):
         kill.assert_not_called()
     finally:
         runner.selector.close()
+
+
+def test_shutdown_uses_full_grace_and_one_shared_cleanup_deadline(monkeypatch):
+    from unittest.mock import Mock
+    from gpustack.worker.backends import supervisor
+
+    tasks = [
+        supervisor._parse_task({'name': f'rank{i}', 'argv': ['unused']})
+        for i in range(2)
+    ]
+    runner = supervisor.GPUStackSupervisor(tasks, 60, cleanup_timeout=5)
+    now, signals, waits = [100.0], [], []
+
+    def wait(timeout):
+        waits.append(timeout)
+        now[0] += timeout / 2
+
+    for task in tasks:
+        task.process = Mock(returncode=None)
+        task.process.wait.side_effect = wait
+    monkeypatch.setattr(supervisor.time, 'monotonic', lambda: now[0])
+    runner._signal_groups = lambda sig: signals.append((sig, now[0]))
+    runner._groups_alive = lambda: len(signals) < 2
+    runner._read_logs = lambda timeout: now.__setitem__(0, now[0] + timeout)
+    runner._emit = Mock()
+    try:
+        assert runner._cleanup()
+        assert signals == [(signal.SIGTERM, 100.0), (signal.SIGKILL, 160.0)]
+        assert waits == [5, 2.5]
+        assert now[0] < 165
+    finally:
+        runner.selector.close()
+
+
+def test_cooperative_shutdown_finishes_within_grace(start_supervisor, tmp_path):
+    done = tmp_path / 'drained'
+    task = _task(
+        tmp_path,
+        'cooperative',
+        f'''
+        import signal, time
+        def stop(_signal, _frame):
+            time.sleep(0.25)
+            Path({str(done)!r}).touch()
+            raise SystemExit(0)
+        signal.signal(signal.SIGTERM, stop)
+        Path({str(tmp_path / 'ready')!r}).touch()
+        while True:
+            time.sleep(0.01)
+        ''',
+    )
+    process = start_supervisor([task], shutdown_timeout=0.3)
+    _wait_for(lambda: (tmp_path / 'ready').exists())
+    process.terminate()
+    output = process.communicate(timeout=5)[0].decode()
+    assert process.returncode == 128 + signal.SIGTERM, output
+    assert done.exists()
+    assert not psutil.pid_exists(int((tmp_path / 'cooperative.pid').read_text()))

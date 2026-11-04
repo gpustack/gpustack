@@ -108,7 +108,7 @@ async def test_instance_delete_distinguishes_pending_cleanup(report_api, deleted
 async def test_instance_error_condition_is_separate_from_operation_progress(
     report_api, draining
 ):
-    from gpustack.api.streaming import finalize_model_lifecycle_event
+    from gpustack.routes.model_instances import _strip_private_snapshot_changes
     from gpustack.server.bus import Event, EventType
 
     api = report_api
@@ -121,7 +121,7 @@ async def test_instance_error_condition_is_separate_from_operation_progress(
     assert response.status_code == 200
     public = ModelInstancePublic.model_validate(response.json())
     event = Event(type=EventType.UPDATED, data=public)
-    await finalize_model_lifecycle_event(event)
+    await _strip_private_snapshot_changes(event)
     watched = ModelInstancePublic.model_validate_json(event.data.model_dump_json())
     for snapshot in (public, watched):
         assert snapshot.state == ModelInstanceStateEnum.ERROR
@@ -135,7 +135,7 @@ async def test_instance_retirement_does_not_imply_runtime_termination(
     report_api, runtime
 ):
     from gpustack.server.bus import Event, EventType
-    from gpustack.api.streaming import finalize_model_lifecycle_event
+    from gpustack.routes.model_instances import _strip_private_snapshot_changes
 
     instance = report_api.instance
     instance.distributed_servers = (
@@ -152,7 +152,7 @@ async def test_instance_retirement_does_not_imply_runtime_termination(
     if runtime == 'running':
         assert public.lifecycle.pending_stop_worker_ids == [1]
     event = Event(type=EventType.DELETED, data=public)
-    await finalize_model_lifecycle_event(event)
+    await _strip_private_snapshot_changes(event)
     restored = ModelInstancePublic.model_validate_json(event.data.model_dump_json())
     assert restored.lifecycle.pending is False
     assert restored.lifecycle.phase == 'completed'

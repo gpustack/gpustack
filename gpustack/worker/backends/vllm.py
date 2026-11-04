@@ -579,6 +579,7 @@ class VLLMServer(InferenceServer):
         container.execution.command, container.execution.args = (
             self._override_entrypoint(base, [], container.execution.command_script)
         )
+        self._configure_shutdown_budget(plan, [{'argv': base}])
         return ModelInstanceWorkload(
             name=plan.name,
             worker_id=self._worker.id,
@@ -653,6 +654,7 @@ class VLLMServer(InferenceServer):
             container.execution.command, container.execution.args = (
                 self._override_entrypoint(child, [], container.execution.command_script)
             )
+            self._configure_shutdown_budget(plan, [{'argv': child}])
         else:
             visible = (
                 "CUDA_VISIBLE_DEVICES"
@@ -844,14 +846,53 @@ class VLLMServer(InferenceServer):
             dp_rank_placements=placements,
         )
 
+    def _configure_shutdown_budget(self, plan: WorkloadPlan, tasks: List[Dict]) -> int:
+        """Let vLLM drain and release devices before parent and container cleanup."""
+        container = plan.containers[0]
+        env = {item.name: item.value for item in container.envs or []}
+        shutdown_timeout = 0
+        for task in tasks:
+            argv, request_timeout = task['argv'], '0'
+            for index, argument in enumerate(argv):
+                key, separator, value = argument.partition('=')
+                if key == '--shutdown-timeout':
+                    request_timeout = (
+                        value
+                        if separator
+                        else (argv[index + 1] if index + 1 < len(argv) else '')
+                    )
+            worker_timeout = {**env, **task.get('env', {})}.get(
+                'VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS', '5'
+            )
+            values = []
+            for name, value in (
+                ('--shutdown-timeout', request_timeout),
+                ('VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS', worker_timeout),
+            ):
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f'{name} must be a non-negative integer') from exc
+                if parsed < 0:
+                    raise ValueError(f'{name} must be a non-negative integer')
+                values.append(parsed)
+            # vLLM's DP Supervisor reserves five seconds beyond child shutdown.
+            shutdown_timeout = max(shutdown_timeout, max(values) + 5)
+        # Reserve separate windows for forced process reaping and container exit.
+        plan.termination_grace_period_seconds = max(
+            plan.termination_grace_period_seconds, shutdown_timeout + 10
+        )
+        logger.info(
+            'vLLM shutdown budget: graceful=%ss, cleanup=5s, container=%ss',
+            shutdown_timeout,
+            plan.termination_grace_period_seconds,
+        )
+        return shutdown_timeout
+
     def _configure_rank_supervisor(self, plan, tasks) -> None:
         """Keep every local compute child under the container's process lifecycle."""
         container = plan.containers[0]
-        shutdown_timeout = min(10, plan.termination_grace_period_seconds / 2)
-        if shutdown_timeout <= 0:
-            raise ValueError(
-                "Managed workloads require a positive termination grace period."
-            )
+        shutdown_timeout = self._configure_shutdown_budget(plan, tasks)
         container.files = list(container.files or []) + [
             ContainerFile(
                 path="/gpustack/supervisor.py",
@@ -862,7 +903,11 @@ class VLLMServer(InferenceServer):
                 path="/gpustack/tasks.json",
                 mode=0o444,
                 content=json.dumps(
-                    {"tasks": tasks, "shutdown_timeout": shutdown_timeout}
+                    {
+                        "tasks": tasks,
+                        "shutdown_timeout": shutdown_timeout,
+                        "cleanup_timeout": 5,
+                    }
                 ),
             ),
         ]

@@ -1376,6 +1376,19 @@ class ModelLifecycleState(BaseModel):
     runtime_termination_confirmed: Optional[bool] = None
     pending_stop_worker_ids: List[int] = PydanticField(default_factory=list)
 
+    def for_deleted_record(self) -> 'ModelLifecycleState':
+        """Complete record retirement without claiming unconfirmed runtime exit."""
+        return self.model_copy(
+            update={
+                'pending': False,
+                'phase': 'completed',
+                'pending_stop_worker_ids': [],
+                'runtime_termination_confirmed': (
+                    True if self.runtime_termination_confirmed is True else None
+                ),
+            }
+        )
+
 
 class ModelLifecycleResult(BaseModel):
     """Acknowledgement of a resource operation, separate from runtime absence."""

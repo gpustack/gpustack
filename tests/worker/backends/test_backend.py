@@ -463,7 +463,7 @@ def test_vllm_workload_creation_uses_the_selected_lifecycle(monkeypatch, mode):
     ]
 
 
-@pytest.mark.parametrize("grace", [1, 10, 30])
+@pytest.mark.parametrize("grace", [1, 10, 30, 120])
 def test_external_supervisor_shutdown_finishes_before_container_deadline(grace):
     backend, plan = _external_backend()
     plan.termination_grace_period_seconds = grace
@@ -473,7 +473,103 @@ def test_external_supervisor_shutdown_finishes_before_container_deadline(grace):
             f.content for f in plan.containers[0].files if f.path.endswith("tasks.json")
         )
     )
-    assert 0 < config["shutdown_timeout"] < grace
+    assert config["shutdown_timeout"] == 10
+    assert config["cleanup_timeout"] == 5
+    assert plan.termination_grace_period_seconds == max(grace, 20)
+
+
+@pytest.mark.parametrize(
+    'parameters,worker_timeout,expected',
+    [
+        ([], None, 10),
+        (['--shutdown-timeout', '0'], '0', 5),
+        (['--shutdown-timeout', '60'], None, 65),
+        (['--shutdown-timeout=60'], '90', 95),
+        (['--shutdown-timeout=90', '--shutdown-timeout', '60'], None, 65),
+    ],
+)
+def test_supervisor_budget_uses_final_child_arguments_and_environment(
+    parameters, worker_timeout, expected
+):
+    from gpustack_runtime.deployer import ContainerEnv
+
+    backend, plan = _external_backend()
+    if worker_timeout is not None:
+        plan.containers[0].envs = [
+            ContainerEnv(
+                name='VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS', value=worker_timeout
+            )
+        ]
+    backend._configure_external_workload(
+        plan, ['vllm', 'serve'], ['/models/moe', *parameters]
+    )
+    config = json.loads(
+        next(
+            f.content for f in plan.containers[0].files if f.path.endswith('tasks.json')
+        )
+    )
+    assert config['shutdown_timeout'] == expected
+    assert config['cleanup_timeout'] == 5
+    assert plan.termination_grace_period_seconds == max(30, expected + 10)
+
+
+@pytest.mark.parametrize('value', ['-1', 'nan', 'inf', 'abc', '1.5', ''])
+@pytest.mark.parametrize('source', ['argument', 'environment'])
+def test_supervisor_rejects_invalid_shutdown_budget(value, source):
+    from gpustack_runtime.deployer import ContainerEnv
+
+    backend, plan = _external_backend()
+    parameters = ['/models/moe']
+    if source == 'argument':
+        parameters.append(f'--shutdown-timeout={value}')
+    else:
+        plan.containers[0].envs = [
+            ContainerEnv(name='VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS', value=value)
+        ]
+    with pytest.raises(ValueError, match='non-negative integer'):
+        backend._configure_external_workload(plan, ['vllm', 'serve'], parameters)
+
+
+def test_supervisor_budget_covers_all_children_and_task_environment_overrides():
+    from gpustack_runtime.deployer import ContainerEnv
+
+    backend, plan = _external_backend()
+    plan.containers[0].envs = [
+        ContainerEnv(name='VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS', value='180')
+    ]
+    tasks = [
+        {
+            'name': 'a',
+            'argv': ['vllm', 'serve', '/model', '--shutdown-timeout=60'],
+            'env': {'VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS': '90'},
+        },
+        {
+            'name': 'b',
+            'argv': ['vllm', 'serve', '/model', '--shutdown-timeout=120'],
+            'env': {'VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS': '5'},
+        },
+    ]
+    backend._configure_rank_supervisor(plan, tasks)
+    config = json.loads(plan.containers[0].files[-1].content)
+    assert config['shutdown_timeout'] == 125
+    assert plan.termination_grace_period_seconds == 135
+
+
+@pytest.mark.parametrize(
+    'parameters',
+    [
+        ['--shutdown-timeout'],
+        ['--shutdown-timeout=60', '--shutdown-timeout'],
+    ],
+)
+def test_supervisor_rejects_missing_shutdown_timeout_value(parameters):
+    backend, plan = _external_backend()
+    with pytest.raises(
+        ValueError, match='--shutdown-timeout must be a non-negative integer'
+    ):
+        backend._configure_external_workload(
+            plan, ['vllm', 'serve'], ['/models/moe', *parameters]
+        )
 
 
 @pytest.mark.parametrize("managed", [False, True])
@@ -3095,12 +3191,15 @@ def test_multi_port_external_plan_uses_vllm_launcher_and_contiguous_apis(vendor)
     )
     backend._override_entrypoint = lambda command, args, script: (command, args)
     manifest = backend._configure_multi_port_external_workload(
-        plan, ['vllm', 'serve'], ['/models/moe', *backend._model.backend_parameters]
+        plan,
+        ['vllm', 'serve'],
+        ['/models/moe', *backend._model.backend_parameters, '--shutdown-timeout=60'],
     )
     argv = plan.containers[0].execution.command + plan.containers[0].execution.args
     assert '--data-parallel-multi-port-external-lb' in argv
     assert '--data-parallel-external-lb' not in argv
     assert plan.containers[0].files == []
+    assert plan.termination_grace_period_seconds == 75
     assert [p.dp_rank for p in manifest.dp_rank_placements] == [0, 1]
     assert [p.api_port for p in manifest.dp_rank_placements] == [40000, 40001]
     assert [p.gpu_indexes for p in manifest.dp_rank_placements] == [[1, 3], [5, 7]]
@@ -3941,7 +4040,12 @@ def test_hybrid_native_launcher_keeps_one_shared_api_and_local_engine_pool(
     manifest = backend._configure_hybrid_workload(
         plan,
         ['vllm', 'serve'],
-        ['/models/moe', *backend._model.backend_parameters, '--port=1234'],
+        [
+            '/models/moe',
+            *backend._model.backend_parameters,
+            '--port=1234',
+            '--shutdown-timeout=60',
+        ],
     )
     argv = plan.containers[0].execution.command + (
         plan.containers[0].execution.args or []
@@ -3960,6 +4064,7 @@ def test_hybrid_native_launcher_keeps_one_shared_api_and_local_engine_pool(
     assert manifest.component.dp_size == 2
     assert manifest.dp_rank_placements == []
     assert not plan.containers[0].files
+    assert plan.termination_grace_period_seconds == 75
 
 
 @pytest.mark.parametrize('worker_index', [0, 1, 2, 3])
@@ -3992,8 +4097,11 @@ def test_hybrid_cross_worker_single_fragment_has_true_api_owner(worker_index):
     backend._worker.id = 7 + worker_index
     backend._worker.ip = f'10.0.0.{7 + worker_index}'
     manifest = backend._configure_hybrid_workload(
-        plan, ['vllm', 'serve'], ['/models/moe', *backend._model.backend_parameters]
+        plan,
+        ['vllm', 'serve'],
+        ['/models/moe', *backend._model.backend_parameters, '--shutdown-timeout=60'],
     )
+    assert plan.termination_grace_period_seconds == 75
     if worker_index % 2:
         config = json.loads(
             next(

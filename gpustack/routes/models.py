@@ -13,7 +13,7 @@ from sqlmodel import or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack import envs
-from gpustack.api.streaming import tenant_streaming, finalize_model_lifecycle_event
+from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     HTTPException,
@@ -70,6 +70,7 @@ from gpustack.api.tenant import (
     tenant_list_conditions,
 )
 from gpustack.server.db import async_session
+from gpustack.server.bus import Event, EventType
 from gpustack.server.deps import (
     ListParamsDep,
     SessionDep,
@@ -145,6 +146,11 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+async def _finalize_model_lifecycle_event(event: Event) -> None:
+    if event.type == EventType.DELETED and event.data.lifecycle is not None:
+        event.data.lifecycle = event.data.lifecycle.for_deleted_record()
+
+
 def _make_model_watch_filter(categories, state=None):
     """Match the watch stream against category and state business filters."""
     predicates = []
@@ -194,7 +200,7 @@ async def get_models(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 filter_func=_make_model_watch_filter(categories, state),
-                event_transform=finalize_model_lifecycle_event,
+                event_transform=_finalize_model_lifecycle_event,
             ),
             media_type="text/event-stream",
         )

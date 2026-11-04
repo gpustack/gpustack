@@ -2715,10 +2715,8 @@ class ServeManager(ContainerLogPersister):
                 return
             if (
                 current.role not in (None, "prefill", "decode")
-                or get_backend(model) != BackendEnum.VLLM
+                or get_backend(current) != BackendEnum.VLLM
                 or get_model_instance_workloads(current) is None
-                or vllm_lb_mode(model.backend_parameters)
-                not in ('external', 'multi_port_external')
             ):
                 self._clear_rank_health(mi.id)
                 return

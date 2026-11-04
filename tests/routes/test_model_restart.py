@@ -350,7 +350,7 @@ def test_model_lifecycle_is_readable_in_get_and_watch_snapshots(action, error):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('pd', [False, True])
 async def test_error_model_restart_progress_survives_get_and_watch(monkeypatch, pd):
-    from gpustack.api.streaming import finalize_model_lifecycle_event
+    from gpustack.routes.models import _finalize_model_lifecycle_event
     from gpustack.routes import models
     from gpustack.schemas.models import ModelPublic, ModelStateEnum
     from gpustack.server.bus import Event, EventType
@@ -371,13 +371,41 @@ async def test_error_model_restart_progress_survives_get_and_watch(monkeypatch, 
     monkeypatch.setattr(models, 'is_lora_list_stale', lambda _: False)
     public = await models.get_model(MagicMock(), MagicMock(), model.id)
     event = Event(type=EventType.UPDATED, data=public)
-    await finalize_model_lifecycle_event(event)
+    await _finalize_model_lifecycle_event(event)
     watched = ModelPublic.model_validate_json(event.data.model_dump_json())
     for snapshot in (public, watched):
         assert snapshot.lifecycle.pending is True
         assert snapshot.lifecycle.phase == result.phase
         assert snapshot.state == ModelStateEnum.ERROR
         assert snapshot.state_message == 'Engine failed'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('proof', [None, False, True])
+async def test_model_deleted_watch_preserves_only_confirmed_runtime_evidence(proof):
+    from gpustack.routes.models import _finalize_model_lifecycle_event
+    from gpustack.schemas.models import ModelLifecycleState, ModelPublic
+    from gpustack.server.bus import Event, EventType
+
+    model = _model()
+    model.created_at = model.updated_at = datetime.now(timezone.utc)
+    public = ModelPublic.model_validate(model)
+    original = ModelLifecycleState(
+        pending=True,
+        phase='stopping',
+        runtime_termination_confirmed=proof,
+        pending_stop_worker_ids=[1],
+    )
+    public.lifecycle = original
+    event = Event(type=EventType.DELETED, data=public)
+    await _finalize_model_lifecycle_event(event)
+    assert public.lifecycle.phase == 'completed'
+    assert public.lifecycle.pending is False
+    assert public.lifecycle.pending_stop_worker_ids == []
+    assert public.lifecycle.runtime_termination_confirmed is (
+        True if proof is True else None
+    )
+    assert original.phase == 'stopping'
 
 
 @pytest.mark.asyncio
@@ -393,7 +421,7 @@ async def test_model_delete_retains_null_body_and_status(monkeypatch, completed,
         ModelStateEnum,
     )
     from gpustack.server.deps import get_session, get_tenant_context
-    from gpustack.api.streaming import finalize_model_lifecycle_event
+    from gpustack.routes.models import _finalize_model_lifecycle_event
     from gpustack.server.bus import Event, EventType
 
     result = ModelLifecycleResult(
@@ -436,7 +464,7 @@ async def test_model_delete_retains_null_body_and_status(monkeypatch, completed,
             assert public.lifecycle.phase == 'stopping'
             assert public.state == model.state
             event = Event(type=EventType.UPDATED, data=public)
-            await finalize_model_lifecycle_event(event)
+            await _finalize_model_lifecycle_event(event)
             watched = ModelPublic.model_validate_json(event.data.model_dump_json())
             assert watched.lifecycle == public.lifecycle
             assert watched.state == model.state

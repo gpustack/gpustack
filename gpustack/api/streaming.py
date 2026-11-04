@@ -4,7 +4,7 @@ from inspect import isawaitable
 from typing import Any, AsyncGenerator, Awaitable, Callable, List, Optional, Union
 
 from gpustack.api.tenant import TenantContext, tenant_stream_filter
-from gpustack.server.bus import Event, EventType
+from gpustack.server.bus import Event
 
 StreamFilter = Callable[[Any], Union[bool, Awaitable[bool]]]
 
@@ -68,19 +68,3 @@ def tenant_streaming(
         options=options,
         event_transform=event_transform,
     )
-
-
-async def finalize_model_lifecycle_event(event: Event) -> None:
-    """Expose record retirement without fabricating proof of runtime termination."""
-    lifecycle = getattr(event.data, 'lifecycle', None)
-    if event.type == EventType.DELETED and lifecycle is not None:
-        event.data.lifecycle = lifecycle.model_copy(
-            update={
-                'pending': False,
-                'phase': 'completed',
-                'pending_stop_worker_ids': [],
-                'runtime_termination_confirmed': (
-                    True if lifecycle.runtime_termination_confirmed is True else None
-                ),
-            }
-        )
