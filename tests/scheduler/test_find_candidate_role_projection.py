@@ -265,6 +265,156 @@ async def test_find_candidate_does_not_mutate_the_model(harness):
     assert model.replicas == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('managed', [False, True])
+@pytest.mark.parametrize('mode', ['external', 'hybrid', 'multi-port-external'])
+@pytest.mark.parametrize('port_range', ['40000-40003', '40000-40063'])
+async def test_pending_instance_keeps_its_port_mode_after_manual_dp_edit(
+    harness, monkeypatch, managed, mode, port_range
+):
+    from uuid import uuid4
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+    from gpustack.scheduler import port_budget
+    from gpustack.schemas.models import DistributedServers
+    from gpustack.schemas.port_reservations import WorkerPortAvailability
+    from tests.utils.model import new_model_instance
+
+    env = {'GPUSTACK_MANUAL_DP': '1' if managed else '0', 'OTHER': 'preserved'}
+    model = _model(
+        backend_parameters=[f'--data-parallel-{mode}-lb', '--tp=2', '--dp=2'],
+        env=env.copy(),
+    )
+    pending = new_model_instance(10, 'pending', model.id)
+    if managed:
+        pending.distributed_servers = DistributedServers(workloads=[])
+    worker = _admission_worker()
+    candidate = ModelInstanceScheduleCandidate(worker, [0, 1, 2, 3], None)
+    monkeypatch.setattr(
+        harness.selectors['VLLMResourceFitSelector'],
+        'select_candidates',
+        AsyncMock(return_value=[candidate]),
+    )
+    monkeypatch.setattr(
+        scheduler, 'pick_highest_score_candidate', lambda found: next(iter(found), None)
+    )
+    snapshots = AsyncMock(
+        return_value={
+            worker.id: WorkerPortAvailability(
+                worker_id=worker.id, generation=uuid4(), port_range=port_range
+            )
+        }
+    )
+    monkeypatch.setattr(port_budget, 'worker_port_snapshots', snapshots)
+
+    selected, messages = await scheduler.find_candidate(
+        None,
+        SimpleNamespace(cache_dir=None),
+        model,
+        [worker],
+        [pending],
+        exclude_instance_id=pending.id,
+    )
+
+    if managed and mode != 'hybrid' and port_range == '40000-40003':
+        assert selected is None
+        assert any('service ports' in message for message in messages)
+    else:
+        assert selected is candidate
+        assert messages == []
+    if managed:
+        snapshots.assert_awaited_once_with([worker], pending.id)
+    else:
+        snapshots.assert_not_awaited()
+    assert model.env == env
+    assert _selected(harness)[1].model.env['OTHER'] == 'preserved'
+    assert pending.state == 'pending'
+    assert (pending.distributed_servers is not None) == managed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('managed', [False, True])
+@pytest.mark.parametrize('skip_count_check', [False, True])
+async def test_pending_instance_keeps_gpu_count_validation_after_manual_dp_edit(
+    harness, monkeypatch, managed, skip_count_check
+):
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+    from gpustack.policies.candidate_selectors import vllm_resource_fit_selector
+    from gpustack.schemas.models import (
+        ComputedResourceClaim,
+        DistributedServers,
+        GPUSelector,
+    )
+    from tests.utils.model import new_model_instance
+
+    selector_class = vllm_resource_fit_selector.VLLMResourceFitSelector
+    model = _model(
+        backend_parameters=['--data-parallel-external-lb', '--tp=2', '--dp=2'],
+        gpu_selector=GPUSelector(gpu_ids=['worker-7:cuda:0', 'worker-7:cuda:1']),
+        env={
+            'GPUSTACK_MANUAL_DP': '1' if managed else '0',
+            'GPUSTACK_SKIP_GPU_COUNT_CHECK': '1' if skip_count_check else '0',
+        },
+    )
+    pending = new_model_instance(10, 'pending', model.id)
+    if managed:
+        pending.distributed_servers = DistributedServers(workloads=[])
+    worker = _admission_worker()
+    candidate = ModelInstanceScheduleCandidate(
+        worker, [0, 1], ComputedResourceClaim(vram={0: 1, 1: 1}, ram=0)
+    )
+    monkeypatch.setattr(scheduler, 'VLLMResourceFitSelector', selector_class)
+
+    async def init_parameters(selector, workers):
+        selector._gpu_memory_utilization = 0
+
+    monkeypatch.setattr(selector_class, '_init_model_parameters', init_parameters)
+    monkeypatch.setattr(
+        selector_class, 'find_manual_gpu_selection_candidates', lambda *_: [candidate]
+    )
+    monkeypatch.setattr(
+        vllm_resource_fit_selector, 'estimate_model_vram', AsyncMock(return_value=0)
+    )
+    monkeypatch.setattr(
+        vllm_resource_fit_selector, 'estimate_offloaded_lookup_bytes', lambda *_: 0
+    )
+    monkeypatch.setattr(
+        scheduler, 'pick_highest_score_candidate', lambda found: next(iter(found), None)
+    )
+
+    selected, messages = await scheduler.find_candidate(
+        None,
+        SimpleNamespace(cache_dir=None, huggingface_token=None),
+        model,
+        [worker],
+        [pending],
+        exclude_instance_id=pending.id,
+    )
+
+    if managed:
+        assert selected is None
+        assert messages
+        if not skip_count_check:
+            assert any(
+                'does not match the world size' in message for message in messages
+            )
+    else:
+        assert selected is candidate
+        assert messages == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('manual', ['0', '1'])
+async def test_preview_uses_desired_manual_dp_without_an_instance(harness, manual):
+    model = _model(
+        backend_parameters=['--data-parallel-external-lb', '--dp=2'],
+        env={'GPUSTACK_MANUAL_DP': manual},
+    )
+
+    await _run(model)
+
+    assert _selected(harness)[1].model is model
+
+
 # --- the router takes no accelerator --------------------------------------- #
 
 

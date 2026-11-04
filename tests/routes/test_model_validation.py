@@ -251,6 +251,70 @@ def test_manual_dp_uses_merged_environment_for_sparse_updates():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('env', [{}, None, {'GPUSTACK_MANUAL_DP': '0'}])
+@pytest.mark.parametrize(
+    'parameters,message',
+    [
+        (['--data-parallel-external-lb', '--uds=/tmp/model.sock'], '--uds'),
+        (
+            ['--data-parallel-external-lb', '--data-parallel-hybrid-lb'],
+            'load balancing',
+        ),
+        (['--data-parallel-multi-port-external-lb', '--dp=1'], 'data-parallel-size'),
+    ],
+)
+async def test_disabling_manual_dp_validates_stored_parameters(
+    monkeypatch, env, parameters, message
+):
+    monkeypatch.setattr(models, 'validate_pd_config', AsyncMock())
+    stored = Model(
+        id=1,
+        name='manual',
+        backend='vLLM',
+        backend_parameters=parameters,
+        env={'GPUSTACK_MANUAL_DP': '1'},
+    )
+    update = ModelUpdate(
+        name='manual', source='local_path', local_path='/models/moe', env=env
+    )
+    fields = update.model_fields_set.copy()
+
+    with pytest.raises(BadRequestException) as exc:
+        await models.validate_model_in(MagicMock(), update, stored=stored)
+
+    assert message in exc.value.message
+    assert update.model_fields_set == fields
+    assert update.backend_parameters is None
+    assert stored.env == {'GPUSTACK_MANUAL_DP': '1'}
+    assert stored.backend_parameters == parameters
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'patch', [{'replicas': 2}, {'env': {}, 'backend_parameters': []}]
+)
+async def test_manual_dp_updates_validate_the_effective_parameter_override(
+    monkeypatch, patch
+):
+    monkeypatch.setattr(models, 'validate_pd_config', AsyncMock())
+    stored = Model(
+        id=1,
+        name='manual',
+        backend='vLLM',
+        backend_parameters=['--data-parallel-external-lb', '--uds=/tmp/model.sock'],
+        env={'GPUSTACK_MANUAL_DP': '1'},
+    )
+    update = ModelUpdate(
+        name='manual', source='local_path', local_path='/models/moe', **patch
+    )
+    fields = update.model_fields_set.copy()
+
+    await models.validate_model_in(MagicMock(), update, stored=stored)
+
+    assert update.model_fields_set == fields
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'parameters,categories',
     [

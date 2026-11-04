@@ -567,10 +567,13 @@ async def validate_model_in(
     cluster_id: Optional[int] = None,
     stored: Optional[Model] = None,
 ):
+    from gpustack.validation.pd.common import effective_model_spec
+
     # `stored` is the row being updated, so a sparse PUT is judged against the
     # merged state rather than against the handful of fields it happened to
     # send. Absent on create, where there is nothing to merge.
-    manual_dp = _validate_manual_dp_config(model_in, stored)
+    effective = effective_model_spec(model_in, stored)
+    manual_dp = _validate_manual_dp_config(effective)
     await validate_pd_config(session, model_in, cluster_id=cluster_id, stored=stored)
 
     # API responses use short LoRA names; compare their stored form when
@@ -593,11 +596,11 @@ async def validate_model_in(
         logger.info("Skip model validation for custom backend")
         return
 
-    if get_backend(model_in) == BackendEnum.VLLM and not manual_dp:
+    if get_backend(effective) == BackendEnum.VLLM and not manual_dp:
         from gpustack.utils.vllm_topology import validate_managed_lb_parameters
 
         try:
-            validate_managed_lb_parameters(model_in.backend_parameters)
+            validate_managed_lb_parameters(effective.backend_parameters)
         except ValueError as exc:
             raise BadRequestException(message=str(exc)) from exc
 

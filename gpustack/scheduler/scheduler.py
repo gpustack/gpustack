@@ -120,6 +120,7 @@ from gpustack.utils.gpu import group_gpu_ids_by_worker
 from gpustack.utils.hub import has_diffusers_model_index
 from gpustack.utils.math import largest_power_of_2_leq
 from gpustack.utils.model_source import get_draft_model_source
+from gpustack.utils.vllm_topology import manual_dp_enabled, vllm_lb_mode
 from gpustack.scheduler.calculator import get_pretrained_config_with_workers
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -1113,6 +1114,30 @@ def _gather_floor(
     )
 
 
+def _instance_scheduling_model(
+    model: Model, instance: Optional[ModelInstance]
+) -> Model:
+    """Keep placement checks aligned with the instance's persisted launcher."""
+    if instance is None or get_backend(model) != BackendEnum.VLLM:
+        return model
+    if (
+        not manual_dp_enabled(model.env)
+        and vllm_lb_mode(model.backend_parameters) == 'internal'
+    ):
+        return model
+    # Only the scheduling view changes; the desired env applies to replacements.
+    return model.model_copy(
+        update={
+            'env': {
+                **(model.env or {}),
+                'GPUSTACK_MANUAL_DP': (
+                    '0' if get_model_instance_workloads(instance) is not None else '1'
+                ),
+            }
+        }
+    )
+
+
 async def find_candidate(
     session: AsyncSession,
     config: Config,
@@ -1157,7 +1182,11 @@ async def find_candidate(
     )
     if admission_message:
         return None, [admission_message]
+    instance = None
     if exclude_instance_id is not None:
+        instance = next(
+            (mi for mi in model_instances if mi.id == exclude_instance_id), None
+        )
         model_instances = [mi for mi in model_instances if mi.id != exclude_instance_id]
     resource_view = (
         resource_view.with_model_instances(model_instances)
@@ -1200,6 +1229,7 @@ async def find_candidate(
     # below is constructed from `model` and reads Model-level fields directly;
     # none of them knows about roles. A role-less model comes back unchanged.
     model = role_effective_model(model, role)
+    model = _instance_scheduling_model(model, instance)
 
     managed_sglang = managed_sglang and role is None and sglang_smg_mode(model)
 
