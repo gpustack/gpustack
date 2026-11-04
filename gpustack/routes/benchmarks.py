@@ -97,6 +97,7 @@ from gpustack.worker.logs import LogOptionsDep
 from sqlalchemy.orm import defer
 
 MAX_EXPORT_RECORDS = 20
+MIN_STAGE_REQUEST_RATE = 0.001
 # Upper bound on the per-point grid a single benchmark may upload. The ramp's own
 # budget is max_points and a manual stage list is user-sized, so this sits far
 # above any real curve — it exists so a malformed upload is rejected at the
@@ -540,6 +541,16 @@ def _validate_stages(benchmark_in: BenchmarkCreate) -> None:
                 message=f"Stage {i} must specify a numeric 'rate'"
             )
         _validate_load_axis_value(rate, f"Stage {i} 'rate'", benchmark_in.load_type)
+        if (
+            benchmark_in.load_type != BenchmarkLoadTypeEnum.CONCURRENCY
+            and rate < MIN_STAGE_REQUEST_RATE
+        ):
+            raise BadRequestException(
+                message=(
+                    f"Stage {i} 'rate' must be >= {MIN_STAGE_REQUEST_RATE} "
+                    "requests per second"
+                )
+            )
         # The per-stage constraints ride into `--stages` as JSON verbatim, so an
         # unusable one is not caught until the container acts on it — the same
         # reason the top-level budgets are checked in _validate_positive_knobs.
