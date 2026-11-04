@@ -28,8 +28,6 @@ from gpustack.schemas.models import (
     ROUTER_DEFAULT_MEMORY,
     Model,
     ModelInstance,
-    ModelLifecycleResult,
-    model_instance_lifecycle,
     ModelInstanceStateEnum,
     ModelInstanceWorkload,
     ModelInstanceLegacyStop,
@@ -992,16 +990,6 @@ class ModelRouteService:
         return result
 
 
-def _runtime_termination_confirmed(instances: List[ModelInstance]) -> Optional[bool]:
-    confirmations = [
-        model_instance_lifecycle(instance).runtime_termination_confirmed
-        for instance in instances
-    ]
-    if not confirmations or None in confirmations:
-        return None
-    return all(confirmations)
-
-
 class ModelService:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -1069,18 +1057,13 @@ class ModelService:
             await delete_cache_by_key(self.get_by_id, model.id)
             await delete_cache_by_key(self.get_by_name, model.name)
 
-    async def delete(self, model: Model) -> ModelLifecycleResult:
-        observe_url = f"/v2/models/{model.id}"
+    async def delete(self, model: Model) -> bool:
+        """Return False while workload stop confirmation prevents record deletion."""
         model = await Model.one_by_id(
             self.session, model.id, for_update=True, refresh=True
         )
         if model is None:
-            return ModelLifecycleResult(
-                completed=True,
-                phase="completed",
-                record_deleted=True,
-                observe_url=observe_url,
-            )
+            return True
         instances = await ModelInstance.all_by_field(
             self.session, "model_id", model.id, for_update=True, refresh=True
         )
@@ -1120,13 +1103,7 @@ class ModelService:
                         "replicas": 0,
                     },
                 )
-            return ModelLifecycleResult(
-                completed=False,
-                phase="stopping",
-                observe_url=observe_url,
-                runtime_termination_confirmed=_runtime_termination_confirmed(instances),
-            )
-        proof = _runtime_termination_confirmed(instances)
+            return False
         # ORM cascade bypasses child service caches; collect ids and route
         # names (raw + owner-name-prefixed effective) BEFORE deleting so
         # we can invalidate them explicitly below.
@@ -1201,13 +1178,7 @@ class ModelService:
                 route_service.get_model_auth_info_by_name, route_name
             )
 
-        return ModelLifecycleResult(
-            completed=True,
-            phase="completed",
-            record_deleted=True,
-            runtime_termination_confirmed=True if proof else None,
-            observe_url=observe_url,
-        )
+        return True
 
 
 class CacheServiceService:

@@ -246,9 +246,7 @@ async def test_managed_model_delete_preserves_children_and_routes_until_stop(
     instance = await _managed_instance(session, model, task_state)
 
     pending = await ModelService(session).delete(model)
-    assert pending.completed is False
-    assert pending.phase == 'stopping'
-    assert pending.runtime_termination_confirmed is False
+    assert pending is False
 
     assert model.deleted_at is not None
     assert model.replicas == 0
@@ -268,8 +266,7 @@ async def test_managed_model_delete_preserves_children_and_routes_until_stop(
     servers.workloads[0].state = ModelInstanceWorkloadStateEnum.STOPPED
     await instance.update(session, {"distributed_servers": servers})
     completed = await ModelService(session).delete(model)
-    assert completed.completed is True
-    assert completed.runtime_termination_confirmed is True
+    assert completed is True
 
     assert await Model.one_by_id(session, model.id) is None
     assert await ModelInstance.one_by_id(session, instance.id) is None
@@ -404,11 +401,9 @@ async def test_deployment_teardown_with_no_reachable_worker_releases_worker_dele
     )
     if operation == 'delete':
         pending = await ModelService(session).delete(model)
-        assert pending.completed is False
+        assert pending is False
         completed = await ModelService(session).delete(model)
-        assert completed.completed is True
-        assert completed.record_deleted is True
-        assert completed.runtime_termination_confirmed is None
+        assert completed is True
         assert await Model.one_by_id(session, model.id) is None
     else:
         await model.update(session, {'replicas': 0})

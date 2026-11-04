@@ -144,8 +144,9 @@ def test_sdk_restart_exposes_pending_replacement_startup():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('resource', ['models', 'model_instances'])
-async def test_id_only_delete_does_not_reuse_cached_termination_proof(
-    instance, resource
+@pytest.mark.parametrize('present', [False, True])
+async def test_id_only_delete_enriches_from_cache_without_extra_status(
+    instance, resource, present
 ):
     from gpustack.schemas.models import ModelPublic
     from gpustack.server.bus import Event, EventType
@@ -164,13 +165,15 @@ async def test_id_only_delete_does_not_reuse_cached_termination_proof(
             updated_at=instance.updated_at,
         )
     )
-    cached.lifecycle.pending = True
-    cached.lifecycle.runtime_termination_confirmed = True
-    api._cache = {7: cached}
+    before = cached.model_dump()
+    api._cache = {7: cached} if present else {}
     event = Event(type=EventType.DELETED, id=7, data={'id': 7})
     await api._update_cache_from_event(event)
-    assert event.data.lifecycle.pending is False
-    assert event.data.lifecycle.phase == 'completed'
-    assert event.data.lifecycle.runtime_termination_confirmed is None
-    assert cached.lifecycle.pending is True
+    if present:
+        assert event.data is cached
+        assert event.data.model_dump() == before
+        assert 'lifecycle' not in event.data.model_dump()
+    else:
+        assert event.data == {'id': 7}
+    assert cached.model_dump() == before
     assert api._cache == {}

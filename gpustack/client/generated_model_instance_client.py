@@ -145,21 +145,6 @@ class ModelInstanceClient:
                 if item is not None:
                     # Enrich so downstream callbacks (e.g. ServeManager) see
                     # a validated object instead of {"id": ...}.
-                    if item.lifecycle is not None:
-                        # Cached observations cannot prove how the current
-                        # runtime stopped when the event carries only an ID.
-                        item = item.model_copy(
-                            update={
-                                "lifecycle": item.lifecycle.model_copy(
-                                    update={
-                                        "pending": False,
-                                        "phase": "completed",
-                                        "pending_stop_worker_ids": [],
-                                        "runtime_termination_confirmed": None,
-                                    }
-                                )
-                            }
-                        )
                     event.data = item
                 logger.debug(f"Cache: removed modelinstance {event.id}")
                 return

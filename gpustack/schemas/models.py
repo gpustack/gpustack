@@ -1368,30 +1368,8 @@ class ModelUpdate(ModelWriteBase):
     pass
 
 
-class ModelLifecycleState(BaseModel):
-    """Operation progress, independent of the model or instance serving condition."""
-
-    pending: bool
-    phase: Literal["idle", "stopping", "restarting", "completed"]
-    runtime_termination_confirmed: Optional[bool] = None
-    pending_stop_worker_ids: List[int] = PydanticField(default_factory=list)
-
-    def for_deleted_record(self) -> 'ModelLifecycleState':
-        """Complete record retirement without claiming unconfirmed runtime exit."""
-        return self.model_copy(
-            update={
-                'pending': False,
-                'phase': 'completed',
-                'pending_stop_worker_ids': [],
-                'runtime_termination_confirmed': (
-                    True if self.runtime_termination_confirmed is True else None
-                ),
-            }
-        )
-
-
-class ModelLifecycleResult(BaseModel):
-    """Acknowledgement of a resource operation, separate from runtime absence."""
+class ModelRestartResult(BaseModel):
+    """Acknowledge a restart while replacement startup is observed separately."""
 
     accepted: bool = True
     completed: bool
@@ -1399,9 +1377,6 @@ class ModelLifecycleResult(BaseModel):
     record_deleted: bool = False
     runtime_termination_confirmed: Optional[bool] = None
     observe_url: Optional[str] = None
-
-
-class ModelRestartResult(ModelLifecycleResult):
     spec_digest: str
     restarted: bool
     deleted_instances: List[str] = PydanticField(default_factory=list)
@@ -1430,23 +1405,6 @@ class ModelPublic(
     deleted_at: Optional[datetime] = PydanticField(
         default=None, json_schema_extra={"readOnly": True}
     )
-
-    lifecycle: Optional[ModelLifecycleState] = PydanticField(
-        default=None, json_schema_extra={"readOnly": True}
-    )
-
-    @model_validator(mode="after")
-    def populate_lifecycle(self):
-        if self.lifecycle is None:
-            pending = self.deleted_at is not None or self.restarting_since is not None
-            if self.deleted_at is not None:
-                phase = "stopping"
-            elif pending:
-                phase = "restarting"
-            else:
-                phase = "idle"
-            self.lifecycle = ModelLifecycleState(pending=pending, phase=phase)
-        return self
 
     @field_serializer("lora_list")
     def _strip_lora_prefix(self, lora_list, _info):
@@ -2489,44 +2447,6 @@ class ModelInstancePublic(
     id: int
     created_at: datetime
     updated_at: datetime
-
-    lifecycle: Optional[ModelLifecycleState] = PydanticField(
-        default=None, json_schema_extra={"readOnly": True}
-    )
-
-    @model_validator(mode="after")
-    def populate_lifecycle(self):
-        if self.lifecycle is None:
-            self.lifecycle = model_instance_lifecycle(self)
-        return self
-
-
-def model_instance_lifecycle(instance: ModelInstanceBase) -> ModelLifecycleState:
-    """Read stop evidence without treating retired ownership as physical absence."""
-    servers = instance.distributed_servers
-    guard = servers.legacy_stop if servers is not None else None
-    pending_workers, confirmed = set(), None
-    if guard is not None:
-        pending_workers = set(guard.worker_ids) - set(guard.confirmed_worker_ids)
-        confirmed = (
-            not pending_workers
-            and (instance.restart_count or 0) == guard.restart_count
-            and set(member_worker_ids(instance)) == set(guard.worker_ids)
-        )
-    elif servers is not None and servers.workloads is not None:
-        pending_workers = {
-            item.worker_id
-            for item in servers.workloads
-            if item.state != ModelInstanceWorkloadStateEnum.STOPPED
-        }
-        confirmed = not pending_workers
-    stopping = instance.draining_since is not None
-    return ModelLifecycleState(
-        pending=stopping,
-        phase="stopping" if stopping else "idle",
-        runtime_termination_confirmed=confirmed,
-        pending_stop_worker_ids=sorted(pending_workers) if stopping else [],
-    )
 
 
 ModelInstancesPublic = PaginatedList[ModelInstancePublic]

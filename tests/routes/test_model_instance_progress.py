@@ -125,13 +125,33 @@ async def test_instance_error_condition_is_separate_from_operation_progress(
     watched = ModelInstancePublic.model_validate_json(event.data.model_dump_json())
     for snapshot in (public, watched):
         assert snapshot.state == ModelInstanceStateEnum.ERROR
-        assert snapshot.lifecycle.pending is draining
-        assert snapshot.lifecycle.phase == ('stopping' if draining else 'idle')
+        assert snapshot.draining_since == api.instance.draining_since
+        assert 'lifecycle' not in snapshot.model_dump()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('data', [{'id': 7}, SimpleNamespace(id=7)])
+async def test_instance_deleted_watch_filters_private_changes(data):
+    from gpustack.server.bus import Event, EventType
+
+    event = Event(
+        type=EventType.DELETED,
+        data=data,
+        changed_fields={
+            'model_config_snapshot': (None, {}),
+            'state': ('running', 'error'),
+        },
+    )
+    await routes._strip_private_snapshot_changes(event)
+    assert event.data is data
+    assert event.id == 7
+    assert not hasattr(data, 'lifecycle')
+    assert event.changed_fields == {'state': ('running', 'error')}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('runtime', ['legacy', 'running', 'stopped'])
-async def test_instance_retirement_does_not_imply_runtime_termination(
+async def test_instance_deleted_watch_preserves_workload_observations(
     report_api, runtime
 ):
     from gpustack.server.bus import Event, EventType
@@ -145,20 +165,13 @@ async def test_instance_retirement_does_not_imply_runtime_termination(
     )
     instance.draining_since = datetime.now(timezone.utc)
     public = ModelInstancePublic.model_validate(instance)
-    assert public.lifecycle.pending is True
-    assert public.lifecycle.runtime_termination_confirmed is (
-        None if runtime == 'legacy' else runtime == 'stopped'
-    )
-    if runtime == 'running':
-        assert public.lifecycle.pending_stop_worker_ids == [1]
     event = Event(type=EventType.DELETED, data=public)
     await _strip_private_snapshot_changes(event)
     restored = ModelInstancePublic.model_validate_json(event.data.model_dump_json())
-    assert restored.lifecycle.pending is False
-    assert restored.lifecycle.phase == 'completed'
-    assert restored.lifecycle.runtime_termination_confirmed is (
-        True if runtime == 'stopped' else None
-    )
+    assert restored.draining_since == instance.draining_since
+    assert restored.distributed_servers == instance.distributed_servers
+    assert 'lifecycle' not in restored.model_dump()
+    assert 'lifecycle' not in ModelInstancePublic.model_json_schema()['properties']
 
 
 @pytest.mark.asyncio

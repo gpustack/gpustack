@@ -37,7 +37,7 @@ from gpustack.api.tenant import (
 )
 from gpustack.server.db import async_session
 from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
-from gpustack.server.bus import Event, EventType
+from gpustack.server.bus import Event
 from gpustack.schemas.models import (
     BackendEnum,
     DistributedServers,
@@ -89,8 +89,6 @@ router = APIRouter()
 
 
 async def _strip_private_snapshot_changes(event: Event) -> None:
-    if event.type == EventType.DELETED and event.data.lifecycle is not None:
-        event.data.lifecycle = event.data.lifecycle.for_deleted_record()
     event.changed_fields = {
         name: values
         for name, values in event.changed_fields.items()

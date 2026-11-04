@@ -145,18 +145,7 @@ class {{ class_name }}Client:
                 if item is not None:
                     # Enrich so downstream callbacks (e.g. ServeManager) see
                     # a validated object instead of {"id": ...}.
-{% if class_name in ['Model', 'ModelInstance'] %}                    if item.lifecycle is not None:
-                        # Cached observations cannot prove how the current
-                        # runtime stopped when the event carries only an ID.
-                        item = item.model_copy(update={
-                            "lifecycle": item.lifecycle.model_copy(update={
-                                "pending": False,
-                                "phase": "completed",
-                                "pending_stop_worker_ids": [],
-                                "runtime_termination_confirmed": None,
-                            })
-                        })
-{% endif %}                    event.data = item
+                    event.data = item
                 logger.debug(f"Cache: removed {{ class_name | lower }} {event.id}")
                 return
 

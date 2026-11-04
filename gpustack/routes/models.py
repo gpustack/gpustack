@@ -70,7 +70,6 @@ from gpustack.api.tenant import (
     tenant_list_conditions,
 )
 from gpustack.server.db import async_session
-from gpustack.server.bus import Event, EventType
 from gpustack.server.deps import (
     ListParamsDep,
     SessionDep,
@@ -146,11 +145,6 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def _finalize_model_lifecycle_event(event: Event) -> None:
-    if event.type == EventType.DELETED and event.data.lifecycle is not None:
-        event.data.lifecycle = event.data.lifecycle.for_deleted_record()
-
-
 def _make_model_watch_filter(categories, state=None):
     """Match the watch stream against category and state business filters."""
     predicates = []
@@ -200,7 +194,6 @@ async def get_models(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 filter_func=_make_model_watch_filter(categories, state),
-                event_transform=_finalize_model_lifecycle_event,
             ),
             media_type="text/event-stream",
         )
@@ -2735,10 +2728,10 @@ async def delete_model(
     assert_resource_visible(ctx, model, not_found_message="Model not found")
 
     try:
-        result = await ModelService(session).delete(model)
+        completed = await ModelService(session).delete(model)
     except HTTPException:
         raise
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
-    if response is not None and not result.completed:
+    if response is not None and not completed:
         response.status_code = 202
