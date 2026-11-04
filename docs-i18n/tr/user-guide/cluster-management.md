@@ -304,6 +304,7 @@ cache_dir: "/var/lib/gpustack/cache"
 log_dir: "/var/lib/gpustack/log"
 bin_dir: "/var/lib/gpustack/bin"
 # ========= container & image ===========
+container_namespace: "gpustack"
 image_name_override: "gpustack/gpustack:main"
 image_repo: "gpustack/gpustack"
 # ========= service & networking ===========
@@ -327,7 +328,9 @@ insecure_tls: false
 
 Yukarıdaki YAML, `Worker Configuration YAML` için şu anda desteklenen tüm seçenekleri listeler. Her seçeneğin anlamı için GPUStack [config dosyası belgelerinin](../cli-reference/start.md#config-file) tamamına bakın. `proxy_mode` seçeneği, sunucunun çalışana nasıl ulaştığını kontrol eder - bkz. [Çalışan Bağlantı Modları](#worker-connection-modes).
 
-Varsayılan kapsayıcı kaydı artık burada `Docker` veya `Kubernetes` kümeler için ayarlanmamaktadır; bunun yerine `Advanced` ayarlarındaki küme düzeyi `Default Container Registry` seçeneğini kullanarak yapılandırın. `Kubernetes` kümeler için ad alanı da aynı şekilde `Namespace` seçeneği aracılığıyla yapılandırılır (bkz. [Kubernetes Küme Seçenekleri](#kubernetes-cluster-options)).
+`container_namespace`, GPUStack'in varsayılan çalışan, çalıştırıcı ve çalışma zamanı imajları için `gpustack` ad alanını değiştirir. Örneğin kümenin `Default Container Registry` değeri `registry.example.com` ve `container_namespace: gpustack-ai` olarak ayarlandığında, varsayılan çalışan imajı `registry.example.com/gpustack-ai/gpustack:<version>` olarak çözümlenir; çalıştırıcı ve çalışma zamanı imajları ise sırasıyla `registry.example.com/gpustack-ai/runner` ve `registry.example.com/gpustack-ai/runtime` altında çözümlenir. Açıkça belirtilen `image_name_override` bu ayarın önüne geçer. Açıkça belirtilen küme `image_repo` değeri yalnızca çalışan imajını geçersiz kılar; çalıştırıcı ve çalışma zamanı imajları `container_namespace` kullanmaya devam eder.
+
+Varsayılan konteyner kayıt defteri, `Docker` veya `Kubernetes` kümeleri için bu YAML içinde ayarlanmaz; bunun yerine `Advanced` ayarlarındaki küme düzeyi `Default Container Registry` seçeneğiyle yapılandırın. `Kubernetes` kümelerinde `Namespace` seçeneği, konteyner imajı ad alanını değil Kubernetes kaynak ad alanını kontrol eder (bkz. [Kubernetes Küme Seçenekleri](#kubernetes-cluster-options)).
 
 ## Çalışan Bağlantı Modları { #worker-connection-modes }
 

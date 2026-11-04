@@ -206,7 +206,10 @@ def test_create_accepts_the_server_image_override(server_config):
 
 
 def test_create_rejects_a_server_image_override_on_docker_hub(server_config):
+    # The full override decides the worker image even when the server also
+    # configures a namespace for its inference images.
     server_config.image_name_override = "gpustack/gpustack:v1"
+    server_config.container_namespace = "gpustack-ai"
     request = ClusterCreate(name="c", provider=ClusterProvider.Shuihua, credential_id=1)
 
     with pytest.raises(InvalidException):
@@ -226,6 +229,39 @@ def test_cluster_repo_suppresses_the_server_image_override(server_config):
     )
 
     check_shuihua_requirements(request)
+
+
+def test_cluster_namespace_suppresses_the_server_image_override(server_config):
+    """A namespace composes the worker image from the resolved registry,
+    just like an explicit repository, so the server override no longer decides
+    which pull source needs validation."""
+    server_config.image_name_override = "gpustack/gpustack:v1"
+    server_config.system_default_container_registry = PRIVATE_REGISTRY
+    request = ClusterCreate(
+        name="c",
+        provider=ClusterProvider.Shuihua,
+        credential_id=1,
+        worker_config={"container_namespace": "gpustack-ai"},
+    )
+
+    check_shuihua_requirements(request)
+
+
+@pytest.mark.parametrize("container_namespace", ["", "gpustack"])
+def test_noop_cluster_namespace_keeps_the_server_override_in_validation(
+    server_config, container_namespace
+):
+    server_config.image_name_override = "gpustack/gpustack:v1"
+    server_config.system_default_container_registry = PRIVATE_REGISTRY
+    request = ClusterCreate(
+        name="c",
+        provider=ClusterProvider.Shuihua,
+        credential_id=1,
+        worker_config={"container_namespace": container_namespace},
+    )
+
+    with pytest.raises(InvalidException):
+        check_shuihua_requirements(request)
 
 
 @pytest.mark.parametrize("registry", ["docker.io", "index.docker.io"])

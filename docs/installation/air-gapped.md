@@ -179,6 +179,10 @@ set the following environment variable when starting the GPUStack worker to allo
      --system-default-container-registry <your_internal_registry>
 ```
 
+For workers managed through a GPUStack cluster, you can instead set `container_namespace` in the cluster's [Worker Configuration YAML](../user-guide/cluster-management.md#worker-configuration-yaml). This applies the namespace to the default worker, runner, and runtime images, so a separate `image_repo` is unnecessary unless the worker image needs its own repository override.
+
+When `container_namespace` is set, it also applies to other default `gpustack/*` images resolved by the worker, including `benchmark-runner` and cache service images. Mirror every image required by the workloads you use.
+
 ## Documentation
 
 The server carries this documentation and serves it at `/help/`, so an air-gapped environment does not need access to the online site:

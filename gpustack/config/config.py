@@ -197,6 +197,7 @@ class Config(WorkerConfig, BaseSettings):
         allow_headers: A list of HTTP request headers that should be supported for cross-origin requests.
         server_external_url: Specified external URL for the server.
         system_default_container_registry: Default registry for container images (server and inference images). Images are expected under the 'gpustack' namespace; for multi-level namespaces keep 'gpustack' as the last level and set this to the parent path.
+        container_namespace: Namespace for default GPUStack container images, including worker, runner and runtime images. Explicit worker image overrides take precedence.
         image_name_override: Force override of the image name.
         image_repo: Repository for the container images. When the image lives outside the 'gpustack' namespace (e.g. 'gpustack-ai/gpustack'), point system_default_container_registry to the parent namespace path and set this to the remaining repository path.
         service_discovery_name: Name of the service discovery service in DNS. Only useful when deployed in Kubernetes with service discovery.
@@ -1186,10 +1187,30 @@ class Config(WorkerConfig, BaseSettings):
         return self._derive_auth_cache_key
 
 
+def has_custom_container_namespace(container_namespace: Optional[str]) -> bool:
+    """Return whether the value changes the default ``gpustack`` namespace."""
+    return (container_namespace or "").strip().strip("/") not in ("", "gpustack")
+
+
+def apply_container_namespace_to_image(
+    image: str, container_namespace: Optional[str]
+) -> str:
+    """Replace the namespace of GPUStack's default image references.
+
+    References in another namespace already identify their repository and stay
+    unchanged. Full image overrides are returned before reaching this helper.
+    """
+    namespace = (container_namespace or "").strip().strip("/")
+    if namespace and image.startswith("gpustack/"):
+        return f"{namespace}/{image.removeprefix('gpustack/')}"
+    return image
+
+
 def get_image_name(
     image_name_override: Optional[str],
     registry: Optional[str] = None,
     image_repo: str = "gpustack/gpustack",
+    container_namespace: Optional[str] = None,
 ) -> str:
     if image_name_override:
         return image_name_override
@@ -1200,6 +1221,7 @@ def get_image_name(
     if version.removeprefix("v") == "0.0.0":
         version = "dev"
     prefix = f"{registry}/" if registry else ""
+    image_repo = apply_container_namespace_to_image(image_repo, container_namespace)
     return f"{prefix}{image_repo}:{version}"
 
 
@@ -1213,20 +1235,30 @@ def get_cluster_image_name(
     )
     cluster_override = worker_config.image_name_override if worker_config else None
     cluster_repo = worker_config.image_repo if worker_config else None
+    cluster_namespace = worker_config.container_namespace if worker_config else None
     # The server-level override typically comes from the Helm chart and pins
     # the exact image the server runs. It is the default for a cluster that
     # pins nothing about where its own workers pull from — but a full
-    # reference, so once a cluster sets a registry or a repository those
-    # explicit settings decide the image instead of being swallowed whole.
+    # reference, so once a cluster sets a registry, repository or custom
+    # namespace those explicit settings decide the image instead of being
+    # swallowed whole.
     server_override = (
         cfg.image_name_override
-        if cluster_registry is None and cluster_repo is None
+        if cluster_registry is None
+        and cluster_repo is None
+        and not has_custom_container_namespace(cluster_namespace)
         else None
     )
+    container_namespace = (
+        cluster_namespace if cluster_namespace is not None else cfg.container_namespace
+    )
+    if cluster_repo is not None:
+        container_namespace = None
     return get_image_name(
         image_name_override=cluster_override or server_override,
         image_repo=cluster_repo or cfg.image_repo,
         registry=registry,
+        container_namespace=container_namespace,
     )
 
 

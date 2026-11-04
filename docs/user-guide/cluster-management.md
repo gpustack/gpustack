@@ -319,6 +319,7 @@ cache_dir: "/var/lib/gpustack/cache"
 log_dir: "/var/lib/gpustack/log"
 bin_dir: "/var/lib/gpustack/bin"
 # ========= container & image ===========
+container_namespace: "gpustack"
 image_name_override: "gpustack/gpustack:main"
 image_repo: "gpustack/gpustack"
 # ========= service & networking ===========
@@ -342,7 +343,9 @@ insecure_tls: false
 
 The above YAML lists all currently supported options for the `Worker Configuration YAML`. For the meaning of each option, refer to the full GPUStack [config file documentation](../cli-reference/start.md#config-file). The `proxy_mode` option controls how the server reaches the worker — see [Worker Connection Modes](#worker-connection-modes).
 
-The default container registry is no longer set here for either `Docker` or `Kubernetes` clusters; configure it through the cluster-level `Default Container Registry` option in the `Advanced` settings instead. For `Kubernetes` clusters, the namespace is likewise configured through the `Namespace` option (see [Kubernetes Cluster Options](#kubernetes-cluster-options)).
+`container_namespace` replaces the default `gpustack` namespace for GPUStack's default worker, runner, and runtime images. For example, with the cluster's `Default Container Registry` set to `registry.example.com` and `container_namespace: gpustack-ai`, the default worker image resolves to `registry.example.com/gpustack-ai/gpustack:<version>`, while runner and runtime images resolve under `registry.example.com/gpustack-ai/runner` and `registry.example.com/gpustack-ai/runtime`. An explicit `image_name_override` takes precedence over this setting. An explicit cluster `image_repo` overrides it for the worker image only; runner and runtime images continue to use `container_namespace`.
+
+The default container registry is not set in this YAML for either `Docker` or `Kubernetes` clusters; configure it through the cluster-level `Default Container Registry` option in the `Advanced` settings instead. For `Kubernetes` clusters, the `Namespace` option controls the Kubernetes resource namespace, not the container image namespace (see [Kubernetes Cluster Options](#kubernetes-cluster-options)).
 
 ## Worker Connection Modes
 
