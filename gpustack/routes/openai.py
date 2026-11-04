@@ -301,6 +301,11 @@ async def proxy_request_by_model(
                 media_type="text/event-stream",
             )
         else:
+            # raise_on_error=False: a non-2xx here is an answer, not a transport
+            # failure. The engine's own rejection (an unsupported parameter, a
+            # malformed body) carries the status and message the caller needs,
+            # and raising would flatten every 4xx into the 503 below. The
+            # streaming branch forwards the same statuses for the same reason.
             resp, body = await request_to_worker(
                 worker=worker,
                 method=request.method,
@@ -310,10 +315,16 @@ async def proxy_request_by_model(
                 data=data,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT),
+                raise_on_error=False,
             )
+            # The worker's headers must not be forwarded verbatim: aiohttp
+            # hands over an already-decoded body, so a Content-Encoding or
+            # Content-Length from the worker leg describes a body the caller
+            # never receives, and Transfer-Encoding/Connection are hop-by-hop.
+            # Starlette recomputes Content-Length for the body actually sent.
             return Response(
                 status_code=resp.status,
-                headers=dict(resp.headers),
+                headers=_worker_response_headers(resp.headers),
                 content=body,
             )
     except asyncio.TimeoutError as e:
@@ -503,6 +514,29 @@ def filter_headers(headers):
         and key.lower() != "content-type"
         and key.lower() != "transfer-encoding"
         and key.lower() != "authorization"
+    }
+
+
+# Headers that describe the worker-to-server transfer of the body. They must be
+# dropped when relaying the answer: aiohttp auto-decompresses, which strands a
+# stale Content-Encoding and Content-Length on the decoded bytes, and the
+# remaining two are hop-by-hop and belong to the server-to-worker leg only.
+_EXCLUDED_WORKER_RESPONSE_HEADERS = frozenset(
+    {
+        "content-length",
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+    }
+)
+
+
+def _worker_response_headers(headers) -> Dict[str, str]:
+    """Worker response headers that are safe to relay to the caller as-is."""
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in _EXCLUDED_WORKER_RESPONSE_HEADERS
     }
 
 
