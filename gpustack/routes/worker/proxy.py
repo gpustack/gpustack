@@ -25,11 +25,7 @@ from gpustack.api.exceptions import (
 from gpustack import envs
 from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.utils.stall import stall_error_sse
-from gpustack.gateway.utils import (
-    router_header_key,
-    transform_sglang_component_request,
-    read_sglang_component_body,
-)
+from gpustack.gateway.utils import router_header_key
 from gpustack.utils.model_instance_workers import parse_model_instance_target
 
 router = APIRouter(dependencies=[Depends(worker_proxy_auth)])
@@ -248,29 +244,9 @@ async def proxy(path: str, request: Request):  # noqa: C901
         headers.pop("host", None)
         # Read the header while popping it: aiohttp sets its own framing, and
         # checking after the pop would never see a chunked upload.
-        component_target = getattr(request.state, "model_instance_endpoint", None)
-        component = getattr(component_target, "component", None)
-        transformed = component == "sglang_engine"
-        if transformed:
-            transform_sglang_component_request(
-                request.headers,
-                None,
-                component=component,
-                dp_rank=component_target.dp_rank,
-            )
         transfer_encoding = headers.pop("transfer-encoding", "")
         body_consumed = asyncio.Event()
-        if transformed:
-            content = await read_sglang_component_body(request)
-            headers, content = await asyncio.to_thread(
-                transform_sglang_component_request,
-                headers,
-                content,
-                component=component,
-                dp_rank=component_target.dp_rank,
-            )
-            body_consumed.set()
-        elif transfer_encoding.lower() == "chunked":
+        if transfer_encoding.lower() == "chunked":
 
             async def body_generator():
                 async for chunk in request.stream():

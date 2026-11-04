@@ -65,93 +65,6 @@ HeaderRouter: TypeAlias = Callable[
 ]
 
 
-class RoutedAddress(tuple):
-    """Tuple-compatible address with request-local HTTP transformation metadata."""
-
-    def __new__(cls, host, port, *, request_transform, body_limit):
-        value = super().__new__(cls, (host, port))
-        value.request_transform = request_transform
-        value.body_limit = body_limit
-        return value
-
-
-class _RequestHeaders(dict):
-    duplicate_framing = False
-
-
-async def _read_routed_body(reader, headers, limit):
-    if getattr(headers, "duplicate_framing", False):
-        raise HTTPException(400, "Use one request framing header")
-    chunks, size = [], 0
-    if headers.get("transfer-encoding", "").lower() == "chunked":
-        while True:
-            line = await reader.readline()
-            try:
-                count = int(line.split(b";", 1)[0].strip(), 16)
-            except ValueError as exc:
-                raise HTTPException(400, "Invalid chunked request") from exc
-            if count < 0:
-                raise HTTPException(400, "Invalid chunked request")
-            if count == 0:
-                if await reader.readline() != b"\r\n":
-                    raise HTTPException(400, "Send this JSON request without trailers")
-                break
-            size += count
-            if size > limit:
-                raise HTTPException(413, "Reduce the request body size")
-            chunks.append(await reader.readexactly(count))
-            if await reader.readexactly(2) != b"\r\n":
-                raise HTTPException(400, "Invalid chunked request")
-        return b"".join(chunks)
-    count = int(headers.get("content-length", "0"))
-    if not 0 <= count <= limit:
-        raise HTTPException(413, "Reduce the request body size")
-    return await reader.readexactly(count)
-
-
-async def _relay_prepared_request(client, remote, request, stall_policy, method):
-    try:
-        await remote.write(request)
-    except Exception as exc:
-        raise HTTPException(502, "Failed to send the upstream request") from exc
-    response = asyncio.create_task(
-        wait_for_complete_response(
-            remote,
-            client,
-            stall_policy=stall_policy,
-            expect_body=method != "HEAD",
-            close_connection=True,
-        )
-    )
-
-    async def wait_for_disconnect():
-        # This transformed path serves one request per connection. A pipelined
-        # next request is discarded, but only EOF cancels the current response.
-        while await client.read(65536):
-            pass
-
-    disconnected = asyncio.create_task(wait_for_disconnect())
-    response_observed = False
-    try:
-        done, _ = await asyncio.wait(
-            (response, disconnected), return_when=asyncio.FIRST_COMPLETED
-        )
-        if response in done:
-            response_observed = True
-            await response
-    finally:
-        for task in (response, disconnected):
-            if not task.done():
-                task.cancel()
-        results = await asyncio.gather(response, disconnected, return_exceptions=True)
-        error = results[0]
-        if not response_observed and isinstance(error, Exception):
-            logger.debug(
-                'Upstream response relay failed during disconnect cleanup',
-                exc_info=(type(error), error, error.__traceback__),
-            )
-
-
 async def _read_line(reader: asyncio.StreamReader) -> Optional[str]:
     """Read a line from the client"""
     try:
@@ -165,7 +78,7 @@ async def _read_line(reader: asyncio.StreamReader) -> Optional[str]:
 
 async def _read_headers(reader: asyncio.StreamReader) -> Dict[str, str]:
     """Read all headers from the client"""
-    headers = _RequestHeaders()
+    headers = {}
     while True:
         line = await _read_line(reader)
         if not line:
@@ -175,8 +88,6 @@ async def _read_headers(reader: asyncio.StreamReader) -> Dict[str, str]:
         if ":" in line:
             key, value = line.split(":", 1)
             name = key.strip().lower()
-            if name in ("content-length", "transfer-encoding") and name in headers:
-                headers.duplicate_framing = True
             headers[name] = value.strip()
     return headers
 
@@ -336,24 +247,6 @@ async def _handle_http(
 
     logger.debug(f"[Proxy] {method} {uri} -> {host}:{port}")
 
-    request_body = None
-    transform = getattr(resolved_target, "request_transform", None)
-    if transform is not None:
-        transform(headers, None)
-        try:
-            request_body = await asyncio.wait_for(
-                _read_routed_body(
-                    client_connection.reader, headers, resolved_target.body_limit
-                ),
-                timeout=30,
-            )
-        except asyncio.TimeoutError as exc:
-            raise HTTPException(408, "Request body upload timed out") from exc
-        except (asyncio.IncompleteReadError, ValueError) as exc:
-            raise HTTPException(400, "Incomplete or invalid request body") from exc
-        headers, request_body = await asyncio.to_thread(
-            transform, headers, request_body
-        )
     # Filter hop-by-hop headers
     filtered_headers: list[tuple[str, str]] = _filter_headers(headers)
     host_value = f"{host}:{port}" if port != 80 else host
@@ -372,25 +265,16 @@ async def _handle_http(
         return
 
     try:
-        if request_body is not None:
-            await _relay_prepared_request(
-                client_connection,
-                connection,
-                _get_request(method, path, filtered_headers).encode() + request_body,
-                stall_policy,
-                method,
-            )
-        else:
-            await tunnel(
-                client_connection,
-                connection,
-                request=_get_request(method, path, filtered_headers),
-                response_relay=partial(
-                    wait_for_complete_response,
-                    stall_policy=stall_policy if routed_by_header else None,
-                    expect_body=method != "HEAD",
-                ),
-            )
+        await tunnel(
+            client_connection,
+            connection,
+            request=_get_request(method, path, filtered_headers),
+            response_relay=partial(
+                wait_for_complete_response,
+                stall_policy=stall_policy if routed_by_header else None,
+                expect_body=method != "HEAD",
+            ),
+        )
 
     except HTTPException as e:
         await client_connection.send_error(e.status_code, e.detail)
@@ -588,7 +472,6 @@ async def wait_for_complete_response(  # noqa: C901
     client_writer: IOConnection,
     stall_policy: Optional[StallPolicy] = None,
     expect_body: bool = True,
-    close_connection: bool = False,
 ) -> None:
     """Wait for complete HTTP response from WebSocket tunnel and forward to client.
 
@@ -601,8 +484,6 @@ async def wait_for_complete_response(  # noqa: C901
     504 rather than a 200 that never produces data. Without one, the behavior is
     unchanged.
 
-    ``close_connection`` advertises the one-request lifecycle of transformed
-    requests while leaving response body and chunk framing unchanged.
     """
     if client_writer is None:
         logger.debug("[Proxy] Client writer is None")
@@ -661,17 +542,6 @@ async def wait_for_complete_response(  # noqa: C901
                 header_end = pending_data.find(b'\r\n\r\n') + 4
                 head = pending_data[:header_end]
                 pending_data = pending_data[header_end:]
-                if close_connection:
-                    lines = head[:-4].split(b'\r\n')
-                    head = (
-                        b'\r\n'.join(
-                            line
-                            for line in lines
-                            if line.split(b':', 1)[0].lower()
-                            not in (b'connection', b'keep-alive')
-                        )
-                        + b'\r\nConnection: close\r\n\r\n'
-                    )
                 (
                     content_length,
                     is_event_stream,

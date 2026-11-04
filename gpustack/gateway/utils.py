@@ -1,5 +1,4 @@
 import re
-import json
 import logging
 import copy
 import math
@@ -2118,90 +2117,6 @@ def get_instance_id_from_header(headers: Mapping[str, str]) -> int:
         raise NotFoundException(message="Invalid model destination format") from exc
 
 
-SG_ROUTING_MAX_BODY_BYTES = 16 * 1024 * 1024
-
-
-def _validate_sglang_request_headers(result: Dict[str, str]) -> str:
-    if result.get("expect"):
-        raise HTTPException(417, "Send this request without the Expect header")
-    if result.get("content-encoding", "identity").lower() != "identity":
-        raise HTTPException(415, "Send an uncompressed JSON request")
-    transfer = result.get("transfer-encoding", "").lower()
-    if transfer and (transfer != "chunked" or "content-length" in result):
-        raise HTTPException(400, "Use either Content-Length or chunked encoding")
-    try:
-        length = int(result.get("content-length", "0"))
-    except ValueError as exc:
-        raise HTTPException(400, "Invalid Content-Length") from exc
-    if length < 0:
-        raise HTTPException(400, "Invalid Content-Length")
-    if length > SG_ROUTING_MAX_BODY_BYTES:
-        raise HTTPException(413, "Reduce the request body to 16 MiB or less")
-    content_type = result.get("content-type", "").split(";", 1)[0].strip().lower()
-    if content_type and content_type != "application/json":
-        raise HTTPException(415, "Use application/json for this request")
-    return content_type
-
-
-def transform_sglang_component_request(
-    headers: Mapping[str, str],
-    body: Optional[bytes],
-    *,
-    component: str,
-    dp_rank: Optional[int] = None,
-) -> Tuple[Dict[str, str], Optional[bytes]]:
-    """Inject the authorized Engine diagnostic rank without conflicting hints."""
-    if component != "sglang_engine":
-        return {key.lower(): value for key, value in headers.items()}, body
-    if hasattr(headers, "getlist") and any(
-        len(headers.getlist(key)) > 1 for key in ("content-length", "transfer-encoding")
-    ):
-        raise HTTPException(400, "Use one request framing header")
-    result = {key.lower(): value for key, value in headers.items()}
-    content_type = _validate_sglang_request_headers(result)
-    result.pop("x-data-parallel-rank", None)
-    if dp_rank is None or dp_rank < 0:
-        raise HTTPException(400, "A valid Engine rank is required")
-    result["x-data-parallel-rank"] = str(dp_rank)
-    if body is None:
-        return result, None
-    if len(body) > SG_ROUTING_MAX_BODY_BYTES:
-        raise HTTPException(413, "Reduce the request body to 16 MiB or less")
-    if body:
-        if content_type != "application/json":
-            raise HTTPException(415, "Use application/json for this request")
-        try:
-            data = json.loads(body)
-        except (ValueError, UnicodeError) as exc:
-            raise HTTPException(400, "Send a valid JSON object") from exc
-        if not isinstance(data, dict):
-            raise HTTPException(400, "Send a valid JSON object")
-        data.pop("routed_dp_rank", None)
-        data.pop("data_parallel_rank", None)
-        data["routed_dp_rank"] = dp_rank
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        if len(body) > SG_ROUTING_MAX_BODY_BYTES:
-            raise HTTPException(413, "Reduce the request body to 16 MiB or less")
-        result["content-type"] = "application/json"
-    result.pop("transfer-encoding", None)
-    result.pop("trailer", None)
-    result.pop("connection", None)
-    result.pop("proxy-connection", None)
-    result["content-length"] = str(len(body))
-    return result, body
-
-
-async def read_sglang_component_body(request) -> bytes:
-    """Bound Engine diagnostic JSON buffering without changing other uploads."""
-    chunks, size = [], 0
-    async for chunk in request.stream():
-        size += len(chunk)
-        if size > SG_ROUTING_MAX_BODY_BYTES:
-            raise HTTPException(413, "Reduce the request body to 16 MiB or less")
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
 async def resolve_instance_address_from_model_header(
     headers: Dict[str, str],
 ) -> Tuple[Optional[str], int]:
@@ -2252,19 +2167,6 @@ async def resolve_instance_address_from_model_header(
                 status_code=404, detail="Destination Worker is unavailable"
             )
         await _assert_rank_destination_visible(session, principal, instance, worker)
-        if endpoint.component == "sglang_engine":
-            from gpustack.websocket_proxy.proxy_server import RoutedAddress
-
-            return RoutedAddress(
-                worker.ip,
-                endpoint.port,
-                request_transform=partial(
-                    transform_sglang_component_request,
-                    component=endpoint.component,
-                    dp_rank=endpoint.dp_rank,
-                ),
-                body_limit=SG_ROUTING_MAX_BODY_BYTES,
-            )
         return worker.ip, endpoint.port
 
 

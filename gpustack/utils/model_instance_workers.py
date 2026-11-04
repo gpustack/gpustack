@@ -657,12 +657,6 @@ def resolve_model_instance_endpoint(
     """Resolve a stable identity against the currently available endpoints."""
     if instance.id != target.instance_id or instance.model_id != target.model_id:
         raise ValueError("Model destination identity mismatch")
-    workloads = get_model_instance_workloads(instance) or []
-    if target.dp_rank is not None and any(
-        task.component is not None and task.component.kind == "sglang_engine"
-        for task in workloads
-    ):
-        return _resolve_sglang_engine_endpoint(instance, target, worker_id)
     endpoints = model_instance_endpoints(instance)
     if target.dp_rank is None and target.worker_id is None:
         endpoints = endpoints if len(endpoints) == 1 else []
@@ -854,32 +848,3 @@ def _sglang_engine_workloads(
     ):
         return []
     return engines
-
-
-def _resolve_sglang_engine_endpoint(instance, target, worker_id):
-    if (
-        instance.state
-        not in (ModelInstanceStateEnum.RUNNING, ModelInstanceStateEnum.STARTING)
-        or instance.draining_since is not None
-        or target.worker_id is not None
-    ):
-        raise ValueError("Engine diagnostic destination is unavailable")
-    engines = _sglang_engine_workloads(instance)
-    main = next((w for w in engines if w.worker_id == instance.worker_id), None)
-    if (
-        main is None
-        or target.dp_rank is None
-        or not 0 <= target.dp_rank < main.component.dp_size
-        or worker_id is not None
-        and worker_id != main.worker_id
-    ):
-        raise ValueError("Invalid Engine logical rank or Worker")
-    return ModelInstanceEndpoint(
-        instance.model_id,
-        instance.id,
-        main.worker_id,
-        main.component.api_port,
-        instance.restart_count or 0,
-        target.dp_rank,
-        component="sglang_engine",
-    )

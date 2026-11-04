@@ -1019,23 +1019,24 @@ async def test_tunnel_model_resolver_checks_identity_and_releases_session(
             'legacy_distributed_instance': 'model-1-7.static',
         }[kind]
     }
-    if case in ('worker', 'cluster', 'stale_epoch'):
+    if case in ('worker', 'cluster', 'stale_epoch') and kind != 'sglang_engine':
         resolved = await utils.resolve_instance_address_from_model_header(headers)
         assert resolved == (
             '10.0.0.2',
             {
                 'sglang_component_instance': 42001,
-                'sglang_engine': 42000,
                 'legacy_instance': 49999,
                 'legacy_distributed_instance': 49999,
             }.get(kind, 41001),
         )
-        assert hasattr(resolved, 'request_transform') == (kind == 'sglang_engine')
+        assert type(resolved) is tuple
     else:
         with pytest.raises(HTTPException) as exc:
             await utils.resolve_instance_address_from_model_header(headers)
         if case in ('null_cluster', 'foreign_owner', 'null_owner', 'unbound_system'):
-            assert exc.value.status_code == {'unbound_system': 403}.get(case, 404)
+            assert exc.value.status_code == {('unbound_system', False): 403}.get(
+                (case, kind == 'sglang_engine'), 404
+            )
     assert closed == [True]
 
 
@@ -1203,39 +1204,22 @@ def test_sglang_default_endpoint_is_single_smg(sglang_component_instance):
         )
 
 
-@pytest.mark.parametrize('alias', [''])
-def test_sglang_engine_diagnostic_survives_smg_recovery(
-    sglang_component_instance, alias
+@pytest.mark.parametrize('state', ['running', 'starting'])
+def test_sglang_engine_rank_targets_are_not_platform_routes(
+    sglang_component_instance, state
 ):
     from gpustack.utils.model_instance_workers import (
-        model_instance_endpoints,
         parse_model_instance_target,
         resolve_model_instance_endpoint,
     )
 
     instance = sglang_component_instance
-    instance.state = 'starting'
-    instance.distributed_servers.workloads[1].state = 'failed'
-    instance.distributed_servers.workloads[1].component.ready = False
-    assert model_instance_endpoints(instance) == []
-    target = parse_model_instance_target(f'model-1-7-dp3{alias}.static')
-    endpoint = resolve_model_instance_endpoint(instance, target)
-    assert endpoint.port == 42000
-    assert endpoint.component == 'sglang_engine'
-    assert endpoint.dp_rank == 3
-    for destination in (
-        'model-1-7-dp4.static',
-        'model-1-7-r2-engine-dp0.static',
-        'model-1-7.static',
-        'model-1-7-w1.static',
-    ):
-        with pytest.raises(ValueError):
+    instance.state = state
+    for rank in (0, 3, 4):
+        with pytest.raises(ValueError, match='unavailable'):
             resolve_model_instance_endpoint(
-                instance, parse_model_instance_target(destination)
+                instance, parse_model_instance_target(f'model-1-7-dp{rank}.static')
             )
-    instance.state = 'error'
-    with pytest.raises(ValueError):
-        resolve_model_instance_endpoint(instance, target)
 
 
 @pytest.mark.parametrize(
@@ -1346,34 +1330,26 @@ def test_component_getter_rejects_obsolete_or_foreign_smg(component_getter, chan
     client.model_instances.get_cached.assert_called_once_with(7)
 
 
-@pytest.mark.parametrize('rank,port', [(0, 42000), (3, 42000), (4, None), (-1, None)])
-def test_component_getter_engine_diagnostic_during_smg_starting(
-    component_getter, rank, port
+@pytest.mark.parametrize('rank', [0, 3, 4, -1])
+def test_component_getter_rejects_engine_rank_during_smg_starting(
+    component_getter, rank
 ):
     manager, client, instance = component_getter
     instance.state = 'starting'
     instance.distributed_servers.workloads[1].state = 'failed'
     instance.distributed_servers.workloads[1].component.ready = False
     assert (
-        getattr(
-            manager.get_instance_endpoint_by_model_instance_id(
-                7,
-                model_id=1,
-                dp_rank=rank,
-            ),
-            'port',
-            None,
+        manager.get_instance_endpoint_by_model_instance_id(
+            7,
+            model_id=1,
+            dp_rank=rank,
         )
-        == port
+        is None
     )
     assert (
-        getattr(
-            manager.get_instance_endpoint_by_model_instance_id(
-                7,
-                model_id=1,
-            ),
-            'port',
-            None,
+        manager.get_instance_endpoint_by_model_instance_id(
+            7,
+            model_id=1,
         )
         is None
     )
@@ -1419,6 +1395,8 @@ async def test_component_middleware_carries_validated_target_through_existing_au
     from unittest.mock import MagicMock
     from fastapi import Depends
 
+    if component == 'engine-dp3':
+        status = 404
     manager, authority, instance = component_getter
     if component == 'hybrid-w1':
         authority.model_instances.get_cached.return_value = hybrid_instance.__wrapped__(
@@ -1553,25 +1531,9 @@ async def test_component_middleware_does_not_forward_unavailable_default_smg(
     'component', ['sglang_smg', 'sglang_engine', 'vllm_hybrid', None]
 )
 @pytest.mark.parametrize('chunked', [False, True])
-async def test_component_proxy_sends_transformed_unicode_body(
-    component, chunked, monkeypatch
-):
+async def test_component_proxy_preserves_native_unicode_body(component, chunked):
     from gpustack.utils.model_instance_workers import ModelInstanceEndpoint
-    import threading
 
-    loop_thread = threading.get_ident()
-    transform = worker_proxy.transform_sglang_component_request
-    transformed_bodies = []
-
-    def check_transform(headers, body, **kwargs):
-        if body is not None:
-            assert threading.get_ident() != loop_thread
-            transformed_bodies.append(body)
-        return transform(headers, body, **kwargs)
-
-    monkeypatch.setattr(
-        worker_proxy, 'transform_sglang_component_request', check_transform
-    )
     received = []
 
     async def handler(request):
@@ -1617,89 +1579,20 @@ async def test_component_proxy_sends_transformed_unicode_body(
     assert response.status_code == 200
     data, headers, sent = received[0]
     assert headers['x-smg-routing-key'] == 'conversation-123'
-    assert len(transformed_bodies) == int(component == 'sglang_engine')
-    if component == 'sglang_engine':
-        assert data == {'prompt': '你好', 'routed_dp_rank': 1}
-        assert headers.get('x-data-parallel-rank') == '1'
-        assert int(headers['content-length']) == len(sent)
-        assert 'transfer-encoding' not in headers
-    else:
-        assert data == payload
-        assert headers['x-data-parallel-rank'] == '9'
-        assert sent == raw
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    'headers,status',
-    [
-        ({'Content-Encoding': 'gzip'}, 415),
-        ({'Content-Type': 'multipart/form-data'}, 415),
-        ({'Expect': '100-continue'}, 417),
-    ],
-)
-async def test_component_proxy_rejects_unsupported_request_without_forwarding(
-    headers, status
-):
-    from gpustack.utils.model_instance_workers import ModelInstanceEndpoint
-
-    received = []
-
-    async def handler(request):
-        received.append(True)
-        return web.Response()
-
-    async with _fake_inference_server(handler) as port:
-        async with _worker_client(port) as (client, app):
-            app.state.routed_target = ModelInstanceEndpoint(
-                1, 7, 1, port, 3, dp_rank=1, component='sglang_engine'
-            )
-            response = await client.post(
-                '/v1/chat/completions',
-                content=b'{}',
-                headers={'Content-Type': 'application/json', **headers},
-            )
-    assert response.status_code == status
-    assert received == []
-
-
-@pytest.mark.asyncio
-async def test_component_proxy_bounds_chunked_upload_before_forwarding(monkeypatch):
-    from gpustack.gateway import utils
-    from gpustack.utils.model_instance_workers import ModelInstanceEndpoint
-
-    monkeypatch.setattr(utils, 'SG_ROUTING_MAX_BODY_BYTES', 32)
-    received = []
-
-    async def handler(request):
-        received.append(True)
-        return web.Response()
-
-    async def chunks():
-        yield b'x' * 33
-
-    async with _fake_inference_server(handler) as port:
-        async with _worker_client(port) as (client, app):
-            app.state.routed_target = ModelInstanceEndpoint(
-                1, 7, 1, port, 3, dp_rank=1, component='sglang_engine'
-            )
-            response = await client.post(
-                '/v1/chat/completions',
-                content=chunks(),
-                headers={'Content-Type': 'application/json'},
-            )
-    assert response.status_code == 413
-    assert received == []
+    assert data == payload
+    assert headers['x-data-parallel-rank'] == '9'
+    assert sent == raw
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('chunked', [False, True])
 @pytest.mark.parametrize('body', [b'not-json', b'x' * 33])
-async def test_smg_proxy_preserves_body_and_backend_error(monkeypatch, chunked, body):
-    from gpustack.gateway import utils
+@pytest.mark.parametrize('component', ['sglang_smg', 'sglang_engine'])
+async def test_component_proxy_preserves_body_and_backend_error(
+    component, chunked, body
+):
     from gpustack.utils.model_instance_workers import ModelInstanceEndpoint
 
-    monkeypatch.setattr(utils, 'SG_ROUTING_MAX_BODY_BYTES', 32)
     received = []
     error = {'error': {'message': 'native backend validation error'}}
 
@@ -1714,7 +1607,13 @@ async def test_smg_proxy_preserves_body_and_backend_error(monkeypatch, chunked, 
     async with _fake_inference_server(handler) as port:
         async with _worker_client(port) as (client, app):
             app.state.routed_target = ModelInstanceEndpoint(
-                1, 7, 1, port, 3, component='sglang_smg', attempt=2
+                1,
+                7,
+                1,
+                port,
+                3,
+                component=component,
+                attempt=2 if component == 'sglang_smg' else None,
             )
             response = await client.post(
                 '/v1/chat/completions',
@@ -1727,7 +1626,9 @@ async def test_smg_proxy_preserves_body_and_backend_error(monkeypatch, chunked, 
 
 
 @pytest.mark.asyncio
-async def test_engine_diagnostic_proxy_keeps_rank_during_smg_recovery(component_getter):
+async def test_removed_engine_rank_route_does_not_forward_during_smg_recovery(
+    component_getter,
+):
     from gpustack.schemas.models import (
         ModelInstanceStateEnum,
         ModelInstanceWorkloadStateEnum,
@@ -1780,12 +1681,9 @@ async def test_engine_diagnostic_proxy_keeps_rank_during_smg_recovery(component_
                     },
                     json={'prompt': 'hi', 'routed_dp_rank': 8, 'data_parallel_rank': 9},
                 )
-    assert response.status_code == 200
-    assert received == [({'prompt': 'hi', 'routed_dp_rank': 1}, '1')]
-    assert all(
-        call.kwargs['use_cache'] is False
-        for call in clientset.model_instances.get.call_args_list
-    )
+    assert response.status_code == 404
+    assert received == []
+    clientset.model_instances.get_cached.assert_called_once_with(7)
 
 
 @pytest.mark.parametrize('watching', [False, True])

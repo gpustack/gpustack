@@ -943,16 +943,10 @@ async def test_model_target_is_resolved_once_without_uri_fallback(monkeypatch, c
 
 
 @asynccontextmanager
-async def _component_tunnel_client(port, component):
+async def _component_tunnel_client(port):
     import httpx
-    from functools import partial
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
-    from gpustack.gateway.utils import (
-        transform_sglang_component_request,
-        SG_ROUTING_MAX_BODY_BYTES,
-    )
-    from gpustack.websocket_proxy.proxy_server import RoutedAddress
     from gpustack.websocket_proxy.connection import AsyncIOConnection
 
     class ChunkConnection(AsyncIOConnection):
@@ -965,17 +959,6 @@ async def _component_tunnel_client(port, component):
         return ChunkConnection(reader, writer)
 
     target = ('127.0.0.1', port)
-    if component == 'sglang_engine':
-        target = RoutedAddress(
-            '127.0.0.1',
-            port,
-            request_transform=partial(
-                transform_sglang_component_request,
-                component=component,
-                dp_rank=1 if component == 'sglang_engine' else None,
-            ),
-            body_limit=SG_ROUTING_MAX_BODY_BYTES,
-        )
     route = AsyncMock(return_value=target)
     proxy = HTTPSProxyServer(
         '127.0.0.1', 0, lambda ip: SimpleNamespace(connect=connect), header_router=route
@@ -991,27 +974,13 @@ async def _component_tunnel_client(port, component):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('component', ['sglang_smg', 'sglang_engine'])
+@pytest.mark.parametrize('path', ['v1/chat/completions', 'generate'])
 @pytest.mark.parametrize('chunked', [False, True])
-async def test_component_tunnel_sends_selected_payload_once(
-    component, chunked, monkeypatch
-):
+async def test_tunnel_preserves_native_rank_payload(path, chunked):
     import json
     from aiohttp import web
     from tests.routes.test_worker_proxy import _fake_inference_server
 
-    import threading
-    from gpustack.gateway import utils
-
-    loop_thread = threading.get_ident()
-    transform = utils.transform_sglang_component_request
-
-    def check_transform(headers, body, **kwargs):
-        if body is not None:
-            assert threading.get_ident() != loop_thread
-        return transform(headers, body, **kwargs)
-
-    monkeypatch.setattr(utils, 'transform_sglang_component_request', check_transform)
     received = []
 
     async def handler(request):
@@ -1026,7 +995,7 @@ async def test_component_tunnel_sends_selected_payload_once(
         return web.json_response({'ok': True})
 
     async with _fake_inference_server(handler) as port:
-        async with _component_tunnel_client(port, component) as (client, route, _):
+        async with _component_tunnel_client(port) as (client, route, _):
             raw = json.dumps(
                 {'prompt': '你好', 'routed_dp_rank': 9, 'data_parallel_rank': 8},
                 ensure_ascii=False,
@@ -1037,7 +1006,7 @@ async def test_component_tunnel_sends_selected_payload_once(
                 yield raw[3:]
 
             response = await client.post(
-                'http://unselected-worker:49999/v1/chat/completions',
+                f'http://unselected-worker:49999/{path}',
                 content=chunks() if chunked else raw,
                 headers={
                     'Content-Type': 'application/json; charset=utf-8',
@@ -1046,35 +1015,25 @@ async def test_component_tunnel_sends_selected_payload_once(
                 },
             )
     assert response.status_code == 200
-    if component == 'sglang_engine':
-        assert response.headers.get('connection') == 'close'
     data, headers, sent = received[0]
     assert headers['x-smg-routing-key'] == 'conversation-123'
-    assert data == (
-        {'prompt': '你好', 'routed_dp_rank': 1}
-        if component == 'sglang_engine'
-        else {'prompt': '你好', 'routed_dp_rank': 9, 'data_parallel_rank': 8}
-    )
-    assert headers.get('x-data-parallel-rank') == (
-        '1' if component == 'sglang_engine' else '9'
-    )
-    if component == 'sglang_engine' or not chunked:
-        assert int(headers['content-length']) == len(sent)
-        assert 'transfer-encoding' not in headers
-    else:
+    assert data == {'prompt': '你好', 'routed_dp_rank': 9, 'data_parallel_rank': 8}
+    assert sent == raw
+    assert headers['x-data-parallel-rank'] == '9'
+    if chunked:
         assert headers['transfer-encoding'] == 'chunked'
+    else:
+        assert int(headers['content-length']) == len(raw)
     route.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('chunked', [False, True])
 @pytest.mark.parametrize('body', [b'not-json', b'x' * 33])
-async def test_smg_tunnel_preserves_body_and_backend_error(monkeypatch, chunked, body):
+async def test_tunnel_preserves_body_and_backend_error(chunked, body):
     from aiohttp import web
-    from gpustack.gateway import utils
     from tests.routes.test_worker_proxy import _fake_inference_server
 
-    monkeypatch.setattr(utils, 'SG_ROUTING_MAX_BODY_BYTES', 32)
     received = []
     error = {'error': {'message': 'native backend validation error'}}
 
@@ -1087,7 +1046,7 @@ async def test_smg_tunnel_preserves_body_and_backend_error(monkeypatch, chunked,
         yield body[3:]
 
     async with _fake_inference_server(handler) as port:
-        async with _component_tunnel_client(port, 'sglang_smg') as (client, route, _):
+        async with _component_tunnel_client(port) as (client, route, _):
             response = await client.post(
                 'http://unselected/v1/chat/completions',
                 content=chunks() if chunked else body,
@@ -1096,73 +1055,6 @@ async def test_smg_tunnel_preserves_body_and_backend_error(monkeypatch, chunked,
     assert received == [body]
     assert response.status_code == 422
     assert response.json() == error
-    route.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('kind', ['json', 'chunked', 'head', 'empty'])
-async def test_component_tunnel_advertises_close_and_accepts_sequential_requests(kind):
-    from aiohttp import web
-    from tests.routes.test_worker_proxy import _fake_inference_server
-
-    async def handler(request):
-        await request.read()
-        headers = {'Connection': 'keep-alive', 'Keep-Alive': 'timeout=60'}
-        if kind == 'empty':
-            return web.Response(status=204, headers=headers)
-        if kind == 'chunked':
-            response = web.StreamResponse(headers=headers)
-            await response.prepare(request)
-            await response.write(b'data: first\n\n')
-            await response.write(b'data: [DONE]\n\n')
-            await response.write_eof()
-            return response
-        return web.json_response({'ok': True}, headers=headers)
-
-    async with _fake_inference_server(handler) as port:
-        async with _component_tunnel_client(port, 'sglang_engine') as (
-            client,
-            route,
-            _,
-        ):
-            for _ in range(2):
-                response = await client.request(
-                    'HEAD' if kind == 'head' else 'POST',
-                    'http://unselected/v1/chat/completions',
-                    json={},
-                )
-                assert response.status_code == (204 if kind == 'empty' else 200)
-                assert response.headers['connection'] == 'close'
-                assert 'keep-alive' not in response.headers
-                if kind in ('head', 'empty'):
-                    assert response.content == b''
-                elif kind == 'chunked':
-                    assert response.content == b'data: first\n\ndata: [DONE]\n\n'
-                    assert response.headers['transfer-encoding'] == 'chunked'
-                else:
-                    assert response.json() == {'ok': True}
-            assert route.await_count == 2
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    'headers,status',
-    [
-        ({'Content-Type': 'multipart/form-data'}, 415),
-        ({'Content-Encoding': 'gzip'}, 415),
-        ({'Expect': '100-continue'}, 417),
-    ],
-)
-async def test_component_tunnel_rejects_unsupported_body_before_connect(
-    headers, status
-):
-    async with _component_tunnel_client(1, 'sglang_engine') as (client, route, _):
-        response = await client.post(
-            'http://unselected/v1/chat/completions',
-            content=b'{}',
-            headers={'Content-Type': 'application/json', **headers},
-        )
-    assert response.status_code == status
     route.assert_awaited_once()
 
 
@@ -1183,7 +1075,7 @@ async def test_component_tunnel_disconnect_releases_upstream_stream():
         return response
 
     async with _fake_inference_server(handler) as port:
-        async with _component_tunnel_client(port, 'sglang_smg') as (client, route, _):
+        async with _component_tunnel_client(port) as (client, route, _):
             async with client.stream(
                 'POST',
                 'http://unselected/v1/chat/completions',
@@ -1195,93 +1087,3 @@ async def test_component_tunnel_disconnect_releases_upstream_stream():
                     break
             await asyncio.wait_for(closed.wait(), 2)
     route.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    'framing,status',
-    [
-        ('Content-Length: 2\r\nTransfer-Encoding: chunked\r\n', 400),
-        ('Content-Length: 2\r\nContent-Length: 3\r\n', 400),
-        ('Content-Length: 16777217\r\n', 413),
-    ],
-)
-async def test_component_tunnel_rejects_ambiguous_or_oversized_framing(framing, status):
-    async with _component_tunnel_client(1, 'sglang_engine') as (_, route, port):
-        reader, writer = await asyncio.open_connection('127.0.0.1', port)
-        writer.write(
-            f'POST http://unselected/v1/chat/completions HTTP/1.1\r\nHost: unselected\r\nContent-Type: application/json\r\n{framing}\r\n'.encode()
-        )
-        await writer.drain()
-        head = await asyncio.wait_for(reader.readline(), 2)
-        assert f' {status} '.encode() in head
-        writer.close()
-        await writer.wait_closed()
-    route.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_transformed_relay_keeps_response_when_client_pipelines(monkeypatch):
-    from unittest.mock import MagicMock, AsyncMock
-    from gpustack.websocket_proxy.proxy_server import _relay_prepared_request
-
-    extra_read = asyncio.Event()
-    finish_response = asyncio.Event()
-    response_finished = asyncio.Event()
-    reads = 0
-
-    async def read(_size):
-        nonlocal reads
-        reads += 1
-        if reads == 1:
-            return b'GET /next HTTP/1.1\r\n'
-        extra_read.set()
-        await asyncio.Event().wait()
-
-    async def response(*args, **kwargs):
-        await finish_response.wait()
-        response_finished.set()
-
-    monkeypatch.setattr(
-        'gpustack.websocket_proxy.proxy_server.wait_for_complete_response', response
-    )
-    client = MagicMock(read=read)
-    remote = MagicMock(write=AsyncMock())
-    relay = asyncio.create_task(
-        _relay_prepared_request(client, remote, b'POST /', None, 'POST')
-    )
-    try:
-        await asyncio.wait_for(extra_read.wait(), 1)
-        assert not relay.done()
-        finish_response.set()
-        await asyncio.wait_for(relay, 1)
-        assert response_finished.is_set()
-    finally:
-        relay.cancel()
-        await asyncio.gather(relay, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('failure', [False, True])
-async def test_disconnected_relay_logs_unobserved_upstream_failure(
-    monkeypatch, caplog, failure
-):
-    from unittest.mock import MagicMock, AsyncMock
-    from gpustack.websocket_proxy import proxy_server
-
-    async def response(*args, **kwargs):
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            if failure:
-                raise ConnectionResetError('upstream reset')
-            raise
-
-    monkeypatch.setattr(proxy_server, 'wait_for_complete_response', response)
-    client = MagicMock(read=AsyncMock(return_value=b''))
-    remote = MagicMock(write=AsyncMock())
-    with caplog.at_level('DEBUG', logger=proxy_server.__name__):
-        await proxy_server._relay_prepared_request(
-            client, remote, b'POST /', None, 'POST'
-        )
-    assert ('upstream reset' in caplog.text) == failure
