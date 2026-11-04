@@ -3,7 +3,7 @@ import functools
 import json
 import logging
 import time
-from typing import Type, Union
+from typing import Optional, Type, Union
 from fastapi import Request, Response, status
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from jwt import DecodeError, ExpiredSignatureError
@@ -18,7 +18,11 @@ from openai.types.create_embedding_response import (
 )
 from gpustack.api.exceptions import ErrorResponse
 from gpustack.routes.rerank import RerankResponse, RerankUsage
-from gpustack.schemas.images import ImageGenerationChunk, ImagesResponse
+from gpustack.schemas.images import (
+    ImageGenerationChunk,
+    ImagesResponse,
+    compute_image_usage,
+)
 from gpustack.schemas.model_usage import OperationEnum
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.models import Model
@@ -167,6 +171,7 @@ async def process_request(
         response_body = b"".join([chunk async for chunk in response.body_iterator])
         try:
             usage = None
+            generated_image_count = None
             if (
                 response.headers.get("content-type")
                 .lower()
@@ -176,8 +181,16 @@ async def process_request(
                 response_instance = response_class(**response_dict)
                 if hasattr(response_instance, "usage"):
                     usage = response_instance.usage
+                if isinstance(response_instance, ImagesResponse):
+                    if response_instance.data is not None:
+                        generated_image_count = len(response_instance.data)
 
-            await record_model_usage(request, usage, operation)
+            await record_model_usage(
+                request,
+                usage,
+                operation,
+                generated_image_count=generated_image_count,
+            )
         except Exception as e:
             logger.error(f"Error processing model usage: {e}")
         response = Response(
@@ -227,7 +240,19 @@ async def record_model_usage(
     request: Request,
     usage: Union[CompletionUsage, EmbeddingUsage, RerankUsage, None],
     operation: OperationEnum,
+    generated_image_count: Optional[int] = None,
 ):
+    """Report one completed direct-path inference request to the usage collector.
+
+    Args:
+        request: The inference request; ``request.state`` carries the
+            resolved user / model / api key.
+        usage: The OpenAI-style usage block from the response, if any.
+        operation: The inference operation the request path maps to.
+        generated_image_count: For image generation, the number of images
+            the response returned. ``None`` (e.g. streamed responses) falls
+            back to the ``n`` the request asked for.
+    """
     total_tokens = getattr(usage, 'total_tokens', 0) or 0
     prompt_tokens = getattr(usage, 'prompt_tokens', total_tokens) or total_tokens
     completion_tokens = (
@@ -301,6 +326,11 @@ async def record_model_usage(
         operation=operation,
         organization_id=organization_id,
     )
+    if operation == OperationEnum.IMAGE_GENERATION:
+        metric.image_count, metric.image_pixel_count = compute_image_usage(
+            getattr(request.state, "image_request_params", None),
+            generated_image_count,
+        )
     await accumulate_gateway_metrics([metric])
 
 

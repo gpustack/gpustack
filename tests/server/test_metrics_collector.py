@@ -7,7 +7,7 @@ import pytest
 
 from types import SimpleNamespace
 
-from gpustack.schemas.model_usage import ModelUsage
+from gpustack.schemas.model_usage import ModelUsage, OperationEnum
 from gpustack.schemas.models import Model
 from gpustack.schemas.principals import PrincipalType, platform_principal_id
 from gpustack.server.metrics_collector import (
@@ -276,6 +276,71 @@ def test_accumulate_same_key_sums_values():
     assert entry.output_token == 280
     assert entry.input_cached_token == 75
     assert entry.request_count == 2
+
+
+def test_model_usage_metrics_image_units_default_to_zero():
+    # Reports from gateway plugins that predate media metering carry no
+    # image fields and must still validate.
+    m = ModelUsageMetrics.model_validate({"model": "m", "input_token": 5})
+    assert m.image_count == 0
+    assert m.image_pixel_count == 0
+
+
+def test_accumulate_sums_image_units_and_keeps_details_per_request():
+    def image_metric(count, pixels):
+        return ModelUsageMetrics(
+            model="sd-turbo",
+            model_id=7,
+            user_id=2,
+            operation=OperationEnum.IMAGE_GENERATION,
+            completed=True,
+            image_count=count,
+            image_pixel_count=pixels,
+        )
+
+    asyncio.run(accumulate_gateway_metrics([image_metric(2, 2 * 512 * 512)]))
+    asyncio.run(accumulate_gateway_metrics([image_metric(1, 1024 * 1024)]))
+
+    assert len(gateway_metrics_buffer) == 1
+    entry = list(gateway_metrics_buffer.values())[0]
+    assert entry.image_count == 3
+    assert entry.image_pixel_count == 2 * 512 * 512 + 1024 * 1024
+    assert entry.request_count == 2
+    assert [d.image_count for d in gateway_details_buffer] == [2, 1]
+
+
+@pytest.mark.asyncio
+async def test_create_or_update_accumulates_image_units(monkeypatch):
+    def usage(images, pixels):
+        return ModelUsage(
+            model_id=7,
+            model_name="sd-turbo",
+            user_id=2,
+            model_route_id=21,
+            date=date(2023, 11, 14),
+            prompt_token_count=0,
+            completion_token_count=0,
+            request_count=1,
+            image_count=images,
+            image_pixel_count=pixels,
+            operation=OperationEnum.IMAGE_GENERATION,
+        )
+
+    existing = usage(4, 4 * 1024 * 1024)
+
+    async def fake_one_by_fields(session, fields):
+        return existing
+
+    monkeypatch.setattr(ModelUsage, "one_by_fields", fake_one_by_fields)
+    monkeypatch.setattr(ModelUsage, "save", AsyncMock())
+
+    await create_or_update_model_usage(
+        MagicMock(), usage(1, 512 * 512), auto_commit=False
+    )
+
+    assert existing.image_count == 5
+    assert existing.image_pixel_count == 4 * 1024 * 1024 + 512 * 512
+    assert existing.request_count == 2
 
 
 def test_accumulate_different_keys():

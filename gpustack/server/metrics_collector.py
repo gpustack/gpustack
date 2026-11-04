@@ -64,6 +64,13 @@ class ModelUsageMetrics(BaseModel):
     total_token: int = 0
     input_cached_token: int = 0
     request_count: int = 1
+    # Media generation units (image_generation only; 0 otherwise). Additive
+    # like the token fields, so they roll up by ``+=``. A reporter that does
+    # not send them (older gateway plugins) yields 0 — no image units are
+    # invented server-side because, unlike tokens, there is nothing in the
+    # report to estimate them from.
+    image_count: int = 0
+    image_pixel_count: int = 0
     # ``completed`` is True iff the canonical usage chunk was observed before
     # the stream ended. When False, token fields may be 0 (OpenAI/vLLM) or
     # partial (Anthropic message_start carries input_token early), so the
@@ -320,6 +327,8 @@ async def accumulate_gateway_metrics(metrics: List[ModelUsageMetrics]):
                 existing.total_token += metric.total_token
                 existing.input_cached_token += metric.input_cached_token
                 existing.request_count += metric.request_count
+                existing.image_count += metric.image_count
+                existing.image_pixel_count += metric.image_pixel_count
         _trim_details_buffer_locked()
         _maybe_warn_missing_route_id(missing_route_id_count, missing_route_id_sample)
 
@@ -446,6 +455,8 @@ async def create_or_update_model_usage(
         current_usage.completion_token_count += metric.completion_token_count
         current_usage.prompt_cached_token_count += metric.prompt_cached_token_count
         current_usage.request_count += metric.request_count
+        current_usage.image_count += metric.image_count
+        current_usage.image_pixel_count += metric.image_pixel_count
         # Refresh route name snapshot to the latest non-NULL value so that
         # a mid-day rename converges to one consistent label per (route_id,
         # date) cell. A NULL incoming name means the route was deleted
@@ -832,6 +843,9 @@ async def store_usage_metrics(
                     completion_token_count=completion_tokens,
                     prompt_cached_token_count=metric.input_cached_token,
                     request_count=metric.request_count,
+                    # Reporter-supplied; a negative quantity is never valid.
+                    image_count=max(metric.image_count, 0),
+                    image_pixel_count=max(metric.image_pixel_count, 0),
                     operation=metric.operation,
                     consumer_name=consumer_info[0] if consumer_info else None,
                     consumer_principal_kind=(
@@ -886,6 +900,8 @@ async def store_usage_metrics(
                         prompt_token_count=prompt_tokens,
                         completion_token_count=completion_tokens,
                         prompt_cached_token_count=metric.input_cached_token,
+                        image_count=max(metric.image_count, 0),
+                        image_pixel_count=max(metric.image_pixel_count, 0),
                         # Persist the completion flag so downstream billing
                         # can tell authoritative token counts from estimated
                         # ones, and gate per-request charges (image/tts/stt)

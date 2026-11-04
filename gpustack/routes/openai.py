@@ -26,6 +26,7 @@ from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.model_common import build_category_conditions
+from gpustack.schemas.images import IMAGE_GENERATION_ENDPOINTS, ImageRequestParams
 from gpustack.schemas.models import Model, servable_instances
 from gpustack.schemas.model_routes import (
     ModelRoute,
@@ -198,6 +199,13 @@ async def proxy_request_by_model(
     """
     endpoint = re.sub(r"^.*/(?:v1|v1-openai)/", "", request.url.path)
     model_name, stream, body_json, form_data = await parse_request_body(request)
+    if endpoint in IMAGE_GENERATION_ENDPOINTS:
+        # Image usage is metered per image, which the response alone cannot
+        # always tell (streamed responses, ``size`` is only on the request).
+        # ``request.form()`` is cached by Starlette, so this re-read is free.
+        request.state.image_request_params = ImageRequestParams.from_mapping(
+            body_json if body_json is not None else await request.form()
+        )
 
     async with async_session() as session:
         # The per-user access list is a USER question, and one caller is not a
