@@ -77,3 +77,60 @@ async def test_deployed_model_with_no_active_target_is_unavailable(monkeypatch):
 
     assert exc.value.status_code == 503
     assert exc.value.message == "No running instances available"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 429, 500])
+async def test_inference_error_preserves_upstream_status_and_body(monkeypatch, status):
+    """A backend rejection must reach the SDK with its original error details."""
+    _stub_resolution(monkeypatch, route=SimpleNamespace(id=7))
+    monkeypatch.setattr(
+        openai_route.ModelRouteService,
+        "resolve_route_targets",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(weight=1, model_id=1, overridden_model_name=None)
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        openai_route.ModelService, "get_by_id", AsyncMock(return_value=MagicMock())
+    )
+    monkeypatch.setattr(
+        openai_route,
+        "get_running_instance",
+        AsyncMock(return_value=SimpleNamespace(worker_id=1, worker_ip="test", port=80)),
+    )
+    worker = SimpleNamespace(
+        id=1,
+        ip="127.0.0.1",
+        port=10150,
+        advertise_address=None,
+        token="test-worker-token",
+        get_proxy_address=lambda: None,
+    )
+    monkeypatch.setattr(
+        openai_route.WorkerService, "get_by_id", AsyncMock(return_value=worker)
+    )
+    monkeypatch.setattr(openai_route, "model_instance_prefix", lambda _: "instance")
+    monkeypatch.setattr(openai_route, "mutate_request", MagicMock())
+    monkeypatch.setattr(
+        openai_route, "_prepare_proxy_request", lambda *a, **k: ({}, b"{}")
+    )
+
+    body = b'{"error":{"message":"backend rejection","type":"BadRequestError"}}'
+    upstream = MagicMock(status=status, headers={"content-type": "application/json"})
+    upstream.read = AsyncMock(return_value=body)
+    upstream.text = AsyncMock(return_value=body.decode())
+    client = SimpleNamespace(request=AsyncMock(return_value=upstream))
+    request = _request()
+    request.method = "POST"
+    request.app.state.http_client = client
+    request.app.state.http_client_no_proxy = client
+
+    response = await openai_route.proxy_request_by_model(request, SimpleNamespace(id=1))
+
+    assert response.status_code == status
+    assert response.body == body
+    assert response.headers["content-type"] == "application/json"
+    upstream.close.assert_called_once()
