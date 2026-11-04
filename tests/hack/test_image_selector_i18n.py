@@ -300,6 +300,7 @@ for (const component of ['all', 'server', 'worker']) {
                     const index = lines.findIndex(line => line.startsWith('docker ') && line.endsWith(`/${image}`));
                     if (component !== 'worker') {
                         assert.ok(index > 0);
+                        assert.notEqual(page.CONFIG.i18n[language].comments[category], undefined);
                         const heading = lines.slice(0, index).reverse().find(line => line.startsWith('# '));
                         assert.equal(heading, `# ${page.CONFIG.i18n[language].comments[category]}`);
                     } else {
