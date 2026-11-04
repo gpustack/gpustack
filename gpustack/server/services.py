@@ -2,11 +2,12 @@ import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 from typing import List, NamedTuple, Optional, Tuple, Union, Set
-from sqlalchemy import func, or_, inspect
+from sqlalchemy import delete, func, or_, inspect
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from gpustack.api.exceptions import (
     ConflictException,
@@ -20,7 +21,11 @@ from gpustack.schemas.cache_services import (
     CacheServiceInstance,
     CacheServiceInstanceCreate,
 )
-from gpustack.schemas.links import ModelRoutePrincipalLink
+from gpustack.schemas.links import (
+    ModelRoutePrincipalLink,
+    ModelInstanceModelFileLink,
+    ModelInstanceDraftModelFileLink,
+)
 from gpustack.schemas.model_files import ModelFile
 from gpustack.schemas.models import (
     BackendEnum,
@@ -28,6 +33,7 @@ from gpustack.schemas.models import (
     ROUTER_DEFAULT_MEMORY,
     Model,
     ModelInstance,
+    ModelSource,
     ModelInstanceStateEnum,
     ModelInstanceWorkload,
     ModelInstanceLegacyStop,
@@ -1613,7 +1619,7 @@ class ModelInstanceService:
             or not model.restart_on_error
             or model.replicas == 0
             or model.restarting_since is not None
-            or model.stale
+            or (model.stale and (instance.group_id or not instance.spec_digest))
         ):
             return False
         engines = [
@@ -1677,34 +1683,88 @@ class ModelInstanceService:
             "state_message": "",
             "distributed_servers": servers,
         }
-        from gpustack.utils.model_instance_workers import sglang_smg_mode
+        configuration_changed = False
+        if not instance.group_id and instance.spec_digest:
+            from gpustack.server.controllers import model_spec_digest
 
+            target = await model_spec_digest(self.session, model)
+            source['spec_digest'] = target
+            configuration_changed = instance.spec_digest != target
+            if configuration_changed:
+                # Every old task has stopped; preparation can reserve a new layout.
+                source.update(
+                    await self._managed_restart_configuration(instance, model)
+                )
+                source.update(
+                    port=None,
+                    ports=None,
+                    named_ports=None,
+                    backend=get_backend(model),
+                    backend_version=model.backend_version,
+                    api_detected_backend_version=None,
+                )
+        from gpustack.utils.model_instance_workers import sglang_smg_mode
+        from gpustack.utils.vllm_topology import vllm_lb_mode
+
+        sglang_engines = any(
+            item.component is not None and item.component.kind == "sglang_engine"
+            for item in workloads
+        )
+        single_entry = (
+            vllm_lb_mode(model.backend_parameters) == 'internal'
+            if get_backend(model) == BackendEnum.VLLM
+            else not sglang_smg_mode(model)
+        )
         if (
             instance.role is None
-            and get_backend(model) == BackendEnum.SGLANG
+            and not instance.group_id
             and model.disaggregation is None
-            and not model.stale
-            and not sglang_smg_mode(model)
-            and any(
-                item.component is not None and item.component.kind == "sglang_engine"
-                for item in workloads
+            and single_entry
+            and (
+                configuration_changed
+                or (sglang_engines and get_backend(model) == BackendEnum.SGLANG)
             )
         ):
-            if instance.spec_digest:
-                from gpustack.server.controllers import model_members_stale
-
-                if await model_members_stale(self.session, model, [instance]):
-                    return source, None
             # All old tasks have stopped before the next launch changes its layout.
             servers.workloads = None
             servers.orchestration_mode = "legacy"
             source.update(port=None, ports=None, named_ports=None)
             claim = instance.computed_resource_claim
-            if claim is not None:
+            if claim is not None and sglang_engines:
                 source["computed_resource_claim"] = claim.model_copy(
                     update={"ram": max(0, (claim.ram or 0) - ROUTER_DEFAULT_MEMORY)}
                 )
         return source, None
+
+    async def _managed_restart_configuration(
+        self, instance: ModelInstance, model: Model
+    ) -> dict:
+        """Rebind launch inputs and file associations after every old task stops."""
+        from gpustack.utils.model_source import get_draft_model_source
+
+        draft_source = await get_draft_model_source(self.session, model)
+        worker = await Worker.one_by_id(self.session, instance.worker_id)
+        cache_config = await resolve_instance_cache_config_safe(
+            self.session, model, worker=worker, spans_workers=instance.spans_workers
+        )
+        # Cached files remain reusable; only this instance's old associations go.
+        for link in (ModelInstanceModelFileLink, ModelInstanceDraftModelFileLink):
+            await self.session.execute(
+                delete(link).where(link.model_instance_id == instance.id)
+            )
+        set_committed_value(instance, 'model_files', [])
+        set_committed_value(instance, 'draft_model_files', [])
+        return {
+            **model.model_dump(include=set(ModelSource.model_fields)),
+            'draft_model_source': draft_source,
+            'cache_config': cache_config,
+            'resolved_path': None,
+            'draft_model_resolved_path': None,
+            'download_progress': None,
+            'draft_model_download_progress': None,
+            'mounted_loras': [],
+            'model_config_snapshot': None,
+        }
 
     async def delete(self, model_instance: ModelInstance) -> bool:
         """Return whether the row is absent, or False while stopping is pending."""

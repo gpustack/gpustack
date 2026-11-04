@@ -426,6 +426,8 @@ async def test_managed_recovery_requires_every_registered_task_stopped(
     ctx = managed_recovery
     ctx.instance.state = ModelInstanceStateEnum.ERROR
     ctx.instance.state_message = "first rank failure"
+    ctx.instance.spec_digest = 'old'
+    ctx.instance.resolved_path = '/models/running-generation'
     ctx.instance.distributed_servers.workloads[0].state = (
         ModelInstanceWorkloadStateEnum.STOPPED
     )
@@ -437,6 +439,8 @@ async def test_managed_recovery_requires_every_registered_task_stopped(
 
     ctx.write.assert_not_awaited()
     assert ctx.instance.state_message == "first rank failure"
+    assert ctx.instance.resolved_path == '/models/running-generation'
+    ctx.session.execute.assert_not_awaited()
     assert ctx.instance.restart_count == 0
     assert ctx.instance.distributed_servers.workloads
 
@@ -795,6 +799,102 @@ async def test_manual_dp_edit_keeps_managed_recovery_until_explicit_rebuild(
     assert ctx.instance.restart_count == 1
     assert ctx.instance.distributed_servers.orchestration_mode == 'managed'
     assert ctx.instance.distributed_servers.workloads == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'edited', [None, 'parameters', 'manual_dp', 'topology', 'version']
+)
+async def test_ordinary_managed_recovery_registers_the_current_configuration(
+    managed_recovery, edited
+):
+    from gpustack.routes.model_instances import _validate_workload_layout
+    from gpustack.schemas.models import ModelInstanceWorkloadReport, PortBand
+    from gpustack.server.controllers import model_spec_digest
+
+    ctx = managed_recovery
+    ctx.session.info = {}
+    ctx.model.backend = 'vLLM'
+    ctx.model.backend_version = '0.31.0'
+    ctx.instance.backend = 'vLLM'
+    ctx.instance.backend_version = '0.31.0'
+    ctx.instance.api_detected_backend_version = '0.31.0'
+    ctx.model.backend_parameters = ['--data-parallel-external-lb', '--tp=1', '--dp=2']
+    ctx.instance.spec_digest = await model_spec_digest(ctx.session, ctx.model)
+    ctx.instance.state = ModelInstanceStateEnum.ERROR
+    for task in ctx.instance.distributed_servers.workloads:
+        task.state = ModelInstanceWorkloadStateEnum.STOPPED
+    if edited:
+        if edited == 'manual_dp':
+            ctx.model.env = {'GPUSTACK_MANUAL_DP': '1'}
+        elif edited == 'version':
+            ctx.model.backend_version = '0.32.0'
+        elif edited == 'topology':
+            ctx.model.backend_parameters = [
+                '--data-parallel-external-lb',
+                '--tp=2',
+                '--dp=1',
+            ]
+        else:
+            ctx.model.backend_parameters.append('--max-model-len=4096')
+        ctx.model.stale = True
+        ctx.session.info.clear()
+    target = await model_spec_digest(ctx.session, ctx.model)
+
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+
+    assert ctx.instance.state == ModelInstanceStateEnum.SCHEDULED
+    assert ctx.instance.spec_digest == target
+    assert ctx.instance.backend == ctx.model.backend
+    assert ctx.instance.backend_version == ctx.model.backend_version
+    assert ctx.instance.api_detected_backend_version == (None if edited else '0.31.0')
+    assert ctx.instance.worker_id == 1
+    assert ctx.instance.gpu_indexes == [0]
+    assert ctx.instance.distributed_servers.orchestration_mode == 'managed'
+    assert ctx.instance.port == (None if edited else 40000)
+    assert ctx.instance.ports == (None if edited else [40000])
+    # Preparation republishes the new generation's ports before task registration.
+    api_count = 1 if edited == 'topology' else 2
+    ctx.instance.named_ports = {
+        '_vllm_external_api': PortBand(base=40000, count=api_count)
+    }
+    task = ModelInstanceWorkload.model_validate(
+        new_model_instance_workload(worker_id=1, dp_rank=0)
+    )
+    await _validate_workload_layout(
+        ctx.session,
+        ctx.instance,
+        ModelInstanceWorkloadReport(restart_count=1, workloads=[task]),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('backend', ['vLLM', 'SGLang', 'custom'])
+async def test_ordinary_recovery_uses_latest_single_entry_backend(
+    managed_recovery, backend
+):
+    from gpustack.server.controllers import model_spec_digest
+
+    ctx = managed_recovery
+    ctx.session.info = {}
+    ctx.model.backend = 'vLLM'
+    ctx.model.backend_parameters = ['--data-parallel-external-lb', '--tp=1', '--dp=2']
+    ctx.instance.spec_digest = await model_spec_digest(ctx.session, ctx.model)
+    ctx.instance.state = ModelInstanceStateEnum.ERROR
+    for task in ctx.instance.distributed_servers.workloads:
+        task.state = ModelInstanceWorkloadStateEnum.STOPPED
+    ctx.model.backend = backend
+    ctx.model.backend_parameters = []
+    ctx.model.stale = True
+    ctx.session.info.clear()
+
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+
+    assert ctx.instance.backend == backend
+    assert ctx.instance.distributed_servers.orchestration_mode == 'legacy'
+    assert ctx.instance.distributed_servers.workloads is None
+    assert ctx.instance.port is None and ctx.instance.ports is None
+    assert ctx.instance.computed_resource_claim.vram == {0: 1024}
 
 
 @pytest.mark.asyncio
@@ -1620,3 +1720,367 @@ async def test_ep_only_switches_to_single_entry_only_after_all_tasks_stop(
         ctx.write.assert_not_awaited()
         assert ctx.instance.computed_resource_claim.ram == 3 * 1024**3
         assert ctx.instance.distributed_servers.workloads
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('edited', [None, 'primary', 'draft', 'remove_draft', 'lora'])
+async def test_managed_recovery_prepares_files_for_the_adopted_spec(
+    managed_recovery, monkeypatch, edited
+):
+    from gpustack.schemas.model_files import ModelFile
+    from gpustack.schemas.models import (
+        LoraListEntry,
+        ModelSource,
+        SpeculativeConfig,
+        ModelConfigSnapshot,
+    )
+    from gpustack.schemas.cache_services import CacheConfigSnapshot
+    from gpustack.schemas.workers import Worker
+    from gpustack.server import controllers
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    ctx = managed_recovery
+    ctx.session.info = {}
+    ctx.model.backend = 'vLLM'
+    ctx.model.backend_parameters = ['--data-parallel-external-lb', '--tp=1', '--dp=2']
+    monkeypatch.setattr(
+        'gpustack.utils.model_source.get_catalog_draft_models',
+        AsyncMock(return_value=[]),
+    )
+    worker = SimpleNamespace(id=ctx.instance.worker_id)
+    monkeypatch.setattr(Worker, 'one_by_id', AsyncMock(return_value=worker))
+    cache_config = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        'gpustack.server.services.resolve_instance_cache_config_safe', cache_config
+    )
+    ctx.instance.cache_config = CacheConfigSnapshot(cache_service_id=1, injected=True)
+    ctx.instance.model_config_snapshot = ModelConfigSnapshot(
+        backend_parameters=['--old']
+    )
+    ctx.model.speculative_config = SpeculativeConfig(draft_model='/models/draft-A')
+    ctx.instance.source = ctx.model.source
+    ctx.instance.huggingface_repo_id = ctx.model.huggingface_repo_id
+    ctx.instance.resolved_path = '/models/primary-A'
+    ctx.instance.draft_model_source = ModelSource(
+        source='local_path', local_path='/models/draft-A'
+    )
+    ctx.instance.draft_model_resolved_path = '/models/draft-A'
+    ctx.instance.download_progress = 100
+    ctx.instance.draft_model_download_progress = 100
+    ctx.instance.spec_digest = await controllers.model_spec_digest(
+        ctx.session, ctx.model
+    )
+    old_files = [
+        ModelFile(
+            id=wid,
+            worker_id=wid,
+            source=ctx.model.source,
+            huggingface_repo_id=ctx.model.huggingface_repo_id,
+            state='ready',
+            resolved_paths=['/models/primary-A'],
+        )
+        for wid in (1, 2)
+    ]
+    set_committed_value(ctx.instance, 'model_files', old_files)
+    old_draft_files = [
+        ModelFile(
+            id=wid + 2,
+            worker_id=wid,
+            source='local_path',
+            local_path='/models/draft-A',
+            state='ready',
+            resolved_paths=['/models/draft-A'],
+        )
+        for wid in (1, 2)
+    ]
+    set_committed_value(ctx.instance, 'draft_model_files', old_draft_files)
+    if edited == 'primary':
+        ctx.model.source = SourceEnum.LOCAL_PATH
+        ctx.model.local_path = '/models/primary-B'
+        ctx.model.huggingface_repo_id = None
+    elif edited == 'draft':
+        ctx.model.speculative_config = SpeculativeConfig(draft_model='/models/draft-B')
+    elif edited == 'remove_draft':
+        ctx.model.speculative_config = None
+    elif edited == 'lora':
+        ctx.model.backend_parameters.append('--enable-lora')
+        ctx.model.lora_list = [
+            LoraListEntry(
+                lora_name='adapter',
+                source='huggingface',
+                lora_repo_name='org/adapter',
+            )
+        ]
+    ctx.session.info.clear()
+    ctx.instance.state = ModelInstanceStateEnum.ERROR
+    for task in ctx.instance.distributed_servers.workloads:
+        task.state = ModelInstanceWorkloadStateEnum.STOPPED
+
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+
+    assert ctx.instance.spec_digest == await controllers.model_spec_digest(
+        ctx.session, ctx.model
+    )
+    if not edited:
+        assert ctx.instance.model_files == old_files
+        assert ctx.instance.resolved_path == '/models/primary-A'
+        ctx.session.execute.assert_not_awaited()
+        cache_config.assert_not_awaited()
+        assert ctx.instance.cache_config.injected is True
+        return
+    assert ctx.instance.source == ctx.model.source
+    assert ctx.instance.huggingface_repo_id == ctx.model.huggingface_repo_id
+    assert ctx.instance.local_path == ctx.model.local_path
+    assert ctx.instance.resolved_path is None
+    assert ctx.instance.draft_model_resolved_path is None
+    assert ctx.instance.download_progress is None
+    assert ctx.instance.draft_model_download_progress is None
+    assert ctx.instance.cache_config is None
+    assert ctx.instance.model_config_snapshot is None
+    cache_config.assert_awaited_once_with(
+        ctx.session, ctx.model, worker=worker, spans_workers=True
+    )
+    assert ctx.instance.model_files == []
+    assert ctx.instance.draft_model_files == []
+    assert ctx.session.execute.await_count == 2
+    from gpustack.schemas.links import (
+        ModelInstanceModelFileLink,
+        ModelInstanceDraftModelFileLink,
+    )
+
+    for call, link in zip(
+        ctx.session.execute.await_args_list,
+        (ModelInstanceModelFileLink, ModelInstanceDraftModelFileLink),
+    ):
+        statement = call.args[0]
+        assert statement.table.name == link.__tablename__
+        assert statement.compile().params == {'model_instance_id_1': ctx.instance.id}
+    assert not controllers._instance_model_files_complete(ctx.instance, ctx.model)
+    if edited == 'remove_draft':
+        assert ctx.instance.draft_model_source is None
+    else:
+        assert ctx.instance.draft_model_source.local_path == (
+            '/models/draft-B' if edited == 'draft' else '/models/draft-A'
+        )
+    primary_files = [
+        ModelFile(
+            id=wid + 4,
+            worker_id=wid,
+            source=ctx.model.source,
+            huggingface_repo_id=ctx.model.huggingface_repo_id,
+            local_path=ctx.model.local_path,
+            state='ready',
+            resolved_paths=[ctx.model.local_path or '/models/primary-A'],
+        )
+        for wid in (1, 2)
+    ]
+    draft_source = ctx.instance.draft_model_source
+    draft_files = (
+        [
+            ModelFile(
+                id=wid + 6,
+                worker_id=wid,
+                source='local_path',
+                local_path=draft_source.local_path,
+                state='ready',
+                resolved_paths=[draft_source.local_path],
+            )
+            for wid in (1, 2)
+        ]
+        if draft_source
+        else []
+    )
+    by_source = {ctx.instance.model_source_index: primary_files}
+    if draft_source:
+        by_source[draft_source.model_source_index] = draft_files
+    monkeypatch.setattr(
+        controllers.ModelFileService,
+        'get_by_source_index',
+        AsyncMock(side_effect=lambda index: by_source.get(index, [])),
+    )
+    monkeypatch.setattr(
+        controllers.ModelFileService, 'get_by_resolved_path', AsyncMock(return_value=[])
+    )
+    create_file = AsyncMock()
+    monkeypatch.setattr(ModelFile, 'create', create_file)
+    primary_files = await controllers.get_or_create_model_files_for_instance(
+        ctx.session, ctx.instance
+    )
+    if draft_source:
+        draft_files = await controllers.get_or_create_model_files_for_instance(
+            ctx.session, ctx.instance, is_draft_model=True
+        )
+    create_file.assert_not_awaited()
+    set_committed_value(ctx.instance, 'model_files', primary_files)
+    set_committed_value(ctx.instance, 'draft_model_files', draft_files)
+    ctx.instance.state = ModelInstanceStateEnum.INITIALIZING
+    monkeypatch.setattr(
+        controllers, '_build_mounted_loras_payload', AsyncMock(return_value=([], []))
+    )
+    assert await controllers._promote_to_starting_if_complete(ctx.session, ctx.instance)
+    assert ctx.instance.resolved_path == primary_files[0].resolved_paths[0]
+    assert ctx.instance.draft_model_resolved_path == (
+        draft_source.local_path if draft_source else None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stale_sibling', [False, True])
+@pytest.mark.parametrize('fence', [None, 'pd', 'own_stale'])
+async def test_current_smg_recovers_despite_a_stale_sibling(
+    smg_recovery, stale_sibling, fence
+):
+    from gpustack.server.controllers import model_members_stale, model_spec_digest
+
+    ctx = smg_recovery
+    ctx.session.info = {}
+    ctx.model.backend = 'SGLang'
+    ctx.model.backend_parameters = ['--dp-size=2']
+    ctx.model.replicas = 2
+    ctx.instance.spec_digest = await model_spec_digest(ctx.session, ctx.model)
+    sibling = ctx.instance.model_copy(deep=True, update={'id': 2, 'spec_digest': 'old'})
+    ctx.model.stale = await model_members_stale(
+        ctx.session,
+        ctx.model,
+        [ctx.instance, sibling] if stale_sibling else [ctx.instance],
+    )
+    if fence == 'pd':
+        ctx.instance.group_id = 'group'
+    elif fence == 'own_stale':
+        ctx.instance.spec_digest = 'old'
+    smg = ctx.instance.distributed_servers.workloads[-1]
+    smg.state = ModelInstanceWorkloadStateEnum.STOPPED
+    smg.component.stop_requested = True
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+    expected = int(fence != 'own_stale' and not (fence == 'pd' and stale_sibling))
+    assert ctx.instance.distributed_servers.workloads[-1].component.attempt == expected
+
+
+@pytest.mark.asyncio
+async def test_recovery_serializes_with_inflight_file_preparation(
+    managed_recovery, monkeypatch
+):
+    from gpustack.schemas.model_files import ModelFile
+    from gpustack.server import controllers
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    ctx = managed_recovery
+    ctx.session.info = {}
+    ctx.model.backend = 'vLLM'
+    ctx.model.backend_parameters = ['--data-parallel-external-lb', '--tp=1', '--dp=2']
+    current = ctx.instance
+    current.source = ctx.model.source
+    current.huggingface_repo_id = ctx.model.huggingface_repo_id
+    current.spec_digest = await controllers.model_spec_digest(ctx.session, ctx.model)
+    current.state = ModelInstanceStateEnum.INITIALIZING
+    current.distributed_servers.workloads = []
+    preparing = current.model_copy(deep=True)
+    files = [
+        ModelFile(
+            id=wid,
+            worker_id=wid,
+            source=current.source,
+            huggingface_repo_id=current.huggingface_repo_id,
+            state='ready',
+            resolved_paths=['/models/model-A'],
+        )
+        for wid in (1, 2)
+    ]
+    lookup_started, resume_lookup, recovery_started = (
+        asyncio.Event(),
+        asyncio.Event(),
+        asyncio.Event(),
+    )
+    lock = asyncio.Lock()
+    held = set()
+    writer = MagicMock()
+
+    async def acquire(session):
+        if session not in held:
+            await lock.acquire()
+            held.add(session)
+
+    def release(session):
+        if session in held:
+            held.remove(session)
+            lock.release()
+
+    async def load(session, id, *, for_update=False, options=None, **kwargs):
+        if session is ctx.session:
+            recovery_started.set()
+        if for_update:
+            await acquire(session)
+        return preparing if options is not None else current
+
+    async def load_files(session, id, *, for_update=False):
+        if for_update:
+            await acquire(session)
+        return current
+
+    async def lookup(index):
+        assert index == preparing.model_source_index
+        lookup_started.set()
+        await resume_lookup.wait()
+        return files
+
+    monkeypatch.setattr(ModelInstance, 'one_by_id', AsyncMock(side_effect=load))
+    monkeypatch.setattr(
+        ModelInstance, 'one_by_id_with_model_files', AsyncMock(side_effect=load_files)
+    )
+    monkeypatch.setattr(Model, 'one_by_id', AsyncMock(return_value=ctx.model))
+    monkeypatch.setattr(
+        'gpustack.server.services.Worker.one_by_id', AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        controllers.ModelFileService,
+        'get_by_source_index',
+        AsyncMock(side_effect=lookup),
+    )
+    writer.exec = AsyncMock(return_value=SimpleNamespace(first=lambda: None))
+    pending = []
+    writer.add.side_effect = pending.append
+
+    async def commit_writer():
+        if pending:
+            set_committed_value(current, 'model_files', files)
+            pending.clear()
+        release(writer)
+
+    async def commit_recovery():
+        release(ctx.session)
+        # A Worker can begin the replacement while the old preparation unwinds.
+        current.state = ModelInstanceStateEnum.INITIALIZING
+
+    writer.commit = AsyncMock(side_effect=commit_writer)
+    ctx.session.commit.side_effect = commit_recovery
+
+    task = asyncio.create_task(
+        controllers.ensure_instance_model_file(writer, preparing)
+    )
+    await asyncio.wait_for(lookup_started.wait(), timeout=2)
+    ctx.model.source = SourceEnum.LOCAL_PATH
+    ctx.model.huggingface_repo_id = None
+    ctx.model.local_path = '/models/model-B'
+    ctx.session.info.clear()
+    current.state = ModelInstanceStateEnum.ERROR
+    recovery = asyncio.create_task(
+        ctx.service.reconcile_managed_instance(current.id, 0)
+    )
+    try:
+        await asyncio.wait_for(recovery_started.wait(), timeout=2)
+        resume_lookup.set()
+        await asyncio.wait_for(asyncio.gather(task, recovery), timeout=2)
+    finally:
+        resume_lookup.set()
+        task.cancel()
+        recovery.cancel()
+        await asyncio.gather(task, recovery, return_exceptions=True)
+        release(writer)
+        release(ctx.session)
+    assert current.restart_count == 1
+    assert current.local_path == '/models/model-B'
+    assert current.spec_digest == await controllers.model_spec_digest(
+        ctx.session, ctx.model
+    )
+    assert current.resolved_path is None
+    assert current.model_files == []

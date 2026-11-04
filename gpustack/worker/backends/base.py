@@ -349,14 +349,8 @@ class InferenceServer(ABC):
         )
         # The subprocess reads configuration independently of the manager;
         # an edit after its launch decision must not reach the container.
-        if (self._model_instance.group_id or managed) and getattr(
-            model, "stale", None
-        ) is True:
-            raise RuntimeError(
-                PD_CONFIGURATION_CHANGED_MESSAGE
-                if self._model_instance.group_id
-                else "The deployment configuration has changed; restart the model instead."
-            )
+        if self._model_instance.group_id and getattr(model, "stale", None) is True:
+            raise RuntimeError(PD_CONFIGURATION_CHANGED_MESSAGE)
         # Keep the model as the server holds it, for the one path that writes
         # back: a projection must never be persisted, and a PUT built from one
         # would push a role's overrides up to the Model-level spec.

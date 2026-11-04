@@ -203,6 +203,7 @@ async def get_model_instance(
     session: SessionDep,
     ctx: TenantContextDep,
     id: int,
+    check_configuration: bool = False,
 ):
     model_instance = await ModelInstance.one_by_id(session, id)
     assert_resource_visible(
@@ -210,6 +211,12 @@ async def get_model_instance(
         model_instance,
         not_found_message="Model instance not found",
     )
+    if check_configuration:
+        model = await Model.one_by_id(session, model_instance.model_id, refresh=True)
+        if model is None or await model_members_stale(session, model, [model_instance]):
+            raise ConflictException(
+                message="The deployment configuration changed before launch"
+            )
     return model_instance
 
 

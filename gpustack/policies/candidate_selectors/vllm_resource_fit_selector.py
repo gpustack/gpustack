@@ -139,7 +139,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
     def get_world_size_from_backend_parameters(
         model: Model,
     ) -> Tuple[Optional[int], Optional[List[str]]]:
-        parallelism = parse_user_parallelism(model.backend_parameters)
+        parallelism = parse_user_parallelism(model.backend_parameters, last_wins=True)
         tp = parallelism.tp
         pp = parallelism.pp
         dp = parallelism.dp

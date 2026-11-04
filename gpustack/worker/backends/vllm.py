@@ -59,6 +59,7 @@ from gpustack.utils.vllm_topology import (
     validate_managed_http_parameters,
     external_lb_fragments,
     vllm_lb_mode,
+    normalize_vllm_parameters,
 )
 from gpustack.utils.model_config import get_hf_text_config
 from gpustack.utils.template import render_values
@@ -460,7 +461,9 @@ class VLLMServer(InferenceServer):
                 BackendEnum.VLLM,
                 self._model.backend_parameters,
             )
-        parameters = list(command or []) + arguments
+        parameters = normalize_vllm_parameters(
+            list(command or []) + arguments, tokenized=True
+        )
         validate_multi_port_external_lb_parameters(parameters)
         config = get_hf_text_config(self._get_pretrained_config())
         if not any(
@@ -601,7 +604,9 @@ class VLLMServer(InferenceServer):
     ) -> ModelInstanceWorkload:
         """Run one native shared API, or supervise all allocated compute fragments."""
         mi = self._model_instance
-        parameters = list(command or []) + arguments
+        parameters = normalize_vllm_parameters(
+            list(command or []) + arguments, tokenized=True
+        )
         validate_managed_http_parameters(parameters)
         if vllm_lb_mode(parameters) not in ("internal", "hybrid"):
             raise ValueError("The command must preserve the selected Hybrid-LB mode.")
@@ -750,7 +755,9 @@ class VLLMServer(InferenceServer):
     ) -> ModelInstanceWorkload:
         """Build one container with all local rank commands, without starting it."""
         mi = self._model_instance
-        parameters = list(command or []) + arguments
+        parameters = normalize_vllm_parameters(
+            list(command or []) + arguments, tokenized=True
+        )
         validate_managed_http_parameters(parameters)
         if vllm_lb_mode(parameters) not in ("internal", "external"):
             raise ValueError("The command must preserve the selected External-LB mode.")
@@ -927,9 +934,9 @@ class VLLMServer(InferenceServer):
         keep_api_server_count=False,
     ) -> List[str]:
         """Keep non-managed options from a direct vllm serve command."""
-        argv = list(arguments)
+        argv = normalize_vllm_parameters(arguments, tokenized=True)
         if not (len(argv) > 1 and Path(argv[0]).name == "vllm" and argv[1] == "serve"):
-            argv = list(command or []) + argv
+            argv = normalize_vllm_parameters(list(command or []) + argv, tokenized=True)
         if (
             len(argv) < 3
             or Path(argv[0]).name != "vllm"

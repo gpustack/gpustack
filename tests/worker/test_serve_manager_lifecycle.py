@@ -12,6 +12,7 @@ from httpx import ReadTimeout
 from gpustack.api.exceptions import (
     ConflictException,
     ForbiddenException,
+    HTTPException,
     NotFoundException,
 )
 from gpustack.schemas.models import (
@@ -372,6 +373,22 @@ def test_external_stop_during_preparation_closes_channel_before_any_create(
     assert (state.instance.id in state.serve._assigned_ports) is not stopped
 
 
+def test_ordinary_preparation_can_launch_while_other_replicas_are_stale(
+    preparing_external,
+):
+    state = preparing_external
+    state.client.models.get.return_value.stale = True
+    local = [_prepared_external_workload(state)]
+    state.receiver.poll.return_value = True
+    state.receiver.recv.return_value = (local, _managed_plans(local))
+
+    state.serve._sync_managed_model_instance(state.instance)
+
+    assert state.events[0] == 'report'
+    state.create.assert_called_once()
+    state.receiver.close.assert_called_once()
+
+
 def test_managed_stop_intent_without_local_snapshot_resumes_from_server(managed):
     state = managed
     state.instance.state = ModelInstanceStateEnum.ERROR
@@ -410,6 +427,7 @@ def test_external_failed_preparation_never_creates_a_container(
         error = httpx.ConnectError if failure == "connect" else httpx.ReadTimeout
         state.client.models.get.side_effect = error("control plane unavailable")
     elif failure == "stale":
+        state.instance.group_id = 'pd-generation'
         state.client.models.get.return_value.stale = True
     else:
         state.client.model_instances.report_workloads.side_effect = ConflictException(
@@ -3697,3 +3715,97 @@ def test_hybrid_worker_claim_adopts_without_recreating_or_advancing_generation(
     state.create.assert_not_called()
     state.delete.assert_not_called()
     state.serve._update_model_instance.assert_not_called()
+
+
+@pytest.mark.parametrize('stamped', [False, True])
+@pytest.mark.parametrize('grouped', [False, True])
+def test_smg_pending_attempt_is_not_blocked_by_a_stale_sibling(smg, stamped, grouped):
+    s = smg
+    if s.serve._worker_id != 1:
+        return
+    _pending_cpu(s)
+    s.model.stale = True
+    s.instance.spec_digest = 'server-validated-spec' if stamped else None
+    s.instance.group_id = 'pd-group' if grouped else None
+    s.serve._sync_managed_model_instance(s.instance)
+    assert s.create.call_count == int(stamped and not grouped)
+
+
+@pytest.mark.parametrize('changed_at', [None, 'pending', 'prepared', 'created'])
+def test_smg_create_rechecks_current_instance_configuration(smg, changed_at):
+    s = smg
+    if s.serve._worker_id != 1:
+        return
+    _pending_cpu(s)
+    s.instance.spec_digest = 'authorized-spec'
+    checks = 0
+
+    def get(*, id, use_cache, check_configuration=False):
+        nonlocal checks
+        if check_configuration:
+            checks += 1
+            if (
+                checks
+                == {None: 99, 'pending': 1, 'prepared': 2, 'created': 3}[changed_at]
+            ):
+                raise ConflictException(message='The deployment configuration changed')
+        return s.instance.model_copy(deep=True)
+
+    s.client.model_instances.get.side_effect = get
+    s.serve._sync_managed_model_instance(s.instance)
+    assert checks >= (
+        3 if changed_at in (None, 'created') else 1 if changed_at == 'pending' else 2
+    )
+    assert s.create.call_count == int(changed_at in (None, 'created'))
+    assert any(w.name == 'engine-1' for w in s.runtime)
+    cpu = [w for w in s.runtime if not w.name.startswith('engine')]
+    assert bool(cpu) == (changed_at is None)
+
+
+@pytest.mark.parametrize('manager', [1], indirect=True)
+@pytest.mark.parametrize('status', [409, 503, None])
+@pytest.mark.parametrize('engine_failed', [False, True])
+@pytest.mark.asyncio
+async def test_blocked_smg_recovery_preserves_engine_observation(
+    smg, monkeypatch, status, engine_failed
+):
+    s = smg
+    session = SimpleNamespace(info={})
+    s.instance.spec_digest = await model_spec_digest(session, s.model)
+    _pending_cpu(s)
+    s.model.backend_parameters.append('--policy=random')
+    session.info.clear()
+    s.model.stale = await model_members_stale(session, s.model, [s.instance])
+    assert s.model.stale is True
+
+    def get(**kwargs):
+        if kwargs.get('check_configuration'):
+            if status is None:
+                raise ReadTimeout('Configuration authority unavailable')
+            raise HTTPException(
+                status,
+                'Conflict' if status == 409 else 'Unavailable',
+                'Cannot authorize SMG creation',
+            )
+        return s.instance.model_copy(deep=True)
+
+    s.client.model_instances.get.side_effect = get
+    if engine_failed:
+        next(w for w in s.runtime if w.name == 'engine-1').state = (
+            WorkloadStatusStateEnum.FAILED
+        )
+    stop = MagicMock()
+    monkeypatch.setattr(s.serve, '_stop_model_instance', stop)
+
+    s.serve._sync_managed_model_instance(s.instance)
+
+    s.create.assert_not_called()
+    observed_failure = status == 409 and engine_failed
+    assert stop.call_count == int(observed_failure)
+    assert s.client.model_instances.report_workloads.call_count == int(observed_failure)
+    assert s.serve._sync_managed_rank_health.call_count == int(status == 409)
+    engine = next(
+        w for w in s.instance.distributed_servers.workloads if w.name == 'engine-1'
+    )
+    assert engine.state == ('failed' if observed_failure else 'running')
+    assert s.instance.restart_count == 3

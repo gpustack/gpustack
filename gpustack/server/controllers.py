@@ -3168,15 +3168,23 @@ async def ensure_instance_model_file(session: AsyncSession, instance: ModelInsta
         # Not scheduled yet
         return
 
+    restart_count = instance.restart_count or 0
     instance = await ModelInstance.one_by_id(
         session,
         instance.id,
+        for_update=True,
+        refresh=True,
         options=[
             selectinload(ModelInstance.model_files),
             selectinload(ModelInstance.draft_model_files),
         ],
     )
-    if not instance:
+    if (
+        instance is None
+        or instance.deleted_at is not None
+        or (instance.restart_count or 0) != restart_count
+        or instance.state != ModelInstanceStateEnum.INITIALIZING
+    ):
         return
 
     model = await Model.one_by_id(session, instance.model_id)
@@ -3226,7 +3234,6 @@ async def ensure_instance_model_file(session: AsyncSession, instance: ModelInsta
             f"Retrying download for model files {retry_model_files} for model instance {instance.name}"
         )
 
-    instance = await ModelInstance.one_by_id(session, instance.id)
     await sync_instance_files_state(
         session,
         instance,
@@ -6167,7 +6174,24 @@ class CacheProviderSourceController:
 async def sync_instance_files_state(
     session: AsyncSession, instance: ModelInstance, files: List[ModelFile]
 ):
+    restart_count = instance.restart_count or 0
+    instance_id = instance.id
     for file in files:
+        # Each progress update may commit, releasing the preceding row lock.
+        instance = await ModelInstance.one_by_id_with_model_files(
+            session, instance_id, for_update=True
+        )
+        if (
+            instance is None
+            or instance.deleted_at is not None
+            or (instance.restart_count or 0) != restart_count
+        ):
+            return
+        if not any(
+            linked.id == file.id
+            for linked in instance.model_files + instance.draft_model_files
+        ):
+            continue
         if file.worker_id == instance.worker_id:
             is_draft_model = _is_draft_model_file(file, instance)
             if is_draft_model:

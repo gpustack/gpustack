@@ -2402,6 +2402,8 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
         session,
         instance_id: int,
         populate_existing: bool = True,
+        *,
+        for_update: bool = False,
     ) -> Optional["ModelInstance"]:
         """Load a model instance with primary/LoRA + draft model_files and model spec eagerly loaded."""
         stmt = (
@@ -2413,6 +2415,8 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
                 selectinload(cls.model),
             )
         )
+        if for_update:
+            stmt = stmt.with_for_update()
         if populate_existing:
             stmt = stmt.execution_options(populate_existing=True)
         return (await session.exec(stmt)).first()

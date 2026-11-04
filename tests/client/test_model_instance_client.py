@@ -177,3 +177,31 @@ async def test_id_only_delete_enriches_from_cache_without_extra_status(
         assert event.data == {'id': 7}
     assert cached.model_dump() == before
     assert api._cache == {}
+
+
+@pytest.mark.parametrize('status', [200, 409])
+def test_configuration_checked_get_bypasses_watch_cache(instance, status):
+    from gpustack.api.exceptions import HTTPException
+
+    transport = MagicMock()
+    send = transport.get_httpx_client.return_value.get
+    send.return_value = httpx.Response(
+        status,
+        json=(
+            instance.model_dump(mode='json')
+            if status == 200
+            else {'code': 409, 'reason': 'Conflict', 'message': 'Configuration changed'}
+        ),
+    )
+    client = ModelInstanceClient(transport)
+    client._watch_started = True
+    client._cache = {instance.id: instance}
+    if status == 409:
+        with pytest.raises(HTTPException) as exc:
+            client.get(instance.id, check_configuration=True)
+        assert exc.value.status_code == 409
+    else:
+        assert client.get(instance.id, check_configuration=True) == instance
+    send.assert_called_once_with(
+        '/model-instances/7', params={'check_configuration': True}
+    )

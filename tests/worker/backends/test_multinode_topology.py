@@ -1355,3 +1355,69 @@ def test_manual_dp_local_candidate_retains_only_its_selected_gpus(flag, manual):
     else:
         assert candidate is None
         assert 'data-parallel-size' in reason
+
+
+@pytest.mark.parametrize('mode', ['external', 'hybrid', 'multi-port-external'])
+@pytest.mark.parametrize('equal', [False, True])
+def test_vllm_underscore_options_keep_native_parallelism(mode, equal):
+    from gpustack.utils.vllm_topology import managed_lb_parallelism, vllm_lb_mode
+
+    def option(key, value):
+        return [f'{key}={value}'] if equal else [key, value]
+
+    parameters = [
+        f'--data_parallel_{mode.replace("-", "_")}_lb',
+        *option('--tensor_parallel_size', '2'),
+        *option('--data_parallel_size', '2'),
+        *option('--data_parallel_size_local', '2'),
+    ]
+    assert vllm_lb_mode(parameters) == mode.replace('-', '_')
+    topology = managed_lb_parallelism(parameters, [4])
+    assert (topology.tp, topology.dp, topology.dpl_per_node) == (2, 2, [2])
+
+
+def test_vllm_mixed_parallelism_aliases_use_the_final_value():
+    from gpustack.utils.vllm_topology import external_lb_parallelism
+
+    topology = external_lb_parallelism(
+        ['--tp=1', '--tensor_parallel_size=2', '--data_parallel_size=2'], [4]
+    )
+    assert (topology.tp, topology.dp) == (2, 2)
+    model = _mock_model(
+        ['--tp=1', '--tensor_parallel_size=2', '--data_parallel_size=2']
+    )
+    world, _ = VLLMResourceFitSelector.get_world_size_from_backend_parameters(model)
+    assert world == 4
+
+
+def test_vllm_option_normalization_preserves_values_and_nested_fields():
+    from gpustack.utils.vllm_topology import normalize_vllm_parameters
+
+    parameters = [
+        '/models/name_with_underscores',
+        '--served_model_name=model_name',
+        '--hf_overrides.rope_scaling.rope_type=yarn_type',
+        '--tokenizer',
+        '/models/tokenizer with spaces',
+        '--hf_overrides={"rope_type":"custom_value"}',
+    ]
+    original = list(parameters)
+    assert normalize_vllm_parameters(parameters) == [
+        '/models/name_with_underscores',
+        '--served-model-name=model_name',
+        '--hf-overrides.rope_scaling.rope_type=yarn_type',
+        '--tokenizer',
+        '/models/tokenizer with spaces',
+        '--hf-overrides={"rope_type":"custom_value"}',
+    ]
+    assert parameters == original
+
+
+@pytest.mark.parametrize('option', ['ssl_keyfile', 'ssl_certfile'])
+def test_managed_http_validation_recognizes_native_tls_aliases(option):
+    from gpustack.utils.vllm_topology import validate_managed_lb_parameters
+
+    with pytest.raises(ValueError, match='TLS is unsupported'):
+        validate_managed_lb_parameters(
+            ['--data_parallel_external_lb', f'--{option}=/tmp/model_key']
+        )

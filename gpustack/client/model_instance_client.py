@@ -13,6 +13,18 @@ from .generated_model_instance_client import (
 class ModelInstanceClient(GeneratedModelInstanceClient):
     """Worker reporting operations over the generated CRUD client."""
 
+    def get(
+        self, id: int, use_cache: bool = True, *, check_configuration: bool = False
+    ) -> ModelInstancePublic:
+        """Fetch launch authority from the Server when configuration must match."""
+        if not check_configuration:
+            return super().get(id, use_cache=use_cache)
+        response = self._client.get_httpx_client().get(
+            f"{self._url}/{id}", params={"check_configuration": True}
+        )
+        raise_if_response_error(response)
+        return ModelInstancePublic.model_validate(response.json())
+
     def report_workloads(
         self, id: int, report: ModelInstanceWorkloadUpdate
     ) -> ModelInstancePublic:

@@ -129,8 +129,13 @@ def _external_backend(dp=2, vendor="NVIDIA"):
 
 
 @pytest.mark.parametrize("dp", [1, 2, 4])
-def test_external_plan_has_all_ranks_and_injected_supervisor(dp):
+@pytest.mark.parametrize('separator', ['-', '_'])
+def test_external_plan_has_all_ranks_and_injected_supervisor(dp, separator):
     backend, plan = _external_backend(dp)
+    backend._model.backend_parameters = [
+        parameter.replace('-', separator).replace(separator * 2, '--', 1)
+        for parameter in backend._model.backend_parameters
+    ]
     manifest = backend._configure_external_workload(
         plan,
         ["vllm", "serve"],
@@ -631,11 +636,7 @@ def test_managed_backend_reads_current_configuration_before_preparation(managed,
     backend._clientset = MagicMock()
     backend._clientset.models.get.return_value = model
     backend._config = types.SimpleNamespace(data_dir="/data")
-    if managed and stale:
-        with pytest.raises(RuntimeError, match="configuration has changed"):
-            backend.get_model()
-    else:
-        backend.get_model()
+    backend.get_model()
     backend._clientset.models.get.assert_called_once_with(id=1, use_cache=not managed)
 
 
@@ -4664,3 +4665,23 @@ def test_legacy_vllm_arguments_preserve_user_dp_group(manual_dp, parameters):
         assert parameter not in injected
     assert '--data-parallel-rank' not in injected
     assert '--nnodes' not in injected
+
+
+@pytest.mark.parametrize(
+    'option,value',
+    [
+        ('--chat-template', 'hello world'),
+        ('--tokenizer', '/models/my tokenizer'),
+    ],
+)
+@pytest.mark.parametrize('equal', [False, True])
+def test_managed_command_preserves_tokenized_option_values(option, value, equal):
+    from gpustack.utils.command import flatten_to_argv
+
+    raw = [f"{option}='{value}'"] if equal else [option, value]
+    arguments = ['/models/moe', *flatten_to_argv(raw)]
+    assert VLLMServer._external_command(['vllm', 'serve'], arguments) == [
+        'vllm',
+        'serve',
+        *arguments,
+    ]

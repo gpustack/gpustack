@@ -910,3 +910,19 @@ def test_running_managed_port_plan_is_not_changed_by_manual_dp_edit():
     assert ('_vllm_external_api', 2, None) in model_port_requests(
         model, None, [4], managed=True
     )
+
+
+def test_multi_port_supervisor_alias_reserves_the_requested_fixed_port():
+    from gpustack.utils.model_ports import model_port_requests
+
+    model = _model(
+        backend_parameters=[
+            '--data_parallel_multi_port_external_lb',
+            '--tensor_parallel_size=2',
+            '--data_parallel_size=2',
+            '--data_parallel_supervisor_port=40100',
+        ]
+    )
+    requests = model_port_requests(model, None, [4])
+    assert requests[0] == ('_vllm_multi_port_external_supervisor', 1, 40100)
+    assert sum(count for _, count, _ in requests) == 14

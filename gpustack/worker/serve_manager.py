@@ -34,7 +34,7 @@ from gpustack_runtime.deployer import (
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
 from gpustack import envs
-from gpustack.api.exceptions import NotFoundException
+from gpustack.api.exceptions import HTTPException, NotFoundException
 from gpustack.config.config import Config
 from gpustack.config import registration
 from gpustack.logging import (
@@ -981,9 +981,17 @@ class ServeManager(ContainerLogPersister):
             return False
 
     def _smg_create_current(self, mi, item):
-        current = ModelInstance.model_validate(
-            self._clientset.model_instances.get(id=mi.id, use_cache=False)
-        )
+        try:
+            current = ModelInstance.model_validate(
+                self._clientset.model_instances.get(
+                    id=mi.id, use_cache=False, check_configuration=True
+                )
+            )
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            # A stale spec blocks CPU creation while Engine observation continues.
+            return None
         if (
             current.deleted_at is not None
             or (current.restart_count or 0) != (mi.restart_count or 0)
@@ -1012,7 +1020,9 @@ class ServeManager(ContainerLogPersister):
             or model.replicas == 0
             or not model.restart_on_error
             or model.restarting_since is not None
-            or model.stale
+            # The checked read validates this instance; aggregate staleness can
+            # describe another replica. Unstamped and PD deployments stay fenced.
+            or (model.stale and (current.group_id or not current.spec_digest))
         ):
             return None
         worker = self._clientset.workers.get(self._worker_id, use_cache=False)
@@ -1355,7 +1365,7 @@ class ServeManager(ContainerLogPersister):
         try:
             workloads, plans = connection.recv()
             model = self._clientset.models.get(mi.model_id, use_cache=False)
-            if getattr(model, "stale", None) is True:
+            if mi.group_id and getattr(model, "stale", None) is True:
                 raise ValueError(
                     "The deployment configuration has changed; restart the model instead."
                 )

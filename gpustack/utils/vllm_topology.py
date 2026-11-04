@@ -25,6 +25,24 @@ from gpustack.utils.command import (
 VLLM_MP_CONNECTING_PORT_COUNT = 10
 
 
+def normalize_vllm_parameters(
+    parameters: Optional[List[str]], *, tokenized: bool = False
+) -> List[str]:
+    """Canonicalize long option names without changing values or dotted keys.
+
+    Set tokenized for built argv so equal-form values are not split again.
+    """
+    result = []
+    argv = list(parameters or []) if tokenized else flatten_to_argv(parameters)
+    for token in argv:
+        if token.startswith('--'):
+            key, separator, value = token.partition('=')
+            name, dot, field = key.partition('.')
+            token = f'{name.replace("_", "-")}{dot}{field}{separator}{value}'
+        result.append(token)
+    return result
+
+
 def manual_dp_enabled(env: Optional[Dict[str, str]]) -> bool:
     """Whether the operator owns the ordinary vLLM deployment's DP group."""
     return str((env or {}).get('GPUSTACK_MANUAL_DP', '')).strip().lower() in {
@@ -39,6 +57,7 @@ def managed_lb_port_requests(
     parameters: Optional[List[str]], gpu_per_node: List[int]
 ) -> List[Tuple[str, int]]:
     """Ordered platform port bands shared by scheduling and Worker allocation."""
+    parameters = normalize_vllm_parameters(parameters)
     topology = managed_lb_parallelism(parameters, gpu_per_node)
     mode = vllm_lb_mode(parameters)
     hybrid = mode == "hybrid"
@@ -60,6 +79,7 @@ def managed_lb_port_requests(
 
 def vllm_lb_mode(parameters: Optional[List[str]]) -> str:
     """Identify explicitly selected load balancing and reject conflicting modes."""
+    parameters = normalize_vllm_parameters(parameters)
     external = find_bool_parameter(
         parameters, ["data-parallel-external-lb", "dpe"], last_wins=True
     )
@@ -92,6 +112,7 @@ def external_lb_parallelism(
     parameters: List[str], gpu_count: Union[int, List[int]]
 ) -> "ValidatedTopology":
     """Validate the complete allocation and split uniform rank fragments."""
+    parameters = normalize_vllm_parameters(parameters)
     values = {}
     for field, names in (
         ("dp", ["data-parallel-size", "dp"]),
@@ -136,6 +157,7 @@ def external_lb_parallelism(
 
 def validate_managed_http_parameters(parameters: Optional[List[str]]) -> None:
     """Keep managed rank APIs compatible with platform HTTP routes and probes."""
+    parameters = normalize_vllm_parameters(parameters)
     if any(token.partition("=")[0] == "--uds" for token in flatten_to_argv(parameters)):
         raise ValueError(
             "Managed rank routes and health checks require TCP HTTP; --uds is unsupported."
@@ -151,6 +173,7 @@ def validate_managed_http_parameters(parameters: Optional[List[str]]) -> None:
 
 def validate_multi_port_external_lb_parameters(parameters: Optional[List[str]]) -> None:
     """Reject multi-port External-LB options that cannot represent managed rank APIs."""
+    parameters = normalize_vllm_parameters(parameters)
     if vllm_lb_mode(parameters) != "multi_port_external":
         raise ValueError(
             "Multi-port External-LB requires --data-parallel-multi-port-external-lb."
@@ -199,6 +222,7 @@ def multi_port_external_lb_parallelism(
     parameters: List[str], gpu_count: Union[int, List[int]]
 ) -> "ValidatedTopology":
     """Resolve multi-port External-LB with complete, evenly allocated local DP replicas."""
+    parameters = normalize_vllm_parameters(parameters)
     validate_multi_port_external_lb_parameters(parameters)
     counts = [gpu_count] if isinstance(gpu_count, int) else gpu_count
     result = external_lb_parallelism(parameters, counts)
@@ -481,6 +505,7 @@ def parse_user_parallelism(
     last_wins: bool = False,
 ) -> MultinodeUserParallelism:
     """Extract MultinodeUserParallelism from user-provided backend_parameters."""
+    backend_parameters = normalize_vllm_parameters(backend_parameters)
     read = find_last_int_parameter if last_wins else find_int_parameter
     return MultinodeUserParallelism(
         tp=read(backend_parameters, ["tensor-parallel-size", "tp"]),
