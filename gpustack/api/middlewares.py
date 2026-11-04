@@ -432,7 +432,6 @@ async def process_chunk(
             response_chunk = response_class(**response_dict)
 
             if is_usage_chunk(response_chunk):
-                request.state.usage_recorded = True
                 await record_model_usage(
                     request,
                     response_chunk.usage,
@@ -443,6 +442,9 @@ async def process_chunk(
                         else None
                     ),
                 )
+                # Only once the metric is buffered: a failed attempt leaves
+                # the stream-end fallback free to record the request.
+                request.state.usage_recorded = True
 
                 # Fill rate metrics. These are extended info not included in OAI APIs.
                 # llama-box provides them out-of-the-box. Align with other backends here.
