@@ -761,6 +761,17 @@ def _build_worker_config_dict(cluster: Cluster) -> Dict[str, Any]:
     effective_registry = cluster_registry or cfg_registry
     if effective_registry:
         worker_config["system_default_container_registry"] = effective_registry
+    # Standalone workers do not inherit the server process's Config. Resolve
+    # the namespace fallback here so their inference images stay consistent
+    # with the worker image named during registration.
+    cluster_namespace = (
+        cluster.worker_config.container_namespace if cluster.worker_config else None
+    )
+    effective_namespace = (
+        cluster_namespace if cluster_namespace is not None else cfg.container_namespace
+    )
+    if effective_namespace is not None:
+        worker_config["container_namespace"] = effective_namespace
     return worker_config
 
 

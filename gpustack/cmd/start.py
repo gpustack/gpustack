@@ -128,8 +128,14 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     common_group.add_argument(
         "--system-default-container-registry",
         type=str,
-        help="Default container registry for GPUStack to pull system and inference images. The default is 'docker.io'. Keep all GPUStack business images under the 'gpustack' namespace; if a multi-level namespace is required, keep 'gpustack' as the last level (e.g. 'awesome.com/amazing-group/amazing-subgroup/gpustack') and set this to the parent path (e.g. 'awesome.com/amazing-group/amazing-subgroup'). If the images cannot stay under the 'gpustack' namespace (e.g. 'gpustack-ai'), adjust --image-repo and --benchmark-image-repo accordingly.",
+        help="Default container registry for GPUStack to pull system and inference images. The default is 'docker.io'. Keep all GPUStack business images under the 'gpustack' namespace; if a multi-level namespace is required, keep 'gpustack' as the last level (e.g. 'awesome.com/amazing-group/amazing-subgroup/gpustack') and set this to the parent path (e.g. 'awesome.com/amazing-group/amazing-subgroup'). If the images cannot stay under the 'gpustack' namespace, set the container_namespace config key to change it for GPUStack worker, runner and runtime images; use --image-repo and --benchmark-image-repo for repository-specific overrides.",
         default=get_gpustack_env("SYSTEM_DEFAULT_CONTAINER_REGISTRY"),
+    )
+    common_group.add_argument(
+        "--container-namespace",
+        type=str,
+        help="Default namespace for GPUStack worker, runner, runtime, benchmark and cache service images.",
+        default=get_gpustack_env("CONTAINER_NAMESPACE"),
     )
     common_group.add_argument(
         "--image-name-override",
@@ -875,6 +881,7 @@ def set_common_options(args, config_data: dict):
         "huggingface_token",
         "insecure_tls",
         "system_default_container_registry",
+        "container_namespace",
         "image_name_override",
         "image_repo",
         "benchmark_image_repo",

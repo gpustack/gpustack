@@ -69,6 +69,7 @@ class PredefinedConfig(SensitivePredefinedConfig):
     bin_dir: Optional[str] = None
     benchmark_dir: Optional[str] = None
     system_default_container_registry: Optional[str] = None
+    container_namespace: Optional[str] = None
     image_name_override: Optional[str] = None
     image_repo: str = "gpustack/gpustack"
     benchmark_image_repo: str = (

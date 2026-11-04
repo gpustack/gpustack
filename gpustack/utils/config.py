@@ -3,8 +3,7 @@ from typing import Any, Dict, get_type_hints, get_args, get_origin
 
 from transformers.hf_argparser import string_to_bool
 
-from gpustack.config.config import Config
-
+from gpustack.config.config import Config, apply_container_namespace_to_image
 
 WHITELIST_CONFIG_FIELDS = {
     "debug",
@@ -77,6 +76,9 @@ def apply_registry_override_to_image(
     _config: Config, image: str, fallback_registry: str
 ) -> str:
     """
+    Default GPUStack image references without an explicit registry first use
+    the configured container namespace, then resolve their registry as follows:
+
     1) If the image has an explicit registry, return it as is.
     2) If the image does not have an explicit registry and a system default registry is configured,
        prefix the image with the system default registry in config.
@@ -95,6 +97,10 @@ def apply_registry_override_to_image(
     )
     if has_explicit:
         return image
+    is_default_gpustack_image = image.startswith("gpustack/")
+    image = apply_container_namespace_to_image(
+        image, getattr(_config, "container_namespace", None)
+    )
     # 2) If the image does not have an explicit registry and a system default registry is configured,
     #    prefix the image with the system default registry in config.
     if registry_cfg:
@@ -106,7 +112,7 @@ def apply_registry_override_to_image(
         return final
 
     # 3) no explicit or configured, and not start with "gpustack" using "docker.io" as default.
-    if not image.startswith("gpustack"):
+    if not is_default_gpustack_image:
         logger.info(
             f"Using Docker Hub for non-gpustack image; image resolved to: {image}"
         )

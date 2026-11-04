@@ -5,6 +5,7 @@ import pytest
 
 from gpustack.api.exceptions import ForbiddenException, NotFoundException
 from gpustack.routes.workers import (
+    _build_worker_config_dict,
     check_existing_worker_ownership,
     delete_worker,
     get_worker_privatekey,
@@ -22,6 +23,46 @@ from gpustack.schemas.workers import (
     SystemReserved,
 )
 from gpustack.schemas.clusters import Cluster, ClusterProvider
+from gpustack.schemas.config import PredefinedConfigNoDefaults
+
+
+def test_worker_config_inherits_the_server_container_namespace(monkeypatch):
+    server_config = SimpleNamespace(
+        system_default_container_registry=None,
+        container_namespace="gpustack-ai",
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.workers.get_global_config", lambda: server_config
+    )
+    cluster = Cluster(
+        name="c",
+        worker_config=PredefinedConfigNoDefaults(),
+    )
+
+    config = _build_worker_config_dict(cluster)
+
+    assert config["container_namespace"] == "gpustack-ai"
+
+
+@pytest.mark.parametrize("cluster_namespace", ["cluster-org", ""])
+def test_cluster_container_namespace_overrides_the_server(
+    monkeypatch, cluster_namespace
+):
+    server_config = SimpleNamespace(
+        system_default_container_registry=None,
+        container_namespace="gpustack-ai",
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.workers.get_global_config", lambda: server_config
+    )
+    cluster = Cluster(
+        name="c",
+        worker_config=PredefinedConfigNoDefaults(container_namespace=cluster_namespace),
+    )
+
+    config = _build_worker_config_dict(cluster)
+
+    assert config["container_namespace"] == cluster_namespace
 
 
 def test_update_worker_data_preserves_maintenance_mode():
