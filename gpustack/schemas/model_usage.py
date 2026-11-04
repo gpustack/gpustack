@@ -8,6 +8,12 @@ from sqlmodel import Field, SQLModel
 from gpustack.mixins.active_record import ActiveRecordMixin
 
 
+# Largest value the BIGINT usage quantity columns hold on every supported
+# database. Quantities derived from client or reporter input are clamped to
+# it: one out-of-range value would fail the whole usage flush batch.
+USAGE_QUANTITY_MAX = 2**63 - 1
+
+
 class OperationEnum(str, Enum):
     COMPLETION = "completion"
     CHAT_COMPLETION = "chat_completion"

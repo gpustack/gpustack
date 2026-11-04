@@ -3,8 +3,10 @@ import pytest
 from gpustack.schemas.images import (
     ImageRequestParams,
     compute_image_usage,
+    finished_image_indexes,
     parse_image_size,
 )
+from gpustack.schemas.model_usage import USAGE_QUANTITY_MAX
 
 
 @pytest.mark.parametrize(
@@ -65,6 +67,34 @@ def test_symbolic_size_counts_images_but_not_pixels():
 
 def test_missing_params_default_to_one_image():
     assert compute_image_usage(None) == (1, 0)
+
+
+def test_client_supplied_n_cannot_overflow_the_usage_columns():
+    params = ImageRequestParams(n=10**30, size="999999x999999")
+
+    assert compute_image_usage(params) == (USAGE_QUANTITY_MAX, USAGE_QUANTITY_MAX)
+
+
+@pytest.mark.parametrize(
+    "chunk, expected",
+    [
+        ({"data": [{"index": 0, "finish_reason": "stop"}]}, [0]),
+        ({"data": [{"index": 1, "finish_reason": None}]}, []),
+        (
+            {
+                "data": [
+                    {"index": 0, "finish_reason": "stop"},
+                    {"index": 2, "finish_reason": "stop"},
+                ]
+            },
+            [0, 2],
+        ),
+        ({"data": "nope"}, []),
+        ({}, []),
+    ],
+)
+def test_finished_image_indexes(chunk, expected):
+    assert finished_image_indexes(chunk) == expected
 
 
 def test_empty_response_records_no_images():

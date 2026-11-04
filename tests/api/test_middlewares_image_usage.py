@@ -94,3 +94,102 @@ async def test_text_operations_carry_no_image_units(captured_metrics):
     (metric,) = captured_metrics
     assert metric.image_count == 0
     assert metric.image_pixel_count == 0
+
+
+class _SSEStream:
+    """Stands in for a downstream SSE ``StreamingResponse``."""
+
+    def __init__(self, events):
+        self.headers = {"content-type": "text/event-stream"}
+        self.status_code = 200
+
+        async def _iter():
+            for event in events:
+                payload = event if isinstance(event, str) else json.dumps(event)
+                yield f"data: {payload}\n\n".encode()
+
+        self.body_iterator = _iter()
+
+
+def _image_event(index, finish_reason=None, progress=50.0):
+    return {
+        "created": 1,
+        "object": "image.chunk",
+        "data": [
+            {
+                "index": index,
+                "object": "image",
+                "progress": progress,
+                "b64_json": "abc" if finish_reason else None,
+                "finish_reason": finish_reason,
+            }
+        ],
+    }
+
+
+def _streaming_request(params):
+    request = _request(params)
+    request.state.stream = True
+    return request
+
+
+async def _drain(response):
+    return [chunk async for chunk in response.body_iterator]
+
+
+@pytest.mark.asyncio
+async def test_image_stream_without_usage_event_meters_finished_images(
+    captured_metrics,
+):
+    request = _streaming_request(ImageRequestParams(n=3, size="512x512"))
+    upstream = _SSEStream(
+        [
+            _image_event(0),
+            _image_event(0, "stop", 100.0),
+            _image_event(1),
+            _image_event(1, "stop", 100.0),
+            "[DONE]",
+        ]
+    )
+
+    response = await middlewares.process_request(
+        request, upstream, ImagesResponse, OperationEnum.IMAGE_GENERATION
+    )
+    await _drain(response)
+
+    # Two of the three requested images finished.
+    (metric,) = captured_metrics
+    assert metric.image_count == 2
+    assert metric.image_pixel_count == 2 * 512 * 512
+
+
+@pytest.mark.asyncio
+async def test_image_stream_with_usage_event_is_metered_once(captured_metrics):
+    request = _streaming_request(ImageRequestParams(n=1, size="1024x1024"))
+    usage_event = {**_image_event(0, "stop", 100.0), "usage": {"total_tokens": 0}}
+    upstream = _SSEStream([_image_event(0), usage_event, "[DONE]"])
+
+    response = await middlewares.process_request(
+        request, upstream, ImagesResponse, OperationEnum.IMAGE_GENERATION
+    )
+    await _drain(response)
+
+    (metric,) = captured_metrics
+    assert metric.image_count == 1
+    assert metric.image_pixel_count == 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_abandoned_image_stream_is_not_metered(captured_metrics):
+    request = _streaming_request(ImageRequestParams(n=2, size="512x512"))
+    upstream = _SSEStream([_image_event(0), _image_event(0, "stop"), "[DONE]"])
+
+    response = await middlewares.process_request(
+        request, upstream, ImagesResponse, OperationEnum.IMAGE_GENERATION
+    )
+    body = response.body_iterator
+    await body.__anext__()
+    # The client goes away before the stream ends.
+    await body.aclose()
+
+    assert captured_metrics == []

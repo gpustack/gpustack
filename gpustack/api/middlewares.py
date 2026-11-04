@@ -22,6 +22,7 @@ from gpustack.schemas.images import (
     ImageGenerationChunk,
     ImagesResponse,
     compute_image_usage,
+    finished_image_indexes,
 )
 from gpustack.schemas.model_usage import OperationEnum
 from gpustack.schemas.api_keys import ApiKey
@@ -352,8 +353,49 @@ async def handle_streaming_response(
             except Exception as e:
                 logger.error(f"Error processing streaming response: {e}")
                 yield chunk
+        # Reached only when the upstream stream ended on its own; a client
+        # disconnect cancels the generator before this point, so an
+        # abandoned generation is not billed.
+        if operation == OperationEnum.IMAGE_GENERATION and not getattr(
+            request.state, "usage_recorded", False
+        ):
+            # Image backends need not emit a usage event: the images are the
+            # billable unit, so meter them even when no usage chunk arrived.
+            try:
+                await record_model_usage(
+                    request,
+                    None,
+                    operation,
+                    generated_image_count=_streamed_image_count(request),
+                )
+            except Exception as e:
+                logger.error(f"Error recording streamed image usage: {e}")
 
     return StreamingResponse(streaming_generator(), headers=response.headers)
+
+
+def _track_streamed_images(request: Request, data: str) -> None:
+    """Remember which images an image generation stream has finished."""
+    try:
+        payload = json.loads(data.strip())
+    except ValueError:
+        return
+    if not isinstance(payload, dict) or "data" not in payload:
+        return
+    finished = getattr(request.state, "streamed_images_finished", None)
+    if finished is None:
+        finished = set()
+        request.state.streamed_images_finished = finished
+    finished.update(finished_image_indexes(payload))
+
+
+def _streamed_image_count(request: Request) -> Optional[int]:
+    """Images an image stream finished, or ``None`` when it carried no image chunks.
+
+    ``None`` lets the metering fall back to the requested ``n``.
+    """
+    finished = getattr(request.state, "streamed_images_finished", None)
+    return None if finished is None else len(finished)
 
 
 async def process_chunk(
@@ -378,6 +420,9 @@ async def process_chunk(
             yield "data: [DONE]\n\n".encode("utf-8")
             continue
 
+        if operation == OperationEnum.IMAGE_GENERATION:
+            _track_streamed_images(request, data)
+
         if '"usage":' in data:
             response_dict = None
             try:
@@ -387,7 +432,17 @@ async def process_chunk(
             response_chunk = response_class(**response_dict)
 
             if is_usage_chunk(response_chunk):
-                await record_model_usage(request, response_chunk.usage, operation)
+                request.state.usage_recorded = True
+                await record_model_usage(
+                    request,
+                    response_chunk.usage,
+                    operation,
+                    generated_image_count=(
+                        _streamed_image_count(request)
+                        if operation == OperationEnum.IMAGE_GENERATION
+                        else None
+                    ),
+                )
 
                 # Fill rate metrics. These are extended info not included in OAI APIs.
                 # llama-box provides them out-of-the-box. Align with other backends here.

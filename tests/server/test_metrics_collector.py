@@ -7,7 +7,7 @@ import pytest
 
 from types import SimpleNamespace
 
-from gpustack.schemas.model_usage import ModelUsage, OperationEnum
+from gpustack.schemas.model_usage import USAGE_QUANTITY_MAX, ModelUsage, OperationEnum
 from gpustack.schemas.models import Model
 from gpustack.schemas.principals import PrincipalType, platform_principal_id
 from gpustack.server.metrics_collector import (
@@ -307,6 +307,54 @@ def test_accumulate_sums_image_units_and_keeps_details_per_request():
     assert entry.image_pixel_count == 2 * 512 * 512 + 1024 * 1024
     assert entry.request_count == 2
     assert [d.image_count for d in gateway_details_buffer] == [2, 1]
+
+
+def test_negative_image_report_cannot_cancel_valid_usage():
+    def image_metric(count, pixels):
+        return ModelUsageMetrics(
+            model="sd-turbo",
+            model_id=7,
+            user_id=2,
+            operation=OperationEnum.IMAGE_GENERATION,
+            image_count=count,
+            image_pixel_count=pixels,
+        )
+
+    asyncio.run(accumulate_gateway_metrics([image_metric(2, 2 * 512 * 512)]))
+    asyncio.run(accumulate_gateway_metrics([image_metric(-3, -(10**9))]))
+
+    (entry,) = gateway_metrics_buffer.values()
+    assert entry.image_count == 2
+    assert entry.image_pixel_count == 2 * 512 * 512
+    # Rollup and audit rows carry the same bounded values.
+    assert [(d.image_count, d.image_pixel_count) for d in gateway_details_buffer] == [
+        (2, 2 * 512 * 512),
+        (0, 0),
+    ]
+
+
+def test_image_units_saturate_at_the_bigint_limit():
+    near_max = USAGE_QUANTITY_MAX - 1
+
+    def image_metric(count):
+        return ModelUsageMetrics(
+            model="sd-turbo",
+            model_id=7,
+            user_id=2,
+            operation=OperationEnum.IMAGE_GENERATION,
+            image_count=count,
+            image_pixel_count=count,
+        )
+
+    asyncio.run(accumulate_gateway_metrics([image_metric(10**30)]))
+    assert gateway_details_buffer[0].image_count == USAGE_QUANTITY_MAX
+    gateway_metrics_buffer.clear()
+
+    asyncio.run(accumulate_gateway_metrics([image_metric(near_max)]))
+    asyncio.run(accumulate_gateway_metrics([image_metric(near_max)]))
+    (entry,) = gateway_metrics_buffer.values()
+    assert entry.image_count == USAGE_QUANTITY_MAX
+    assert entry.image_pixel_count == USAGE_QUANTITY_MAX
 
 
 @pytest.mark.asyncio

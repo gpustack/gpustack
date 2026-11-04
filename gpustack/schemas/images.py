@@ -5,6 +5,8 @@ from typing import Any, List, Mapping, Optional, Tuple
 from pydantic import BaseModel
 from openai.types.image import Image
 
+from gpustack.schemas.model_usage import USAGE_QUANTITY_MAX
+
 # Inference endpoints (path after ``/v1/``) whose usage is metered in images.
 IMAGE_GENERATION_ENDPOINTS = frozenset({"images/generations", "images/edits"})
 
@@ -107,9 +109,32 @@ def compute_image_usage(
     """
     params = params or ImageRequestParams()
     count = generated_count if generated_count is not None else params.n
-    count = max(count, 0)
+    # ``n`` is client input: bound it to what the usage columns can hold.
+    count = min(max(count, 0), USAGE_QUANTITY_MAX)
     dimensions = parse_image_size(params.size)
     if dimensions is None:
         return count, 0
     width, height = dimensions
-    return count, count * width * height
+    return count, min(count * width * height, USAGE_QUANTITY_MAX)
+
+
+def finished_image_indexes(chunk: Mapping[str, Any]) -> List[int]:
+    """Indexes of the images a streamed image generation chunk completes.
+
+    Image streams report per-image progress; an image is done once its
+    ``finish_reason`` is set.
+
+    Args:
+        chunk: One decoded ``data:`` payload of an image generation stream.
+
+    Returns:
+        The ``index`` of every image the chunk marks as finished.
+    """
+    data = chunk.get("data")
+    if not isinstance(data, list):
+        return []
+    return [
+        item.get("index", 0)
+        for item in data
+        if isinstance(item, Mapping) and item.get("finish_reason")
+    ]
