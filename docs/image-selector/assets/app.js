@@ -122,7 +122,7 @@ const CONFIG = {
                 'postgres': 'PostgreSQL - 用于独立部署外置数据库（可选组件）',
                 'monitoring': '监控套件 - 包含 Prometheus 和 Grafana（可选组件）',
                 'gateway': 'AI 网关镜像 - 仅在 Kubernetes 环境下需要',
-                'k8s': 'GPUStack Operator 镜像 - 仅在 Kubernetes 环境下需要'
+                'k8s': 'GPUStack Operator 镜像 - 仅用于 Kubernetes 环境，包含可选依赖'
             },
             'cards': {
                 'nvidia': 'NVIDIA', 'amd': 'AMD', 'ascend': '昇腾', 'hygon': '海光',
@@ -170,7 +170,7 @@ const CONFIG = {
                 "postgres": "PostgreSQL — 外部データベースを独立してデプロイするためのオプションコンポーネントです",
                 "monitoring": "監視スイート — Prometheus と Grafana を含むオプションコンポーネントです",
                 "gateway": "AI ゲートウェイイメージ — Kubernetes でのデプロイにのみ必要です",
-                "k8s": "GPUStack Operator のイメージ — Kubernetes でのデプロイにのみ必要です"
+                "k8s": "GPUStack Operator のイメージ — Kubernetes でのデプロイ専用です（オプションの依存関係を含みます）"
             },
             "cards": {
                 "nvidia": "NVIDIA",
@@ -331,7 +331,7 @@ docker load -i gpustack-worker-images.tar</code></pre>
                 'postgres': 'PostgreSQL - Used for independent deployment of external database (optional component)',
                 'monitoring': 'Monitoring Suite - Includes Prometheus and Grafana (optional components)',
                 'gateway': 'AI Gateway Images - Required for Kubernetes deployment only',
-                'k8s': 'GPUStack Operator Images - Required for Kubernetes deployment only'
+                'k8s': 'GPUStack Operator Images - For Kubernetes deployment only, including optional dependencies'
             },
             'cards': {
                 'nvidia': 'NVIDIA', 'amd': 'AMD', 'ascend': 'Ascend', 'hygon': 'Hygon',
@@ -486,7 +486,7 @@ docker load -i gpustack-worker-images.tar</code></pre>
         "postgres": "PostgreSQL — дополнительный компонент для отдельного развертывания внешней базы данных",
         "monitoring": "Мониторинг — дополнительные компоненты Prometheus и Grafana",
         "gateway": "Образы AI-шлюза — нужны только при развертывании в Kubernetes",
-        "k8s": "Образы GPUStack Operator — нужны только при развертывании в Kubernetes"
+        "k8s": "Образы GPUStack Operator — только для развертывания в Kubernetes, включая необязательные зависимости"
     },
     "cards": {
         "nvidia": "NVIDIA",
@@ -615,7 +615,7 @@ docker load -i gpustack-worker-images.tar</code></pre>
         "postgres": "PostgreSQL — harici veritabanını ayrı dağıtmak için isteğe bağlı bileşen",
         "monitoring": "İzleme paketi — isteğe bağlı Prometheus ve Grafana bileşenleri",
         "gateway": "AI ağ geçidi imajları — yalnızca Kubernetes dağıtımları için gereklidir",
-        "k8s": "GPUStack Operator imajları — yalnızca Kubernetes dağıtımları için gereklidir"
+        "k8s": "GPUStack Operator imajları — yalnızca Kubernetes dağıtımları içindir, isteğe bağlı bağımlılıkları da içerir"
     },
     "cards": {
         "nvidia": "NVIDIA",
