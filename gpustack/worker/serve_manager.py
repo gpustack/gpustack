@@ -3268,17 +3268,52 @@ class ServeManager(ContainerLogPersister):
             f"UPDATED event: started model instance {mi.name} on subordinate worker."
         )
 
-    def _get_numbered_log_path(self, mi: ModelInstance) -> str:
+    def _log_restart_counts_on_disk(self, model_instance_id: int) -> Set[int]:
+        """Serve-log generations that already exist for one instance.
+
+        A follower's logs are local to this worker, so what is on disk decides
+        its next generation. Both the numbered layout and a pre-v2.2.0 flat log
+        are counted.
+        """
+        log_dir = Path(self._serve_log_dir)
+        counts = set(restart_log_dirs(log_dir, model_instance_id))
+        counts.update(
+            parsed.restart_count
+            for _path, parsed in flat_instance_logs(log_dir, model_instance_id)
+        )
+        return counts
+
+    def _current_follower_log_restart_count(self, mi: ModelInstance) -> int:
+        """The serve-log generation a follower is already writing to."""
+        counts = self._log_restart_counts_on_disk(mi.id)
+        return max(counts) if counts else (mi.restart_count or 0)
+
+    def _next_follower_log_restart_count(self, mi: ModelInstance) -> int:
+        """The next serve-log generation for a follower.
+
+        A follower can restart without the server changing `mi.restart_count`.
+        Reusing that count would truncate the previous run's files, so a
+        follower with existing logs advances past the highest one on disk.
+        """
+        counts = self._log_restart_counts_on_disk(mi.id)
+        return max(counts) + 1 if counts else (mi.restart_count or 0)
+
+    def _get_numbered_log_path(
+        self, mi: ModelInstance, restart_count: Optional[int] = None
+    ) -> str:
         """Get log file path with restart count.
 
         Args:
             mi: The model instance.
+            restart_count: Log generation to use; defaults to the server's
+                restart count.
 
         Returns:
             Log file path with format:
             {log_dir}/{name}.{model_instance_id}/{restart_count}/main.log
         """
-        restart_count = mi.restart_count or 0
+        if restart_count is None:
+            restart_count = mi.restart_count or 0
         return str(
             main_log_path(Path(self._serve_log_dir), mi.name, mi.id, restart_count)
         )
@@ -3390,7 +3425,12 @@ class ServeManager(ContainerLogPersister):
                 f"{names}"
             )
 
-    def _start_container_log_persistence(self, mi: ModelInstance, resume: bool = False):
+    def _start_container_log_persistence(
+        self,
+        mi: ModelInstance,
+        resume: bool = False,
+        restart_count: Optional[int] = None,
+    ):
         """Start a background thread to persist container logs.
 
         Starts a single "main" log persistence thread. The thread will
@@ -3401,13 +3441,16 @@ class ServeManager(ContainerLogPersister):
             mi: The model instance.
             resume: Append to log files left behind by a previous worker process
                 instead of rewriting them.
+            restart_count: Log generation to write; defaults to the server's
+                restart count.
         """
         # Use deployment metadata name for the actual workload name,
         # which differs for subordinate workers (e.g., "model-f0").
         deployment_metadata = mi.get_deployment_metadata(self._worker_id)
         workload_name = deployment_metadata.name if deployment_metadata else mi.name
 
-        restart_count = mi.restart_count or 0
+        if restart_count is None:
+            restart_count = mi.restart_count or 0
         log_path = str(
             container_log_path(Path(self._serve_log_dir), mi.name, mi.id, restart_count)
         )
@@ -3480,7 +3523,19 @@ class ServeManager(ContainerLogPersister):
         """
         # Only the main log thread counts: the sidecar discovery thread beside it
         # polls forever on a single-container workload.
-        restart = mi.restart_count or 0
+        if mi.worker_id == self._worker_id:
+            restart = mi.restart_count or 0
+        else:
+            current = self._current_follower_log_restart_count(mi)
+            if current is None:
+                logger.warning(
+                    "Deferring container log persistence for follower %s: "
+                    "serve-log directory is unreadable",
+                    mi.name,
+                )
+                return
+            restart = current
+
         with self._log_persistence_lock:
             persistence = self._log_persistence.get(mi.id)
             if persistence and persistence.restart_count > restart:
@@ -3495,7 +3550,7 @@ class ServeManager(ContainerLogPersister):
             if not reuse:
                 # Hold the epoch check through local directory maintenance.
                 self._align_instance_log_dir(mi)
-                self._align_legacy_main_log(mi)
+                self._align_legacy_main_log(mi, restart)
                 self._migrate_flat_logs(mi)
         if reuse:
             self._record_log_sources(mi, persistence)
@@ -3506,7 +3561,9 @@ class ServeManager(ContainerLogPersister):
             f"Re-attaching container log persistence for adopted model instance "
             f"{mi.name}"
         )
-        self._start_container_log_persistence(mi, resume=True)
+        self._start_container_log_persistence(
+            mi, resume=True, restart_count=restart
+        )
 
     def _record_log_sources(self, mi: ModelInstance, persistence=None) -> None:
         """Publish accepted identities without making logging an Engine fault."""
@@ -3588,7 +3645,9 @@ class ServeManager(ContainerLogPersister):
                 persistence.component_writer = (task.name, thread, stopped)
                 persistence.component_attempt = task.component.attempt
 
-    def _align_legacy_main_log(self, mi: ModelInstance):
+    def _align_legacy_main_log(
+        self, mi: ModelInstance, restart_count: Optional[int] = None
+    ):
         """Rename a pre-v2.2.0 main log to carry the current restart_count.
 
         A {id}.log counts as restart 0, so the log viewer would otherwise file it
@@ -3596,10 +3655,12 @@ class ServeManager(ContainerLogPersister):
 
         Args:
             mi: The model instance.
+            restart_count: Log generation to file the legacy log under; defaults
+                to the server's restart count.
         """
         try:
             legacy_log = legacy_main_log_path(Path(self._serve_log_dir), mi.id)
-            numbered_log = Path(self._get_numbered_log_path(mi))
+            numbered_log = Path(self._get_numbered_log_path(mi, restart_count))
             if not legacy_log.exists() or numbered_log.exists():
                 return
             numbered_log.parent.mkdir(parents=True, exist_ok=True)
@@ -3837,12 +3898,17 @@ class ServeManager(ContainerLogPersister):
         # Follow a rename before anything writes under the new name, or the
         # instance's logs end up split across two directories.
         self._align_instance_log_dir(mi)
-        # Clean up old log files before starting
-        self._cleanup_old_logs(mi.id, mi.restart_count or 0)
 
         is_main_worker = mi.worker_id == self._worker_id
+        log_restart_count = (
+            (mi.restart_count or 0)
+            if is_main_worker
+            else self._next_follower_log_restart_count(mi)
+        )
 
-        log_file_path = self._get_numbered_log_path(mi)
+        # Clean up old log files before starting.
+        self._cleanup_old_logs(mi.id, log_restart_count)
+        log_file_path = self._get_numbered_log_path(mi, log_restart_count)
 
         sw_pos: Optional[int] = None
         sw: Optional[ModelInstanceSubordinateWorker] = None
@@ -3929,7 +3995,7 @@ class ServeManager(ContainerLogPersister):
             self._provisioning_processes[mi.id] = process
 
             # Start container log persistence for containerized backends
-            self._start_container_log_persistence(mi)
+            self._start_container_log_persistence(mi, restart_count=log_restart_count)
 
             # Get patch dict for main worker.
             if is_main_worker:
