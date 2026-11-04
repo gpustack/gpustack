@@ -1369,10 +1369,10 @@ class ModelUpdate(ModelWriteBase):
 
 
 class ModelLifecycleState(BaseModel):
-    """Current resource lifecycle, available through GET and watch snapshots."""
+    """Operation progress, independent of the model or instance serving condition."""
 
     pending: bool
-    phase: Literal["idle", "stopping", "restarting", "failed", "completed"]
+    phase: Literal["idle", "stopping", "restarting", "completed"]
     runtime_termination_confirmed: Optional[bool] = None
     pending_stop_worker_ids: List[int] = PydanticField(default_factory=list)
 
@@ -1382,7 +1382,7 @@ class ModelLifecycleResult(BaseModel):
 
     accepted: bool = True
     completed: bool
-    phase: Literal["stopping", "starting", "completed"]
+    phase: Literal["stopping", "restarting", "completed"]
     record_deleted: bool = False
     runtime_termination_confirmed: Optional[bool] = None
     observe_url: Optional[str] = None
@@ -1426,10 +1426,11 @@ class ModelPublic(
     def populate_lifecycle(self):
         if self.lifecycle is None:
             pending = self.deleted_at is not None or self.restarting_since is not None
-            phase = "stopping" if self.deleted_at is not None else "restarting"
-            if self.state == ModelStateEnum.ERROR:
-                phase = "failed"
-            elif not pending:
+            if self.deleted_at is not None:
+                phase = "stopping"
+            elif pending:
+                phase = "restarting"
+            else:
                 phase = "idle"
             self.lifecycle = ModelLifecycleState(pending=pending, phase=phase)
         return self
@@ -2509,11 +2510,7 @@ def model_instance_lifecycle(instance: ModelInstanceBase) -> ModelLifecycleState
     stopping = instance.draining_since is not None
     return ModelLifecycleState(
         pending=stopping,
-        phase=(
-            "stopping"
-            if stopping
-            else "failed" if instance.state == ModelInstanceStateEnum.ERROR else "idle"
-        ),
+        phase="stopping" if stopping else "idle",
         runtime_termination_confirmed=confirmed,
         pending_stop_worker_ids=sorted(pending_workers) if stopping else [],
     )

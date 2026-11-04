@@ -159,21 +159,18 @@ class GPUStackSupervisor:
     def _monitor(self) -> int:
         while not self.stop_signal:
             for task in self.tasks:
-                if hasattr(os, "waitid"):
-                    # Keep the exited leader waitable so its PID cannot be
-                    # recycled before the final process-group signal.
-                    status = os.waitid(
-                        os.P_PID,
-                        task.process.pid,
-                        os.WEXITED | os.WNOHANG | os.WNOWAIT,
-                    )
-                    code = None
-                    if status is not None:
-                        code = status.si_status
-                        if status.si_code != os.CLD_EXITED:
-                            code = -code
-                else:
-                    code = task.process.poll()
+                # Keep the exited leader waitable so its PID cannot be
+                # recycled before the final process-group signal.
+                status = os.waitid(
+                    os.P_PID,
+                    task.process.pid,
+                    os.WEXITED | os.WNOHANG | os.WNOWAIT,
+                )
+                code = None
+                if status is not None:
+                    code = status.si_status
+                    if status.si_code != os.CLD_EXITED:
+                        code = -code
                 if code is not None:
                     if self.stop_signal:
                         return 128 + self.stop_signal
@@ -289,6 +286,8 @@ def main() -> int:
     args = parser.parse_args()
     if os.name != "posix":
         parser.error("Process supervision requires POSIX process groups")
+    if not hasattr(os, "waitid"):
+        parser.error("Process supervision requires os.waitid")
     try:
         tasks, timeout = _load_config(args.config)
     except (OSError, ValueError) as exc:

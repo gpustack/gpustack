@@ -289,7 +289,11 @@ async def proxy_request_by_model(
     }
     path = f"v1/{endpoint}"
     logger.debug(
-        f"proxying to {instance.worker_ip}:{instance.port}, instance port: {instance.port}"
+        "Proxying instance %s to Worker %s at %s:%s",
+        instance.id,
+        worker.id,
+        worker.ip,
+        rank_endpoint.port if rank_endpoint else instance.port,
     )
 
     try:

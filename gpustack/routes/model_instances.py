@@ -47,8 +47,6 @@ from gpustack.schemas.models import (
     ModelInstanceLogOptions,
     ModelInstanceLogWorkerOption,
     ModelInstancePublic,
-    ModelLifecycleResult,
-    model_instance_lifecycle,
     ModelInstanceWorkloadReport,
     ModelInstanceWorkloadUpdate,
     ModelInstanceStopReport,
@@ -1881,12 +1879,12 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
 
 @router.delete(
     "/{id}",
-    response_model=ModelLifecycleResult,
-    responses={202: {"model": ModelLifecycleResult}},
+    response_model=None,
+    responses={202: {"description": "Cleanup is pending"}},
 )
 async def delete_model_instance(
     session: SessionDep, ctx: TenantContextDep, id: int, response: Response = None
-):
+) -> None:
     model_instance = await ModelInstance.one_by_id(session, id, for_update=True)
     assert_resource_visible(
         ctx,
@@ -1916,18 +1914,8 @@ async def delete_model_instance(
             message=f"Failed to delete model instance: {e}"
         )
     completed = deleted is not False
-    proof = model_instance_lifecycle(model_instance).runtime_termination_confirmed
     if response is not None and not completed:
         response.status_code = 202
-    return ModelLifecycleResult(
-        completed=completed,
-        phase="completed" if completed else "stopping",
-        record_deleted=completed,
-        runtime_termination_confirmed=(
-            True if proof is True else None if completed else proof
-        ),
-        observe_url=f"/v2/model-instances/{id}",
-    )
 
 
 async def _resolve_visible_log_source(request, instance, worker, selector):

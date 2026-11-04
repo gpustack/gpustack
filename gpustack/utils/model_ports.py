@@ -21,12 +21,6 @@ from gpustack.utils.vllm_topology import (
     validate_multinode_topology,
     vllm_lb_mode,
 )
-from gpustack.worker.pd_injection import (
-    ACCELERATOR_COUNT_KEY,
-    band_count_key,
-    band_specs_for,
-    member_band_width,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +33,13 @@ def connector_port_requests(
     model: Model, role: Optional[str], allocation: List[int]
 ) -> List[Tuple[str, int]]:
     """Resolve connector bands in catalog order, leaving unknown widths unresolved."""
+    from gpustack.worker.pd_injection import (
+        ACCELERATOR_COUNT_KEY,
+        band_count_key,
+        band_specs_for,
+        member_band_width,
+    )
+
     requests = []
     mode = getattr(getattr(model, "disaggregation", None), "mode", None)
     for spec in band_specs_for(model, role, context=f"Role {role!r}"):

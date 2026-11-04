@@ -83,7 +83,7 @@ async def test_deployed_model_with_no_active_target_is_unavailable(monkeypatch):
 @pytest.mark.parametrize('managed', [False, 'rank', 'hybrid'])
 @pytest.mark.parametrize('deleted', [False, True])
 async def test_proxy_preserves_api_path_and_selects_rank_owner(
-    monkeypatch, managed, deleted
+    monkeypatch, caplog, managed, deleted
 ):
     from gpustack.schemas.models import ModelInstance
     from gpustack.utils.model_instance_workers import ModelInstanceEndpoint
@@ -102,6 +102,7 @@ async def test_proxy_preserves_api_path_and_selects_rank_owner(
         AsyncMock(return_value=SimpleNamespace(id=1)),
     )
     instance = new_model_instance(7, 'moe', 1, worker_id=1)
+    instance.worker_ip, instance.port = '10.0.0.1', 41000
     monkeypatch.setattr(
         openai_route, 'get_running_instance', AsyncMock(return_value=instance)
     )
@@ -127,7 +128,9 @@ async def test_proxy_preserves_api_path_and_selects_rank_owner(
     )
     get_worker = AsyncMock(
         return_value=SimpleNamespace(
-            id=2 if managed else 1, deleted_at='deleted' if deleted else None
+            id=2 if managed else 1,
+            ip='10.0.0.2',
+            deleted_at='deleted' if deleted else None,
         )
     )
     monkeypatch.setattr(openai_route.WorkerService, 'get_by_id', get_worker)
@@ -149,9 +152,13 @@ async def test_proxy_preserves_api_path_and_selects_rank_owner(
         assert error.value.message == f"Worker with ID {2 if managed else 1} not found"
         forward.assert_not_awaited()
         return
+    caplog.set_level('DEBUG', logger=openai_route.__name__)
     await openai_route.proxy_request_by_model(
         request=_request(), user=SimpleNamespace(id=1)
     )
+    expected_port = 41001 if managed else 41000
+    assert f'Worker {2 if managed else 1} at 10.0.0.2:{expected_port}' in caplog.text
+    assert '10.0.0.1:41000' not in caplog.text
     assert forward.call_args.kwargs['path'] == 'v1/chat/completions'
     assert forward.call_args.kwargs['headers'][openai_route.router_header_key] == (
         'model-1-7-w2.static'

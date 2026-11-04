@@ -4910,31 +4910,34 @@ def test_smg_lineage_switch_appends_a_boundary_and_replays_new_runtime_from_star
     path = str(tmp_path / 'component.sglang_smg.log')
     first = 'model-r3-smg-a0'
     second = 'model-r3-smg-a1'
-    with (
-        patch(
-            'gpustack.worker.container_logs.logs_workload',
-            side_effect=[
-                iter(_stamped((10, 'old\n'))),
-                iter(_stamped((-10, 'new\n'))),
-                iter(_stamped((-10, 'new\n'), (-9, 'tail\n'))),
-            ],
-        ) as logs,
-        patch.object(manager, '_wait_for_container_recovery', return_value=False),
-    ):
-        manager._persist_container_logs(
-            first, path, _fake_stop_event(), resume=True, lineage=first
-        )
-        manager._persist_container_logs(
-            second, path, _fake_stop_event(), resume=True, lineage=second
-        )
-        manager._persist_container_logs(
-            second, path, _fake_stop_event(), resume=True, lineage=second
-        )
-    assert [c.kwargs['since'] for c in logs.call_args_list] == [
-        None,
-        None,
-        _STREAM_EPOCH - 10,
+    streams = [
+        (first, _stamped((10, 'old\n')), None, _STREAM_EPOCH + 10),
+        (second, _stamped((-10, 'new\n')), None, _STREAM_EPOCH - 10),
+        (
+            second,
+            _stamped((-10, 'new\n'), (-9, 'tail\n')),
+            _STREAM_EPOCH - 10,
+            _STREAM_EPOCH - 9,
+        ),
     ]
+    for lineage, chunks, since, epoch in streams:
+        stopped = threading.Event()
+
+        def stream():
+            yield from chunks
+            stopped.set()
+
+        with patch(
+            'gpustack.worker.container_logs.logs_workload', return_value=stream()
+        ) as logs:
+            manager._persist_container_logs(
+                lineage, path, stopped, resume=True, lineage=lineage
+            )
+        logs.assert_called_once_with(
+            name=lineage, token=None, tail=-1, timestamps=True, since=since, follow=True
+        )
+        cursor = json.loads(Path(path + '.cursor').read_text())
+        assert cursor == dict(lineage=lineage, epoch=epoch, count=1)
     data = Path(path).read_text()
     assert data.startswith('old\n')
     assert data.endswith('new\ntail\n')

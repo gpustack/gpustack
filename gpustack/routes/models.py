@@ -84,7 +84,6 @@ from gpustack.schemas.models import (
     ModelUpdate,
     ModelPublic,
     ModelRestartResult,
-    ModelLifecycleResult,
     ModelsPublic,
     ScalingSchedule,
 )
@@ -2601,7 +2600,7 @@ async def restart_model(
             response.status_code = 202
         return ModelRestartResult(
             completed=False,
-            phase="stopping",
+            phase="restarting",
             observe_url=f"/v2/models/{id}",
             spec_digest=target,
             restarted=True,
@@ -2664,7 +2663,7 @@ async def restart_model(
         response.status_code = 202
     return ModelRestartResult(
         completed=False,
-        phase="starting",
+        phase="restarting",
         observe_url=f"/v2/models/{id}",
         spec_digest=target,
         restarted=True,
@@ -2712,12 +2711,12 @@ def _restart_message(failed: List[str]) -> str:
 
 @router.delete(
     "/{id}",
-    response_model=ModelLifecycleResult,
-    responses={202: {"model": ModelLifecycleResult}},
+    response_model=None,
+    responses={202: {"description": "Cleanup is pending"}},
 )
 async def delete_model(
     session: SessionDep, ctx: TenantContextDep, id: int, response: Response = None
-):
+) -> None:
     model = await Model.one_by_id(
         session,
         id,
@@ -2737,4 +2736,3 @@ async def delete_model(
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
     if response is not None and not result.completed:
         response.status_code = 202
-    return result

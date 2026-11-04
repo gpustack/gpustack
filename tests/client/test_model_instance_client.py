@@ -101,26 +101,19 @@ def test_requests_use_their_dedicated_endpoint(
 
 @pytest.mark.parametrize('resource', ['models', 'model_instances'])
 @pytest.mark.parametrize('completed', [False, True])
-def test_sdk_exposes_deletion_acknowledgement(resource, completed):
+def test_sdk_delete_accepts_pending_or_completed_null_body(resource, completed):
     clientset = ClientSet('http://server.example')
     client = getattr(clientset, resource)
     transport = MagicMock()
     client._client = transport
-    body = dict(
-        accepted=True,
-        completed=completed,
-        record_deleted=completed,
-        phase='completed' if completed else 'stopping',
-        runtime_termination_confirmed=None,
-    )
     transport.get_httpx_client.return_value.delete.return_value = httpx.Response(
         200 if completed else 202,
-        json=body,
+        json=None,
     )
-    result = client.delete(7)
-    assert result.completed is completed
-    assert result.record_deleted is completed
-    assert result.runtime_termination_confirmed is None
+    assert client.delete(7) is None
+    transport.get_httpx_client.return_value.delete.assert_called_once_with(
+        f'{client._url}/7'
+    )
 
 
 def test_sdk_restart_exposes_pending_replacement_startup():
@@ -132,7 +125,7 @@ def test_sdk_restart_exposes_pending_replacement_startup():
         json=dict(
             accepted=True,
             completed=False,
-            phase='starting',
+            phase='restarting',
             spec_digest='sha1:target',
             restarted=True,
             deleted_instances=['old'],
@@ -141,6 +134,7 @@ def test_sdk_restart_exposes_pending_replacement_startup():
     )
     result = clientset.models.restart(7)
     assert result.completed is False
+    assert result.phase == 'restarting'
     assert result.spec_digest == 'sha1:target'
     assert result.deleted_instances == ['old']
     transport.get_httpx_client.return_value.post.assert_called_once_with(

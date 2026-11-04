@@ -375,8 +375,6 @@ class ModelInstanceClient:
         raise_if_response_error(response)
         return ModelInstancePublic.model_validate(response.json())
 
-    def delete(self, id: int) -> ModelLifecycleResult:
-        """Return whether deletion completed or still awaits runtime cleanup."""
+    def delete(self, id: int):
         response = self._client.get_httpx_client().delete(f"{self._url}/{id}")
         raise_if_response_error(response)
-        return ModelLifecycleResult.model_validate(response.json())

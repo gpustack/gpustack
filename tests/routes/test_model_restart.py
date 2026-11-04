@@ -323,21 +323,24 @@ def test_the_endpoint_takes_no_role_parameter():
     assert params == {"session", "ctx", "id", "response"}
 
 
-@pytest.mark.parametrize('phase', ['idle', 'restarting', 'stopping', 'failed'])
-def test_model_lifecycle_is_readable_in_get_and_watch_snapshots(phase):
+@pytest.mark.parametrize('action', ['idle', 'restarting', 'stopping'])
+@pytest.mark.parametrize('error', [False, True])
+def test_model_lifecycle_is_readable_in_get_and_watch_snapshots(action, error):
     from gpustack.schemas.models import ModelPublic, ModelStateEnum
 
     model = _model()
     model.created_at = model.updated_at = datetime.now(timezone.utc)
-    if phase == 'restarting':
+    if action == 'restarting':
         model.restarting_since = datetime.now(timezone.utc)
-    if phase == 'stopping':
+    if action == 'stopping':
         model.deleted_at = datetime.now(timezone.utc)
-    if phase == 'failed':
+    if error:
         model.state = ModelStateEnum.ERROR
     public = ModelPublic.model_validate(model)
+    phase = action
     assert public.lifecycle.phase == phase
-    assert public.lifecycle.pending == (phase in ('restarting', 'stopping'))
+    assert public.state == model.state
+    assert public.lifecycle.pending == (action in ('restarting', 'stopping'))
     assert (
         ModelPublic.model_validate_json(public.model_dump_json()).lifecycle
         == public.lifecycle
@@ -345,13 +348,53 @@ def test_model_lifecycle_is_readable_in_get_and_watch_snapshots(phase):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('pd', [False, True])
+async def test_error_model_restart_progress_survives_get_and_watch(monkeypatch, pd):
+    from gpustack.api.streaming import finalize_model_lifecycle_event
+    from gpustack.routes import models
+    from gpustack.schemas.models import ModelPublic, ModelStateEnum
+    from gpustack.server.bus import Event, EventType
+
+    model = _model(roles=_pd_roles() if pd else None)
+    model.created_at = model.updated_at = datetime.now(timezone.utc)
+    model.state, model.state_message = ModelStateEnum.ERROR, 'Engine failed'
+    instance = _instance(1, role='prefill' if pd else None)
+    instance.distributed_servers = DistributedServers(workloads=[])
+
+    result, _ = await _restart(model, [instance])
+
+    assert result.accepted is True and result.completed is False
+    assert result.phase == 'restarting'
+    monkeypatch.setattr(models.Model, 'one_by_id', AsyncMock(return_value=model))
+    monkeypatch.setattr(models, 'assert_resource_visible', lambda *_a, **_kw: None)
+    monkeypatch.setattr(models, 'model_members_stale', AsyncMock(return_value=False))
+    monkeypatch.setattr(models, 'is_lora_list_stale', lambda _: False)
+    public = await models.get_model(MagicMock(), MagicMock(), model.id)
+    event = Event(type=EventType.UPDATED, data=public)
+    await finalize_model_lifecycle_event(event)
+    watched = ModelPublic.model_validate_json(event.data.model_dump_json())
+    for snapshot in (public, watched):
+        assert snapshot.lifecycle.pending is True
+        assert snapshot.lifecycle.phase == result.phase
+        assert snapshot.state == ModelStateEnum.ERROR
+        assert snapshot.state_message == 'Engine failed'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('completed', [False, True])
-async def test_model_delete_returns_machine_readable_status(monkeypatch, completed):
+@pytest.mark.parametrize('error', [False, True])
+async def test_model_delete_retains_null_body_and_status(monkeypatch, completed, error):
     import httpx
     from fastapi import FastAPI
     from gpustack.routes import models
-    from gpustack.schemas.models import ModelLifecycleResult
+    from gpustack.schemas.models import (
+        ModelLifecycleResult,
+        ModelPublic,
+        ModelStateEnum,
+    )
     from gpustack.server.deps import get_session, get_tenant_context
+    from gpustack.api.streaming import finalize_model_lifecycle_event
+    from gpustack.server.bus import Event, EventType
 
     result = ModelLifecycleResult(
         completed=completed,
@@ -359,8 +402,20 @@ async def test_model_delete_returns_machine_readable_status(monkeypatch, complet
         phase='completed' if completed else 'stopping',
         observe_url='/v2/models/1',
     )
-    remove = AsyncMock(return_value=result)
-    monkeypatch.setattr(models.Model, 'one_by_id', AsyncMock(return_value=_model()))
+    model = _model()
+    model.created_at = model.updated_at = datetime.now(timezone.utc)
+    if error:
+        model.state = ModelStateEnum.ERROR
+
+    async def remove_model(row):
+        if not completed:
+            row.deleted_at = datetime.now(timezone.utc)
+        return result
+
+    remove = AsyncMock(side_effect=remove_model)
+    monkeypatch.setattr(models.Model, 'one_by_id', AsyncMock(return_value=model))
+    monkeypatch.setattr(models, 'model_members_stale', AsyncMock(return_value=False))
+    monkeypatch.setattr(models, 'is_lora_list_stale', lambda _: False)
     monkeypatch.setattr(models, 'assert_resource_visible', lambda *_a, **_kw: None)
     monkeypatch.setattr(
         models, 'ModelService', lambda _: SimpleNamespace(delete=remove)
@@ -373,8 +428,23 @@ async def test_model_delete_returns_machine_readable_status(monkeypatch, complet
         transport=httpx.ASGITransport(app=app), base_url='http://test'
     ) as client:
         response = await client.delete('/models/1')
+        if not completed:
+            observed = await client.get('/models/1')
+            assert observed.status_code == 200
+            public = ModelPublic.model_validate(observed.json())
+            assert public.lifecycle.pending is True
+            assert public.lifecycle.phase == 'stopping'
+            assert public.state == model.state
+            event = Event(type=EventType.UPDATED, data=public)
+            await finalize_model_lifecycle_event(event)
+            watched = ModelPublic.model_validate_json(event.data.model_dump_json())
+            assert watched.lifecycle == public.lifecycle
+            assert watched.state == model.state
     assert response.status_code == (200 if completed else 202)
-    assert response.json() == result.model_dump(mode='json')
+    assert response.json() is None
+    schema = app.openapi()['paths']['/models/{id}']['delete']
+    assert set(schema['responses']) >= {'200', '202'}
+    assert 'ModelLifecycleResult' not in str(schema)
     remove.assert_awaited_once()
 
 

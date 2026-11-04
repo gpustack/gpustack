@@ -54,6 +54,8 @@ def start_supervisor(tmp_path):
     processes = []
 
     def start(tasks, shutdown_timeout=1, subreaper=False):
+        if not hasattr(os, 'waitid'):
+            pytest.skip('Requires non-reaping waitid')
         config = tmp_path / "tasks.json"
         config.write_text(
             json.dumps({"tasks": tasks, "shutdown_timeout": shutdown_timeout})
@@ -387,6 +389,28 @@ def test_emit_drains_available_output_before_dropping_a_new_fragment(monkeypatch
         assert not runner.output
     finally:
         runner.selector.close()
+
+
+def test_missing_waitid_is_rejected_before_loading_or_starting_tasks(
+    monkeypatch, capsys
+):
+    from unittest.mock import Mock
+    from gpustack.worker.backends import supervisor
+
+    monkeypatch.delattr(supervisor.os, 'waitid', raising=False)
+    monkeypatch.setattr(sys, 'argv', ['gpustack-supervisor', 'unused.json'])
+    load = Mock()
+    start = Mock()
+    monkeypatch.setattr(supervisor, '_load_config', load)
+    monkeypatch.setattr(supervisor, 'GPUStackSupervisor', start)
+
+    with pytest.raises(SystemExit) as error:
+        supervisor.main()
+
+    assert error.value.code == 2
+    assert 'Process supervision requires os.waitid' in capsys.readouterr().err
+    load.assert_not_called()
+    start.assert_not_called()
 
 
 @pytest.mark.parametrize('error_number', [errno.EIO, errno.EPIPE])

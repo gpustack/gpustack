@@ -81,9 +81,21 @@ def member_port_requests(
 def fits_port_layout(
     snapshots: List[WorkerPortAvailability], requests: List[Tuple[int, Optional[int]]]
 ) -> bool:
-    """Check first-fit bands in the intersection of participating Workers' ports."""
+    """Check first-fit bands in the intersection of participating Workers' ports.
+
+    Raises:
+        ValueError: Workers have no common service-port range.
+    """
     ranges = [parse_port_range(snapshot.port_range) for snapshot in snapshots]
     start, end = max(low for low, _ in ranges), min(high for _, high in ranges)
+    if start > end:
+        configured = ', '.join(
+            f'{snapshot.worker_id}: {snapshot.port_range}' for snapshot in snapshots
+        )
+        raise ValueError(
+            f'Workers have no common service port range ({configured}); '
+            'align service_port_range across these Workers.'
+        )
     busy = {port for snapshot in snapshots for port in snapshot.unavailable_ports}
     free = set(range(start, end + 1)) - busy
     for count, fixed in requests:
@@ -192,6 +204,7 @@ async def filter_candidates(
         await CacheServiceInstance.all_by_fields(
             session,
             {"cluster_id": model.cluster_id} if model.cluster_id is not None else {},
+            extra_conditions=[CacheServiceInstance.worker_id.in_(sorted(needed))],
         )
         if session is not None
         else []
@@ -205,13 +218,20 @@ async def filter_candidates(
     for candidate, members, requests in plans:
         if requests is None:
             accepted.append(candidate)
-        elif not all(worker_id in snapshots for worker_id in members):
+            continue
+        if not all(worker_id in snapshots for worker_id in members):
             messages.append(
                 f"Cannot establish port availability for Workers {members}."
             )
-        elif fits_port_layout(
-            [snapshots[worker_id] for worker_id in members], requests
-        ):
+            continue
+        try:
+            fits = fits_port_layout(
+                [snapshots[worker_id] for worker_id in members], requests
+            )
+        except ValueError as error:
+            messages.append(str(error))
+            continue
+        if fits:
             accepted.append(candidate)
         else:
             demand = sum(count for count, _ in requests)

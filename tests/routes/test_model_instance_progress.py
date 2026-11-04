@@ -96,13 +96,37 @@ async def test_instance_delete_distinguishes_pending_cleanup(report_api, deleted
     ) as client:
         response = await client.delete(f'/model-instances/{api.instance.id}')
     assert response.status_code == (200 if deleted else 202)
-    body = response.json()
-    assert body['accepted'] is True
-    assert body['completed'] is deleted
-    assert body['record_deleted'] is deleted
-    assert body['phase'] == ('completed' if deleted else 'stopping')
-    assert body['observe_url'] == f'/v2/model-instances/{api.instance.id}'
+    assert response.json() is None
+    schema = api.app.openapi()['paths']['/model-instances/{id}']['delete']
+    assert set(schema['responses']) >= {'200', '202'}
+    assert 'ModelLifecycleResult' not in str(schema)
     api.service.delete.assert_awaited_once_with(api.instance)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('draining', [False, True])
+async def test_instance_error_condition_is_separate_from_operation_progress(
+    report_api, draining
+):
+    from gpustack.api.streaming import finalize_model_lifecycle_event
+    from gpustack.server.bus import Event, EventType
+
+    api = report_api
+    api.instance.state = ModelInstanceStateEnum.ERROR
+    api.instance.draining_since = datetime.now(timezone.utc) if draining else None
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.get(f'/model-instances/{api.instance.id}')
+    assert response.status_code == 200
+    public = ModelInstancePublic.model_validate(response.json())
+    event = Event(type=EventType.UPDATED, data=public)
+    await finalize_model_lifecycle_event(event)
+    watched = ModelInstancePublic.model_validate_json(event.data.model_dump_json())
+    for snapshot in (public, watched):
+        assert snapshot.state == ModelInstanceStateEnum.ERROR
+        assert snapshot.lifecycle.pending is draining
+        assert snapshot.lifecycle.phase == ('stopping' if draining else 'idle')
 
 
 @pytest.mark.asyncio
@@ -138,7 +162,7 @@ async def test_instance_retirement_does_not_imply_runtime_termination(
 
 
 @pytest.mark.asyncio
-async def test_record_delete_with_unconfirmed_runtime_returns_unknown(report_api):
+async def test_legacy_instance_delete_retains_null_response(report_api):
     report_api.instance.distributed_servers = None
     report_api.service.delete = AsyncMock(return_value=True)
     async with httpx.AsyncClient(
@@ -146,8 +170,8 @@ async def test_record_delete_with_unconfirmed_runtime_returns_unknown(report_api
     ) as client:
         response = await client.delete('/model-instances/7')
     assert response.status_code == 200
-    assert response.json()['record_deleted'] is True
-    assert response.json()['runtime_termination_confirmed'] is None
+    assert response.json() is None
+    report_api.service.delete.assert_awaited_once_with(report_api.instance)
 
 
 async def _apply_report(instance, report):
