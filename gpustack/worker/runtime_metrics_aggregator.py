@@ -397,7 +397,7 @@ class RuntimeMetricsAggregator:
         if (
             self._worker.id != worker_id
             or self._worker.cluster_id is None
-            or getattr(self._worker, "me", None) is False
+            or getattr(self._worker, "me", None) is not True
         ):
             raise ValueError("Runtime metrics require the current cluster-bound Worker")
         model_instances = self._clientset.model_instances.list(

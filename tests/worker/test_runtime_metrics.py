@@ -608,6 +608,7 @@ def _source_aggregator(instance, *, worker_id=2, model=None):
         name=f'worker-{worker_id}',
         ip=f'10.0.0.{worker_id}',
         cluster_id=4,
+        me=True,
     )
     client = SimpleNamespace(
         workers=SimpleNamespace(get=Mock(return_value=worker)),
@@ -1003,10 +1004,14 @@ def test_worker_rebind_or_address_change_discards_inflight_samples(field, replac
     assert not aggregator._cache['raw']
 
 
-def test_source_discovery_refuses_worker_no_longer_bound_to_current_principal():
+@pytest.mark.parametrize('me', [False, None, 'missing'])
+def test_source_discovery_refuses_worker_no_longer_bound_to_current_principal(me):
     instance = _managed_instance([_rank_task(2, 0)])
     aggregator, client = _source_aggregator(instance)
-    client.workers.get.return_value.me = False
+    if me == 'missing':
+        del client.workers.get.return_value.me
+    else:
+        client.workers.get.return_value.me = me
     with pytest.raises(ValueError, match='current cluster-bound Worker'):
         aggregator._find_active_model_endpoints(2, get_builtin_metrics_config())
     client.model_instances.list.assert_not_called()

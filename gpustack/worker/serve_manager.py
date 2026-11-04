@@ -1019,7 +1019,7 @@ class ServeManager(ContainerLogPersister):
         if (
             worker.state != WorkerStateEnum.READY
             or getattr(worker, 'unreachable', False)
-            or getattr(worker, 'me', None) is False
+            or getattr(worker, 'me', None) is not True
             or getattr(worker, 'id', self._worker_id) != self._worker_id
             or getattr(worker, 'cluster_id', current.cluster_id) != current.cluster_id
         ):

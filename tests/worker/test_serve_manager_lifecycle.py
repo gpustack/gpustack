@@ -2809,6 +2809,7 @@ def smg(managed, monkeypatch):
     s.client.models.get.return_value = s.model
     s.serve._get_model = lambda mi: s.model
     s.client.workers.get.return_value.ip = '10.0.0.1'
+    s.client.workers.get.return_value.me = True
     s.serve._sync_managed_rank_health = MagicMock()
     s.serve._launch_model_instance = MagicMock()
     s.serve._prepare_managed_model_instance = MagicMock()
@@ -3273,6 +3274,7 @@ def test_initial_cpu_authority_read_failure_does_not_stop_engine(smg):
     'change',
     [
         'me',
+        'me_unknown',
         'worker_id',
         'worker_cluster',
         'worker_ip',
@@ -3295,6 +3297,8 @@ def test_cpu_second_authority_fences_binding_and_prepared_inputs(smg, change):
         if reads == 2:
             if change == 'me':
                 worker.me = False
+            elif change == 'me_unknown':
+                worker.me = None
             elif change == 'worker_id':
                 worker.id = 99
             elif change == 'worker_cluster':
@@ -3313,12 +3317,16 @@ def test_cpu_second_authority_fences_binding_and_prepared_inputs(smg, change):
     assert any(w.name == 'engine-1' for w in s.runtime)
 
 
-def test_cpu_me_false_rejects_first_create_authority(smg):
+@pytest.mark.parametrize('me', [False, None, 'missing'])
+def test_cpu_requires_self_worker_for_first_create_authority(smg, me):
     s = smg
     if s.serve._worker_id != 1:
         return
     _pending_cpu(s)
-    s.client.workers.get.return_value.me = False
+    if me == 'missing':
+        del s.client.workers.get.return_value.me
+    else:
+        s.client.workers.get.return_value.me = me
     s.serve._sync_managed_model_instance(s.instance)
     s.create.assert_not_called()
     assert any(w.name == 'engine-1' for w in s.runtime)

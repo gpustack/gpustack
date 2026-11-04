@@ -605,6 +605,34 @@ async def test_candidate_admission_checks_ports_before_scoring(monkeypatch, role
 
 
 @pytest.mark.asyncio
+async def test_role_scoped_band_rejects_candidates_with_a_diagnostic(monkeypatch):
+    from unittest.mock import AsyncMock
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+    from gpustack.schemas.pd_modes import PDPortScopeEnum
+
+    worker = SimpleNamespace(id=1)
+    candidate = ModelInstanceScheduleCandidate(worker, [0], None)
+    monkeypatch.setattr(
+        'gpustack.worker.pd_injection.band_specs_for',
+        lambda *args, **kwargs: [
+            SimpleNamespace(scope=PDPortScopeEnum.ROLE, name='kv_port')
+        ],
+    )
+    snapshots = AsyncMock()
+    monkeypatch.setattr(port_budget, 'worker_port_snapshots', snapshots)
+
+    accepted, messages = await port_budget.filter_candidates(
+        None, _model(MOONCAKE), 'prefill', [candidate], [worker], []
+    )
+
+    assert accepted == []
+    assert len(messages) == 1
+    assert "scope 'role'" in messages[0]
+    assert 'kv_port' in messages[0]
+    snapshots.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_missing_worker_port_snapshot_does_not_admit_candidate(monkeypatch):
     from unittest.mock import AsyncMock
     from gpustack.policies.base import ModelInstanceScheduleCandidate

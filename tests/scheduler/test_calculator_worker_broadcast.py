@@ -228,6 +228,7 @@ async def test_worker_path_selector_finishes_pending_probes_before_returning():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("skip_evaluation", [False, True])
 @pytest.mark.parametrize(
     "outcomes",
     [
@@ -238,8 +239,11 @@ async def test_worker_path_selector_finishes_pending_probes_before_returning():
         [aiohttp.ClientConnectionError("unavailable"), True],
     ],
 )
-async def test_metadata_check_preserves_missing_unknown_and_accessible_paths(outcomes):
+async def test_metadata_check_preserves_missing_unknown_and_accessible_paths(
+    outcomes, skip_evaluation
+):
     model = make_local_path_model()
+    model.env = {"GPUSTACK_SKIP_MODEL_EVALUATION": "1"} if skip_evaluation else {}
     workers = [SimpleNamespace(id=i, name=f"worker-{i}") for i in range(2)]
 
     async def probe(worker, path):
@@ -262,8 +266,13 @@ async def test_metadata_check_preserves_missing_unknown_and_accessible_paths(out
         if not any(x is True for x in outcomes) and any(
             isinstance(x, Exception) for x in outcomes
         ):
-            with pytest.raises(WorkerPathCheckError, match="could not be checked"):
-                await evaluate_model_metadata(SimpleNamespace(), model, workers)
+            if skip_evaluation:
+                assert await evaluate_model_metadata(
+                    SimpleNamespace(), model, workers
+                ) == (True, [])
+            else:
+                with pytest.raises(WorkerPathCheckError, match="could not be checked"):
+                    await evaluate_model_metadata(SimpleNamespace(), model, workers)
             return
         valid, messages = await evaluate_model_metadata(
             SimpleNamespace(), model, workers

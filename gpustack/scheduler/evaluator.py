@@ -1207,13 +1207,14 @@ async def evaluate_model_metadata(
             await scheduler.evaluate_gguf_model(model, workers=workers)
         elif not is_audio_model(model):
             await scheduler.evaluate_pretrained_config(model, workers=workers)
-    except WorkerPathCheckError:
-        # Unavailable filesystem checks must not become cached compatibility results.
-        raise
     except Exception as e:
         if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
             logger.warning(f"Ignore model evaluation error for model {model.name}: {e}")
             return True, []
+
+        if isinstance(e, WorkerPathCheckError):
+            # Unavailable checks must not become cached compatibility results.
+            raise
 
         return False, [str(e)]
 

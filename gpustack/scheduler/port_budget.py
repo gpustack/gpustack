@@ -38,7 +38,7 @@ from gpustack.schemas.models import Model, member_worker_ids
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.cache_services import CacheServiceInstance
 from gpustack.policies.base import ModelInstanceScheduleCandidate
-from gpustack.utils.model_ports import model_port_requests
+from gpustack.utils.model_ports import PDPortScopeUnsupportedError, model_port_requests
 from gpustack.schemas.port_reservations import WorkerPortAvailability
 from gpustack.server.worker_request import request_to_worker
 
@@ -183,7 +183,7 @@ async def filter_candidates(
         ]
         try:
             requests = member_port_requests(model, role, counts)
-        except ValueError as error:
+        except (ValueError, PDPortScopeUnsupportedError) as error:
             messages.append(str(error))
             continue
         if role is None and sum(count for count, _ in requests) == 1:
