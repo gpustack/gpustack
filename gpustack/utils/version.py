@@ -1,4 +1,5 @@
 from functools import cmp_to_key
+from typing import Optional
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
 from packaging import version
@@ -84,6 +85,13 @@ def is_worker_version_compatible(
         return False
 
     return worker_version == server_version
+
+
+def worker_version_matches_server(worker_version: Optional[str]) -> bool:
+    """Compare a registered Worker version with the running Server's version."""
+    from gpustack.extension import resolve_version_info
+
+    return is_worker_version_compatible(worker_version, resolve_version_info()[0])
 
 
 def major_version(version_str):

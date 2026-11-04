@@ -3,6 +3,7 @@ from typing import List, Tuple
 
 from gpustack.schemas.models import Model
 from gpustack.schemas.workers import Worker, WorkerStateEnum
+from gpustack.utils.version import worker_version_matches_server
 from gpustack.utils.model_instance_workers import (
     worker_supports_model_instance_workloads,
 )
@@ -11,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 class StatusFilter:
-    def __init__(self, model: Model, require_managed_workload_protocol: bool = False):
+    def __init__(self, model: Model, require_managed_worker_binding: bool = False):
         self._model = model
-        self._require_managed_workload_protocol = require_managed_workload_protocol
+        self._require_managed_worker_binding = require_managed_worker_binding
 
     async def filter(self, workers: List[Worker]) -> Tuple[List[Worker], List[str]]:
         """
@@ -25,8 +26,11 @@ class StatusFilter:
         for worker in workers:
             if worker.state != WorkerStateEnum.READY:
                 continue
-            if self._require_managed_workload_protocol and not (
-                worker_supports_model_instance_workloads(worker)
+            if not worker_version_matches_server(
+                getattr(worker, 'worker_version', None)
+            ) or (
+                self._require_managed_worker_binding
+                and not worker_supports_model_instance_workloads(worker)
             ):
                 incompatible = True
                 continue
@@ -35,16 +39,16 @@ class StatusFilter:
         messages = []
         if len(candidates) != len(workers):
             criterion = (
-                "READY status and managed workload admission"
-                if self._require_managed_workload_protocol
-                else "READY status"
+                "READY status, matching Server version and bound Worker identity"
+                if self._require_managed_worker_binding
+                else "READY status and matching Server version"
             )
             messages = [
                 f"Matched {len(candidates)}/{len(workers)} workers by {criterion}."
             ]
         if incompatible:
             messages.append(
-                "Managed workloads require a READY, bound Worker with orchestration "
-                "protocol v1 and admission enabled; upgrade or re-register incompatible Workers."
+                "Workers must run the same version as the Server; managed workloads "
+                "also require a bound Worker identity. Upgrade or re-register incompatible Workers."
             )
         return candidates, messages

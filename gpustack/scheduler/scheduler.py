@@ -86,7 +86,7 @@ from gpustack.utils.unit import byte_to_gib
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
     model_instance_legacy_stop,
-    model_requires_managed_workload_protocol,
+    model_requires_managed_worker_binding,
     sglang_smg_mode,
     worker_supports_model_instance_workloads,
 )
@@ -118,11 +118,11 @@ from gpustack.server.services import (
 from gpustack.utils.command import find_last_parameter, find_parameter
 from gpustack.utils.gpu import group_gpu_ids_by_worker
 from gpustack.utils.hub import has_diffusers_model_index
+from gpustack.utils.version import worker_version_matches_server
 from gpustack.utils.math import largest_power_of_2_leq
 from gpustack.utils.model_source import get_draft_model_source
 from gpustack.scheduler.calculator import get_pretrained_config_with_workers
 from sqlalchemy.orm.attributes import flag_modified
-
 
 logger = logging.getLogger(__name__)
 
@@ -423,14 +423,14 @@ class Scheduler:
         if not is_group_forming(model, group_instances):
             return False
 
-        required = model_requires_managed_workload_protocol(model_instances, model.id)
-        protocol_message = _incompatible_cohort_message(
+        required = model_requires_managed_worker_binding(model_instances, model.id)
+        admission_message = _incompatible_cohort_message(
             model, workers, model_instances, required
         )
-        if protocol_message:
-            by_instance, messages = None, [protocol_message]
+        if admission_message:
+            by_instance, messages = None, [admission_message]
         else:
-            workers, protocol_messages = await StatusFilter(model, required).filter(
+            workers, admission_messages = await StatusFilter(model, required).filter(
                 workers
             )
             by_instance, messages = await schedule_group(
@@ -441,7 +441,7 @@ class Scheduler:
                 model_instances,
                 group_instances,
             )
-            messages = protocol_messages + messages
+            messages = admission_messages + messages
         model_name, group_id = model.name, model_instance.group_id
         if by_instance is None:
             locked = await _lock_scheduling_instances(session, group_instances)
@@ -592,7 +592,7 @@ class Scheduler:
                     # placed; a sibling that came back here keeps its own, and
                     # every later attempt is measured against it.
                     model_instance.computed_resource_claim = None
-                if messages and model_requires_managed_workload_protocol(
+                if messages and model_requires_managed_worker_binding(
                     _model_cohort(model_instances, model.id), model.id
                 ):
                     model_instance.state_message = (
@@ -623,8 +623,8 @@ class Scheduler:
 
 
 _MANAGED_WORKER_MESSAGE = (
-    "Managed workloads require READY candidate Workers and current, bound "
-    "orchestration protocol v1 admission for all candidate and assigned cohort Workers; "
+    "Managed workloads require READY candidate Workers and bound identities with "
+    "matching Server versions for every candidate and assigned cohort Worker; "
     "upgrade or re-register incompatible Workers."
 )
 
@@ -662,13 +662,14 @@ def _scheduling_identity(row):
     )
 
 
-def _worker_admitted(worker, model, requires_protocol, *, require_ready=True):
+def _worker_admitted(worker, model, requires_managed, *, require_ready=True):
     return (
         worker is not None
         and worker.deleted_at is None
         and (not require_ready or worker.state == WorkerStateEnum.READY)
         and worker.cluster_id == model.cluster_id
-        and (not requires_protocol or worker_supports_model_instance_workloads(worker))
+        and worker_version_matches_server(getattr(worker, 'worker_version', None))
+        and (not requires_managed or worker_supports_model_instance_workloads(worker))
     )
 
 
@@ -697,7 +698,7 @@ async def _lock_scheduling_admission(
     discovery = list(discovery) + [
         row for row in expected if row.id not in {i.id for i in discovery}
     ]
-    required = model_requires_managed_workload_protocol(discovery, model.id)
+    required = model_requires_managed_worker_binding(discovery, model.id)
     candidate_ids = _candidate_worker_ids(candidates.values())
     worker_ids = set(candidate_ids)
     if required:
@@ -715,7 +716,7 @@ async def _lock_scheduling_admission(
     current = await ModelInstance.all_by_field(
         session, 'model_id', model.id, for_update=True, refresh=True
     )
-    required = model_requires_managed_workload_protocol(current, model.id)
+    required = model_requires_managed_worker_binding(current, model.id)
     rows = {row.id: row for row in current}
     if (
         (required and not _cohort_worker_ids(current).issubset(worker_ids))
@@ -1151,14 +1152,14 @@ async def find_candidate(
     # available workers. Exclude its main and subordinate bindings from both
     # placement rules and resource accounting.
     # Keep the caller's instance list intact for group membership checks.
-    require_protocol = managed_sglang or model_requires_managed_workload_protocol(
+    require_managed = managed_sglang or model_requires_managed_worker_binding(
         _model_cohort(model_instances, model.id), model.id
     )
-    protocol_message = _incompatible_cohort_message(
-        model, workers, model_instances, require_protocol
+    admission_message = _incompatible_cohort_message(
+        model, workers, model_instances, require_managed
     )
-    if protocol_message:
-        return None, [protocol_message]
+    if admission_message:
+        return None, [admission_message]
     if exclude_instance_id is not None:
         model_instances = [mi for mi in model_instances if mi.id != exclude_instance_id]
     resource_view = (
@@ -1210,7 +1211,7 @@ async def find_candidate(
         ClusterFilter(model),
         GPUMatchingFilter(model),
         LabelMatchingFilter(model),
-        StatusFilter(model, require_protocol),
+        StatusFilter(model, require_managed),
         BackendFrameworkFilter(model),
         LocalPathFilter(model),
         PDModeRuntimeFilter(model),

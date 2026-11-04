@@ -27,6 +27,7 @@ from typing import List
 from sqlalchemy.orm import declarative_base
 
 from gpustack.utils.network import is_offline
+from gpustack.utils.version import worker_version_matches_server
 from .clusters import ClusterProvider, Cluster, WorkerPool
 
 if TYPE_CHECKING:
@@ -281,19 +282,10 @@ class Maintenance(BaseModel):
     message: Optional[str] = None
 
 
-class WorkerOrchestrationStatus(BaseModel):
-    """The Worker's declared protocol and the Server's admission decision."""
-
-    protocol_version: Optional[int] = Field(default=None, ge=1)
-    admission_blocked: bool = False
-
-
 class WorkerStatus(SystemInfo):
     """
     rpc_servers: Deprecated
     """
-
-    orchestration: Optional[WorkerOrchestrationStatus] = None
 
     gpu_devices: Optional[GPUDevicesStatus] = Field(
         sa_column=Column(JSON), default=None
@@ -446,15 +438,13 @@ class WorkerBase(WorkerCreate):
     )
 
     def compute_state(self):
-        if (
-            self.status is not None
-            and self.status.orchestration is not None
-            and self.status.orchestration.admission_blocked
+        if not self.state.is_provisioning and not worker_version_matches_server(
+            self.worker_version
         ):
             self.state = WorkerStateEnum.NOT_READY
             self.state_message = (
-                "Worker orchestration admission is blocked. Upgrade the worker "
-                "to support the assigned model instance protocol."
+                "Worker version is missing or does not match the Server version. "
+                "Upgrade or re-register the worker with the same version as the Server."
             )
             return
         if self.maintenance and self.maintenance.enabled:

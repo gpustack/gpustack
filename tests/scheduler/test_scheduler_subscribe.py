@@ -42,32 +42,33 @@ async def _stop_task(task: asyncio.Task) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'state,protocol,upgrade',
+    'state,version,upgrade',
     [
-        ('ready', None, True),
-        ('ready', 1, False),
-        ('not_ready', None, False),
-        ('unreachable', 1, False),
+        ('ready', '2.3.0', True),
+        ('ready', '2.3.1', False),
+        ('not_ready', '2.3.0', False),
+        ('unreachable', '2.3.1', False),
     ],
 )
 async def test_managed_admission_message_distinguishes_offline_workers(
-    state, protocol, upgrade
+    state, version, upgrade, monkeypatch
 ):
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+    )
     from gpustack.policies.worker_filters.status_filter import StatusFilter
 
     worker = SimpleNamespace(
         state=state,
         system_principal_id=7,
-        status=SimpleNamespace(
-            orchestration=SimpleNamespace(
-                protocol_version=protocol,
-                admission_blocked=False,
-            )
-        ),
+        worker_version=version,
     )
     candidates, messages = await StatusFilter(None, True).filter([worker])
-    assert bool(candidates) == (state == 'ready' and protocol == 1)
-    assert any('upgrade or re-register' in message for message in messages) == upgrade
+    assert bool(candidates) == (state == 'ready' and version == '2.3.1')
+    assert (
+        any('upgrade or re-register' in message.lower() for message in messages)
+        == upgrade
+    )
 
 
 @pytest.mark.asyncio
@@ -192,10 +193,14 @@ async def test_scheduler_handles_live_created_event_with_single_instance_path():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('transition', ['protocol_only', 'blocked_to_ready'])
+@pytest.mark.parametrize('transition', ['version_only', 'not_ready_to_ready'])
 async def test_periodic_retry_observes_current_worker_admission_without_generation_change(
     transition,
+    monkeypatch,
 ):
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+    )
     from contextlib import asynccontextmanager
     from datetime import datetime, timedelta, timezone
     from gpustack.schemas.models import (
@@ -218,16 +223,11 @@ async def test_periodic_retry_observes_current_worker_admission_without_generati
         id=1,
         state='ready',
         system_principal_id=101,
-        status=SimpleNamespace(
-            orchestration=SimpleNamespace(
-                protocol_version=None, admission_blocked=False
-            )
-        ),
+        worker_version='2.3.0',
     )
-    if transition == 'blocked_to_ready':
+    if transition == 'not_ready_to_ready':
         worker.state = 'not_ready'
-        worker.status.orchestration.protocol_version = 1
-        worker.status.orchestration.admission_blocked = True
+        worker.worker_version = '2.3.1'
     model = Model(id=1, name='m', source='huggingface', huggingface_repo_id='a/b')
     eligibility = []
 
@@ -247,8 +247,7 @@ async def test_periodic_retry_observes_current_worker_admission_without_generati
         ) as evaluate_mock,
     ):
         await scheduler._enqueue_pending_instances()
-        worker.status.orchestration.protocol_version = 1
-        worker.status.orchestration.admission_blocked = False
+        worker.worker_version = '2.3.1'
         worker.state = 'ready'
         await scheduler._enqueue_pending_instances()
     assert eligibility == [[], [1]]

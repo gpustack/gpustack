@@ -19,6 +19,7 @@ from gpustack.schemas.models import (
 )
 
 from gpustack.schemas.workers import Worker
+from gpustack.utils.version import worker_version_matches_server
 
 
 @dataclass(frozen=True)
@@ -183,17 +184,14 @@ def requires_model_instance_stop_barrier(instance: ModelInstanceBase) -> bool:
 
 
 def worker_supports_model_instance_workloads(worker: Worker) -> bool:
-    """Require an explicit supported protocol from a bound, admitted Worker."""
-    status = worker.status.orchestration if worker.status is not None else None
+    """Require a bound Worker running the Server's version."""
     return bool(
         worker.system_principal_id
-        and status is not None
-        and status.protocol_version == 1
-        and not status.admission_blocked
+        and worker_version_matches_server(worker.worker_version)
     )
 
 
-def model_requires_managed_workload_protocol(
+def model_requires_managed_worker_binding(
     instances: Iterable[ModelInstanceBase], model_id: int
 ) -> bool:
     """Include legacy members when their model participates in managed stopping."""

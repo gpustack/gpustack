@@ -60,8 +60,6 @@ from gpustack.schemas.workers import (
     Worker,
     WorkerRegistrationPublic,
     WorkerStatusStored,
-    WorkerStatus,
-    WorkerOrchestrationStatus,
     WorkerStateEnum,
 )
 from gpustack.server.bus import Event, EventType, event_field
@@ -93,6 +91,7 @@ from gpustack.server.services import WorkerService
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
 from gpustack.utils.grafana import resolve_grafana_base_url
 from gpustack.utils.labels import LabelFilter
+from gpustack.utils.version import worker_version_matches_server
 
 router = APIRouter()
 system_name_prefix = "system/worker"
@@ -868,40 +867,19 @@ async def _registration_instances(session, worker):
         return result.all()
 
 
-async def _registration_orchestration(session, existing, incoming, instances):
-    """Commit admission loss before rejecting an incompatible re-registration."""
-    declaration = incoming.status.orchestration if incoming.status is not None else None
-    protocol = declaration.protocol_version if declaration is not None else None
-    if existing is not None:
-        if protocol != 1 and existing.id in assigned_managed_workload_worker_ids(
-            instances
-        ):
-            status = (
-                existing.status.model_copy(deep=True)
-                if existing.status is not None
-                else WorkerStatus.get_default_status()
-            )
-            status.orchestration = WorkerOrchestrationStatus(
-                protocol_version=protocol, admission_blocked=True
-            )
-            existing.status = status
-            existing.compute_state()
-            await WorkerService(session).update(existing)
-            raise ConflictException(
-                message="Upgrade this worker before serving its assigned managed model instances"
-            )
-    incoming = incoming.model_copy(deep=True)
-    status = (
-        incoming.status
-        if incoming.status is not None
-        else WorkerStatus.get_default_status()
-    )
-    status.orchestration = WorkerOrchestrationStatus(
-        protocol_version=protocol,
-        admission_blocked=False,
-    )
-    incoming.status = status
-    return incoming
+async def _check_registration_version(session, existing, incoming, instances):
+    """Persist a version mismatch before rejecting existing managed assignments."""
+    if (
+        existing is not None
+        and not worker_version_matches_server(incoming.worker_version)
+        and existing.id in assigned_managed_workload_worker_ids(instances)
+    ):
+        existing.worker_version = incoming.worker_version
+        existing.compute_state()
+        await WorkerService(session).update(existing)
+        raise ConflictException(
+            message="Worker and Server versions must match before serving assigned managed model instances"
+        )
 
 
 @router.post("", response_model=WorkerRegistrationPublic)
@@ -942,7 +920,7 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                 raise NotFoundException(message="Cluster not found")
 
             instances = await _registration_instances(session, existing_worker)
-            worker_in = await _registration_orchestration(
+            await _check_registration_version(
                 session, existing_worker, worker_in, instances
             )
             existing_principal = await _resolve_existing_worker_principal(

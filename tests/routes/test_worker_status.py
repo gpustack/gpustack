@@ -50,6 +50,17 @@ async def test_status_report_cannot_rewrite_worker_uuid():
 
 
 @pytest.mark.asyncio
+async def test_status_report_cannot_rewrite_registered_worker_version():
+    status = WorkerStatusStored.model_validate(
+        {**_status().model_dump(), 'worker_version': '2.3.1'}
+    )
+    await workers_route.create_worker_status(_user(worker_id=7), status)
+    async with worker_status_flush_buffer_lock:
+        buffered = worker_status_flush_buffer.pop(7)
+    assert 'worker_version' not in buffered
+
+
+@pytest.mark.asyncio
 async def test_status_report_buffers_operational_fields():
     status = _status(ip="10.0.0.9", hostname="worker-1")
 
@@ -64,7 +75,7 @@ async def test_status_report_buffers_operational_fields():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('empty', [True, False])
-async def test_flush_uses_locked_registration_marker_instead_of_late_packet(
+async def test_flush_keeps_registered_version_instead_of_late_packet(
     empty, monkeypatch
 ):
     from contextlib import asynccontextmanager
@@ -73,7 +84,6 @@ async def test_flush_uses_locked_registration_marker_instead_of_late_packet(
     from gpustack.schemas.workers import (
         Worker,
         WorkerStateEnum,
-        WorkerOrchestrationStatus,
     )
     from gpustack.server.services import WorkerService
 
@@ -82,13 +92,15 @@ async def test_flush_uses_locked_registration_marker_instead_of_late_packet(
         hostname='worker',
         ip='10.0.0.1',
         id=7,
-        status=WorkerStatus(
-            orchestration=WorkerOrchestrationStatus(admission_blocked=True)
-        ),
+        status=WorkerStatus(),
+        worker_version='2.3.0',
         state=WorkerStateEnum.NOT_READY,
     )
     stale = fresh.model_copy(deep=True)
-    stale.status.orchestration = WorkerOrchestrationStatus(protocol_version=1)
+    stale.worker_version = '2.3.1'
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+    )
 
     @asynccontextmanager
     async def session():
@@ -97,7 +109,7 @@ async def test_flush_uses_locked_registration_marker_instead_of_late_packet(
     packet = (
         None
         if empty
-        else WorkerStatus(orchestration=WorkerOrchestrationStatus(protocol_version=1))
+        else WorkerStatus.model_validate({'orchestration': {'protocol_version': 1}})
     )
     buffer.worker_status_flush_buffer[7] = {'status': packet, 'state_message': None}
     locked = AsyncMock(return_value=[fresh])
@@ -110,6 +122,5 @@ async def test_flush_uses_locked_registration_marker_instead_of_late_packet(
     locked.assert_awaited_once()
     assert locked.await_args.kwargs['for_update'] is True
     assert persist.await_args.args[0] == [fresh]
-    assert fresh.status.orchestration.admission_blocked
-    assert fresh.status.orchestration.protocol_version is None
+    assert fresh.worker_version == '2.3.0'
     assert fresh.state == WorkerStateEnum.NOT_READY

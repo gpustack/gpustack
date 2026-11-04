@@ -376,10 +376,13 @@ async def test_reregistration_reconciles_only_authorized_cluster_owner(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('protocol', [None, 2])
-async def test_sqlite_downgrade_commits_block_before_conflict_and_late_status_cannot_unblock(
-    monkeypatch, protocol
+@pytest.mark.parametrize('version', [None, 'unknown', '2.3.0'])
+async def test_downgrade_persists_version_before_conflict_and_late_status_cannot_readmit(
+    monkeypatch, version
 ):
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+    )
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlmodel.ext.asyncio.session import AsyncSession
     from gpustack.schemas.models import (
@@ -389,7 +392,7 @@ async def test_sqlite_downgrade_commits_block_before_conflict_and_late_status_ca
         SourceEnum,
         BackendEnum,
     )
-    from gpustack.schemas.workers import WorkerOrchestrationStatus, WorkerStateEnum
+    from gpustack.schemas.workers import WorkerStateEnum
     from gpustack.server import worker_status_buffer as buffer
     from gpustack.mixins import active_record
     from gpustack.server import services
@@ -443,7 +446,7 @@ async def test_sqlite_downgrade_commits_block_before_conflict_and_late_status_ca
                     'owner_principal_id': 1,
                 }
             )
-            worker.status.orchestration = WorkerOrchestrationStatus(protocol_version=1)
+            worker.worker_version = '2.3.1'
             model = Model(
                 id=1,
                 name='model',
@@ -472,9 +475,7 @@ async def test_sqlite_downgrade_commits_block_before_conflict_and_late_status_ca
             await session.commit()
         old_payload = WorkerCreate.model_validate(_payload(100, True))
         old_payload.ip, old_payload.port = '192.0.2.99', 12345
-        old_payload.status.orchestration = WorkerOrchestrationStatus(
-            protocol_version=protocol, admission_blocked=False
-        )
+        old_payload.worker_version = version
         from httpx import AsyncClient, ASGITransport
 
         app = FastAPI()
@@ -492,8 +493,7 @@ async def test_sqlite_downgrade_commits_block_before_conflict_and_late_status_ca
             generate.assert_not_called()
         async with AsyncSession(engine) as session:
             stored = await Worker.one_by_id(session, 20, refresh=True)
-            assert stored.status.orchestration.protocol_version == protocol
-            assert stored.status.orchestration.admission_blocked
+            assert stored.worker_version == version
             assert stored.state == WorkerStateEnum.NOT_READY
             assert stored.token == 'existing-token' and stored.system_principal_id == 30
             assert stored.ip == '192.0.2.10' and stored.port == 10150
@@ -503,21 +503,16 @@ async def test_sqlite_downgrade_commits_block_before_conflict_and_late_status_ca
                 and untouched.ports == [40000]
             )
         buffer.worker_status_flush_buffer[20] = {
-            'status': WorkerStatus(
-                orchestration=WorkerOrchestrationStatus(protocol_version=1)
-            ),
+            'status': WorkerStatus(),
             'state_message': None,
         }
         await buffer.flush_worker_status()
         async with AsyncSession(engine) as session:
             stored = await Worker.one_by_id(session, 20, refresh=True)
-            assert stored.status.orchestration.admission_blocked
-            assert stored.status.orchestration.protocol_version == protocol
+            assert stored.worker_version == version
             assert stored.state == WorkerStateEnum.NOT_READY
         compatible = WorkerCreate.model_validate(_payload(100, True))
-        compatible.status.orchestration = WorkerOrchestrationStatus(
-            protocol_version=1, admission_blocked=True
-        )
+        compatible.worker_version = '2.3.1'
         from gpustack.api.exceptions import ForbiddenException
 
         with pytest.raises(ForbiddenException):
@@ -538,28 +533,27 @@ async def test_sqlite_downgrade_commits_block_before_conflict_and_late_status_ca
         publish.assert_not_awaited()
         async with AsyncSession(engine) as session:
             unchanged = await Worker.one_by_id(session, 20, refresh=True)
-            assert unchanged.status.orchestration.admission_blocked
-            assert unchanged.status.orchestration.protocol_version == protocol
+            assert unchanged.worker_version == version
             assert unchanged.token == 'existing-token'
         response = await workers.create_worker(_principal('worker'), compatible)
-        assert response.status.orchestration.protocol_version == 1
-        assert not response.status.orchestration.admission_blocked
+        assert response.worker_version == '2.3.1'
+        assert response.state == WorkerStateEnum.READY
         buffer.worker_status_flush_buffer[20] = {'status': None, 'state_message': None}
         await buffer.flush_worker_status()
         buffer.heartbeat_flush_buffer.add(20)
         await buffer.flush_heartbeats()
         async with AsyncSession(engine) as session:
             admitted = await Worker.one_by_id(session, 20, refresh=True)
-            assert admitted.status.orchestration.protocol_version == 1
-            assert not admitted.status.orchestration.admission_blocked
+            assert admitted.worker_version == '2.3.1'
+            assert admitted.state == WorkerStateEnum.READY
         with pytest.raises(ConflictException):
             await workers.create_worker(_principal('worker'), old_payload)
         async with AsyncSession(engine) as session:
             await session.delete(await ModelInstance.one_by_id(session, 1))
             await session.commit()
         response = await workers.create_worker(_principal('worker'), old_payload)
-        assert response.status.orchestration.protocol_version == protocol
-        assert not response.status.orchestration.admission_blocked
+        assert response.worker_version == version
+        assert response.state == WorkerStateEnum.NOT_READY
         assert response.token == 'existing-token'
         assert not any(
             call.args[1].type.value == 'DELETED' for call in publish.await_args_list
@@ -576,7 +570,6 @@ def test_registration_repair_binding_obeys_only_assigned_managed_cohort(
     registration, monkeypatch, cohort
 ):
     from gpustack.schemas.models import DistributedServers, ModelInstanceLegacyStop
-    from gpustack.schemas.workers import WorkerOrchestrationStatus
     from tests.utils.model import new_model_instance
     from uuid import uuid4
 
@@ -615,7 +608,7 @@ def test_registration_repair_binding_obeys_only_assigned_managed_cohort(
     registration.session.exec.return_value = MagicMock()
     registration.session.exec.return_value.all.return_value = [engine, router]
     payload = WorkerCreate.model_validate(_payload(100, True))
-    payload.status.orchestration = WorkerOrchestrationStatus(protocol_version=1)
+    payload.worker_version = '2.3.1'
     with TestClient(registration.app) as client:
         response = client.post('/v2/workers', json=payload.model_dump(mode='json'))
     assert response.status_code == (

@@ -77,21 +77,7 @@ async def flush_worker_status():
 
             workers = [worker for worker in workers if worker.deleted_at is None]
             for worker in workers:
-                registered = (
-                    worker.status.orchestration if worker.status is not None else None
-                )
                 for key, value in to_update_worker_status.get(worker.id, {}).items():
-                    if key == "status":
-                        if value is None and registered is not None:
-                            value = worker.status.model_copy(deep=True)
-                        elif value is not None:
-                            value = value.model_copy(deep=True)
-                        if value is not None:
-                            value.orchestration = (
-                                registered.model_copy(deep=True)
-                                if registered is not None
-                                else None
-                            )
                     setattr(worker, key, value)
                 worker.compute_state()
 

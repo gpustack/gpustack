@@ -824,68 +824,66 @@ async def test_guarded_legacy_worker_loss_cannot_retire_the_stop_barrier(
         delete.assert_not_awaited()
 
 
-def test_worker_orchestration_status_json_round_trip():
+def test_worker_status_does_not_expose_orchestration_admission_fields():
     from gpustack.schemas.workers import WorkerStatus
 
     status = WorkerStatus.model_validate(
-        {'orchestration': {'protocol_version': 1, 'admission_blocked': False}}
+        {'orchestration': {'protocol_version': 1, 'admission_blocked': True}}
     )
-    restored = WorkerStatus.model_validate_json(status.model_dump_json())
-    assert restored.model_dump()['orchestration'] == {
-        'protocol_version': 1,
-        'admission_blocked': False,
-    }
-    assert WorkerStatus().orchestration is None
+    assert 'orchestration' not in status.model_dump()
+    assert 'orchestration' not in WorkerStatus.model_json_schema()['properties']
 
 
 @pytest.mark.parametrize('maintenance', [False, True])
-def test_orchestration_block_is_not_cleared_by_maintenance_or_late_status(maintenance):
-    from gpustack.schemas.workers import WorkerStatus
-
+def test_version_mismatch_is_not_cleared_by_maintenance_or_late_status(
+    maintenance, monkeypatch
+):
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+    )
     worker = linux_nvidia_1_4090_24gx1()
+    worker.worker_version = '2.3.0'
     worker.heartbeat_time = datetime.now(timezone.utc)
     worker.maintenance = Maintenance(enabled=maintenance, message='planned')
-    worker.status = WorkerStatus.model_validate(
-        {'orchestration': {'protocol_version': 1, 'admission_blocked': True}}
-    )
-    worker.state_message = None
+    worker.state, worker.state_message = WorkerStateEnum.READY, None
     worker.compute_state()
     assert worker.state == WorkerStateEnum.NOT_READY
-    assert 'upgrade' in worker.state_message.lower()
+    assert 'version' in worker.state_message.lower()
     worker.state, worker.state_message = WorkerStateEnum.READY, None
     worker.compute_state()
     assert worker.state == WorkerStateEnum.NOT_READY
 
 
 @pytest.mark.parametrize(
-    'protocol,blocked,bound,supported',
+    'version,bound,supported',
     [
-        (None, False, 11, False),
-        (2, False, 11, False),
-        (1, True, 11, False),
-        (1, False, None, False),
-        (1, False, 11, True),
+        (None, 11, False),
+        ('unknown', 11, False),
+        ('2.3.0', 11, False),
+        ('2.3.1', None, False),
+        ('2.3.1', 11, True),
+        ('0.0.0', 11, True),
     ],
 )
-def test_worker_managed_protocol_requires_explicit_supported_bound_admission(
-    protocol, blocked, bound, supported
+def test_managed_worker_requires_matching_version_and_identity(
+    version, bound, supported, monkeypatch
 ):
-    from gpustack.schemas.workers import WorkerStatus
     from gpustack.utils.model_instance_workers import (
         worker_supports_model_instance_workloads,
     )
 
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+    )
     worker = linux_nvidia_1_4090_24gx1()
     worker.system_principal_id = bound
-    worker.status = WorkerStatus.model_validate(
-        {'orchestration': {'protocol_version': protocol, 'admission_blocked': blocked}}
-    )
+    worker.worker_version = version
     assert worker_supports_model_instance_workloads(worker) is supported
 
 
 def test_managed_protocol_cohort_distinguishes_unassigned_pending_and_assigned_router():
     from gpustack.utils.model_instance_workers import (
-        model_requires_managed_workload_protocol,
+        model_requires_managed_worker_binding,
         assigned_managed_workload_worker_ids,
     )
 
@@ -894,8 +892,8 @@ def test_managed_protocol_cohort_distinguishes_unassigned_pending_and_assigned_r
     pending.distributed_servers = DistributedServers(workloads=[])
     router = new_model_instance(2, 'router', model_id=1, worker_id=7)
     legacy = new_model_instance(3, 'legacy', model_id=2, worker_id=8)
-    assert model_requires_managed_workload_protocol([pending, router, legacy], 1)
-    assert not model_requires_managed_workload_protocol([pending, router, legacy], 2)
+    assert model_requires_managed_worker_binding([pending, router, legacy], 1)
+    assert not model_requires_managed_worker_binding([pending, router, legacy], 2)
     assert assigned_managed_workload_worker_ids([pending, router, legacy]) == set()
     pending.worker_id = 9
     pending.distributed_servers.subordinate_workers = [
@@ -905,33 +903,35 @@ def test_managed_protocol_cohort_distinguishes_unassigned_pending_and_assigned_r
 
 
 @pytest.mark.parametrize('maintenance', [False, True])
-def test_legacy_worker_without_admission_marker_keeps_state_rules(maintenance):
-    from gpustack.schemas.workers import WorkerStatus
-    from gpustack.utils.model_instance_workers import (
-        worker_supports_model_instance_workloads,
+def test_matching_worker_version_keeps_normal_state_rules(maintenance, monkeypatch):
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
     )
-
     worker = linux_nvidia_1_4090_24gx1()
+    worker.worker_version = '2.3.1'
     worker.state, worker.state_message = WorkerStateEnum.READY, None
     worker.heartbeat_time = datetime.now(timezone.utc)
     worker.unreachable = False
     worker.maintenance = Maintenance(enabled=maintenance, message='planned')
-    worker.status = WorkerStatus()
-    worker.labels['orchestration_protocol'] = '1'
     worker.compute_state()
     assert worker.state == (
         WorkerStateEnum.MAINTENANCE if maintenance else WorkerStateEnum.READY
     )
-    assert not worker_supports_model_instance_workloads(worker)
 
 
-@pytest.mark.parametrize('protocol', [0, -1])
-def test_worker_orchestration_protocol_is_positive_when_present(protocol):
-    from pydantic import ValidationError
-    from gpustack.schemas.workers import WorkerStatus
-
-    with pytest.raises(ValidationError):
-        WorkerStatus.model_validate({'orchestration': {'protocol_version': protocol}})
+@pytest.mark.parametrize(
+    'state', [state for state in WorkerStateEnum if state.is_provisioning]
+)
+def test_version_check_preserves_worker_provisioning_states(state, monkeypatch):
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+    )
+    worker = linux_nvidia_1_4090_24gx1()
+    worker.worker_version = None
+    worker.state, worker.state_message = state, 'provisioning'
+    worker.compute_state()
+    assert worker.state == state
+    assert worker.state_message == 'provisioning'
 
 
 def test_assigned_legacy_stop_requires_the_complete_model_cohort():
@@ -939,7 +939,7 @@ def test_assigned_legacy_stop_requires_the_complete_model_cohort():
     from gpustack.schemas.models import ModelInstanceLegacyStop
     from gpustack.utils.model_instance_workers import (
         assigned_managed_workload_worker_ids,
-        model_requires_managed_workload_protocol,
+        model_requires_managed_worker_binding,
     )
 
     engine = new_model_instance(1, 'engine', model_id=1, worker_id=7)
@@ -950,7 +950,7 @@ def test_assigned_legacy_stop_requires_the_complete_model_cohort():
     )
     router = new_model_instance(2, 'router', model_id=1, worker_id=8)
     unrelated = new_model_instance(3, 'legacy', model_id=2, worker_id=9)
-    assert model_requires_managed_workload_protocol([engine, router], 1)
+    assert model_requires_managed_worker_binding([engine, router], 1)
     assert assigned_managed_workload_worker_ids([engine, router, unrelated]) == {7, 8}
 
 
@@ -960,16 +960,18 @@ def test_assigned_legacy_stop_requires_the_complete_model_cohort():
     [None, 'ip', 'cluster_id', 'system_principal_id', 'token', 'proxy_address'],
 )
 async def test_worker_sync_ignores_late_identity_and_preserves_locked_admission(
-    managed_worker, changed_identity
+    managed_worker, changed_identity, monkeypatch
 ):
-    from gpustack.schemas.workers import WorkerOrchestrationStatus
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+    )
 
     s = managed_worker
     probed = s.main
     probed.unreachable = True
     probed.state = WorkerStateEnum.UNREACHABLE
     stored = probed.model_copy(deep=True)
-    stored.status.orchestration = WorkerOrchestrationStatus(admission_blocked=True)
+    stored.worker_version = '2.3.0'
     stored.state = WorkerStateEnum.NOT_READY
     stored.state_message = None
     if changed_identity is not None:
@@ -1016,7 +1018,7 @@ async def test_worker_sync_ignores_late_identity_and_preserves_locked_admission(
         assert persist.await_args.args[0] == [stored]
         assert not stored.unreachable
         assert stored.state == WorkerStateEnum.NOT_READY
-        assert stored.status.orchestration.admission_blocked
+        assert stored.worker_version == '2.3.0'
     else:
         assert persist.await_args.args[0] == []
         assert stored.unreachable

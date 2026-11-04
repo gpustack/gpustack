@@ -24,6 +24,13 @@ from gpustack.scheduler.scheduler import apply_candidate_to_instance
 from tests.utils.model import new_model_instance_workload
 
 
+@pytest.fixture(autouse=True)
+def server_version(monkeypatch):
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+    )
+
+
 def _model():
     model = Model(
         name="llm", source=SourceEnum.HUGGING_FACE, huggingface_repo_id="org/repo"
@@ -47,7 +54,7 @@ def _instance():
 
 def _candidate():
     return SimpleNamespace(
-        worker=_protocol_worker(),
+        worker=_registered_worker(),
         gpu_indexes=[0],
         gpu_addresses=None,
         gpu_type="cuda",
@@ -69,7 +76,7 @@ async def test_the_single_instance_path_still_commits_its_own_row():
         ),
         patch(
             'gpustack.scheduler.scheduler.Worker.all_by_ids',
-            AsyncMock(return_value=[_protocol_worker()]),
+            AsyncMock(return_value=[_registered_worker()]),
         ),
     ):
         service.return_value.update = AsyncMock()
@@ -212,7 +219,7 @@ async def test_candidate_commit_rechecks_stop_and_epoch_under_lock(change):
         ) as lookup,
         patch(
             'gpustack.scheduler.scheduler.Worker.all_by_ids',
-            AsyncMock(return_value=[_protocol_worker()]),
+            AsyncMock(return_value=[_registered_worker()]),
         ),
         patch('gpustack.scheduler.scheduler.ModelInstanceService') as service,
     ):
@@ -258,7 +265,7 @@ async def test_group_rechecks_every_member_before_assigning_any_candidate():
         ),
         patch(
             'gpustack.scheduler.scheduler.Worker.all_by_ids',
-            AsyncMock(return_value=[_protocol_worker()]),
+            AsyncMock(return_value=[_registered_worker()]),
         ),
         patch('gpustack.scheduler.scheduler.ModelInstanceService') as service,
     ):
@@ -274,7 +281,7 @@ async def test_group_rechecks_every_member_before_assigning_any_candidate():
     service.return_value.batch_update.assert_not_awaited()
 
 
-def _protocol_worker(identity=7, supported=True):
+def _registered_worker(identity=7, supported=True):
     return SimpleNamespace(
         id=identity,
         name=f'w{identity}',
@@ -285,16 +292,12 @@ def _protocol_worker(identity=7, supported=True):
         deleted_at=None,
         state='ready',
         system_principal_id=identity + 100,
-        status=SimpleNamespace(
-            orchestration=SimpleNamespace(
-                protocol_version=1 if supported else None, admission_blocked=False
-            )
-        ),
+        worker_version='2.3.1' if supported else '2.3.0',
     )
 
 
 @pytest.fixture
-def protocol_admission(monkeypatch):
+def managed_admission(monkeypatch):
     from unittest.mock import MagicMock
     from gpustack.scheduler import scheduler
     from gpustack.schemas.workers import Worker
@@ -305,7 +308,7 @@ def protocol_admission(monkeypatch):
     model = _model()
     model.cluster_id = 1
     candidate = _candidate()
-    candidate.worker = _protocol_worker()
+    candidate.worker = _registered_worker()
     session = MagicMock()
     session.rollback = AsyncMock()
     session.commit = AsyncMock()
@@ -348,9 +351,9 @@ def protocol_admission(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_registration_after_solve_prevents_candidate_writeback(
-    protocol_admission,
+    managed_admission,
 ):
-    s = protocol_admission
+    s = managed_admission
     current = s.target.model_copy(deep=True)
     current.distributed_servers.workloads = [
         ModelInstanceWorkload.model_validate(
@@ -371,9 +374,9 @@ async def test_registration_after_solve_prevents_candidate_writeback(
 
 @pytest.mark.asyncio
 async def test_managed_admission_locks_workers_before_current_instance_cohort(
-    protocol_admission,
+    managed_admission,
 ):
-    s = protocol_admission
+    s = managed_admission
     assert await apply_candidate_to_instance(s.session, s.model, s.target, s.candidate)
     assert [e[0] for e in s.events] == ['workers', 'instances']
     assert all(e[2] == {'for_update': True, 'refresh': True} for e in s.events)
@@ -384,17 +387,25 @@ async def test_managed_admission_locks_workers_before_current_instance_cohort(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     'fault',
-    ['protocol', 'blocked', 'unbound', 'deleted', 'cluster', 'not_ready', 'missing'],
+    [
+        'version',
+        'unknown_version',
+        'unbound',
+        'deleted',
+        'cluster',
+        'not_ready',
+        'missing',
+    ],
 )
 async def test_managed_candidate_changed_after_solve_is_refused(
-    protocol_admission, fault
+    managed_admission, fault
 ):
-    s = protocol_admission
+    s = managed_admission
     worker = s.workers[7]
-    if fault == 'protocol':
-        worker.status.orchestration.protocol_version = None
-    elif fault == 'blocked':
-        worker.status.orchestration.admission_blocked = True
+    if fault == 'version':
+        worker.worker_version = '2.3.0'
+    elif fault == 'unknown_version':
+        worker.worker_version = 'unknown'
     elif fault == 'unbound':
         worker.system_principal_id = None
     elif fault == 'deleted':
@@ -413,14 +424,14 @@ async def test_managed_candidate_changed_after_solve_is_refused(
 
 
 @pytest.mark.asyncio
-async def test_managed_subordinate_and_existing_legacy_router_require_protocol(
-    protocol_admission,
+async def test_managed_subordinate_and_existing_legacy_router_require_version(
+    managed_admission,
 ):
     from gpustack.schemas.models import ModelInstanceSubordinateWorker
 
-    s = protocol_admission
+    s = managed_admission
     s.candidate.subordinate_workers = [ModelInstanceSubordinateWorker(worker_id=8)]
-    s.workers[8] = _protocol_worker(8, False)
+    s.workers[8] = _registered_worker(8, False)
     assert not await apply_candidate_to_instance(
         s.session, s.model, s.target, s.candidate
     )
@@ -430,7 +441,7 @@ async def test_managed_subordinate_and_existing_legacy_router_require_protocol(
     router.cluster_id = 1
     s.discovery.append(router)
     s.current.append(router)
-    s.workers[9] = _protocol_worker(9, False)
+    s.workers[9] = _registered_worker(9, False)
     assert not await apply_candidate_to_instance(
         s.session, s.model, s.target, s.candidate
     )
@@ -440,9 +451,9 @@ async def test_managed_subordinate_and_existing_legacy_router_require_protocol(
 
 @pytest.mark.asyncio
 async def test_new_cohort_worker_after_discovery_aborts_without_reverse_worker_lock(
-    protocol_admission,
+    managed_admission,
 ):
-    s = protocol_admission
+    s = managed_admission
     newcomer = _instance().model_copy(update={'id': 2, 'worker_id': 9})
     newcomer.cluster_id = 1
     s.current = s.current + [newcomer]
@@ -456,8 +467,8 @@ async def test_new_cohort_worker_after_discovery_aborts_without_reverse_worker_l
 
 
 @pytest.mark.asyncio
-async def test_managed_commit_false_acquires_admission_before_write(protocol_admission):
-    s = protocol_admission
+async def test_managed_commit_false_acquires_admission_before_write(managed_admission):
+    s = managed_admission
     assert await apply_candidate_to_instance(
         s.session, s.model, s.target, s.candidate, commit=False
     )
@@ -469,11 +480,11 @@ async def test_managed_commit_false_acquires_admission_before_write(protocol_adm
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['spec', 'marker', 'owner', 'epoch', 'drain'])
 async def test_managed_writeback_compares_preparation_snapshot(
-    protocol_admission, change
+    managed_admission, change
 ):
     from datetime import datetime, timezone
 
-    s = protocol_admission
+    s = managed_admission
     current = s.target.model_copy(deep=True)
     if change == 'spec':
         current.spec_digest = 'changed'
@@ -494,15 +505,15 @@ async def test_managed_writeback_compares_preparation_snapshot(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('failure', ['protocol', 'drain'])
+@pytest.mark.parametrize('failure', ['version', 'drain'])
 async def test_group_last_member_failure_has_zero_assignment_writes(
-    protocol_admission, monkeypatch, caplog, failure
+    managed_admission, monkeypatch, caplog, failure
 ):
     from datetime import datetime, timezone
     from gpustack.scheduler import scheduler
     from gpustack.schemas.workers import Worker
 
-    s = protocol_admission
+    s = managed_admission
     second = s.target.model_copy(deep=True, update={'id': 2})
     s.target.group_id = second.group_id = 'g1'
     current_second = second.model_copy(deep=True)
@@ -511,13 +522,13 @@ async def test_group_last_member_failure_has_zero_assignment_writes(
     s.discovery = [s.target, second]
     s.current = [s.target, current_second]
     candidate2 = _candidate()
-    candidate2.worker = _protocol_worker(8)
+    candidate2.worker = _registered_worker(8)
     s.workers[8] = candidate2.worker
     original = Worker.all_by_ids.side_effect
 
     async def lock(*args, **kwargs):
-        if failure == 'protocol':
-            s.workers[8].status.orchestration.protocol_version = None
+        if failure == 'version':
+            s.workers[8].worker_version = '2.3.0'
         return await original(*args, **kwargs)
 
     monkeypatch.setattr(Worker, 'all_by_ids', AsyncMock(side_effect=lock))
@@ -552,17 +563,17 @@ async def test_group_last_member_failure_has_zero_assignment_writes(
 
 @pytest.mark.asyncio
 async def test_complete_group_admission_locks_once_then_writes_one_batch(
-    protocol_admission, monkeypatch
+    managed_admission, monkeypatch
 ):
     from gpustack.scheduler import scheduler
 
-    s = protocol_admission
+    s = managed_admission
     second = s.target.model_copy(deep=True, update={'id': 2})
     s.target.group_id = second.group_id = 'g1'
     s.discovery = [s.target, second]
     s.current = [s.target, second]
     candidate2 = _candidate()
-    candidate2.worker = _protocol_worker(8)
+    candidate2.worker = _registered_worker(8)
     s.workers[8] = candidate2.worker
     monkeypatch.setattr(scheduler, 'is_group_forming', lambda *a: True)
     monkeypatch.setattr(
@@ -585,29 +596,37 @@ async def test_complete_group_admission_locks_once_then_writes_one_batch(
 
 
 @pytest.mark.asyncio
-async def test_pure_legacy_keeps_unadvertised_ready_workers(protocol_admission):
-    s = protocol_admission
+@pytest.mark.parametrize(
+    'version,accepted', [('2.3.1', True), ('2.3.0', False), (None, False)]
+)
+async def test_legacy_candidate_requires_matching_version(
+    managed_admission, version, accepted
+):
+    s = managed_admission
     s.target.distributed_servers = DistributedServers(workloads=None)
     s.workers[7].system_principal_id = None
-    s.workers[7].status.orchestration = None
-    assert await apply_candidate_to_instance(s.session, s.model, s.target, s.candidate)
-    assert s.target.worker_id == 7
-    s.write.assert_awaited_once()
+    s.workers[7].worker_version = version
+    assert (
+        await apply_candidate_to_instance(s.session, s.model, s.target, s.candidate)
+        is accepted
+    )
+    assert s.target.worker_id == (7 if accepted else None)
+    assert s.write.await_count == int(accepted)
 
 
 @pytest.mark.asyncio
 async def test_legacy_offline_sibling_does_not_block_new_legacy_candidate(
-    protocol_admission,
+    managed_admission,
 ):
-    s = protocol_admission
+    s = managed_admission
     s.target.distributed_servers = DistributedServers(workloads=None)
     offline = _instance().model_copy(update={'id': 2, 'worker_id': 9})
     s.discovery = [s.target, offline]
     s.current = [s.target, offline]
-    s.workers[9] = _protocol_worker(9, False)
+    s.workers[9] = _registered_worker(9, False)
     s.workers[9].state = 'unreachable'
     s.workers[7].system_principal_id = None
-    s.workers[7].status.orchestration = None
+    s.workers[7].worker_version = '2.3.1'
     assert await apply_candidate_to_instance(s.session, s.model, s.target, s.candidate)
     assert s.events[0][1] == [7]
     assert s.target.worker_id == 7
@@ -617,9 +636,9 @@ async def test_legacy_offline_sibling_does_not_block_new_legacy_candidate(
 
 @pytest.mark.asyncio
 async def test_legacy_becoming_managed_cohort_requires_retry_before_assignment(
-    protocol_admission,
+    managed_admission,
 ):
-    s = protocol_admission
+    s = managed_admission
     s.target.distributed_servers = DistributedServers(workloads=None)
     old_member = _instance().model_copy(update={'id': 2, 'worker_id': 9})
     pending = _instance().model_copy(update={'id': 3})
@@ -638,14 +657,14 @@ async def test_legacy_becoming_managed_cohort_requires_retry_before_assignment(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('state', ['maintenance', 'unreachable'])
-async def test_protocol_capable_existing_sibling_does_not_require_candidate_ready_state(
-    protocol_admission, state
+async def test_version_capable_existing_sibling_does_not_require_candidate_ready_state(
+    managed_admission, state
 ):
-    s = protocol_admission
+    s = managed_admission
     sibling = _instance().model_copy(update={'id': 2, 'worker_id': 9})
     s.discovery.append(sibling)
     s.current = s.discovery
-    s.workers[9] = _protocol_worker(9)
+    s.workers[9] = _registered_worker(9)
     s.workers[9].state = state
     assert await apply_candidate_to_instance(s.session, s.model, s.target, s.candidate)
     assert s.events[0][1] == [7, 9]
@@ -656,15 +675,15 @@ async def test_protocol_capable_existing_sibling_does_not_require_candidate_read
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('has_resource_view', [False, True])
-async def test_incompatible_protocol_returns_before_resource_and_filter_work(
-    protocol_admission, monkeypatch, has_resource_view
+async def test_incompatible_version_returns_before_resource_and_filter_work(
+    managed_admission, monkeypatch, has_resource_view
 ):
     from unittest.mock import MagicMock
     from gpustack.scheduler import scheduler
 
-    s = protocol_admission
+    s = managed_admission
     s.target.worker_id = 7
-    s.workers[7].status.orchestration.protocol_version = None
+    s.workers[7].worker_version = '2.3.0'
     load = AsyncMock(side_effect=AssertionError('resource loading is unnecessary'))
     topology = AsyncMock(side_effect=AssertionError('topology is unnecessary'))
     filters = MagicMock(side_effect=AssertionError('filters are unnecessary'))

@@ -25,6 +25,13 @@ from gpustack.schemas.models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def server_version(monkeypatch):
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+    )
+
+
 def _model(**kwargs):
     base = dict(
         id=1,
@@ -322,16 +329,12 @@ def _admission_worker(identity=7, supported=True):
         deleted_at=None,
         state='ready',
         system_principal_id=identity + 100,
-        status=SimpleNamespace(
-            orchestration=SimpleNamespace(
-                protocol_version=1 if supported else None, admission_blocked=False
-            )
-        ),
+        worker_version='2.3.1' if supported else '2.3.0',
     )
 
 
 @pytest.mark.asyncio
-async def test_protocol_filter_keeps_target_marker_before_exclusion_and_role_projection(
+async def test_version_filter_keeps_target_marker_before_exclusion_and_role_projection(
     harness,
 ):
     from gpustack.schemas.models import DistributedServers
@@ -353,12 +356,12 @@ async def test_protocol_filter_keeps_target_marker_before_exclusion_and_role_pro
     status = next(f for f in harness.filters_seen[0] if isinstance(f, StatusFilter))
     kept, messages = await status.filter([_admission_worker(supported=False)])
     assert kept == []
-    assert any('protocol v1' in message for message in messages)
+    assert any('Server' in message for message in messages)
     assert status._model is not model
 
 
 @pytest.mark.asyncio
-async def test_initial_protocol_filter_prevents_old_worker_candidate_construction(
+async def test_initial_version_filter_prevents_old_worker_candidate_construction(
     harness, monkeypatch
 ):
     from gpustack.schemas.models import DistributedServers
@@ -388,7 +391,7 @@ async def test_initial_protocol_filter_prevents_old_worker_candidate_constructio
         exclude_instance_id=10,
     )
     assert candidate is None
-    assert any('protocol v1' in message for message in messages)
+    assert any('Server' in message for message in messages)
     assert all(not cls.seen for cls in harness.selectors.values())
 
 
@@ -416,7 +419,7 @@ async def test_pending_managed_model_cannot_join_old_assigned_legacy_router(harn
 
 
 @pytest.mark.asyncio
-async def test_cohort_protocol_precheck_does_not_require_existing_sibling_ready():
+async def test_cohort_version_precheck_does_not_require_existing_sibling_ready():
     from gpustack.schemas.models import DistributedServers
     from tests.utils.model import new_model_instance
 
@@ -432,8 +435,8 @@ async def test_cohort_protocol_precheck_does_not_require_existing_sibling_ready(
         )
         is None
     )
-    worker.status.orchestration.protocol_version = None
-    assert 'protocol v1' in scheduler._incompatible_cohort_message(
+    worker.worker_version = '2.3.0'
+    assert 'Server' in scheduler._incompatible_cohort_message(
         model, [worker], [pending, sibling], True
     )
 
