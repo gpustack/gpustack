@@ -1977,6 +1977,6 @@ def _log_source_visible(instance, worker_id, source) -> bool:
             task.component and task.component.kind == 'sglang_smg'
             for task in tasks or []
         )
-    if source.workload_name is not None and tasks is not None:
+    if tasks is not None:
         return any(task.name == source.workload_name for task in tasks)
     return True

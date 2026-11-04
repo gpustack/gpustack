@@ -3,12 +3,10 @@ import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException
 
 from gpustack import envs
-from gpustack.api.exceptions import NotFoundException
 from gpustack.gateway.labels_annotations import managed_labels
 from gpustack.gateway.utils import (
     RoutePrefix,
@@ -21,7 +19,6 @@ from gpustack.gateway.utils import (
     generate_model_ingress,
     generic_proxy_router_diff_spec,
     get_expected_match_list,
-    get_instance_id_from_header,
     higress_metadata_equal,
     mirror_from_anchor_ingress,
     model_instance_registry,
@@ -29,7 +26,6 @@ from gpustack.gateway.utils import (
     provider_proxy_plugin_spec,
     provider_registry,
     route_rule_ingress_names,
-    router_header_key,
 )
 from gpustack.schemas.models import ModelInstance
 from gpustack.gateway.client.extensions_higress_io_v1_api import (
@@ -611,13 +607,6 @@ def test_included_proxy_route_off_has_no_proxy_paths():
     )
     paths = [p.path for p in ingress.spec.rules[0].http.paths]
     assert not any("model/proxy" in p for p in paths)
-
-
-def test_get_instance_id_from_header_invalid():
-    with pytest.raises(HTTPException):
-        get_instance_id_from_header({})
-    with pytest.raises(NotFoundException):
-        get_instance_id_from_header({router_header_key: "cluster-gateway.static"})
 
 
 def test_lora_destinations_reuse_instance_registries():

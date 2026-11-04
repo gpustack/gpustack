@@ -790,6 +790,146 @@ def _hybrid_log_instance():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['options', 'read', 'download', 'archive'])
+@pytest.mark.parametrize('workload_name', [None, 'unregistered', 'hybrid-1'])
+async def test_current_managed_log_sources_require_registered_workload(
+    operation, workload_name
+):
+    from gpustack.api.exceptions import NotFoundException
+    from gpustack.routes.model_instances import (
+        _plan_log_streams,
+        get_model_instance_log_options,
+    )
+    from gpustack.schemas.models import ModelInstanceLogSource
+
+    instance = _hybrid_log_instance()
+    worker = SimpleNamespace(id=1, name='worker', cluster_id=1)
+    targets = [(1, 'worker', worker)]
+    source = ModelInstanceLogSource(
+        id='opaque',
+        worker_id=1,
+        restart_count=3,
+        kind='workload',
+        workload_name=workload_name,
+        label='Engine',
+        available=True,
+    )
+    payload = ServeLogOptionsResponse(
+        restarts=[ModelInstanceLogRestartEntry(sources=[source])]
+    )
+    allowed = workload_name == 'hybrid-1'
+    with (
+        patch(f'{MODULE}.async_session', _fake_async_session),
+        patch(f'{MODULE}.fetch_model_instance', AsyncMock(return_value=instance)),
+        patch(f'{MODULE}.fetch_worker', AsyncMock(return_value=worker)),
+        patch(
+            f'{MODULE}.resolve_instance_log_worker_targets',
+            AsyncMock(return_value=targets),
+        ),
+        patch(
+            f'{MODULE}.fetch_serve_log_options_from_worker',
+            AsyncMock(return_value=payload),
+        ),
+        patch(f'{MODULE}._stream_single_worker_log', AsyncMock()) as stream,
+    ):
+        if operation == 'options':
+            result = await get_model_instance_log_options(MagicMock(), MagicMock(), 7)
+            assert result.workers[0].restarts[0].sources == (
+                [source] if allowed else []
+            )
+        elif operation == 'archive':
+            streams = await _plan_log_streams(MagicMock(), instance, targets)
+            assert [s.get('source') for s in streams if s.get('source')] == (
+                ['opaque'] if allowed else []
+            )
+            if not allowed:
+                assert streams[0]['error'] == 'No trusted log sources are available'
+        else:
+
+            async def selected_source():
+                if operation == 'read':
+                    return await get_serving_logs(
+                        MagicMock(),
+                        MagicMock(),
+                        7,
+                        LogOptions(),
+                        worker_id=1,
+                        source='opaque',
+                    )
+                return await download_serving_logs(
+                    MagicMock(), MagicMock(), 7, worker_id=1, source='opaque'
+                )
+
+            if allowed:
+                result = await selected_source()
+                if operation == 'download':
+                    stream.assert_awaited_once()
+                else:
+                    assert result.status_code == 200
+            else:
+                with pytest.raises(NotFoundException):
+                    await selected_source()
+                stream.assert_not_awaited()
+
+
+@pytest.mark.parametrize('kind,previous', [('preparation', False), ('workload', True)])
+def test_unnamed_log_sources_keep_preparation_and_previous_generation(kind, previous):
+    from gpustack.routes.model_instances import _log_source_visible
+    from gpustack.schemas.models import ModelInstanceLogSource
+
+    source = ModelInstanceLogSource(
+        id='opaque',
+        worker_id=1,
+        restart_count=2 if previous else 3,
+        previous=previous,
+        kind=kind,
+        label='Logs',
+        available=True,
+    )
+    assert _log_source_visible(_hybrid_log_instance(), 1, source)
+
+
+@pytest.mark.parametrize('registered', [False, True])
+def test_unnamed_smg_log_source_requires_registered_component(registered):
+    from gpustack.routes.model_instances import _log_source_visible
+    from gpustack.schemas.models import (
+        DistributedServers,
+        ModelInstanceLogSource,
+        ModelInstanceWorkload,
+    )
+
+    instance = _instance()
+    instance.distributed_servers = DistributedServers(
+        workloads=(
+            [
+                ModelInstanceWorkload(
+                    name='smg',
+                    worker_id=1,
+                    state='running',
+                    component={
+                        'kind': 'sglang_smg',
+                        'api_port': 40000,
+                        'metrics_port': 40001,
+                    },
+                )
+            ]
+            if registered
+            else []
+        )
+    )
+    source = ModelInstanceLogSource(
+        id='opaque',
+        worker_id=1,
+        restart_count=0,
+        kind='workload',
+        component_kind='sglang_smg',
+        label='SMG',
+        available=True,
+    )
+    assert _log_source_visible(instance, 1, source) is registered
+
+
+@pytest.mark.asyncio
 async def test_hybrid_download_includes_every_api_and_compute_worker_once():
     from gpustack.schemas.models import ModelInstanceLogSource
 

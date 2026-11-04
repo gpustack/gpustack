@@ -90,9 +90,7 @@ class WorkerSyncer:
         for worker in state_changed_workers:
             if worker and worker.state in state_to_worker_name:
                 should_update_workers.append(worker)
-                state_to_worker_name[worker.state].append(worker.name)
 
-        state_to_worker_name = {state: [] for state in state_to_worker_name}
         async with async_session() as session:
             current = await Worker.all_by_ids(
                 session,

@@ -133,22 +133,6 @@ class MembershipOutcome:
         return f"MembershipOutcome(ok={self.ok}, reason={self.reason!r})"
 
 
-def member_url(instance: ModelInstance) -> Optional[str]:
-    """The address the router knows a member by.
-
-    `host:port` of the serving listener, which is what upstream stores and
-    what `DELETE /workers/{url}` matches on — measured: the `worker` label on
-    the router's own request counters carries the whole URL it was launched
-    with, not a worker name or id.
-    """
-    servers = getattr(instance, "distributed_servers", None)
-    if servers is not None and getattr(servers, "workloads", None) is not None:
-        return None
-    if not instance.worker_ip or not instance.port:
-        return None
-    return f"http://{instance.worker_ip}:{instance.port}"
-
-
 def desired_members(
     model: Model,
     instances: Sequence[ModelInstance],

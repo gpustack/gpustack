@@ -22,7 +22,6 @@ from gpustack.server import pd_membership
 from gpustack.server.pd_membership import (
     MembershipOutcome,
     desired_members,
-    member_url,
     router_addresses,
 )
 
@@ -58,8 +57,10 @@ def test_a_member_is_addressed_the_way_the_router_stores_it():
     """`host:port` of the serving listener. Measured: the `worker` label on the
     router's own counters carries the whole URL it was launched with, not a
     worker name or id, and `DELETE /workers/{url}` matches on the same."""
-    assert member_url(_instance("decode", 40011)) == "http://10.0.0.1:40011"
-    assert member_url(_instance("decode", None)) is None
+    assert desired_members(_model(), [_instance("decode", 40011)]) == {
+        "http://10.0.0.1:40011": "decode"
+    }
+    assert desired_members(_model(), [_instance("decode", None)]) == {}
 
 
 def _managed_member():
@@ -107,7 +108,6 @@ def test_managed_pd_members_use_all_ready_main_apis():
         "http://10.0.0.2:41001": "prefill",
     }
     assert {f"http://{p.ip}:{p.port}" for p in startup["prefill"]} == set(wanted)
-    assert member_url(instance) is None
 
 
 @pytest.mark.parametrize(

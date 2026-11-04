@@ -16,7 +16,6 @@ from typing import (
     Literal,
     Callable,
     Set,
-    Mapping,
 )
 from tenacity import retry, stop_after_attempt, wait_fixed
 from fastapi import HTTPException
@@ -2091,30 +2090,6 @@ def ai_proxy_diff_spec(
     apply_ai_proxy_override(current_spec.defaultConfig, cfg)
     current_spec.matchRules = match_rules
     return current_spec
-
-
-def get_instance_id_from_header(headers: Mapping[str, str]) -> int:
-    """Parse the model instance ID from the ``x-gpustack-model-instance`` routing header.
-
-    The gateway selects the instance's sole serving endpoint, a DP rank, or a
-    Worker API. LoRA names travel in the model mapping, not the service name.
-
-    Raises:
-        HTTPException (400): if the header is absent.
-        NotFoundException: if the header value does not match the expected pattern.
-    """
-    if not isinstance(headers, Headers):
-        headers = Headers(headers)
-    model_destination = headers.get(router_header_key)
-    if model_destination is None:
-        raise HTTPException(
-            status_code=400, detail=f"Missing {router_header_key} header"
-        )
-
-    try:
-        return parse_model_instance_target(model_destination).instance_id
-    except ValueError as exc:
-        raise NotFoundException(message="Invalid model destination format") from exc
 
 
 async def resolve_instance_address_from_model_header(

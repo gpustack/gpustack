@@ -69,7 +69,7 @@ class TestRegistryRemoval:
 
         members = pd_membership.desired_members(_model(), [keep, going])
 
-        assert members == {pd_membership.member_url(keep): "prefill"}
+        assert members == {f"http://{keep.worker_ip}:{keep.port}": "prefill"}
 
     def test_it_is_not_a_state_change(self):
         """The container must keep serving the decodes already pulling from
@@ -340,7 +340,7 @@ async def test_cancelling_a_drain_puts_it_back():
 
     assert instance.draining_since is None
     assert pd_membership.desired_members(_model(), [instance]) == {
-        pd_membership.member_url(instance): RoleNameEnum.PREFILL.value
+        f"http://{instance.worker_ip}:{instance.port}": RoleNameEnum.PREFILL.value
     }
 
 
