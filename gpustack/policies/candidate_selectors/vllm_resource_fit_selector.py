@@ -46,6 +46,7 @@ from gpustack.utils.command import (
     resolve_executor_backend,
 )
 from gpustack.utils.unit import byte_to_gib
+from gpustack.validation.pd.roles import validate_managed_pd_topology
 from gpustack.utils.vllm_topology import (
     parse_user_parallelism,
     validate_multinode_topology,
@@ -388,7 +389,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             members = [candidate, *(candidate.subordinate_workers or [])]
             counts = [len(member.gpu_indexes or []) for member in members]
             try:
-                managed_lb_parallelism(self._model.backend_parameters, counts)
+                topology = managed_lb_parallelism(
+                    self._model.backend_parameters, counts
+                )
+                validate_managed_pd_topology(self._model, topology)
             except ValueError as error:
                 self._event_collector.add(
                     EventLevelEnum.INFO, EVENT_ACTION_DEFAULT, str(error)
@@ -1170,7 +1174,10 @@ def _create_candidate(
         ):
             gpu_per_node = [len(w.status.gpu_devices or []) for w in selected_workers]
             if mode in ("external", "multi_port_external", "hybrid"):
-                managed_lb_parallelism(model.backend_parameters, gpu_per_node)
+                topology = managed_lb_parallelism(
+                    model.backend_parameters, gpu_per_node
+                )
+                validate_managed_pd_topology(model, topology)
             else:
                 validate_multinode_topology(
                     gpu_per_node, parse_user_parallelism(model.backend_parameters)

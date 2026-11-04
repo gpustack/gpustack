@@ -126,6 +126,10 @@ def external_lb_parallelism(
 
 def validate_managed_http_parameters(parameters: Optional[List[str]]) -> None:
     """Keep managed rank APIs compatible with platform HTTP routes and probes."""
+    if any(token.partition("=")[0] == "--uds" for token in flatten_to_argv(parameters)):
+        raise ValueError(
+            "Managed rank routes and health checks require TCP HTTP; --uds is unsupported."
+        )
     if any(
         find_last_parameter(parameters, [name]) is not None
         for name in ("ssl-keyfile", "ssl-certfile")
@@ -163,8 +167,6 @@ def validate_multi_port_external_lb_parameters(parameters: Optional[List[str]]) 
     for flag in ("headless", "grpc"):
         if find_bool_parameter(parameters, [flag], last_wins=True):
             raise ValueError(f"Multi-port External-LB does not support --{flag}.")
-    if any(token.partition("=")[0] == "--uds" for token in flatten_to_argv(parameters)):
-        raise ValueError("Multi-port External-LB does not support --uds.")
     validate_managed_http_parameters(parameters)
     for name, allowed in (
         ("distributed-executor-backend", ("mp", "uni")),
@@ -176,7 +178,10 @@ def validate_multi_port_external_lb_parameters(parameters: Optional[List[str]]) 
 
 def validate_managed_lb_parameters(parameters: Optional[List[str]]) -> None:
     """Validate an explicit LB mode before scheduling without device assumptions."""
-    if vllm_lb_mode(parameters) == "multi_port_external":
+    mode = vllm_lb_mode(parameters)
+    if mode != "internal":
+        validate_managed_http_parameters(parameters)
+    if mode == "multi_port_external":
         validate_multi_port_external_lb_parameters(parameters)
 
 
@@ -241,6 +246,7 @@ def managed_lb_parallelism(
     parameters: List[str], gpu_count: Union[int, List[int]]
 ) -> "ValidatedTopology":
     """Resolve the topology for the explicitly selected managed LB mode."""
+    validate_managed_lb_parameters(parameters)
     mode = vllm_lb_mode(parameters)
     if mode == "multi_port_external":
         return multi_port_external_lb_parallelism(parameters, gpu_count)

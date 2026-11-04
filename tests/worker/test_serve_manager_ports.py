@@ -33,12 +33,12 @@ from gpustack.schemas.pd_modes import (
 )
 from gpustack.server.pd_mode_catalog import get_pd_modes
 from gpustack.utils import network
-from gpustack.worker.backends.vllm import VLLMServer
-from gpustack.worker.serve_manager import (
-    _VLLM_MP_CONNECTING_BAND,
-    PDPortScopeUnsupportedError,
-    ServeManager,
+from gpustack.utils.model_ports import PDPortScopeUnsupportedError
+from gpustack.utils.vllm_topology import (
+    VLLM_MP_CONNECTING_PORT_COUNT as _VLLM_MP_CONNECTING_BAND,
 )
+from gpustack.worker.backends.vllm import VLLMServer
+from gpustack.worker.serve_manager import ServeManager
 from tests.utils.model import new_model, new_model_instance
 
 PORT_RANGE = "40000-40063"
@@ -1417,6 +1417,81 @@ def test_sglang_component_ports_preserve_engine_and_connecting_layout(
         } & set(range(band.base, band.base + band.count))
     else:
         assert '_sglang_smg_api' not in (mi.named_ports or {})
+
+
+@pytest.mark.parametrize(
+    'backend,parameters,counts,managed,busy,port_range',
+    [
+        ('vLLM', ['--dp=4', '--tp=1'], [4], False, [40004], '40000-40005'),
+        (
+            'vLLM',
+            ['--dp=4', '--tp=2', '--distributed-executor-backend=mp'],
+            [4, 4],
+            False,
+            [40010, 40015],
+            '40000-40020',
+        ),
+        ('SGLang', ['--dp=4'], [4], True, [], '40000-40003'),
+        ('SGLang', ['--attn-dp-size=4', '--tp-size=4'], [4], True, [], '40000-40016'),
+        (
+            'SGLang',
+            ['--dp=4', '--enable-dp-attention'],
+            [2, 2],
+            True,
+            [],
+            '40000-40003',
+        ),
+    ],
+)
+def test_admission_plan_matches_worker_allocation(
+    backend, parameters, counts, managed, busy, port_range
+):
+    from gpustack.scheduler.port_budget import fits_port_layout, member_port_requests
+    from gpustack.schemas.port_reservations import WorkerPortAvailability
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    model = (
+        _pd_model(backend=backend, backend_parameters=parameters)
+        if backend == 'vLLM'
+        else new_model(
+            1,
+            'sg',
+            huggingface_repo_id='org/sg',
+            backend=backend,
+            backend_parameters=parameters,
+        )
+    )
+    role = 'prefill' if backend == 'vLLM' else None
+    mi = _instance(role=role, cards=counts[0])
+    mi.distributed_servers = DistributedServers(
+        workloads=[] if managed else None,
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=index + 2, gpu_indexes=list(range(count))
+            )
+            for index, count in enumerate(counts[1:])
+        ],
+    )
+    snapshots = [
+        WorkerPortAvailability(
+            worker_id=index + 1,
+            generation=uuid4(),
+            port_range=port_range,
+            unavailable_ports=busy,
+        )
+        for index in range(len(counts))
+    ]
+    requests = member_port_requests(model, role, counts)
+    assert fits_port_layout(snapshots, requests)
+
+    _manager(port_range)._select_ports(
+        mi, model, BackendEnum(backend), set(busy), port_range
+    )
+
+    assert len(model_instance_ports(mi, 1)) == sum(count for count, _ in requests)
+    if role == 'prefill' and len(counts) == 1:
+        assert mi.named_ports['kv_side_channel'] == PortBand(base=40000, count=4)
+        assert mi.port == 40005
 
 
 def test_managed_sglang_exhaustion_does_not_publish_partial_allocation():

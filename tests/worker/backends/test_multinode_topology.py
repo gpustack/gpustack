@@ -1215,3 +1215,27 @@ def test_multi_port_validation_uses_effective_boolean_value(flag, enabled):
             multi_port_external_lb_parallelism(parameters, [4])
     else:
         assert multi_port_external_lb_parallelism(parameters, [4]).dp == 2
+
+
+@pytest.mark.parametrize(
+    'flag',
+    [
+        '--data-parallel-external-lb',
+        '--data-parallel-hybrid-lb',
+        '--data-parallel-multi-port-external-lb',
+    ],
+)
+@pytest.mark.parametrize(
+    'uds', [['--uds', '/tmp/model.sock'], ['--uds=/tmp/model.sock'], ['--uds']]
+)
+def test_managed_http_modes_reject_unix_socket_parameters(flag, uds):
+    from gpustack.utils.vllm_topology import (
+        managed_lb_parallelism,
+        validate_managed_lb_parameters,
+    )
+
+    parameters = [flag, '--dp=2', '--tp=2', *uds]
+    with pytest.raises(ValueError, match='--uds'):
+        validate_managed_lb_parameters(parameters)
+    with pytest.raises(ValueError, match='--uds'):
+        managed_lb_parallelism(parameters, [4])

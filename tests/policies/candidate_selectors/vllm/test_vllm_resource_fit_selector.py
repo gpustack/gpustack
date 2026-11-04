@@ -2291,6 +2291,52 @@ async def test_hybrid_global_group_does_not_fit_one_local_allocation(config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('manual', [False, True])
+@pytest.mark.parametrize('cards_per_worker', [4, 8])
+@pytest.mark.parametrize(
+    'mode', [None, 'vllm-mooncake', 'vllm-ascend-mooncake', 'vllm-nixl']
+)
+async def test_external_pd_transport_checks_candidate_rank_locality(
+    config, manual, cards_per_worker, mode
+):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    workers = [
+        linux_nvidia_22_H100_80gx8(),
+        linux_nvidia_23_H100_80gx8(),
+        linux_nvidia_24_H100_80gx8(),
+        linux_nvidia_25_H100_80gx8(),
+    ][: 16 // cards_per_worker]
+    for worker in workers:
+        worker.status.gpu_devices = worker.status.gpu_devices[:cards_per_worker]
+    ids = [
+        f'{worker.name}:cuda:{gpu.index}'
+        for worker in workers
+        for gpu in worker.status.gpu_devices
+    ]
+    model = make_model(
+        16,
+        ids if manual else None,
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--data-parallel-external-lb', '--dp=2', '--tp=8'],
+        disaggregation=DisaggregationSpec(mode=mode) if mode else None,
+    )
+    selector = VLLMResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    selector._set_gpu_memory_utilization()
+    with (
+        patch.object(selector, '_init_model_parameters', new=AsyncMock()),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram',
+            new=AsyncMock(return_value=1),
+        ),
+    ):
+        candidates = await selector.select_candidates(workers)
+    assert bool(candidates) is (mode != 'vllm-mooncake' or cards_per_worker == 8)
+
+
+@pytest.mark.asyncio
 async def test_hybrid_offer_capacity_reserves_every_node_of_each_global_group(config):
     from gpustack.scheduler.offer_slot import count_offer_slots
 

@@ -19,9 +19,8 @@ one fewer slot on that host, which the solver handles like any other shortage:
 it moves to the next host, or refuses with an arithmetic the operator can act
 on ("widen the port range").
 
-Used by group capacity and ordinary candidate admission. Internal serving keeps
-its one API port; managed vLLM also reserves rank APIs and communication windows
-before the connector bands are counted.
+Used by group capacity and ordinary candidate admission. The shared ordered plan
+includes Engine APIs, internal communication windows, SMG listeners and connector bands.
 """
 
 from __future__ import annotations
@@ -33,31 +32,17 @@ import aiohttp
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from gpustack.schemas.pd_modes import PDPortScopeEnum
 from gpustack.utils.network import parse_port_range
 
-# The same resolution `_assign_named_ports` runs, imported rather than
-# restated. The two answers have to agree: this one decides whether a member is
-# placed on a host, that one decides whether it can start there, and a private
-# copy here would drift into a scheduler that promises room the allocator does
-# not find.
-from gpustack.schemas.models import BackendEnum, Model, get_backend, member_worker_ids
+from gpustack.schemas.models import Model, member_worker_ids
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.cache_services import CacheServiceInstance
 from gpustack.policies.base import ModelInstanceScheduleCandidate
-from gpustack.utils.vllm_topology import (
-    managed_lb_port_requests,
-    vllm_lb_mode,
-)
-from gpustack.worker.pd_injection import band_specs_for, member_band_width
+from gpustack.utils.model_ports import model_port_requests
 from gpustack.schemas.port_reservations import WorkerPortAvailability
 from gpustack.server.worker_request import request_to_worker
-from gpustack.utils.command import find_last_parameter
 
 logger = logging.getLogger(__name__)
-
-# The HTTP serving port every instance gets before any band is considered.
-_BASE_PORTS = 1
 
 
 def member_port_demand(
@@ -87,37 +72,10 @@ def member_port_requests(
     model: Model, role: Optional[str], allocation: List[int]
 ) -> List[Tuple[int, Optional[int]]]:
     """Ordered bands, including fixed listeners, as the Worker allocates them."""
-    requests = [(_BASE_PORTS, None)]
-    mode = (
-        vllm_lb_mode(model.backend_parameters)
-        if get_backend(model) == BackendEnum.VLLM
-        else "internal"
-    )
-    if (
-        role in (None, "prefill", "decode")
-        and mode != "internal"
-        and min(allocation) > 0
-    ):
-        requests = [
-            (count, None)
-            for _, count in managed_lb_port_requests(
-                model.backend_parameters, allocation
-            )
-        ]
-        fixed = find_last_parameter(
-            model.backend_parameters, ["data-parallel-supervisor-port"]
-        )
-        if mode == "multi_port_external" and fixed is not None:
-            requests.insert(0, (1, int(fixed)))
-    connector = [
-        member_band_width(spec, model, allocation)
-        for spec in band_specs_for(model, role, context=f"Role {role!r}")
-        if spec.scope != PDPortScopeEnum.ROLE
+    return [
+        (count, fixed)
+        for _, count, fixed in model_port_requests(model, role, allocation)
     ]
-    requests.extend(
-        (count, None) for count in sorted((n for n in connector if n), reverse=True)
-    )
-    return requests
 
 
 def fits_port_layout(
@@ -203,6 +161,7 @@ async def filter_candidates(
     if not candidates:
         return candidates, []
     plans = []
+    messages = []
     for candidate in candidates:
         members = [candidate.worker.id] + [
             w.worker_id for w in candidate.subordinate_workers or []
@@ -210,7 +169,11 @@ async def filter_candidates(
         counts = [len(candidate.gpu_indexes or [])] + [
             len(w.gpu_indexes or []) for w in candidate.subordinate_workers or []
         ]
-        requests = member_port_requests(model, role, counts)
+        try:
+            requests = member_port_requests(model, role, counts)
+        except ValueError as error:
+            messages.append(str(error))
+            continue
         if role is None and sum(count for count, _ in requests) == 1:
             plans.append((candidate, members, None))
         else:
@@ -219,7 +182,7 @@ async def filter_candidates(
         worker_id for _, members, requests in plans if requests for worker_id in members
     }
     if not needed:
-        return candidates, []
+        return [candidate for candidate, _, _ in plans], messages
     snapshots = await worker_port_snapshots(
         [worker for worker in workers if worker.id in needed], exclude_instance_id
     )
@@ -238,7 +201,7 @@ async def filter_candidates(
             set(snapshot.unavailable_ports)
             | reserved_ports_on(worker_id, model_instances, caches)
         )
-    accepted, messages = [], []
+    accepted = []
     for candidate, members, requests in plans:
         if requests is None:
             accepted.append(candidate)
@@ -285,7 +248,7 @@ def reserved_ports_on(
 
     **A member counts on every machine it spans, not on the one its row is
     filed under.** One `ModelInstance` holds one set of ports:
-    `_assign_named_ports` sizes the bands once on the primary, and each host
+    The shared port plan sizes the bands once on the primary, and each host
     the member landed on then fences that same set through
     `_register_assigned_ports` -- a subordinate's own pass finds `mi.port`
     already set and re-registers rather than allocating. Filtering on

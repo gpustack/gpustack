@@ -49,6 +49,7 @@ from gpustack.validation.pd.parameters import (
     selector_cards_per_replica,
     selector_spans_workers,
 )
+from gpustack.validation.pd.roles import validate_managed_pd_topology
 from gpustack.utils.command import (
     find_int_parameter,
     flatten_to_argv,
@@ -521,21 +522,11 @@ def _managed_parallelism(
     ]
     try:
         topology = managed_lb_parallelism(effective.backend_parameters or [], counts)
+        validate_managed_pd_topology(effective, topology)
     except ValueError as exc:
         raise PDInjectionError(
             f"Cannot resolve managed PD rank topology: {exc}"
         ) from exc
-    if (
-        str(effective.disaggregation.mode) == "vllm-mooncake"
-        and vllm_lb_mode(effective.backend_parameters) == "external"
-        and topology.nnodes_within_dp > 1
-    ):
-        # Native External-LB workers register with a node-local bootstrap
-        # service. A remote TP/PP fragment cannot reach its rank's listener.
-        raise PDInjectionError(
-            "CUDA Mooncake External-LB requires each DP rank to fit on one Worker; "
-            "cross-Worker TP/PP needs a separately managed bootstrap service."
-        )
     if dp_rank is not None and not 0 <= dp_rank < topology.dp:
         raise PDInjectionError(
             f'Managed PD rank {dp_rank} is outside the allocated DP world '

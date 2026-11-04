@@ -3142,22 +3142,33 @@ def test_multi_port_external_cross_worker_apis_have_real_global_ranks(worker_ind
     assert env['VLLM_DP_MASTER_IP'] == '10.0.0.7'
 
 
-@pytest.mark.parametrize('multi_port_external', [False, True])
-@pytest.mark.parametrize('flag', ['--ssl-keyfile=key.pem', '--ssl-certfile=cert.pem'])
-def test_managed_rank_http_contract_rejects_tls(multi_port_external, flag):
+@pytest.mark.parametrize('mode', ['external', 'hybrid', 'multi_port_external'])
+@pytest.mark.parametrize(
+    'parameters',
+    [
+        ['--ssl-keyfile=key.pem'],
+        ['--ssl-certfile=cert.pem'],
+        ['--uds', '/tmp/model-api.sock'],
+        ['--uds=/tmp/model-api.sock'],
+    ],
+)
+def test_managed_rank_http_contract_rejects_incompatible_listeners(mode, parameters):
     backend, plan = _external_backend()
-    if multi_port_external:
-        backend._model.backend_parameters[0] = '-dpm'
-    configure = (
-        backend._configure_multi_port_external_workload
-        if multi_port_external
-        else backend._configure_external_workload
-    )
+    backend._model.backend_parameters[0] = {
+        'external': '--data-parallel-external-lb',
+        'hybrid': '--data-parallel-hybrid-lb',
+        'multi_port_external': '--data-parallel-multi-port-external-lb',
+    }[mode]
+    configure = {
+        'external': backend._configure_external_workload,
+        'hybrid': backend._configure_hybrid_workload,
+        'multi_port_external': backend._configure_multi_port_external_workload,
+    }[mode]
     with pytest.raises(ValueError, match='routes and health checks.*HTTP'):
         configure(
             plan,
             ['vllm', 'serve'],
-            ['/models/moe', *backend._model.backend_parameters, flag],
+            ['/models/moe', *backend._model.backend_parameters, *parameters],
         )
 
 

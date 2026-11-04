@@ -57,6 +57,7 @@ from gpustack.utils.model_instance_workers import (
     sglang_smg_mode,
     sglang_parallelism,
     validate_sglang_dpa_version,
+    sglang_component_port_requests,
 )
 
 
@@ -64,15 +65,13 @@ def sglang_component_connecting_port_count(
     model: Model, instance: ModelInstance
 ) -> int:
     """Reserve the Python single-node DP-attention TCP listeners together."""
-    if (
-        get_model_instance_workloads(instance) is not None
-        and not (instance.distributed_servers.subordinate_workers or [])
-        and sglang_parallelism(model.backend_parameters)[2]
-    ):
-        # Rendezvous at +0, derived ZMQ at +1..6, NCCL at +7, and
-        # the DP-controller handshake at +13 (also bound on one node).
-        return 14
-    return 1
+    if get_model_instance_workloads(instance) is None:
+        return 1
+    allocation = [len(instance.gpu_indexes or [])] + [
+        len(worker.gpu_indexes or [])
+        for worker in instance.distributed_servers.subordinate_workers or []
+    ]
+    return dict(sglang_component_port_requests(model, allocation))["_sglang_connecting"]
 
 
 def split_sglang_smg_parameters(

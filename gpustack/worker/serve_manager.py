@@ -49,7 +49,6 @@ from gpustack.schemas.inference_backend import (
 from gpustack.utils import network
 from gpustack.utils.convert import safe_int
 from gpustack.utils.attrs import set_attr
-from gpustack.utils.command import find_int_parameter, find_last_parameter
 from gpustack.utils.process import (
     terminate_process_tree,
     terminate_process,
@@ -61,12 +60,9 @@ from gpustack.worker.backends.sglang import (
     SGLangServer,
     build_sglang_smg_workload,
     split_sglang_smg_parameters,
-    sglang_component_connecting_port_count,
 )
 from gpustack.utils.runtime import transform_workload_plan
-from gpustack.utils.command import resolve_executor_backend
-from gpustack.worker.backends.vllm import VLLMServer, cal_multinode_topology
-from gpustack.utils.vllm_topology import parse_user_parallelism
+from gpustack.worker.backends.vllm import VLLMServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.custom import CustomServer
 from gpustack.worker.log_sources import (
@@ -120,7 +116,6 @@ from gpustack.schemas.models import (
     RoleNameEnum,
     role_effective_model,
 )
-from gpustack.schemas.pd_modes import PDPortScopeEnum
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
     model_instance_legacy_stop,
@@ -131,19 +126,10 @@ from gpustack.utils.model_instance_workers import (
     ModelInstanceEndpoint,
     resolve_model_instance_endpoint,
 )
-from gpustack.utils.vllm_topology import (
-    VLLM_MP_CONNECTING_PORT_COUNT as _VLLM_MP_CONNECTING_BAND,
-    managed_lb_parallelism,
-    managed_lb_port_requests,
-    vllm_lb_mode,
-)
+from gpustack.utils.vllm_topology import vllm_lb_mode
 from gpustack.schemas.workers import WorkerStateEnum
-from gpustack.worker.pd_injection import (
-    ACCELERATOR_COUNT_KEY,
-    band_count_key,
-    band_specs_for,
-    member_band_width,
-)
+from gpustack.utils.model_ports import model_port_requests
+from gpustack.worker.pd_injection import band_specs_for
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
 
@@ -186,19 +172,6 @@ _SERVER_CLASS_MAPPING = {
 # e.g. {"<container>": {"devices": {"groups": [{"accelerators": [{"id": "<GPU UUID>",
 # "index": 0, "mode": 3, "allocated": 640000}]}]}, "deviceIDs": [...]}}.
 _ALLOCATED_ACCELERATORS_ANNOTATION = "device.gpustack.ai/accelerator.allocated"
-
-
-class PDPortScopeUnsupportedError(Exception):
-    """A band declares a scope this allocator cannot honour.
-
-    Raised rather than degraded to per-instance. `PDPortScopeEnum.ROLE` means
-    "every member of this role shares one band", which needs a registry keyed
-    by (group, role) that does not exist yet. Allocating such a band per
-    instance produces the one thing worse than an unimplemented feature: a
-    band of the right *width* at the wrong *base* on each member, so the
-    connector that was supposed to meet on it only fails at handshake, long
-    after the instances report healthy.
-    """
 
 
 def _parse_allocated_accelerators(annotations: Optional[Dict[str, str]]) -> List[dict]:
@@ -3990,49 +3963,61 @@ class ServeManager(ContainerLogPersister):
             len(w.gpu_indexes or [])
             for w in mi.distributed_servers.subordinate_workers or []
         ]
-        topology = managed_lb_parallelism(model.backend_parameters, counts)
-        bands = {}
-        hybrid = vllm_lb_mode(model.backend_parameters) == "hybrid"
-        api_count = 1 if hybrid else topology.dp
-        requests = managed_lb_port_requests(model.backend_parameters, counts)
-        if vllm_lb_mode(model.backend_parameters) == "multi_port_external":
-            requested = find_last_parameter(
-                model.backend_parameters, ["data-parallel-supervisor-port"]
-            )
-            if requested is not None:
-                base = int(requested)
-                low, high = (int(value) for value in port_range.split("-"))
-                if (
-                    not low <= base <= high
-                    or base in unavailable
-                    or not network.is_port_available(base, host=mi.worker_ip)
-                ):
-                    raise ValueError(
-                        "Multi-port External-LB supervisor port is unavailable."
-                    )
-                bands["_vllm_multi_port_external_supervisor"] = PortBand(base=base)
-                unavailable.add(base)
-        for name, count in requests:
-            base = network.get_free_band(
-                port_range=port_range,
-                count=count,
-                unavailable_ports=unavailable,
-                host=mi.worker_ip,
-            )
-            unavailable.update(range(base, base + count))
-            bands[name] = PortBand(base=base, count=count)
+        requests = model_port_requests(model, mi.role, counts)
+        bands = self._allocate_port_plan(mi, requests, unavailable, port_range)
         mi.port = bands["_vllm_external_api"].base
+        api_count = bands["_vllm_external_api"].count
+        connector_names = [spec.name for spec in band_specs_for(model, mi.role)]
         mi.ports = [
             *range(mi.port, mi.port + api_count),
             *[
                 band.base
                 for name, band in bands.items()
-                if name != "_vllm_external_api"
+                if name != "_vllm_external_api" and name not in connector_names
+            ],
+            *[
+                port
+                for name in connector_names
+                if name in bands
+                for port in range(
+                    bands[name].base, bands[name].base + bands[name].count
+                )
             ],
         ]
         mi.named_ports = bands
-        if mi.role in ("prefill", "decode"):
-            mi.ports += self._assign_named_ports(mi, model, unavailable, port_range)
+
+    @staticmethod
+    def _allocate_port_plan(mi, requests, unavailable, port_range):
+        """Select every band in the shared plan without publishing partial ports."""
+        bands = {}
+        for name, count, fixed in requests:
+            if fixed is not None:
+                low, high = network.parse_port_range(port_range)
+                if (
+                    not low <= fixed <= high
+                    or fixed in unavailable
+                    or not network.is_port_available(fixed, host=mi.worker_ip)
+                ):
+                    raise ValueError(
+                        "Multi-port External-LB supervisor port is unavailable."
+                    )
+                base = fixed
+            else:
+                try:
+                    base = network.get_free_band(
+                        port_range=port_range,
+                        count=count,
+                        unavailable_ports=unavailable,
+                        host=mi.worker_ip,
+                    )
+                except network.PortRangeExhaustedError as error:
+                    raise network.PortRangeExhaustedError(
+                        f"Model instance {mi.name} (role '{mi.role}') needs a "
+                        f"{count}-port band for '{name}': {error}"
+                    ) from error
+            unavailable.update(range(base, base + count))
+            bands[name] = PortBand(base=base, count=count)
+        return bands
 
     def _component_preparer_handed_off(self, mi):
         if (mi.id, mi.restart_count or 0) in self._managed_stopping:
@@ -4331,26 +4316,13 @@ class ServeManager(ContainerLogPersister):
             raise ValueError(
                 "Managed components require ordinary multi-rank SGLang DP/DPA"
             )
-        bands = {}
-        for name in (
-            "_sglang_engine_api",
-            "_sglang_connecting",
-            "_sglang_smg_api",
-            "_sglang_smg_metrics",
-        ):
-            count = (
-                sglang_component_connecting_port_count(model, mi)
-                if name == "_sglang_connecting"
-                else 1
-            )
-            port = network.get_free_band(
-                port_range=port_range,
-                count=count,
-                unavailable_ports=unavailable,
-                host=mi.worker_ip,
-            )
-            unavailable.update(range(port, port + count))
-            bands[name] = PortBand(base=port, count=count)
+        counts = [len(mi.gpu_indexes or [])] + [
+            len(worker.gpu_indexes or [])
+            for worker in mi.distributed_servers.subordinate_workers or []
+        ]
+        bands = ServeManager._allocate_port_plan(
+            mi, model_port_requests(model, mi.role, counts), unavailable, port_range
+        )
         mi.port = bands["_sglang_engine_api"].base
         mi.ports = [band.base for band in bands.values()]
         mi.named_ports = bands
@@ -4373,127 +4345,41 @@ class ServeManager(ContainerLogPersister):
         ):
             self._select_sglang_ports(mi, model, unavailable_ports, port_range)
             return
-        # Commit only a complete allocation. A retry must not mistake a
-        # partially selected HTTP port for an already-published port set.
-        target = mi
-        mi = mi.model_copy(deep=True)
-
-        # Additional ports for distributed servers (mp path allocates all):
-        #   ports[0]: HTTP API (always)
-        #   ports[1]: --data-parallel-rpc-port (DP coordinator ZMQ)
-        #   ports[2]: --master-port (PyTorch distributed TCP store)
-        #   ports[3]: env VLLM_PORT (dp_only only; reserved but unused otherwise)
-        #   ports[4:-1]: named bands, then the connecting band's derived
-        #                ports — fenced, addressed by nobody
-        #   ports[-1]: connecting port (= VLLM_DP_MASTER_PORT for dp_only/nested)
-        # Ray path: ports[-1] is VLLM_PORT; ports[1] is DP RPC when dp > 1.
-        connecting_port: Optional[int] = None
-        connecting_band: List[int] = []
-        band_count = 0
-        cross_port_count = 0
-        if mi.distributed_servers and mi.distributed_servers.subordinate_workers:
-            executor_backend = (
-                resolve_executor_backend(
-                    model.backend_parameters,
-                    model.backend_version,
-                    model.image_name,
-                )
-                if backend == BackendEnum.VLLM
-                else None
-            )
-            # Use the command builder's topology so only deployments that
-            # set VLLM_DP_MASTER_PORT reserve its protection window.
-            band_count = 1
-            if executor_backend == "mp":
-                topology = cal_multinode_topology(
-                    mi,
-                    mi.get_deployment_metadata(self._worker_id),
-                    parse_user_parallelism(model.backend_parameters),
-                )
-                if topology.shape in ("dp_only", "nested"):
-                    band_count = _VLLM_MP_CONNECTING_BAND
-            if band_count > 1:
-                connecting_port = network.get_free_band(
-                    port_range=port_range,
-                    count=band_count,
-                    unavailable_ports=unavailable_ports,
-                    host=mi.worker_ip,
-                )
-                connecting_band = list(
-                    range(connecting_port, connecting_port + band_count)
-                )
-                unavailable_ports.update(connecting_band)
-
-            if backend == BackendEnum.VLLM:
-                if executor_backend == "mp":
-                    # DP RPC + PyTorch master + VLLM_PORT.
-                    cross_port_count = 3
-                else:
-                    dps = find_int_parameter(
-                        model.backend_parameters,
-                        ["data-parallel-size", "dp"],
-                    )
-                    cross_port_count = 1 if dps and dps > 1 else 0
-
-        # Named connector bands, appended to `mi.ports` as well as written
-        # to `mi.named_ports`. `named_ports` is a *new* index, not a
-        # migration: the positional convention above stays exactly as it
-        # is. The append matters on its own — under hostNetwork the
-        # runtime declares every entry of `mi.ports` as a hostPort
-        # (`_get_configured_ports()` never looks at `named_ports`), and
-        # that declaration is the only thing that turns a same-host port
-        # collision into a schedulable-Pending with an event instead of a
-        # container crash-looping forever in `starting`.
-        named_band_ports = self._assign_named_ports(
-            mi, model, unavailable_ports, port_range=port_range
+        counts = (
+            [len(mi.gpu_indexes or [])]
+            + [
+                len(worker.gpu_indexes or [])
+                for worker in (mi.distributed_servers.subordinate_workers or [])
+            ]
+            if mi.distributed_servers
+            else [len(mi.gpu_indexes or [])]
         )
-        if band_count == 1:
-            connecting_port = network.get_free_band(
-                port_range=port_range,
-                unavailable_ports=unavailable_ports,
-                host=mi.worker_ip,
-            )
-            unavailable_ports.add(connecting_port)
-
-        # Reserve continuous bands first, then pack single ports into the
-        # lowest gaps. Keep the positional layout consumed by backends.
-        mi.port = network.get_free_band(
-            port_range=port_range,
-            unavailable_ports=unavailable_ports,
-            host=mi.worker_ip,
+        requests = model_port_requests(model, mi.role, counts, managed=False)
+        bands = self._allocate_port_plan(mi, requests, unavailable_ports, port_range)
+        connector_names = [spec.name for spec in band_specs_for(model, mi.role)]
+        named = dict(mi.named_ports or {})
+        named.update({name: bands[name] for name in connector_names if name in bands})
+        api = bands["_api"].base
+        ports = [api]
+        ports.extend(
+            band.base for name, band in bands.items() if name.startswith("_cross_")
         )
-        mi.ports = [mi.port]
-        unavailable_ports.add(mi.port)
-        for _ in range(cross_port_count):
-            cross_port = network.get_free_band(
-                port_range=port_range,
-                unavailable_ports=unavailable_ports,
-                host=mi.worker_ip,
-            )
-            mi.ports.append(cross_port)
-            unavailable_ports.add(cross_port)
-        mi.ports.extend(named_band_ports)
-
-        if connecting_port is not None:
-            # Only the base goes into `mi.ports`, and it goes last: the
-            # distributed backends read the connecting port as `ports[-1]`
-            # (VLLM_DP_MASTER_PORT / VLLM_PORT), so nothing may be appended
-            # after it.
-            mi.ports.append(connecting_port)
-            if len(connecting_band) > 1:
-                # Persist the whole protection window for peer workers and
-                # restarts. Only the base belongs in the positional layout;
-                # the remaining window is reservation metadata, not extra
-                # hostPort declarations in the workload specification.
-                named_ports = dict(mi.named_ports or {})
-                named_ports[_VLLM_MP_CONNECTING_BAND_NAME] = PortBand(
-                    base=connecting_port, count=len(connecting_band)
-                )
-                mi.named_ports = named_ports
-
-        target.port = mi.port
-        target.ports = mi.ports
-        target.named_ports = mi.named_ports
+        ports.extend(
+            port
+            for name in connector_names
+            if name in bands
+            for port in range(bands[name].base, bands[name].base + bands[name].count)
+        )
+        connecting = bands.get("_connecting")
+        if connecting is not None:
+            # Backends consume the connecting base as ports[-1]; derived
+            # protection ports belong only in the named reservation metadata.
+            ports.append(connecting.base)
+            if connecting.count > 1:
+                named[_VLLM_MP_CONNECTING_BAND_NAME] = connecting
+        mi.port, mi.ports = api, ports
+        if named:
+            mi.named_ports = named
 
     def _mark_crash_loop(
         self, mi: ModelInstance, workload, is_main_worker: bool
@@ -4600,115 +4486,6 @@ class ServeManager(ContainerLogPersister):
         taken = model_instance_ports(mi, self._worker_id)
         if taken:
             self._assigned_ports[mi.id] = taken
-
-    def _assign_named_ports(
-        self,
-        mi: ModelInstance,
-        model: Model,
-        unavailable_ports: Set[int],
-        port_range: Optional[str] = None,
-    ) -> List[int]:
-        """Allocate the port bands this instance's PD role declares.
-
-        The widths come from `pd-modes.yaml` and nothing else: measured, one
-        connector wants one port per data-parallel replica and another wants
-        one per tensor-parallel rank, so there is no platform-side formula to
-        compute them from. Writes `mi.named_ports` and returns every port of
-        every band, in order, for the caller to append to `mi.ports`.
-
-        Mutates `unavailable_ports` with the *whole* band, not just its base:
-        the ports a connector derives from the base are bound just as surely
-        as the base is, and the existing vLLM mp path fencing off ten ports
-        around the connecting port is the same idea with the width hardcoded.
-
-        Every band is allocated per instance, which is what
-        `PDPortScopeEnum.INSTANCE` means and what every band shipped today
-        declares. A `role`-scoped band would need a registry shared across the
-        instances of one role, which does not exist yet; nothing declares one,
-        so allocating it per instance is strictly safer than pretending.
-
-        Callers must use the shared port reservation allocation context.
-        """
-        mode_name = getattr(getattr(model, "disaggregation", None), "mode", None)
-        specs = band_specs_for(model, mi.role, context=f"Model instance {mi.name}")
-        if not specs:
-            # Not a PD instance, or a role that declares no band. Either way,
-            # today's path byte for byte.
-            return []
-
-        named_ports: Dict[str, PortBand] = dict(mi.named_ports or {})
-        requests = []
-        for spec in specs:
-            if spec.scope == PDPortScopeEnum.ROLE:
-                # Not implemented, and therefore refused. See
-                # PDPortScopeUnsupportedError: per-instance allocation of a
-                # role-scoped band is not a partial implementation of it, it is
-                # a different band on every member.
-                raise PDPortScopeUnsupportedError(
-                    f"Model instance {mi.name} (role '{mi.role}', PD mode "
-                    f"'{mode_name}') declares port band '{spec.name}' with "
-                    f"scope '{PDPortScopeEnum.ROLE.value}'. Role-scoped bands "
-                    "need a registry shared by the members of one role, which "
-                    "does not exist yet, and allocating one per instance would "
-                    "give each member a different base for a band they are "
-                    "supposed to meet on."
-                )
-            subordinate = (
-                mi.distributed_servers.subordinate_workers
-                if mi.distributed_servers
-                else []
-            )
-            gpu_per_node = [len(mi.gpu_indexes or [])] + [
-                len(worker.gpu_indexes or []) for worker in subordinate or []
-            ]
-            count = member_band_width(spec, model, gpu_per_node)
-            if count is None:
-                # Skipping the band leaves `{{ports.<name>}}` unresolved in the
-                # launch, which the renderer logs and the engine rejects by
-                # name; allocating a guessed width would instead look like it
-                # worked. Which of the two reasons it was decides where the
-                # operator looks next, so it is named.
-                why = (
-                    "has no accelerators assigned to size it from"
-                    if band_count_key(spec) == ACCELERATOR_COUNT_KEY
-                    else "declares no parallelism parameter answering to that name"
-                )
-                logger.warning(
-                    f"Model instance {mi.name} (role '{mi.role}') declares port "
-                    f"band '{spec.name}' with count '{spec.count}' but {why}. "
-                    "No ports are reserved for it, so the placeholder reaches "
-                    "the engine verbatim and the launch fails naming it."
-                )
-                continue
-            requests.append((spec, count))
-
-        # Larger bands must fit before single-port connector demands can
-        # fragment the only suitable gap. The published order follows specs.
-        allocated_bands: Dict[str, List[int]] = {}
-        for spec, count in sorted(requests, key=lambda item: item[1], reverse=True):
-            try:
-                base = network.get_free_band(
-                    port_range=port_range or self._config.service_port_range,
-                    count=count,
-                    unavailable_ports=unavailable_ports,
-                    host=mi.worker_ip,
-                )
-            except network.PortRangeExhaustedError as e:
-                # Re-raise with the role and band named. The allocator knows
-                # the arithmetic but not who was asking, and "which role of
-                # which deployment" is the first thing an operator needs.
-                raise network.PortRangeExhaustedError(
-                    f"Model instance {mi.name} (role '{mi.role}', PD mode "
-                    f"'{mode_name}') needs a {count}-port band for "
-                    f"'{spec.name}': {e}"
-                ) from e
-            band = list(range(base, base + count))
-            unavailable_ports |= set(band)
-            named_ports[spec.name] = PortBand(base=base, count=count)
-            allocated_bands[spec.name] = band
-
-        mi.named_ports = named_ports
-        return [port for spec, _ in requests for port in allocated_bands[spec.name]]
 
     def _restart_model_instance(self, mi: ModelInstance):
         """

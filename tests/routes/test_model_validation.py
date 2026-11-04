@@ -164,6 +164,25 @@ async def test_multi_port_external_invalid_parameters_are_rejected_before_schedu
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['external', 'hybrid', 'multi-port-external'])
+@pytest.mark.parametrize(
+    'uds', [['--uds', '/tmp/model.sock'], ['--uds=/tmp/model.sock']]
+)
+async def test_managed_http_modes_reject_uds_before_scheduling(monkeypatch, mode, uds):
+    monkeypatch.setattr(models, 'validate_pd_config', AsyncMock())
+    model = ModelCreate(
+        name='moe',
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id='org/moe',
+        backend='vLLM',
+        backend_parameters=[f'--data-parallel-{mode}-lb', *uds],
+    )
+    with pytest.raises(BadRequestException) as error:
+        await models.validate_model_in(MagicMock(), model)
+    assert '--uds' in error.value.message
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'parameters,categories',
     [

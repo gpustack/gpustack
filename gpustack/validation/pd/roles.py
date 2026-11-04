@@ -20,7 +20,11 @@ from gpustack.utils.command import (
     find_last_parameter,
     flatten_to_argv,
 )
-from gpustack.utils.vllm_topology import vllm_lb_mode
+from gpustack.utils.vllm_topology import (
+    ValidatedTopology,
+    validate_managed_lb_parameters,
+    vllm_lb_mode,
+)
 from gpustack.validation.pd.common import model_field
 
 
@@ -284,6 +288,7 @@ def validate_external_pd_membership(
     if backend != BackendEnum.VLLM:
         return
     try:
+        validate_managed_lb_parameters(parameters)
         lb_mode = vllm_lb_mode(parameters)
     except ValueError as exc:
         raise BadRequestException(message=str(exc)) from exc
@@ -304,6 +309,21 @@ def validate_external_pd_membership(
         message=f"Multi-port External-LB with {detail} is not supported by GPUStack; "
         "only CUDA NIXL PD has a managed Multi-port integration."
     )
+
+
+def validate_managed_pd_topology(model: Model, topology: ValidatedTopology) -> None:
+    """Reject transport layouts that cannot launch on the selected Workers."""
+    if (
+        model.disaggregation is not None
+        and model.disaggregation.mode == PDModeEnum.VLLM_MOONCAKE
+        and vllm_lb_mode(model.backend_parameters) == "external"
+        and topology.nnodes_within_dp > 1
+    ):
+        # Native bootstrap services are node-local to each complete DP rank.
+        raise ValueError(
+            "CUDA Mooncake External-LB requires each DP rank to fit on one Worker; "
+            "cross-Worker TP/PP needs a separately managed bootstrap service."
+        )
 
 
 def _reject_router_params_the_platform_owns(roles, disaggregation) -> None:

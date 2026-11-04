@@ -31,6 +31,9 @@ def _model(mode=None, backend_parameters=None):
         ),
         disaggregation=SimpleNamespace(mode=mode) if mode else None,
         backend_parameters=backend_parameters or [],
+        backend_version=None,
+        image_name=None,
+        categories=[],
     )
 
 
@@ -121,12 +124,10 @@ class TestMemberDemand:
         )
 
     @pytest.mark.parametrize("parameters", [["--tp=16"], ["--dp=0"]])
-    def test_invalid_spanning_topology_leaves_the_band_unresolved(self, parameters):
+    def test_invalid_spanning_topology_cannot_produce_a_port_plan(self, parameters):
         model = _model("vllm-nixl", parameters + ["--distributed-executor-backend=mp"])
-        assert (
-            port_budget.member_port_demand(model, "prefill", 4, gpu_per_node=[4, 4])
-            == 1
-        )
+        with pytest.raises(ValueError):
+            port_budget.member_port_requests(model, "prefill", [4, 4])
 
     @pytest.mark.parametrize(
         "parameters, expected",
@@ -136,7 +137,7 @@ class TestMemberDemand:
         model = _model("vllm-nixl", parameters)
         assert port_budget.member_port_demand(model, "prefill", 8) == expected
 
-    @pytest.mark.parametrize("mode, expected", [("vllm-nixl", 5), (MOONCAKE, 9)])
+    @pytest.mark.parametrize("mode, expected", [("vllm-nixl", 18), (MOONCAKE, 22)])
     def test_spanning_member_covers_global_rank_range(self, mode, expected):
         model = _model(mode, ["--tp=2", "--distributed-executor-backend=mp"])
         assert (
@@ -414,7 +415,7 @@ class TestPortsCommittedDuringOneSolve:
         assert narrow == 20, "three ports each leaves room for every slot offered"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("mode, demand", [("vllm-nixl", 7), (MOONCAKE, 13)])
+    @pytest.mark.parametrize("mode, demand", [("vllm-nixl", 20), (MOONCAKE, 26)])
     @pytest.mark.parametrize("reverse", [False, True])
     async def test_spanning_budget_covers_every_candidate_for_a_primary(
         self, mode, demand, reverse, monkeypatch
@@ -426,7 +427,7 @@ class TestPortsCommittedDuringOneSolve:
         model = _model(mode, ["--tp=2", "--distributed-executor-backend=mp"])
         model.distributed_inference_across_workers = True
         cap = self._capacity(model)
-        cap._config = SimpleNamespace(service_port_range="40000-40012")
+        cap._config = SimpleNamespace(service_port_range="40000-40039")
         workers = {
             worker_id: SimpleNamespace(
                 id=worker_id,
@@ -467,7 +468,7 @@ class TestPortsCommittedDuringOneSolve:
         assert cap._committed_ports == {1: demand, 2: demand, 3: demand}
         assert cap._within_port_budget(
             "decode", 1, SimpleNamespace(slots=2), 4, gpu_per_node=[4, 4]
-        ) == (13 - demand) // (5 if mode == "vllm-nixl" else 9)
+        ) == max(0, (40 - demand) // (18 if mode == "vllm-nixl" else 22))
 
 
 @pytest.mark.parametrize('counts', [[4], [2, 2]])
@@ -699,3 +700,70 @@ async def test_spanning_hybrid_candidate_requires_common_contiguous_bands(
         None, model, None, [candidate], workers, []
     )
     assert bool(accepted) is not conflicting
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parameters,demand',
+    [
+        (['--dp=4', '--tp=1'], 4),
+        (['--dp=4', '--tp=4', '--enable-dp-attention'], 17),
+        (['--attn-dp-size=4', '--tp-size=4'], 17),
+    ],
+)
+async def test_sglang_admission_selects_worker_with_complete_component_ports(
+    monkeypatch, parameters, demand
+):
+    from unittest.mock import AsyncMock
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+
+    model = _model(backend_parameters=parameters)
+    model.backend = BackendEnum.SGLANG
+    workers = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+    candidates = [
+        ModelInstanceScheduleCandidate(w, list(range(4)), None) for w in workers
+    ]
+    insufficient = 2 if demand == 4 else 16
+    monkeypatch.setattr(
+        port_budget,
+        'worker_port_snapshots',
+        AsyncMock(
+            return_value={
+                1: _snapshot(1, f'40000-{40000 + insufficient - 1}'),
+                2: _snapshot(2, f'40000-{40000 + demand - 1}'),
+            }
+        ),
+    )
+
+    accepted, messages = await port_budget.filter_candidates(
+        None, model, None, candidates, workers, []
+    )
+
+    assert accepted == [candidates[1]]
+    assert any(f'cannot fit {demand} service ports' in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_internal_pd_admission_preserves_the_connector_gap(monkeypatch):
+    from unittest.mock import AsyncMock
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+
+    worker = SimpleNamespace(id=1)
+    candidate = ModelInstanceScheduleCandidate(worker, list(range(4)), None)
+    monkeypatch.setattr(
+        port_budget,
+        'worker_port_snapshots',
+        AsyncMock(return_value={1: _snapshot(1, '40000-40005', [40004])}),
+    )
+
+    accepted, messages = await port_budget.filter_candidates(
+        None,
+        _model('vllm-nixl', ['--dp=4', '--tp=1']),
+        'prefill',
+        [candidate],
+        [worker],
+        [],
+    )
+
+    assert accepted == [candidate]
+    assert messages == []
