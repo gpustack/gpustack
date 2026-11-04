@@ -310,6 +310,7 @@ async def proxy_request_by_model(
                 data=data,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT),
+                raise_on_error=False,
             )
             return Response(
                 status_code=resp.status,
