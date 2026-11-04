@@ -4332,8 +4332,9 @@ def test_managed_rank_health_uses_existing_periodic_entrypoints(rank_health, run
 
 @pytest.mark.parametrize('role', [None, 'prefill', 'decode'])
 @pytest.mark.parametrize('mode', ['external', 'internal', 'hybrid'])
+@pytest.mark.parametrize('backend', [BackendEnum.VLLM, 'Modular MAX'])
 def test_managed_worker_adoption_immediately_rechecks_without_restart(
-    rank_health, role, mode
+    rank_health, role, mode, backend
 ):
     s = rank_health
     s.mi.state = ModelInstanceStateEnum.RUNNING
@@ -4343,6 +4344,14 @@ def test_managed_worker_adoption_immediately_rechecks_without_restart(
         workload.dp_rank_placements[0].ready = True
     s.model.backend_parameters = (
         [] if mode == 'internal' else [f'--data-parallel-{mode}-lb']
+    )
+    s.model.backend = backend
+    s.manager._get_health_check_path.side_effect = lambda backend, owner: (
+        '/health' if backend == BackendEnum.VLLM else '/v1/health'
+    )
+    s.get.side_effect = lambda url, **kw: SimpleNamespace(
+        status_code=200 if url.endswith('/health') and '/v1/' not in url else 404,
+        close=lambda: None,
     )
     s.client.models.get.return_value = s.model
     s.manager._model_cache_by_instance.clear()
@@ -4355,6 +4364,19 @@ def test_managed_worker_adoption_immediately_rechecks_without_restart(
     assert s.mi.restart_count == 3
     s.manager._stop_model_instance.assert_not_called()
 
+    for _ in range(3):
+        s.finish()
+        s.sync()
+        s.now += 10
+        s.sync()
+    assert s.mi.state == ModelInstanceStateEnum.RUNNING
+    s.manager._get_health_check_path.assert_called_with(
+        BackendEnum.VLLM, s.model.owner_principal_id
+    )
+    assert all(call.args[0].endswith('/health') for call in s.get.call_args_list)
+    s.manager._stop_model_instance.assert_not_called()
+
+    s.get.side_effect = None
     s.get.return_value.status_code = 503
     for _ in range(3):
         s.finish()

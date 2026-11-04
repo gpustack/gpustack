@@ -3541,7 +3541,8 @@ def test_hybrid_failed_health_cannot_be_revived_by_same_batch_success(
 
 
 @pytest.mark.parametrize('hybrid', [False, True])
-def test_component_health_path_preserves_sglang_contract(managed, hybrid):
+@pytest.mark.parametrize('custom_path', [None, '/custom-health'])
+def test_component_health_path_preserves_sglang_contract(managed, hybrid, custom_path):
     from tests.utils.model import new_hybrid_workload
 
     state = managed
@@ -3550,23 +3551,28 @@ def test_component_health_path_preserves_sglang_contract(managed, hybrid):
     )
     if not hybrid:
         item.component.kind = 'sglang_engine'
+    state.instance.backend = BackendEnum.VLLM if hybrid else BackendEnum.SGLANG
     state.instance.distributed_servers.workloads = [item]
     state.instance.distributed_servers.orchestration_mode = "managed"
     model = new_model(
         1,
         'model',
         huggingface_repo_id='org/model',
-        backend=BackendEnum.VLLM if hybrid else BackendEnum.SGLANG,
-        env={'GPUSTACK_MODEL_HEALTH_CHECK_PATH': '/custom-health'},
+        backend='Modular MAX',
+        env={'GPUSTACK_MODEL_HEALTH_CHECK_PATH': custom_path} if custom_path else {},
     )
     state.client.workers.get.return_value.ip = '10.0.0.1'
     state.serve._schedule_rank_health = MagicMock()
     state.serve._get_health_check_path = MagicMock(return_value='/backend-health')
     state.serve._sync_component_health(state.instance, model, [])
     assert state.serve._schedule_rank_health.call_args.args[-1] == (
-        '/custom-health' if hybrid else '/health'
+        (custom_path or '/backend-health') if hybrid else '/health'
     )
     assert bool(state.serve._get_health_check_path.called) == hybrid
+    if hybrid:
+        state.serve._get_health_check_path.assert_called_once_with(
+            BackendEnum.VLLM, model.owner_principal_id
+        )
 
 
 @pytest.fixture

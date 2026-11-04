@@ -855,7 +855,7 @@ class VLLMServer(InferenceServer):
             argv, request_timeout = task['argv'], '0'
             for index, argument in enumerate(argv):
                 key, separator, value = argument.partition('=')
-                if key == '--shutdown-timeout':
+                if key.replace('_', '-') == '--shutdown-timeout':
                     request_timeout = (
                         value
                         if separator

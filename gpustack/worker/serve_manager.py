@@ -2611,7 +2611,7 @@ class ServeManager(ContainerLogPersister):
         if self._has_hybrid_components(current):
             path = (
                 self._get_health_check_path(
-                    get_backend(model), model.owner_principal_id
+                    get_backend(current), model.owner_principal_id
                 )
                 or '/health'
             )
@@ -2756,7 +2756,7 @@ class ServeManager(ContainerLogPersister):
                 path = (
                     (model.env or {}).get('GPUSTACK_MODEL_HEALTH_CHECK_PATH')
                     or self._get_health_check_path(
-                        get_backend(model), model.owner_principal_id
+                        get_backend(current), model.owner_principal_id
                     )
                     or '/health'
                 )

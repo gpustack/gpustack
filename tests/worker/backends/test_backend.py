@@ -486,6 +486,11 @@ def test_external_supervisor_shutdown_finishes_before_container_deadline(grace):
         (['--shutdown-timeout', '60'], None, 65),
         (['--shutdown-timeout=60'], '90', 95),
         (['--shutdown-timeout=90', '--shutdown-timeout', '60'], None, 65),
+        (['--shutdown_timeout', '60'], None, 65),
+        (['--shutdown_timeout=60'], None, 65),
+        (['--shutdown-timeout=60', '--shutdown_timeout', '120'], None, 125),
+        (['--shutdown_timeout=120', '--shutdown-timeout', '60'], None, 65),
+        (['--shutdown_timeout=60'], '90', 95),
     ],
 )
 def test_supervisor_budget_uses_final_child_arguments_and_environment(
@@ -514,14 +519,19 @@ def test_supervisor_budget_uses_final_child_arguments_and_environment(
 
 
 @pytest.mark.parametrize('value', ['-1', 'nan', 'inf', 'abc', '1.5', ''])
-@pytest.mark.parametrize('source', ['argument', 'environment'])
+@pytest.mark.parametrize('source', ['argument', 'underscore_argument', 'environment'])
 def test_supervisor_rejects_invalid_shutdown_budget(value, source):
     from gpustack_runtime.deployer import ContainerEnv
 
     backend, plan = _external_backend()
     parameters = ['/models/moe']
-    if source == 'argument':
-        parameters.append(f'--shutdown-timeout={value}')
+    if source in ('argument', 'underscore_argument'):
+        flag = (
+            '--shutdown_timeout'
+            if source == 'underscore_argument'
+            else '--shutdown-timeout'
+        )
+        parameters.append(f'{flag}={value}')
     else:
         plan.containers[0].envs = [
             ContainerEnv(name='VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS', value=value)
@@ -560,6 +570,8 @@ def test_supervisor_budget_covers_all_children_and_task_environment_overrides():
     [
         ['--shutdown-timeout'],
         ['--shutdown-timeout=60', '--shutdown-timeout'],
+        ['--shutdown_timeout'],
+        ['--shutdown-timeout=60', '--shutdown_timeout'],
     ],
 )
 def test_supervisor_rejects_missing_shutdown_timeout_value(parameters):
@@ -3179,7 +3191,10 @@ def test_multi_port_external_mode_preserves_start_rank_alias(parameters, mode):
 
 
 @pytest.mark.parametrize('vendor', ['NVIDIA', 'Huawei'])
-def test_multi_port_external_plan_uses_vllm_launcher_and_contiguous_apis(vendor):
+@pytest.mark.parametrize('shutdown_flag', ['--shutdown-timeout', '--shutdown_timeout'])
+def test_multi_port_external_plan_uses_vllm_launcher_and_contiguous_apis(
+    vendor, shutdown_flag
+):
     backend, plan = _external_backend(vendor=vendor)
     backend._model.backend_parameters = ['-dpm', '--dp=2', '--tp=2']
     backend._model_instance.gpu_indexes = [1, 3, 5, 7]
@@ -3193,7 +3208,7 @@ def test_multi_port_external_plan_uses_vllm_launcher_and_contiguous_apis(vendor)
     manifest = backend._configure_multi_port_external_workload(
         plan,
         ['vllm', 'serve'],
-        ['/models/moe', *backend._model.backend_parameters, '--shutdown-timeout=60'],
+        ['/models/moe', *backend._model.backend_parameters, f'{shutdown_flag}=60'],
     )
     argv = plan.containers[0].execution.command + plan.containers[0].execution.args
     assert '--data-parallel-multi-port-external-lb' in argv
@@ -4010,8 +4025,9 @@ def test_legacy_single_node_sglang_dpa_keeps_native_port_selection():
 
 @pytest.mark.parametrize('worker_index', [0, 1])
 @pytest.mark.parametrize('vendor', ['NVIDIA', 'Huawei'])
+@pytest.mark.parametrize('shutdown_flag', ['--shutdown-timeout', '--shutdown_timeout'])
 def test_hybrid_native_launcher_keeps_one_shared_api_and_local_engine_pool(
-    worker_index, vendor
+    worker_index, vendor, shutdown_flag
 ):
     from gpustack.schemas.models import ModelInstanceSubordinateWorker
 
@@ -4044,7 +4060,7 @@ def test_hybrid_native_launcher_keeps_one_shared_api_and_local_engine_pool(
             '/models/moe',
             *backend._model.backend_parameters,
             '--port=1234',
-            '--shutdown-timeout=60',
+            f'{shutdown_flag}=60',
         ],
     )
     argv = plan.containers[0].execution.command + (
