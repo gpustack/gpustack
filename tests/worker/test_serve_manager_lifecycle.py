@@ -653,12 +653,13 @@ def test_workers_without_local_workload_do_not_track_instance(manager, placement
         WorkloadStatusStateEnum.UNKNOWN,
     ],
 )
-def test_follower_retries_respect_restart_on_error(
+def test_run_first_follower_retries_respect_restart_on_error(
     manager, restart_on_error, local_state, workload_state
 ):
     serve, _ = manager
     instance = _instance()
     instance.state = ModelInstanceStateEnum.STARTING
+    instance.distributed_servers.mode = DistributedServerCoordinateModeEnum.RUN_FIRST
     instance.distributed_servers.subordinate_workers[0].state = local_state
     serve._get_model.return_value.restart_on_error = restart_on_error
     workload = (
@@ -675,6 +676,265 @@ def test_follower_retries_respect_restart_on_error(
             )
     assert start.call_count == (3 if restart_on_error else 0)
     assert stop.call_count == (3 if restart_on_error and workload is not None else 0)
+
+
+@pytest.mark.parametrize("manager", [2], indirect=True)
+@pytest.mark.parametrize("restart_on_error", [False, True])
+@pytest.mark.parametrize(
+    "local_state",
+    [
+        ModelInstanceStateEnum.ERROR,
+        ModelInstanceStateEnum.RUNNING,
+        ModelInstanceStateEnum.UNREACHABLE,
+    ],
+)
+@pytest.mark.parametrize(
+    "workload_state",
+    [
+        None,
+        WorkloadStatusStateEnum.FAILED,
+        WorkloadStatusStateEnum.UNHEALTHY,
+        WorkloadStatusStateEnum.INACTIVE,
+        WorkloadStatusStateEnum.UNKNOWN,
+    ],
+)
+def test_initialize_later_follower_leaves_recovery_to_main(
+    manager, restart_on_error, local_state, workload_state
+):
+    serve, _ = manager
+    instance = _instance()
+    instance.state = ModelInstanceStateEnum.STARTING
+    instance.restart_count = 2
+    worker = instance.distributed_servers.subordinate_workers[0]
+    worker.state = local_state
+    worker.restart_count = 2
+    serve._get_model.return_value.restart_on_error = restart_on_error
+    workload = (
+        SimpleNamespace(state=workload_state) if workload_state is not None else None
+    )
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=workload),
+        patch.object(serve, "_start_model_instance") as start,
+        patch.object(serve, "_stop_model_instance") as stop,
+    ):
+        serve._dispatch_model_instance_event(
+            Event(type=EventType.UPDATED, data=instance)
+        )
+    start.assert_not_called()
+    stop.assert_not_called()
+
+
+@pytest.mark.parametrize("manager", [2], indirect=True)
+@pytest.mark.parametrize(
+    "instance_state, local_state, local_generation",
+    [
+        # The main worker announced a restart.
+        (ModelInstanceStateEnum.SCHEDULED, ModelInstanceStateEnum.RUNNING, 2),
+        (ModelInstanceStateEnum.SCHEDULED, ModelInstanceStateEnum.ERROR, 2),
+        # A workload started before generations were recorded.
+        (ModelInstanceStateEnum.SCHEDULED, ModelInstanceStateEnum.RUNNING, None),
+        # The SCHEDULED event was missed and the main worker has moved on.
+        (ModelInstanceStateEnum.STARTING, ModelInstanceStateEnum.RUNNING, 2),
+        (ModelInstanceStateEnum.RUNNING, ModelInstanceStateEnum.RUNNING, 2),
+    ],
+)
+def test_stale_follower_stops_and_waits_for_main(
+    manager, instance_state, local_state, local_generation
+):
+    serve, _ = manager
+    instance = _instance()
+    instance.state = instance_state
+    instance.restart_count = 3
+    worker = instance.distributed_servers.subordinate_workers[0]
+    worker.state = local_state
+    worker.state_message = "old failure"
+    worker.pid = 1234
+    worker.restart_count = local_generation
+    with (
+        patch.object(serve, "_start_model_instance") as start,
+        patch.object(serve, "_stop_model_instance") as stop,
+    ):
+        serve._dispatch_model_instance_event(
+            Event(type=EventType.UPDATED, data=instance)
+        )
+    stop.assert_called_once_with(instance, clear_restart_backoff=False)
+    start.assert_not_called()
+    assert instance.id in serve._model_instance_by_instance_id
+    update = serve._update_model_instance.call_args.kwargs[
+        "distributed_servers.subordinate_workers.0"
+    ]
+    assert update.state == ModelInstanceStateEnum.SCHEDULED
+    assert update.state_message == ""
+    assert update.pid is None
+    assert update.restart_count is None
+    # Do not mutate the watch cache before the update succeeds.
+    assert worker.state == local_state
+
+
+@pytest.mark.parametrize("manager", [2], indirect=True)
+def test_current_follower_is_not_stopped(manager):
+    serve, _ = manager
+    instance = _instance()
+    instance.state = ModelInstanceStateEnum.STARTING
+    instance.restart_count = 3
+    worker = instance.distributed_servers.subordinate_workers[0]
+    worker.state = ModelInstanceStateEnum.RUNNING
+    worker.restart_count = 3
+    with (
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+        patch.object(serve, "_start_model_instance") as start,
+        patch.object(serve, "_stop_model_instance") as stop,
+    ):
+        serve._dispatch_model_instance_event(
+            Event(type=EventType.UPDATED, data=instance)
+        )
+    start.assert_not_called()
+    stop.assert_not_called()
+
+
+@pytest.mark.parametrize("manager", [2], indirect=True)
+def test_follower_records_its_generation_when_launched(manager):
+    serve, _ = manager
+    instance = _instance()
+    instance.state = ModelInstanceStateEnum.STARTING
+    instance.restart_count = 5
+    instance.distributed_servers.subordinate_workers[0].state = (
+        ModelInstanceStateEnum.SCHEDULED
+    )
+    with patch.object(serve, "_assign_ports"):
+        serve._launch_model_instance(instance)
+    update = serve._update_model_instance.call_args.kwargs[
+        "distributed_servers.subordinate_workers.0"
+    ]
+    assert update.state == ModelInstanceStateEnum.RUNNING
+    assert update.restart_count == 5
+
+
+def _scheduled_on_main(subordinate_state):
+    instance = _instance()
+    instance.state = ModelInstanceStateEnum.SCHEDULED
+    instance.restart_count = 3
+    instance.distributed_servers.subordinate_workers[0].state = subordinate_state
+    instance.distributed_servers.subordinate_workers[0].worker_ip = "127.0.0.2"
+    return instance
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+@pytest.mark.parametrize(
+    "subordinate_state",
+    [ModelInstanceStateEnum.RUNNING, ModelInstanceStateEnum.ERROR],
+)
+def test_main_restart_waits_for_active_subordinates(manager, subordinate_state):
+    serve, _ = manager
+    instance = _scheduled_on_main(subordinate_state)
+    with patch.object(serve, "_restart_model_instance") as restart:
+        serve._dispatch_model_instance_event(
+            Event(type=EventType.UPDATED, data=instance)
+        )
+    restart.assert_not_called()
+    assert instance.id in serve._deferred_group_restarts
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+@pytest.mark.parametrize(
+    "subordinate_state",
+    [
+        ModelInstanceStateEnum.PENDING,
+        ModelInstanceStateEnum.SCHEDULED,
+        ModelInstanceStateEnum.DOWNLOADING,
+        # An unreachable worker cannot acknowledge. It stops when it returns.
+        ModelInstanceStateEnum.UNREACHABLE,
+    ],
+)
+def test_main_restarts_when_subordinates_are_not_active(manager, subordinate_state):
+    serve, _ = manager
+    instance = _scheduled_on_main(subordinate_state)
+    serve._deferred_group_restarts[instance.id] = 0.0
+    with patch.object(serve, "_restart_model_instance") as restart:
+        serve._dispatch_model_instance_event(
+            Event(type=EventType.UPDATED, data=instance)
+        )
+    restart.assert_called_once_with(instance)
+    assert instance.id not in serve._deferred_group_restarts
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+def test_main_restart_stops_waiting_after_timeout(manager):
+    serve, _ = manager
+    instance = _scheduled_on_main(ModelInstanceStateEnum.RUNNING)
+    with (
+        patch("gpustack.worker.serve_manager.time.monotonic", return_value=1000.0),
+        patch.object(serve, "_restart_model_instance") as restart,
+    ):
+        serve._deferred_group_restarts[instance.id] = 1000.0 - 119
+        serve._restart_scheduled_model_instance(instance)
+        restart.assert_not_called()
+        serve._deferred_group_restarts[instance.id] = 1000.0 - 120
+        serve._restart_scheduled_model_instance(instance)
+    restart.assert_called_once_with(instance)
+    assert instance.id not in serve._deferred_group_restarts
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+def test_run_first_main_restart_does_not_wait_for_subordinates(manager):
+    serve, _ = manager
+    instance = _scheduled_on_main(ModelInstanceStateEnum.ERROR)
+    instance.distributed_servers.mode = DistributedServerCoordinateModeEnum.RUN_FIRST
+    with patch.object(serve, "_restart_model_instance") as restart:
+        serve._restart_scheduled_model_instance(instance)
+    restart.assert_called_once_with(instance)
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+def test_duplicate_scheduled_event_does_not_restart_while_provisioning(manager):
+    serve, _ = manager
+    instance = _scheduled_on_main(ModelInstanceStateEnum.SCHEDULED)
+    with (
+        patch.object(serve, "_is_provisioning", return_value=True),
+        patch.object(serve, "_restart_model_instance") as restart,
+    ):
+        serve._dispatch_model_instance_event(
+            Event(type=EventType.UPDATED, data=instance)
+        )
+    restart.assert_not_called()
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+def test_deferred_restart_retries_from_live_state(manager):
+    serve, clientset = manager
+    instance = _scheduled_on_main(ModelInstanceStateEnum.SCHEDULED)
+    clientset.model_instances.get.return_value = instance
+    serve._deferred_group_restarts[instance.id] = 0.0
+    with patch.object(serve, "_restart_model_instance") as restart:
+        serve._retry_deferred_group_restarts()
+    clientset.model_instances.get.assert_called_once_with(
+        id=instance.id, use_cache=False
+    )
+    restart.assert_called_once_with(instance)
+    assert not serve._deferred_group_restarts
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+@pytest.mark.parametrize("reason", ["deleted", "moved-on", "reassigned"])
+def test_deferred_restart_is_dropped_when_no_longer_due(manager, reason):
+    serve, clientset = manager
+    instance = _scheduled_on_main(ModelInstanceStateEnum.RUNNING)
+    if reason == "deleted":
+        clientset.model_instances.get.side_effect = NotFoundException("gone")
+    else:
+        clientset.model_instances.get.return_value = instance
+    if reason == "moved-on":
+        instance.state = ModelInstanceStateEnum.STARTING
+    if reason == "reassigned":
+        instance.worker_id = 9
+    serve._deferred_group_restarts[instance.id] = 0.0
+    with patch.object(serve, "_restart_model_instance") as restart:
+        serve._retry_deferred_group_restarts()
+    restart.assert_not_called()
+    assert not serve._deferred_group_restarts
 
 
 @pytest.mark.parametrize("manager", [2], indirect=True)
@@ -1023,19 +1283,55 @@ def test_follower_recovery_uses_current_restart_policy(manager):
 
 @pytest.mark.parametrize("manager", [1], indirect=True)
 @pytest.mark.parametrize(
-    "local_state, restart_on_error, should_update",
+    "mode, local_state, restart_on_error, should_update",
     [
-        (ModelInstanceStateEnum.ERROR, False, True),
-        (ModelInstanceStateEnum.ERROR, True, False),
-        (ModelInstanceStateEnum.PENDING, False, False),
+        (
+            DistributedServerCoordinateModeEnum.RUN_FIRST,
+            ModelInstanceStateEnum.ERROR,
+            False,
+            True,
+        ),
+        (
+            DistributedServerCoordinateModeEnum.RUN_FIRST,
+            ModelInstanceStateEnum.ERROR,
+            True,
+            False,
+        ),
+        (
+            DistributedServerCoordinateModeEnum.RUN_FIRST,
+            ModelInstanceStateEnum.PENDING,
+            False,
+            False,
+        ),
+        # INITIALIZE_LATER followers never recover on their own, so the failure
+        # always has to reach the main worker.
+        (
+            DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+            ModelInstanceStateEnum.ERROR,
+            False,
+            True,
+        ),
+        (
+            DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+            ModelInstanceStateEnum.ERROR,
+            True,
+            True,
+        ),
+        (
+            DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+            ModelInstanceStateEnum.PENDING,
+            False,
+            False,
+        ),
     ],
 )
 def test_starting_main_observes_follower_recovery_policy(
-    manager, local_state, restart_on_error, should_update
+    manager, mode, local_state, restart_on_error, should_update
 ):
     serve, clientset = manager
     instance = _instance()
     instance.state = ModelInstanceStateEnum.STARTING
+    instance.distributed_servers.mode = mode
     worker = instance.distributed_servers.subordinate_workers[0]
     worker.state = local_state
     worker.state_message = (
@@ -1048,7 +1344,10 @@ def test_starting_main_observes_follower_recovery_policy(
         return_value=SimpleNamespace(state=WorkloadStatusStateEnum.INITIALIZING),
     ):
         serve.sync_model_instances_state()
-    if local_state == ModelInstanceStateEnum.ERROR:
+    if (
+        local_state == ModelInstanceStateEnum.ERROR
+        and mode == DistributedServerCoordinateModeEnum.RUN_FIRST
+    ):
         clientset.models.get.assert_called_with(instance.model_id, use_cache=True)
     if not should_update:
         serve._update_model_instance.assert_not_called()

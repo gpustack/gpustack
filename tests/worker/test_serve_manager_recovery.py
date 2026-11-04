@@ -682,3 +682,61 @@ def test_failed_recovery_write_does_not_mutate_watch_cache(recovery, subordinate
         recovery.instance.distributed_servers.subordinate_workers[0].state
         == ModelInstanceStateEnum.RUNNING
     )
+
+
+def _dispatch(manager, recovery):
+    manager._dispatch_model_instance_event(
+        Event(type=EventType.UPDATED, data=recovery.instance.model_copy(deep=True))
+    )
+
+
+def test_main_crash_restarts_the_group_in_order(recovery, monkeypatch):
+    """A surviving follower must never meet the main worker's next generation."""
+    main, follower = recovery.managers
+    calls = []
+    for name, manager in (("main", main), ("follower", follower)):
+        monkeypatch.setattr(
+            manager,
+            "_stop_model_instance",
+            lambda mi, name=name, **kwargs: calls.append(f"{name}-stop"),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_start_model_instance",
+            lambda mi, name=name: calls.append(f"{name}-start"),
+        )
+    recovery.clients[0].models.get.return_value.restart_on_error = True
+    instance = recovery.instance
+    instance.state = ModelInstanceStateEnum.ERROR
+    instance.restart_count = 3
+    worker = instance.distributed_servers.subordinate_workers[0]
+    worker.state = ModelInstanceStateEnum.RUNNING
+    worker.state_message = ""
+    worker.restart_count = 3
+
+    # The main process dies while its follower still looks healthy.
+    main._restart_error_model_instance(instance.model_copy(deep=True))
+    assert recovery.instance.state == ModelInstanceStateEnum.SCHEDULED
+    assert recovery.instance.restart_count == 4
+
+    _dispatch(main, recovery)
+    assert calls == []
+
+    # The follower stops, and that update is what releases the main worker.
+    _dispatch(follower, recovery)
+    assert calls == ["follower-stop"]
+    worker = recovery.instance.distributed_servers.subordinate_workers[0]
+    assert worker.state == ModelInstanceStateEnum.SCHEDULED
+    assert worker.restart_count is None
+    recovery.workload = None
+
+    _dispatch(follower, recovery)
+    assert calls == ["follower-stop"]
+
+    _dispatch(main, recovery)
+    assert calls == ["follower-stop", "main-stop", "main-start"]
+
+    # Only now may the follower of the new generation start.
+    recovery.instance.state = ModelInstanceStateEnum.STARTING
+    _dispatch(follower, recovery)
+    assert calls == ["follower-stop", "main-stop", "main-start", "follower-start"]

@@ -114,6 +114,15 @@ _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE = "Inference health check failed."
 # Last-resort message for a workload that stopped serving without saying why.
 _WORKLOAD_FAILED_MESSAGE = "Inference server exited or unhealthy."
 _SUBORDINATE_ERROR_PREFIX = "Distributed serving error in subordinate worker "
+# A subordinate in one of these states has no workload for the current generation.
+_SUBORDINATE_UNSTARTED_STATES = (
+    ModelInstanceStateEnum.PENDING,
+    ModelInstanceStateEnum.SCHEDULED,
+    ModelInstanceStateEnum.DOWNLOADING,
+)
+# How long a main worker waits for subordinates to stop before restarting anyway,
+# so that a hung subordinate worker cannot block recovery forever.
+_SUBORDINATE_QUIESCE_TIMEOUT_SECONDS = 120
 
 # vLLM excludes a ten-port window starting at VLLM_DP_MASTER_PORT from its
 # other automatic port selections. Protect that window for MP topologies
@@ -432,6 +441,8 @@ class ServeManager(ContainerLogPersister):
         self._port_reservations = port_reservations or WorkerPortReservations()
         self._assigned_ports = self._port_reservations.model_ports
         self._restart_backoff_counts: Dict[int, int] = {}
+        # Instance id -> when its main worker began waiting for subordinates.
+        self._deferred_group_restarts: Dict[int, float] = {}
         # Recognises a member that keeps restarting without ever serving. In
         # this process rather than on the row because the signal is a rate, and
         # the row records only a cumulative count and the last restart's time.
@@ -505,6 +516,7 @@ class ServeManager(ContainerLogPersister):
         while True:
             try:
                 await asyncio.to_thread(self._retry_distributed_port_releases)
+                await asyncio.to_thread(self._retry_deferred_group_restarts)
                 for mi in list(self._error_model_instances.values()):
                     await asyncio.to_thread(self._restart_error_model_instance, mi)
                 await asyncio.sleep(10)
@@ -696,11 +708,18 @@ class ServeManager(ContainerLogPersister):
                         subordinate_state
                         and subordinate_state.get("state")
                         == ModelInstanceStateEnum.ERROR
-                        and not self._auto_restart_enabled(model_instance)
+                        and (
+                            model_instance.distributed_servers.mode
+                            == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                            or not self._auto_restart_enabled(model_instance)
+                        )
                     ):
                         # The main engine may wait for a follower indefinitely.
                         # Surface a terminal follower failure instead of waiting
                         # for an HTTP listener that cannot finish initializing.
+                        # INITIALIZE_LATER followers never recover on their own,
+                        # so the failure must reach the main worker's group restart
+                        # even when automatic recovery is enabled.
                         if subordinate_state["should_update"]:
                             self._update_model_instance(
                                 model_instance.id,
@@ -1396,6 +1415,10 @@ class ServeManager(ContainerLogPersister):
             # Track local followers even while they wait to start. Reaping
             # needs their workload metadata after the server deletes the row.
             self._model_instance_by_instance_id[mi.id] = mi
+            # A new generation must not find this one still running. This has to
+            # precede the gate below, which holds until the main worker restarted.
+            if event.type == EventType.UPDATED and self._quiesce_stale_subordinate(mi):
+                return
             # Return if the main worker isn't initialized.
             if (
                 mi.distributed_servers.mode
@@ -1452,10 +1475,7 @@ class ServeManager(ContainerLogPersister):
 
             # Restart if scheduled and this is the assigned worker.
             if is_main_worker and mi.state == ModelInstanceStateEnum.SCHEDULED:
-                self._restart_model_instance(mi)
-                logger.trace(
-                    f"UPDATED event: restarted scheduled model instance {mi.name}."
-                )
+                self._restart_scheduled_model_instance(mi)
 
             # Start on subordinate worker if not started yet, or restart if failed.
             if not is_main_worker:
@@ -1494,10 +1514,18 @@ class ServeManager(ContainerLogPersister):
             if worker.worker_id == self._worker_id
         )
         initial_start = not workload and subordinate.state in (
-            ModelInstanceStateEnum.PENDING,
-            ModelInstanceStateEnum.SCHEDULED,
-            ModelInstanceStateEnum.DOWNLOADING,
+            _SUBORDINATE_UNSTARTED_STATES
         )
+        # A new follower cannot rejoin engines that have already started. Its
+        # failure is reported by the sync loop, and the main worker restarts the
+        # whole group: recreating only this follower leaves the two sides on
+        # different generations, each failing the other's startup handshake.
+        if (
+            mi.distributed_servers.mode
+            == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+            and subordinate.state not in _SUBORDINATE_UNSTARTED_STATES
+        ):
+            return
         # The parent can still be STARTING after this follower fails. Its
         # local state distinguishes first launch from recovery on later events.
         if not initial_start and not self._auto_restart_enabled(
@@ -1517,6 +1545,115 @@ class ServeManager(ContainerLogPersister):
         logger.trace(
             f"UPDATED event: started model instance {mi.name} on subordinate worker."
         )
+
+    def _quiesce_stale_subordinate(self, mi: ModelInstance) -> bool:
+        """Stop this worker's follower if it belongs to an earlier generation.
+
+        Returns True if it was stopped. The follower goes back to SCHEDULED, so
+        the first-start path launches it once the main worker reaches STARTING.
+        """
+        if (
+            mi.distributed_servers.mode
+            != DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+        ):
+            return False
+
+        sw_pos, sw = next(
+            (pos, sw)
+            for pos, sw in enumerate(mi.distributed_servers.subordinate_workers)
+            if sw.worker_id == self._worker_id
+        )
+        restart_count = mi.restart_count or 0
+        older_generation = sw.restart_count not in (None, restart_count)
+        # Also covers workloads started before restart_count was recorded here.
+        restart_pending = mi.state == ModelInstanceStateEnum.SCHEDULED and (
+            sw.state not in _SUBORDINATE_UNSTARTED_STATES
+            and sw.state != ModelInstanceStateEnum.UNREACHABLE
+        )
+        if not older_generation and not restart_pending:
+            return False
+
+        self._stop_model_instance(mi, clear_restart_backoff=False)
+        # Stopping forgets the instance, but followers stay tracked for reaping.
+        self._model_instance_by_instance_id[mi.id] = mi
+        self._update_model_instance(
+            mi.id,
+            **{
+                f"distributed_servers.subordinate_workers.{sw_pos}": sw.model_copy(
+                    update={
+                        "state": ModelInstanceStateEnum.SCHEDULED,
+                        "state_message": "",
+                        "pid": None,
+                        "restart_count": None,
+                    }
+                )
+            },
+        )
+        logger.info(
+            f"Stopped subordinate of model instance {mi.name} "
+            f"for restart generation {restart_count}."
+        )
+        return True
+
+    def _restart_scheduled_model_instance(self, mi: ModelInstance) -> None:
+        """Restart on the main worker once subordinates have stopped.
+
+        A surviving follower of the previous generation can reach the new main
+        process during its startup handshake, which vLLM treats as fatal.
+        """
+        # Equivalent SCHEDULED events can arrive before INITIALIZING is seen.
+        if self._is_provisioning(mi):
+            logger.trace(f"Model instance {mi.name} is already provisioning.")
+            return
+
+        active = [
+            sw.worker_ip
+            for sw in (
+                mi.distributed_servers.subordinate_workers
+                if mi.distributed_servers
+                and mi.distributed_servers.mode
+                == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                and mi.distributed_servers.subordinate_workers
+                else []
+            )
+            if sw.state not in _SUBORDINATE_UNSTARTED_STATES
+            and sw.state != ModelInstanceStateEnum.UNREACHABLE
+        ]
+        if active:
+            now = time.monotonic()
+            waiting_since = self._deferred_group_restarts.setdefault(mi.id, now)
+            if now - waiting_since < _SUBORDINATE_QUIESCE_TIMEOUT_SECONDS:
+                logger.info(
+                    f"Model instance {mi.name} waits for subordinate workers "
+                    f"{active} to stop before restarting."
+                )
+                return
+            logger.warning(
+                f"Restarting model instance {mi.name} although subordinate workers "
+                f"{active} did not stop in time."
+            )
+
+        self._deferred_group_restarts.pop(mi.id, None)
+        self._restart_model_instance(mi)
+        logger.trace(f"Restarted scheduled model instance {mi.name}.")
+
+    def _retry_deferred_group_restarts(self) -> None:
+        """Re-evaluate waiting restarts, since a hung follower sends no event."""
+        for instance_id in list(self._deferred_group_restarts):
+            try:
+                mi = self._clientset.model_instances.get(
+                    id=instance_id, use_cache=False
+                )
+            except NotFoundException:
+                self._deferred_group_restarts.pop(instance_id, None)
+                continue
+            if (
+                mi.state != ModelInstanceStateEnum.SCHEDULED
+                or mi.worker_id != self._worker_id
+            ):
+                self._deferred_group_restarts.pop(instance_id, None)
+                continue
+            self._restart_scheduled_model_instance(mi)
 
     def _get_numbered_log_path(self, mi: ModelInstance) -> str:
         """Get log file path with restart count.
@@ -2062,6 +2199,7 @@ class ServeManager(ContainerLogPersister):
                 ):
                     sw.state = ModelInstanceStateEnum.RUNNING
                 sw.pid = process.pid
+                sw.restart_count = mi.restart_count or 0
                 patch_dict = {
                     f"distributed_servers.subordinate_workers.{sw_pos}": sw,
                 }

@@ -1742,6 +1742,9 @@ class ModelInstanceSubordinateWorker(BaseModel):
     state_message: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
+    # The instance's restart_count this subordinate's workload was started for.
+    # None means nothing has been started for the current generation yet.
+    restart_count: Optional[int] = None
 
 
 class DistributedServerCoordinateModeEnum(Enum):
