@@ -3,7 +3,6 @@ from typing import List, Tuple
 
 from gpustack.schemas.models import Model
 from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.utils.version import worker_version_matches_server
 from gpustack.utils.model_instance_workers import (
     worker_supports_model_instance_workloads,
 )
@@ -26,9 +25,7 @@ class StatusFilter:
         for worker in workers:
             if worker.state != WorkerStateEnum.READY:
                 continue
-            if not worker_version_matches_server(
-                getattr(worker, 'worker_version', None)
-            ) or (
+            if (
                 self._require_managed_worker_binding
                 and not worker_supports_model_instance_workloads(worker)
             ):
@@ -39,16 +36,16 @@ class StatusFilter:
         messages = []
         if len(candidates) != len(workers):
             criterion = (
-                "READY status, matching Server version and bound Worker identity"
+                "READY status and bound Worker identity"
                 if self._require_managed_worker_binding
-                else "READY status and matching Server version"
+                else "READY status"
             )
             messages = [
                 f"Matched {len(candidates)}/{len(workers)} workers by {criterion}."
             ]
         if incompatible:
             messages.append(
-                "Workers must run the same version as the Server; managed workloads "
-                "also require a bound Worker identity. Upgrade or re-register incompatible Workers."
+                "Managed workloads require a bound Worker identity; "
+                "re-register unbound Workers."
             )
         return candidates, messages

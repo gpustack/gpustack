@@ -79,6 +79,7 @@ async def test_flush_keeps_registered_version_instead_of_late_packet(
     empty, monkeypatch
 ):
     from contextlib import asynccontextmanager
+    from datetime import datetime, timezone
     from unittest.mock import AsyncMock
     from gpustack.server import worker_status_buffer as buffer
     from gpustack.schemas.workers import (
@@ -95,6 +96,7 @@ async def test_flush_keeps_registered_version_instead_of_late_packet(
         status=WorkerStatus(),
         worker_version='2.3.0',
         state=WorkerStateEnum.NOT_READY,
+        heartbeat_time=datetime.now(timezone.utc),
     )
     stale = fresh.model_copy(deep=True)
     stale.worker_version = '2.3.1'
@@ -123,4 +125,4 @@ async def test_flush_keeps_registered_version_instead_of_late_packet(
     assert locked.await_args.kwargs['for_update'] is True
     assert persist.await_args.args[0] == [fresh]
     assert fresh.worker_version == '2.3.0'
-    assert fresh.state == WorkerStateEnum.NOT_READY
+    assert fresh.state == WorkerStateEnum.READY

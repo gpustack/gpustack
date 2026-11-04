@@ -46,7 +46,6 @@ from gpustack.server.worker_status_buffer import (
 )
 from gpustack.schemas.models import ModelInstance
 from gpustack.utils.model_instance_workers import (
-    assigned_managed_workload_worker_ids,
     get_model_instance_worker_match,
 )
 from gpustack.schemas.workers import (
@@ -91,7 +90,6 @@ from gpustack.server.services import WorkerService
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
 from gpustack.utils.grafana import resolve_grafana_base_url
 from gpustack.utils.labels import LabelFilter
-from gpustack.utils.version import worker_version_matches_server
 
 router = APIRouter()
 system_name_prefix = "system/worker"
@@ -867,21 +865,6 @@ async def _registration_instances(session, worker):
         return result.all()
 
 
-async def _check_registration_version(session, existing, incoming, instances):
-    """Persist a version mismatch before rejecting existing managed assignments."""
-    if (
-        existing is not None
-        and not worker_version_matches_server(incoming.worker_version)
-        and existing.id in assigned_managed_workload_worker_ids(instances)
-    ):
-        existing.worker_version = incoming.worker_version
-        existing.compute_state()
-        await WorkerService(session).update(existing)
-        raise ConflictException(
-            message="Worker and Server versions must match before serving assigned managed model instances"
-        )
-
-
 @router.post("", response_model=WorkerRegistrationPublic)
 async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
     cluster_id = _resolve_create_worker_cluster_id(user, worker_in)
@@ -920,9 +903,6 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                 raise NotFoundException(message="Cluster not found")
 
             instances = await _registration_instances(session, existing_worker)
-            await _check_registration_version(
-                session, existing_worker, worker_in, instances
-            )
             existing_principal = await _resolve_existing_worker_principal(
                 session, existing_worker
             )

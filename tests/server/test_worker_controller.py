@@ -834,51 +834,36 @@ def test_worker_status_does_not_expose_orchestration_admission_fields():
     assert 'orchestration' not in WorkerStatus.model_json_schema()['properties']
 
 
+@pytest.mark.parametrize('version', [None, 'unknown', '2.3.0', '2.3.1', '2.3.1-ent2'])
 @pytest.mark.parametrize('maintenance', [False, True])
-def test_version_mismatch_is_not_cleared_by_maintenance_or_late_status(
-    maintenance, monkeypatch
-):
+def test_version_mismatch_keeps_normal_state_rules(version, maintenance, monkeypatch):
     monkeypatch.setattr(
-        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1-ent1', 'test')
     )
     worker = linux_nvidia_1_4090_24gx1()
-    worker.worker_version = '2.3.0'
+    worker.worker_version = version
     worker.heartbeat_time = datetime.now(timezone.utc)
+    worker.unreachable = False
     worker.maintenance = Maintenance(enabled=maintenance, message='planned')
     worker.state, worker.state_message = WorkerStateEnum.READY, None
     worker.compute_state()
-    assert worker.state == WorkerStateEnum.NOT_READY
-    assert 'version' in worker.state_message.lower()
-    worker.state, worker.state_message = WorkerStateEnum.READY, None
-    worker.compute_state()
-    assert worker.state == WorkerStateEnum.NOT_READY
+    assert worker.state == (
+        WorkerStateEnum.MAINTENANCE if maintenance else WorkerStateEnum.READY
+    )
+    assert worker.state_message == ('planned' if maintenance else None)
 
 
-@pytest.mark.parametrize(
-    'version,bound,supported',
-    [
-        (None, 11, False),
-        ('unknown', 11, False),
-        ('2.3.0', 11, False),
-        ('2.3.1', None, False),
-        ('2.3.1', 11, True),
-        ('0.0.0', 11, True),
-    ],
-)
-def test_managed_worker_requires_matching_version_and_identity(
-    version, bound, supported, monkeypatch
-):
+@pytest.mark.parametrize('version', [None, 'unknown', '2.3.0', '2.3.1', '2.3.1-ent2'])
+@pytest.mark.parametrize('bound', [None, 11])
+def test_managed_worker_requires_identity_regardless_of_version(version, bound):
     from gpustack.utils.model_instance_workers import (
         worker_supports_model_instance_workloads,
     )
 
-    monkeypatch.setattr(
-        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
-    )
     worker = linux_nvidia_1_4090_24gx1()
     worker.system_principal_id = bound
     worker.worker_version = version
-    assert worker_supports_model_instance_workloads(worker) is supported
+    assert worker_supports_model_instance_workloads(worker) is bool(bound)
 
 
 def test_managed_protocol_cohort_distinguishes_unassigned_pending_and_assigned_router():
@@ -922,7 +907,7 @@ def test_matching_worker_version_keeps_normal_state_rules(maintenance, monkeypat
 @pytest.mark.parametrize(
     'state', [state for state in WorkerStateEnum if state.is_provisioning]
 )
-def test_version_check_preserves_worker_provisioning_states(state, monkeypatch):
+def test_worker_provisioning_states_ignore_version(state, monkeypatch):
     monkeypatch.setattr(
         'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
     )
@@ -959,7 +944,7 @@ def test_assigned_legacy_stop_requires_the_complete_model_cohort():
     'changed_identity',
     [None, 'ip', 'cluster_id', 'system_principal_id', 'token', 'proxy_address'],
 )
-async def test_worker_sync_ignores_late_identity_and_preserves_locked_admission(
+async def test_worker_sync_ignores_late_identity_and_preserves_registered_version(
     managed_worker, changed_identity, monkeypatch
 ):
     monkeypatch.setattr(
@@ -1017,7 +1002,7 @@ async def test_worker_sync_ignores_late_identity_and_preserves_locked_admission(
     if changed_identity is None:
         assert persist.await_args.args[0] == [stored]
         assert not stored.unreachable
-        assert stored.state == WorkerStateEnum.NOT_READY
+        assert stored.state == WorkerStateEnum.READY
         assert stored.worker_version == '2.3.0'
     else:
         assert persist.await_args.args[0] == []

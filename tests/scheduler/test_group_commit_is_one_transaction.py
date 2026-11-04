@@ -291,8 +291,8 @@ def _registered_worker(identity=7, supported=True):
         cluster_id=1,
         deleted_at=None,
         state='ready',
-        system_principal_id=identity + 100,
-        worker_version='2.3.1' if supported else '2.3.0',
+        system_principal_id=identity + 100 if supported else None,
+        worker_version='2.3.0',
     )
 
 
@@ -388,8 +388,6 @@ async def test_managed_admission_locks_workers_before_current_instance_cohort(
 @pytest.mark.parametrize(
     'fault',
     [
-        'version',
-        'unknown_version',
         'unbound',
         'deleted',
         'cluster',
@@ -402,11 +400,7 @@ async def test_managed_candidate_changed_after_solve_is_refused(
 ):
     s = managed_admission
     worker = s.workers[7]
-    if fault == 'version':
-        worker.worker_version = '2.3.0'
-    elif fault == 'unknown_version':
-        worker.worker_version = 'unknown'
-    elif fault == 'unbound':
+    if fault == 'unbound':
         worker.system_principal_id = None
     elif fault == 'deleted':
         worker.deleted_at = object()
@@ -424,7 +418,7 @@ async def test_managed_candidate_changed_after_solve_is_refused(
 
 
 @pytest.mark.asyncio
-async def test_managed_subordinate_and_existing_legacy_router_require_version(
+async def test_managed_subordinate_and_existing_legacy_router_require_identity(
     managed_admission,
 ):
     from gpustack.schemas.models import ModelInstanceSubordinateWorker
@@ -505,7 +499,7 @@ async def test_managed_writeback_compares_preparation_snapshot(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('failure', ['version', 'drain'])
+@pytest.mark.parametrize('failure', ['identity', 'drain'])
 async def test_group_last_member_failure_has_zero_assignment_writes(
     managed_admission, monkeypatch, caplog, failure
 ):
@@ -527,8 +521,8 @@ async def test_group_last_member_failure_has_zero_assignment_writes(
     original = Worker.all_by_ids.side_effect
 
     async def lock(*args, **kwargs):
-        if failure == 'version':
-            s.workers[8].worker_version = '2.3.0'
+        if failure == 'identity':
+            s.workers[8].system_principal_id = None
         return await original(*args, **kwargs)
 
     monkeypatch.setattr(Worker, 'all_by_ids', AsyncMock(side_effect=lock))
@@ -596,22 +590,19 @@ async def test_complete_group_admission_locks_once_then_writes_one_batch(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    'version,accepted', [('2.3.1', True), ('2.3.0', False), (None, False)]
-)
-async def test_legacy_candidate_requires_matching_version(
-    managed_admission, version, accepted
+@pytest.mark.parametrize('version', ['2.3.1', '2.3.0', '2.3.1-ent1', None, 'unknown'])
+@pytest.mark.parametrize('managed', [False, True])
+async def test_candidate_version_does_not_block_assignment(
+    managed_admission, version, managed
 ):
     s = managed_admission
-    s.target.distributed_servers = DistributedServers(workloads=None)
-    s.workers[7].system_principal_id = None
+    if not managed:
+        s.target.distributed_servers = DistributedServers(workloads=None)
+        s.workers[7].system_principal_id = None
     s.workers[7].worker_version = version
-    assert (
-        await apply_candidate_to_instance(s.session, s.model, s.target, s.candidate)
-        is accepted
-    )
-    assert s.target.worker_id == (7 if accepted else None)
-    assert s.write.await_count == int(accepted)
+    assert await apply_candidate_to_instance(s.session, s.model, s.target, s.candidate)
+    assert s.target.worker_id == 7
+    s.write.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -657,7 +648,7 @@ async def test_legacy_becoming_managed_cohort_requires_retry_before_assignment(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('state', ['maintenance', 'unreachable'])
-async def test_version_capable_existing_sibling_does_not_require_candidate_ready_state(
+async def test_bound_existing_sibling_does_not_require_candidate_ready_state(
     managed_admission, state
 ):
     s = managed_admission
@@ -675,7 +666,7 @@ async def test_version_capable_existing_sibling_does_not_require_candidate_ready
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('has_resource_view', [False, True])
-async def test_incompatible_version_returns_before_resource_and_filter_work(
+async def test_unbound_cohort_returns_before_resource_and_filter_work(
     managed_admission, monkeypatch, has_resource_view
 ):
     from unittest.mock import MagicMock
@@ -683,7 +674,7 @@ async def test_incompatible_version_returns_before_resource_and_filter_work(
 
     s = managed_admission
     s.target.worker_id = 7
-    s.workers[7].worker_version = '2.3.0'
+    s.workers[7].system_principal_id = None
     load = AsyncMock(side_effect=AssertionError('resource loading is unnecessary'))
     topology = AsyncMock(side_effect=AssertionError('topology is unnecessary'))
     filters = MagicMock(side_effect=AssertionError('filters are unnecessary'))

@@ -42,16 +42,16 @@ async def _stop_task(task: asyncio.Task) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'state,version,upgrade',
+    'state,bound,registration_needed',
     [
-        ('ready', '2.3.0', True),
-        ('ready', '2.3.1', False),
-        ('not_ready', '2.3.0', False),
-        ('unreachable', '2.3.1', False),
+        ('ready', 7, False),
+        ('ready', None, True),
+        ('not_ready', 7, False),
+        ('unreachable', 7, False),
     ],
 )
 async def test_managed_admission_message_distinguishes_offline_workers(
-    state, version, upgrade, monkeypatch
+    state, bound, registration_needed, monkeypatch
 ):
     monkeypatch.setattr(
         'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
@@ -60,14 +60,14 @@ async def test_managed_admission_message_distinguishes_offline_workers(
 
     worker = SimpleNamespace(
         state=state,
-        system_principal_id=7,
-        worker_version=version,
+        system_principal_id=bound,
+        worker_version='2.3.0',
     )
     candidates, messages = await StatusFilter(None, True).filter([worker])
-    assert bool(candidates) == (state == 'ready' and version == '2.3.1')
+    assert bool(candidates) == (state == 'ready' and bound is not None)
     assert (
-        any('upgrade or re-register' in message.lower() for message in messages)
-        == upgrade
+        any('re-register' in message.lower() for message in messages)
+        == registration_needed
     )
 
 
@@ -193,7 +193,7 @@ async def test_scheduler_handles_live_created_event_with_single_instance_path():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('transition', ['version_only', 'not_ready_to_ready'])
+@pytest.mark.parametrize('transition', ['identity_binding', 'not_ready_to_ready'])
 async def test_periodic_retry_observes_current_worker_admission_without_generation_change(
     transition,
     monkeypatch,
@@ -227,7 +227,8 @@ async def test_periodic_retry_observes_current_worker_admission_without_generati
     )
     if transition == 'not_ready_to_ready':
         worker.state = 'not_ready'
-        worker.worker_version = '2.3.1'
+    else:
+        worker.system_principal_id = None
     model = Model(id=1, name='m', source='huggingface', huggingface_repo_id='a/b')
     eligibility = []
 
@@ -247,7 +248,7 @@ async def test_periodic_retry_observes_current_worker_admission_without_generati
         ) as evaluate_mock,
     ):
         await scheduler._enqueue_pending_instances()
-        worker.worker_version = '2.3.1'
+        worker.system_principal_id = 101
         worker.state = 'ready'
         await scheduler._enqueue_pending_instances()
     assert eligibility == [[], [1]]

@@ -27,7 +27,6 @@ from typing import List
 from sqlalchemy.orm import declarative_base
 
 from gpustack.utils.network import is_offline
-from gpustack.utils.version import worker_version_matches_server
 from .clusters import ClusterProvider, Cluster, WorkerPool
 
 if TYPE_CHECKING:
@@ -438,15 +437,6 @@ class WorkerBase(WorkerCreate):
     )
 
     def compute_state(self):
-        if not self.state.is_provisioning and not worker_version_matches_server(
-            self.worker_version
-        ):
-            self.state = WorkerStateEnum.NOT_READY
-            self.state_message = (
-                "Worker version is missing or does not match the Server version. "
-                "Upgrade or re-register the worker with the same version as the Server."
-            )
-            return
         if self.maintenance and self.maintenance.enabled:
             self.state = WorkerStateEnum.MAINTENANCE
             self.state_message = self.maintenance.message

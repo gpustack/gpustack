@@ -118,7 +118,6 @@ from gpustack.server.services import (
 from gpustack.utils.command import find_last_parameter, find_parameter
 from gpustack.utils.gpu import group_gpu_ids_by_worker
 from gpustack.utils.hub import has_diffusers_model_index
-from gpustack.utils.version import worker_version_matches_server
 from gpustack.utils.math import largest_power_of_2_leq
 from gpustack.utils.model_source import get_draft_model_source
 from gpustack.scheduler.calculator import get_pretrained_config_with_workers
@@ -623,9 +622,8 @@ class Scheduler:
 
 
 _MANAGED_WORKER_MESSAGE = (
-    "Managed workloads require READY candidate Workers and bound identities with "
-    "matching Server versions for every candidate and assigned cohort Worker; "
-    "upgrade or re-register incompatible Workers."
+    "Managed workloads require READY candidate Workers and bound identities for "
+    "every candidate and assigned cohort Worker; re-register unbound Workers."
 )
 
 
@@ -668,7 +666,6 @@ def _worker_admitted(worker, model, requires_managed, *, require_ready=True):
         and worker.deleted_at is None
         and (not require_ready or worker.state == WorkerStateEnum.READY)
         and worker.cluster_id == model.cluster_id
-        and worker_version_matches_server(getattr(worker, 'worker_version', None))
         and (not requires_managed or worker_supports_model_instance_workloads(worker))
     )
 

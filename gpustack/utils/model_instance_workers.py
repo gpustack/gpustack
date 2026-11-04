@@ -19,7 +19,6 @@ from gpustack.schemas.models import (
 )
 
 from gpustack.schemas.workers import Worker
-from gpustack.utils.version import worker_version_matches_server
 
 
 @dataclass(frozen=True)
@@ -184,11 +183,8 @@ def requires_model_instance_stop_barrier(instance: ModelInstanceBase) -> bool:
 
 
 def worker_supports_model_instance_workloads(worker: Worker) -> bool:
-    """Require a bound Worker running the Server's version."""
-    return bool(
-        worker.system_principal_id
-        and worker_version_matches_server(worker.worker_version)
-    )
+    """Require a bound Worker identity for managed workloads."""
+    return bool(worker.system_principal_id)
 
 
 def model_requires_managed_worker_binding(

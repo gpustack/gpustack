@@ -25,13 +25,6 @@ from gpustack.schemas.models import (
 )
 
 
-@pytest.fixture(autouse=True)
-def server_version(monkeypatch):
-    monkeypatch.setattr(
-        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
-    )
-
-
 def _model(**kwargs):
     base = dict(
         id=1,
@@ -328,13 +321,13 @@ def _admission_worker(identity=7, supported=True):
         cluster_id=None,
         deleted_at=None,
         state='ready',
-        system_principal_id=identity + 100,
-        worker_version='2.3.1' if supported else '2.3.0',
+        system_principal_id=identity + 100 if supported else None,
+        worker_version='2.3.0',
     )
 
 
 @pytest.mark.asyncio
-async def test_version_filter_keeps_target_marker_before_exclusion_and_role_projection(
+async def test_identity_filter_keeps_target_marker_before_exclusion_and_role_projection(
     harness,
 ):
     from gpustack.schemas.models import DistributedServers
@@ -356,23 +349,27 @@ async def test_version_filter_keeps_target_marker_before_exclusion_and_role_proj
     status = next(f for f in harness.filters_seen[0] if isinstance(f, StatusFilter))
     kept, messages = await status.filter([_admission_worker(supported=False)])
     assert kept == []
-    assert any('Server' in message for message in messages)
+    assert any('identity' in message for message in messages)
     assert status._model is not model
 
 
 @pytest.mark.asyncio
-async def test_initial_version_filter_prevents_old_worker_candidate_construction(
-    harness, monkeypatch
+@pytest.mark.parametrize('bound', [False, True])
+async def test_initial_identity_filter_admits_bound_workers_regardless_of_version(
+    harness, monkeypatch, bound
 ):
     from gpustack.schemas.models import DistributedServers
     from gpustack.policies.worker_filters.status_filter import StatusFilter
     from tests.utils.model import new_model_instance
 
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1-ent1', 'test')
+    )
     model = _model()
     pending = new_model_instance(10, 'new', model.id)
     pending.distributed_servers = DistributedServers(workloads=[])
 
-    class ProtocolChain:
+    class IdentityChain:
         def __init__(self, filters):
             self.filters = filters
 
@@ -381,22 +378,27 @@ async def test_initial_version_filter_prevents_old_worker_candidate_construction
                 f for f in self.filters if isinstance(f, StatusFilter)
             ).filter(workers)
 
-    monkeypatch.setattr(scheduler, 'WorkerFilterChain', ProtocolChain)
+    monkeypatch.setattr(scheduler, 'WorkerFilterChain', IdentityChain)
     candidate, messages = await scheduler.find_candidate(
         None,
         SimpleNamespace(cache_dir=None),
         model,
-        [_admission_worker(supported=False)],
+        [_admission_worker(supported=bound)],
         [pending],
         exclude_instance_id=10,
     )
     assert candidate is None
-    assert any('Server' in message for message in messages)
-    assert all(not cls.seen for cls in harness.selectors.values())
+    if bound:
+        assert harness.selectors['VLLMResourceFitSelector'].seen
+    else:
+        assert any('identity' in message for message in messages)
+        assert all(not cls.seen for cls in harness.selectors.values())
 
 
 @pytest.mark.asyncio
-async def test_pending_managed_model_cannot_join_old_assigned_legacy_router(harness):
+async def test_pending_managed_model_cannot_join_unbound_assigned_legacy_router(
+    harness,
+):
     from gpustack.schemas.models import DistributedServers
     from tests.utils.model import new_model_instance
 
@@ -414,12 +416,12 @@ async def test_pending_managed_model_cannot_join_old_assigned_legacy_router(harn
         exclude_instance_id=10,
     )
     assert candidate is None
-    assert any('upgrade' in message for message in messages)
+    assert any('re-register' in message for message in messages)
     assert all(not cls.seen for cls in harness.selectors.values())
 
 
 @pytest.mark.asyncio
-async def test_cohort_version_precheck_does_not_require_existing_sibling_ready():
+async def test_cohort_identity_precheck_does_not_require_existing_sibling_ready():
     from gpustack.schemas.models import DistributedServers
     from tests.utils.model import new_model_instance
 
@@ -435,8 +437,8 @@ async def test_cohort_version_precheck_does_not_require_existing_sibling_ready()
         )
         is None
     )
-    worker.worker_version = '2.3.0'
-    assert 'Server' in scheduler._incompatible_cohort_message(
+    worker.system_principal_id = None
+    assert 'bound' in scheduler._incompatible_cohort_message(
         model, [worker], [pending, sibling], True
     )
 

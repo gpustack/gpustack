@@ -118,9 +118,19 @@ def test_registration_denies_other_cluster_before_database_access(
     ],
 )
 @pytest.mark.parametrize("existing", [False, True], ids=["new", "reregister"])
+@pytest.mark.parametrize("version", ["2.3.1", "2.3.0"])
 def test_registration_allows_authorized_cluster(
-    registration, principal_kind, requested_cluster_id, target_cluster_id, existing
+    registration,
+    principal_kind,
+    requested_cluster_id,
+    target_cluster_id,
+    existing,
+    version,
+    monkeypatch,
 ):
+    monkeypatch.setattr(
+        "gpustack.extension.resolve_version_info", lambda: ("2.3.1-ent1", "test")
+    )
     registration.app.dependency_overrides[get_current_user] = lambda: _principal(
         principal_kind
     )
@@ -141,16 +151,21 @@ def test_registration_allows_authorized_cluster(
         registration.get_worker.return_value = worker
         registration.get_principal.return_value = SimpleNamespace(api_keys=[object()])
 
+    payload = _payload(requested_cluster_id, existing)
+    payload["worker_version"] = version
     with TestClient(registration.app) as client:
-        response = client.post(
-            "/v2/workers", json=_payload(requested_cluster_id, existing)
-        )
+        response = client.post("/v2/workers", json=payload)
 
     assert response.status_code == 200, response.text
     assert response.json()["cluster_id"] == target_cluster_id
+    assert response.json()["worker_version"] == version
     registration.persist.assert_awaited_once()
     new_worker = registration.persist.await_args.kwargs["new_worker"]
     assert new_worker.cluster_id == target_cluster_id
+    new_worker.heartbeat_time = datetime.now(timezone.utc)
+    new_worker.state_message = None
+    new_worker.compute_state()
+    assert new_worker.state == "ready"
     if existing:
         assert response.json()["token"] == "synthetic-worker-token"
 
@@ -376,12 +391,12 @@ async def test_reregistration_reconciles_only_authorized_cluster_owner(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('version', [None, 'unknown', '2.3.0'])
-async def test_downgrade_persists_version_before_conflict_and_late_status_cannot_readmit(
+@pytest.mark.parametrize('version', [None, 'unknown', '2.3.0', '2.3.1'])
+async def test_version_mismatch_reregistration_preserves_identity_and_assignments(
     monkeypatch, version
 ):
     monkeypatch.setattr(
-        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1-ent1', 'test')
     )
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlmodel.ext.asyncio.session import AsyncSession
@@ -396,7 +411,6 @@ async def test_downgrade_persists_version_before_conflict_and_late_status_cannot
     from gpustack.server import worker_status_buffer as buffer
     from gpustack.mixins import active_record
     from gpustack.server import services
-    from gpustack.api.exceptions import ConflictException
     from unittest.mock import patch
 
     engine = create_async_engine('sqlite+aiosqlite://')
@@ -482,21 +496,21 @@ async def test_downgrade_persists_version_before_conflict_and_late_status_cannot
         register_handlers(app)
         app.include_router(workers.router, prefix='/v2/workers')
         app.dependency_overrides[get_current_user] = lambda: _principal('worker')
-        with patch.object(workers, 'generate_access_key') as generate:
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url='http://test'
-            ) as client:
-                rejected = await client.post(
-                    '/v2/workers', json=old_payload.model_dump(mode='json')
-                )
-            assert rejected.status_code == 409
-            generate.assert_not_called()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url='http://test'
+        ) as client:
+            accepted = await client.post(
+                '/v2/workers', json=old_payload.model_dump(mode='json')
+            )
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()['state'] == 'ready'
         async with AsyncSession(engine) as session:
             stored = await Worker.one_by_id(session, 20, refresh=True)
             assert stored.worker_version == version
-            assert stored.state == WorkerStateEnum.NOT_READY
+            assert stored.state == WorkerStateEnum.READY
             assert stored.token == 'existing-token' and stored.system_principal_id == 30
-            assert stored.ip == '192.0.2.10' and stored.port == 10150
+            assert stored.ip == '192.0.2.99' and stored.port == 12345
+            assert stored.worker_uuid == 'registered-uuid'
             untouched = await ModelInstance.one_by_id(session, 1, refresh=True)
             assert (
                 untouched.distributed_servers.workloads == []
@@ -510,7 +524,7 @@ async def test_downgrade_persists_version_before_conflict_and_late_status_cannot
         async with AsyncSession(engine) as session:
             stored = await Worker.one_by_id(session, 20, refresh=True)
             assert stored.worker_version == version
-            assert stored.state == WorkerStateEnum.NOT_READY
+            assert stored.state == WorkerStateEnum.READY
         compatible = WorkerCreate.model_validate(_payload(100, True))
         compatible.worker_version = '2.3.1'
         from gpustack.api.exceptions import ForbiddenException
@@ -546,14 +560,9 @@ async def test_downgrade_persists_version_before_conflict_and_late_status_cannot
             admitted = await Worker.one_by_id(session, 20, refresh=True)
             assert admitted.worker_version == '2.3.1'
             assert admitted.state == WorkerStateEnum.READY
-        with pytest.raises(ConflictException):
-            await workers.create_worker(_principal('worker'), old_payload)
-        async with AsyncSession(engine) as session:
-            await session.delete(await ModelInstance.one_by_id(session, 1))
-            await session.commit()
         response = await workers.create_worker(_principal('worker'), old_payload)
         assert response.worker_version == version
-        assert response.state == WorkerStateEnum.NOT_READY
+        assert response.state == WorkerStateEnum.READY
         assert response.token == 'existing-token'
         assert not any(
             call.args[1].type.value == 'DELETED' for call in publish.await_args_list
