@@ -25,7 +25,6 @@ from gpustack.schemas.models import (
     ModelInstancePublic,
     ModelInstanceWorkload,
     ModelInstanceWorkloadUpdate,
-    ModelInstanceWorkloadReport,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
     ModelInstanceUpdate,
@@ -38,6 +37,8 @@ from gpustack.server.controllers import (
     sync_main_worker_model_file_state,
 )
 from tests.server.test_model_file_state_sync import _distributed_instance, _patched
+from gpustack.utils.model_instance_workers import worker_workload_report
+
 from tests.utils.model import (
     new_model,
     new_model_instance,
@@ -486,16 +487,52 @@ def test_headless_report_can_arrive_before_main():
     assert placement.ready is None
 
 
+@pytest.mark.parametrize(
+    'fields',
+    [
+        {'workloads': [new_model_instance_workload()]},
+        {'observations': []},
+        {'preparation': {'pid': 123}},
+        {'backend_version': '0.32.0'},
+    ],
+)
+def test_flat_workload_report_accepts_each_reporting_phase(fields):
+    update = ModelInstanceWorkloadUpdate.model_validate({'restart_count': 3, **fields})
+    assert update.restart_count == 3
+    assert 'workload_report' not in update.model_dump()
+
+
+@pytest.mark.parametrize(
+    'fields',
+    [
+        {'workloads': [], 'observations': []},
+        {'preparation': {'pid': 123}, 'workloads': []},
+        {'preparation': {'pid': 123}, 'observations': []},
+    ],
+)
+def test_flat_workload_report_rejects_mixed_phases(fields):
+    with pytest.raises(ValidationError):
+        ModelInstanceWorkloadUpdate.model_validate({'restart_count': 3, **fields})
+
+
+def test_flat_workload_report_rejects_nested_envelope():
+    with pytest.raises(ValidationError):
+        ModelInstanceWorkloadUpdate.model_validate(
+            {
+                'restart_count': 3,
+                'workload_report': {'restart_count': 3, 'workloads': []},
+            }
+        )
+
+
 def test_rank_update_only_requires_request_fields():
     update = ModelInstanceWorkloadUpdate.model_validate(
         {
-            "workload_report": {
-                "restart_count": 0,
-                "workloads": [new_model_instance_workload()],
-            }
+            "restart_count": 0,
+            "workloads": [new_model_instance_workload()],
         }
     )
-    assert update.workload_report.restart_count == 0
+    assert update.restart_count == 0
     assert "workload_report" not in ModelInstancePublic.model_fields
 
 
@@ -503,11 +540,14 @@ def test_rank_update_only_requires_request_fields():
 def test_workload_report_rejects_extra_identity_and_state(field):
     with pytest.raises(ValidationError):
         ModelInstanceWorkloadUpdate.model_validate(
-            {"workload_report": {"restart_count": 0, "workloads": [], field: 1}}
+            {"restart_count": 0, "workloads": [], field: 1}
         )
 
 
-def test_full_update_cannot_silently_discard_workload_report():
+@pytest.mark.parametrize(
+    'field', ['workload_report', 'workloads', 'observations', 'preparation']
+)
+def test_full_update_cannot_silently_discard_workload_report(field):
     instance = new_model_instance(1, "instance", 1)
     instance.source = SourceEnum.LOCAL_PATH
     instance.local_path = "/model"
@@ -515,7 +555,7 @@ def test_full_update_cannot_silently_discard_workload_report():
         ModelInstanceUpdate.model_validate(
             {
                 **instance.model_dump(),
-                "workload_report": {"restart_count": 0, "workloads": []},
+                field: {"restart_count": 0, "workloads": []},
             }
         )
 
@@ -599,8 +639,13 @@ async def put(api, items=None, generation=0, **fields):
     report = worker_workload_report(
         api.instance, getattr(api.ctx.user.worker, 'id', 1), tasks
     )
-    payload = {'workload_report': report.model_dump(mode='json'), **fields}
-    payload['workload_report']['restart_count'] = generation
+    payload = (
+        {'restart_count': generation}
+        if 'preparation' in fields
+        else report.model_dump(mode='json', exclude_none=True)
+    )
+    payload.update(fields)
+    payload['restart_count'] = generation
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api.app), base_url="http://test"
     ) as client:
@@ -628,7 +673,17 @@ def test_old_json_gains_explicit_orchestration_mode(workloads, mode):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('envelope', ['rank_report', 'workload_report', 'stop_report'])
+@pytest.mark.parametrize(
+    'envelope',
+    [
+        'rank_report',
+        'workload_report',
+        'stop_report',
+        'workloads',
+        'observations',
+        'preparation',
+    ],
+)
 async def test_crud_rejects_worker_report_envelopes(report_api, envelope):
     payload = report_api.instance.model_dump(mode='json')
     payload[envelope] = {'restart_count': 0, 'workloads': []}
@@ -641,6 +696,37 @@ async def test_crud_rejects_worker_report_envelopes(report_api, envelope):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('invalid', [None, 'generation', 'worker'])
+async def test_metadata_only_report_preserves_tasks_and_checks_ownership(
+    report_api, invalid
+):
+    api = report_api
+    assert (await put(api)).status_code == 200
+    api.instance.state = ModelInstanceStateEnum.STARTING
+    before = api.instance.model_dump()
+    if invalid == 'worker':
+        api.ctx.user.worker.cluster_id = 99
+    payload = {
+        'restart_count': 99 if invalid == 'generation' else 0,
+        'state_message': 'waiting for startup',
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put('/model-instances/7/workload-report', json=payload)
+    assert (
+        response.status_code == {None: 200, 'generation': 409, 'worker': 403}[invalid]
+    )
+    assert (
+        api.instance.distributed_servers.model_dump() == before['distributed_servers']
+    )
+    if invalid is None:
+        assert api.instance.state_message == 'waiting for startup'
+    else:
+        assert api.instance.model_dump() == before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'field', ['api_port', 'worker_id', 'stop_requested', 'attempt']
 )
@@ -648,17 +734,15 @@ async def test_observation_cannot_write_topology_or_server_intent(report_api, fi
     assert (await put(report_api)).status_code == 200
     task = report_api.instance.distributed_servers.workloads[0]
     payload = {
-        'workload_report': {
-            'restart_count': 0,
-            'observations': [
-                {
-                    'name': task.name,
-                    'state': 'running',
-                    'rank_readiness': {0: True},
-                    field: 1,
-                }
-            ],
-        }
+        'restart_count': 0,
+        'observations': [
+            {
+                'name': task.name,
+                'state': 'running',
+                'rank_readiness': {0: True},
+                field: 1,
+            }
+        ],
     }
     before = report_api.instance.model_dump()
     async with httpx.AsyncClient(
@@ -1011,10 +1095,8 @@ def test_instance_client_preserves_manifest_and_sends_only_report(
     client = ModelInstanceClient(transport, enable_cache=False)
     update = ModelInstanceWorkloadUpdate.model_validate(
         {
-            "workload_report": {
-                "restart_count": 0,
-                "workloads": [new_model_instance_workload()],
-            }
+            "restart_count": 0,
+            "workloads": [new_model_instance_workload()],
         }
     )
     result = client.report_workloads(7, update)
@@ -1540,7 +1622,9 @@ def test_component_report_preserves_server_recovery_state(report_api):
     result = routes._merge_workload_report(
         report_api.instance,
         report_api.ctx,
-        ModelInstanceWorkloadReport(restart_count=0, workloads=payload),
+        worker_workload_report(
+            report_api.instance, report_api.ctx.user.worker.id, payload
+        ),
     )
     assert result.workloads[-1].component == smg.component
     assert result.workloads[-1].state == 'stopped'
@@ -1549,7 +1633,9 @@ def test_component_report_preserves_server_recovery_state(report_api):
         routes._merge_workload_report(
             report_api.instance,
             report_api.ctx,
-            ModelInstanceWorkloadReport(restart_count=0, workloads=payload),
+            worker_workload_report(
+                report_api.instance, report_api.ctx.user.worker.id, payload
+            ),
         )
 
 
@@ -1565,6 +1651,11 @@ def test_first_component_report_rejects_invalid_local_contract(report_api, chang
         items[1].component.attempt = 1
     elif change == 'stop':
         items[1].component.stop_requested = True
+        with pytest.raises(ValidationError):
+            ModelInstanceWorkloadUpdate(
+                restart_count=0, workloads=[item.model_dump() for item in items]
+            )
+        return
     elif change == 'missing_engine':
         items.pop(0)
     elif change == 'secondary_smg':
@@ -1577,7 +1668,9 @@ def test_first_component_report_rejects_invalid_local_contract(report_api, chang
         routes._merge_workload_report(
             report_api.instance,
             report_api.ctx,
-            ModelInstanceWorkloadReport(restart_count=0, workloads=items),
+            worker_workload_report(
+                report_api.instance, report_api.ctx.user.worker.id, items
+            ),
         )
 
 
@@ -1652,7 +1745,9 @@ def test_component_registered_identity_is_immutable(report_api, change):
         routes._merge_workload_report(
             report_api.instance,
             report_api.ctx,
-            ModelInstanceWorkloadReport(restart_count=0, workloads=payload),
+            worker_workload_report(
+                report_api.instance, report_api.ctx.user.worker.id, payload
+            ),
         )
 
 
@@ -1840,7 +1935,9 @@ def test_registered_engine_image_evidence_is_immutable(report_api, change):
         routes._merge_workload_report(
             report_api.instance,
             report_api.ctx,
-            ModelInstanceWorkloadReport(restart_count=0, workloads=payload),
+            worker_workload_report(
+                report_api.instance, report_api.ctx.user.worker.id, payload
+            ),
         )
     assert items[0].component.image == 'selected-image'
 
@@ -2496,10 +2593,11 @@ def test_hybrid_reports_preserve_owner_generation_and_registered_shape(
     elif change == 'terminal':
         stored.state = 'failed'
         incoming.state = 'running'
-    report = ModelInstanceWorkloadReport(
-        restart_count=1 if change == 'generation' else 0,
-        workloads=[] if change == 'omit' else [incoming],
+    report = worker_workload_report(
+        report_api.instance, 1, [] if change == 'omit' else [incoming]
     )
+    if change == 'generation':
+        report.restart_count = 1
     with pytest.raises((ConflictException, routes.ForbiddenException)):
         routes._merge_workload_report(report_api.instance, report_api.ctx, report)
     assert report_api.instance.distributed_servers.workloads == [stored]
@@ -2543,7 +2641,9 @@ def test_hybrid_error_observation_clears_api_readiness(report_api):
     task = ModelInstanceWorkload.model_validate(new_hybrid_workload(state='running'))
     task.component.ready = True
     report_api.instance.state = ModelInstanceStateEnum.ERROR
-    report = ModelInstanceWorkloadReport(restart_count=0, workloads=[task])
+    report = worker_workload_report(
+        report_api.instance, report_api.ctx.user.worker.id, [task]
+    )
     merged = routes._merge_workload_report(report_api.instance, report_api.ctx, report)
     assert merged.workloads[0].component.ready is False
 

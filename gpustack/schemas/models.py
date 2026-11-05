@@ -1944,19 +1944,6 @@ def validate_workload_manifest(workloads: List[ModelInstanceWorkload]) -> None:
                 ports.add(port)
 
 
-class ModelInstanceWorkloadReport(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    restart_count: int = PydanticField(ge=0)
-    workloads: List[ModelInstanceWorkload]
-
-    @field_validator("workloads")
-    @classmethod
-    def validate_workloads(cls, value):
-        validate_workload_manifest(value)
-        return value
-
-
 class ModelInstancePreparation(BaseModel):
     """Fenced preparation metadata; no runtime task may be replaced through it."""
 
@@ -2008,20 +1995,6 @@ class ModelInstanceWorkloadRegistrationItem(ModelInstanceWorkload):
     component: Optional[ModelInstanceComponentRegistration] = None
 
 
-class ModelInstanceWorkloadRegistration(BaseModel):
-    """Register immutable topology once per Worker and generation."""
-
-    model_config = ConfigDict(extra="forbid")
-    restart_count: int = PydanticField(ge=0)
-    workloads: List[ModelInstanceWorkloadRegistrationItem]
-
-    @field_validator("workloads")
-    @classmethod
-    def validate_workloads(cls, value):
-        validate_workload_manifest(value)
-        return value
-
-
 class ModelInstanceWorkloadObservation(BaseModel):
     """Update observations without resubmitting topology or recovery intent."""
 
@@ -2033,20 +2006,14 @@ class ModelInstanceWorkloadObservation(BaseModel):
     component_attempt: Optional[int] = PydanticField(default=None, ge=0)
 
 
-class ModelInstanceWorkloadObservations(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    restart_count: int = PydanticField(ge=0)
-    observations: List[ModelInstanceWorkloadObservation]
-
-
 class ModelInstanceWorkloadUpdate(BaseModel):
     """Worker-only request envelope; never persisted as instance fields."""
 
     model_config = ConfigDict(extra="forbid")
 
-    workload_report: Union[
-        ModelInstanceWorkloadRegistration, ModelInstanceWorkloadObservations
-    ]
+    restart_count: int = PydanticField(ge=0)
+    workloads: Optional[List[ModelInstanceWorkloadRegistrationItem]] = None
+    observations: Optional[List[ModelInstanceWorkloadObservation]] = None
     model_config_snapshot: Optional[ModelConfigSnapshot] = None
     state: Optional[Literal[ModelInstanceStateEnum.ERROR]] = None
     state_message: Optional[str] = None
@@ -2054,11 +2021,19 @@ class ModelInstanceWorkloadUpdate(BaseModel):
     backend_version: Optional[str] = None
     injected_backend_parameters: Optional[List[str]] = None
 
+    @field_validator("workloads")
+    @classmethod
+    def validate_workloads(cls, value):
+        if value is not None:
+            validate_workload_manifest(value)
+        return value
+
     @model_validator(mode="after")
-    def validate_failure_message(self):
+    def validate_report(self):
+        if self.workloads is not None and self.observations is not None:
+            raise ValueError("Register workloads or report observations, not both")
         if self.preparation is not None and (
-            not isinstance(self.workload_report, ModelInstanceWorkloadRegistration)
-            or self.workload_report.workloads
+            self.workloads is not None or self.observations is not None
         ):
             raise ValueError("Preparation must precede task registration")
         if self.state is not None and not self.state_message:
@@ -2440,6 +2415,9 @@ class ModelInstanceUpdate(ModelInstanceBase):
             "workload_report" in value
             or "rank_report" in value
             or "stop_report" in value
+            or "workloads" in value
+            or "observations" in value
+            or "preparation" in value
         ):
             raise ValueError("Use the workload-report or stop-confirmation endpoint")
         return value

@@ -86,14 +86,18 @@ def managed(manager, monkeypatch):
     def report(*, id, report):
         model_update = report
         assert isinstance(model_update, ModelInstanceWorkloadUpdate)
-        assert (
-            model_update.workload_report.restart_count == state.instance.restart_count
-        )
-        from gpustack.routes.model_instances import _expand_workload_observations
+        assert model_update.restart_count == state.instance.restart_count
+        from gpustack.routes.model_instances import _apply_workload_observations
+        from gpustack.utils.model_instance_workers import get_model_instance_workloads
 
-        local = _expand_workload_observations(
-            state.instance, serve._worker_id, model_update.workload_report
-        ).workloads
+        local = get_model_instance_workloads(state.instance, serve._worker_id)
+        if model_update.workloads is not None:
+            local = [
+                ModelInstanceWorkload.model_validate(w.model_dump())
+                for w in model_update.workloads
+            ]
+        elif model_update.observations is not None:
+            local = _apply_workload_observations(local, model_update.observations)
         assert all(item.worker_id == serve._worker_id for item in local)
         state.events.append("report")
         state.instance.distributed_servers.workloads = [
@@ -310,7 +314,8 @@ def test_managed_launch_payloads_precede_local_registration(managed, monkeypatch
         if update.preparation is None:
             phases.append("registration")
             return normal_report(id=id, report=update)
-        assert not update.workload_report.workloads
+        assert update.workloads is None
+        assert update.observations is None
         assert not any(
             item.worker_id == serve._worker_id
             for item in mi.distributed_servers.workloads

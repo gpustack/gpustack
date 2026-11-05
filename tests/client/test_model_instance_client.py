@@ -70,9 +70,7 @@ def test_cached_lookup_never_falls_back_to_http(instance, enabled, watching, pre
         ),
         (
             'report_workloads',
-            ModelInstanceWorkloadUpdate(
-                workload_report={'restart_count': 3, 'workloads': []}
-            ),
+            ModelInstanceWorkloadUpdate(restart_count=3, workloads=[]),
             '/model-instances/7/workload-report',
             'put',
         ),

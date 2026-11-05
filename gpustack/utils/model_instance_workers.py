@@ -10,8 +10,6 @@ from gpustack.schemas.models import (
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
     ModelInstanceWorkloadUpdate,
-    ModelInstanceWorkloadRegistration,
-    ModelInstanceWorkloadObservations,
     ModelInstanceWorkloadObservation,
     ModelInstancePreparation,
     ModelInstanceStateEnum,
@@ -126,11 +124,11 @@ def workload_topology(workloads: List[ModelInstanceWorkload]) -> Dict:
     }
 
 
-def worker_workload_report(instance, worker_id, workloads):
+def worker_workload_report(instance, worker_id, workloads, **fields):
     """Send topology only for registration; retain Server intent in its snapshot."""
     local = get_model_instance_workloads(instance, worker_id) or []
     if local and workload_topology(local) == workload_topology(workloads):
-        return ModelInstanceWorkloadObservations(
+        return ModelInstanceWorkloadUpdate(
             restart_count=instance.restart_count or 0,
             observations=[
                 ModelInstanceWorkloadObservation(
@@ -148,6 +146,7 @@ def worker_workload_report(instance, worker_id, workloads):
                 )
                 for item in workloads
             ],
+            **fields,
         )
     payload = []
     for item in workloads:
@@ -156,8 +155,8 @@ def worker_workload_report(instance, worker_id, workloads):
             for key in ('stop_requested', 'last_restart_time'):
                 value['component'].pop(key)
         payload.append(value)
-    return ModelInstanceWorkloadRegistration(
-        restart_count=instance.restart_count or 0, workloads=payload
+    return ModelInstanceWorkloadUpdate(
+        restart_count=instance.restart_count or 0, workloads=payload, **fields
     )
 
 
@@ -241,7 +240,7 @@ def model_instance_workloads_stopped(
 
 
 def managed_instance_update(
-    instance: ModelInstance, worker_id: int, **fields
+    instance: ModelInstance, **fields
 ) -> ModelInstanceWorkloadUpdate:
     """Build a narrow Worker report rather than rewriting an instance snapshot."""
     preparation = None
@@ -255,9 +254,7 @@ def managed_instance_update(
             }
         )
     return ModelInstanceWorkloadUpdate(
-        workload_report=worker_workload_report(
-            instance, worker_id, get_model_instance_workloads(instance, worker_id) or []
-        ),
+        restart_count=instance.restart_count or 0,
         preparation=preparation,
         **fields,
     )

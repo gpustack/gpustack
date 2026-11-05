@@ -390,7 +390,7 @@ class InferenceServer(ABC):
                 raise RuntimeError("Instance generation changed during preparation")
             return self._clientset.model_instances.report_workloads(
                 id=id,
-                report=managed_instance_update(current, self._worker.id, **kwargs),
+                report=managed_instance_update(current, **kwargs),
             )
 
         mi = ModelInstanceUpdate(**mi_public.model_dump())

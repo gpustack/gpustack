@@ -114,7 +114,8 @@ def test_managed_startup_snapshot_uses_the_generation_fenced_report():
     InferenceServer._update_model_instance(owner, 11, model_config_snapshot=snapshot)
     payload = json.loads(http_client.put.call_args.kwargs['content'])
     report = ModelInstanceWorkloadUpdate.model_validate(payload)
-    assert report.workload_report.restart_count == 0
-    assert report.workload_report.workloads == []
+    assert report.restart_count == 0
+    assert report.workloads is None
+    assert report.observations is None
     assert report.model_config_snapshot == snapshot
     assert 'distributed_servers' not in payload

@@ -3971,11 +3971,19 @@ def rank_health(monkeypatch):
     def report(*, id, report):
         model_update = report
         state.reports.append(model_update)
-        from gpustack.routes.model_instances import _expand_workload_observations
+        from gpustack.routes.model_instances import _apply_workload_observations
+        from gpustack.schemas.models import ModelInstanceWorkload
+        from gpustack.utils.model_instance_workers import get_model_instance_workloads
 
-        state.mi.distributed_servers.workloads = _expand_workload_observations(
-            state.mi, manager._worker_id, model_update.workload_report
-        ).workloads
+        local = get_model_instance_workloads(state.mi, manager._worker_id)
+        if model_update.workloads is not None:
+            local = [
+                ModelInstanceWorkload.model_validate(w.model_dump())
+                for w in model_update.workloads
+            ]
+        elif model_update.observations is not None:
+            local = _apply_workload_observations(local, model_update.observations)
+        state.mi.distributed_servers.workloads = local
         state.mi.distributed_servers.orchestration_mode = (
             "managed"
             if state.mi.distributed_servers.workloads is not None

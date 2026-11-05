@@ -101,11 +101,10 @@ from gpustack.schemas.models import (
     ModelUpdate,
     ModelInstance,
     ModelInstanceUpdate,
-    ModelInstanceWorkloadReport,
     ModelInstanceStopReport,
-    ModelInstanceWorkloadUpdate,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
+    validate_workload_manifest,
     ModelInstanceStateEnum,
     get_backend,
     DistributedServerCoordinateModeEnum,
@@ -612,10 +611,7 @@ class ServeManager(ContainerLogPersister):
     def _report_managed_workloads(
         self, mi: ModelInstance, workloads: List[ModelInstanceWorkload], **diagnostic
     ) -> ModelInstance:
-        update = ModelInstanceWorkloadUpdate(
-            workload_report=worker_workload_report(mi, self._worker_id, workloads),
-            **diagnostic,
-        )
+        update = worker_workload_report(mi, self._worker_id, workloads, **diagnostic)
         result = self._clientset.model_instances.report_workloads(
             id=mi.id, report=update
         )
@@ -685,11 +681,10 @@ class ServeManager(ContainerLogPersister):
             if tracked and tracked.restart_count != current.restart_count:
                 return False
             local = [
-                item.model_copy(deep=True)
-                for item in ModelInstanceWorkloadReport(
-                    restart_count=mi.restart_count or 0, workloads=workloads
-                ).workloads
+                ModelInstanceWorkload.model_validate(item.model_dump())
+                for item in workloads
             ]
+            validate_workload_manifest(local)
             if (
                 not local
                 or any(item.worker_id != self._worker_id for item in local)
@@ -4552,7 +4547,7 @@ class ServeManager(ContainerLogPersister):
                     raise RuntimeError("Instance generation changed during preparation")
                 return self._clientset.model_instances.report_workloads(
                     id=id,
-                    report=managed_instance_update(current, self._worker_id, **kwargs),
+                    report=managed_instance_update(current, **kwargs),
                 )
 
             mi = ModelInstanceUpdate(**mi_public.model_dump())

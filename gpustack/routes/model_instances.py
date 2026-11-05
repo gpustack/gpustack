@@ -47,11 +47,8 @@ from gpustack.schemas.models import (
     ModelInstanceLogOptions,
     ModelInstanceLogWorkerOption,
     ModelInstancePublic,
-    ModelInstanceWorkloadReport,
     ModelInstanceWorkloadUpdate,
     ModelInstanceStopReport,
-    ModelInstanceWorkloadRegistration,
-    ModelInstanceWorkloadObservations,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
     member_worker_ids,
@@ -1264,12 +1261,9 @@ def _merge_component_observation(instance, item, old) -> None:
         component.ready = False
 
 
-def _expand_workload_observations(instance, worker_id, report):
-    if not isinstance(report, ModelInstanceWorkloadObservations):
-        return ModelInstanceWorkloadReport.model_validate(report.model_dump())
-    local = get_model_instance_workloads(instance, worker_id) or []
-    observed = {item.name: item for item in report.observations}
-    if len(observed) != len(report.observations) or set(observed) != {
+def _apply_workload_observations(local, observations):
+    observed = {item.name: item for item in observations}
+    if len(observed) != len(observations) or set(observed) != {
         item.name for item in local
     }:
         raise ConflictException(
@@ -1310,16 +1304,23 @@ def _expand_workload_observations(instance, worker_id, report):
             for placement in item.dp_rank_placements:
                 if placement.node_rank == 0:
                     placement.ready = observation.rank_readiness[placement.dp_rank]
-        workloads.append(item.model_dump())
+        workloads.append(item)
     try:
-        return ModelInstanceWorkloadReport(
-            restart_count=report.restart_count, workloads=workloads
-        )
+        return [
+            ModelInstanceWorkload.model_validate(item.model_dump())
+            for item in workloads
+        ]
     except ValueError as exc:
         raise BadRequestException(message=str(exc)) from exc
 
 
-def _validate_repeated_registration(local, incoming, registration):
+def _validate_reported_workloads(worker_id, local, incoming, registration):
+    if any(item.worker_id != worker_id for item in incoming):
+        raise ForbiddenException(message="A Worker may only report its own workloads")
+    if local and workload_topology(local) != workload_topology(incoming):
+        raise ConflictException(
+            message="Registered workload topology is immutable within a restart_count"
+        )
     if not registration or not local:
         return
     exclude = {'component': {'stop_requested', 'last_restart_time'}}
@@ -1330,7 +1331,7 @@ def _validate_repeated_registration(local, incoming, registration):
 
 
 def _merge_workload_report(
-    instance: ModelInstance, ctx: TenantContext, report: ModelInstanceWorkloadReport
+    instance: ModelInstance, ctx: TenantContext, report: ModelInstanceWorkloadUpdate
 ) -> DistributedServers:
     """Validate and merge a local report while the caller holds the instance row lock."""
     worker = ctx.user.worker
@@ -1353,22 +1354,25 @@ def _merge_workload_report(
         raise ConflictException(
             message="Workload report does not match the current restart_count"
         )
-    registration = isinstance(report, ModelInstanceWorkloadRegistration)
-    report = _expand_workload_observations(instance, worker.id, report)
-    if any(item.worker_id != worker.id for item in report.workloads):
-        raise ForbiddenException(message="A Worker may only report its own workloads")
     local = get_model_instance_workloads(instance, worker.id)
-    if local and workload_topology(local) != workload_topology(report.workloads):
-        raise ConflictException(
-            message="Registered workload topology is immutable within a restart_count"
-        )
-    _validate_repeated_registration(local, report.workloads, registration)
+    if report.workloads is not None:
+        workloads = [
+            ModelInstanceWorkload.model_validate(item.model_dump())
+            for item in report.workloads
+        ]
+    elif report.observations is not None:
+        workloads = _apply_workload_observations(local, report.observations)
+    else:
+        return instance.distributed_servers
+    _validate_reported_workloads(
+        worker.id, local, workloads, report.workloads is not None
+    )
     terminal = {
         ModelInstanceWorkloadStateEnum.STOPPED,
         ModelInstanceWorkloadStateEnum.FAILED,
     }
     previous = {item.name: item for item in local}
-    for item in report.workloads:
+    for item in workloads:
         old = previous.get(item.name)
         _merge_component_observation(instance, item, old)
         if (
@@ -1386,13 +1390,13 @@ def _merge_workload_report(
             for placement in item.dp_rank_placements:
                 if placement.node_rank == 0:
                     placement.ready = False
-    if local or report.workloads:
-        _validate_local_devices(instance, worker.id, report.workloads)
-    incoming = {item.name: item for item in report.workloads}
+    if local or workloads:
+        _validate_local_devices(instance, worker.id, workloads)
+    incoming = {item.name: item for item in workloads}
     merged = [
         incoming[item.name] if item.worker_id == worker.id else item for item in stored
     ]
-    merged.extend(item for item in report.workloads if item.name not in previous)
+    merged.extend(item for item in workloads if item.name not in previous)
     try:
         servers = DistributedServers.model_validate(
             {**instance.distributed_servers.model_dump(), "workloads": merged}
@@ -1526,11 +1530,9 @@ def _validate_hybrid_component_layout(instance, model, workloads) -> None:
             )
 
 
-async def _validate_workload_layout(session, instance, report) -> None:
+async def _validate_workload_layout(session, instance, workloads) -> None:
     """Validate a first registration against the allocated, deterministic layout."""
-    if not report.workloads or get_model_instance_workloads(
-        instance, report.workloads[0].worker_id
-    ):
+    if not workloads or get_model_instance_workloads(instance, workloads[0].worker_id):
         return
     model = await Model.one_by_id(session, instance.model_id, refresh=True)
     if model is None:
@@ -1544,15 +1546,15 @@ async def _validate_workload_layout(session, instance, report) -> None:
         get_backend(model) == BackendEnum.VLLM
         and vllm_lb_mode(model.backend_parameters) == "hybrid"
     ):
-        _validate_hybrid_component_layout(instance, model, report.workloads)
+        _validate_hybrid_component_layout(instance, model, workloads)
         return
-    if any(w.component is not None for w in report.workloads):
-        if report.workloads[0].component.kind == "vllm_hybrid":
-            _validate_hybrid_component_layout(instance, model, report.workloads)
+    if any(w.component is not None for w in workloads):
+        if workloads[0].component.kind == "vllm_hybrid":
+            _validate_hybrid_component_layout(instance, model, workloads)
         else:
-            _validate_sglang_component_layout(instance, model, report.workloads)
+            _validate_sglang_component_layout(instance, model, workloads)
         return
-    _validate_external_rank_layout(instance, model, report.workloads)
+    _validate_external_rank_layout(instance, model, workloads)
 
 
 def _validate_external_rank_layout(instance, model, workloads) -> None:
@@ -1814,20 +1816,11 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
             )
         source = {
             "distributed_servers": _merge_workload_report(
-                model_instance, ctx, model_instance_in.workload_report
+                model_instance, ctx, model_instance_in
             )
         }
         await _validate_workload_layout(
-            session,
-            model_instance,
-            ModelInstanceWorkloadReport(
-                restart_count=model_instance_in.workload_report.restart_count,
-                workloads=[
-                    w
-                    for w in source['distributed_servers'].workloads
-                    if w.worker_id == worker.id
-                ],
-            ),
+            session, model_instance, model_instance_in.workloads
         )
         if model_instance_in.preparation is not None:
             source.update(

@@ -392,12 +392,8 @@ async def test_deployment_teardown_with_no_reachable_worker_releases_worker_dele
     await worker.update(session, {'unreachable': True})
     instance_id = instance.id
     late_report = ModelInstanceWorkloadUpdate(
-        workload_report={
-            'restart_count': instance.restart_count or 0,
-            'workloads': [
-                w.model_dump() for w in instance.distributed_servers.workloads
-            ],
-        }
+        restart_count=instance.restart_count or 0,
+        workloads=[w.model_dump() for w in instance.distributed_servers.workloads],
     )
     if operation == 'delete':
         pending = await ModelService(session).delete(model)

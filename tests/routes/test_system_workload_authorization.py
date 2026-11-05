@@ -237,7 +237,7 @@ def test_worker_reports_require_bound_identity_and_resource_scope(
     else:
         instance.owner_principal_id = 20
     method, body = (
-        ('PUT', {'workload_report': {'restart_count': 0, 'workloads': []}})
+        ('PUT', {'restart_count': 0, 'workloads': []})
         if endpoint == 'workload-report'
         else ('POST', {'restart_count': 0, 'token': str(uuid4())})
     )

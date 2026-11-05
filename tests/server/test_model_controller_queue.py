@@ -809,7 +809,7 @@ async def test_ordinary_managed_recovery_registers_the_current_configuration(
     managed_recovery, edited
 ):
     from gpustack.routes.model_instances import _validate_workload_layout
-    from gpustack.schemas.models import ModelInstanceWorkloadReport, PortBand
+    from gpustack.schemas.models import PortBand
     from gpustack.server.controllers import model_spec_digest
 
     ctx = managed_recovery
@@ -864,7 +864,7 @@ async def test_ordinary_managed_recovery_registers_the_current_configuration(
     await _validate_workload_layout(
         ctx.session,
         ctx.instance,
-        ModelInstanceWorkloadReport(restart_count=1, workloads=[task]),
+        [task],
     )
 
 
