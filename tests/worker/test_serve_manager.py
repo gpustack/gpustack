@@ -1688,6 +1688,27 @@ def test_cleanup_old_logs_keeps_only_current_and_previous_restart(tmp_path: Path
     ]
 
 
+def test_cleanup_old_logs_keeps_the_latest_previous_generation_after_a_jump(
+    tmp_path: Path,
+):
+    """When the current generation jumps ahead, keep the actual latest previous
+    generation rather than a non-existent R-1, and retire stale generations
+    above the current one."""
+    serve_dir = tmp_path / "serve"
+    for count in (0, 1, 5, 6):
+        _write_restart_logs(serve_dir, "follower", 7, count, "main.log")
+
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+
+    manager._cleanup_old_logs(7, 5)
+
+    assert sorted(p.name for p in (serve_dir / "follower.7").iterdir()) == [
+        "1",
+        "5",
+    ]
+
+
 def test_cleanup_old_logs_restart_zero_purges_all(tmp_path: Path):
     """Fresh start (restart_count 0) removes every log for the id, incl. sidecar
     and {id}.log, but leaves other instances' and model-file download logs."""
@@ -1787,7 +1808,7 @@ def _follower_instance(restart_count: int = 0) -> ModelInstance:
         (5, (), 5),
         (0, (0,), 1),
         (0, (0, 1), 2),
-        (5, (0,), 1),
+        (5, (0,), 5),
     ],
 )
 def test_follower_log_generation_advances_past_existing_logs(
@@ -1904,6 +1925,49 @@ async def test_follower_launch_keeps_the_previous_log_generation(tmp_path: Path)
     assert (previous / "main.log").read_text(encoding="utf-8") == "old main"
     assert persistence.call_args.kwargs["restart_count"] == 1
     assert instance.restart_count == 0
+
+
+@pytest.mark.asyncio
+async def test_follower_launch_aligns_with_a_higher_server_count(tmp_path: Path):
+    """A server count ahead of the local logs becomes the new generation, while
+    cleanup retains the actual previous local run."""
+    serve_dir = tmp_path / "serve"
+    previous = _write_restart_logs(
+        serve_dir, "follower", 7, 0, "container.log", "main.log"
+    )
+    (previous / "container.log").write_text("old", encoding="utf-8")
+    (previous / "main.log").write_text("old main", encoding="utf-8")
+
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(serve_dir)
+    instance = _follower_instance(5)
+    model = new_model(1, "model", huggingface_repo_id="Qwen/Qwen3-0.6B")
+
+    with (
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_assign_ports"),
+        patch.object(manager, "_update_model_instance"),
+        patch.object(manager, "_start_container_log_persistence") as persistence,
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+        patch(
+            "gpustack.worker.serve_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+    ):
+        manager._launch_model_instance(instance)
+
+    log_path = process.call_args.kwargs["args"][3]
+    assert log_path.endswith("/5/main.log")
+    assert (previous / "container.log").read_text(encoding="utf-8") == "old"
+
+    current = serve_dir / "follower.7" / "5" / "main.log"
+    current.parent.mkdir(parents=True, exist_ok=True)
+    current.write_text("new main", encoding="utf-8")
+    assert await resolve_restart_count(serve_dir, 7, previous=False) == 5
+    assert await resolve_restart_count(serve_dir, 7, previous=True) == 0
+    assert (previous / "main.log").read_text(encoding="utf-8") == "old main"
+    assert persistence.call_args.kwargs["restart_count"] == 5
+    assert instance.restart_count == 5
 
 
 def test_main_worker_launch_uses_the_server_restart_count(tmp_path: Path):

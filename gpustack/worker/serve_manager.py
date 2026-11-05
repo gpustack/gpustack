@@ -3302,14 +3302,17 @@ class ServeManager(ContainerLogPersister):
 
         A follower can restart without the server changing `mi.restart_count`.
         Reusing that count would truncate the previous run's files, so a
-        follower with existing logs advances past the highest one on disk.
+        follower with existing logs advances past the highest one on disk. The
+        chosen generation is also at least the server's count, keeping the
+        worker's generation aligned when the server has moved ahead.
 
-        The server count is deliberately not a floor here: jumping to it would
-        make `_cleanup_old_logs` keep `{N, N-1}` and drop the actual previous
-        run when the server count is ahead of the local logs.
+        `_cleanup_old_logs` retains the highest existing generation below the
+        chosen one, so that alignment does not drop the previous local run.
         """
         counts = self._log_restart_counts_on_disk(mi.id)
-        return max(counts) + 1 if counts else (mi.restart_count or 0)
+        if not counts:
+            return mi.restart_count or 0
+        return max(max(counts) + 1, mi.restart_count or 0)
 
     def _get_numbered_log_path(
         self, mi: ModelInstance, restart_count: Optional[int] = None
@@ -3769,16 +3772,17 @@ class ServeManager(ContainerLogPersister):
         return stopped
 
     def _cleanup_old_logs(self, model_instance_id: int, current_restart_count: int):
-        """Keep serve logs for restart_count in {R, R-1}.
+        """Keep the current serve-log generation and the latest previous one.
 
         R==0 is a fresh lifecycle start, so all existing files are purged (any
-        present belong to a previous owner of a reused id).
+        present belong to a previous owner of a reused id). Otherwise the
+        highest existing generation below R is retained, even when R jumped
+        ahead of it, so the log viewer still has a previous run.
         """
         if current_restart_count == 0:
             self._purge_instance_logs(model_instance_id)
             return
 
-        keep = {current_restart_count, current_restart_count - 1}
         log_dir = Path(self._serve_log_dir)
 
         # Runs before every start, and a failed listing must not stop one.
@@ -3788,6 +3792,19 @@ class ServeManager(ContainerLogPersister):
         except Exception as e:
             logger.error(f"Failed to cleanup old logs for {model_instance_id}: {e}")
             return
+
+        previous_counts = {
+            count for count in restart_dirs if count < current_restart_count
+        }
+        previous_counts.update(
+            parsed.restart_count
+            for _path, parsed in flat_logs
+            if parsed.restart_count < current_restart_count
+        )
+
+        keep = {current_restart_count}
+        if previous_counts:
+            keep.add(max(previous_counts))
 
         for restart_count, path in restart_dirs.items():
             if restart_count in keep:
