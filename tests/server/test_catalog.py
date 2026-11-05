@@ -87,39 +87,9 @@ def test_packaged_catalog_model_release_dates(catalog_file):
 @pytest.mark.parametrize(
     "catalog_file", ["model-catalog.yaml", "model-catalog-modelscope.yaml"]
 )
-@pytest.mark.parametrize(
-    "compute_capability,cache_dtype",
-    [
-        ("8.0", None),
-        ("9.0", "fp8"),
-        ("10.0", "nvfp4"),
-        ("10.3", "nvfp4"),
-        ("11.0", None),
-        ("12.0", "fp8"),
-        ("12.1", "fp8"),
-        ("13.0", None),
-    ],
-)
-def test_packaged_minimax31_hardware_recipe(
-    catalog_file, compute_capability, cache_dtype
-):
+def test_packaged_catalog_excludes_minimax31(catalog_file):
     catalog_path = pkg_resources.files("gpustack.assets").joinpath(catalog_file)
-    model_set = _packaged_model_sets(str(catalog_path))["MiniMax-M3.1-Flash"]
-    specs = filter_specs_by_gpu(
-        [GPUDevice(vendor="nvidia", compute_capability=compute_capability)],
-        model_set.specs,
-    )
-    if cache_dtype is None:
-        assert not specs
-        return
-    assert len(specs) == 1
-    parameters = specs[0].backend_parameters
-    assert find_parameter(parameters, ["kv-cache-dtype"]) == cache_dtype
-    attention = json.loads(find_parameter(parameters, ["attention-config"]))
-    assert attention["indexer_kv_dtype"] == "fp8"
-    if cache_dtype == "fp8":
-        assert "--moe-backend=marlin" in parameters
-        assert not attention.get("use_prefill_query_quantization", False)
+    assert "MiniMax-M3.1-Flash" not in _packaged_model_sets(str(catalog_path))
 
 
 @pytest.mark.parametrize(

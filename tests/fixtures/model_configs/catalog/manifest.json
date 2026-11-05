@@ -31,6 +31,7 @@
     },
     {
       "name": "MiniMax-M3.1-Flash",
+      "in_catalog": false,
       "release_date": "2026-10-23",
       "repo_id": "MiniMaxAI/MiniMax-M3.1-Flash",
       "revision": "262ae6830934f3512211081b8a3f16425b93a239",
