@@ -1,11 +1,145 @@
+from pathlib import Path
+import shutil
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
 from gpustack.scheduler import evaluator
+from gpustack.policies import utils as policy_utils
+from gpustack.policies.resource_view import ResourceView
 from gpustack.schemas.model_sets import ModelSpec
-from gpustack.schemas.models import SourceEnum
+from gpustack.schemas.models import DisaggregationSpec, RoleSpec, SourceEnum
+from gpustack.schemas.port_reservations import WorkerPortAvailability
+from tests.fixtures.workers.fixtures import linux_nvidia_22_H100_80gx8
+from tests.utils.mock import mock_async_session
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fits', [False, True])
+@pytest.mark.parametrize(
+    'mode,pd',
+    [
+        ('internal', False),
+        ('external', False),
+        ('hybrid', False),
+        ('multi-port-external', False),
+        ('external', True),
+        ('hybrid', True),
+    ],
+)
+async def test_unsaved_spec_completes_real_resource_evaluation(
+    config, monkeypatch, tmp_path, mode, pd, fits
+):
+    from gpustack.scheduler import port_budget
+
+    fixtures = Path(__file__).parents[1] / 'fixtures' / 'model_configs'
+    monkeypatch.setenv('HF_HUB_OFFLINE', '1')
+    shutil.copyfile(fixtures / 'qwen3_moe.json', tmp_path / 'config.json')
+    worker = linux_nvidia_22_H100_80gx8()
+    if not fits:
+        worker.status.gpu_devices = worker.status.gpu_devices[:1]
+    worker.cluster_id = 1
+    worker.system_principal_id = 101
+    parameters = [
+        '--distributed-executor-backend=mp',
+        '--data-parallel-backend=mp',
+        '--tensor-parallel-size=1',
+        '--data-parallel-size=2',
+    ]
+    if mode != 'internal':
+        parameters.append(f'--data-parallel-{mode}-lb')
+    if mode == 'hybrid':
+        parameters.append('--data-parallel-size-local=2')
+    model = ModelSpec(
+        source=SourceEnum.LOCAL_PATH,
+        local_path=str(tmp_path),
+        backend='vLLM',
+        backend_version='0.32.0',
+        cluster_id=1,
+        backend_parameters=[] if pd else parameters,
+        roles=(
+            [
+                RoleSpec(name='prefill', backend_parameters=parameters),
+                RoleSpec(name='decode', backend_parameters=parameters),
+                RoleSpec(name='router'),
+            ]
+            if pd
+            else None
+        ),
+        disaggregation=DisaggregationSpec(mode='vllm-nixl') if pd else None,
+    )
+    monkeypatch.setattr(
+        evaluator, 'get_catalog_spec_by_source_key', AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        evaluator.Cluster,
+        'one_by_id',
+        AsyncMock(return_value=SimpleNamespace(topology=None)),
+    )
+    monkeypatch.setattr(
+        'gpustack.validation.pd.runtime.cluster_vendors',
+        AsyncMock(return_value=['nvidia']),
+    )
+    monkeypatch.setattr(
+        policy_utils,
+        'get_local_model_weight_size',
+        AsyncMock(return_value=20 * 1024**3),
+    )
+    monkeypatch.setattr(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+        mock_async_session,
+    )
+    monkeypatch.setattr(
+        'gpustack.policies.worker_filters.backend_framework_filter.BackendFrameworkFilter._has_supported_runners',
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr('gpustack.envs.SCHEDULER_SCALE_UP_LOCALITY_MAX_SCORE', 0)
+    monkeypatch.setattr(
+        port_budget,
+        'worker_port_snapshots',
+        AsyncMock(
+            return_value={
+                worker.id: WorkerPortAvailability(
+                    worker_id=worker.id,
+                    generation=uuid4(),
+                    port_range='40000-40255',
+                )
+            }
+        ),
+    )
+
+    result = await evaluator.evaluate_model(
+        config,
+        None,
+        model,
+        [worker],
+        [],
+        resource_view=ResourceView([]),
+        cache_instances=[],
+    )
+
+    assert not result.error, result.error_message
+    assert result.compatible == fits, (
+        result.compatibility_messages,
+        result.scheduling_messages,
+    )
+    assert not hasattr(model, 'id')
+    assert model.name is None
+    if not fits:
+        assert result.resource_claim is None
+        assert result.scheduling_messages
+        assert all('has no attribute' not in msg for msg in result.scheduling_messages)
+        return
+    assert result.resource_claim is not None
+    assert result.resource_claim.vram > 0
+    if pd:
+        assert {claim.role for claim in result.role_resource_claims} == {
+            'prefill',
+            'decode',
+            'router',
+        }
 
 
 @pytest.mark.asyncio

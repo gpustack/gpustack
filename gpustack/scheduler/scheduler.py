@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import queue
-from typing import Dict, List, Sequence, Tuple, Optional
+from typing import Dict, List, Sequence, Tuple, Optional, Union
 from weakref import WeakValueDictionary
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -82,6 +82,8 @@ from gpustack.schemas.models import (
     member_worker_ids,
 )
 from gpustack.schemas.model_files import ModelFileStateEnum
+from gpustack.schemas.model_sets import ModelSpec
+from gpustack.schemas.principals import _platform_principal_id
 from gpustack.utils.unit import byte_to_gib
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
@@ -672,12 +674,13 @@ def _worker_admitted(worker, model, requires_managed, *, require_ready=True):
 
 
 def _incompatible_cohort_message(model, workers, instances, required):
-    if not required:
+    model_id = getattr(model, 'id', None)
+    if not required or model_id is None:
         return None
     indexed = {worker.id: worker for worker in workers}
     if any(
         not _worker_admitted(indexed.get(wid), model, True, require_ready=False)
-        for wid in _cohort_worker_ids(_model_cohort(instances, model.id))
+        for wid in _cohort_worker_ids(_model_cohort(instances, model_id))
     ):
         return _MANAGED_WORKER_MESSAGE
     return None
@@ -1141,7 +1144,7 @@ def _instance_scheduling_model(
 async def find_candidate(
     session: AsyncSession,
     config: Config,
-    model: Model,
+    model: Union[Model, ModelSpec],
     workers: List[Worker],
     model_instances: List[ModelInstance],
     role: Optional[str] = None,
@@ -1174,8 +1177,12 @@ async def find_candidate(
     # available workers. Exclude its main and subordinate bindings from both
     # placement rules and resource accounting.
     # Keep the caller's instance list intact for group membership checks.
-    require_managed = managed_sglang or model_requires_managed_worker_binding(
-        _model_cohort(model_instances, model.id), model.id
+    model_id = getattr(model, 'id', None)
+    require_managed = managed_sglang or (
+        model_id is not None
+        and model_requires_managed_worker_binding(
+            _model_cohort(model_instances, model_id), model_id
+        )
     )
     admission_message = _incompatible_cohort_message(
         model, workers, model_instances, require_managed
@@ -1656,6 +1663,21 @@ async def evaluate_pretrained_config(
     return categories_modified or gpus_per_replica_modified or meta_modified
 
 
+def _pd_prefill_model(model: Union[Model, ModelSpec]):
+    """Project metadata inputs without requiring a persisted deployment identity."""
+    return role_effective_model(
+        model.model_copy(
+            update={
+                "name": model.name or "model-evaluation",
+                "owner_principal_id": (
+                    model.owner_principal_id or _platform_principal_id()
+                ),
+            }
+        ),
+        "prefill",
+    )
+
+
 async def _pd_layout_config(model: Model, config, workers: Optional[List[Worker]]):
     """Inspect source KV layout even when an architecture override supplies categories."""
     from gpustack.server.pd_mode_catalog import get_pd_mode
@@ -1667,7 +1689,7 @@ async def _pd_layout_config(model: Model, config, workers: Optional[List[Worker]
         not mode.connector_variants and not environment_pairing_needs_config(model)
     ):
         return config
-    effective = role_effective_model(model, "prefill")
+    effective = _pd_prefill_model(model)
     try:
         return await get_pretrained_config_with_workers(
             effective,
@@ -1676,7 +1698,7 @@ async def _pd_layout_config(model: Model, config, workers: Optional[List[Worker]
     except Exception:
         logger.debug(
             "Source KV layout unavailable for model %s; using the PD recipe fallback",
-            model.id,
+            model.name or model.readable_source,
         )
         return None
 
@@ -1695,7 +1717,7 @@ def _record_pd_connector_variant(
     mode = get_pd_mode(model.disaggregation.mode)
     if not mode or not mode.connector_variants:
         return False
-    effective = role_effective_model(model, "prefill")
+    effective = _pd_prefill_model(model)
     inputs = {
         key: getattr(effective, key, None)
         for key in (

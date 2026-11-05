@@ -8,6 +8,7 @@ import json
 import pytest
 
 from gpustack.scheduler import scheduler
+from gpustack.schemas.model_sets import ModelSpec
 from gpustack.schemas.models import (
     DisaggregationSpec,
     RoleSpec,
@@ -97,6 +98,34 @@ async def test_architecture_override_with_unavailable_layout_uses_fallback(monke
     await scheduler.evaluate_pretrained_config(model)
 
     assert model.meta["pd_connector_variant"] == "hybrid"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('named', [False, True])
+@pytest.mark.parametrize('available', [False, True])
+async def test_unsaved_pd_spec_resolves_layout_without_database_fields(
+    monkeypatch, named, available
+):
+    model = ModelSpec.model_validate(_model().model_dump())
+    model.name = 'evaluation' if named else None
+    model.owner_principal_id = 1 if named else None
+    model.backend_parameters = ['--hf-overrides={"architectures":["Qwen3ForCausalLM"]}']
+    loader = AsyncMock(
+        return_value=SimpleNamespace(model_type='qwen3'),
+        side_effect=None if available else ValueError('unavailable model config'),
+    )
+    monkeypatch.setattr(
+        scheduler, 'evaluate_diffusion_model', AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(scheduler, 'get_pretrained_config_with_workers', loader)
+
+    await scheduler.evaluate_pretrained_config(model)
+
+    assert model.meta['pd_connector_variant'] == ('standard' if available else 'hybrid')
+    loader.assert_awaited_once()
+    assert model.name == ('evaluation' if named else None)
+    assert model.owner_principal_id == (1 if named else None)
+    assert not hasattr(model, 'id')
 
 
 @pytest.mark.parametrize(

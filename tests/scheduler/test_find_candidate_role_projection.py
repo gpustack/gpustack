@@ -16,6 +16,7 @@ import pytest
 from gpustack.policies.resource_view import ResourceView
 
 from gpustack.scheduler import scheduler
+from gpustack.schemas.model_sets import ModelSpec
 from gpustack.schemas.models import (
     BackendEnum,
     DisaggregationSpec,
@@ -474,6 +475,59 @@ def _admission_worker(identity=7, supported=True):
         system_principal_id=identity + 100 if supported else None,
         worker_version='2.3.0',
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('persisted_type', [False, True])
+@pytest.mark.parametrize('managed_sglang', [False, True])
+async def test_unsaved_models_keep_resource_accounting_without_an_assigned_cohort(
+    harness, persisted_type, managed_sglang
+):
+    from gpustack.policies.worker_filters.status_filter import StatusFilter
+    from gpustack.schemas.models import DistributedServers
+    from tests.utils.model import new_model_instance
+
+    model_type = Model if persisted_type else ModelSpec
+    model = model_type(
+        name='evaluation',
+        source='huggingface',
+        huggingface_repo_id='test/model',
+        backend=BackendEnum.SGLANG if managed_sglang else BackendEnum.VLLM,
+        backend_parameters=['--dp-size=2'] if managed_sglang else [],
+    )
+    unrelated = new_model_instance(42, 'unrelated', 2, worker_id=9)
+    unrelated.distributed_servers = DistributedServers(workloads=[])
+
+    candidate, _ = await scheduler.find_candidate(
+        None,
+        SimpleNamespace(cache_dir=None),
+        model,
+        [_admission_worker()],
+        [unrelated],
+        managed_sglang=managed_sglang,
+    )
+
+    assert candidate is None
+    _, selector = _selected(harness)
+    assert selector.model is model
+    assert selector.instances == [unrelated]
+    status = next(f for f in harness.filters_seen[0] if isinstance(f, StatusFilter))
+    unbound = _admission_worker(supported=False)
+    kept, messages = await status.filter([unbound])
+    assert kept == ([] if managed_sglang else [unbound])
+    assert bool(messages) == managed_sglang
+
+
+@pytest.mark.parametrize('model_type', [ModelSpec, Model])
+def test_unsaved_models_have_no_existing_cohort_to_validate(model_type):
+    from tests.utils.model import new_model_instance
+
+    model = model_type(
+        name='evaluation', source='huggingface', huggingface_repo_id='test/model'
+    )
+    unrelated = new_model_instance(42, 'unrelated', 2, worker_id=9)
+
+    assert scheduler._incompatible_cohort_message(model, [], [unrelated], True) is None
 
 
 @pytest.mark.asyncio
