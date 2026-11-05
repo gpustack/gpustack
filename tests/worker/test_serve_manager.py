@@ -1841,8 +1841,8 @@ def test_follower_log_generation_counts_flat_logs(tmp_path: Path):
     assert manager._next_follower_log_restart_count(_follower_instance(0)) == 1
 
 
-def test_follower_log_scan_error_falls_back_to_server_count(tmp_path: Path):
-    """An unreadable serve-log directory must not become a start failure."""
+def test_follower_log_scan_error_is_reported_as_unknown(tmp_path: Path):
+    """An unreadable serve-log directory is unknown, not an empty history."""
     manager, _clients = _build_serve_manager(worker_id=2)
     manager._serve_log_dir = str(tmp_path / "serve")
     instance = _follower_instance(5)
@@ -1851,8 +1851,10 @@ def test_follower_log_scan_error_falls_back_to_server_count(tmp_path: Path):
         "gpustack.worker.serve_manager.restart_log_dirs",
         side_effect=OSError("stale file handle"),
     ):
-        assert manager._next_follower_log_restart_count(instance) == 5
-        assert manager._current_follower_log_restart_count(instance) == 5
+        assert manager._next_follower_log_restart_count(instance) is None
+        assert manager._current_follower_log_restart_count(instance) is None
+        # No files exist for count 5, so the server count is a safe fallback.
+        assert manager._fallback_follower_log_restart_count(instance) == 5
 
 
 def test_follower_launch_survives_a_log_scan_failure(tmp_path: Path):
@@ -1882,6 +1884,97 @@ def test_follower_launch_survives_a_log_scan_failure(tmp_path: Path):
 
     log_path = process.call_args.kwargs["args"][3]
     assert log_path.endswith("/5/main.log")
+
+
+def test_follower_launch_does_not_truncate_a_colliding_generation(
+    tmp_path: Path,
+):
+    """When the server count already has a main log, the unreadable-scan
+    fallback must not open that head for write."""
+    serve_dir = tmp_path / "serve"
+    existing = _write_restart_logs(serve_dir, "follower", 7, 5, "main.log")
+    (existing / "main.log").write_text("old main", encoding="utf-8")
+
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(serve_dir)
+    instance = _follower_instance(5)
+    model = new_model(1, "model", huggingface_repo_id="Qwen/Qwen3-0.6B")
+
+    with (
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_assign_ports"),
+        patch.object(manager, "_update_model_instance"),
+        patch.object(manager, "_start_container_log_persistence"),
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+        patch(
+            "gpustack.worker.serve_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.serve_manager.restart_log_dirs",
+            side_effect=OSError("stale file handle"),
+        ),
+    ):
+        manager._launch_model_instance(instance)
+
+    log_path = process.call_args.kwargs["args"][3]
+    generation = int(Path(log_path).parent.name)
+    assert generation != 5
+    assert generation > 0
+    assert (existing / "main.log").read_text(encoding="utf-8") == "old main"
+
+
+def test_follower_launch_does_not_purge_when_scan_fails_at_zero(tmp_path: Path):
+    """An unreadable scan at server count 0 must not take the fresh-start
+    purge branch."""
+    serve_dir = tmp_path / "serve"
+    previous = _write_restart_logs(serve_dir, "follower", 7, 0, "main.log")
+    (previous / "main.log").write_text("old main", encoding="utf-8")
+
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(serve_dir)
+    instance = _follower_instance(0)
+    model = new_model(1, "model", huggingface_repo_id="Qwen/Qwen3-0.6B")
+
+    with (
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_assign_ports"),
+        patch.object(manager, "_update_model_instance"),
+        patch.object(manager, "_start_container_log_persistence"),
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+        patch(
+            "gpustack.worker.serve_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.serve_manager.restart_log_dirs",
+            side_effect=OSError("stale file handle"),
+        ),
+    ):
+        manager._launch_model_instance(instance)
+
+    log_path = process.call_args.kwargs["args"][3]
+    assert int(Path(log_path).parent.name) > 0
+    assert (previous / "main.log").read_text(encoding="utf-8") == "old main"
+
+
+def test_follower_adoption_defers_when_log_scan_fails(tmp_path: Path):
+    """Adoption cannot pick a generation from an unreadable directory, so it
+    retries on the next sync instead of creating a new one."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(tmp_path / "serve")
+    instance = _follower_instance(0)
+
+    with (
+        patch.object(manager, "_start_container_log_persistence") as persistence,
+        patch(
+            "gpustack.worker.serve_manager.restart_log_dirs",
+            side_effect=OSError("stale file handle"),
+        ),
+    ):
+        manager._ensure_container_log_persistence(instance)
+
+    persistence.assert_not_called()
 
 
 @pytest.mark.asyncio

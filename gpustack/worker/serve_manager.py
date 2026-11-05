@@ -3268,12 +3268,16 @@ class ServeManager(ContainerLogPersister):
             f"UPDATED event: started model instance {mi.name} on subordinate worker."
         )
 
-    def _log_restart_counts_on_disk(self, model_instance_id: int) -> Set[int]:
+    def _log_restart_counts_on_disk(self, model_instance_id: int) -> Optional[Set[int]]:
         """Serve-log generations that already exist for one instance.
 
         A follower's logs are local to this worker, so what is on disk decides
         its next generation. Both the numbered layout and a pre-v2.2.0 flat log
         are counted.
+
+        Returns None when the directory cannot be read. That is not the same as
+        "no logs": callers must not fall back to a count that may already hold
+        files, because opening an existing head for write would truncate it.
         """
         log_dir = Path(self._serve_log_dir)
         try:
@@ -3284,21 +3288,22 @@ class ServeManager(ContainerLogPersister):
             )
         except OSError as e:
             logger.warning(
-                "Failed to read serve logs for model instance %s: %s; "
-                "falling back to the server restart count",
+                "Failed to read serve logs for model instance %s: %s",
                 model_instance_id,
                 e,
             )
-            return set()
+            return None
         return counts
 
-    def _current_follower_log_restart_count(self, mi: ModelInstance) -> int:
-        """The serve-log generation a follower is already writing to."""
+    def _current_follower_log_restart_count(self, mi: ModelInstance) -> Optional[int]:
+        """The serve-log generation a follower is already writing to, if known."""
         counts = self._log_restart_counts_on_disk(mi.id)
+        if counts is None:
+            return None
         return max(counts) if counts else (mi.restart_count or 0)
 
-    def _next_follower_log_restart_count(self, mi: ModelInstance) -> int:
-        """The next serve-log generation for a follower.
+    def _next_follower_log_restart_count(self, mi: ModelInstance) -> Optional[int]:
+        """The next serve-log generation for a follower, if the disk is readable.
 
         A follower can restart without the server changing `mi.restart_count`.
         Reusing that count would truncate the previous run's files, so a
@@ -3310,9 +3315,42 @@ class ServeManager(ContainerLogPersister):
         chosen one, so that alignment does not drop the previous local run.
         """
         counts = self._log_restart_counts_on_disk(mi.id)
+        if counts is None:
+            return None
         if not counts:
             return mi.restart_count or 0
         return max(max(counts) + 1, mi.restart_count or 0)
+
+    def _fallback_follower_log_restart_count(self, mi: ModelInstance) -> int:
+        """A generation for a follower whose log directory cannot be read.
+
+        The server count is safe only when neither of its log files exists:
+        opening an existing head for write would truncate it, and count 0
+        would take the fresh-start purge. Otherwise use a nanosecond timestamp,
+        which is positive and cannot realistically collide with an existing
+        generation.
+        """
+        log_dir = Path(self._serve_log_dir)
+        base = mi.restart_count or 0
+        if base > 0:
+            main = main_log_path(log_dir, mi.name, mi.id, base)
+            container = container_log_path(log_dir, mi.name, mi.id, base)
+            try:
+                if not main.exists() and not container.exists():
+                    return base
+            except OSError:
+                pass
+
+        candidate = time.time_ns()
+        try:
+            while (
+                main_log_path(log_dir, mi.name, mi.id, candidate).exists()
+                or container_log_path(log_dir, mi.name, mi.id, candidate).exists()
+            ):
+                candidate += 1
+        except OSError:
+            pass
+        return candidate
 
     def _get_numbered_log_path(
         self, mi: ModelInstance, restart_count: Optional[int] = None
@@ -3572,6 +3610,7 @@ class ServeManager(ContainerLogPersister):
             self._record_log_sources(mi, persistence)
             self._sync_component_log_persistence(mi, persistence)
             return
+
 
         logger.info(
             f"Re-attaching container log persistence for adopted model instance "
@@ -3930,13 +3969,21 @@ class ServeManager(ContainerLogPersister):
         self._align_instance_log_dir(mi)
 
         is_main_worker = mi.worker_id == self._worker_id
-        log_restart_count = (
-            (mi.restart_count or 0)
-            if is_main_worker
-            else self._next_follower_log_restart_count(mi)
-        )
+        if is_main_worker:
+            log_restart_count = mi.restart_count or 0
+        else:
+            log_restart_count = self._next_follower_log_restart_count(mi)
+            if log_restart_count is None:
+                log_restart_count = self._fallback_follower_log_restart_count(mi)
+                logger.warning(
+                    "Serve-log directory for follower %s is unreadable; "
+                    "starting with log generation %s",
+                    mi.name,
+                    log_restart_count,
+                )
 
-        # Clean up old log files before starting.
+        # Clean up old log files before starting. A fallback generation above
+        # zero never takes the fresh-start purge branch.
         self._cleanup_old_logs(mi.id, log_restart_count)
         log_file_path = self._get_numbered_log_path(mi, log_restart_count)
 
