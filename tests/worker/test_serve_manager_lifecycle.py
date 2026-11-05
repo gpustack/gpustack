@@ -917,32 +917,135 @@ def test_deferred_restart_retries_from_live_state(manager):
     assert not serve._deferred_group_restarts
 
 
-@pytest.mark.parametrize("manager", [1], indirect=True)
-@pytest.mark.parametrize("failing_call", ["read", "restart"])
-def test_deferred_restart_failure_does_not_block_other_instances(manager, failing_call):
-    serve, clientset = manager
+def _two_deferred_restarts(serve, clientset, get_instance):
     failing = _scheduled_on_main(ModelInstanceStateEnum.SCHEDULED)
     healthy = _scheduled_on_main(ModelInstanceStateEnum.SCHEDULED)
     healthy.id = 2
+    clientset.model_instances.get.side_effect = lambda id, use_cache: get_instance(
+        failing if id == failing.id else healthy
+    )
+    serve._deferred_group_restarts[failing.id] = 0.0
+    serve._deferred_group_restarts[healthy.id] = 0.0
+    return failing, healthy
 
-    def get_instance(id, use_cache):
-        if id == failing.id and failing_call == "read":
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+def test_deferred_restart_read_failure_stays_deferred(manager):
+    serve, clientset = manager
+
+    def get_instance(instance):
+        if instance.id == 1:
             raise ReadTimeout("API unavailable")
-        return failing if id == failing.id else healthy
+        return instance
+
+    failing, healthy = _two_deferred_restarts(serve, clientset, get_instance)
+    with patch.object(serve, "_restart_model_instance") as restart:
+        serve._retry_deferred_group_restarts()
+    restart.assert_called_once_with(healthy)
+    assert failing.id in serve._deferred_group_restarts
+    assert healthy.id not in serve._deferred_group_restarts
+    serve._update_model_instance.assert_not_called()
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+def test_deferred_restart_failure_moves_to_the_backoff_path(manager):
+    serve, clientset = manager
+    failing, healthy = _two_deferred_restarts(serve, clientset, lambda i: i)
 
     def restart(mi):
         if mi.id == failing.id:
-            raise ReadTimeout("API unavailable")
+            raise ReadTimeout("cannot stop workload")
 
-    clientset.model_instances.get.side_effect = get_instance
-    serve._deferred_group_restarts[failing.id] = 0.0
-    serve._deferred_group_restarts[healthy.id] = 0.0
-    with patch.object(serve, "_restart_model_instance", side_effect=restart) as restart:
+    with patch.object(serve, "_restart_model_instance", side_effect=restart) as called:
         serve._retry_deferred_group_restarts()
-    assert healthy in [call.args[0] for call in restart.call_args_list]
-    # A failed retry stays deferred for the next pass.
+        serve._retry_deferred_group_restarts()
+    # Retrying on every pass would stop and start containers every few seconds.
+    assert [call.args[0].id for call in called.call_args_list] == [
+        failing.id,
+        healthy.id,
+    ]
+    assert not serve._deferred_group_restarts
+    serve._update_model_instance.assert_called_once_with(
+        failing.id,
+        state=ModelInstanceStateEnum.ERROR,
+        state_message="Failed to restart: cannot stop workload",
+    )
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+def test_deferred_restart_stays_deferred_if_failure_cannot_be_reported(manager):
+    serve, clientset = manager
+    failing, _ = _two_deferred_restarts(serve, clientset, lambda i: i)
+    serve._update_model_instance.side_effect = ReadTimeout("API unavailable")
+
+    with patch.object(
+        serve,
+        "_restart_model_instance",
+        side_effect=ReadTimeout("cannot stop workload"),
+    ):
+        serve._retry_deferred_group_restarts()
     assert failing.id in serve._deferred_group_restarts
-    assert healthy.id not in serve._deferred_group_restarts
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+@pytest.mark.parametrize(
+    "state",
+    [ModelInstanceStateEnum.UNREACHABLE, ModelInstanceStateEnum.RUNNING],
+)
+def test_restart_marks_subordinate_without_a_generation_as_stale(manager, state):
+    serve, _ = manager
+    instance = _scheduled_on_main(state)
+    # A RUNNING subordinate only reaches the restart once the wait timed out.
+    serve._deferred_group_restarts[instance.id] = 0.0
+    with patch.object(serve, "_restart_model_instance") as restart:
+        serve._restart_scheduled_model_instance(instance)
+    restart.assert_called_once_with(instance)
+    update = serve._update_model_instance.call_args.kwargs[
+        "distributed_servers.subordinate_workers.0"
+    ]
+    assert update.restart_count == -1
+    assert update.state == state
+    assert instance.distributed_servers.subordinate_workers[0].restart_count is None
+
+
+@pytest.mark.parametrize("manager", [1], indirect=True)
+@pytest.mark.parametrize(
+    "state, generation",
+    [
+        # Already has a generation that the restart makes older.
+        (ModelInstanceStateEnum.UNREACHABLE, 2),
+        # Has no workload to leave behind.
+        (ModelInstanceStateEnum.SCHEDULED, None),
+        (ModelInstanceStateEnum.PENDING, None),
+    ],
+)
+def test_restart_does_not_mark_other_subordinates(manager, state, generation):
+    serve, _ = manager
+    instance = _scheduled_on_main(state)
+    instance.distributed_servers.subordinate_workers[0].restart_count = generation
+    with patch.object(serve, "_restart_model_instance"):
+        serve._restart_scheduled_model_instance(instance)
+    serve._update_model_instance.assert_not_called()
+
+
+@pytest.mark.parametrize("manager", [2], indirect=True)
+def test_returning_subordinate_marked_stale_stops(manager):
+    serve, _ = manager
+    instance = _instance()
+    instance.state = ModelInstanceStateEnum.STARTING
+    instance.restart_count = 3
+    worker = instance.distributed_servers.subordinate_workers[0]
+    worker.state = ModelInstanceStateEnum.RUNNING
+    worker.restart_count = -1
+    with (
+        patch.object(serve, "_start_model_instance") as start,
+        patch.object(serve, "_stop_model_instance") as stop,
+    ):
+        serve._dispatch_model_instance_event(
+            Event(type=EventType.UPDATED, data=instance)
+        )
+    stop.assert_called_once_with(instance, clear_restart_backoff=False)
+    start.assert_not_called()
 
 
 @pytest.mark.parametrize("manager", [1], indirect=True)

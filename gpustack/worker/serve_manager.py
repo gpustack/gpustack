@@ -123,6 +123,9 @@ _SUBORDINATE_UNSTARTED_STATES = (
 # How long a main worker waits for subordinates to stop before restarting anyway,
 # so that a hung subordinate worker cannot block recovery forever.
 _SUBORDINATE_QUIESCE_TIMEOUT_SECONDS = 120
+# Recorded for a subordinate that outlives a restart without having recorded its
+# generation, so that it matches no real restart_count and stops when it returns.
+_STALE_SUBORDINATE_GENERATION = -1
 
 # vLLM excludes a ten-port window starting at VLLM_DP_MASTER_PORT from its
 # other automatic port selections. Protect that window for MP topologies
@@ -1513,9 +1516,8 @@ class ServeManager(ContainerLogPersister):
             for worker in mi.distributed_servers.subordinate_workers
             if worker.worker_id == self._worker_id
         )
-        initial_start = not workload and subordinate.state in (
-            _SUBORDINATE_UNSTARTED_STATES
-        )
+        unstarted = subordinate.state in _SUBORDINATE_UNSTARTED_STATES
+        initial_start = not workload and unstarted
         # A new follower cannot rejoin engines that have already started. Its
         # failure is reported by the sync loop, and the main worker restarts the
         # whole group: recreating only this follower leaves the two sides on
@@ -1523,7 +1525,7 @@ class ServeManager(ContainerLogPersister):
         if (
             mi.distributed_servers.mode
             == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
-            and subordinate.state not in _SUBORDINATE_UNSTARTED_STATES
+            and not unstarted
         ):
             return
         # The parent can still be STARTING after this follower fails. Its
@@ -1632,34 +1634,79 @@ class ServeManager(ContainerLogPersister):
                 f"{active} did not stop in time."
             )
 
+        self._mark_unacknowledged_subordinates(mi)
         self._restart_model_instance(mi)
-        # Only now: a restart that raised has to stay eligible for a retry.
         self._deferred_group_restarts.pop(mi.id, None)
         logger.trace(f"Restarted scheduled model instance {mi.name}.")
+
+    def _mark_unacknowledged_subordinates(self, mi: ModelInstance) -> None:
+        """Mark subordinates this restart is about to leave behind as stale.
+
+        A workload started before generations were recorded has no
+        restart_count to compare. If its worker misses this restart, by being
+        unreachable or too slow to stop, nothing would tell it apart from the
+        new generation later, and it would rejoin the new main process.
+        """
+        servers = mi.distributed_servers
+        if (
+            not servers
+            or servers.mode != DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+        ):
+            return
+        patch = {
+            f"distributed_servers.subordinate_workers.{pos}": sw.model_copy(
+                update={"restart_count": _STALE_SUBORDINATE_GENERATION}
+            )
+            for pos, sw in enumerate(servers.subordinate_workers or [])
+            if sw.restart_count is None
+            and sw.state not in _SUBORDINATE_UNSTARTED_STATES
+        }
+        if patch:
+            self._update_model_instance(mi.id, **patch)
 
     def _retry_deferred_group_restarts(self) -> None:
         """Re-evaluate waiting restarts, since a hung follower sends no event."""
         for instance_id in list(self._deferred_group_restarts):
+            # Failures stay inside this loop, so they do not hold up other
+            # instances' recovery later in the same pass of the watch loop.
             try:
                 mi = self._clientset.model_instances.get(
                     id=instance_id, use_cache=False
                 )
-                if (
-                    mi.state != ModelInstanceStateEnum.SCHEDULED
-                    or mi.worker_id != self._worker_id
-                ):
-                    self._deferred_group_restarts.pop(instance_id, None)
-                    continue
-                self._restart_scheduled_model_instance(mi)
             except NotFoundException:
                 self._deferred_group_restarts.pop(instance_id, None)
+                continue
             except Exception as e:
-                # Stay deferred, and do not hold up other instances' recovery,
-                # which runs later in the same pass of the watch loop.
                 logger.warning(
-                    f"Failed to retry deferred restart of model instance "
-                    f"{instance_id}: {e}"
+                    f"Failed to read model instance {instance_id} "
+                    f"for its deferred restart: {e}"
                 )
+                continue
+            if (
+                mi.state != ModelInstanceStateEnum.SCHEDULED
+                or mi.worker_id != self._worker_id
+            ):
+                self._deferred_group_restarts.pop(instance_id, None)
+                continue
+            try:
+                self._restart_scheduled_model_instance(mi)
+            except Exception as e:
+                self._fail_deferred_group_restart(mi, e)
+
+    def _fail_deferred_group_restart(self, mi: ModelInstance, error: Exception) -> None:
+        """Hand a failed restart to the error path, which applies the backoff."""
+        logger.warning(f"Failed to restart model instance {mi.name}: {error}")
+        try:
+            self._update_model_instance(
+                mi.id,
+                state=ModelInstanceStateEnum.ERROR,
+                state_message=f"Failed to restart: {error}",
+            )
+        except Exception as e:
+            # Stay deferred: without the ERROR state nothing else would retry.
+            logger.warning(f"Failed to report restart failure of {mi.name}: {e}")
+            return
+        self._deferred_group_restarts.pop(mi.id, None)
 
     def _get_numbered_log_path(self, mi: ModelInstance) -> str:
         """Get log file path with restart count.
