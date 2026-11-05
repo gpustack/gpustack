@@ -1820,6 +1820,49 @@ def test_follower_log_generation_counts_flat_logs(tmp_path: Path):
     assert manager._next_follower_log_restart_count(_follower_instance(0)) == 1
 
 
+def test_follower_log_scan_error_falls_back_to_server_count(tmp_path: Path):
+    """An unreadable serve-log directory must not become a start failure."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(tmp_path / "serve")
+    instance = _follower_instance(5)
+
+    with patch(
+        "gpustack.worker.serve_manager.restart_log_dirs",
+        side_effect=OSError("stale file handle"),
+    ):
+        assert manager._next_follower_log_restart_count(instance) == 5
+        assert manager._current_follower_log_restart_count(instance) == 5
+
+
+def test_follower_launch_survives_a_log_scan_failure(tmp_path: Path):
+    """A transient log-directory read failure falls back to the server count
+    instead of aborting the follower launch."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(tmp_path / "serve")
+    instance = _follower_instance(5)
+    model = new_model(1, "model", huggingface_repo_id="Qwen/Qwen3-0.6B")
+
+    with (
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_assign_ports"),
+        patch.object(manager, "_update_model_instance"),
+        patch.object(manager, "_start_container_log_persistence"),
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+        patch(
+            "gpustack.worker.serve_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.serve_manager.restart_log_dirs",
+            side_effect=OSError("stale file handle"),
+        ),
+    ):
+        manager._launch_model_instance(instance)
+
+    log_path = process.call_args.kwargs["args"][3]
+    assert log_path.endswith("/5/main.log")
+
+
 @pytest.mark.asyncio
 async def test_follower_launch_keeps_the_previous_log_generation(tmp_path: Path):
     """A follower start writes into a new generation and leaves the previous

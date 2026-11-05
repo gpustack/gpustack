@@ -3276,11 +3276,20 @@ class ServeManager(ContainerLogPersister):
         are counted.
         """
         log_dir = Path(self._serve_log_dir)
-        counts = set(restart_log_dirs(log_dir, model_instance_id))
-        counts.update(
-            parsed.restart_count
-            for _path, parsed in flat_instance_logs(log_dir, model_instance_id)
-        )
+        try:
+            counts = set(restart_log_dirs(log_dir, model_instance_id))
+            counts.update(
+                parsed.restart_count
+                for _path, parsed in flat_instance_logs(log_dir, model_instance_id)
+            )
+        except OSError as e:
+            logger.warning(
+                "Failed to read serve logs for model instance %s: %s; "
+                "falling back to the server restart count",
+                model_instance_id,
+                e,
+            )
+            return set()
         return counts
 
     def _current_follower_log_restart_count(self, mi: ModelInstance) -> int:
@@ -3294,6 +3303,10 @@ class ServeManager(ContainerLogPersister):
         A follower can restart without the server changing `mi.restart_count`.
         Reusing that count would truncate the previous run's files, so a
         follower with existing logs advances past the highest one on disk.
+
+        The server count is deliberately not a floor here: jumping to it would
+        make `_cleanup_old_logs` keep `{N, N-1}` and drop the actual previous
+        run when the server count is ahead of the local logs.
         """
         counts = self._log_restart_counts_on_disk(mi.id)
         return max(counts) + 1 if counts else (mi.restart_count or 0)
