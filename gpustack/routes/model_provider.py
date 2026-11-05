@@ -642,9 +642,14 @@ async def get_models_from_provider(
     fallback_created = int(datetime.now(timezone.utc).timestamp())
     for item in data:
         if input.config.type == ModelProviderTypeEnum.DOUBAO:
-            status = item.get("status", None)
-            if status is not None:
-                continue
+            # Ark stamps a lifecycle status on every entry of its model
+            # list ("Published", "Retiring", ...). Both of those still serve
+            # requests -- "Retiring" is scheduled for deprecation, not gone --
+            # so only statuses outside the serving window are hidden.
+            status = item.get("status")
+            if isinstance(status, str) and status:
+                if status.lower() not in ("published", "retiring"):
+                    continue
         model_id = get_model_name(item)
         if not model_id:
             continue
