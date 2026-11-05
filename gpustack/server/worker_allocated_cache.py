@@ -164,6 +164,27 @@ async def get_workers_allocated(worker_ids: Iterable[int]) -> Dict[int, Allocate
     return allocated
 
 
+def bound_worker_ids(instance: ModelInstance) -> Set[int]:
+    """IDs of the workers bound to the instance: main plus subordinates."""
+    worker_ids: Set[int] = set()
+    if instance.worker_id is not None:
+        worker_ids.add(instance.worker_id)
+    dservers = instance.distributed_servers
+    if dservers and dservers.subordinate_workers:
+        worker_ids.update(
+            sw.worker_id
+            for sw in dservers.subordinate_workers
+            if sw.worker_id is not None
+        )
+    return worker_ids
+
+
+async def invalidate_worker_ids(worker_ids: Iterable[int]) -> None:
+    """Drop cached Allocated for the given workers."""
+    for wid in set(worker_ids):
+        await delete_cache_by_key(_key=_cache_key_for(wid))
+
+
 async def invalidate_workers_allocated(instances: Iterable[ModelInstance]) -> None:
     """Drop cached Allocated for every worker bound to any of the given
     instances — main worker plus distributed subordinates.
@@ -172,14 +193,6 @@ async def invalidate_workers_allocated(instances: Iterable[ModelInstance]) -> No
     batch writes pass the batch directly; deduplication across the union
     keeps the actual ``delete_cache_by_key`` calls minimal.
     """
-    worker_ids: Set[int] = set()
-    for inst in instances:
-        if inst.worker_id is not None:
-            worker_ids.add(inst.worker_id)
-        dservers = inst.distributed_servers
-        if dservers and dservers.subordinate_workers:
-            for sw in dservers.subordinate_workers:
-                if sw.worker_id is not None:
-                    worker_ids.add(sw.worker_id)
-    for wid in worker_ids:
-        await delete_cache_by_key(_key=_cache_key_for(wid))
+    await invalidate_worker_ids(
+        wid for inst in instances for wid in bound_worker_ids(inst)
+    )
