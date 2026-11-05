@@ -314,9 +314,25 @@ class InferenceServer(ABC):
             sys.exit(1)
 
     def _stop_when_starting(self, event: Event) -> bool:
-        if event.data["state"] == ModelInstanceStateEnum.ERROR:
+        state = event.data["state"]
+        if state == ModelInstanceStateEnum.ERROR:
             raise ModelInstanceStateError()
-        elif event.data["state"] == ModelInstanceStateEnum.STARTING:
+        # The instance is already past STARTING, which it will not re-enter
+        # without a new launch. While this process is alive the worker skips
+        # state sync for the instance, so waiting here would block its recovery.
+        # A follower may be relaunched under a running main worker, so the state
+        # only speaks for the main worker's own launch.
+        elif (
+            state
+            in (ModelInstanceStateEnum.RUNNING, ModelInstanceStateEnum.UNREACHABLE)
+            and self._model_instance.worker_id == self._worker.id
+        ):
+            logger.info(
+                f"Model instance {self._model_instance.name} is already {state}. "
+                "Skipping provisioning."
+            )
+            raise ModelInstanceStateError()
+        elif state == ModelInstanceStateEnum.STARTING:
             resolved_path = event.data["resolved_path"]
             if not resolved_path:
                 raise ValueError(

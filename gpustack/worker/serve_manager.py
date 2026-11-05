@@ -1472,6 +1472,18 @@ class ServeManager(ContainerLogPersister):
                     f"Model instance {mi.name} is already running. Skipping start."
                 )
                 return
+            # A watch reconnect replays every existing instance as CREATED, so
+            # this is not necessarily a first start. An unreachable instance
+            # has a workload to reconcile through the periodic state sync, and
+            # an errored one is retried only as its recovery policy allows.
+            if mi.state == ModelInstanceStateEnum.UNREACHABLE:
+                logger.debug(
+                    f"Model instance {mi.name} is unreachable. Skipping start."
+                )
+                return
+            if mi.state == ModelInstanceStateEnum.ERROR:
+                self._error_model_instances[mi.id] = mi
+                return
             self._start_model_instance(mi)
             logger.trace(f"CREATED event: started created model instance {mi.name}.")
 
@@ -2066,7 +2078,12 @@ class ServeManager(ContainerLogPersister):
                     f"distributed_servers.subordinate_workers.{sw_pos}": sw,
                 }
 
-            self._update_model_instance(mi.id, **patch_dict)
+            try:
+                self._update_model_instance(mi.id, **patch_dict)
+            except Exception as e:
+                if is_main_worker and self._abandon_launch_for_running_workload(mi, e):
+                    return
+                raise
             self._error_model_instances.pop(mi.id, None)
             self._pending_model_instance_errors.pop(mi.id, None)
             logger.info(
@@ -2088,6 +2105,47 @@ class ServeManager(ContainerLogPersister):
                     )
 
             self._handle_model_instance_launch_failure(mi, e)
+
+    def _abandon_launch_for_running_workload(
+        self, mi: ModelInstance, error: Exception
+    ) -> bool:
+        """
+        Stop a launch whose state write failed unless it has no workload to keep.
+
+        A failed write says nothing about a running workload, which keeps serving
+        and is reconciled by the periodic state sync once the provisioning process
+        is gone. A workload that cannot be looked up is left to that sync as well,
+        rather than deleted on an unknown state. A SCHEDULED instance is excluded
+        from the sync and any workload it has is being replaced, so its launch
+        fails normally.
+
+        Returns:
+            True if the launch was abandoned, False if the launch should fail.
+        """
+        if mi.state == ModelInstanceStateEnum.SCHEDULED:
+            return False
+
+        try:
+            workload = get_workload(mi.name)
+        except Exception as lookup_error:
+            logger.warning(
+                f"Failed to look up workload of model instance {mi.name}: "
+                f"{lookup_error}"
+            )
+        else:
+            if not workload or workload.state != WorkloadStatusStateEnum.RUNNING:
+                return False
+
+        logger.warning(
+            f"Keeping workload of model instance {mi.name} "
+            f"after failing to update its state: {error}"
+        )
+        process = self._provisioning_processes.pop(mi.id, None)
+        if process:
+            terminate_process_tree(process.pid)
+        self._error_model_instances.pop(mi.id, None)
+        self._pending_model_instance_errors.pop(mi.id, None)
+        return True
 
     def _handle_model_instance_launch_failure(
         self, mi: ModelInstance, error: Exception
