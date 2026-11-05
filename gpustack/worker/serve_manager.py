@@ -4,7 +4,7 @@ import contextlib
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import wraps
+from functools import partial, wraps
 import json
 import multiprocessing
 from multiprocessing.connection import Connection
@@ -142,6 +142,7 @@ _WORKLOAD_FAILED_MESSAGE = "Inference server exited or unhealthy."
 _SUBORDINATE_ERROR_PREFIX = "Distributed serving error in subordinate worker "
 
 _RANK_HEALTH_CONCURRENCY = 4
+_MANAGED_TASK_CONCURRENCY = 4
 
 
 @dataclass
@@ -357,7 +358,7 @@ class _LocalPortReservationChanged(RuntimeError):
         self.ports = ports
 
 
-def _model_lifecycle(method):
+def _model_lifecycle(method, *, blocking: bool = True):
     @wraps(method)
     def serialized(self, *args, **kwargs):
         instance = args[0] if args else kwargs["mi"]
@@ -366,8 +367,12 @@ def _model_lifecycle(method):
             if lock is None:
                 lock = threading.RLock()
                 self._model_lifecycle_locks[instance.id] = lock
-        with lock:
+        if not lock.acquire(blocking=blocking):
+            return
+        try:
             return method(self, *args, **kwargs)
+        finally:
+            lock.release()
 
     return serialized
 
@@ -457,6 +462,8 @@ class ServeManager(ContainerLogPersister):
         self._model_lifecycle_locks = WeakValueDictionary()
         self._managed_stopping: Dict[Tuple[int, int], bool] = {}
         self._managed_launches: Dict[Tuple[int, int], Connection] = {}
+        self._managed_tasks: Dict[int, Future] = {}
+        self._managed_task_executor: Optional[ThreadPoolExecutor] = None
         self._smg_stopping: Dict[tuple, tuple] = {}
         self._distributed_port_claim_lock = threading.Lock()
         self._distributed_port_client: Optional[DistributedPortClient] = None
@@ -1288,10 +1295,13 @@ class ServeManager(ContainerLogPersister):
         key = (mi.id, mi.restart_count or 0)
         if key not in self._managed_stopping:
             return False
-        self._stop_model_instance(mi, delete_logs=self._managed_stopping[key])
+        self._schedule_managed_task(
+            mi,
+            partial(self._stop_model_instance, delete_logs=self._managed_stopping[key]),
+        )
         return True
 
-    @_model_lifecycle
+    @partial(_model_lifecycle, blocking=False)
     def _sync_managed_model_instance(self, mi: ModelInstance) -> None:
         tracked = self._model_instance_by_instance_id.get(mi.id)
         if tracked and self._resume_managed_stop(tracked):
@@ -1301,10 +1311,15 @@ class ServeManager(ContainerLogPersister):
                 self._clientset.model_instances.get(id=mi.id, use_cache=False)
             )
         except NotFoundException:
-            self._stop_model_instance(tracked or mi, delete_logs=True)
+            self._schedule_managed_task(
+                tracked or mi, partial(self._stop_model_instance, delete_logs=True)
+            )
             return
         except Exception as exc:
             logger.warning("Cannot reconcile managed model instance %s: %s", mi.id, exc)
+            return
+        if self._managed_stop_requested(current):
+            self._schedule_managed_task(current, self._stop_model_instance)
             return
         if not self._adopt_managed_model_instance(current, tracked):
             return
@@ -1319,11 +1334,46 @@ class ServeManager(ContainerLogPersister):
                 )
                 and current.draining_since is None
             ):
-                self._prepare_managed_model_instance(current)
+                if (current.id, current.restart_count or 0) in self._managed_launches:
+                    self._schedule_managed_task(
+                        current, self._prepare_managed_model_instance
+                    )
+                else:
+                    self._prepare_managed_model_instance(current)
             return
         if mi.id in self._starting_model_instances:
             return
         self._sync_registered_workloads(current, tracked)
+
+    def _schedule_managed_task(
+        self, mi: ModelInstance, operation: Callable[[ModelInstance], None]
+    ) -> None:
+        """Keep slow creation and teardown outside shared reconciliation loops."""
+        with self._model_instance_start_lock:
+            for instance_id, job in list(self._managed_tasks.items()):
+                if job.done():
+                    try:
+                        job.result()
+                    except Exception as exc:
+                        logger.warning(
+                            'Cannot reconcile managed model instance %s: %s',
+                            instance_id,
+                            exc,
+                        )
+                    self._managed_tasks.pop(instance_id)
+            if (
+                mi.id in self._managed_tasks
+                or len(self._managed_tasks) >= _MANAGED_TASK_CONCURRENCY
+            ):
+                return
+            if self._managed_task_executor is None:
+                self._managed_task_executor = ThreadPoolExecutor(
+                    max_workers=_MANAGED_TASK_CONCURRENCY,
+                    thread_name_prefix='managed-lifecycle',
+                )
+            self._managed_tasks[mi.id] = self._managed_task_executor.submit(
+                operation, mi.model_copy(deep=True)
+            )
 
     def _sync_registered_workloads(self, current, tracked):
         local = get_model_instance_workloads(current, self._worker_id)
@@ -1343,7 +1393,7 @@ class ServeManager(ContainerLogPersister):
             )
             for item in local
         ):
-            self._stop_model_instance(current)
+            self._schedule_managed_task(current, self._stop_model_instance)
             return
         report = self._observe_managed_workloads(current)
         try:
@@ -1357,7 +1407,7 @@ class ServeManager(ContainerLogPersister):
             if any(
                 item.state == ModelInstanceWorkloadStateEnum.FAILED for item in report
             ):
-                self._stop_model_instance(current)
+                self._schedule_managed_task(current, self._stop_model_instance)
             else:
                 self._sync_managed_rank_health(
                     current, startup_only=tracked is not None
@@ -1481,7 +1531,9 @@ class ServeManager(ContainerLogPersister):
     def _retry_managed_stops(self) -> None:
         """Continue accepted local teardown even when Server snapshots are unavailable."""
         for old_mi, item in list(self._smg_stopping.values()):
-            self._retry_smg_stop(old_mi, item)
+            self._schedule_managed_task(
+                old_mi, partial(self._retry_smg_stop, item=item)
+            )
         for (instance_id, restart_count), delete_logs in list(
             self._managed_stopping.items()
         ):
@@ -1491,7 +1543,9 @@ class ServeManager(ContainerLogPersister):
                 and (mi.restart_count or 0) == restart_count
                 and instance_id not in self._starting_model_instances
             ):
-                self._stop_model_instance(mi, delete_logs=delete_logs)
+                self._schedule_managed_task(
+                    mi, partial(self._stop_model_instance, delete_logs=delete_logs)
+                )
 
     def _stop_managed_model_instance(
         self, mi: ModelInstance, delete_logs: bool
@@ -2725,7 +2779,7 @@ class ServeManager(ContainerLogPersister):
             processed.append((check, failures))
         return diagnostic, processed
 
-    @_model_lifecycle
+    @partial(_model_lifecycle, blocking=False)
     def _sync_managed_rank_health(
         self, mi: ModelInstance, *, startup_only: bool = False
     ) -> None:
@@ -2802,7 +2856,7 @@ class ServeManager(ContainerLogPersister):
                     check.future = None
             if self._managed_stop_requested(current):
                 self._clear_rank_health(mi.id)
-                self._stop_model_instance(current)
+                self._schedule_managed_task(current, self._stop_model_instance)
                 return
             if targets:
                 worker = self._clientset.workers.get(id=self._worker_id)
