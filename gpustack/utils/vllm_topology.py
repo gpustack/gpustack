@@ -84,7 +84,11 @@ def vllm_lb_mode(parameters: Optional[List[str]], *, tokenized: bool = False) ->
     """Identify explicitly selected load balancing and reject conflicting modes."""
     parameters = normalize_vllm_parameters(parameters, tokenized=tokenized)
     external = find_bool_parameter(
-        parameters, ["data-parallel-external-lb", "dpe"], last_wins=True, tokenized=True
+        parameters,
+        ["data-parallel-external-lb", "dpe"],
+        negative_param_names=["no-data-parallel-external-lb"],
+        last_wins=True,
+        tokenized=True,
     )
     multi_port_external = find_bool_parameter(
         parameters,
@@ -93,7 +97,11 @@ def vllm_lb_mode(parameters: Optional[List[str]], *, tokenized: bool = False) ->
         tokenized=True,
     )
     hybrid = find_bool_parameter(
-        parameters, ["data-parallel-hybrid-lb", "dph"], last_wins=True, tokenized=True
+        parameters,
+        ["data-parallel-hybrid-lb", "dph"],
+        negative_param_names=["no-data-parallel-hybrid-lb"],
+        last_wins=True,
+        tokenized=True,
     ) or (
         not multi_port_external
         and find_last_parameter(

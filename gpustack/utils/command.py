@@ -186,6 +186,7 @@ def find_bool_parameter(
     *,
     last_wins: bool = False,
     tokenized: bool = False,
+    negative_param_names: Optional[List[str]] = None,
 ) -> bool:
     """
     Return whether any parameter whose key is in ``param_names`` is "enabled".
@@ -200,12 +201,17 @@ def find_bool_parameter(
 
     Values are matched case-insensitively. The first occurrence wins unless
     ``last_wins`` is set to follow argparse override semantics.
+    Explicit ``negative_param_names`` disable the flag in the same order;
+    negative spellings are only recognized when the caller declares them.
     """
     enabled = False
     for key, value in _iter_param_pairs(parameters, tokenized=tokenized):
-        if key not in param_names:
+        if key in (negative_param_names or []):
+            enabled = False
+        elif key in param_names:
+            enabled = value is None or value.lower() not in _FALSY_VALUES
+        else:
             continue
-        enabled = value is None or value.lower() not in _FALSY_VALUES
         if not last_wins:
             return enabled
     return enabled

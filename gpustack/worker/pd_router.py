@@ -18,6 +18,7 @@ catalog entry keeps the router under `router:` and not under `roles:`.
 """
 
 import logging
+import shlex
 from typing import TYPE_CHECKING, Dict, List, Mapping, NamedTuple, Optional, Sequence
 
 from pydantic import BaseModel
@@ -26,6 +27,7 @@ from gpustack.utils.command import (
     find_last_int_parameter,
     find_last_parameter,
     flatten_to_argv,
+    is_parameter_key,
 )
 
 from gpustack.schemas.pd_modes import (
@@ -206,7 +208,20 @@ def _static_hybrid_router_parameters(parameters, expected: int) -> List[str]:
         index += 1
     if overrides and overrides[-1] != expected:
         raise ValueError(f"{flag} must match the shared API local DP {expected}.")
-    return result if overrides else list(parameters or [])
+    if not overrides:
+        return list(parameters or [])
+    # These fragments are parsed again when the Custom backend builds its argv.
+    # Quote values inside their option rather than storing unquoted argv tokens.
+    fragments = []
+    for token in result:
+        key, separator, value = token.partition('=')
+        if is_parameter_key(key):
+            fragments.append(f'{key}={shlex.quote(value)}' if separator else key)
+        elif fragments and is_parameter_key(fragments[-1]):
+            fragments[-1] += ' ' + shlex.quote(token)
+        else:
+            fragments.append(token)
+    return fragments
 
 
 def _peer_scope(peer: PeerAddress) -> Dict[str, object]:

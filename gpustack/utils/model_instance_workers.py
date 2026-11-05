@@ -780,11 +780,16 @@ def sglang_component_port_requests(
 
 def sglang_policy_parameters(
     parameters: Optional[List[str]],
+    *,
+    tokenized: bool = False,
 ) -> tuple[List[str], str, bool]:
-    """Separate exact native policy options while preserving the saved parameters."""
+    """Separate native policy options without mutating the input.
+
+    Set tokenized for launch argv; saved parameters still need shell parsing.
+    """
     from gpustack.utils.command import flatten_to_argv
 
-    tokens = flatten_to_argv(parameters)
+    tokens = list(parameters or []) if tokenized else flatten_to_argv(parameters)
     engine, policy, found = [], 'cache_aware', False
     index = 0
     while index < len(tokens):

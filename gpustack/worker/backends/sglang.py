@@ -75,14 +75,17 @@ def sglang_component_connecting_port_count(
 
 
 def split_sglang_smg_parameters(
-    parameters: Optional[List[str]], dependencies: Optional[Dict[str, str]]
+    parameters: Optional[List[str]],
+    dependencies: Optional[Dict[str, str]],
+    *,
+    tokenized: bool = False,
 ) -> Tuple[List[str], str]:
     """Use only the policy capabilities of the selected Engine image's SMG wheel."""
     if not dependencies or dependencies.get("sglang-router") != "0.3.2":
         raise ValueError(
             "SGLang SMG requires trusted sglang-router 0.3.2 image metadata"
         )
-    engine, policy, _ = sglang_policy_parameters(parameters)
+    engine, policy, _ = sglang_policy_parameters(parameters, tokenized=tokenized)
     return engine, policy
 
 
@@ -162,7 +165,7 @@ def extend_sglang_mounted_lora_arguments(
         return
     if find_parameter(backend_parameters or [], ["lora-paths", "lora_paths"]):
         return
-    if find_parameter(arguments, ["lora-paths", "lora_paths"]):
+    if find_parameter(arguments, ["lora-paths", "lora_paths"], tokenized=True):
         return
 
     modules: List[Tuple[str, str]] = []
@@ -702,7 +705,7 @@ class SGLangServer(InferenceServer):
         user_backend_parameters = self._flatten_backend_param()
         if get_model_instance_workloads(self._model_instance) is not None:
             user_backend_parameters, _ = split_sglang_smg_parameters(
-                user_backend_parameters, self._smg_image_dependencies
+                user_backend_parameters, self._smg_image_dependencies, tokenized=True
             )
             self._validate_managed_engine_parameters(
                 user_backend_parameters, is_distributed, is_distributed_leader, port
@@ -735,11 +738,11 @@ class SGLangServer(InferenceServer):
         ):
             native = self._get_multinode_arguments(leader)
             for key in ("nnodes", "node-rank", "dist-init-addr", "nccl-port"):
-                value = find_last_parameter(native, [key])
+                value = find_last_parameter(native, [key], tokenized=True)
                 if value is not None:
                     expected[key] = value
         for key, value in expected.items():
-            supplied = find_last_parameter(parameters, [key])
+            supplied = find_last_parameter(parameters, [key], tokenized=True)
             if supplied is not None and supplied != value:
                 raise ValueError(
                     f"Managed SGLang --{key} conflicts with its reserved allocation"

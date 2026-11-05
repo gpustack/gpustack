@@ -411,6 +411,31 @@ def test_backend_parameter_name_keeps_store_true_no_prefix():
     )
 
 
+@pytest.mark.parametrize(
+    'value', ["vllm's mode", 'vllm --max-seq-len=1024 --dtype=bfloat16']
+)
+@pytest.mark.parametrize('explicit', [False, True])
+def test_mindie_launch_readers_preserve_opaque_argv(monkeypatch, value, explicit):
+    from gpustack.worker.backends import ascend_mindie as module
+
+    server = AscendMindIEServer.__new__(AscendMindIEServer)
+    server._get_selected_gpu_devices = lambda: []
+    monkeypatch.setattr(module, 'is_ascend_310p', lambda devices: True)
+    argv = [f'--openai-support={value}']
+    if explicit:
+        argv += ['--max-seq-len=16384', '--dtype=bfloat16']
+    params, _, _ = server._prepare_backend_parameters(
+        local_world_size=1,
+        world_size=1,
+        derived_max_seq_len=32768,
+        user_backend_parameters=argv,
+        env={},
+    )
+    assert params.openai_support == value
+    assert params.max_seq_len == (16384 if explicit else 8192)
+    assert params.dtype == ('bfloat16' if explicit else 'float16')
+
+
 def test_start_writes_timeouts_into_generated_config(tmp_path):
     model_dir = tmp_path / "model"
     model_dir.mkdir()

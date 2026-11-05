@@ -1013,11 +1013,13 @@ class VLLMServer(InferenceServer):
                 index += 1 if sep else 2
             elif key in (
                 "--data-parallel-external-lb",
+                "--no-data-parallel-external-lb",
                 "-dpe",
                 "--headless",
                 "--data-parallel-multi-port-external-lb",
                 "-dpm",
                 "--data-parallel-hybrid-lb",
+                "--no-data-parallel-hybrid-lb",
                 "-dph",
             ):
                 index += 1
@@ -1767,7 +1769,11 @@ class VLLMServer(InferenceServer):
         # run its own API server, so skip the headless injection when the user
         # opts into it.
         hybrid_lb = find_bool_parameter(
-            self._model.backend_parameters, ["data-parallel-hybrid-lb"]
+            normalize_vllm_parameters(self._model.backend_parameters),
+            ["data-parallel-hybrid-lb", "dph"],
+            negative_param_names=["no-data-parallel-hybrid-lb"],
+            last_wins=True,
+            tokenized=True,
         )
         if topology.is_follower and not hybrid_lb:
             extend_args_no_exist(arguments, "--headless")

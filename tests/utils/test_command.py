@@ -811,3 +811,30 @@ def test_parse_bool_flag_value(value, expected):
 )
 def test_find_bool_parameter_can_use_the_last_alias(parameters, expected):
     assert find_bool_parameter(parameters, ['foo', 'bar'], last_wins=True) == expected
+
+
+@pytest.mark.parametrize('tokenized', [False, True])
+@pytest.mark.parametrize(
+    'parameters,expected',
+    [
+        (['--no-foo'], False),
+        (['--foo', '--no-foo'], False),
+        (['--no-foo', '--bar'], True),
+        (['--bar', '--no-foo', '--foo'], True),
+        (['--no-foo', '--bar=false'], False),
+        (['--foo', '--unrelated'], True),
+    ],
+)
+def test_find_bool_parameter_resolves_explicit_negative_aliases(
+    parameters, expected, tokenized
+):
+    assert (
+        find_bool_parameter(
+            parameters if tokenized else [' '.join(parameters)],
+            ['foo', 'bar'],
+            negative_param_names=['no-foo'],
+            last_wins=True,
+            tokenized=tokenized,
+        )
+        is expected
+    )

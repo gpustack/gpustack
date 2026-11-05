@@ -1210,6 +1210,7 @@ def test_static_hybrid_router_refuses_conflicting_or_invalid_override(parameters
 def test_static_hybrid_router_keeps_other_connection_parameters():
     from gpustack.schemas.models import PDModeEnum, RoleSpec
     from gpustack.worker.pd_router import apply_managed_router
+    from gpustack.utils.command import flatten_to_argv
 
     model = _pd_model(
         RoleSpec(
@@ -1224,7 +1225,53 @@ def test_static_hybrid_router_keeps_other_connection_parameters():
         peers=PEERS,
         variables={**VARIABLES, "intra_node_data_parallel_size": 2},
     )
-    assert rendered.backend_parameters == ["--port", "41000"]
+    assert flatten_to_argv(rendered.backend_parameters) == ["--port", "41000"]
+
+
+@pytest.mark.parametrize('equal', [False, True])
+@pytest.mark.parametrize(
+    'value',
+    [
+        'test key with spaces',
+        "test's key",
+        ' leading and trailing ',
+        '{"key":"test\'s key"}',
+        'text --intra-node-data-parallel-size=4 --port=9999',
+    ],
+)
+def test_static_router_parameters_preserve_values_until_launch(equal, value):
+    import shlex
+    from types import SimpleNamespace
+    from gpustack.schemas.models import PDModeEnum, RoleSpec
+    from gpustack.worker.backends.custom import CustomServer
+    from gpustack.worker.pd_router import apply_managed_router
+
+    option = (
+        f'--api-key={shlex.quote(value)}'
+        if equal
+        else f'--api-key {shlex.quote(value)}'
+    )
+    parameters = ['--intra-node-data-parallel-size=2', option]
+    model = _pd_model(RoleSpec(name='router', backend_parameters=parameters))
+    model.disaggregation.mode = PDModeEnum.VLLM_MOONCAKE
+    rendered = apply_managed_router(
+        model,
+        'router',
+        peers=PEERS,
+        variables={**VARIABLES, 'intra_node_data_parallel_size': 2},
+    )
+    server = CustomServer.__new__(CustomServer)
+    server._model = rendered
+    server._model_path = '/models/router'
+    server._model_instance = SimpleNamespace()
+    server._worker = SimpleNamespace(ip='127.0.0.1')
+    server._get_selected_gpu_devices = lambda: []
+    server._pd_injection_resolved, server._pd_injection_cache = True, None
+    server.inference_backend = None
+    argv = server._flatten_backend_param()
+    expected = [f'--api-key={value}'] if equal else ['--api-key', value]
+    assert argv == expected
+    assert model.roles[-1].backend_parameters == parameters
 
 
 def test_static_hybrid_hand_written_router_owns_its_local_dp():

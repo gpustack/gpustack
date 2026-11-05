@@ -1,3 +1,4 @@
+import argparse
 import json
 import logging
 import types
@@ -72,6 +73,61 @@ def test_vllm_load_balancing_modes(parameters, mode):
     assert vllm_lb_mode(parameters) == mode
 
 
+@pytest.mark.parametrize('separator', ['-', '_'])
+@pytest.mark.parametrize('tokenized', [False, True])
+@pytest.mark.parametrize(
+    'flags',
+    [
+        ['--data-parallel-external-lb', '--no-data-parallel-external-lb'],
+        ['--no-data-parallel-external-lb', '-dpe'],
+        ['--data-parallel-hybrid-lb', '--no-data-parallel-hybrid-lb'],
+        ['--no-data-parallel-hybrid-lb', '-dph'],
+        ['-dpe', '-dph', '--no-data-parallel-external-lb'],
+        ['-dph', '-dpe', '--no-data-parallel-hybrid-lb'],
+        ['-dpe', '--no-data-parallel-external-lb', '-dph'],
+        ['-dph', '--no-data-parallel-hybrid-lb', '-dpe'],
+        ['-dpm', '-dpe', '--no-data-parallel-external-lb'],
+        ['--no-data-parallel-external-lb', '--no-data-parallel-hybrid-lb'],
+    ],
+)
+def test_vllm_lb_modes_match_native_negative_flag_order(flags, tokenized, separator):
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--data-parallel-external-lb', '-dpe', action=argparse.BooleanOptionalAction
+    )
+    parser.add_argument(
+        '--data-parallel-hybrid-lb', '-dph', action=argparse.BooleanOptionalAction
+    )
+    parser.add_argument(
+        '--data-parallel-multi-port-external-lb', '-dpm', action='store_true'
+    )
+    native = parser.parse_args(flags)
+    expected = next(
+        (
+            mode
+            for mode, enabled in (
+                ('external', native.data_parallel_external_lb),
+                ('hybrid', native.data_parallel_hybrid_lb),
+                ('multi_port_external', native.data_parallel_multi_port_external_lb),
+            )
+            if enabled
+        ),
+        'internal',
+    )
+    argv = [flag[:2] + flag[2:].replace('-', separator) for flag in flags]
+    value = "You're helpful. --no-data-parallel-external-lb --data-parallel-hybrid-lb"
+    argv += ['--chat-template', value]
+    parameters = argv if tokenized else [shlex.join(argv)]
+    assert vllm_lb_mode(parameters, tokenized=tokenized) == expected
+
+
+def test_vllm_negative_hybrid_flag_keeps_native_start_rank_inference():
+    assert (
+        vllm_lb_mode(['--no-data-parallel-hybrid-lb', '--data-parallel-start-rank=0'])
+        == 'hybrid'
+    )
+
+
 @pytest.mark.parametrize(
     "other",
     [
@@ -127,6 +183,51 @@ def _external_backend(dp=2, vendor="NVIDIA"):
         ],
     )
     return backend, plan
+
+
+@pytest.mark.parametrize('mode', ['external', 'hybrid', 'multi_port_external'])
+def test_managed_launch_removes_overridden_negative_lb_flags(mode):
+    backend, plan = _external_backend()
+    parameters = [
+        '--data-parallel-external-lb',
+        '--data-parallel-hybrid-lb',
+        '--no-data-parallel-external-lb',
+        '--no-data-parallel-hybrid-lb',
+        f'--data-parallel-{mode.replace("_", "-")}-lb',
+        '-dp=2',
+        '-tp=2',
+    ]
+    backend._model.backend_parameters = parameters
+    backend._model_instance.gpu_indexes = [1, 3, 5, 7]
+    backend._model_instance.named_ports['_vllm_external_api'] = PortBand(
+        base=40000, count=1 if mode == 'hybrid' else 2
+    )
+    backend._model_instance.named_ports['_vllm_multi_port_external_supervisor'] = (
+        PortBand(base=40030)
+    )
+    backend._override_entrypoint = lambda command, args, script: (command, args)
+    configure = {
+        'external': backend._configure_external_workload,
+        'hybrid': backend._configure_hybrid_workload,
+        'multi_port_external': backend._configure_multi_port_external_workload,
+    }[mode]
+    configure(plan, ['vllm', 'serve'], ['/models/moe', *parameters])
+    if mode == 'external':
+        tasks = json.loads(
+            next(
+                f.content
+                for f in plan.containers[0].files
+                if f.path.endswith('tasks.json')
+            )
+        )['tasks']
+        commands = [task['argv'] for task in tasks]
+    else:
+        execution = plan.containers[0].execution
+        commands = [(execution.command or []) + (execution.args or [])]
+    for argv in commands:
+        assert '--no-data-parallel-external-lb' not in argv
+        assert '--no-data-parallel-hybrid-lb' not in argv
+        assert vllm_lb_mode(argv, tokenized=True) == mode
 
 
 @pytest.mark.parametrize("dp", [1, 2, 4])
@@ -393,6 +494,8 @@ def test_external_unsupported_device_or_executor_overrides_are_rejected(paramete
         "multi_port_external",
         "multi_port_external_managed",
         "hybrid",
+        "disabled_external",
+        "disabled_hybrid",
         "manual_external",
         "manual_hybrid",
         "manual_mixed",
@@ -425,6 +528,15 @@ def test_vllm_workload_creation_uses_the_selected_lifecycle(
     elif mode == "hybrid":
         backend._model.backend_parameters[0] = '--data-parallel-hybrid-lb'
         backend._model_instance.named_ports['_vllm_external_api'] = PortBand(base=40000)
+    elif mode.startswith('disabled_'):
+        backend._model_instance.distributed_servers = None
+        flag = mode.removeprefix('disabled_')
+        backend._model.backend_parameters = [
+            f'--data-parallel-{flag}-lb',
+            f'--no-data-parallel-{flag}-lb',
+            '-tp=2',
+            '-dp=2',
+        ]
     elif mode == "multi_port_external_managed":
         backend._model.backend_parameters[0] = '-dpm'
         backend._model_instance.named_ports['_vllm_external_api'] = PortBand(
@@ -460,7 +572,7 @@ def test_vllm_workload_creation_uses_the_selected_lifecycle(
         (
             ["/models/moe", *backend._model.backend_parameters]
             if mode in ('multi_port_external_managed', 'hybrid')
-            or mode.startswith('manual_')
+            or mode.startswith(('manual_', 'disabled_'))
             else ["/models/moe"]
         ),
         {},
@@ -470,7 +582,7 @@ def test_vllm_workload_creation_uses_the_selected_lifecycle(
         create.assert_called_once()
         backend._workload_plan_callback.assert_not_called()
         assert create.call_args.args[0].containers[0].files == []
-        if mode.startswith('manual_'):
+        if mode.startswith(('manual_', 'disabled_')):
             container = create.call_args.args[0].containers[0]
             argv = (container.execution.command or []) + (
                 container.execution.args or []
@@ -2113,6 +2225,19 @@ def test_sglang_injects_raw_max_lora_rank(tmp_path):
         backend_parameters=None,
     )
     assert _arg_value(arguments, "--max-lora-rank") == "24"
+
+
+@pytest.mark.parametrize(
+    'value', ["/models/worker's tokenizer", '/models/tokenizer --lora-paths=decoy']
+)
+def test_sglang_lora_probe_preserves_existing_argv(tmp_path, value):
+    adapter = _write_adapter_config(tmp_path / 'a', {'r': 24})
+    arguments = [f'--tokenizer-path={value}']
+    extend_sglang_mounted_lora_arguments(
+        arguments, [_lora('base:a', adapter)], backend_parameters=None
+    )
+    assert arguments[0] == f'--tokenizer-path={value}'
+    assert _arg_value(arguments, '--lora-paths') == f'a={adapter}'
 
 
 def test_sglang_respects_user_max_lora_rank(tmp_path):
@@ -3764,6 +3889,32 @@ def test_sglang_smg_policy_is_native_and_nonmutating(parameters, expected, polic
     assert parameters == original
 
 
+@pytest.mark.parametrize('tokenized', [False, True])
+@pytest.mark.parametrize(
+    'value',
+    [
+        '/models/chat templates/template.jinja',
+        "/models/worker's templates/template.jinja",
+        'text --policy=random --host=wrong',
+    ],
+)
+def test_sglang_policy_preserves_opaque_values(value, tokenized):
+    from gpustack.worker.backends.sglang import split_sglang_smg_parameters
+
+    native = f'--chat-template={value}'
+    parameters = [
+        '--dp=4',
+        '--policy=manual',
+        native if tokenized else f'--chat-template={shlex.quote(value)}',
+    ]
+    original = list(parameters)
+    kwargs = {'tokenized': True} if tokenized else {}
+    assert split_sglang_smg_parameters(
+        parameters, {'sglang-router': '0.3.2'}, **kwargs
+    ) == (['--dp=4', native], 'manual')
+    assert parameters == original
+
+
 @pytest.mark.parametrize(
     'parameters,dependencies',
     [
@@ -3985,6 +4136,62 @@ def test_managed_sglang_engine_argv_splits_policy_and_fences_addresses(
         assert '--policy=manual' not in argv
         assert '--schedule-policy=lpm' in argv and '--load-balance-method=auto' in argv
     assert backend._model.backend_parameters == parameters
+
+
+@pytest.mark.parametrize(
+    'parameter_format', [None, ParameterFormatEnum.SPACE, ParameterFormatEnum.EQUAL]
+)
+@pytest.mark.parametrize('equal', [False, True])
+@pytest.mark.parametrize(
+    'value',
+    [
+        '/models/chat templates/template.jinja',
+        "/models/worker's templates/template.jinja",
+        'text --policy=random --host=wrong',
+    ],
+)
+def test_sglang_build_command_keeps_real_flattened_values(
+    parameter_format, equal, value
+):
+    import argparse
+
+    backend = _managed_sglang_backend()
+    option = (
+        f'--chat-template={shlex.quote(value)}'
+        if equal
+        else f'--chat-template {shlex.quote(value)}'
+    )
+    parameters = ['--dp=4', '--policy=manual', option]
+    backend._model.backend_parameters = list(parameters)
+    backend._model_path = '/models/sg'
+    backend._model_spec = backend._model
+    backend._pd_injection_resolved, backend._pd_injection_cache = True, None
+    backend.inference_backend = None
+    backend._parameter_format = lambda: parameter_format
+    backend._derive_max_model_len = lambda: None
+    backend._get_model_architecture = lambda: []
+    backend._get_speculative_arguments = lambda: []
+    backend._get_hicache_arguments = lambda: []
+    backend._get_selected_gpu_devices = lambda: []
+
+    argv, _ = backend._build_command_args(40000, False, False)
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument('--chat-template')
+    parsed, _ = parser.parse_known_args(argv)
+    assert parsed.chat_template == value
+    assert not any(token.partition('=')[0] == '--policy' for token in argv)
+    assert argv[argv.index('--host') + 1] == '10.0.0.1'
+    assert backend._model.backend_parameters == parameters
+
+
+@pytest.mark.parametrize(
+    'value', ["worker's template", 'text --host=wrong --port=9999']
+)
+def test_sglang_address_validation_reads_existing_argv(value):
+    backend = _managed_sglang_backend()
+    backend._validate_managed_engine_parameters(
+        [f'--chat-template={value}'], False, False, 40000
+    )
 
 
 def test_accelerator_free_plan_conversion_skips_model_instance_type(monkeypatch):

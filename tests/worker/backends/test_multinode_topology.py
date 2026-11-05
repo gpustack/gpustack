@@ -243,8 +243,20 @@ def test_follower_gets_headless_by_default():
     assert "--headless" in _dp_only_mp_arguments([])
 
 
-def test_follower_skips_headless_under_hybrid_lb():
-    assert "--headless" not in _dp_only_mp_arguments(["--data-parallel-hybrid-lb"])
+@pytest.mark.parametrize(
+    'parameters,headless',
+    [
+        (['--data-parallel-hybrid-lb'], False),
+        (['--data-parallel-hybrid-lb', '--no-data-parallel-hybrid-lb'], True),
+        (['--no-data-parallel-hybrid-lb', '--data-parallel-hybrid-lb'], False),
+        (['-dph', '--no-data-parallel-hybrid-lb'], True),
+        (['--no-data-parallel-hybrid-lb', '-dph'], False),
+        (['--data_parallel_hybrid_lb', '--no_data_parallel_hybrid_lb'], True),
+        (['--data-parallel-start-rank=8', '--no-data-parallel-hybrid-lb'], True),
+    ],
+)
+def test_follower_headless_follows_explicit_hybrid_flag_order(parameters, headless):
+    assert ('--headless' in _dp_only_mp_arguments(parameters)) is headless
 
 
 @pytest.mark.parametrize(

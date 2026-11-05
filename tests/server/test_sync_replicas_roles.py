@@ -264,6 +264,10 @@ async def test_role_less_still_fans_out_by_model_replicas():
         (["--data-parallel-multi-port-external-lb", "--data-parallel-size=2"], True),
         (["-dpm", "--data-parallel-size=2"], True),
         (["--data-parallel-hybrid-lb", "--data-parallel-size=4"], True),
+        (['-dpe', '--no-data-parallel-external-lb', '-tp=2', '-dp=2'], False),
+        (['-dph', '--no-data-parallel-hybrid-lb', '-tp=2', '-dp=2'], False),
+        (['--no-data-parallel-external-lb', '-dpe', '-dp=2'], True),
+        (['--no-data-parallel-hybrid-lb', '-dph', '-dp=2'], True),
         (["--data-parallel-rank=1", "--data-parallel-size=2"], False),
     ],
 )
@@ -1374,6 +1378,8 @@ def test_managed_draining_instance_leaves_gateway_during_the_window():
         (['--dp=2'], False),
         (['--data-parallel-external-lb', '--dp=2'], True),
         (['--data-parallel-hybrid-lb', '--dp=2'], True),
+        (['-dpe', '--no-data-parallel-external-lb', '--dp=2'], False),
+        (['-dph', '--no-data-parallel-hybrid-lb', '--dp=2'], False),
         ([], False),
     ],
 )

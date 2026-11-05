@@ -59,6 +59,23 @@ def _cache_instance(worker_id, ports=None, port=None):
 
 
 class TestMemberDemand:
+    @pytest.mark.parametrize('mode', ['external', 'hybrid'])
+    def test_disabled_native_lb_flags_keep_internal_port_budget(self, mode):
+        parameters = ['-tp=2', '-dp=2']
+        assert port_budget.member_port_requests(
+            _model(
+                backend_parameters=[
+                    f'--data-parallel-{mode}-lb',
+                    f'--no-data-parallel-{mode}-lb',
+                    *parameters,
+                ]
+            ),
+            None,
+            [4],
+        ) == port_budget.member_port_requests(
+            _model(backend_parameters=parameters), None, [4]
+        )
+
     @pytest.mark.parametrize(
         'mode, expected',
         [
