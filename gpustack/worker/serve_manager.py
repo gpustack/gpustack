@@ -1597,6 +1597,7 @@ class ServeManager(ContainerLogPersister):
         )
         return True
 
+    @_model_lifecycle
     def _restart_scheduled_model_instance(self, mi: ModelInstance) -> None:
         """Restart on the main worker once subordinates have stopped.
 

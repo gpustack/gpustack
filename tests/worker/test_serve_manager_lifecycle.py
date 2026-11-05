@@ -1028,6 +1028,40 @@ def test_restart_does_not_mark_other_subordinates(manager, state, generation):
     serve._update_model_instance.assert_not_called()
 
 
+@pytest.mark.parametrize("manager", [1], indirect=True)
+def test_concurrent_restarts_of_one_instance_run_once(manager):
+    serve, _ = manager
+    instance = _scheduled_on_main(ModelInstanceStateEnum.SCHEDULED)
+    restarting = threading.Event()
+    finish = threading.Event()
+
+    def restart(mi):
+        # The old workload is gone and the new process does not exist yet, so
+        # a concurrent caller cannot see that this restart is under way.
+        restarting.set()
+        finish.wait(timeout=5)
+        serve._provisioning_processes[mi.id] = MagicMock(
+            is_alive=MagicMock(return_value=True)
+        )
+
+    with patch.object(serve, "_restart_model_instance", side_effect=restart) as called:
+        event = threading.Thread(
+            target=serve._restart_scheduled_model_instance, args=(instance,)
+        )
+        retry = threading.Thread(
+            target=serve._restart_scheduled_model_instance, args=(instance,)
+        )
+        event.start()
+        assert restarting.wait(timeout=5)
+        retry.start()
+        # Long enough for an unserialized caller to reach the restart.
+        retry.join(timeout=0.2)
+        finish.set()
+        event.join(timeout=5)
+        retry.join(timeout=5)
+    assert called.call_count == 1
+
+
 @pytest.mark.parametrize("manager", [2], indirect=True)
 def test_returning_subordinate_marked_stale_stops(manager):
     serve, _ = manager
