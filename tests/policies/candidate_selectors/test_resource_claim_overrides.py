@@ -24,6 +24,37 @@ from tests.fixtures.workers.fixtures import (
 GIB = 1024**3
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source', ['huggingface', 'model_scope'])
+async def test_unsaved_spec_counts_remote_lora_weights(source):
+    from gpustack.policies.utils import estimate_lora_weights_bytes
+    from gpustack.schemas.model_sets import ModelSpec
+    from gpustack.schemas.models import LoraListEntry
+
+    model = ModelSpec(
+        source='huggingface',
+        huggingface_repo_id='test/base',
+        lora_list=[
+            LoraListEntry(
+                lora_name='adapter', lora_repo_name='test/adapter', source=source
+            )
+        ],
+    )
+    with patch(
+        'gpustack.policies.utils.get_model_weight_size', return_value=GIB
+    ) as get_weights:
+        assert await estimate_lora_weights_bytes(model, None, [], None) == GIB
+
+    get_weights.assert_called_once()
+    adapter = get_weights.call_args.args[0]
+    assert adapter.source == source
+    assert (
+        adapter.huggingface_repo_id
+        if source == 'huggingface'
+        else adapter.model_scope_model_id
+    ) == 'test/adapter'
+
+
 def deployment(backend, env=None, **kwargs):
     return Model(
         name="resource-overrides",

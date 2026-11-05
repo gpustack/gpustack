@@ -323,7 +323,7 @@ async def estimate_lora_weights_bytes(
                     replicas=1,
                     ready_replicas=0,
                     cluster_id=model.cluster_id,
-                    access_policy=model.access_policy,
+                    access_policy=getattr(model, 'access_policy', None),
                 )
                 w = await asyncio.wait_for(
                     asyncio.to_thread(get_model_weight_size, lm, token),
