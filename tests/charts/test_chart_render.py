@@ -18,6 +18,8 @@ import subprocess
 import pytest
 import yaml
 
+from gpustack import __operator_version__
+
 HELM = shutil.which("helm")
 
 pytestmark = pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -179,6 +181,17 @@ class TestServerAndWorker:
         assert "gpustack-operator-worker" in names(docs, "Deployment")
         assert "kueue-controller-manager" in names(docs, "Deployment")
 
+    def test_operator_and_kueue_images_match_the_exported_release(self):
+        docs = render("--set", "worker.enabled=true")
+        images = {
+            container["image"]
+            for doc in docs
+            if doc["kind"] == "Deployment"
+            for container in doc["spec"]["template"]["spec"]["containers"]
+        }
+        assert f"docker.io/gpustack/gpustack-operator:{__operator_version__}" in images
+        assert "docker.io/gpustack/mirrored-kueue:v0.18.11" in images
+
     def test_workers_address_the_in_release_server(self):
         docs = render("--set", "worker.enabled=true")
         env = container_env(docs, "DaemonSet", "gpustack-worker")
@@ -193,6 +206,58 @@ class TestServerAndWorker:
             "gpustack-worker-nvidia",
             "gpustack-worker-amd",
         }
+
+
+@pytest.mark.parametrize(
+    "certmanager, override, expected",
+    [
+        ("false", {}, {"insecureSkipVerify": True}),
+        (
+            "true",
+            {},
+            {
+                "serverName": "kueue-controller-manager-metrics-service.default.svc",
+                "insecureSkipVerify": False,
+                "ca": {
+                    "secret": {
+                        "name": "kueue-metrics-server-cert",
+                        "key": "ca.crt",
+                    }
+                },
+            },
+        ),
+        (
+            "true",
+            {"serverName": "metrics.example.com", "insecureSkipVerify": False},
+            {"serverName": "metrics.example.com", "insecureSkipVerify": False},
+        ),
+        (
+            "false",
+            {"serverName": "metrics.example.com"},
+            {"serverName": "metrics.example.com", "insecureSkipVerify": True},
+        ),
+    ],
+)
+def test_kueue_metrics_tls(certmanager, override, expected):
+    args = [
+        "--set",
+        "worker.enabled=true",
+        "--set",
+        "gpustack-operator.kueue.enablePrometheus=true",
+        "--set",
+        f"gpustack-operator.global.certmanager.enabled={certmanager}",
+    ]
+    for key, value in override.items():
+        args.extend(
+            [
+                "--set",
+                "gpustack-operator.kueue.metrics.serviceMonitor.tlsConfig."
+                f"{key}={str(value).lower() if isinstance(value, bool) else value}",
+            ]
+        )
+    monitors = [doc for doc in render(*args) if doc["kind"] == "ServiceMonitor"]
+    assert len(monitors) == 1
+    assert monitors[0]["spec"]["endpoints"][0]["tlsConfig"] == expected
 
 
 class TestCPUWorkerDisabled:
