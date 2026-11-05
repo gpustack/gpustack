@@ -3649,6 +3649,11 @@ class ServeManager(ContainerLogPersister):
             else:
                 restart_count = self._current_follower_log_restart_count(mi)
                 if restart_count is None:
+                    logger.warning(
+                        "Skipping log sources for follower %s: "
+                        "serve-log directory is unreadable",
+                        mi.name,
+                    )
                     return
             with self._log_persistence_lock:
                 current = self._log_persistence.get(mi.id)
