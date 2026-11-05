@@ -11,6 +11,9 @@ import asyncio
 import codecs
 import contextlib
 import io
+import json
+import hashlib
+import uuid
 import logging
 import os
 import re
@@ -218,6 +221,7 @@ class ServeLogKind(str, Enum):
     MAIN = "main"
     CONTAINER = "container"
     SIDECAR = "sidecar"
+    COMPONENT = "component"
 
 
 class ServeLogSegment(str, Enum):
@@ -328,6 +332,8 @@ def _parse_log_file_name(
         return ServeLogKind.MAIN, "", segment, shard
     if _CONTAINER_FILE_RE.match(head_name):
         return ServeLogKind.CONTAINER, "", segment, shard
+    if head_name == "component.sglang_smg.log":
+        return ServeLogKind.COMPONENT, "sglang_smg", segment, shard
     match = _SIDECAR_FILE_RE.match(head_name)
     if match:
         return ServeLogKind.SIDECAR, match.group("cname"), segment, shard
@@ -429,6 +435,16 @@ def canonical_log_path(
     Returns:
         The path the current writer would use for that same file.
     """
+    if parsed.kind is ServeLogKind.COMPONENT:
+        return (
+            restart_log_dir(
+                log_dir,
+                model_instance_name,
+                parsed.model_instance_id,
+                parsed.restart_count,
+            )
+            / "component.sglang_smg.log"
+        )
     if parsed.kind is ServeLogKind.SIDECAR:
         return sidecar_container_log_path(
             log_dir,
@@ -749,8 +765,8 @@ async def resolve_restart_count(
     if not files:
         return None
     counts = sorted(set(extract_restart_count(f) for f in files))
-    if previous and len(counts) >= 2:
-        return counts[-2]
+    if previous:
+        return counts[-2] if len(counts) >= 2 else None
     return counts[-1]
 
 
@@ -1626,3 +1642,333 @@ async def monitor_container_content(
             logger.debug("Container log now has content, stopping main log follow")
             stop_event.set()
             return
+
+
+def write_log_sources(
+    log_dir: Path, instance, worker_id: int, multi_port_external: Optional[bool] = None
+) -> None:
+    """Persist only this generation's accepted local identities beside its logs."""
+    from gpustack.utils.model_instance_workers import get_model_instance_workloads
+
+    root = find_instance_log_dir(log_dir, instance.id) or instance_log_dir(
+        log_dir, instance.name, instance.id
+    )
+    directory = root / str(instance.restart_count or 0)
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / 'sources.json'
+    old = read_log_sources(target, instance.id, worker_id, instance.restart_count or 0)
+    streams = {s['key']: s for s in old}
+    streams.setdefault('preparation', dict(key='preparation', physical_kind='main'))
+    tasks = get_model_instance_workloads(instance, worker_id)
+    if tasks is None:
+        metadata = instance.get_deployment_metadata(worker_id)
+        streams.setdefault(
+            'engine',
+            dict(
+                key='engine',
+                physical_kind='container',
+                workload_name=metadata.name if metadata else instance.name,
+            ),
+        )
+    for task in tasks or []:
+        component = task.component
+        key = 'sglang_smg' if component and component.kind == 'sglang_smg' else 'engine'
+        record = dict(
+            key=key,
+            physical_kind='component' if key == 'sglang_smg' else 'container',
+            component_kind=component.kind if component else None,
+            workload_name=None if key == 'sglang_smg' else task.name,
+            active_workload_name=task.name if key == 'sglang_smg' else None,
+            active_attempt=component.attempt if key == 'sglang_smg' else None,
+            main=(
+                (component.api_port is not None)
+                if component and key == 'engine'
+                else None
+            ),
+            attribution=(
+                (
+                    'multi_port_external_api_rank'
+                    if multi_port_external is True
+                    else 'supervisor_rank' if multi_port_external is False else 'all'
+                )
+                if task.dp_rank_placements
+                else 'all'
+            ),
+            placements=[
+                dict(dp_rank=p.dp_rank, node_rank=p.node_rank)
+                for p in task.dp_rank_placements
+            ],
+        )
+        prior = streams.get(key)
+        if (
+            prior
+            and prior.get('placements')
+            and prior['placements'] != record['placements']
+        ):
+            raise ValueError(
+                'Archived rank identities cannot change within a generation'
+            )
+        if prior and key != 'sglang_smg' and prior.get('placements'):
+            record = prior
+        if (
+            prior
+            and key == 'sglang_smg'
+            and (prior.get('active_attempt') or 0) > (record.get('active_attempt') or 0)
+        ):
+            record = prior
+        streams[key] = record
+    if list(streams.values()) == old:
+        return
+    payload = dict(
+        version=1,
+        instance_id=instance.id,
+        worker_id=worker_id,
+        restart_count=instance.restart_count or 0,
+        streams=list(streams.values()),
+    )
+    temporary = directory / f'.sources-{uuid.uuid4().hex}.tmp'
+    try:
+        temporary.write_text(json.dumps(payload), encoding='utf-8')
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_log_sources(
+    path: Path, instance_id: int, worker_id: int, restart: int
+) -> List[dict]:
+    """Read a bounded generation manifest; unknown identities stay unclassified."""
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+        if not isinstance(data, dict):
+            raise ValueError('Manifest must be an object')
+        if any(
+            type(data.get(key)) is not int
+            for key in ('version', 'instance_id', 'worker_id', 'restart_count')
+        ):
+            raise ValueError('Manifest identity fields must be integers')
+        if (
+            data.get('version'),
+            data.get('instance_id'),
+            data.get('worker_id'),
+            data.get('restart_count'),
+        ) != (1, instance_id, worker_id, restart):
+            raise ValueError('Manifest version or identity does not match')
+        streams = data['streams']
+        if not isinstance(streams, list) or not all(
+            isinstance(s, dict) for s in streams
+        ):
+            raise ValueError('Manifest streams must be objects')
+        if len({s.get('key') for s in streams if isinstance(s.get('key'), str)}) != len(
+            streams
+        ):
+            raise ValueError('Manifest stream keys must be unique strings')
+        records = [s for s in streams if _valid_log_source_record(s)]
+        if len(records) != len(streams):
+            logger.debug(
+                'Ignoring %s invalid records in log source manifest %s',
+                len(streams) - len(records),
+                path,
+            )
+        return records
+
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError, KeyError, TypeError):
+        logger.debug('Ignoring invalid log source manifest %s', path, exc_info=True)
+        return []
+
+
+def _valid_log_source_record(record: dict) -> bool:
+    """Damaged metadata cannot prove a rank or an active component identity."""
+    if (record.get('key'), record.get('physical_kind')) not in (
+        ('preparation', 'main'),
+        ('engine', 'container'),
+        ('sglang_smg', 'component'),
+    ):
+        return False
+    if record.get('component_kind') not in (
+        None,
+        'sglang_engine',
+        'sglang_smg',
+        'vllm_hybrid',
+    ):
+        return False
+    if record.get('attribution', 'all') not in (
+        'all',
+        'supervisor_rank',
+        'multi_port_external_api_rank',
+    ):
+        return False
+    for name in ('workload_name', 'active_workload_name'):
+        if record.get(name) is not None and not isinstance(record[name], str):
+            return False
+    attempt = record.get('active_attempt')
+    if attempt is not None and (type(attempt) is not int or attempt < 0):
+        return False
+    if record.get('main') is not None and type(record['main']) is not bool:
+        return False
+    placements = record.get('placements', [])
+    return isinstance(placements, list) and all(
+        isinstance(p, dict)
+        and all(
+            type(p.get(key)) is int and p[key] >= 0 for key in ('dp_rank', 'node_rank')
+        )
+        for p in placements
+    )
+
+
+@dataclass
+class ResolvedLogSource:
+    descriptor: object
+    paths: List[Path]
+    placements: List[dict]
+    attribution: str
+
+    def accepts(self, line: bytes) -> bool:
+        """Classify explicit metadata only; unmarked continuations remain public."""
+        if self.descriptor.kind in ('preparation', 'workload'):
+            return True
+        text = re.sub(
+            r'\x1b\[[0-?]*[ -/]*[@-~]', '', line.decode('utf-8', errors='replace')
+        )
+        match = None
+        if self.attribution == 'supervisor_rank':
+            match = re.match(r'^\[dp([0-9]+)-node([0-9]+)\] ', text)
+            rank = (int(match[1]), int(match[2])) if match else None
+        elif self.attribution == 'multi_port_external_api_rank':
+            match = re.match(r'^\(APIServer_DP([0-9]+) pid=[0-9]+\) ', text)
+            rank = (int(match[1]), 0) if match else None
+        else:
+            rank = None
+        known = {(p['dp_rank'], p['node_rank']) for p in self.placements}
+        rank = rank if rank in known else None
+        if self.descriptor.kind == 'public':
+            return rank is None
+        return rank == (self.descriptor.dp_rank, self.descriptor.node_rank)
+
+
+def list_log_sources(
+    log_dir: Path, instance_id: int, worker_id: int, current_restart: int
+) -> List[ResolvedLogSource]:
+    """Offer physical streams and proven views within the existing R/R-1 window."""
+    from gpustack.schemas.models import ModelInstanceLogSource
+
+    entries = instance_log_files(log_dir, instance_id)
+    directories = restart_log_dirs(log_dir, instance_id)
+    resolved = []
+    for restart in (current_restart, current_restart - 1):
+        if restart < 0:
+            continue
+        local = [(p, n) for p, n in entries if n.restart_count == restart]
+        directory = directories.get(restart)
+        records = (
+            read_log_sources(
+                directory / 'sources.json', instance_id, worker_id, restart
+            )
+            if directory
+            else []
+        )
+        covered = {r['physical_kind'] for r in records}
+        for kind in (ServeLogKind.MAIN, ServeLogKind.CONTAINER, ServeLogKind.COMPONENT):
+            if kind.value not in covered and any(n.kind is kind for _, n in local):
+                records.append(dict(key=kind.value, physical_kind=kind.value))
+        records += [
+            dict(key=f'sidecar:{name}', physical_kind='sidecar', container_name=name)
+            for name in sorted(
+                {n.container_name for _, n in local if n.kind is ServeLogKind.SIDECAR}
+            )
+        ]
+        for record in records:
+            paths = [
+                p
+                for p, n in sorted(local, key=_sort_key)
+                if n.kind.value == record['physical_kind']
+                and (
+                    n.kind is not ServeLogKind.SIDECAR
+                    or n.container_name == record.get('container_name')
+                )
+            ]
+            base = dict(
+                worker_id=worker_id,
+                restart_count=restart,
+                previous=restart != current_restart,
+                kind='preparation' if record['physical_kind'] == 'main' else 'workload',
+                label='Preparation' if record['physical_kind'] == 'main' else 'Engine',
+                container_name=(
+                    None
+                    if record['physical_kind'] == 'main'
+                    else record.get('container_name', 'default')
+                ),
+                available=bool(paths),
+                component_kind=record.get('component_kind'),
+                workload_name=record.get('workload_name'),
+                active_workload_name=record.get('active_workload_name'),
+                active_attempt=record.get('active_attempt'),
+                main=record.get('main'),
+            )
+            if record['physical_kind'] == 'component':
+                base['label'] = (
+                    'SMG (all attempts in this generation)'
+                    if record.get('component_kind') == 'sglang_smg'
+                    else 'Component archive (unattributed)'
+                )
+            elif record['physical_kind'] == 'sidecar':
+                base['label'] = record['container_name']
+            views = [base]
+            placements = record.get('placements', [])
+            attribution = record.get('attribution', 'all')
+            if placements and attribution in (
+                'supervisor_rank',
+                'multi_port_external_api_rank',
+            ):
+                views += [
+                    dict(
+                        base,
+                        kind='public',
+                        label='Common logs',
+                        attribution='unattributed',
+                    )
+                ]
+                views += [
+                    dict(
+                        base,
+                        kind='rank',
+                        dp_rank=p['dp_rank'],
+                        node_rank=p['node_rank'],
+                        main=p['node_rank'] == 0,
+                        attribution=attribution,
+                        label=f"DP {p['dp_rank']} · node {p['node_rank']}",
+                    )
+                    for p in placements
+                ]
+            for view in views:
+                identity = [
+                    instance_id,
+                    worker_id,
+                    restart,
+                    record['physical_kind'],
+                    record.get('container_name'),
+                    view['kind'],
+                    view.get('dp_rank'),
+                    view.get('node_rank'),
+                    attribution if view['kind'] in ('rank', 'public') else 'all',
+                ]
+                selector = (
+                    's1_' + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+                )
+                descriptor = ModelInstanceLogSource(id=selector, **view)
+                resolved.append(
+                    ResolvedLogSource(descriptor, paths, placements, attribution)
+                )
+    return resolved
+
+
+def resolve_log_source(
+    log_dir: Path, instance_id: int, worker_id: int, current_restart: int, selector: str
+) -> ResolvedLogSource:
+    """Resolve an opaque ID against local trusted sources, never against a path."""
+    for source in list_log_sources(log_dir, instance_id, worker_id, current_restart):
+        if source.descriptor.id == selector and source.descriptor.available:
+            return source
+    raise ValueError('Log source is unavailable')

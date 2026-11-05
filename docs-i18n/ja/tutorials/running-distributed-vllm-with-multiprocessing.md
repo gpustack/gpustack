@@ -67,11 +67,28 @@ translation_status: translated
     `gpu_memory_utilization` のメモリー要件などを満たせず自動割り当てできない場合、`Scheduling Mode` を `Manual` または `Specify GPU` に切り替え、`GPU Selector` で各ワーカーの 8 GPU（合計 16）を選択します。自動配置の全条件は、[組み込み推論バックエンド](../user-guide/built-in-inference-backends.md)をご覧ください。
 
 
-!!! note "手動で複数のデプロイメントに分ける場合：`GPUSTACK_SKIP_GPU_COUNT_CHECK` で GPU 数チェックを省略する"
+!!! note "複数の独立したデプロイメントによる手動 DP"
 
-    外部の負荷分散を自身で管理する場合など、ノードごとにデプロイメントを作り、GPU を手動選択して `--data-parallel-size-local 1` を指定することがあります。各デプロイメントの GPU は 8 基でも `tensor-parallel-size × data-parallel-size = 16` のため、GPUStack は world size との不一致を `the selected gpu count (8) does not match the world size (16)` として報告します。
+    GPUStack 2.3.1 より後に追加された `GPUSTACK_MANUAL_DP` を使用すると、新しい vLLM MP バージョンでも複数のデプロイメントで DP グループを手動構成できます。各デプロイメントの `Environment Variables` に次を設定します。
 
-    意図した配置であれば、各デプロイメントの `Environment Variables` で `GPUSTACK_SKIP_GPU_COUNT_CHECK=1` を設定し、検証を省略して手動 GPU 数を維持します。**GPU を手動選択した場合のみ**（`Scheduling Mode` が `Manual` または `Specify GPU`）有効で、自動スケジューリングには影響しません。
+    ```bash
+    GPUSTACK_MANUAL_DP=1
+    ```
+
+    例えば、各ノードに 8 基の GPU がある 2 ノード構成では、デプロイメントを 2 つ作成します。それぞれのノードの 8 基の GPU を手動選択し、次の `Backend Parameters` を設定します。
+
+    ```bash
+    --distributed-executor-backend=mp
+    --tensor-parallel-size=8
+    --data-parallel-size=2
+    --data-parallel-size-local=1
+    --data-parallel-external-lb
+    --data-parallel-rank=0
+    --data-parallel-address=<your-dp-coordinator-ip>
+    --data-parallel-rpc-port=13345
+    ```
+
+    `<your-dp-coordinator-ip>` を最初のノードの IP に置き換えます。2 つ目のデプロイメントでは同じパラメーターを使用し、`--data-parallel-rank` を `1` に変更します。`GPUSTACK_SKIP_GPU_COUNT_CHECK` を追加で設定する必要はありません。
 
 ## 手順 3：デプロイの監視 { #step-3-monitor-deployment }
 

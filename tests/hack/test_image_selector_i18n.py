@@ -288,17 +288,28 @@ for (const component of ['all', 'server', 'worker']) {
                 page.state.currentLang = language;
                 page.generateImageList();
                 const lines = page.nodes['image-list'].textContent.split('\n');
-                for (const [image, category] of [
-                    ['llm-router:v0.3.1', 'llm_router'],
-                    ['higress-plugins:0.5.0.post2', 'gateway_plugins']
-                ]) {
+                const categorized = [
+                    ['higress-plugins:0.5.0.post2', 'gateway'],
+                    ['mirrored-higress-gateway:v1', 'gateway'],
+                    ['gpustack-operator:v1', 'k8s'],
+                    ['ssh-server:v1', 'k8s'],
+                    ['mirrored-kueue:v1', 'k8s'],
+                    ['llm-router:v0.3.1', 'k8s']
+                ];
+                for (const [image, category] of categorized) {
                     const index = lines.findIndex(line => line.startsWith('docker ') && line.endsWith(`/${image}`));
                     if (component !== 'worker') {
                         assert.ok(index > 0);
-                        assert.equal(lines[index - 1], `# ${page.CONFIG.i18n[language].comments[category]}`);
                         assert.notEqual(page.CONFIG.i18n[language].comments[category], undefined);
+                        const heading = lines.slice(0, index).reverse().find(line => line.startsWith('# '));
+                        assert.equal(heading, `# ${page.CONFIG.i18n[language].comments[category]}`);
                     } else {
                         assert.equal(index, -1);
+                    }
+                }
+                if (component !== 'worker') {
+                    for (const category of ['gateway', 'k8s']) {
+                        assert.equal(lines.filter(line => line === `# ${page.CONFIG.i18n[language].comments[category]}`).length, 1);
                     }
                 }
                 commands.push(

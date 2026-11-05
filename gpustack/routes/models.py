@@ -31,6 +31,7 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
     ModelInstancesPublic,
     BackendEnum,
+    get_backend,
     ModelListParams,
     shared_cache_service_ids_by_role,
 )
@@ -82,6 +83,7 @@ from gpustack.schemas.models import (
     ModelSpecBase,
     ModelUpdate,
     ModelPublic,
+    ModelRestartResult,
     ModelsPublic,
     ScalingSchedule,
 )
@@ -133,6 +135,10 @@ from gpustack.routes.model_common import (
 from gpustack.config.config import get_global_config
 from gpustack.utils.grafana import build_model_dashboard_url, resolve_grafana_base_url
 from gpustack.utils.lora_model_source import lora_route_name_for
+from gpustack.utils.model_instance_workers import (
+    get_model_instance_workloads,
+    requires_model_instance_stop_barrier,
+)
 
 router = APIRouter()
 
@@ -294,6 +300,7 @@ async def get_model_dashboard(
         resolve_grafana_base_url(cfg, request),
         model,
         cluster_name=cluster.name if cluster is not None else None,
+        request=request,
     )
     if dashboard_url is None:
         raise InternalServerErrorException(
@@ -520,6 +527,39 @@ def _is_schedule_pause_only_update(
     return all(getattr(model_in, field) == getattr(stored, field) for field in fields)
 
 
+def _validate_sglang_smg_policy(model_in, stored=None) -> None:
+    from gpustack.utils.model_instance_workers import (
+        validate_sglang_smg_policy,
+        validate_sglang_dpa_version,
+    )
+    from gpustack.validation.pd.common import effective_model_spec
+
+    try:
+        effective = effective_model_spec(model_in, stored)
+        validate_sglang_dpa_version(effective)
+        validate_sglang_smg_policy(effective)
+    except ValueError as exc:
+        raise BadRequestException(message=str(exc)) from exc
+
+
+def _validate_manual_dp_config(model_in, stored=None) -> bool:
+    from gpustack.utils.vllm_topology import manual_dp_enabled
+    from gpustack.validation.pd.common import effective_model_spec
+
+    effective = effective_model_spec(model_in, stored)
+    enabled = manual_dp_enabled(effective.env)
+    role_enabled = any(manual_dp_enabled(role.env) for role in effective.roles or [])
+    if (enabled or role_enabled) and (
+        get_backend(effective) != BackendEnum.VLLM
+        or effective.roles
+        or effective.disaggregation is not None
+    ):
+        raise BadRequestException(
+            message='GPUSTACK_MANUAL_DP is supported only for ordinary vLLM deployments.'
+        )
+    return enabled
+
+
 async def validate_model_in(
     session: SessionDep,
     model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
@@ -527,9 +567,13 @@ async def validate_model_in(
     cluster_id: Optional[int] = None,
     stored: Optional[Model] = None,
 ):
+    from gpustack.validation.pd.common import effective_model_spec
+
     # `stored` is the row being updated, so a sparse PUT is judged against the
     # merged state rather than against the handful of fields it happened to
     # send. Absent on create, where there is nothing to merge.
+    effective = effective_model_spec(model_in, stored)
+    manual_dp = _validate_manual_dp_config(effective)
     await validate_pd_config(session, model_in, cluster_id=cluster_id, stored=stored)
 
     # API responses use short LoRA names; compare their stored form when
@@ -551,6 +595,16 @@ async def validate_model_in(
     if is_custom_backend(model_in.backend):
         logger.info("Skip model validation for custom backend")
         return
+
+    if get_backend(effective) == BackendEnum.VLLM and not manual_dp:
+        from gpustack.utils.vllm_topology import validate_managed_lb_parameters
+
+        try:
+            validate_managed_lb_parameters(effective.backend_parameters)
+        except ValueError as exc:
+            raise BadRequestException(message=str(exc)) from exc
+
+    _validate_sglang_smg_policy(model_in, stored)
 
     # A custom image carries its own version and is not described by the runner
     # catalog, so there is nothing for backend_version to select.
@@ -2497,50 +2551,31 @@ async def _apply_model_update(
     return model
 
 
-class ModelRestartResult(BaseModel):
-    """What a restart request did, so the caller can tell "converged" from
-    "nothing to do" without a second read."""
+@router.post(
+    "/{id}/restart",
+    response_model=ModelRestartResult,
+    responses={202: {"model": ModelRestartResult}},
+)
+async def restart_model(
+    session: SessionDep, ctx: TenantContextDep, id: int, response: Response = None
+):
+    """Restart all instances on the current deployment configuration.
 
-    spec_digest: str
-    """The generation the group is being brought onto."""
-    restarted: bool
-    deleted_instances: List[str] = []
-    message: Optional[str] = None
+    PD deployments persist parent restart and child drain requests in one
+    transaction. Replica convergence retires the old rows only after the
+    managed manifests confirm that every old task stopped. Ordinary deployments
+    delete their instance records and clean up tasks through Worker events.
 
-
-@router.post("/{id}/restart", response_model=ModelRestartResult)
-async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
-    """Retire the running generation so the current spec takes effect.
-
-    Atomic by construction, and that is the point rather than an optimisation.
-    "Restart" has until now meant deleting an instance and letting replica
-    convergence rebuild it, which for a group produces a window holding a
-    new-generation prefill beside an old-generation decode — and the engines do
-    not reject that pairing. A `max_model_len` mismatch handshakes, transfers,
-    and only fails on a long prompt, after prefill has already been paid for.
-    So the whole generation stops before any of it starts again.
-
-    There is deliberately no role parameter. "Restart only the decodes" is the
-    request that produces exactly the cross-generation window above, and the
-    strongest way to reject it is to have no way to express it.
-
-    Not idempotent, deliberately. A group already wholly on the current spec is
-    still torn down and rebuilt: "restart" is the word this operation is
-    offered under, and the state an operator reaches for it in — a process
-    wedged behind a socket while the control plane still calls it RUNNING — is
-    precisely the one no digest comparison can detect. `restarted` is
-    therefore true whenever there was anything to tear down, and
-    `deleted_instances` says what that was.
-
-    A restart still in flight is a 409 — the members are mid-replacement and a
-    second teardown would delete the replacements. That is recorded on the
-    model (`restarting_since`) rather than inferred from the rows: see
-    `_restart_in_flight`, and the field's own note for why the digest
-    comparison this replaces could never fire.
-
-    """
-    model = await Model.one_by_id(session, id)
+    The response acknowledges an accepted managed restart with an empty
+    deleted_instances list and a message explaining the pending stop barrier.
+    Repeated requests cannot retire replacements while old managed rows still
+    carry stop requests. There is no role-specific restart parameter."""
+    model = await Model.one_by_id(session, id, for_update=True)
     assert_resource_visible(ctx, model, not_found_message="Model not found")
+    if model.deleted_at is not None:
+        raise ConflictException(
+            message="The model is being deleted; wait for its workloads to stop."
+        )
 
     target = await model_spec_digest(session, model)
     instances = await ModelInstance.all_by_fields(
@@ -2551,10 +2586,13 @@ async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
         return ModelRestartResult(
             spec_digest=target,
             restarted=False,
+            completed=True,
+            phase="completed",
+            observe_url=f"/v2/models/{id}",
             message="No instances to restart; the model has none running.",
         )
 
-    if _restart_in_flight(model):
+    if _restart_in_flight(model, instances):
         # Tearing down again here would delete the replacements the previous
         # restart just created, and cost the group a second full startup.
         raise ConflictException(
@@ -2567,6 +2605,29 @@ async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
         for instance in instances
         if instance.state == ModelInstanceStateEnum.ERROR
     ]
+
+    if any(requires_model_instance_stop_barrier(instance) for instance in instances):
+        try:
+            await ModelService(session).stop_instances(
+                model, instances, {"restarting_since": datetime.now(timezone.utc)}
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise InternalServerErrorException(
+                message=f"Failed to restart model: {exc}"
+            )
+        if response is not None:
+            response.status_code = 202
+        return ModelRestartResult(
+            completed=False,
+            phase="restarting",
+            observe_url=f"/v2/models/{id}",
+            spec_digest=target,
+            restarted=True,
+            deleted_instances=[],
+            message="Restart accepted; waiting for all old workloads to stop before rebuilding.",
+        )
 
     # No short-circuit on a converged group. Returning `restarted: false`
     # when the members already carry the target digest reads as "converge to
@@ -2597,6 +2658,7 @@ async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
     await ModelService(session).update(
         model, {"restarting_since": datetime.now(timezone.utc)}
     )
+    restart_started = model.restarting_since
 
     try:
         deleted = await ModelInstanceService(session).batch_delete(list(instances))
@@ -2605,14 +2667,25 @@ async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
         # reason to make the operator wait out the lapse. Released explicitly
         # rather than left to expire: the failure they now have to retry is the
         # worst moment to answer the retry with a 409.
-        await ModelService(session).update(model, {"restarting_since": None})
+        # Rollback expires model attributes and releases the original row lock.
+        # A later request may own a different guard by the time we read it again.
+        current = await Model.one_by_id(session, id, for_update=True, refresh=True)
+        if current is not None and current.restarting_since == restart_started:
+            await ModelService(session).update(current, {"restarting_since": None})
+        if isinstance(e, HTTPException):
+            raise
         raise InternalServerErrorException(message=f"Failed to restart model: {e}")
 
     # Rebuilding is left to replica convergence rather than done here: it is
     # the one place that knows a group forms its GPU roles atomically and holds
     # the router back until they run, and duplicating that here would be a
     # second implementation of the rule that matters most.
+    if response is not None:
+        response.status_code = 202
     return ModelRestartResult(
+        completed=False,
+        phase="restarting",
+        observe_url=f"/v2/models/{id}",
         spec_digest=target,
         restarted=True,
         deleted_instances=deleted,
@@ -2620,28 +2693,23 @@ async def restart_model(session: SessionDep, ctx: TenantContextDep, id: int):
     )
 
 
-def _restart_in_flight(model: Model) -> bool:
-    """Whether a previous restart is still rebuilding this deployment.
+def _restart_in_flight(
+    model: Model, instances: Optional[List[ModelInstance]] = None
+) -> bool:
+    """Whether a restart still protects old tasks or their replacements.
 
-    Read off `Model.restarting_since`, which the status pass clears when the
-    deployment is RUNNING or stopped.
-    Two things it is deliberately not:
-
-    - **Not a digest comparison.** The teardown is synchronous and the reconcile
-      rebuilds from the same target digest, so the generations never coexist and
-      `len(digests) > 1` — the test this replaces — was never true. What it was
-      written to prevent happened anyway, measured: a second click 4.5s after
-      the first deleted the three replacements the first had just created.
-    - **Not "the group is not RUNNING".** That would refuse the restart of a
-      group wedged in `starting`, which is the state operators reach for this
-      endpoint in and the reason its no-op short-circuit was removed.
-
-    The lapse makes the refusal bounded. A restart that never converges must not
-    become a deployment that can never be restarted.
-    """
+    Managed rows with a stop request retain the guard until their stop barrier
+    is retired, regardless of elapsed time. After that, replacement startup
+    uses the bounded guard until the status controller releases it."""
     since = model.restarting_since
     if since is None:
         return False
+    if any(
+        get_model_instance_workloads(instance) is not None
+        and instance.draining_since is not None
+        for instance in instances or []
+    ):
+        return True
     if since.tzinfo is None:
         since = since.replace(tzinfo=timezone.utc)
     age = (datetime.now(timezone.utc) - since).total_seconds()
@@ -2664,11 +2732,16 @@ def _restart_message(failed: List[str]) -> str:
 
 @router.delete(
     "/{id}",
+    response_model=None,
+    responses={202: {"description": "Cleanup is pending"}},
 )
-async def delete_model(session: SessionDep, ctx: TenantContextDep, id: int):
+async def delete_model(
+    session: SessionDep, ctx: TenantContextDep, id: int, response: Response = None
+) -> None:
     model = await Model.one_by_id(
         session,
         id,
+        for_update=True,
         options=[
             selectinload(Model.instances),
             selectinload(Model.model_route_targets),
@@ -2677,6 +2750,10 @@ async def delete_model(session: SessionDep, ctx: TenantContextDep, id: int):
     assert_resource_visible(ctx, model, not_found_message="Model not found")
 
     try:
-        await ModelService(session).delete(model)
+        completed = await ModelService(session).delete(model)
+    except HTTPException:
+        raise
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
+    if response is not None and not completed:
+        response.status_code = 202

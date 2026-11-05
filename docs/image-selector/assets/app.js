@@ -13,12 +13,14 @@ const CONFIG = {
         'china': { name: '国内镜像源', prefix: 'swr.cn-south-1.myhuaweicloud.com/gpustack/', registry: 'swr.cn-south-1.myhuaweicloud.com' }
     },
     serverImageGroups: [
-        {comment: 'gateway', prefixes: ['gpustack/mirrored-higress-']},
-        {comment: 'gateway_plugins', names: ['gpustack/higress-plugins']},
-        {comment: 'llm_router', names: ['gpustack/llm-router']},
+        {
+            comment: 'gateway',
+            names: ['gpustack/higress-plugins'],
+            prefixes: ['gpustack/mirrored-higress-']
+        },
         {
             comment: 'k8s',
-            names: ['gpustack/gpustack-operator', 'gpustack/ssh-server'],
+            names: ['gpustack/gpustack-operator', 'gpustack/ssh-server', 'gpustack/llm-router'],
             prefixes: ['gpustack/mirrored-'],
             excludedPrefixes: ['gpustack/mirrored-higress-']
         }
@@ -119,10 +121,8 @@ const CONFIG = {
                 'benchmark': 'Benchmark 镜像 - 用于运行模型性能基准测试',
                 'postgres': 'PostgreSQL - 用于独立部署外置数据库（可选组件）',
                 'monitoring': '监控套件 - 包含 Prometheus 和 Grafana（可选组件）',
-                'gateway': '网关镜像 - 仅在 Kubernetes 环境下需要',
-                'gateway_plugins': '网关插件镜像 - 提供 GPUStack AI 网关功能',
-                'llm_router': 'LLM 路由镜像 - 用于推理请求路由',
-                'k8s': 'GPUStack Operator 模型服务镜像 - 仅在 Kubernetes 环境下需要'
+                'gateway': 'AI 网关镜像 - 仅在 Kubernetes 环境下需要',
+                'k8s': 'GPUStack Operator 镜像 - 仅用于 Kubernetes 环境，包含可选依赖'
             },
             'cards': {
                 'nvidia': 'NVIDIA', 'amd': 'AMD', 'ascend': '昇腾', 'hygon': '海光',
@@ -169,10 +169,8 @@ const CONFIG = {
                 "benchmark": "Benchmark イメージ — モデルの性能ベンチマークを実行します",
                 "postgres": "PostgreSQL — 外部データベースを独立してデプロイするためのオプションコンポーネントです",
                 "monitoring": "監視スイート — Prometheus と Grafana を含むオプションコンポーネントです",
-                "gateway": "ゲートウェイイメージ — Kubernetes でのデプロイにのみ必要です",
-                "gateway_plugins": "ゲートウェイプラグインのイメージ — GPUStack AI ゲートウェイの機能を提供します",
-                "llm_router": "LLM ルーターのイメージ — 推論リクエストのルーティングに使用します",
-                "k8s": "GPUStack Operator モデルサービスのイメージ — Kubernetes でのデプロイにのみ必要です"
+                "gateway": "AI ゲートウェイイメージ — Kubernetes でのデプロイにのみ必要です",
+                "k8s": "GPUStack Operator のイメージ — Kubernetes でのデプロイ専用です（オプションの依存関係を含みます）"
             },
             "cards": {
                 "nvidia": "NVIDIA",
@@ -332,10 +330,8 @@ docker load -i gpustack-worker-images.tar</code></pre>
                 'benchmark': 'Benchmark Image - Used for running model performance benchmarks',
                 'postgres': 'PostgreSQL - Used for independent deployment of external database (optional component)',
                 'monitoring': 'Monitoring Suite - Includes Prometheus and Grafana (optional components)',
-                'gateway': 'Gateway Images - Required for Kubernetes deployment only',
-                'gateway_plugins': 'Gateway Plugin Image - Provides GPUStack AI gateway functionality',
-                'llm_router': 'LLM Router Image - Used for inference request routing',
-                'k8s': 'GPUStack Operator Model Service Images - Required for Kubernetes deployment only'
+                'gateway': 'AI Gateway Images - Required for Kubernetes deployment only',
+                'k8s': 'GPUStack Operator Images - For Kubernetes deployment only, including optional dependencies'
             },
             'cards': {
                 'nvidia': 'NVIDIA', 'amd': 'AMD', 'ascend': 'Ascend', 'hygon': 'Hygon',
@@ -489,10 +485,8 @@ docker load -i gpustack-worker-images.tar</code></pre>
         "benchmark": "Образ Benchmark — тестирование производительности моделей",
         "postgres": "PostgreSQL — дополнительный компонент для отдельного развертывания внешней базы данных",
         "monitoring": "Мониторинг — дополнительные компоненты Prometheus и Grafana",
-        "gateway": "Образы шлюза — нужны только при развертывании в Kubernetes",
-        "gateway_plugins": "Образ плагинов шлюза — обеспечивает функции AI-шлюза GPUStack",
-        "llm_router": "Образ LLM-маршрутизатора — используется для маршрутизации запросов инференса",
-        "k8s": "Образы сервисов моделей GPUStack Operator — нужны только при развертывании в Kubernetes"
+        "gateway": "Образы AI-шлюза — нужны только при развертывании в Kubernetes",
+        "k8s": "Образы GPUStack Operator — только для развертывания в Kubernetes, включая необязательные зависимости"
     },
     "cards": {
         "nvidia": "NVIDIA",
@@ -620,10 +614,8 @@ docker load -i gpustack-worker-images.tar</code></pre>
         "benchmark": "Benchmark imajı — model performans testlerini çalıştırır",
         "postgres": "PostgreSQL — harici veritabanını ayrı dağıtmak için isteğe bağlı bileşen",
         "monitoring": "İzleme paketi — isteğe bağlı Prometheus ve Grafana bileşenleri",
-        "gateway": "Ağ geçidi imajları — yalnızca Kubernetes dağıtımları için gereklidir",
-        "gateway_plugins": "Ağ geçidi eklenti imajı — GPUStack AI ağ geçidi işlevlerini sağlar",
-        "llm_router": "LLM yönlendirici imajı — çıkarım isteklerini yönlendirmek için kullanılır",
-        "k8s": "GPUStack Operator model hizmeti imajları — yalnızca Kubernetes dağıtımları için gereklidir"
+        "gateway": "AI ağ geçidi imajları — yalnızca Kubernetes dağıtımları için gereklidir",
+        "k8s": "GPUStack Operator imajları — yalnızca Kubernetes dağıtımları içindir, isteğe bağlı bağımlılıkları da içerir"
     },
     "cards": {
         "nvidia": "NVIDIA",

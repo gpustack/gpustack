@@ -17,13 +17,15 @@ active bug this replaces:
   pass once it is scoped to a single role.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gpustack.schemas.models import (
+    BackendEnum,
+    DistributedServers,
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
@@ -37,6 +39,7 @@ from gpustack.server.controllers import (
     _role_dependencies,
     find_scale_down_candidates,
     model_spec_digest,
+    model_members_stale,
     sync_replicas,
 )
 
@@ -127,13 +130,47 @@ class _Recorder:
         self.created.append(instance)
         return instance
 
-    async def _batch_delete(self, instances):
+    async def _batch_delete(self, instances, **kwargs):
         self.deleted.extend(instances)
         return [i.name for i in instances]
 
 
-async def _run(model, instances, instance_type_snapshot=None):
+@pytest.mark.asyncio
+async def test_managed_restart_waits_for_every_old_instance():
+    from tests.utils.model import new_model_instance_workload
+
+    model = _model()
+    model.restarting_since = datetime.now(timezone.utc)
+    instance = _instance(1)
+    instance.draining_since = model.restarting_since
+    instance.distributed_servers = DistributedServers(
+        workloads=[new_model_instance_workload()], stop_requested=True
+    )
+    result = await _run(model, [instance])
+    assert not result.deleted
+    assert not result.created
+
+
+@pytest.mark.asyncio
+async def test_managed_restart_deletes_all_old_rows_before_building():
+    model = _model(roles=_pd_roles())
+    model.restarting_since = datetime.now(timezone.utc)
+    members = [
+        _instance(i, role=role, group_id="g", spec_digest=CURRENT)
+        for i, role in enumerate(("prefill", "decode", "router"), 1)
+    ]
+    for instance in members:
+        instance.draining_since = model.restarting_since
+    members[0].distributed_servers = DistributedServers(workloads=[])
+    result = await _run(model, members)
+    assert result.deleted == members
+    assert result.created == []
+
+
+async def _run(model, instances, instance_type_snapshot=None, worker_ips=None):
     recorder = _Recorder()
+    if worker_ips is None:
+        worker_ips = {1: "10.0.0.1"}
     matched = (
         [SimpleNamespace(snapshot=instance_type_snapshot)]
         if instance_type_snapshot
@@ -179,7 +216,11 @@ async def _run(model, instances, instance_type_snapshot=None):
         patch("gpustack.server.controllers.ModelInstanceService", recorder),
         patch(
             "gpustack.schemas.workers.Worker.all_by_field",
-            AsyncMock(return_value=[SimpleNamespace(id=1, ip="10.0.0.1")]),
+            AsyncMock(
+                return_value=[
+                    SimpleNamespace(id=id_, ip=ip) for id_, ip in worker_ips.items()
+                ]
+            ),
         ),
         # Soft scale-down marks the surplus instead of deleting it, and the
         # mark is a row write. Recorded rather than performed, for the same
@@ -212,6 +253,60 @@ async def test_role_less_still_fans_out_by_model_replicas():
     # Nothing role-shaped is invented for a plain deployment.
     assert all(c.role is None for c in recorder.created)
     assert all(c.group_id is None for c in recorder.created)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "parameters,managed",
+    [
+        (["--data-parallel-external-lb", "--data-parallel-size=2"], True),
+        (["--data-parallel-size=2"], False),
+        (["--data-parallel-multi-port-external-lb", "--data-parallel-size=2"], True),
+        (["-dpm", "--data-parallel-size=2"], True),
+        (["--data-parallel-hybrid-lb", "--data-parallel-size=4"], True),
+        (['-dpe', '--no-data-parallel-external-lb', '-tp=2', '-dp=2'], False),
+        (['-dph', '--no-data-parallel-hybrid-lb', '-tp=2', '-dp=2'], False),
+        (['--no-data-parallel-external-lb', '-dpe', '-dp=2'], True),
+        (['--no-data-parallel-hybrid-lb', '-dph', '-dp=2'], True),
+        (["--data-parallel-rank=1", "--data-parallel-size=2"], False),
+    ],
+)
+@pytest.mark.parametrize('manual_dp', [None, '0', '1', ' TRUE '])
+async def test_only_new_ordinary_explicit_lb_instances_receive_managed_marker(
+    parameters, managed, manual_dp
+):
+    model = _model(
+        replicas=2,
+        backend=BackendEnum.VLLM,
+        backend_parameters=parameters,
+        env={'GPUSTACK_MANUAL_DP': manual_dp} if manual_dp is not None else {},
+    )
+    existing = _instance(1)
+    recorder = await _run(model, [existing])
+    assert len(recorder.created) == 1
+    created = recorder.created[0]
+    if managed and manual_dp not in ('1', ' TRUE '):
+        assert created.distributed_servers.workloads == []
+        assert created.spec_digest is not None
+    else:
+        assert created.distributed_servers is None
+    assert existing.distributed_servers is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edited", [False, True])
+async def test_ordinary_managed_start_allows_only_automatic_version_writeback(edited):
+    model = _model(
+        backend=BackendEnum.VLLM,
+        backend_parameters=["--data-parallel-external-lb", "--data-parallel-size=2"],
+    )
+    stamp = await model_spec_digest(_pass(), model)
+    instance = _instance(1, spec_digest=stamp, state=ModelInstanceStateEnum.STARTING)
+    instance.distributed_servers = DistributedServers(workloads=[])
+    model.backend_version = "0.32.0"
+    if edited:
+        model.backend_parameters = [*model.backend_parameters, "--dtype=float16"]
+    assert await model_members_stale(_pass(), model, [instance]) is edited
 
 
 @pytest.mark.asyncio
@@ -1222,3 +1317,358 @@ async def test_static_router_serves_existing_peers_while_scale_out_is_incomplete
         assert pd_membership.outcome_for(model.id).ok
     finally:
         pd_membership.forget(model.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("roles_removed", [False, True])
+async def test_managed_pd_stop_retains_rows_if_configuration_changes_during_cleanup(
+    roles_removed,
+):
+    model = _model(
+        roles=None if roles_removed else [RoleSpec(name="prefill", replicas=1)]
+    )
+    instance = _instance(1, role="prefill", group_id="g", spec_digest="sha1:old")
+    instance.draining_since = datetime.now(timezone.utc)
+    instance.distributed_servers = DistributedServers(workloads=[])
+    result = await _run(model, [instance])
+    assert not result.deleted
+    assert not result.created
+    model.restarting_since = datetime.now(timezone.utc)
+    result = await _run(model, [instance])
+    assert result.deleted == [instance]
+    assert not result.created
+
+
+@pytest.mark.asyncio
+async def test_ordinary_pending_stop_is_deleted_without_selecting_a_second_victim():
+    from tests.utils.model import new_model_instance_workload
+
+    model = _model(replicas=1)
+    stopping, healthy = _instance(1), _instance(2)
+    stopping.draining_since = datetime.now(timezone.utc)
+    stopping.distributed_servers = DistributedServers(
+        workloads=[new_model_instance_workload(state="unknown")]
+    )
+    result = await _run(model, [stopping, healthy])
+    assert result.deleted == [stopping]
+    assert not result.created
+
+
+def test_managed_draining_instance_leaves_gateway_during_the_window():
+    from gpustack.server.controllers import (
+        _gateway_registrable_instances,
+        _next_drain_due,
+    )
+
+    instance = _instance(1)
+    instance.draining_since = datetime.now(timezone.utc)
+    instance.distributed_servers = DistributedServers(workloads=[])
+    assert _gateway_registrable_instances(_model(), [instance]) == []
+    assert _next_drain_due([instance]) > 0
+    instance.draining_since = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    assert _next_drain_due([instance]) == 0
+    instance.distributed_servers.stop_requested = True
+    assert _next_drain_due([instance]) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parameters,managed',
+    [
+        (['--dp=2'], False),
+        (['--data-parallel-external-lb', '--dp=2'], True),
+        (['--data-parallel-hybrid-lb', '--dp=2'], True),
+        (['-dpe', '--no-data-parallel-external-lb', '--dp=2'], False),
+        (['-dph', '--no-data-parallel-hybrid-lb', '--dp=2'], False),
+        ([], False),
+    ],
+)
+async def test_new_pd_marker_follows_role_parameters_without_merging(
+    parameters, managed
+):
+    from gpustack.schemas.models import DisaggregationSpec
+    from gpustack.server.controllers import _build_instance_create
+
+    model = _model(
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--data-parallel-external-lb', '--dp=4'],
+        disaggregation=DisaggregationSpec(mode='vllm-nixl'),
+        roles=[RoleSpec(name='prefill', replicas=1, backend_parameters=parameters)],
+    )
+    with patch(
+        'gpustack.server.controllers.get_draft_model_source',
+        AsyncMock(return_value=None),
+    ):
+        row = await _build_instance_create(
+            _pass(), model, model.roles[0], 'g1', 'digest'
+        )
+    assert (row.distributed_servers is not None) is managed
+    if managed:
+        assert row.distributed_servers.workloads == []
+    assert model.roles[0].backend_parameters == parameters
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'mode,parameters',
+    [
+        ('vllm-mooncake', ['--data-parallel-external-lb', '--dp=2']),
+        ('vllm-nixl', ['--dpm', '--dp=2']),
+    ],
+)
+async def test_new_external_pd_registers_managed_role_with_platform_router(
+    mode, parameters
+):
+    from gpustack.schemas.models import DisaggregationSpec
+    from gpustack.server.controllers import _build_instance_create
+
+    model = _model(
+        backend=BackendEnum.VLLM,
+        disaggregation=DisaggregationSpec(mode=mode),
+        roles=[
+            RoleSpec(name='prefill', replicas=1, backend_parameters=list(parameters))
+        ],
+    )
+    with patch(
+        'gpustack.server.controllers.get_draft_model_source',
+        AsyncMock(return_value=None),
+    ):
+        row = await _build_instance_create(
+            _pass(), model, model.roles[0], 'g1', 'digest'
+        )
+    assert row.distributed_servers.workloads == []
+    assert row.spec_digest == 'digest'
+    assert row.role == 'prefill'
+    assert model.roles[0].backend_parameters == parameters
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parameters,categories,managed',
+    [
+        (['--dp=2'], None, True),
+        (['--dp-size=2', '--enable-dp-attention'], None, True),
+        (['--ep-size=2'], None, False),
+        (['--ep-size=2', '--dp=2'], None, True),
+        (['--dp=1'], None, False),
+        (['--dp=2'], ['image'], False),
+    ],
+)
+async def test_only_new_ordinary_sglang_instances_activate_components(
+    parameters, categories, managed
+):
+    model = _model(
+        replicas=2,
+        backend=BackendEnum.SGLANG,
+        backend_parameters=parameters,
+        categories=categories or [],
+    )
+    existing = _instance(1)
+    recorder = await _run(model, [existing])
+    assert len(recorder.created) == 1
+    created = recorder.created[0]
+    if managed:
+        assert created.distributed_servers.workloads == []
+        assert created.spec_digest is not None
+    else:
+        assert created.distributed_servers is None
+    assert existing.distributed_servers is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("elapsed", [0, 61])
+async def test_server_releases_managed_pd_stop_only_after_drain_window(elapsed):
+    from gpustack.server import controllers
+    from tests.utils.model import new_model_instance_workload
+
+    instance = _instance(1, role="prefill", group_id="g")
+    instance.draining_since = datetime.now(timezone.utc) - timedelta(seconds=elapsed)
+    instance.distributed_servers = DistributedServers(
+        workloads=[new_model_instance_workload(state="running")]
+    )
+    session = _pass()
+    with patch.object(
+        controllers, "_release_and_delete", AsyncMock(return_value=[])
+    ) as release:
+        assert not await controllers._reap_managed_instances(session, [instance])
+    if elapsed:
+        release.assert_awaited_once_with(session, [instance])
+    else:
+        release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_released_stop_waits_for_physical_confirmation_without_repeating_release():
+    from gpustack.server import controllers
+    from tests.utils.model import new_model_instance_workload
+
+    instance = _instance(1, role="prefill", group_id="g")
+    instance.draining_since = datetime.now(timezone.utc) - timedelta(days=1)
+    instance.distributed_servers = DistributedServers(
+        workloads=[new_model_instance_workload(state="unknown")], stop_requested=True
+    )
+    with patch.object(
+        controllers, "_release_and_delete", AsyncMock(return_value=[])
+    ) as release:
+        assert not await controllers._reap_managed_instances(_pass(), [instance])
+    release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_model_restart_releases_an_open_pd_drain_without_waiting():
+    from tests.utils.model import new_model_instance_workload
+
+    model = _model(roles=_pd_roles())
+    model.restarting_since = datetime.now(timezone.utc)
+    instance = _instance(1, role="prefill", group_id="g")
+    instance.draining_since = model.restarting_since
+    instance.distributed_servers = DistributedServers(
+        workloads=[new_model_instance_workload(state="running")]
+    )
+    stop = AsyncMock()
+    with patch(
+        "gpustack.server.controllers.ModelService",
+        return_value=SimpleNamespace(stop_instances=stop),
+    ):
+        result = await _run(model, [instance])
+    stop.assert_awaited_once()
+    assert stop.await_args.args[0] is model
+    assert stop.await_args.args[1] == [instance]
+    assert not result.created
+    assert not result.deleted
+
+
+@pytest.mark.asyncio
+async def test_stale_pd_drain_still_releases_stop_without_deleting_old_rows():
+    from tests.utils.model import new_model_instance_workload
+
+    model = _model(roles=_pd_roles())
+    instance = _instance(1, role="prefill", group_id="g", spec_digest="sha1:old")
+    instance.draining_since = datetime.now(timezone.utc) - timedelta(seconds=61)
+    instance.distributed_servers = DistributedServers(
+        workloads=[new_model_instance_workload(state="running")]
+    )
+    stop = AsyncMock()
+    with patch(
+        "gpustack.server.controllers.ModelService",
+        return_value=SimpleNamespace(stop_instances=stop),
+    ):
+        result = await _run(model, [instance])
+    stop.assert_awaited_once()
+    assert stop.await_args.args == (model, [instance])
+    assert not result.created
+    assert not result.deleted
+
+
+def _hybrid_static_member(id):
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker, PortBand
+    from tests.utils.model import new_hybrid_workload
+
+    instance = _instance(id, 'prefill', 'g', CURRENT)
+    instance.worker_id, instance.worker_ip, instance.port = 1, '10.0.0.1', 8000 + id
+    instance.gpu_indexes = [0, 1, 2, 3]
+    instance.named_ports = {'bootstrap': PortBand(base=9000 + id)}
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=2, worker_ip='10.0.0.2', gpu_indexes=[0, 1, 2, 3]
+            )
+        ],
+        workloads=[
+            new_hybrid_workload(worker_id, state='running') for worker_id in (1, 2)
+        ],
+    )
+    for task in instance.distributed_servers.workloads:
+        task.name = f'{instance.name}-{task.name}'
+        task.component.api_port, task.component.ready = instance.port, True
+    return instance
+
+
+@pytest.mark.asyncio
+async def test_static_hybrid_scale_out_counts_complete_instances_before_refresh():
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    worker_ips = {1: '10.0.0.1', 2: '10.0.0.2'}
+    model, members = await _static_group(prefill=3)
+    members[0] = _hybrid_static_member(1)
+    router = members[-1]
+    router.router_peer_snapshot = router_peer_snapshot(members, 'g', worker_ips)
+    members.append(_hybrid_static_member(4))
+    result = await _run(model, members, worker_ips=worker_ips)
+    assert [i.role for i in result.created] == ['prefill']
+    assert not result.deleted
+    third = _hybrid_static_member(5)
+    third.distributed_servers.workloads[1].component.ready = False
+    members.append(third)
+    result = await _run(model, members, worker_ips=worker_ips)
+    assert not result.deleted
+    assert not result.created
+    third.distributed_servers.workloads[1].component.ready = True
+    peers_before = [peer.model_dump() for peer in members if peer.role != 'router']
+    result = await _run(model, members, worker_ips=worker_ips)
+    assert result.deleted == [router]
+    assert not result.created
+    assert [
+        peer.model_dump() for peer in members if peer.role != 'router'
+    ] == peers_before
+
+
+@pytest.mark.asyncio
+async def test_static_hybrid_scale_out_keeps_existing_router_serving():
+    from gpustack.server import controllers, pd_membership
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    worker_ips = {1: '10.0.0.1', 2: '10.0.0.2'}
+    model, members = await _static_group(prefill=3)
+    members[0] = _hybrid_static_member(1)
+    router = members[-1]
+    router.router_peer_snapshot = router_peer_snapshot(members, 'g', worker_ips)
+    members.append(_hybrid_static_member(4))
+    digest = await model_spec_digest(_pass(), model)
+    for member in members:
+        member.spec_digest = digest
+    with patch(
+        'gpustack.schemas.workers.Worker.all_by_field',
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(id=id_, ip=ip) for id_, ip in worker_ips.items()
+            ]
+        ),
+    ):
+        await controllers._record_static_router_membership(_pass(), model, members)
+    try:
+        assert pd_membership.outcome_for(model.id).ok
+        assert router.state == ModelInstanceStateEnum.RUNNING
+    finally:
+        pd_membership.forget(model.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['restart', 'bootstrap', 'removed'])
+async def test_static_hybrid_peer_change_refreshes_only_router_while_scale_out_waits(
+    change,
+):
+    from gpustack.schemas.models import PortBand
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    worker_ips = {1: '10.0.0.1', 2: '10.0.0.2'}
+    model, members = await _static_group(prefill=3)
+    members[0] = _hybrid_static_member(1)
+    router = members[-1]
+    removed = _hybrid_static_member(4)
+    router.router_peer_snapshot = router_peer_snapshot(
+        [*members, removed] if change == 'removed' else members, 'g', worker_ips
+    )
+    if change == 'restart':
+        members[0].restart_count = 1
+    elif change == 'bootstrap':
+        members[0].named_ports['bootstrap'] = PortBand(base=9500)
+    digest = await model_spec_digest(_pass(), model)
+    for member in members:
+        member.spec_digest = digest
+    healthy_before = [peer.model_dump() for peer in members if peer.role != 'router']
+    result = await _run(model, members, worker_ips=worker_ips)
+    assert result.deleted == [router]
+    assert [
+        peer.model_dump() for peer in members if peer.role != 'router'
+    ] == healthy_before

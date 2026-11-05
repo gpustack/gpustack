@@ -294,3 +294,87 @@ async def test_subordinate_loads_files_only_for_completion(
         subordinate = instance.distributed_servers.subordinate_workers[0]
         expected_progress = 100 if file_state == ModelFileStateEnum.READY else 99
         assert subordinate.download_progress == expected_progress
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('still_linked', [False, True])
+async def test_file_event_rechecks_association_after_managed_recovery(
+    monkeypatch, still_linked
+):
+    from gpustack.server import controllers
+    from gpustack.server.bus import Event, EventType
+
+    instance = _distributed_instance(sub_download_progress=0)
+    old_snapshot = instance.model_copy(deep=True)
+    file = instance.model_files[0]
+    set_committed_value(file, 'instances', [old_snapshot])
+    set_committed_value(file, 'draft_instances', [])
+    if not still_linked:
+        set_committed_value(instance, 'model_files', [])
+    session = MagicMock()
+
+    @contextlib.asynccontextmanager
+    async def session_context():
+        yield session
+
+    monkeypatch.setattr(controllers, 'async_session', session_context)
+    monkeypatch.setattr(ModelFile, 'one_by_id', AsyncMock(return_value=file))
+    load = AsyncMock(return_value=instance)
+    monkeypatch.setattr(ModelInstance, 'one_by_id_with_model_files', load)
+    sync = AsyncMock()
+    monkeypatch.setattr(controllers, 'sync_main_worker_model_file_state', sync)
+
+    await controllers.ModelFileController()._reconcile(Event(EventType.UPDATED, file))
+
+    load.assert_awaited_once_with(session, instance.id, for_update=True)
+    assert sync.await_count == int(still_linked)
+    if still_linked:
+        sync.assert_awaited_once_with(session, file, instance)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('retired', [False, True])
+async def test_file_preparation_checks_generation_under_lock(monkeypatch, retired):
+    from gpustack.server import controllers
+
+    instance = _distributed_instance(sub_download_progress=0)
+    instance.state = ModelInstanceStateEnum.INITIALIZING
+    event = instance.model_copy(deep=True)
+    if retired:
+        instance.restart_count = (instance.restart_count or 0) + 1
+    load = AsyncMock(return_value=instance)
+    monkeypatch.setattr(ModelInstance, 'one_by_id', load)
+    monkeypatch.setattr(Model, 'one_by_id', AsyncMock(return_value=None))
+    sync = AsyncMock()
+    monkeypatch.setattr(controllers, 'sync_instance_files_state', sync)
+    await controllers.ensure_instance_model_file(MagicMock(), event)
+    assert sync.await_count == int(not retired)
+    assert load.await_args.kwargs.get('for_update') is True
+    assert load.await_args.kwargs.get('refresh') is True
+
+
+@pytest.mark.asyncio
+async def test_file_sync_rechecks_generation_after_each_commit(monkeypatch):
+    from gpustack.server import controllers
+
+    instance = _distributed_instance(sub_download_progress=0)
+    files = list(instance.model_files)
+    expected = instance.restart_count or 0
+
+    async def load(*args, **kwargs):
+        return instance
+
+    monkeypatch.setattr(
+        ModelInstance, 'one_by_id_with_model_files', AsyncMock(side_effect=load)
+    )
+
+    async def recover(*args, **kwargs):
+        instance.restart_count = expected + 1
+
+    primary = AsyncMock(side_effect=recover)
+    subordinate = AsyncMock()
+    monkeypatch.setattr(controllers, 'sync_main_worker_model_file_state', primary)
+    monkeypatch.setattr(controllers, 'sync_distributed_model_file_state', subordinate)
+    await controllers.sync_instance_files_state(MagicMock(), instance, files)
+    primary.assert_awaited_once()
+    subordinate.assert_not_awaited()

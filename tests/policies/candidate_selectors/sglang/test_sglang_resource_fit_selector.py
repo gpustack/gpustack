@@ -2121,3 +2121,131 @@ def test_an_explicit_zero_fraction_returns_a_number_rather_than_none():
 
     assert answer == 0
     assert answer is not None
+
+
+@pytest.mark.parametrize('available,expected', [(6 * 1024**3, 1), (5 * 1024**3 - 1, 0)])
+def test_smg_ram_is_charged_only_once_to_primary(available, expected):
+    from gpustack.policies.candidate_selectors.sglang_resource_fit_selector import (
+        reserve_sglang_smg_ram,
+    )
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+
+    worker = linux_nvidia_1_4090_24gx1()
+    subordinate = ModelInstanceSubordinateWorker(
+        worker_id=2,
+        gpu_indexes=[0],
+        computed_resource_claim=ComputedResourceClaim(ram=3 * 1024**3),
+    )
+    candidate = ModelInstanceScheduleCandidate(
+        worker=worker,
+        gpu_indexes=[0],
+        computed_resource_claim=ComputedResourceClaim(ram=3 * 1024**3),
+        subordinate_workers=[subordinate],
+    )
+    selector = SimpleNamespace(
+        get_worker_allocatable_resource=lambda *args: SimpleNamespace(ram=available)
+    )
+    result = reserve_sglang_smg_ram([candidate], selector)
+    assert len(result) == expected
+    assert candidate.computed_resource_claim.ram == 3 * 1024**3
+    if result:
+        assert result[0].computed_resource_claim.ram == 5 * 1024**3
+        assert (
+            result[0].subordinate_workers[0].computed_resource_claim.ram == 3 * 1024**3
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reserve_gib', [2, 3])
+@pytest.mark.parametrize(
+    'managed,available,expected', [(False, 4, 1), (True, 4, 0), (True, 6, 1)]
+)
+async def test_sglang_selector_adds_smg_ram_only_with_managed_context(
+    config, monkeypatch, managed, available, expected, reserve_gib
+):
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+    import gpustack.policies.candidate_selectors.sglang_resource_fit_selector as module
+
+    monkeypatch.setattr(module, 'ROUTER_DEFAULT_MEMORY', reserve_gib * 1024**3)
+
+    model = new_model(
+        1,
+        'sg',
+        huggingface_repo_id='org/sg',
+        backend='SGLang',
+        backend_parameters=['--dp=4'],
+    )
+    worker = linux_nvidia_1_4090_24gx1()
+    candidate = ModelInstanceScheduleCandidate(
+        worker=worker,
+        gpu_indexes=[0],
+        computed_resource_claim=ComputedResourceClaim(ram=3 * 1024**3),
+    )
+    selector = SGLangResourceFitSelector(
+        config, model, [], resource_view=ResourceView([]), managed_sglang=managed
+    )
+    selector._init_model_parameters = AsyncMock()
+    selector.cal_mem_fraction_static = lambda workers: None
+    selector.should_skip_candidate_func = lambda function: False
+    selector.find_manual_gpu_selection_candidates = lambda workers: [candidate]
+    selector.find_single_worker_single_gpu_full_offloading_candidates = (
+        lambda workers: []
+    )
+    selector.find_single_worker_multi_gpu_full_offloading_candidates = (
+        lambda workers: []
+    )
+    selector.find_multi_worker_multi_gpu_candidates = lambda workers: []
+    selector.get_worker_allocatable_resource = lambda *args: SimpleNamespace(
+        ram=available * 1024**3
+    )
+    selector._set_messages = lambda: None
+    monkeypatch.setattr(module, 'estimate_model_vram', AsyncMock(return_value=0))
+    result = await selector.select_candidates([worker])
+    assert len(result) == expected
+    assert candidate.computed_resource_claim.ram == 3 * 1024**3
+    if result:
+        assert (
+            result[0].computed_resource_claim.ram
+            == (3 + reserve_gib if managed else 3) * 1024**3
+        )
+    elif managed:
+        assert any(f'{reserve_gib} GiB' in message for message in selector._messages)
+
+
+@pytest.mark.parametrize(
+    'parameters',
+    [
+        ['--tp=8', '--dp=8', '--enable-dp-attention'],
+        ['--tp=8', '--attn-dp-size=8'],
+        ['--tp=8', '--attention-data-parallel-size=8', '--ep=8'],
+    ],
+)
+def test_dpa_syntax_has_the_same_gpu_width_and_memory_padding(parameters):
+    model = new_model(
+        1,
+        'dpa',
+        huggingface_repo_id='org/model',
+        backend='SGLang',
+        backend_parameters=parameters,
+    )
+    assert SGLangResourceFitSelector.get_world_size_from_backend_parameters(model) == (
+        8,
+        ['tp'],
+    )
+    calculator = _calculator(model)
+    assert calculator._enable_dp_attention
+    assert calculator._dp_size == 8
+
+
+def test_sglang_scheduler_uses_the_last_dp_alias():
+    model = new_model(
+        1,
+        'dp',
+        huggingface_repo_id='org/model',
+        backend='SGLang',
+        backend_parameters=['--dp=4', '--data-parallel-size=1'],
+    )
+    assert SGLangResourceFitSelector.get_world_size_from_backend_parameters(model) == (
+        1,
+        ['dp'],
+    )

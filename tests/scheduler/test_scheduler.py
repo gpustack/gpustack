@@ -485,6 +485,9 @@ _TP8_DP2_DPL1 = [
         ("manual_env_true", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "TRUE"}, True),
         ("manual_env_yes", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "yes"}, True),
         ("manual_env_on", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "on"}, True),
+        ("manual_dp", True, {"GPUSTACK_MANUAL_DP": "1"}, True),
+        ("manual_dp_false", True, {"GPUSTACK_MANUAL_DP": "false"}, False),
+        ("automatic_dp", False, {"GPUSTACK_MANUAL_DP": "1"}, False),
         ("manual_env_0", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "0"}, False),
         ("manual_env_false", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "false"}, False),
         ("manual_env_empty", True, {"GPUSTACK_SKIP_GPU_COUNT_CHECK": ""}, False),
@@ -507,6 +510,7 @@ def test_should_skip_gpu_count_check(case_name, manual_select, env, expected):
         ("default", None, 16),
         # Bypass on: honor the manual selection (8 GPUs / 1 replica).
         ("skip", {"GPUSTACK_SKIP_GPU_COUNT_CHECK": "1"}, 8),
+        ("manual_dp", {"GPUSTACK_MANUAL_DP": "1"}, 8),
     ],
 )
 def test_set_model_gpus_per_replica_skip_gpu_count_check(case_name, env, expected):
@@ -543,12 +547,15 @@ def test_set_gpu_count_mismatch_raises_by_default():
         selector._set_gpu_count(world_size=16, strategies=["tp", "dp"])
 
 
-def test_set_gpu_count_mismatch_bypassed():
+@pytest.mark.parametrize(
+    'flag', ['GPUSTACK_SKIP_GPU_COUNT_CHECK', 'GPUSTACK_MANUAL_DP']
+)
+def test_set_gpu_count_mismatch_bypassed(flag):
     model = make_model(
         gpus_per_replica=8,
         gpu_ids=_MANUAL_8_GPU_IDS,
         backend=BackendEnum.VLLM.value,
-        env={"GPUSTACK_SKIP_GPU_COUNT_CHECK": "1"},
+        env={flag: "1"},
     )
     selector = _build_selector_for_set_gpu_count(model)
     selector._set_gpu_count(world_size=16, strategies=["tp", "dp"])

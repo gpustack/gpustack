@@ -10,6 +10,27 @@ from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.bus import EventType
 
 
+@pytest.mark.parametrize('state', ['pending', 'scheduled'])
+@pytest.mark.parametrize('workload_state', ['pending', 'running', 'unknown', 'stopped'])
+def test_periodic_scheduling_waits_until_the_manifest_is_retired(state, workload_state):
+    from datetime import datetime, timedelta, timezone
+    from gpustack.schemas.models import DistributedServers
+    from tests.utils.model import new_model_instance, new_model_instance_workload
+
+    scheduler = Scheduler(SimpleNamespace(cache_dir=None), check_interval=180)
+    instance = new_model_instance(7, 'managed', 1, state=state)
+    instance.worker_id = 1 if state == 'scheduled' else None
+    instance.created_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    instance.updated_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    instance.distributed_servers = DistributedServers(
+        workloads=[new_model_instance_workload(state=workload_state)]
+    )
+    assert not scheduler._should_schedule(instance)
+    instance.distributed_servers.workloads = []
+    instance.distributed_servers.orchestration_mode = "managed"
+    assert scheduler._should_schedule(instance)
+
+
 async def _stop_task(task: asyncio.Task) -> None:
     if not task.done():
         task.cancel()
@@ -17,6 +38,37 @@ async def _stop_task(task: asyncio.Task) -> None:
         await task
     except (asyncio.CancelledError, Exception):
         pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'state,bound,registration_needed',
+    [
+        ('ready', 7, False),
+        ('ready', None, True),
+        ('not_ready', 7, False),
+        ('unreachable', 7, False),
+    ],
+)
+async def test_managed_admission_message_distinguishes_offline_workers(
+    state, bound, registration_needed, monkeypatch
+):
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+    )
+    from gpustack.policies.worker_filters.status_filter import StatusFilter
+
+    worker = SimpleNamespace(
+        state=state,
+        system_principal_id=bound,
+        worker_version='2.3.0',
+    )
+    candidates, messages = await StatusFilter(None, True).filter([worker])
+    assert bool(candidates) == (state == 'ready' and bound is not None)
+    assert (
+        any('re-register' in message.lower() for message in messages)
+        == registration_needed
+    )
 
 
 @pytest.mark.asyncio
@@ -138,3 +190,68 @@ async def test_scheduler_handles_live_created_event_with_single_instance_path():
             finally:
                 forever.set()
                 await _stop_task(task)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('transition', ['identity_binding', 'not_ready_to_ready'])
+async def test_periodic_retry_observes_current_worker_admission_without_generation_change(
+    transition,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        'gpustack.extension.resolve_version_info', lambda: ('2.3.1', 'test')
+    )
+    from contextlib import asynccontextmanager
+    from datetime import datetime, timedelta, timezone
+    from gpustack.schemas.models import (
+        Model,
+        ModelInstance,
+        ModelInstanceStateEnum,
+        DistributedServers,
+    )
+    from gpustack.policies.worker_filters.status_filter import StatusFilter
+    from tests.utils.model import new_model_instance
+
+    scheduler = Scheduler(SimpleNamespace(cache_dir=None), check_interval=180)
+    instance = new_model_instance(7, 'pending', 1, state=ModelInstanceStateEnum.PENDING)
+    instance.worker_id = None
+    instance.created_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    instance.updated_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    instance.distributed_servers = DistributedServers(workloads=[])
+    initial_epoch = instance.restart_count
+    worker = SimpleNamespace(
+        id=1,
+        state='ready',
+        system_principal_id=101,
+        worker_version='2.3.0',
+    )
+    if transition == 'not_ready_to_ready':
+        worker.state = 'not_ready'
+    else:
+        worker.system_principal_id = None
+    model = Model(id=1, name='m', source='huggingface', huggingface_repo_id='a/b')
+    eligibility = []
+
+    async def evaluate(row):
+        kept, _ = await StatusFilter(model, True).filter([worker])
+        eligibility.append([w.id for w in kept])
+
+    @asynccontextmanager
+    async def session():
+        yield SimpleNamespace()
+
+    with (
+        patch('gpustack.scheduler.scheduler.async_session', session),
+        patch.object(ModelInstance, 'all', AsyncMock(return_value=[instance])),
+        patch.object(
+            scheduler, '_evaluate', AsyncMock(side_effect=evaluate)
+        ) as evaluate_mock,
+    ):
+        await scheduler._enqueue_pending_instances()
+        worker.system_principal_id = 101
+        worker.state = 'ready'
+        await scheduler._enqueue_pending_instances()
+    assert eligibility == [[], [1]]
+    assert evaluate_mock.await_count == 2
+    assert instance.restart_count == initial_epoch
+    assert instance.state == ModelInstanceStateEnum.PENDING

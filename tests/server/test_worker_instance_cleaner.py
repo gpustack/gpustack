@@ -16,7 +16,7 @@ from tests.fixtures.workers.fixtures import (
     linux_nvidia_2_4080_16gx2,
 )
 from tests.utils.mock import mock_async_session
-from tests.utils.model import new_model_instance
+from tests.utils.model import new_model_instance, new_model_instance_workload
 
 
 def _offline_worker(worker, *, heartbeat_age_seconds: int = 600):
@@ -129,3 +129,67 @@ async def test_cleanup_offline_worker_instances_deletes_distributed_instances_wi
     batch_delete.assert_awaited_once()
     deleted_instances = batch_delete.await_args.args[-1]
     assert [item.name for item in deleted_instances] == [instance.name]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headless", [False, True])
+@pytest.mark.parametrize(
+    "manifest", [[], [new_model_instance_workload(state="unknown")], "guarded"]
+)
+async def test_offline_grace_does_not_delete_or_reschedule_managed_instances(
+    headless, manifest, caplog
+):
+    main = linux_nvidia_1_4090_24gx1()
+    subordinate = linux_nvidia_2_4080_16gx2()
+    offline = _offline_worker(subordinate if headless else main)
+    instance = new_model_instance(
+        1,
+        "managed",
+        1,
+        worker_id=main.id,
+        state=ModelInstanceStateEnum.RUNNING,
+        gpu_indexes=[0],
+    )
+    instance.worker_name = main.name
+    instance.distributed_servers = DistributedServers(
+        workloads=None if manifest == "guarded" else manifest,
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=subordinate.id, worker_name=subordinate.name, gpu_indexes=[0]
+            )
+        ],
+    )
+    if manifest == "guarded":
+        from uuid import uuid4
+        from gpustack.schemas.models import ModelInstanceLegacyStop
+
+        instance.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
+            token=uuid4(),
+            restart_count=0,
+            worker_ids=[main.id, subordinate.id],
+            worker_principal_ids={main.id: 10, subordinate.id: 20},
+        )
+    with (
+        patch(
+            "gpustack.server.worker_instance_cleaner.async_session",
+            return_value=mock_async_session(),
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.Worker.all",
+            AsyncMock(return_value=[main, subordinate]),
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.ModelInstance.all",
+            AsyncMock(return_value=[instance]),
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.ModelInstanceService.batch_delete",
+            AsyncMock(),
+        ) as delete,
+    ):
+        await WorkerInstanceCleaner()._cleanup_offline_worker_instances()
+    delete.assert_not_awaited()
+    assert instance.worker_id == main.id
+    assert instance.draining_since is None
+    assert "rescheduled" not in caplog.text
+    assert offline.state == WorkerStateEnum.NOT_READY

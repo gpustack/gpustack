@@ -25,6 +25,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.extension import Plugin, PluginContext
 from gpustack.schemas.config import GatewayModeEnum
+from gpustack.schemas.principals import PrincipalType
 from gpustack.security import LEGACY_TOKEN_ACCESS_KEY
 from gpustack.schemas.users import AuthProviderEnum
 from gpustack.routes import auth as auth_route
@@ -2728,11 +2729,71 @@ async def test_a_credential_failure_401_is_not_a_policy_rejection(monkeypatch):
     assert not is_policy_rejection(raised.value)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'token,allowed',
+    [('worker-token', True), ('registration-token', True), ('user-token', False)],
+)
+async def test_rank_proxy_requires_internal_credentials(monkeypatch, token, allowed):
+    from gpustack.api.auth import worker_proxy_auth
+
+    request = SimpleNamespace(
+        headers={
+            'X-GPUStack-Model-Instance': 'model-1-7-dp1.static',
+            'X-Higress-Llm-Model': 'my-model',
+        },
+        app=SimpleNamespace(
+            state=SimpleNamespace(token='worker-token', config=DummyWorkerConfig())
+        ),
+    )
+    bearer = HTTPAuthorizationCredentials(scheme='Bearer', credentials=token)
+    if allowed:
+        await worker_proxy_auth(request, bearer)
+    else:
+        with pytest.raises(UnauthorizedException):
+            await worker_proxy_auth(request, bearer)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('target', ['model-1-7.static', 'model-2-8.static'])
+@pytest.mark.parametrize('header', ['Authorization', 'X-API-Key'])
+async def test_legacy_proxy_rejects_user_credentials_for_any_target(target, header):
+    from gpustack.api.auth import worker_proxy_auth
+
+    http_client = MagicMock()
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            model_instance_endpoint=SimpleNamespace(restart_count=None)
+        ),
+        headers={
+            'X-GPUStack-Model-Instance': target,
+            'X-Higress-Llm-Model': 'model-a',
+        },
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                token='worker-token',
+                config=DummyWorkerConfig(),
+                http_client_no_proxy=http_client,
+            )
+        ),
+    )
+    bearer = (
+        HTTPAuthorizationCredentials(scheme='Bearer', credentials='user-token')
+        if header == 'Authorization'
+        else None
+    )
+    with pytest.raises(UnauthorizedException):
+        await worker_proxy_auth(
+            request, bearer, 'user-token' if header == 'X-API-Key' else None
+        )
+    http_client.get.assert_not_called()
+
+
 # --- Forward-proxy request authentication (tunnel mode) ----------------------
 #
 # The server's forward proxy authenticates every request it relays. The
 # accepted credentials are the derived gateway token (what the built-in
-# Prometheus scrape job presents) and a principal's API key (what
+# Prometheus scrape job presents) and a SYSTEM principal's API key (what
 # pd_membership hops and gateway-forwarded clients present).
 
 
@@ -2815,7 +2876,7 @@ async def test_proxy_auth_consumes_gateway_token_even_on_api_key_hop(monkeypatch
     from gpustack.api.auth import authenticate_proxy_request_headers
 
     _proxy_token_config(monkeypatch)
-    principal = SimpleNamespace(id=1)
+    principal = SimpleNamespace(id=1, kind=PrincipalType.SYSTEM)
     _proxy_api_key_lookup(monkeypatch, principal)
 
     headers = {
@@ -2827,22 +2888,23 @@ async def test_proxy_auth_consumes_gateway_token_even_on_api_key_hop(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_proxy_auth_falls_back_to_api_key_check(monkeypatch):
+@pytest.mark.parametrize("kind", list(PrincipalType))
+@pytest.mark.parametrize("header", ["Proxy-Authorization", "Authorization"])
+async def test_proxy_auth_requires_system_api_keys(monkeypatch, kind, header):
     from gpustack.api.auth import authenticate_proxy_request_headers
 
     _proxy_token_config(monkeypatch)
-    principal = SimpleNamespace(id=1)
+    principal = SimpleNamespace(id=1, kind=kind)
     _proxy_api_key_lookup(monkeypatch, principal)
 
-    assert await authenticate_proxy_request_headers(
-        {"Proxy-Authorization": "Bearer access:secret"}
-    )
     # An API key in Authorization is the target's own credential
     # (gateway-forwarded requests rely on it reaching the instance), so
     # it is not consumed by the hop check.
-    headers = {"Authorization": "Bearer access:secret"}
-    assert await authenticate_proxy_request_headers(headers)
-    assert headers == {"Authorization": "Bearer access:secret"}
+    headers = {header: "Bearer access:secret"}
+    assert (await authenticate_proxy_request_headers(headers)) is (
+        kind == PrincipalType.SYSTEM
+    )
+    assert headers == {header: "Bearer access:secret"}
 
 
 @pytest.mark.asyncio

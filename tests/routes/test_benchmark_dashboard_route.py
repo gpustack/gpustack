@@ -126,3 +126,53 @@ async def test_a_deleted_model_is_refused_rather_than_guessed():
 
     with pytest.raises(BadRequestException):
         await _redirect(_benchmark(), None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pd', [False, True])
+async def test_external_grafana_benchmark_retains_request_root_and_time_window(pd):
+    import httpx
+    from fastapi import FastAPI, Request
+    from urllib.parse import parse_qs, urlsplit
+
+    app = FastAPI(root_path='/platform')
+
+    @app.get('/benchmarks/{id}/dashboard')
+    async def dashboard(id: int, request: Request):
+        return await route.get_benchmark_dashboard(None, None, id, request)
+
+    cfg = _cfg()
+    cfg.grafana_url = 'https://external.example/grafana'
+    cfg.server_external_url = None
+    cfg.get_grafana_url = lambda: cfg.grafana_url
+    with (
+        patch.object(
+            route.Benchmark, 'one_by_id', AsyncMock(return_value=_benchmark())
+        ),
+        patch.object(route, 'assert_resource_visible', lambda *a, **k: None),
+        patch.object(route.Model, 'one_by_id', AsyncMock(return_value=_model(pd=pd))),
+        patch.object(
+            route.Cluster,
+            'one_by_id',
+            AsyncMock(return_value=SimpleNamespace(name='cluster')),
+        ),
+        patch.object(route, 'get_global_config', lambda: cfg),
+        patch('gpustack.server.pd_mode_catalog.get_pd_mode', lambda _: None),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url='https://api.example'
+        ) as client:
+            response = await client.get('/benchmarks/1/dashboard')
+    assert response.status_code == 302
+    location = response.headers['location']
+    assert location.startswith('https://external.example/grafana/d/')
+    params = parse_qs(urlsplit(location).query)
+    assert params['from'] == [
+        str(int((_STARTED - route._DASHBOARD_PADDING).timestamp() * 1000))
+    ]
+    assert params['to'] == [
+        str(int((_ENDED + route._DASHBOARD_PADDING).timestamp() * 1000))
+    ]
+    assert params['var-gpustack_base_url'] == ['https://api.example/platform']
+    if pd:
+        assert 'var-counted_role' in params

@@ -12,8 +12,10 @@ from typing import Dict, Optional, Tuple
 
 from filelock import Timeout
 import modelscope
+import setproctitle
 from modelscope.hub.constants import TEMPORARY_FOLDER_NAME, API_FILE_DOWNLOAD_CHUNK_SIZE
 from multiprocessing import cpu_count, get_context
+from multiprocessing.managers import SyncManager
 from packaging.version import Version
 from huggingface_hub._local_folder import get_local_download_paths
 from huggingface_hub.file_download import get_hf_file_metadata, hf_hub_url
@@ -89,10 +91,16 @@ class ModelFileManager:
         # must not inherit the parent's pooled sockets: a forked child keeps
         # half-closed fds alive even after the parent closes its own copies.
         spawn = get_context("spawn")
-        self._mp_manager = spawn.Manager()
+        self._mp_manager = SyncManager(ctx=spawn)
+        self._mp_manager.start(
+            initializer=setproctitle.setproctitle,
+            initargs=('gpustack_model_file_manager',),
+        )
         self._download_pool = ProcessPoolExecutor(
             max_workers=min(max_concurrent_downloads, cpu_count()),
             mp_context=spawn,
+            initializer=setproctitle.setproctitle,
+            initargs=('gpustack_model_file_download',),
         )
 
     def _handle_model_file_event(self, event: Event):

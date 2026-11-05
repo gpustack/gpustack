@@ -38,6 +38,7 @@ class LocalPathFilter(WorkerFilter):
 
         candidates = []
         invalid_workers = []
+        unchecked_workers = []
 
         # Validate local path existence on each worker
         async with WorkerFilesystemClient() as filesystem_client:
@@ -55,11 +56,24 @@ class LocalPathFilter(WorkerFilter):
                         f"Failed to check path {self._model.local_path} "
                         f"on worker {worker.name}: {e}"
                     )
-                    invalid_workers.append(worker.name)
+                    unchecked_workers.append(worker.name)
 
         messages = []
-        if invalid_workers:
-            sorted_workers = sorted(invalid_workers)
+        for worker_names, reason, action in (
+            (
+                invalid_workers,
+                "does not exist",
+                "Please ensure the model file is accessible on all workers.",
+            ),
+            (
+                unchecked_workers,
+                "could not be checked",
+                "Please check Worker connectivity and logs.",
+            ),
+        ):
+            if not worker_names:
+                continue
+            sorted_workers = sorted(worker_names)
             if len(sorted_workers) > 3:
                 display_workers = sorted_workers[:3]
                 worker_list = (
@@ -70,10 +84,8 @@ class LocalPathFilter(WorkerFilter):
                 worker_list = ', '.join(sorted_workers)
 
             messages.append(
-                f"The model file path '{self._model.local_path}' does not "
-                f"exist on the following workers: "
-                f"{worker_list}. "
-                f"Please ensure the model file is accessible on all workers."
+                f"The model file path '{self._model.local_path}' {reason} "
+                f"on the following workers: {worker_list}. {action}"
             )
 
         return candidates, messages

@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-import aiohttp
 import httpx
 import pytest
 import pytest_asyncio
@@ -126,7 +125,9 @@ async def test_control_plane_tokens_remain_authorized(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("header", ["Authorization", "X-API-Key"])
 @pytest.mark.parametrize("server_status", [200, 401, 403, 500])
-async def test_proxy_delegates_model_authorization(worker_app, header, server_status):
+async def test_proxy_rejects_user_credentials_without_server_auth(
+    worker_app, header, server_status
+):
     http_client = worker_app.state.http_client_no_proxy
     http_client.get.return_value.__aenter__.return_value.status = server_status
     credential = "inference-only-key"
@@ -139,18 +140,8 @@ async def test_proxy_delegates_model_authorization(worker_app, header, server_st
     ) as client:
         response = await client.get("/proxy/v1/models", headers=headers)
 
-    if server_status == 200:
-        assert response.status_code == 400
-        assert "Missing target port" in response.text
-    else:
-        assert response.status_code == 401
-    http_client.get.assert_called_once_with(
-        "http://server/token-auth",
-        headers={
-            "Authorization": f"Bearer {credential}",
-            "X-Higress-Llm-Model": "allowed-model",
-        },
-    )
+    assert response.status_code == 401
+    http_client.get.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -174,20 +165,3 @@ async def test_missing_credentials_or_model_header_are_rejected(
 
     assert response.status_code == 401
     worker_app.state.http_client_no_proxy.get.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_proxy_rejects_unavailable_auth_server(worker_app):
-    worker_app.state.http_client_no_proxy.get.side_effect = aiohttp.ClientError()
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=worker_app), base_url="http://worker"
-    ) as client:
-        response = await client.get(
-            "/proxy/v1/models",
-            headers={
-                "Authorization": "Bearer inference-only-key",
-                "X-Higress-Llm-Model": "allowed-model",
-            },
-        )
-
-    assert response.status_code == 401

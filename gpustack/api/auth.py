@@ -5,8 +5,6 @@ from functools import lru_cache
 import hmac
 import ipaddress
 import logging
-import aiohttp
-from aiocache import cached
 from fastapi import Depends, Request, WebSocket
 from starlette.datastructures import Headers
 from gpustack.config.config import Config, get_global_config
@@ -1008,43 +1006,8 @@ async def worker_proxy_auth(
     ] = None,
     x_api_key: Annotated[Optional[str], Depends(api_key_header_auth)] = None,
 ) -> None:
-    """Allow delegated model authorization only for the inference proxy."""
-    try:
-        await worker_auth(request, bearer_token, x_api_key)
-        return
-    except UnauthorizedException:
-        pass
-
-    token_value = (bearer_token.credentials if bearer_token else None) or x_api_key
-    if not token_value:
-        raise UnauthorizedException(message="Invalid authentication credentials")
-    model_name = request.headers.get("X-Higress-Llm-Model")
-    if model_name is not None:
-        logger.debug("Verifying inference proxy credentials via server authentication")
-        cached_auth = make_auth_token_via_server(request.app.state.http_client_no_proxy)
-        server_url = request.app.state.config.get_server_url()
-        is_valid = await cached_auth(server_url, token_value, model_name)
-        if is_valid:
-            return
-    raise UnauthorizedException(message="Invalid authentication credentials")
-
-
-def make_auth_token_via_server(client: aiohttp.ClientSession):
-    @cached(ttl=60)
-    async def inner(server_url: str, token: str, model_name: str) -> bool:
-        auth_url = f"{server_url.rstrip('/')}/token-auth"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "X-Higress-Llm-Model": model_name,
-        }
-        try:
-            async with client.get(auth_url, headers=headers) as resp:
-                return resp.status == 200
-        except aiohttp.ClientError as e:
-            logger.error(f"Error verifying token via server: {e}")
-            return False
-
-    return inner
+    """Require internal credentials on every Worker inference proxy target."""
+    await worker_auth(request, bearer_token, x_api_key)
 
 
 def get_scopes(
@@ -1118,7 +1081,7 @@ async def authenticate_proxy_request_headers(header_dict: Dict[str, str]) -> boo
 
     Every proxied request must authenticate, metrics scrapes included: the
     proxy reaches hosts the caller cannot, so a request that names its own
-    target must carry a credential the server issued.
+    target must carry an internal credential.
 
     Accepts a Bearer token in ``Proxy-Authorization`` (the hop credential,
     preferred) or ``Authorization`` (end-to-end, as sent by Prometheus's
@@ -1128,7 +1091,7 @@ async def authenticate_proxy_request_headers(header_dict: Dict[str, str]) -> boo
     * the derived gateway token — designed to be transmitted and compared
       server-side (see ``Config.get_derived_gateway_token``), held by the
       gateway and the built-in Prometheus scraper, or
-    * a principal's API key, the same check worker WebSocket registration
+    * a SYSTEM principal's API key, the same check worker WebSocket registration
       and ``pd_membership`` hops use (``Proxy-Authorization`` rides this
       path too).
 
@@ -1162,7 +1125,7 @@ async def authenticate_proxy_request_headers(header_dict: Dict[str, str]) -> boo
     principal = await authenticate_worker_by_request_headers(
         header_dict, validate_proxy=None
     )
-    return principal is not None
+    return principal is not None and principal.kind == PrincipalType.SYSTEM
 
 
 class BearerTokenAuthenticator(WebsocketAuthenticator):

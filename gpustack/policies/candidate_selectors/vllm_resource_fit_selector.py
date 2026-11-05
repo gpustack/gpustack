@@ -46,9 +46,13 @@ from gpustack.utils.command import (
     resolve_executor_backend,
 )
 from gpustack.utils.unit import byte_to_gib
+from gpustack.validation.pd.roles import validate_managed_pd_topology
 from gpustack.utils.vllm_topology import (
     parse_user_parallelism,
     validate_multinode_topology,
+    vllm_lb_mode,
+    managed_lb_parallelism,
+    manual_dp_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -135,7 +139,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
     def get_world_size_from_backend_parameters(
         model: Model,
     ) -> Tuple[Optional[int], Optional[List[str]]]:
-        parallelism = parse_user_parallelism(model.backend_parameters)
+        parallelism = parse_user_parallelism(model.backend_parameters, last_wins=True)
         tp = parallelism.tp
         pp = parallelism.pp
         dp = parallelism.dp
@@ -153,19 +157,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if value is not None and value <= 0:
                 raise ValueError(f"vLLM: --{name} {value} must be positive.")
 
-        # Hybrid-LB: --data-parallel-size is a GLOBAL count spanning separate
-        # deployments (e.g. one per node), so it must NOT size this deployment's
-        # local GPU need. Only `dpl` ranks run here, each taking tp*pp GPUs, so
-        # the local world is tp*pp*dpl. Without dpl we can't infer it; leave
-        # world_size unset and let the manual GPU selection stand.
-        hybrid_lb = find_bool_parameter(
-            model.backend_parameters, ["data-parallel-hybrid-lb"]
-        )
-        if hybrid_lb:
-            if dpl is None:
-                return None, None
-            dp = dpl
-
         # Each parallel dimension multiplies the world size in a fixed order
         # (tp, pp, pcp, dp).
         # DP-Local is a strategy label only — its ranks live inside the dp
@@ -179,9 +170,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     strategies.append(name)
                     world_size *= value
 
-            # In hybrid-lb, dp already carries the dpl value above, so the "dp"
-            # strategy already reflects the local world; don't double-count dpl.
-            if dpl and not hybrid_lb:
+            if dpl:
                 strategies.append("dpl")
 
             return world_size, strategies
@@ -372,6 +361,14 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             )
 
             candidates = candidate_func(workers)
+            if not manual_dp_enabled(self._model.env) and vllm_lb_mode(
+                self._model.backend_parameters
+            ) in (
+                "external",
+                "multi_port_external",
+                "hybrid",
+            ):
+                candidates = self._validate_managed_candidates(candidates)
             for candidate in candidates:
                 self._finalize_candidate_ram(candidate)
 
@@ -385,6 +382,34 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         self._set_messages()
         return []
+
+    def _validate_managed_candidates(
+        self, candidates: List[ModelInstanceScheduleCandidate]
+    ) -> List[ModelInstanceScheduleCandidate]:
+        """Apply the complete-group layout to manual and automatic placements."""
+        accepted = []
+        for candidate in candidates:
+            members = [candidate, *(candidate.subordinate_workers or [])]
+            counts = [len(member.gpu_indexes or []) for member in members]
+            try:
+                topology = managed_lb_parallelism(
+                    self._model.backend_parameters, counts
+                )
+                validate_managed_pd_topology(self._model, topology)
+            except ValueError as error:
+                self._event_collector.add(
+                    EventLevelEnum.INFO, EVENT_ACTION_DEFAULT, str(error)
+                )
+                continue
+            self._reserved_vram = max(
+                self._reserved_vram,
+                sum(
+                    sum((member.computed_resource_claim.vram or {}).values())
+                    for member in members
+                ),
+            )
+            accepted.append(candidate)
+        return accepted
 
     def should_skip_candidate_func(self, candidate_func) -> bool:
         # Skip conditions for manual GPU selection.
@@ -1139,23 +1164,37 @@ def _create_candidate(
     tries the next one — without raising, because a different combination
     may still satisfy the requirements.
     """
-    if len(selected_workers) > 1 and (
-        resolve_executor_backend(
-            model.backend_parameters, model.backend_version, model.image_name
+    try:
+        mode = (
+            'internal'
+            if manual_dp_enabled(model.env)
+            else vllm_lb_mode(model.backend_parameters)
         )
-        == "mp"
-    ):
-        gpu_per_node = [len(w.status.gpu_devices or []) for w in selected_workers]
-        try:
-            validate_multinode_topology(
-                gpu_per_node, parse_user_parallelism(model.backend_parameters)
+        if mode in ("external", "multi_port_external", "hybrid") or (
+            len(selected_workers) > 1
+            and (
+                resolve_executor_backend(
+                    model.backend_parameters, model.backend_version, model.image_name
+                )
+                == "mp"
             )
-        except ValueError as e:
-            logger.info(
-                f"Skipping worker combination {[w.name for w in selected_workers]} "
-                f"for {model.name}: {e}"
-            )
-            return None, str(e)
+        ):
+            gpu_per_node = [len(w.status.gpu_devices or []) for w in selected_workers]
+            if mode in ("external", "multi_port_external", "hybrid"):
+                topology = managed_lb_parallelism(
+                    model.backend_parameters, gpu_per_node
+                )
+                validate_managed_pd_topology(model, topology)
+            else:
+                validate_multinode_topology(
+                    gpu_per_node, parse_user_parallelism(model.backend_parameters)
+                )
+    except ValueError as e:
+        logger.info(
+            f"Skipping worker combination {[w.name for w in selected_workers]} "
+            f"for {model.name}: {e}"
+        )
+        return None, str(e)
 
     main_worker = selected_workers[0]
     vram_claim_main = {

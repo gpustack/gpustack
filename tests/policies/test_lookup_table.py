@@ -1758,7 +1758,7 @@ def test_gpu_subset_pruning_preserves_feasible_combinations(sizes, count, bounds
     "parallelism",
     [
         ["--dp=2"],
-        ["--dp=6", "--dpl=2", "--data-parallel-hybrid-lb"],
+        ["--dp=2", "--dpl=2", "--data-parallel-hybrid-lb"],
         ["--dp=2", "--enable-elastic-ep"],
         ["--dp=2", "--enable_elastic_ep"],
     ],
@@ -1821,7 +1821,7 @@ async def test_dp_table_ram_assumes_sharing_unless_ram_is_overridden(
         (["--tp=2", "--dp=2"], 1, True),
         (["--pp=2", "--dp=2"], 1, True),
         (["--pcp=2", "--dp=2"], 2, True),
-        (["--dp=8", "--dpl=2", "--data-parallel-hybrid-lb"], 1, False),
+        (["--dp=4", "--dpl=2", "--data-parallel-hybrid-lb"], 1, True),
     ],
 )
 async def test_lookup_ram_keeps_pcp_copies_and_assumes_dp_sharing(

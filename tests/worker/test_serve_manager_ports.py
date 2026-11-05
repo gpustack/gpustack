@@ -33,12 +33,12 @@ from gpustack.schemas.pd_modes import (
 )
 from gpustack.server.pd_mode_catalog import get_pd_modes
 from gpustack.utils import network
-from gpustack.worker.backends.vllm import VLLMServer
-from gpustack.worker.serve_manager import (
-    _VLLM_MP_CONNECTING_BAND,
-    PDPortScopeUnsupportedError,
-    ServeManager,
+from gpustack.utils.model_ports import PDPortScopeUnsupportedError
+from gpustack.utils.vllm_topology import (
+    VLLM_MP_CONNECTING_PORT_COUNT as _VLLM_MP_CONNECTING_BAND,
 )
+from gpustack.worker.backends.vllm import VLLMServer
+from gpustack.worker.serve_manager import ServeManager
 from tests.utils.model import new_model, new_model_instance
 
 PORT_RANGE = "40000-40063"
@@ -1211,6 +1211,7 @@ def test_start_model_instance_persists_named_ports(tmp_path):
     manager._serve_log_dir = str(tmp_path)
     mi = _instance()
     model = _pd_model()
+    manager._clientset.model_instances.get.return_value = mi
 
     with (
         patch.object(manager, "_get_model", return_value=model),
@@ -1224,3 +1225,406 @@ def test_start_model_instance_persists_named_ports(tmp_path):
     patch_dict = update.call_args.kwargs
     assert patch_dict["named_ports"] == mi.named_ports
     assert patch_dict["named_ports"]["kv_side_channel"].base in patch_dict["ports"]
+
+
+def test_external_cross_worker_reservation_includes_all_pending_bands(monkeypatch):
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    manager = _manager()
+    mi = _instance(role=None, cards=4)
+    mi.restart_count = 4
+    mi.distributed_servers = DistributedServers(
+        workloads=[],
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=2, worker_ip='127.0.0.2', gpu_indexes=[0, 1, 2, 3]
+            )
+        ],
+    )
+    model = new_model(
+        1,
+        'moe',
+        huggingface_repo_id='org/moe',
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--data-parallel-external-lb', '--dp=2', '--tp=4'],
+    )
+    coordinator = MagicMock()
+    coordinator.availability.return_value = [
+        SimpleNamespace(
+            worker_id=w,
+            generation=uuid4(),
+            claim_version=None,
+            pending_cleanup=False,
+            port_range=PORT_RANGE,
+            unavailable_ports=[40021] if w == 2 else [],
+        )
+        for w in (1, 2)
+    ]
+
+    def reserve(instance_id, claim):
+        manager._port_reservations.model_claims[instance_id] = (
+            str(claim.token),
+            set(claim.ports),
+        )
+        return SimpleNamespace(accepted=True)
+
+    coordinator.reserve.side_effect = reserve
+    manager._distributed_port_client = coordinator
+    monkeypatch.setattr(network, 'is_port_available', lambda *args, **kw: True)
+    manager._assign_external_ports(mi, model)
+    claim = coordinator.reserve.call_args.args[1]
+    assert claim.restart_count == 4
+    assert 40021 not in claim.ports
+    assert (
+        len(claim.ports) == 13
+    )  # 2 APIs, 1 RPC, 10 DP master ports; ranks fit locally.
+    assert "_vllm_external_store" not in (mi.named_ports or {})
+    assert (
+        model_instance_ports(mi, 1) == model_instance_ports(mi, 2) == set(claim.ports)
+    )
+    assert mi.distributed_servers.workloads == []
+    # A restarted Worker recovers the explicit pending bands from persisted metadata.
+    peer = _manager(worker_id=2)
+    peer._assign_external_ports(mi.model_copy(deep=True), model)
+    assert peer._assigned_ports[mi.id] == set(claim.ports)
+
+
+@pytest.mark.parametrize('epoch', [None, 2, 3])
+def test_managed_worker_port_claim_checks_instance_epoch(epoch):
+    from fastapi import HTTPException
+    from gpustack.routes.worker.port_reservations import reserve
+    from gpustack.schemas.port_reservations import ModelPortClaim
+
+    manager = _manager()
+    mi = _instance(role=None, cards=2)
+    mi.restart_count = 3
+    mi.distributed_servers = DistributedServers(workloads=[])
+    manager._clientset.model_instances.get.return_value = mi
+    manager._port_reservations.reserve_model = MagicMock(
+        return_value=SimpleNamespace(accepted=True)
+    )
+    claim = ModelPortClaim(
+        token=uuid4(), restart_count=epoch, generations={1: uuid4()}, ports=[40000]
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                serve_manager=manager, worker_ip_getter=lambda: '127.0.0.1'
+            )
+        )
+    )
+    if epoch == 3:
+        assert reserve(mi.id, claim, request).accepted
+    else:
+        with pytest.raises(HTTPException) as error:
+            reserve(mi.id, claim, request)
+        assert error.value.status_code == 409
+        manager._port_reservations.reserve_model.assert_not_called()
+
+
+@pytest.mark.parametrize('supervisor', [None, 40000])
+def test_multi_port_external_reserves_supervisor_separately_from_rank_apis(
+    monkeypatch, supervisor
+):
+    manager = _manager()
+    mi = _instance(role=None, cards=4)
+    mi.distributed_servers = DistributedServers(workloads=[])
+    params = ['-dpm', '--dp=2', '--tp=2']
+    if supervisor is not None:
+        params += [f'--data-parallel-supervisor-port={supervisor}']
+    model = new_model(
+        1,
+        'moe',
+        huggingface_repo_id='org/moe',
+        backend=BackendEnum.VLLM,
+        backend_parameters=params,
+    )
+    monkeypatch.setattr(network, 'is_port_available', lambda *args, **kwargs: True)
+    manager._assign_external_ports(mi, model)
+    bands = mi.named_ports
+    port = bands['_vllm_multi_port_external_supervisor'].base
+    assert port not in range(
+        bands['_vllm_external_api'].base, bands['_vllm_external_api'].base + 2
+    )
+    assert port in manager._assigned_ports[mi.id]
+    if supervisor is not None:
+        assert port == supervisor
+
+
+@pytest.mark.parametrize(
+    'mode,band,width',
+    [
+        (PDModeEnum.VLLM_NIXL, 'kv_side_channel', 2),
+        (PDModeEnum.VLLM_ASCEND_MOONCAKE, 'kv_port', 4),
+    ],
+)
+def test_managed_pd_ports_reserve_every_rank_connector(mode, band, width):
+    manager = _manager()
+    mi = _instance(cards=4)
+    mi.distributed_servers = DistributedServers(workloads=[])
+    model = _pd_model(
+        mode,
+        backend=BackendEnum.VLLM,
+        backend_parameters=[
+            '--data-parallel-external-lb',
+            '--dp=2',
+            '--tp=2',
+        ],
+    )
+    manager._assign_external_ports(mi, model)
+    assert mi.named_ports[band].count == width
+    reserved = {
+        port
+        for value in mi.named_ports.values()
+        for port in range(value.base, value.base + value.count)
+    }
+    assert len(reserved) == sum(value.count for value in mi.named_ports.values())
+    assert reserved == manager._assigned_ports[mi.id]
+
+
+@pytest.mark.parametrize('managed', [True, False])
+@pytest.mark.parametrize('attention', [False, True])
+def test_sglang_component_ports_preserve_engine_and_connecting_layout(
+    managed, attention
+):
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    manager = _manager()
+    model = new_model(
+        1,
+        'sg',
+        huggingface_repo_id='org/sg',
+        backend='SGLang',
+        backend_parameters=['--dp=4']
+        + (['--enable-dp-attention'] if attention else []),
+    )
+    mi = _instance(role=None, cards=4)
+    mi.distributed_servers = DistributedServers(workloads=[] if managed else None)
+    manager._select_ports(mi, model, BackendEnum.SGLANG, set(), PORT_RANGE)
+    assert mi.port == mi.ports[0]
+    if managed:
+        assert mi.ports[1] == mi.named_ports['_sglang_connecting'].base
+        assert mi.port == mi.named_ports['_sglang_engine_api'].base
+        assert len(set(mi.ports)) == 4
+        band = mi.named_ports['_sglang_connecting']
+        assert band.count == (14 if attention else 1)
+        expected = set(mi.ports) | set(range(band.base, band.base + band.count))
+        assert model_instance_ports(mi, 1) == expected
+        assert not {
+            mi.port,
+            mi.named_ports['_sglang_smg_api'].base,
+            mi.named_ports['_sglang_smg_metrics'].base,
+        } & set(range(band.base, band.base + band.count))
+    else:
+        assert '_sglang_smg_api' not in (mi.named_ports or {})
+
+
+@pytest.mark.parametrize(
+    'backend,parameters,counts,managed,busy,port_range',
+    [
+        ('vLLM', ['--dp=4', '--tp=1'], [4], False, [40004], '40000-40005'),
+        (
+            'vLLM',
+            ['--dp=4', '--tp=2', '--distributed-executor-backend=mp'],
+            [4, 4],
+            False,
+            [40010, 40015],
+            '40000-40020',
+        ),
+        ('SGLang', ['--dp=4'], [4], True, [], '40000-40003'),
+        ('SGLang', ['--attn-dp-size=4', '--tp-size=4'], [4], True, [], '40000-40016'),
+        (
+            'SGLang',
+            ['--dp=4', '--enable-dp-attention'],
+            [2, 2],
+            True,
+            [],
+            '40000-40003',
+        ),
+    ],
+)
+def test_admission_plan_matches_worker_allocation(
+    backend, parameters, counts, managed, busy, port_range
+):
+    from gpustack.scheduler.port_budget import fits_port_layout, member_port_requests
+    from gpustack.schemas.port_reservations import WorkerPortAvailability
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    model = (
+        _pd_model(backend=backend, backend_parameters=parameters)
+        if backend == 'vLLM'
+        else new_model(
+            1,
+            'sg',
+            huggingface_repo_id='org/sg',
+            backend=backend,
+            backend_parameters=parameters,
+        )
+    )
+    role = 'prefill' if backend == 'vLLM' else None
+    mi = _instance(role=role, cards=counts[0])
+    mi.distributed_servers = DistributedServers(
+        workloads=[] if managed else None,
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=index + 2, gpu_indexes=list(range(count))
+            )
+            for index, count in enumerate(counts[1:])
+        ],
+    )
+    snapshots = [
+        WorkerPortAvailability(
+            worker_id=index + 1,
+            generation=uuid4(),
+            port_range=port_range,
+            unavailable_ports=busy,
+        )
+        for index in range(len(counts))
+    ]
+    requests = member_port_requests(model, role, counts)
+    assert fits_port_layout(snapshots, requests)
+
+    _manager(port_range)._select_ports(
+        mi, model, BackendEnum(backend), set(busy), port_range
+    )
+
+    assert len(model_instance_ports(mi, 1)) == sum(count for count, _ in requests)
+    if role == 'prefill' and len(counts) == 1:
+        assert mi.named_ports['kv_side_channel'] == PortBand(base=40000, count=4)
+        assert mi.port == 40005
+
+
+def test_managed_sglang_exhaustion_does_not_publish_partial_allocation():
+    manager = _manager(port_range='40000-40002')
+    model = new_model(
+        1,
+        'sg',
+        huggingface_repo_id='org/sg',
+        backend='SGLang',
+        backend_parameters=['--dp=4'],
+    )
+    mi = _instance(role=None, cards=4)
+    mi.distributed_servers = DistributedServers(workloads=[])
+    with pytest.raises(network.PortRangeExhaustedError):
+        manager._select_ports(mi, model, BackendEnum.SGLANG, set(), '40000-40002')
+    assert mi.port is None and not mi.ports and not mi.named_ports
+
+
+@pytest.mark.parametrize('registered', [True, False])
+def test_sglang_starting_and_unknown_components_keep_all_reserved_ports(registered):
+    from gpustack.schemas.models import ModelInstanceWorkload
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    mi = _instance(role=None, cards=4)
+    mi.state = 'starting'
+    mi.port = 40000
+    mi.ports = [40000, 40001, 40002, 40003]
+    mi.named_ports = {
+        name: PortBand(base=port)
+        for name, port in zip(
+            (
+                '_sglang_engine_api',
+                '_sglang_connecting',
+                '_sglang_smg_api',
+                '_sglang_smg_metrics',
+            ),
+            mi.ports,
+        )
+    }
+    mi.distributed_servers = DistributedServers(workloads=[])
+    if registered:
+        mi.distributed_servers.workloads = [
+            ModelInstanceWorkload(
+                name='engine',
+                worker_id=1,
+                state='unknown',
+                component={'kind': 'sglang_engine', 'api_port': 40000, 'dp_size': 4},
+            ),
+            ModelInstanceWorkload(
+                name='smg',
+                worker_id=1,
+                state='unknown',
+                component={
+                    'kind': 'sglang_smg',
+                    'api_port': 40002,
+                    'metrics_port': 40003,
+                },
+            ),
+        ]
+        mi.distributed_servers.orchestration_mode = "managed"
+    assert model_instance_ports(mi, 1) == set(mi.ports)
+
+
+def test_parallel_sglang_dpa_allocations_do_not_share_internal_sockets():
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    manager = _manager()
+    model = new_model(
+        1,
+        'sg',
+        huggingface_repo_id='org/sg',
+        backend='SGLang',
+        backend_parameters=['--dp=2', '--enable-dp-attention'],
+    )
+    unavailable = set()
+    rows = []
+    for index in (1, 2):
+        mi = _instance(role=None, cards=2)
+        mi.id = index
+        mi.distributed_servers = DistributedServers(workloads=[])
+        manager._select_ports(mi, model, BackendEnum.SGLANG, unavailable, '40000-40063')
+        rows.append(mi)
+    assert not model_instance_ports(rows[0], 1) & model_instance_ports(rows[1], 1)
+    for mi in rows:
+        band = mi.named_ports['_sglang_connecting']
+        assert set(range(band.base, band.base + 14)) <= model_instance_ports(mi, 1)
+
+
+def test_sglang_dpa_requires_the_complete_internal_band_before_publishing():
+    manager = _manager(port_range='40000-40015')
+    model = new_model(
+        1,
+        'sg',
+        huggingface_repo_id='org/sg',
+        backend='SGLang',
+        backend_parameters=['--dp=2', '--enable-dp-attention'],
+    )
+    mi = _instance(role=None, cards=2)
+    mi.distributed_servers = DistributedServers(workloads=[])
+    with pytest.raises(network.PortRangeExhaustedError):
+        manager._select_ports(mi, model, BackendEnum.SGLANG, set(), '40000-40015')
+    assert mi.port is None and not mi.ports and not mi.named_ports
+
+
+@pytest.mark.parametrize('cross_worker', [False, True])
+def test_hybrid_ports_match_shared_api_and_cross_worker_budget(
+    monkeypatch, cross_worker
+):
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    manager = _manager()
+    mi = _instance(role=None, cards=4)
+    mi.distributed_servers = DistributedServers(workloads=[])
+    parameters = ['--data-parallel-hybrid-lb', '--dp=2', '--tp=2']
+    if cross_worker:
+        mi.distributed_servers.subordinate_workers = [
+            ModelInstanceSubordinateWorker(
+                worker_id=2, worker_ip='127.0.0.2', gpu_indexes=[0, 1, 2, 3]
+            )
+        ]
+        parameters = ['--data-parallel-hybrid-lb', '--dp=1', '--tp=8']
+    model = new_model(
+        1,
+        'hybrid',
+        huggingface_repo_id='org/moe',
+        backend=BackendEnum.VLLM,
+        backend_parameters=parameters,
+    )
+    monkeypatch.setattr(network, 'is_port_available', lambda *args, **kwargs: True)
+    manager._select_external_ports(mi, model, set(), PORT_RANGE)
+    assert mi.named_ports['_vllm_external_api'].count == 1
+    assert mi.named_ports['_vllm_external_rpc'].count == 1
+    assert ('_vllm_mp_connecting' in mi.named_ports) == cross_worker
+    assert ('_vllm_external_store' in mi.named_ports) == cross_worker
+    assert len(model_instance_ports(mi, 1)) == (13 if cross_worker else 2)
+    assert manager._managed_launcher_available(mi, model)

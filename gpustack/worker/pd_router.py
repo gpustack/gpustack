@@ -18,9 +18,17 @@ catalog entry keeps the router under `router:` and not under `roles:`.
 """
 
 import logging
-from typing import Dict, List, Mapping, NamedTuple, Optional, Sequence
+import shlex
+from typing import TYPE_CHECKING, Dict, List, Mapping, NamedTuple, Optional, Sequence
 
 from pydantic import BaseModel
+
+from gpustack.utils.command import (
+    find_last_int_parameter,
+    find_last_parameter,
+    flatten_to_argv,
+    is_parameter_key,
+)
 
 from gpustack.schemas.pd_modes import (
     PDMode,
@@ -31,6 +39,9 @@ from gpustack.schemas.pd_modes import (
 from gpustack.utils.template import render
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from gpustack.schemas.models import ModelBase, ModelInstance
 
 
 class PeerAddress(NamedTuple):
@@ -81,6 +92,136 @@ class RouterPeersUnavailable(Exception):
     partial one silently halves the group. PD failures are invisible from the
     outside, so degrading here would be lying.
     """
+
+
+def static_hybrid_router_variables(
+    model: "ModelBase",
+    instances: Sequence["ModelInstance"],
+    group_id: Optional[str],
+) -> Dict[str, int]:
+    """Derive the common Engine scope required by a static Mooncake router.
+
+    Args:
+        model: The original deployment specification, before role projection.
+        instances: Current deployment instances, including their allocated tasks.
+        group_id: The Router's communication group.
+
+    Returns:
+        Transient rendering variables for a managed Hybrid Mooncake Router.
+    """
+    from gpustack.schemas.models import (
+        find_role,
+        role_effective_model,
+    )
+    from gpustack.utils.model_instance_workers import (
+        get_model_instance_workloads,
+        model_instance_endpoints,
+    )
+
+    disaggregation = getattr(model, "disaggregation", None)
+    if disaggregation is None or disaggregation.mode.value != "vllm-mooncake":
+        return {}
+    router = find_role(model, "router")
+    if router is not None and router.run_command:
+        return {}
+    endpoints = [
+        (instance, endpoint)
+        for instance in instances
+        if instance.group_id == group_id
+        and instance.role in ("prefill", "decode")
+        and getattr(instance, "deleted_at", None) is None
+        for endpoint in model_instance_endpoints(instance)
+    ]
+    if not any(endpoint.component == "vllm_hybrid" for _, endpoint in endpoints):
+        return {}
+    sizes = set()
+    for instance, endpoint in endpoints:
+        if endpoint.component == "vllm_hybrid":
+            task = next(
+                (
+                    task
+                    for task in get_model_instance_workloads(instance) or []
+                    if task.worker_id == endpoint.worker_id
+                ),
+                None,
+            )
+            if task is None:
+                raise ValueError(
+                    f"Hybrid endpoint for instance {instance.id} on "
+                    f"Worker {endpoint.worker_id} has no matching workload."
+                )
+            sizes.add(task.component.dp_size)
+        elif endpoint.dp_rank is not None:
+            sizes.add(1)
+        else:
+            effective = role_effective_model(model, instance.role)
+            sizes.add(_internal_api_dp_size(effective, instance))
+    if len(sizes) != 1:
+        raise ValueError(
+            "CUDA Mooncake shared APIs must have the same local DP size; "
+            "the static router has only one --intra-node-data-parallel-size."
+        )
+    return {"intra_node_data_parallel_size": sizes.pop()}
+
+
+def _internal_api_dp_size(model, instance) -> int:
+    """An Internal API addresses the full DP group, including remote Engines."""
+    parameters = model.backend_parameters
+    names = ["data-parallel-size", "dp"]
+    raw = find_last_parameter(parameters, names)
+    if raw is not None:
+        value = find_last_int_parameter(parameters, names)
+        if value is not None and value > 0:
+            return value
+        raise ValueError("Cannot determine the Internal API data parallel size.")
+    from gpustack.utils.vllm_topology import (
+        parse_user_parallelism,
+        validate_multinode_topology,
+    )
+
+    servers = instance.distributed_servers
+    members = [instance] + list(servers.subordinate_workers or [] if servers else [])
+    counts = [len(member.gpu_indexes or []) for member in members]
+    return validate_multinode_topology(counts, parse_user_parallelism(parameters)).dp
+
+
+def _static_hybrid_router_parameters(parameters, expected: int) -> List[str]:
+    """Keep one platform-rendered DP flag while retaining other user options."""
+    flag = "--intra-node-data-parallel-size"
+    tokens = flatten_to_argv(parameters)
+    result, overrides = [], []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        name, separator, value = token.partition("=")
+        # Both supported wheels use argparse's unambiguous long-option prefixes.
+        if len(name) > 2 and name.startswith("--") and flag.startswith(name):
+            if not separator:
+                index += 1
+                value = tokens[index] if index < len(tokens) else ""
+            try:
+                overrides.append(int(value))
+            except ValueError as exc:
+                raise ValueError(f"{flag} requires an integer value.") from exc
+        else:
+            result.append(token)
+        index += 1
+    if overrides and overrides[-1] != expected:
+        raise ValueError(f"{flag} must match the shared API local DP {expected}.")
+    if not overrides:
+        return list(parameters or [])
+    # These fragments are parsed again when the Custom backend builds its argv.
+    # Quote values inside their option rather than storing unquoted argv tokens.
+    fragments = []
+    for token in result:
+        key, separator, value = token.partition('=')
+        if is_parameter_key(key):
+            fragments.append(f'{key}={shlex.quote(value)}' if separator else key)
+        elif fragments and is_parameter_key(fragments[-1]):
+            fragments[-1] += ' ' + shlex.quote(token)
+        else:
+            fragments.append(token)
+    return fragments
 
 
 def _peer_scope(peer: PeerAddress) -> Dict[str, object]:
@@ -165,6 +306,13 @@ def render_router(
     command = [
         render(part, variables, context="router command") for part in router.command
     ]
+    if mode.name == "vllm-mooncake" and "intra_node_data_parallel_size" in variables:
+        command.extend(
+            [
+                "--intra-node-data-parallel-size",
+                str(variables["intra_node_data_parallel_size"]),
+            ]
+        )
 
     # Peer flags go after the declared command rather than interleaved: the
     # catalog's command is the invariant part of the invocation and the peer
@@ -331,6 +479,16 @@ def apply_managed_router(
 
     disaggregation = model.disaggregation
     mode_name = disaggregation.mode.value
+    role = find_role(model, role_name)
+    declared = role.backend_parameters if role else None
+    if (
+        mode_name == "vllm-mooncake"
+        and not (role and role.run_command)
+        and "intra_node_data_parallel_size" in variables
+    ):
+        declared = _static_hybrid_router_parameters(
+            declared, variables["intra_node_data_parallel_size"]
+        )
     plan = render_router(get_pd_mode(mode_name), variables, peers)
     if plan is None:
         return projected
@@ -346,7 +504,6 @@ def apply_managed_router(
     #                 engine's runner image
     #   both          the router is entirely theirs, and `is_managed_router`
     #                 has already returned False, so this is not reached
-    role = find_role(model, role_name)
     if not (role and role.image_name):
         projected.image_name = plan.image
     if not (role and role.run_command):
@@ -371,7 +528,6 @@ def apply_managed_router(
     # platform renders from placement facts are refused at admission instead,
     # because `--prefill` and `--decode` are `action="append"` there and a
     # second one adds a phantom peer rather than replacing the injected one.
-    declared = role.backend_parameters if role else None
     projected.backend_parameters = list(declared) if declared is not None else []
 
     # Environment goes the other way round from image and command: the

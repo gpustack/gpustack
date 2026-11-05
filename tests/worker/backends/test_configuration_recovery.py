@@ -30,7 +30,9 @@ def test_backend_configuration_read_respects_group_recreation(
     client.models.get.return_value = model
     server = SimpleNamespace(
         _clientset=client,
-        _model_instance=SimpleNamespace(model_id=1, role=role, group_id=group_id),
+        _model_instance=SimpleNamespace(
+            model_id=1, role=role, group_id=group_id, distributed_servers=None
+        ),
         _config=SimpleNamespace(data_dir="/tmp"),
     )
 

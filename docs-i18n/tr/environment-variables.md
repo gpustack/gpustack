@@ -223,6 +223,7 @@ Bu ağırlıklar ve pencereler, önceden doldurma-kod çözme ayrıştırılmı�
 | `GPUSTACK_MODEL_VRAM_CLAIM`                               | Kapasite planlama için zamanlayıcı tarafından kullanılan, model için kullanıcı tarafından beyan edilen VRAM gereksinimi (Bayt cinsinden). | (boş) | Modeli |
 | `GPUSTACK_APPLY_QWEN3_RERANKER_TEMPLATES`                 | Qwen3 yeniden sıralama şablonlarını istek gövdesine uygulayın. https://huggingface.co/Qwen/Qwen3-Reranker-0.6B.'deki talimatlara bakın | (boş) | Modeli |
 | `GPUSTACK_SKIP_MODEL_EVALUATION`                          | Dağıtım sırasında model değerlendirme veya doğrulama adımını atlar. | (boş) | Modeli |
+| `GPUSTACK_MANUAL_DP` | GPUStack 2.3.1 sonrasında eklendi. Yeni vLLM MP sürümlerinde ayrı dağıtımlar üzerinden manuel DP yöntemini korumak için `1` olarak ayarlayın. | `0` | Modeli |
 | `GPUSTACK_SKIP_GPU_COUNT_CHECK`                           | Manuel olarak seçilen GPU sayısının paralellik dünya boyutuna (tp×pp×dp) eşit olması gerektiği doğrulamasını atlar. Yalnızca GPU'lar manuel olarak seçildiğinde etkili olur; otomatik planlama hiçbir zaman etkilenmez. Paralellik parametrelerinin kasıtlı olarak seçilen GPU sayısından farklı olduğu manuel tek düğümlü dağıtımlar için kullanın. | (boş) | Modeli |
 | `GPUSTACK_DISABLE_METRICS`                                | Model için metrik açığa çıkarmayı ve toplamayı devre dışı bırakır. | (boş) | Modeli |
 | `GPUSTACK_MODEL_HEALTH_CHECK_PATH`                        | Modelin sunduğu HTTP durum denetimi yolunu belirtir. | (boş) | Modeli |

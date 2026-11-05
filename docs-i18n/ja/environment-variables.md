@@ -241,6 +241,7 @@ TLS バージョンの設定は `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` で
 | `GPUSTACK_MODEL_VRAM_CLAIM`                               | ユーザーが申告するモデルの VRAM 要件（バイト）。スケジューラーの容量計画に使用します。 | （空） | モデル |
 | `GPUSTACK_APPLY_QWEN3_RERANKER_TEMPLATES`                 | リクエスト本文に Qwen3 リランカーのテンプレートを適用します。https://huggingface.co/Qwen/Qwen3-Reranker-0.6B の手順を参照。 | （空） | モデル |
 | `GPUSTACK_SKIP_MODEL_EVALUATION`                          | デプロイ時のモデル評価または検証を省略します。 | （空） | モデル |
+| `GPUSTACK_MANUAL_DP` | GPUStack 2.3.1 より後に追加。`1` に設定すると、新しい vLLM MP バージョンでも複数の独立したデプロイメントで DP を手動構成できます。 | `0` | モデル |
 | `GPUSTACK_SKIP_GPU_COUNT_CHECK`                           | 手動選択した GPU 数と並列処理の world size（tp×pp×dp）の一致チェックを省略します。GPU を手動選択した場合のみ有効で、自動スケジューリングには影響しません。並列パラメーターと選択 GPU 数を意図的に変える単一ノードの手動デプロイに使用します。 | （空） | モデル |
 | `GPUSTACK_DISABLE_METRICS`                                | モデルのメトリクス公開と収集を無効化。 | （空） | モデル |
 | `GPUSTACK_MODEL_HEALTH_CHECK_PATH`                        | モデルが公開する HTTP ヘルスチェックパスを指定。 | （空） | モデル |

@@ -8,6 +8,8 @@ from packaging.specifiers import SpecifierSet
 
 from gpustack_runtime.deployer import (
     Container,
+    ContainerPort,
+    ContainerResources,
     ContainerEnv,
     ContainerExecution,
     ContainerProfileEnum,
@@ -23,6 +25,12 @@ from gpustack.schemas.models import (
     BackendEnum,
     LoraListEntry,
     ModelInstance,
+    Model,
+    ModelInstanceComponent,
+    ModelInstanceWorkload,
+    ModelInstanceWorkloadStateEnum,
+    ROUTER_DEFAULT_CPU,
+    ROUTER_DEFAULT_MEMORY,
     SpeculativeAlgorithmEnum,
     CategoryEnum,
     ModelInstanceDeploymentMetadata,
@@ -30,6 +38,7 @@ from gpustack.schemas.models import (
 from gpustack.utils.command import (
     find_bool_parameter,
     find_parameter,
+    find_last_parameter,
     extend_args_no_exist,
     format_backend_parameters,
 )
@@ -41,6 +50,101 @@ from gpustack.worker.backends.base import (
     is_ascend_310p,
     read_lora_max_rank,
 )
+
+from gpustack.utils.model_instance_workers import (
+    get_model_instance_workloads,
+    sglang_policy_parameters,
+    sglang_smg_mode,
+    sglang_parallelism,
+    validate_sglang_dpa_version,
+    sglang_component_port_requests,
+)
+
+
+def sglang_component_connecting_port_count(
+    model: Model, instance: ModelInstance
+) -> int:
+    """Reserve the Python single-node DP-attention TCP listeners together."""
+    if get_model_instance_workloads(instance) is None:
+        return 1
+    allocation = [len(instance.gpu_indexes or [])] + [
+        len(worker.gpu_indexes or [])
+        for worker in instance.distributed_servers.subordinate_workers or []
+    ]
+    return dict(sglang_component_port_requests(model, allocation))["_sglang_connecting"]
+
+
+def split_sglang_smg_parameters(
+    parameters: Optional[List[str]],
+    dependencies: Optional[Dict[str, str]],
+    *,
+    tokenized: bool = False,
+) -> Tuple[List[str], str]:
+    """Use only the policy capabilities of the selected Engine image's SMG wheel."""
+    if not dependencies or dependencies.get("sglang-router") != "0.3.2":
+        raise ValueError(
+            "SGLang SMG requires trusted sglang-router 0.3.2 image metadata"
+        )
+    engine, policy, _ = sglang_policy_parameters(parameters, tokenized=tokenized)
+    return engine, policy
+
+
+def build_sglang_smg_workload(
+    name: str,
+    image: str,
+    policy: str,
+    component: ModelInstanceComponent,
+    worker_ip: str,
+    engine_url: str,
+) -> WorkloadPlan:
+    """Build a CPU SMG plan without preparing Engine files, devices or commands."""
+    resources = ContainerResources()
+    resources["cpu"], resources["memory"] = (
+        ROUTER_DEFAULT_CPU,
+        ROUTER_DEFAULT_MEMORY,
+    )
+    return WorkloadPlan(
+        name=name,
+        host_network=True,
+        host_ipc=False,
+        containers=[
+            Container(
+                name="default",
+                image=image,
+                profile=ContainerProfileEnum.RUN,
+                restart_policy=ContainerRestartPolicyEnum.NEVER,
+                execution=ContainerExecution(
+                    command=["python3", "-m", "sglang_router.launch_router"],
+                    args=[
+                        "--host",
+                        worker_ip,
+                        "--port",
+                        str(component.api_port),
+                        "--worker-urls",
+                        engine_url,
+                        "--dp-aware",
+                        "--policy",
+                        policy,
+                        "--prometheus-host",
+                        worker_ip,
+                        "--prometheus-port",
+                        str(component.metrics_port),
+                    ],
+                ),
+                envs=[
+                    ContainerEnv(name="TORCH_DEVICE_BACKEND_AUTOLOAD", value="0"),
+                    ContainerEnv(name="ASCEND_VISIBLE_DEVICES", value="void"),
+                    ContainerEnv(name="NVIDIA_VISIBLE_DEVICES", value="void"),
+                ],
+                resources=resources,
+                ports=[
+                    ContainerPort(internal=component.api_port),
+                    ContainerPort(internal=component.metrics_port),
+                ],
+            )
+        ],
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +165,7 @@ def extend_sglang_mounted_lora_arguments(
         return
     if find_parameter(backend_parameters or [], ["lora-paths", "lora_paths"]):
         return
-    if find_parameter(arguments, ["lora-paths", "lora_paths"]):
+    if find_parameter(arguments, ["lora-paths", "lora_paths"], tokenized=True):
         return
 
     modules: List[Tuple[str, str]] = []
@@ -108,11 +212,50 @@ class SGLangServer(InferenceServer):
         except Exception as e:
             self._handle_error(e)
 
+    def _handle_error(self, error: Exception):
+        if get_model_instance_workloads(self._model_instance) is not None:
+            try:
+                current = self._clientset.model_instances.get(
+                    id=self._model_instance.id, use_cache=False
+                )
+            except Exception:
+                # The parent reconciles preparation failure from authority;
+                # an uncertain child cannot invalidate a registered Engine.
+                raise error
+            engines = [
+                w
+                for w in get_model_instance_workloads(current, self._worker.id) or []
+                if w.component is not None and w.component.kind == 'sglang_engine'
+            ]
+            if (
+                (current.restart_count or 0)
+                != (self._model_instance.restart_count or 0)
+                or current.draining_since is not None
+                or engines
+            ):
+                logger.warning(
+                    'Component preparation ended after Engine handoff: %s', error
+                )
+                raise error
+        return super()._handle_error(error)
+
     def _start(self):
         kind = "Diffusion " if self.is_diffusion else ""
         logger.info(
             f"Starting SGLang {kind}model instance: {self._model_instance.name}"
         )
+
+        managed = get_model_instance_workloads(self._model_instance) is not None
+        if managed and not sglang_smg_mode(self._model):
+            raise ValueError(
+                "Managed components require ordinary multi-rank SGLang DP/DPA"
+            )
+        if not managed and self._model.disaggregation is None:
+            _, _, policy_requested = sglang_policy_parameters(
+                self._model.backend_parameters
+            )
+            if policy_requested:
+                raise ValueError("--policy requires a managed paired SMG component")
 
         deployment_metadata = self._get_deployment_metadata()
 
@@ -126,6 +269,14 @@ class SGLangServer(InferenceServer):
         image = self._get_configured_image()
         if not image:
             raise ValueError("Can't find compatible SGLang image")
+
+        validate_sglang_dpa_version(self._model)
+
+        if managed:
+            self._smg_image_dependencies = dict(self._resolved_image_dependencies or {})
+            split_sglang_smg_parameters(
+                self._model.backend_parameters, self._smg_image_dependencies
+            )
 
         command = ["sglang", "serve"]
         if self.inference_backend:
@@ -250,9 +401,95 @@ class SGLangServer(InferenceServer):
             run_as_user=container_config.user,
             run_as_group=container_config.group,
         )
-        create_workload(self._transform_workload_plan(workload_plan))
+        if get_model_instance_workloads(self._model_instance) is not None:
+            self._prepare_component_workloads(workload_plan, image)
+        else:
+            create_workload(self._transform_workload_plan(workload_plan))
 
-        logger.info(f"Created SGLang container workload: {deployment_metadata.name}")
+        logger.info(f"Prepared SGLang container workload: {deployment_metadata.name}")
+
+    def _prepare_component_workloads(
+        self, engine_plan: WorkloadPlan, image: str
+    ) -> None:
+        """Return the complete local task set without creating runtime objects."""
+        if not sglang_smg_mode(self._model):
+            raise ValueError(
+                "Managed components require ordinary multi-rank SGLang DP/DPA"
+            )
+        callback = getattr(self, "_workload_plan_callback", None)
+        if not callable(callback):
+            raise ValueError("Managed SGLang requires the parent preparation channel")
+        _, policy = split_sglang_smg_parameters(
+            self._model.backend_parameters, self._smg_image_dependencies
+        )
+        mi, worker = self._model_instance, self._worker
+        primary = mi.worker_id == worker.id
+        dp_size, _, _ = sglang_parallelism(self._model.backend_parameters)
+        bands = mi.named_ports or {}
+        required = (
+            "_sglang_engine_api",
+            "_sglang_connecting",
+            "_sglang_smg_api",
+            "_sglang_smg_metrics",
+        )
+        if any(name not in bands for name in required):
+            raise ValueError("SGLang component ports have not been reserved")
+        container = engine_plan.containers[0]
+        if mi.port != bands["_sglang_engine_api"].base or any(
+            bands[name].base not in (mi.ports or []) for name in required
+        ):
+            raise ValueError(
+                "SGLang component ports do not match the published allocation"
+            )
+        container.ports = [
+            ContainerPort(internal=port)
+            for name in (required[:2] if primary else required[1:2])
+            for port in range(bands[name].base, bands[name].base + bands[name].count)
+        ]
+        manifests = [
+            ModelInstanceWorkload(
+                name=engine_plan.name,
+                worker_id=worker.id,
+                state=ModelInstanceWorkloadStateEnum.PENDING,
+                component=ModelInstanceComponent(
+                    kind="sglang_engine",
+                    api_port=mi.port if primary else None,
+                    dp_size=dp_size if primary else None,
+                    image=image,
+                    router_version=self._smg_image_dependencies["sglang-router"],
+                ),
+            )
+        ]
+        plans = [self._transform_workload_plan(engine_plan)]
+        if primary:
+            component = ModelInstanceComponent(
+                kind="sglang_smg",
+                api_port=bands["_sglang_smg_api"].base,
+                metrics_port=bands["_sglang_smg_metrics"].base,
+            )
+            name = f"{mi.name}-r{mi.restart_count or 0}-smg-a0"
+            smg = self._smg_workload_plan(name, image, policy, component)
+            manifests.append(
+                ModelInstanceWorkload(
+                    name=name,
+                    worker_id=worker.id,
+                    state=ModelInstanceWorkloadStateEnum.PENDING,
+                    component=component,
+                )
+            )
+            plans.append(self._transform_workload_plan(smg, accelerator_free=True))
+        callback(manifests, plans)
+
+    def _smg_workload_plan(self, name, image, policy, component) -> WorkloadPlan:
+        """Build an independent CPU-only router using the selected Engine image."""
+        return build_sglang_smg_workload(
+            name,
+            image,
+            policy,
+            component,
+            self._worker.ip,
+            f"http://{self._model_instance.worker_ip}:{self._model_instance.port}",
+        )
 
     def _get_configured_env(self, is_distributed: bool) -> Dict[str, str]:
         """
@@ -410,7 +647,11 @@ class SGLangServer(InferenceServer):
         arguments.extend(speculative_config_arguments)
 
         # Add multi-node deployment parameters if needed
-        if is_distributed:
+        if (
+            is_distributed
+            or sglang_component_connecting_port_count(self._model, self._model_instance)
+            > 1
+        ):
             multinode_arguments = self._get_multinode_arguments(
                 is_distributed_leader=is_distributed_leader
             )
@@ -462,6 +703,13 @@ class SGLangServer(InferenceServer):
 
         # Add user-defined backend parameters
         user_backend_parameters = self._flatten_backend_param()
+        if get_model_instance_workloads(self._model_instance) is not None:
+            user_backend_parameters, _ = split_sglang_smg_parameters(
+                user_backend_parameters, self._smg_image_dependencies, tokenized=True
+            )
+            self._validate_managed_engine_parameters(
+                user_backend_parameters, is_distributed, is_distributed_leader, port
+            )
         arguments.extend(user_backend_parameters)
 
         # Match the served model name to the deployment name used in API requests.
@@ -477,6 +725,28 @@ class SGLangServer(InferenceServer):
         )
 
         return arguments, injected
+
+    def _validate_managed_engine_parameters(
+        self, parameters, distributed, leader, port
+    ):
+        """User flags cannot redirect the Engine away from its reserved addresses."""
+        expected = {"host": self._worker.ip, "port": str(port)}
+        if (
+            distributed
+            or sglang_component_connecting_port_count(self._model, self._model_instance)
+            > 1
+        ):
+            native = self._get_multinode_arguments(leader)
+            for key in ("nnodes", "node-rank", "dist-init-addr", "nccl-port"):
+                value = find_last_parameter(native, [key], tokenized=True)
+                if value is not None:
+                    expected[key] = value
+        for key, value in expected.items():
+            supplied = find_last_parameter(parameters, [key], tokenized=True)
+            if supplied is not None and supplied != value:
+                raise ValueError(
+                    f"Managed SGLang --{key} conflicts with its reserved allocation"
+                )
 
     def _build_command_args_for_diffusion(
         self, port: int, entrypoint: Optional[List[str]] = None
@@ -593,6 +863,23 @@ class SGLangServer(InferenceServer):
         Get multi-node deployment arguments for SGLang.
         """
         arguments = []
+
+        count = sglang_component_connecting_port_count(
+            self._model, self._model_instance
+        )
+        if count > 1:
+            band = (self._model_instance.named_ports or {}).get("_sglang_connecting")
+            if band is None or band.count < count:
+                raise ValueError(
+                    "Managed SGLang DPA requires a reserved internal port band; "
+                    "recreate the instance to allocate it"
+                )
+            return [
+                "--dist-init-addr",
+                f"127.0.0.1:{band.base}",
+                "--nccl-port",
+                str(band.base + 7),
+            ]
 
         # Check if this is a multi-node deployment
         if not (
@@ -792,7 +1079,7 @@ def get_auto_parallelism_arguments(
 
     if is_distributed:
         # distributed across multiple workers
-        (tp, pp) = cal_distributed_parallelism_arguments(model_instance)
+        tp, pp = cal_distributed_parallelism_arguments(model_instance)
         return [
             "--tp-size",
             str(tp),

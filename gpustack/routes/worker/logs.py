@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import threading
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,8 @@ from gpustack.worker.logs import (
     line_window_generator,
     log_generator,
     plan_line_window,
+    plan_source_window,
+    source_window_generator,
     tail_log_generator,
 )
 from gpustack.worker.log_sources import (
@@ -32,6 +35,8 @@ from gpustack.worker.log_sources import (
     instance_log_files,
     monitor_container_content,
     resolve_restart_count,
+    list_log_sources,
+    resolve_log_source,
     select_log_files,
     stream_log_files,
 )
@@ -416,20 +421,63 @@ async def combined_log_generator(
         raise NotFoundException(message="Log file not found")
 
 
+def _source_restart_start_times(sources):
+    started = {}
+    for source in sources:
+        restart = source.descriptor.restart_count
+        for path in source.paths:
+            try:
+                timestamp = _path_started_at_utc(path)
+            except OSError:
+                continue
+            started[restart] = min(started.get(restart, timestamp), timestamp)
+    return started
+
+
 @router.get("/serveLogOptions/{id}", response_model=ServeLogOptionsResponse)
-async def get_serve_log_options(request: Request, id: int):
+async def get_serve_log_options(
+    request: Request, id: int, current_restart_count: Optional[int] = None
+):
     """List restart_count values for which main serve log files exist locally."""
     log_dir = request.app.state.config.log_dir
     serve_log_dir = Path(log_dir) / "serve"
-    # One walk for both: the restarts and the streams each one has.
-    entries = await asyncio.to_thread(instance_log_files, serve_log_dir, id)
-    files = select_log_files(entries)
-    container_names_by_restart = group_container_names_by_restart(entries)
-
-    restarts = await asyncio.to_thread(
-        restart_entries_from_main_log_files, files, container_names_by_restart
-    )
-
+    if current_restart_count is not None:
+        worker_id = request.app.state.serve_manager._worker_id
+        sources = await asyncio.to_thread(
+            list_log_sources, serve_log_dir, id, worker_id, current_restart_count
+        )
+        started_by_restart = await asyncio.to_thread(
+            _source_restart_start_times, sources
+        )
+        restarts = []
+        for previous in (False, True):
+            selected = [
+                source.descriptor
+                for source in sources
+                if source.descriptor.previous == previous
+            ]
+            if selected:
+                restarts.append(
+                    ModelInstanceLogRestartEntry(
+                        previous=previous,
+                        started_at=started_by_restart.get(
+                            current_restart_count - int(previous)
+                        ),
+                        sources=selected,
+                        containers=list(
+                            dict.fromkeys(
+                                s.container_name for s in selected if s.container_name
+                            )
+                        ),
+                    )
+                )
+    else:
+        entries = await asyncio.to_thread(instance_log_files, serve_log_dir, id)
+        files = select_log_files(entries)
+        container_names_by_restart = group_container_names_by_restart(entries)
+        restarts = await asyncio.to_thread(
+            restart_entries_from_main_log_files, files, container_names_by_restart
+        )
     return ServeLogOptionsResponse(restarts=restarts)
 
 
@@ -441,10 +489,33 @@ async def get_serve_logs(
     model_instance_name: str = Query(default=""),
     model_file_id: Optional[int] = Query(default=None),
     container_name: Optional[str] = Query(default=None),
+    source: Optional[str] = None,
+    current_restart_count: Optional[int] = None,
 ):
     log_dir = request.app.state.config.log_dir
     serve_log_dir = Path(log_dir) / "serve"
 
+    if source is not None:
+        if current_restart_count is None:
+            raise BadRequestException(message="source requires current_restart_count")
+        if container_name or log_options.previous:
+            raise BadRequestException(
+                message="A source cannot be combined with container or previous"
+            )
+        return await _serve_source(
+            request,
+            serve_log_dir,
+            id,
+            source,
+            current_restart_count,
+            log_options,
+            model_file_id,
+        )
+    if (
+        log_options.previous
+        and await resolve_restart_count(serve_log_dir, id, True) is None
+    ):
+        raise NotFoundException(message="Previous logs are unavailable")
     download_log_path = ""
     # Use model file ID for shared download logs if provided
     if model_file_id is not None:
@@ -512,7 +583,10 @@ async def serve_log_line_range(
             paths.insert(0, download)
 
     window = await asyncio.to_thread(
-        plan_line_window, paths, options.offset, options.limit
+        plan_line_window,
+        paths,
+        options.offset,
+        options.limit,
     )
     headers = {
         "X-Log-Offset": str(window.offset),
@@ -564,4 +638,66 @@ async def get_benchmark_logs(
     return StreamingResponse(
         log_generator(str(benchmark_log_path), log_options),
         media_type="application/octet-stream",
+    )
+
+
+async def _serve_source(
+    request, directory, instance_id, selector, restart, options, model_file_id=None
+):
+    """Resolve the same source for window planning, streaming and downloads."""
+    worker_id = request.app.state.serve_manager._worker_id
+
+    def refresh():
+        resolved = resolve_log_source(
+            directory, instance_id, worker_id, restart, selector
+        )
+        if (
+            resolved.descriptor.kind == 'preparation'
+            and not resolved.descriptor.previous
+            and isinstance(model_file_id, int)
+        ):
+            download = directory / f'model_file_{model_file_id}.download.log'
+            if download.is_file():
+                resolved.paths.insert(0, download)
+        return resolved
+
+    try:
+        resolved = await asyncio.to_thread(refresh)
+    except ValueError as exc:
+        raise NotFoundException(message="Log source is unavailable") from exc
+    if options.offset is not None and (options.follow or options.tail > 0):
+        raise BadRequestException(
+            message="offset cannot be combined with tail or follow"
+        )
+    cancelled = threading.Event()
+    try:
+        window = await asyncio.to_thread(
+            plan_source_window,
+            resolved,
+            options.offset or 0,
+            options.limit if options.offset is not None else 2**63 - 1,
+            max(0, options.tail),
+            cancelled,
+        )
+    except OSError as exc:
+        cancelled.set()
+        raise NotFoundException(
+            message="Log source expired while reading; refresh and retry"
+        ) from exc
+    except BaseException:
+        cancelled.set()
+        raise
+    headers = {
+        "X-Log-Offset": str(window.offset),
+        "X-Log-Line-Count": str(
+            min(max(0, window.total_lines - window.offset), window.limit)
+        ),
+        "X-Log-Total-Lines": str(window.total_lines),
+    }
+    if window.offset == 0 and window.limit >= window.total_lines:
+        headers["X-Log-Total-Bytes"] = str(window.byte_count)
+    return StreamingResponse(
+        source_window_generator(window, options, refresh),
+        media_type="application/octet-stream",
+        headers=headers,
     )

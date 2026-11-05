@@ -2356,6 +2356,7 @@ def test_a_renamed_instance_starts_in_its_renamed_log_directory(
     _write_restart_logs(serve_dir, "old-name", 1, 0, "main.log")
     model_instance = new_model_instance(1, "new-name", 1, worker_id=1)
     model_instance.restart_count = 1
+    _clients.model_instances.get.return_value = model_instance
 
     with (
         patch.object(manager, "_is_provisioning", return_value=False),
@@ -3905,3 +3906,1333 @@ def test_decision_models_skip_the_inference_probe():
 
     model = Model(id=1, name="laya", categories=["decision"])
     assert _get_inference_endpoint_and_payload(model) is None
+
+
+@pytest.fixture
+def rank_health(monkeypatch):
+    from concurrent.futures import Future
+    from gpustack.schemas.models import ModelInstanceWorkload
+    from tests.utils.model import new_model_instance_workload
+
+    manager, client = _build_serve_manager(worker_id=2)
+    mi = new_model_instance(
+        7, 'external', 1, worker_id=1, state=ModelInstanceStateEnum.STARTING
+    )
+    mi.worker_ip = '10.0.0.1'
+    mi.source = SourceEnum.LOCAL_PATH
+    mi.local_path = '/model'
+    mi.restart_count = 3
+    mi.distributed_servers = DistributedServers(
+        subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
+        workloads=[
+            ModelInstanceWorkload.model_validate(
+                new_model_instance_workload(
+                    worker_id=2,
+                    dp_rank=rank,
+                    name=f'local-{rank}',
+                    state='running',
+                    dp_rank_placements=[
+                        dict(
+                            dp_rank=rank,
+                            node_rank=0,
+                            gpu_indexes=[rank],
+                            api_port=41000 + rank,
+                            ready=False,
+                        )
+                    ],
+                )
+            )
+            for rank in range(2)
+        ],
+    )
+    model = new_model(
+        1,
+        'external',
+        huggingface_repo_id='org/moe',
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--data-parallel-external-lb'],
+    )
+    state = SimpleNamespace(
+        manager=manager,
+        client=client,
+        mi=mi,
+        model=model,
+        jobs=[],
+        now=1000.0,
+        reports=[],
+    )
+    manager._hold_managed_instance(mi)
+    manager._model_cache_by_instance[mi.id] = model
+    client.model_instances.get.side_effect = lambda **kw: state.mi.model_copy(deep=True)
+    client.workers.get.return_value = SimpleNamespace(ip='10.0.0.2')
+    manager._get_health_check_path = MagicMock(return_value=None)
+    manager._stop_model_instance = MagicMock()
+
+    def report(*, id, report):
+        model_update = report
+        state.reports.append(model_update)
+        from gpustack.routes.model_instances import _apply_workload_observations
+        from gpustack.schemas.models import ModelInstanceWorkload
+        from gpustack.utils.model_instance_workers import get_model_instance_workloads
+
+        local = get_model_instance_workloads(state.mi, manager._worker_id)
+        if model_update.workloads is not None:
+            local = [
+                ModelInstanceWorkload.model_validate(w.model_dump())
+                for w in model_update.workloads
+            ]
+        elif model_update.observations is not None:
+            local = _apply_workload_observations(local, model_update.observations)
+        state.mi.distributed_servers.workloads = local
+        state.mi.distributed_servers.orchestration_mode = (
+            "managed"
+            if state.mi.distributed_servers.workloads is not None
+            else "legacy"
+        )
+        if model_update.state is not None:
+            state.mi.state = model_update.state
+        if model_update.state_message is not None:
+            state.mi.state_message = model_update.state_message
+        return state.mi.model_copy(deep=True)
+
+    client.model_instances.report_workloads.side_effect = report
+
+    def submit(fn, *args, **kwargs):
+        future = Future()
+        state.jobs.append((future, fn, args, kwargs))
+        return future
+
+    executor = MagicMock()
+    executor.submit.side_effect = submit
+    monkeypatch.setattr(
+        'gpustack.worker.serve_manager.ThreadPoolExecutor',
+        MagicMock(return_value=executor),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        'gpustack.worker.serve_manager.time.monotonic', lambda: state.now
+    )
+    state.get = MagicMock(
+        return_value=SimpleNamespace(status_code=200, close=lambda: None)
+    )
+    monkeypatch.setattr('gpustack.worker.serve_manager.requests.get', state.get)
+
+    def finish():
+        jobs, state.jobs = state.jobs, []
+        for future, fn, args, kwargs in jobs:
+            if not future.cancelled():
+                future.set_result(fn(*args, **kwargs))
+
+    state.finish = finish
+    state.sync = lambda: manager._sync_managed_rank_health(state.mi)
+    return state
+
+
+def test_managed_rank_startup_targets_owner_and_every_main(rank_health):
+    s = rank_health
+    s.sync()
+    assert len(s.jobs) == 2
+    s.finish()
+    s.sync()
+    assert [call.args[0] for call in s.get.call_args_list] == [
+        'http://10.0.0.2:41000/health',
+        'http://10.0.0.2:41001/health',
+    ]
+    assert all(
+        call.kwargs == dict(timeout=1, allow_redirects=False)
+        for call in s.get.call_args_list
+    )
+    assert all(
+        p.ready
+        for w in s.mi.distributed_servers.workloads
+        for p in w.dp_rank_placements
+    )
+    assert s.mi.state == ModelInstanceStateEnum.STARTING
+
+
+def test_managed_runtime_health_requires_three_failures(rank_health):
+    s = rank_health
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    for w in s.mi.distributed_servers.workloads:
+        w.dp_rank_placements[0].ready = True
+    s.get.side_effect = lambda url, **kw: SimpleNamespace(
+        status_code=503 if ':41001/' in url else 200, close=lambda: None
+    )
+    for count in range(1, 4):
+        s.sync()
+        s.finish()
+        s.sync()
+        assert s.mi.state == (
+            ModelInstanceStateEnum.ERROR
+            if count == 3
+            else ModelInstanceStateEnum.RUNNING
+        )
+        if count < 3:
+            assert not s.mi.state_message
+            assert all(report.state_message is None for report in s.reports)
+        s.now += 10
+    assert all(call.kwargs['timeout'] == 15 for call in s.get.call_args_list)
+    assert s.mi.distributed_servers.workloads[1].state.value == 'running'
+    assert not s.mi.distributed_servers.workloads[1].dp_rank_placements[0].ready
+    assert 'dp_rank=1' in s.mi.state_message
+    assert '503' in s.mi.state_message
+
+
+@pytest.mark.parametrize('failure', [404, 302, 'timeout', 'connection'])
+def test_managed_startup_waits_without_total_timeout(rank_health, failure, caplog):
+    import requests
+
+    s = rank_health
+    caplog.set_level('DEBUG', logger='gpustack.worker.serve_manager')
+    s.model.image_name = 'custom/image'
+    if isinstance(failure, int):
+        s.get.return_value.status_code = failure
+    else:
+        s.get.side_effect = (
+            requests.Timeout if failure == 'timeout' else requests.ConnectionError
+        )
+    for _ in range(5):
+        s.sync()
+        s.finish()
+        s.sync()
+        assert s.mi.state == ModelInstanceStateEnum.STARTING
+        assert not any(
+            p.ready
+            for w in s.mi.distributed_servers.workloads
+            for p in w.dp_rank_placements
+        )
+        s.now += 86400
+    assert not s.mi.state_message
+    assert all(report.state_message is None for report in s.reports)
+    assert 'waiting for readiness' in caplog.text
+    if failure == 404:
+        assert 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in caplog.text
+    s.manager._stop_model_instance.assert_not_called()
+
+
+def test_managed_startup_success_is_not_latched(rank_health):
+    s = rank_health
+    s.sync()
+    s.finish()
+    s.sync()
+    assert s.mi.distributed_servers.workloads[0].dp_rank_placements[0].ready
+    s.get.return_value.status_code = 503
+    s.now += 3
+    s.sync()
+    s.finish()
+    s.sync()
+    assert not s.mi.distributed_servers.workloads[0].dp_rank_placements[0].ready
+    assert s.mi.state == ModelInstanceStateEnum.STARTING
+
+
+@pytest.mark.parametrize(
+    'env_path, backend_path, expected',
+    [
+        ('/custom', '/backend', '/custom'),
+        ('', '/backend', '/backend'),
+        ('', None, '/health'),
+        (None, '/backend', '/backend'),
+    ],
+)
+def test_managed_rank_path_resolves_tenant_backend(
+    rank_health, env_path, backend_path, expected
+):
+    s = rank_health
+    s.model.env = (
+        {'GPUSTACK_MODEL_HEALTH_CHECK_PATH': env_path} if env_path is not None else {}
+    )
+    s.manager._get_health_check_path.return_value = backend_path
+    s.sync()
+    s.finish()
+    s.sync()
+    assert all(call.args[0].endswith(expected) for call in s.get.call_args_list)
+    if not env_path:
+        s.manager._get_health_check_path.assert_called_with(
+            BackendEnum.VLLM, s.model.owner_principal_id
+        )
+
+
+def test_managed_optional_inference_does_not_mask_get_failures(
+    rank_health, monkeypatch
+):
+    s = rank_health
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    s.model.env = {'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED': 'true'}
+    s.manager._last_successful_inference[s.mi.id] = s.now
+    post = MagicMock(return_value=SimpleNamespace(status_code=200))
+    monkeypatch.setattr('gpustack.worker.serve_manager.requests.post', post)
+    s.get.return_value.status_code = 503
+    for _ in range(3):
+        s.sync()
+        s.finish()
+        s.sync()
+        s.now += 10
+    assert post.call_count == 2
+    assert [call.args[0] for call in post.call_args_list] == [
+        'http://10.0.0.2:41000/v1/chat/completions',
+        'http://10.0.0.2:41001/v1/chat/completions',
+    ]
+    assert all(
+        call.kwargs['timeout'] == 15 and call.kwargs['allow_redirects'] is False
+        for call in post.call_args_list
+    )
+    assert s.mi.state == ModelInstanceStateEnum.ERROR
+
+
+def test_managed_get_200_cannot_detect_stalled_inference(rank_health, monkeypatch):
+    """A responding health route is the accepted blind spot when POST is off."""
+    s = rank_health
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    post = MagicMock(return_value=SimpleNamespace(status_code=503))
+    monkeypatch.setattr('gpustack.worker.serve_manager.requests.post', post)
+    for _ in range(4):
+        s.sync()
+        s.finish()
+        s.sync()
+        s.now += 10
+    assert s.mi.state == ModelInstanceStateEnum.RUNNING
+    post.assert_not_called()
+    s.model.env = {
+        'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED': 'true',
+        'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_INTERVAL': '10',
+    }
+    for _ in range(3):
+        s.sync()
+        s.finish()
+        s.sync()
+        s.now += 10
+    assert s.mi.state == ModelInstanceStateEnum.ERROR
+    assert 'inference' in s.mi.state_message
+
+
+def test_managed_failures_reset_per_rank_and_probe_kind(rank_health, monkeypatch):
+    s = rank_health
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    s.model.env = {
+        'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED': 'true',
+        'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_INTERVAL': '10',
+    }
+    post = MagicMock(return_value=SimpleNamespace(status_code=503))
+    monkeypatch.setattr('gpustack.worker.serve_manager.requests.post', post)
+    for round_number in range(3):
+        s.get.side_effect = (
+            lambda url, round_number=round_number, **kw: SimpleNamespace(
+                status_code=503 if ':41001/' in url and round_number != 1 else 200,
+                close=lambda: None,
+            )
+        )
+        s.sync()
+        s.finish()
+        s.sync()
+        s.now += 10
+    assert s.mi.state == ModelInstanceStateEnum.ERROR
+    assert 'inference' in s.mi.state_message
+    assert '3/3' in s.mi.state_message
+
+
+@pytest.mark.parametrize('change', ['error', 'epoch', 'draining', 'removed'])
+def test_managed_late_200_is_discarded(rank_health, change):
+    s = rank_health
+    s.sync()
+    s.finish()
+    if change == 'error':
+        s.mi.state = ModelInstanceStateEnum.ERROR
+    elif change == 'epoch':
+        s.mi.restart_count += 1
+    elif change == 'draining':
+        s.mi.draining_since = datetime.now(timezone.utc)
+    else:
+        s.mi.distributed_servers.workloads = []
+        s.mi.distributed_servers.orchestration_mode = "managed"
+    s.sync()
+    assert not s.reports
+    assert not any(
+        p.ready
+        for w in s.mi.distributed_servers.workloads
+        for p in w.dp_rank_placements
+    )
+
+
+def test_managed_headless_worker_never_probes_remote_main(rank_health):
+    s = rank_health
+    for item in s.mi.distributed_servers.workloads:
+        placement = item.dp_rank_placements[0]
+        placement.node_rank, placement.api_port, placement.ready = 1, None, None
+    s.sync()
+    assert not s.jobs
+    s.get.assert_not_called()
+
+
+def test_managed_probes_are_bounded_and_do_not_wait_for_slow_rank(rank_health):
+    s = rank_health
+    for rank in range(2, 6):
+        item = s.mi.distributed_servers.workloads[0].model_copy(deep=True)
+        item.name = f'local-{rank}'
+        p = item.dp_rank_placements[0]
+        p.dp_rank, p.gpu_indexes, p.api_port = rank, [rank], 41000 + rank
+        s.mi.distributed_servers.workloads.append(item)
+    s.sync()
+    s.sync()
+    assert len(s.jobs) == 4
+    slow, *others = s.jobs
+    slow[0].set_running_or_notify_cancel()
+    s.jobs = others
+    s.finish()
+    s.sync()
+    assert len(s.jobs) == 2
+    assert s.mi.distributed_servers.workloads[1].dp_rank_placements[0].ready
+    # Runtime cleanup discards results and does not join the slow HTTP task.
+    s.manager._managed_runtime_workloads = MagicMock(return_value={})
+    assert s.manager._delete_managed_workloads(s.mi)
+    assert not s.manager._rank_health_checks
+    assert not slow[0].done()
+    slow[0].set_result((True, ''))
+    s.manager._managed_stopping[(s.mi.id, s.mi.restart_count)] = False
+    before = len(s.reports)
+    s.sync()
+    assert len(s.reports) == before
+
+
+def test_managed_report_retry_does_not_double_count(rank_health):
+    s = rank_health
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    s.get.return_value.status_code = 503
+    for _ in range(2):
+        s.sync()
+        s.finish()
+        s.sync()
+        s.now += 10
+    s.sync()
+    s.finish()
+    report = s.client.model_instances.report_workloads.side_effect
+    s.client.model_instances.report_workloads.side_effect = RuntimeError(
+        'temporarily unavailable'
+    )
+    s.sync()
+    s.sync()
+    s.client.model_instances.report_workloads.side_effect = report
+    s.sync()
+    assert s.mi.state == ModelInstanceStateEnum.ERROR
+    assert all(check.failures == 3 for check in s.manager._rank_health_checks.values())
+
+
+@pytest.mark.parametrize('running', [False, True])
+def test_managed_rank_health_uses_existing_periodic_entrypoints(rank_health, running):
+    s = rank_health
+    if running:
+        s.mi.state = ModelInstanceStateEnum.RUNNING
+        s.manager._hold_managed_instance(s.mi)
+        s.manager.sync_model_instances_inference_health()
+    else:
+        s.client.model_instances.list.return_value = SimpleNamespace(items=[s.mi])
+        s.manager._observe_managed_workloads = MagicMock(
+            side_effect=lambda mi: mi.distributed_servers.workloads
+        )
+        with patch.object(s.manager, '_is_provisioning', return_value=True):
+            s.manager.sync_model_instances_state()
+    assert len(s.jobs) == 2
+    s.finish()
+    assert all(
+        call.kwargs['timeout'] == (15 if running else 1)
+        for call in s.get.call_args_list
+    )
+
+
+@pytest.mark.parametrize('role', [None, 'prefill', 'decode'])
+@pytest.mark.parametrize('mode', ['external', 'internal', 'hybrid'])
+@pytest.mark.parametrize('backend', [BackendEnum.VLLM, 'Modular MAX'])
+def test_managed_worker_adoption_immediately_rechecks_without_restart(
+    rank_health, role, mode, backend
+):
+    s = rank_health
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    s.mi.backend = BackendEnum.VLLM
+    s.mi.role = role
+    for workload in s.mi.distributed_servers.workloads:
+        workload.dp_rank_placements[0].ready = True
+    s.model.backend_parameters = (
+        [] if mode == 'internal' else [f'--data-parallel-{mode}-lb']
+    )
+    s.model.backend = backend
+    s.manager._get_health_check_path.side_effect = lambda backend, owner: (
+        '/health' if backend == BackendEnum.VLLM else '/v1/health'
+    )
+    s.get.side_effect = lambda url, **kw: SimpleNamespace(
+        status_code=200 if url.endswith('/health') and '/v1/' not in url else 404,
+        close=lambda: None,
+    )
+    s.client.models.get.return_value = s.model
+    s.manager._model_cache_by_instance.clear()
+    s.manager._model_instance_by_instance_id.clear()
+    s.manager._observe_managed_workloads = MagicMock(
+        side_effect=lambda mi: mi.distributed_servers.workloads
+    )
+    s.manager._sync_managed_model_instance(s.mi)
+    assert len(s.jobs) == 2
+    assert s.mi.restart_count == 3
+    s.manager._stop_model_instance.assert_not_called()
+
+    for _ in range(3):
+        s.finish()
+        s.sync()
+        s.now += 10
+        s.sync()
+    assert s.mi.state == ModelInstanceStateEnum.RUNNING
+    s.manager._get_health_check_path.assert_called_with(
+        BackendEnum.VLLM, s.model.owner_principal_id
+    )
+    assert all(call.args[0].endswith('/health') for call in s.get.call_args_list)
+    s.manager._stop_model_instance.assert_not_called()
+
+    s.get.side_effect = None
+    s.get.return_value.status_code = 503
+    for _ in range(3):
+        s.finish()
+        s.sync()
+        s.now += 10
+        s.sync()
+    assert s.mi.state == ModelInstanceStateEnum.ERROR
+    assert not any(
+        p.ready
+        for w in s.mi.distributed_servers.workloads
+        for p in w.dp_rank_placements
+    )
+
+
+def test_managed_runtime_success_resets_only_its_rank(rank_health):
+    s = rank_health
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    for w in s.mi.distributed_servers.workloads:
+        w.dp_rank_placements[0].ready = True
+    for index in range(3):
+        s.get.side_effect = lambda url, index=index, **kw: SimpleNamespace(
+            status_code=200 if ':41001/' in url and index == 1 else 503,
+            close=lambda: None,
+        )
+        s.sync()
+        s.finish()
+        s.sync()
+        s.now += 10
+    assert s.mi.state == ModelInstanceStateEnum.ERROR
+    assert 'dp_rank=0' in s.mi.state_message
+    assert '3/3' in s.mi.state_message
+    assert s.mi.distributed_servers.workloads[1].dp_rank_placements[0].ready
+
+
+def test_managed_phase_change_does_not_overlap_same_rank_get(rank_health):
+    s = rank_health
+    s.sync()
+    for future, *_ in s.jobs:
+        future.set_running_or_notify_cancel()
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    s.sync()
+    assert len(s.jobs) == 2
+    s.finish()
+    s.sync()
+    assert not s.reports
+    assert len(s.jobs) == 2
+    s.finish()
+    assert [call.kwargs['timeout'] for call in s.get.call_args_list] == [1, 1, 15, 15]
+
+
+def test_managed_runtime_dispatch_rotates_between_instances(rank_health):
+    s = rank_health
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    first = s.mi.model_copy(deep=True)
+    for rank in (2, 3):
+        w = first.distributed_servers.workloads[0].model_copy(deep=True)
+        w.name = f'extra-{rank}'
+        p = w.dp_rank_placements[0]
+        p.dp_rank, p.gpu_indexes, p.api_port = rank, [rank], 41000 + rank
+        first.distributed_servers.workloads.append(w)
+    second = first.model_copy(deep=True)
+    second.id = 8
+    current = {first.id: first, second.id: second}
+    s.client.model_instances.get.side_effect = lambda **kw: current[
+        kw['id']
+    ].model_copy(deep=True)
+    s.manager._hold_managed_instance(first)
+    s.manager._hold_managed_instance(second)
+    s.manager._model_cache_by_instance[second.id] = s.model
+    s.manager.sync_model_instances_inference_health()
+    assert len(s.jobs) == 4
+    assert {args[0].id for _, _, args, _ in s.jobs} == {first.id}
+    s.finish()
+    s.now += 10
+    s.manager.sync_model_instances_inference_health()
+    assert len(s.jobs) == 4
+    assert {args[0].id for _, _, args, _ in s.jobs} == {second.id}
+
+
+def test_managed_runtime_uncertainty_does_not_erase_failures(rank_health):
+    from gpustack.schemas.models import ModelInstanceWorkloadStateEnum
+
+    s = rank_health
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    s.get.side_effect = lambda url, **kw: SimpleNamespace(
+        status_code=503 if ':41000/' in url else 200, close=lambda: None
+    )
+    for _ in range(2):
+        s.sync()
+        s.finish()
+        s.sync()
+        s.now += 10
+    workload = s.mi.distributed_servers.workloads[0]
+    workload.state = ModelInstanceWorkloadStateEnum.UNKNOWN
+    workload.dp_rank_placements[0].ready = False
+    s.sync()
+    assert (
+        next(
+            check for key, check in s.manager._rank_health_checks.items() if key[3] == 0
+        ).failures
+        == 2
+    )
+    workload.state = ModelInstanceWorkloadStateEnum.RUNNING
+    s.sync()
+    s.finish()
+    s.sync()
+    assert s.mi.state == ModelInstanceStateEnum.ERROR
+    assert '3/3' in s.mi.state_message
+
+
+@pytest.mark.parametrize('threshold', ['0', '-1'])
+def test_managed_successful_optional_probe_never_reports_failure(
+    rank_health, monkeypatch, threshold
+):
+    s = rank_health
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    s.model.env = {
+        'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED': 'true',
+        'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD': threshold,
+    }
+    monkeypatch.setattr(
+        'gpustack.worker.serve_manager.requests.post',
+        MagicMock(return_value=SimpleNamespace(status_code=200)),
+    )
+    s.sync()
+    s.finish()
+    s.sync()
+    assert s.mi.state == ModelInstanceStateEnum.RUNNING
+
+
+def test_multi_port_external_health_checks_each_child_and_excludes_supervisor(
+    rank_health,
+):
+    from gpustack.schemas.models import PortBand
+
+    s = rank_health
+    s.model.backend_parameters = ['-dpm', '--dp=2']
+    s.mi.named_ports = {'_vllm_multi_port_external_supervisor': PortBand(base=41999)}
+    s.sync()
+    assert len(s.jobs) == 2
+    s.finish()
+    s.sync()
+    assert {call.args[0] for call in s.get.call_args_list} == {
+        'http://10.0.0.2:41000/health',
+        'http://10.0.0.2:41001/health',
+    }
+    assert all(
+        p.ready
+        for w in s.mi.distributed_servers.workloads
+        for p in w.dp_rank_placements
+    )
+
+
+@pytest.mark.parametrize('role', ['prefill', 'decode'])
+def test_managed_pd_rank_health_keeps_engine_probes_get_only(rank_health, role):
+    s = rank_health
+    s.mi.role, s.mi.group_id = role, 'g1'
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    s.model.env = {'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED': 'true'}
+    s.sync()
+    assert len(s.jobs) == 2
+    assert all(args[3] == 'get' for _, _, args, _ in s.jobs)
+
+
+@pytest.fixture
+def component_health(rank_health):
+    from gpustack.schemas.models import ModelInstanceWorkload
+
+    s = rank_health
+    s.mi.worker_id = 2
+    s.mi.worker_ip = '10.0.0.2'
+    s.mi.port = 41000
+    s.mi.distributed_servers.subordinate_workers = []
+    s.mi.distributed_servers.workloads = [
+        ModelInstanceWorkload(
+            name='engine',
+            worker_id=2,
+            state='running',
+            component=dict(kind='sglang_engine', api_port=41000, dp_size=2),
+        ),
+        ModelInstanceWorkload(
+            name='smg-a0',
+            worker_id=2,
+            state='running',
+            component=dict(kind='sglang_smg', api_port=41002, metrics_port=41003),
+        ),
+    ]
+    s.mi.distributed_servers.orchestration_mode = "managed"
+    s.model.backend = BackendEnum.SGLANG
+    s.model.backend_parameters = ['--dp=2']
+    s.json = {
+        '/server_info': {'dp_size': 2},
+        '/readiness': {'status': 'ready', 'healthy_workers': 2, 'total_workers': 2},
+        '/workers': {
+            'workers': [
+                dict(
+                    url=f'http://10.0.0.2:41000@{r}',
+                    worker_type='regular',
+                    connection_mode='HTTP',
+                    is_healthy=True,
+                )
+                for r in (0, 1)
+            ],
+            'total': 2,
+        },
+    }
+
+    def get(url, **kwargs):
+        from urllib.parse import urlsplit
+
+        path = urlsplit(url).path
+        return SimpleNamespace(
+            status_code=200, json=lambda: s.json.get(path, {}), close=lambda: None
+        )
+
+    s.get.side_effect = get
+    return s
+
+
+def test_component_health_checks_engine_actual_dp_and_full_smg_discovery(
+    component_health,
+):
+    s = component_health
+    s.sync()
+    assert len(s.jobs) == 2
+    s.finish()
+    s.sync()
+    assert all(w.component.ready for w in s.mi.distributed_servers.workloads)
+    assert {call.args[0] for call in s.get.call_args_list} == {
+        'http://10.0.0.2:41000/health',
+        'http://10.0.0.2:41000/server_info',
+        'http://10.0.0.2:41002/readiness',
+        'http://10.0.0.2:41002/workers',
+    }
+
+
+@pytest.mark.parametrize(
+    'fault',
+    [
+        'missing_rank',
+        'duplicate',
+        'wrong_base',
+        'unhealthy',
+        'wrong_mode',
+        'partial',
+        'bool_size',
+    ],
+)
+def test_component_discovery_is_strict_and_startup_waits(component_health, fault):
+    s = component_health
+    workers = s.json['/workers']['workers']
+    if fault == 'missing_rank':
+        workers.pop()
+    elif fault == 'duplicate':
+        workers[1]['url'] = workers[0]['url']
+    elif fault == 'wrong_base':
+        workers[1]['url'] = 'http://other:41000@1'
+    elif fault == 'unhealthy':
+        workers[1]['is_healthy'] = False
+    elif fault == 'wrong_mode':
+        workers[1]['connection_mode'] = 'http'
+    elif fault == 'partial':
+        s.json['/readiness']['healthy_workers'] = 1
+    else:
+        s.json['/readiness']['total_workers'] = True
+    s.sync()
+    s.finish()
+    s.sync()
+    assert s.mi.distributed_servers.workloads[0].component.ready
+    assert not s.mi.distributed_servers.workloads[1].component.ready
+    assert s.mi.distributed_servers.workloads[1].state.value == 'running'
+    s.manager._stop_model_instance.assert_not_called()
+
+
+def test_component_smg_running_failure_never_sets_instance_error(component_health):
+    s = component_health
+    s.mi.state = ModelInstanceStateEnum.RUNNING
+    for w in s.mi.distributed_servers.workloads:
+        w.component.ready = True
+    s.json['/workers']['workers'][1]['is_healthy'] = False
+    for _ in range(3):
+        s.sync()
+        s.finish()
+        s.sync()
+        s.now += 11
+    smg = s.mi.distributed_servers.workloads[1]
+    assert smg.state.value == 'failed'
+    assert not smg.component.ready
+    assert s.mi.state != ModelInstanceStateEnum.ERROR
+    assert s.mi.distributed_servers.workloads[0].state.value == 'running'
+    s.manager._stop_model_instance.assert_not_called()
+
+
+@pytest.mark.parametrize('actual', [True, 0, '2', 3, None])
+def test_component_engine_actual_dp_rejects_invalid_values(component_health, actual):
+    s = component_health
+    s.json['/server_info']['dp_size'] = actual
+    s.sync()
+    s.finish()
+    s.sync()
+    assert not s.mi.distributed_servers.workloads[0].component.ready
+    assert s.mi.distributed_servers.workloads[0].state.value == 'running'
+
+
+@pytest.mark.parametrize(
+    'replica_dp, attention_dp, ready',
+    [
+        (1, 2, True),
+        (2, 1, True),
+        (2, 2, False),
+        (1, 1, False),
+        (1, True, False),
+        (1, '2', False),
+        (1, None, False),
+        (1, 0, False),
+        (1, -2, False),
+    ],
+)
+def test_component_engine_checks_all_attention_dp_routing_targets(
+    component_health, replica_dp, attention_dp, ready
+):
+    s = component_health
+    s.json['/server_info'] = {
+        'dp_size': replica_dp,
+        'attn_dp_size': attention_dp,
+    }
+    s.sync()
+    s.finish()
+    s.sync()
+    assert s.mi.distributed_servers.workloads[0].component.ready is ready
+    assert s.mi.distributed_servers.workloads[0].state.value == 'running'
+
+
+def test_component_engine_keeps_running_health_threshold_during_cpu_recovery(
+    component_health,
+):
+    s = component_health
+    s.mi.distributed_servers.workloads[0].component.ready = True
+    s.json['/server_info']['dp_size'] = 3
+    for count in range(1, 4):
+        s.sync()
+        s.finish()
+        s.sync()
+        engine = s.mi.distributed_servers.workloads[0]
+        assert (engine.state.value == 'failed') == (count == 3)
+        s.now += 11
+    assert s.mi.state == ModelInstanceStateEnum.STARTING
+    assert s.mi.distributed_servers.workloads[1].state.value == 'running'
+
+
+def test_component_old_attempt_http_success_is_discarded(component_health):
+    s = component_health
+    s.sync()
+    s.finish()
+    smg = s.mi.distributed_servers.workloads[1]
+    smg.name = 'smg-a1'
+    smg.component.attempt = 1
+    s.sync()
+    assert not smg.component.ready
+    assert not s.mi.distributed_servers.workloads[1].component.ready
+    assert s.mi.distributed_servers.workloads[0].component.ready
+    assert len(s.manager._rank_health_futures) <= 4
+
+
+def test_component_startup_accepts_engine_health_above_one_second(component_health):
+    s = component_health
+    get = s.get.side_effect
+
+    def delayed_health(url, **kwargs):
+        response = get(url, **kwargs)
+        if url.endswith('/health'):
+            s.now += 1.1
+        return response
+
+    s.get.side_effect = delayed_health
+    s.sync()
+    s.finish()
+    s.sync()
+    assert all(w.component.ready for w in s.mi.distributed_servers.workloads)
+
+
+def test_component_multiget_uses_one_absolute_timeout_budget(component_health):
+    s = component_health
+    get = s.get.side_effect
+
+    def delayed(url, **kwargs):
+        response = get(url, **kwargs)
+        s.now += 3
+        return response
+
+    s.get.side_effect = delayed
+    s.sync()
+    s.finish()
+    s.sync()
+    assert not any(w.component.ready for w in s.mi.distributed_servers.workloads)
+    assert all(call.kwargs['timeout'] <= 5 for call in s.get.call_args_list)
+    assert (
+        s.get.call_args_list[1].kwargs['timeout']
+        < s.get.call_args_list[0].kwargs['timeout']
+    )
+
+
+@pytest.mark.parametrize('status', [404, 503])
+def test_component_engine_server_info_fallback_only_on_404(component_health, status):
+    s = component_health
+    get = s.get.side_effect
+
+    def response(url, **kwargs):
+        if url.endswith('/server_info'):
+            return SimpleNamespace(status_code=status, close=lambda: None)
+        if url.endswith('/get_server_info'):
+            return SimpleNamespace(
+                status_code=200, json=lambda: {'dp_size': 2}, close=lambda: None
+            )
+        return get(url, **kwargs)
+
+    s.get.side_effect = response
+    s.sync()
+    s.finish()
+    s.sync()
+    assert s.mi.distributed_servers.workloads[0].component.ready == (status == 404)
+    assert any(
+        call.args[0].endswith('/get_server_info') for call in s.get.call_args_list
+    ) == (status == 404)
+
+
+def test_component_log_cursor_is_bound_to_runtime_lineage(tmp_path):
+    from gpustack.worker.container_logs import _LogCursor
+
+    path = str(tmp_path / 'component.sglang_smg.log')
+    old = _LogCursor(path, 'model-r3-smg-a0')
+    old.note(100)
+    old.store()
+    resumed = _LogCursor(path, 'model-r3-smg-a0')
+    resumed.load()
+    assert (resumed.epoch, resumed.count) == (100, 1)
+    replacement = _LogCursor(path, 'model-r3-smg-a1')
+    replacement.load()
+    assert replacement.epoch is None
+    assert replacement.changed_lineage
+
+
+@pytest.mark.parametrize('payload', ['null', '[]', '"broken"', '42'])
+def test_component_log_cursor_discards_non_mapping_records(tmp_path, payload):
+    from gpustack.worker.container_logs import _LogCursor
+
+    cursor = _LogCursor(str(tmp_path / 'component.log'), 'current-lineage')
+    cursor.path.write_text(payload)
+    cursor.load()
+    assert cursor.changed_lineage
+    assert cursor.epoch is None
+    assert cursor.count == 0
+
+
+def test_smg_source_metadata_is_fixed_size_across_component_attempts(tmp_path):
+    from tests.utils.model import new_model_instance
+    from gpustack.worker.log_sources import (
+        write_log_sources,
+        restart_log_dir,
+        list_log_sources,
+    )
+    from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+    import json
+
+    mi = new_model_instance(42, 'model', model_id=1, worker_id=7)
+    mi.restart_count = 3
+    for attempt in (0, 1, 99, 1):
+        mi.distributed_servers = DistributedServers(
+            workloads=[
+                ModelInstanceWorkload(
+                    name=f'model-r3-smg-a{attempt}',
+                    worker_id=7,
+                    state='running',
+                    component=dict(
+                        kind='sglang_smg',
+                        api_port=8000,
+                        metrics_port=9000,
+                        attempt=attempt,
+                    ),
+                )
+            ]
+        )
+        write_log_sources(tmp_path, mi, 7)
+    directory = restart_log_dir(tmp_path, 'model', 42, 3)
+    (directory / 'component.sglang_smg.log').write_text('smg\n')
+    metadata = json.loads((directory / 'sources.json').read_text())
+    assert len(metadata['streams']) == 2
+    assert [
+        s['active_attempt'] for s in metadata['streams'] if s['key'] == 'sglang_smg'
+    ] == [99]
+    sources = list_log_sources(tmp_path, 42, 7, 3)
+    component = next(
+        s.descriptor for s in sources if s.descriptor.component_kind == 'sglang_smg'
+    )
+    assert component.workload_name is None
+    assert component.active_attempt == 99
+    assert 'all attempts' in component.label
+
+
+def test_smg_log_switch_waits_for_old_writer_without_stopping_engine(
+    tmp_path, monkeypatch
+):
+    from gpustack.worker.serve_manager import _LogPersistence
+    from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+    from tests.utils.model import new_model_instance
+    import threading
+
+    manager, _ = _build_serve_manager(worker_id=7)
+    manager._serve_log_dir = str(tmp_path)
+    mi = new_model_instance(42, 'model', model_id=1, worker_id=7)
+    mi.restart_count = 3
+    main = MagicMock()
+    main.is_alive.return_value = True
+    persistence = _LogPersistence(threading.Event(), main, 3)
+    manager._log_persistence[42] = persistence
+    created = []
+
+    class Writer:
+        def __init__(self, **kwargs):
+            self.live = False
+            self.kwargs = kwargs
+            created.append(self)
+
+        def start(self):
+            self.live = True
+
+        def is_alive(self):
+            return self.live
+
+        def join(self, timeout):
+            pass
+
+    monkeypatch.setattr('gpustack.worker.serve_manager.threading.Thread', Writer)
+
+    def task(attempt):
+        mi.distributed_servers = DistributedServers(
+            workloads=[
+                ModelInstanceWorkload(
+                    name=f'model-r3-smg-a{attempt}',
+                    worker_id=7,
+                    state='running',
+                    component=dict(
+                        kind='sglang_smg',
+                        api_port=8000,
+                        metrics_port=9000,
+                        attempt=attempt,
+                    ),
+                )
+            ]
+        )
+
+    task(0)
+    manager._sync_component_log_persistence(mi, persistence)
+    assert len(created) == 1
+    task(1)
+    manager._sync_component_log_persistence(mi, persistence)
+    assert len(created) == 1
+    assert persistence.component_writer[2].is_set()
+    assert not persistence.stop_event.is_set()
+    created[0].live = False
+    manager._sync_component_log_persistence(mi, persistence)
+    assert len(created) == 2
+    assert len(persistence._aux_threads) == 1
+    assert created[0].kwargs['args'][1] == created[1].kwargs['args'][1]
+    assert created[1].kwargs['kwargs']['lineage'] == 'model-r3-smg-a1'
+    task(0)
+    manager._sync_component_log_persistence(mi, persistence)
+    assert len(created) == 2
+    assert not persistence.component_writer[2].is_set()
+    main.join.assert_not_called()
+
+
+def test_smg_lineage_switch_appends_a_boundary_and_replays_new_runtime_from_start(
+    tmp_path,
+):
+    import json
+
+    manager, _ = _build_serve_manager()
+    path = str(tmp_path / 'component.sglang_smg.log')
+    first = 'model-r3-smg-a0'
+    second = 'model-r3-smg-a1'
+    streams = [
+        (first, _stamped((10, 'old\n')), None, _STREAM_EPOCH + 10),
+        (second, _stamped((-10, 'new\n')), None, _STREAM_EPOCH - 10),
+        (
+            second,
+            _stamped((-10, 'new\n'), (-9, 'tail\n')),
+            _STREAM_EPOCH - 10,
+            _STREAM_EPOCH - 9,
+        ),
+    ]
+    for lineage, chunks, since, epoch in streams:
+        stopped = threading.Event()
+
+        def stream():
+            yield from chunks
+            stopped.set()
+
+        with patch(
+            'gpustack.worker.container_logs.logs_workload', return_value=stream()
+        ) as logs:
+            manager._persist_container_logs(
+                lineage, path, stopped, resume=True, lineage=lineage
+            )
+        logs.assert_called_once_with(
+            name=lineage, token=None, tail=-1, timestamps=True, since=since, follow=True
+        )
+        cursor = json.loads(Path(path + '.cursor').read_text())
+        assert cursor == dict(lineage=lineage, epoch=epoch, count=1)
+    data = Path(path).read_text()
+    assert data.startswith('old\n')
+    assert data.endswith('new\ntail\n')
+    assert data.count('[GPUStack log source]') == 1
+    assert json.loads(Path(path + '.cursor').read_text())['lineage'] == second
+    assert not list(tmp_path.glob('*a0*')) and not list(tmp_path.glob('*a1*'))
+
+
+@pytest.mark.parametrize('multi_port_external', [True, False, None])
+def test_log_launcher_comes_from_registered_generation_not_desired_model(
+    tmp_path, multi_port_external
+):
+    from gpustack.schemas.models import (
+        DistributedServers,
+        ModelInstanceWorkload,
+        PortBand,
+    )
+    from gpustack.worker.log_sources import list_log_sources
+    from tests.utils.model import new_model_instance
+
+    manager, _ = _build_serve_manager(worker_id=7)
+    manager._serve_log_dir = str(tmp_path)
+    manager._get_model = MagicMock(
+        return_value=SimpleNamespace(
+            backend_parameters=[
+                (
+                    '--data-parallel-external-lb'
+                    if multi_port_external
+                    else '--data-parallel-multi-port-external-lb'
+                )
+            ]
+        )
+    )
+    mi = new_model_instance(42, 'model', model_id=1, worker_id=7)
+    mi.restart_count = 3
+    mi.distributed_servers = DistributedServers(
+        workloads=[
+            ModelInstanceWorkload(
+                name='model',
+                worker_id=7,
+                state='running',
+                dp_rank_placements=[
+                    dict(dp_rank=0, node_rank=0, api_port=8000, gpu_indexes=[0])
+                ],
+            )
+        ]
+    )
+    if multi_port_external is True:
+        mi.named_ports = {'_vllm_multi_port_external_supervisor': PortBand(base=8100)}
+    elif multi_port_external is False:
+        mi.named_ports = {
+            name: PortBand(base=8100 + i)
+            for i, name in enumerate(
+                ('_vllm_external_api', '_vllm_external_rpc', '_vllm_mp_connecting')
+            )
+        }
+    manager._record_log_sources(mi)
+    sources = list_log_sources(tmp_path, 42, 7, 3)
+    ranks = [s for s in sources if s.descriptor.kind == 'rank']
+    if multi_port_external is None:
+        assert ranks == []
+    else:
+        assert ranks[0].descriptor.attribution == (
+            'multi_port_external_api_rank' if multi_port_external else 'supervisor_rank'
+        )
+        mi.named_ports = {}
+        manager._record_log_sources(mi)
+        retained = [
+            s
+            for s in list_log_sources(tmp_path, 42, 7, 3)
+            if s.descriptor.kind == 'rank'
+        ]
+        assert retained[0].descriptor.id == ranks[0].descriptor.id
+    manager._get_model.assert_not_called()
+
+
+def test_stopped_component_writer_cannot_append_a_new_lineage_boundary(tmp_path):
+    import threading
+
+    manager, _ = _build_serve_manager()
+    path = tmp_path / 'component.sglang_smg.log'
+    path.write_text('existing\n')
+    stopped = threading.Event()
+    stopped.set()
+    manager._persist_container_logs(
+        'model-r3-smg-a1', str(path), stopped, resume=True, lineage='model-r3-smg-a1'
+    )
+    assert path.read_text() == 'existing\n'
+
+
+def test_late_old_generation_cannot_touch_new_log_writers_or_metadata(tmp_path):
+    from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+    from gpustack.worker.log_sources import restart_log_dir
+
+    manager, _ = _build_serve_manager(worker_id=7)
+    manager._serve_log_dir = str(tmp_path)
+
+    def instance(restart, attempt):
+        mi = new_model_instance(42, 'model', model_id=1, worker_id=7)
+        mi.restart_count = restart
+        mi.distributed_servers = DistributedServers(
+            workloads=[
+                ModelInstanceWorkload(
+                    name=f'model-r{restart}-smg-a{attempt}',
+                    worker_id=7,
+                    state='running',
+                    component=dict(
+                        kind='sglang_smg',
+                        api_port=8000,
+                        metrics_port=9000,
+                        attempt=attempt,
+                    ),
+                )
+            ]
+        )
+        return mi
+
+    current = instance(4, 0)
+    main = MagicMock()
+    main.is_alive.return_value = True
+    smg = MagicMock()
+    smg.is_alive.return_value = True
+    p = _LogPersistence(threading.Event(), main, 4)
+    p.component_writer = ('model-r4-smg-a0', smg, threading.Event())
+    p.component_attempt = 0
+    manager._log_persistence[42] = p
+    manager._record_log_sources(current)
+    metadata = restart_log_dir(tmp_path, 'model', 42, 4) / 'sources.json'
+    before = metadata.read_bytes()
+    old = instance(3, 5)
+    manager._ensure_container_log_persistence(old)
+    assert not p.component_writer[2].is_set()
+    manager._sync_component_log_persistence(old, p)
+    manager._record_log_sources(old)
+    with patch.object(threading.Thread, 'start') as start:
+        manager._start_container_log_persistence(old)
+    start.assert_not_called()
+    assert manager._log_persistence[42] is p
+    assert not p.stop_event.is_set()
+    assert not p.component_writer[2].is_set()
+    main.join.assert_not_called()
+    smg.join.assert_not_called()
+    assert metadata.read_bytes() == before
+    assert not restart_log_dir(tmp_path, 'model', 42, 3).exists()
+
+
+def test_new_generation_adopts_its_own_engine_and_smg_log_writers(tmp_path):
+    from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+    from gpustack.worker.log_sources import restart_log_dir
+
+    manager, _ = _build_serve_manager(worker_id=7)
+    manager._serve_log_dir = str(tmp_path)
+    old_engine = MagicMock()
+    old_engine.is_alive.return_value = True
+    old = _LogPersistence(threading.Event(), old_engine, 3)
+    manager._log_persistence[42] = old
+    mi = new_model_instance(42, 'model', model_id=1, worker_id=7)
+    mi.restart_count = 4
+    mi.distributed_servers = DistributedServers(
+        workloads=[
+            ModelInstanceWorkload(
+                name='model-r4-smg-a0',
+                worker_id=7,
+                state='running',
+                component=dict(
+                    kind='sglang_smg', api_port=8000, metrics_port=9000, attempt=0
+                ),
+            )
+        ]
+    )
+    with patch.object(threading.Thread, 'start') as start:
+        manager._sync_component_log_persistence(mi, old)
+        start.assert_not_called()
+        assert not old.stop_event.is_set()
+        assert old.component_writer is None
+        manager._ensure_container_log_persistence(mi)
+    current = manager._log_persistence[42]
+    assert current is not old and current.restart_count == 4
+    assert current.component_attempt == 0
+    assert current.component_writer[0] == 'model-r4-smg-a0'
+    assert old.stop_event.is_set()
+    assert not current.stop_event.is_set()
+    assert start.call_count == 3
+    assert (restart_log_dir(tmp_path, 'model', 42, 4) / 'sources.json').exists()
+    assert not restart_log_dir(tmp_path, 'model', 42, 3).exists()
+
+
+@pytest.mark.parametrize('component', ['engine', 'smg'])
+@pytest.mark.parametrize('running', [False, True])
+def test_component_transient_failure_keeps_status_message_empty(
+    component_health, component, running, caplog
+):
+    import requests
+
+    s = component_health
+    caplog.set_level('DEBUG', logger='gpustack.worker.serve_manager')
+    if running:
+        s.mi.state = ModelInstanceStateEnum.RUNNING
+        for workload in s.mi.distributed_servers.workloads:
+            workload.component.ready = True
+    get = s.get.side_effect
+    port = 41000 if component == 'engine' else 41002
+
+    def fail(url, **kwargs):
+        if f':{port}/' in url:
+            raise requests.ConnectionError()
+        return get(url, **kwargs)
+
+    s.get.side_effect = fail
+    s.sync()
+    s.finish()
+    s.sync()
+    assert not s.mi.state_message
+    assert 'connection failed' in caplog.text
+    s.get.side_effect = get
+    s.now += 11
+    s.sync()
+    s.finish()
+    s.sync()
+    assert all(w.component.ready for w in s.mi.distributed_servers.workloads)
+    assert not s.mi.state_message
+
+
+def test_component_health_waits_for_main_engine_manifest(component_health, caplog):
+    state = component_health
+    original = state.mi.distributed_servers.workloads
+    state.mi.distributed_servers.workloads = [
+        w
+        for w in state.mi.distributed_servers.workloads
+        if w.component.kind != 'sglang_engine' or w.component.api_port is None
+    ]
+    state.mi.distributed_servers.orchestration_mode = "managed"
+    state.sync()
+    assert not state.jobs
+    state.get.assert_not_called()
+    assert 'Cannot check managed rank health' not in caplog.text
+    state.mi.distributed_servers.workloads = original
+    state.mi.distributed_servers.orchestration_mode = (
+        "managed" if state.mi.distributed_servers.workloads is not None else "legacy"
+    )
+    state.sync()
+    assert len(state.jobs) == 2

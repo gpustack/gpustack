@@ -669,9 +669,12 @@ async def test_log_options_denies_cross_tenant(monkeypatch):
         AsyncMock(return_value=victim),
     )
 
+    monkeypatch.setattr(
+        model_instances_route, "async_session", _async_session(MagicMock())
+    )
     with pytest.raises(NotFoundException):
         await model_instances_route.get_model_instance_log_options(
-            request=MagicMock(), session=MagicMock(), ctx=_user_ctx(), id=3
+            request=MagicMock(), ctx=_user_ctx(), id=3
         )
 
 

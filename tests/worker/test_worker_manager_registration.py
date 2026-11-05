@@ -71,3 +71,37 @@ async def test_register_worker_closes_registration_client(
 
     registration_client.create_async.assert_awaited_once()
     registration_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('worker_version', ['2.3.1', '2.3.0'])
+async def test_version_mismatch_warns_and_continues_registration(
+    monkeypatch, caplog, worker_version
+):
+    manager = worker_manager.WorkerManager.__new__(worker_manager.WorkerManager)
+    manager._cfg = SimpleNamespace(get_server_url=lambda: 'https://server.example')
+    monkeypatch.setattr(worker_manager, 'ensure_server_tls_trust', AsyncMock())
+    monkeypatch.setattr(
+        worker_manager, 'resolve_version_info', lambda: (worker_version, 'worker')
+    )
+    monkeypatch.setattr(
+        manager,
+        '_fetch_server_version',
+        AsyncMock(return_value={'version': '2.3.1-ent1', 'git_commit': 'server'}),
+    )
+    registered = _registration_public()
+    register = AsyncMock(return_value=registered)
+    monkeypatch.setattr(manager, '_register_worker', register)
+    monkeypatch.setattr(manager, '_prepare_clients', Mock())
+    monkeypatch.setattr(worker_manager, 'write_worker_token', Mock())
+    manager._cfg.data_dir = '/unused'
+    manager._clientset = object()
+
+    await manager.check_server_version()
+    client, config = await manager.register_with_server()
+
+    assert 'Version mismatch detected' in caplog.text
+    assert worker_version in caplog.text and '2.3.1-ent1' in caplog.text
+    register.assert_awaited_once()
+    assert client is manager._clientset
+    assert config == registered.worker_config

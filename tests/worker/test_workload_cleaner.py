@@ -6,6 +6,8 @@ import pytest
 from gpustack.schemas.benchmark import BenchmarkStateEnum
 
 from gpustack.schemas.cache_services import CacheServiceInstance
+from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+from tests.utils.model import new_model_instance, new_model_instance_workload
 from gpustack.worker.workload_cleaner import WorkloadCleaner
 from gpustack_runtime.deployer import WorkloadStatusStateEnum
 
@@ -27,6 +29,81 @@ def _cache_workload(name: str):
         created_at="2020-01-01T00:00:00Z",
         state=WorkloadStatusStateEnum.RUNNING,
     )
+
+
+@pytest.mark.parametrize("worker_id", [1, 2])
+def test_cleanup_preserves_every_registered_local_managed_workload(worker_id):
+    cleaner, client = _build_cleaner(worker_id)
+    instance = new_model_instance(7, "model", 1, worker_id=1)
+    instance.distributed_servers = DistributedServers(
+        workloads=[
+            ModelInstanceWorkload.model_validate(
+                new_model_instance_workload(worker_id=1)
+            ),
+            ModelInstanceWorkload.model_validate(
+                new_model_instance_workload(worker_id=2, node_rank=1)
+            ),
+        ]
+    )
+    client.model_instances.list.return_value = SimpleNamespace(items=[instance])
+    name = f"instance-worker-{worker_id}"
+    workload = SimpleNamespace(name=name, labels={}, created_at="2020-01-01T00:00:00Z")
+    with (
+        patch(
+            "gpustack.worker.workload_cleaner.list_workloads", return_value=[workload]
+        ),
+        patch("gpustack.worker.workload_cleaner.delete_workload") as delete,
+    ):
+        cleaner.cleanup_orphan_workloads()
+    delete.assert_not_called()
+    client.model_instances.list.assert_called_once_with(
+        params={"page": -1}, use_cache=False
+    )
+
+
+@pytest.mark.parametrize('worker_id', [1, 2])
+def test_reconnected_worker_removes_retired_tasks_and_preserves_replacements(worker_id):
+    cleaner, client = _build_cleaner(worker_id)
+    replacement = new_model_instance(8, 'replacement', 1, worker_id=worker_id)
+    current_name = f'replacement-worker-{worker_id}'
+    replacement.distributed_servers = DistributedServers(
+        workloads=[new_model_instance_workload(worker_id=worker_id, name=current_name)]
+    )
+    client.model_instances.list.return_value = SimpleNamespace(items=[replacement])
+    retired_name = f'retired-worker-{worker_id}'
+    workloads = [
+        SimpleNamespace(name=name, labels={}, created_at='2020-01-01T00:00:00Z')
+        for name in (retired_name, current_name)
+    ]
+    with (
+        patch(
+            'gpustack.worker.workload_cleaner.list_workloads', return_value=workloads
+        ),
+        patch('gpustack.worker.workload_cleaner.delete_workload') as delete,
+    ):
+        cleaner.cleanup_orphan_workloads()
+    delete.assert_called_once_with(retired_name)
+    client.model_instances.list.assert_called_once_with(
+        params={'page': -1}, use_cache=False
+    )
+
+
+def test_empty_managed_manifest_does_not_protect_a_legacy_workload_name():
+    cleaner, client = _build_cleaner()
+    instance = new_model_instance(7, "model", 1, worker_id=1)
+    instance.distributed_servers = DistributedServers(workloads=[])
+    client.model_instances.list.return_value = SimpleNamespace(items=[instance])
+    workload = SimpleNamespace(
+        name="model", labels={}, created_at="2020-01-01T00:00:00Z"
+    )
+    with (
+        patch(
+            "gpustack.worker.workload_cleaner.list_workloads", return_value=[workload]
+        ),
+        patch("gpustack.worker.workload_cleaner.delete_workload") as delete,
+    ):
+        cleaner.cleanup_orphan_workloads()
+    delete.assert_called_once_with("model")
 
 
 def test_cleanup_keeps_workloads_of_this_workers_instances():

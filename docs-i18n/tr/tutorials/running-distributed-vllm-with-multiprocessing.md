@@ -67,11 +67,28 @@ Katıldıktan sonra, GPUStack kullanıcı arayüzündeki `Workers` sayfasında h
     Otomatik planlama, bir koşulun karşılanmaması nedeniyle kaynakları tahsis edemiyorsa (örneğin, GPU belleği `gpu_memory_utilization`'i karşılamıyor), `Scheduling Mode`'yi `Manual` veya `Specify GPU` olarak değiştirin ve ardından iki çalışanın her birinde 8 GPU seçmek için `GPU Selector`'i kullanın (toplamda 16). Otomatik planlamanın tüm koşulları için [Yerleşik Çıkarım Arka Uçları](../user-guide/built-in-inference-backends.md) konusuna bakın.
 
 
-!!! note "Manuel olarak birden fazla dağıtıma bölerken: GPU sayım kontrolünü atlamak için `GPUSTACK_SKIP_GPU_COUNT_CHECK` tuşunu kullanın"
+!!! note "Ayrı dağıtımlarda manuel DP"
 
-    Bazı senaryolarda, düğüm başına bir dağıtım oluşturmak (örneğin, harici bir yük dengeleyiciyi kendiniz yönetmek için), GPU'ları manuel olarak seçip `--data-parallel-size-local 1`'i elle ayarlamak isteyebilirsiniz. Bu durumda, her dağıtım yalnızca 8 GPU seçer, oysa `tensor-parallel-size × data-parallel-size = 16`, dolayısıyla GPU sayısı dünya boyutuyla eşleşmediğinden GPUStack bir hata bildirir: `the selected gpu count (8) does not match the world size (16)`.
+    GPUStack 2.3.1 sonrasında eklenen `GPUSTACK_MANUAL_DP`, yeni vLLM MP sürümlerinde birden fazla dağıtımı manuel olarak bir DP grubunda birleştirme yöntemini korur. Her dağıtımın `Environment Variables` bölümünde şunu ayarlayın:
 
-    Eğer amaçladığınız düzen buysa, kontrolü atlamak ve manuel olarak seçtiğiniz GPU sayısını korumak için her dağıtımın `Environment Variables`'inde `GPUSTACK_SKIP_GPU_COUNT_CHECK=1`'ı ayarlayın. Bu anahtar **yalnızca GPU'lar manuel olarak seçildiğinde** (`Scheduling Mode` `Manual` veya `Specify GPU`'dir) etkili olur ve otomatik planlamayı etkilemez.
+    ```bash
+    GPUSTACK_MANUAL_DP=1
+    ```
+
+    Örneğin, her biri 8 GPU içeren iki düğüm için iki dağıtım oluşturun. Her dağıtımda ilgili düğümün 8 GPU'sunu manuel olarak seçin ve şu `Backend Parameters` değerlerini ayarlayın:
+
+    ```bash
+    --distributed-executor-backend=mp
+    --tensor-parallel-size=8
+    --data-parallel-size=2
+    --data-parallel-size-local=1
+    --data-parallel-external-lb
+    --data-parallel-rank=0
+    --data-parallel-address=<your-dp-coordinator-ip>
+    --data-parallel-rpc-port=13345
+    ```
+
+    `<your-dp-coordinator-ip>` yerine ilk düğümün IP adresini yazın. İkinci dağıtımda aynı parametreleri kullanın ve `--data-parallel-rank` değerini `1` olarak değiştirin. Ayrıca `GPUSTACK_SKIP_GPU_COUNT_CHECK` ayarlamanız gerekmez.
 
 ## 3. Adım: Dağıtımı İzleyin { #step-3-monitor-deployment }
 

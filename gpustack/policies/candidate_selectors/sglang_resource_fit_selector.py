@@ -1,5 +1,6 @@
 import logging
 from collections import defaultdict
+from dataclasses import replace
 from typing import Dict, List, Optional, Tuple
 from transformers.utils import strtobool
 
@@ -25,6 +26,7 @@ from gpustack.policies.utils import (
     estimate_model_vram,
     get_model_ram_claim,
     group_workers_by_gpu_type,
+    ram_not_enough,
     sort_workers_by_gpu_count,
     estimate_diffusion_model_vram,
     sort_gpu_indexes_by_allocatable_rate,
@@ -35,6 +37,7 @@ from gpustack.schemas.models import (
     Model,
     ModelInstanceSubordinateWorker,
     CategoryEnum,
+    ROUTER_DEFAULT_MEMORY,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.config import Config
@@ -44,6 +47,30 @@ from gpustack.utils.command import (
     find_int_parameter,
 )
 from gpustack.utils.unit import byte_to_gib, byte_to_mib
+from gpustack.utils.model_instance_workers import sglang_parallelism
+
+
+def reserve_sglang_smg_ram(
+    candidates, selector
+) -> List[ModelInstanceScheduleCandidate]:
+    """Add one CPU router's RAM to each feasible primary, leaving Engines unchanged."""
+    result = []
+    for candidate in candidates:
+        ram = (candidate.computed_resource_claim.ram or 0) + ROUTER_DEFAULT_MEMORY
+        available = selector.get_worker_allocatable_resource(
+            candidate.worker, candidate.gpu_type
+        )
+        if ram_not_enough(ram, available):
+            continue
+        reserved = replace(
+            candidate,
+            computed_resource_claim=candidate.computed_resource_claim.model_copy(
+                update={"ram": ram}
+            ),
+        )
+        result.append(reserved)
+    return result
+
 
 logger = logging.getLogger(__name__)
 _EVENT_ACTION_RAM_NOT_ENOUGH = "ram_not_enough"
@@ -57,8 +84,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         model_instances: List[ModelInstance],
         *,
         resource_view: ResourceView,
+        managed_sglang: bool = False,
     ):
         super().__init__(cfg, model, model_instances, resource_view=resource_view)
+        self._managed_sglang = managed_sglang
 
         self._vram_claim = 0
         self._ram_claim = 0
@@ -126,9 +155,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         dp = find_int_parameter(
             model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
         )
-        dp_attention = find_bool_parameter(
-            model.backend_parameters, ["enable-dp-attention"]
-        )
+        ranks, _, dp_attention = sglang_parallelism(model.backend_parameters)
+        if dp is not None:
+            dp = ranks
         if dp_attention:
             # For DP attention, it's using the TP group GPUs for data parallelism.
             # So we don't need to consider DP size for GPU count calculation.
@@ -185,11 +214,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             )
             or 1
         )
-        self._dp_size = (
-            find_int_parameter(
-                model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
-            )
-            or 1
+        self._dp_size, _, _enable_dp_attention = sglang_parallelism(
+            model.backend_parameters
         )
 
         enable_mixed_chunk_param = find_parameter(
@@ -218,9 +244,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     "Pipeline parallelism is not compatible with overlap schedule, speculative decoding, mixed chunked prefill."
                 )
 
-        _enable_dp_attention = find_bool_parameter(
-            model.backend_parameters, ["enable-dp-attention"]
-        )
         if self._dp_size and int(self._dp_size) > 1 and nnodes != 1:
             if not _enable_dp_attention:
                 raise ValueError(
@@ -367,6 +390,13 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             )
 
             candidates = candidate_func(workers)
+            if self._managed_sglang and candidates:
+                candidates = reserve_sglang_smg_ram(candidates, self)
+                if not candidates:
+                    self._add_message(
+                        "The primary Worker requires an additional "
+                        f"{byte_to_gib(ROUTER_DEFAULT_MEMORY):g} GiB of RAM for SMG."
+                    )
 
             if len(candidates) == 1 and candidates[0].overcommit:
                 self._set_messages()
@@ -1052,8 +1082,8 @@ class MemFractionStaticCalculator:
         self._cuda_graph_max_bs = find_int_parameter(
             self._model.backend_parameters, ["cuda-graph-max-bs"]
         )
-        self._enable_dp_attention = find_bool_parameter(
-            model.backend_parameters, ["enable-dp-attention"]
+        self._dp_size, _, self._enable_dp_attention = sglang_parallelism(
+            model.backend_parameters
         )
         self._speculative_algorithm = find_parameter(
             model.backend_parameters, ["speculative-algorithm"]
@@ -1070,13 +1100,6 @@ class MemFractionStaticCalculator:
             )
             or 1
         )
-        self._dp_size = (
-            find_int_parameter(
-                model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
-            )
-            or 1
-        )
-
         self._max_pp_size = max(
             self._pp_size,
             len(

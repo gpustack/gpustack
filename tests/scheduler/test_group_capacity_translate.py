@@ -133,6 +133,7 @@ async def test_a_solver_commit_reaches_the_accounting_with_a_claim():
     assert entry.gpu_type == "cuda"
     assert hasattr(entry, "gpu_indexes")
     assert hasattr(entry, "distributed_servers")
+    assert entry.model is cap._projected["prefill"].model
 
 
 @pytest.mark.asyncio

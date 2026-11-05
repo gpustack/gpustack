@@ -357,3 +357,52 @@ async def test_instance_watch_hides_private_configuration_and_change_values(
     assert "private-config-value" not in response.text
     assert '"changed_fields":{"state":' in response.text
     assert "model_config_snapshot" in changes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'change', [None, 'sibling', 'instance', 'missing_model', 'other_tenant']
+)
+async def test_checked_get_validates_visible_instance_configuration(
+    api, monkeypatch, change
+):
+    from gpustack.schemas.models import Model
+    from gpustack.server.controllers import model_spec_digest, model_members_stale
+
+    session = MagicMock(info={})
+    model = Model(
+        id=api.instance.model_id,
+        name='test-model',
+        source='huggingface',
+        huggingface_repo_id='test/model',
+        backend='SGLang',
+        backend_parameters=['--dp=2'],
+    )
+    api.instance.spec_digest = await model_spec_digest(session, model)
+    if change == 'instance':
+        model.backend_parameters.append('--policy=random')
+        session.info.clear()
+    members = [api.instance]
+    if change == 'sibling':
+        members.append(api.instance.model_copy(update={'id': 2, 'spec_digest': 'old'}))
+    model.stale = await model_members_stale(session, model, members)
+    if change == 'other_tenant':
+        api.instance.owner_principal_id = 20
+    lookup = AsyncMock(return_value=None if change == 'missing_model' else model)
+    monkeypatch.setattr(routes.Model, 'one_by_id', lookup)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(api.app), base_url='http://server'
+    ) as client:
+        response = await client.get(
+            '/v2/model-instances/1', params={'check_configuration': True}
+        )
+    expected = (
+        404
+        if change == 'other_tenant'
+        else 409 if change in ('instance', 'missing_model') else 200
+    )
+    assert response.status_code == expected
+    if change == 'other_tenant':
+        lookup.assert_not_awaited()
+    else:
+        lookup.assert_awaited_once()
