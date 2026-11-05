@@ -3,6 +3,9 @@
 The matrix contains 30 different root `architectures` from the packaged catalog
 as of 2026-10-29. `manifest.json` records the catalog checksum, model release dates,
 source repositories and revisions, fixture checksums, and expected evaluation fields.
+Entries marked `in_catalog: false` retain configuration-loader coverage but are
+excluded from catalog scheduling tests. MiniMax-M3.1-Flash is excluded because
+vLLM 0.33.0 cannot serve it reliably, including parser issues with the recipe image.
 Each JSON snapshot comes from:
 
 `https://huggingface.co/<repo_id>/resolve/<revision>/config.json`

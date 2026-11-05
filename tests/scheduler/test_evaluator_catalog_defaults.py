@@ -36,16 +36,49 @@ def packaged_catalog(request, monkeypatch):
         )
         if entry.kind == KIND_MODEL_SET
     ]
+    # Synthetic recipes keep GPU selection coverage independent of catalog availability.
+    source = (
+        dict(source="huggingface", huggingface_repo_id="test/hardware-defaults")
+        if request.param == "model-catalog.yaml"
+        else dict(source="model_scope", model_scope_model_id="test/hardware-defaults")
+    )
+    entries.append(
+        CatalogModelEntry(
+            kind=KIND_MODEL_SET,
+            name="hardware-defaults",
+            source_name="builtin",
+            source_type=SourceTypeEnum.BUILTIN,
+            payload=dict(
+                name="hardware-defaults",
+                specs=[
+                    dict(
+                        **source,
+                        backend="vLLM",
+                        gpu_filters=dict(vendor="nvidia", compute_capability=cc),
+                        backend_parameters=[
+                            f"--kv-cache-dtype={dtype}",
+                            '--attention-config={"indexer_kv_dtype":"fp8"}',
+                            *(["--moe-backend=marlin"] if dtype == "fp8" else []),
+                        ],
+                    )
+                    for cc, dtype in [
+                        (">=9.0,<13.0,!=10.*,!=11.*", "fp8"),
+                        (">=10.0,<11.0", "nvfp4"),
+                    ]
+                ],
+            ),
+        )
+    )
     monkeypatch.setattr(catalog, "_model_set_entries", AsyncMock(return_value=entries))
     return request.param
 
 
-def make_model(catalog_file, name="MiniMax-M3.1-Flash", **kwargs):
+def make_model(catalog_file, name="hardware-defaults", **kwargs):
     if catalog_file == "model-catalog.yaml":
-        org = "Nanbeige" if name.startswith("Nanbeige") else "MiniMaxAI"
+        org = "Nanbeige" if name.startswith("Nanbeige") else "test"
         source = dict(source="huggingface", huggingface_repo_id=f"{org}/{name}")
     else:
-        org = "nanbeige" if name.startswith("Nanbeige") else "MiniMax"
+        org = "nanbeige" if name.startswith("Nanbeige") else "test"
         source = dict(source="model_scope", model_scope_model_id=f"{org}/{name}")
     return ModelSpec(**source, backend="vLLM", **kwargs)
 
