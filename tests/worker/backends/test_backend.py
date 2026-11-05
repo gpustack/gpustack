@@ -3,6 +3,7 @@ import logging
 import types
 import os
 import pickle
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -3324,6 +3325,56 @@ def test_managed_rank_http_contract_rejects_incompatible_listeners(mode, paramet
         )
 
 
+@pytest.mark.parametrize('mode', ['external', 'hybrid', 'multi_port_external'])
+@pytest.mark.parametrize('form', ['equal', 'space'])
+@pytest.mark.parametrize(
+    'value',
+    [
+        "You're helpful. {{ messages[0].content }}",
+        'text --data-parallel-hybrid-lb --tp=8 --uds=/tmp/model.sock',
+    ],
+)
+def test_managed_launch_preserves_template_argv(mode, form, value):
+    backend, plan = _external_backend()
+    parameters = [f'--data-parallel-{mode.replace("_", "-")}-lb', '--dp=2', '--tp=2']
+    backend._model.backend_parameters = [
+        *parameters,
+        f'--chat-template={shlex.quote(value)}',
+    ]
+    backend._model_instance.gpu_indexes = [1, 3, 5, 7]
+    backend._model_instance.named_ports['_vllm_external_api'] = PortBand(
+        base=40000, count=1 if mode == 'hybrid' else 2
+    )
+    backend._model_instance.named_ports['_vllm_multi_port_external_supervisor'] = (
+        PortBand(base=40030)
+    )
+    template = (
+        [f'--chat-template={value}'] if form == 'equal' else ['--chat-template', value]
+    )
+    configure = {
+        'external': backend._configure_external_workload,
+        'hybrid': backend._configure_hybrid_workload,
+        'multi_port_external': backend._configure_multi_port_external_workload,
+    }[mode]
+    configure(plan, ['vllm', 'serve'], ['/models/moe', *parameters, *template])
+    container = plan.containers[0]
+    if mode == 'external':
+        tasks = json.loads(
+            next(
+                file.content
+                for file in container.files
+                if file.path.endswith('tasks.json')
+            )
+        )['tasks']
+        commands = [task['argv'] for task in tasks]
+    else:
+        commands = [container.execution.command + (container.execution.args or [])]
+    for argv in commands:
+        assert template[0] in argv
+        if form == 'space':
+            assert argv[argv.index('--chat-template') + 1] == value
+
+
 @pytest.mark.parametrize('parameter', ['-dpm', '--data-parallel-start-rank=0'])
 def test_external_command_cannot_switch_to_another_load_balancing_mode(parameter):
     backend, plan = _external_backend()
@@ -4441,7 +4492,9 @@ def test_multi_port_nixl_pd_inherits_connector_and_reports_global_rank_apis(
         role_effective_model,
     )
 
-    backend, plan = _managed_pd_backend_case('vllm-nixl')
+    backend, plan = _managed_pd_backend_case(
+        'vllm-nixl', env={'MODEL_API_PORT': '{{port}}'}
+    )
     for spec in backend._model_spec.roles:
         spec.backend_parameters = [
             '--data-parallel-multi-port-external-lb',
@@ -4479,6 +4532,7 @@ def test_multi_port_nixl_pd_inherits_connector_and_reports_global_rank_apis(
     env = {item.name: item.value for item in container.envs}
     assert env['VLLM_NIXL_SIDE_CHANNEL_HOST'] == backend._worker.ip
     assert env['VLLM_NIXL_SIDE_CHANNEL_PORT'] == '40100'
+    assert env['MODEL_API_PORT'] == str(40000 + worker_index * 2)
     assert [(p.dp_rank, p.api_port) for p in manifest.dp_rank_placements] == [
         (rank, 40000 + rank) for rank in range(worker_index * 2, worker_index * 2 + 2)
     ]

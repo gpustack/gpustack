@@ -69,7 +69,7 @@ def is_command_available(command_name):
     return shutil.which(command_name) is not None
 
 
-def _iter_param_pairs(parameters):
+def _iter_param_pairs(parameters, *, tokenized=False):
     """
     Yield ``(key_without_dashes, value_or_None)`` over the argv stream produced
     by :func:`flatten_to_argv`.
@@ -77,8 +77,10 @@ def _iter_param_pairs(parameters):
     Bare flags yield ``(key, None)``. Multi-value parameters (``--lora-modules
     v1 v2``) yield ``(key, v1)`` only — present consumers only need to detect
     a key's presence or read its first value; nobody needs the value list.
+
+    Set ``tokenized`` for an existing argv so quoted values are not split again.
     """
-    tokens = flatten_to_argv(parameters)
+    tokens = (parameters or []) if tokenized else flatten_to_argv(parameters)
     i = 0
     n = len(tokens)
     while i < n:
@@ -100,20 +102,26 @@ def _iter_param_pairs(parameters):
             i += 1
 
 
-def find_parameter(parameters: List[str], param_names: List[str]) -> Optional[str]:
+def find_parameter(
+    parameters: List[str], param_names: List[str], *, tokenized: bool = False
+) -> Optional[str]:
     """
     Return the value of the first parameter whose key (without leading dashes)
     is in ``param_names``. ``None`` if not found or the key is flag-only.
+
+    Set ``tokenized`` when ``parameters`` is already an argv token list.
     """
     if parameters is None:
         return None
-    for key, value in _iter_param_pairs(parameters):
+    for key, value in _iter_param_pairs(parameters, tokenized=tokenized):
         if key in param_names and value is not None:
             return value
     return None
 
 
-def find_last_parameter(parameters: List[str], param_names: List[str]) -> Optional[str]:
+def find_last_parameter(
+    parameters: List[str], param_names: List[str], *, tokenized: bool = False
+) -> Optional[str]:
     """
     Return the value of the *last* parameter whose key is in ``param_names`` --
     the one argparse would end up with.
@@ -132,18 +140,20 @@ def find_last_parameter(parameters: List[str], param_names: List[str]) -> Option
     if parameters is None:
         return None
     found = None
-    for key, value in _iter_param_pairs(parameters):
+    for key, value in _iter_param_pairs(parameters, tokenized=tokenized):
         if key in param_names and value is not None:
             found = value
     return found
 
 
-def find_int_parameter(parameters: List[str], param_names: List[str]) -> Optional[int]:
+def find_int_parameter(
+    parameters: List[str], param_names: List[str], *, tokenized: bool = False
+) -> Optional[int]:
     """
     Find specified integer parameter by name from the parameters.
     Return the integer value of the parameter if found, otherwise return None.
     """
-    value = find_parameter(parameters, param_names)
+    value = find_parameter(parameters, param_names, tokenized=tokenized)
     if value is not None:
         try:
             return int(value)
@@ -153,7 +163,7 @@ def find_int_parameter(parameters: List[str], param_names: List[str]) -> Optiona
 
 
 def find_last_int_parameter(
-    parameters: List[str], param_names: List[str]
+    parameters: List[str], param_names: List[str], *, tokenized: bool = False
 ) -> Optional[int]:
     """
     :func:`find_last_parameter` for an integer-valued key. ``None`` when the
@@ -161,7 +171,7 @@ def find_last_int_parameter(
     :func:`find_int_parameter` takes, since a value the engine will reject is
     not a value to draw conclusions from.
     """
-    value = find_last_parameter(parameters, param_names)
+    value = find_last_parameter(parameters, param_names, tokenized=tokenized)
     if value is not None:
         try:
             return int(value)
@@ -171,7 +181,11 @@ def find_last_int_parameter(
 
 
 def find_bool_parameter(
-    parameters: List[str], param_names: List[str], *, last_wins: bool = False
+    parameters: List[str],
+    param_names: List[str],
+    *,
+    last_wins: bool = False,
+    tokenized: bool = False,
 ) -> bool:
     """
     Return whether any parameter whose key is in ``param_names`` is "enabled".
@@ -188,7 +202,7 @@ def find_bool_parameter(
     ``last_wins`` is set to follow argparse override semantics.
     """
     enabled = False
-    for key, value in _iter_param_pairs(parameters or []):
+    for key, value in _iter_param_pairs(parameters, tokenized=tokenized):
         if key not in param_names:
             continue
         enabled = value is None or value.lower() not in _FALSY_VALUES
@@ -715,6 +729,8 @@ def resolve_executor_backend(
     backend_parameters: Optional[List[str]],
     backend_version: Optional[str],
     image_name: Optional[str] = None,
+    *,
+    tokenized: bool = False,
 ) -> ExecutorBackend:
     """
     Resolve the dispatch branch for vLLM distributed execution.
@@ -729,7 +745,9 @@ def resolve_executor_backend(
     2. Otherwise the default depends on whether the runtime is user-supplied,
        via :func:`should_default_to_ray`.
     """
-    user_value = find_parameter(backend_parameters, ["distributed-executor-backend"])
+    user_value = find_parameter(
+        backend_parameters, ["distributed-executor-backend"], tokenized=tokenized
+    )
     if user_value is not None:
         return "mp" if user_value == "mp" else "ray"
 

@@ -107,7 +107,7 @@ def model_port_requests(
         for name, count in sorted(connector, key=lambda item: item[1], reverse=True)
     ]
     mode = (
-        vllm_lb_mode(parameters)
+        vllm_lb_mode(parameters, tokenized=True)
         if managed and backend == BackendEnum.VLLM
         else "internal"
     )
@@ -119,9 +119,13 @@ def model_port_requests(
     ):
         requests = [
             (name, count, None)
-            for name, count in managed_lb_port_requests(parameters, allocation)
+            for name, count in managed_lb_port_requests(
+                parameters, allocation, tokenized=True
+            )
         ]
-        fixed = find_last_parameter(parameters, ["data-parallel-supervisor-port"])
+        fixed = find_last_parameter(
+            parameters, ["data-parallel-supervisor-port"], tokenized=True
+        )
         if mode == "multi_port_external" and fixed is not None:
             requests.insert(0, ("_vllm_multi_port_external_supervisor", 1, int(fixed)))
         return requests + bands
@@ -134,16 +138,19 @@ def model_port_requests(
                 parameters,
                 getattr(model, "backend_version", None),
                 getattr(model, "image_name", None),
+                tokenized=True,
             )
             if executor == "mp":
                 topology = validate_multinode_topology(
-                    allocation, parse_user_parallelism(parameters)
+                    allocation, parse_user_parallelism(parameters, tokenized=True)
                 )
                 if topology.shape in ("dp_only", "nested"):
                     connecting = VLLM_MP_CONNECTING_PORT_COUNT
                 cross = 3
             else:
-                dp = find_int_parameter(parameters, ["data-parallel-size", "dp"])
+                dp = find_int_parameter(
+                    parameters, ["data-parallel-size", "dp"], tokenized=True
+                )
                 cross = 1 if dp and dp > 1 else 0
     requests = [("_connecting", connecting, None)] if connecting > 1 else []
     requests += bands

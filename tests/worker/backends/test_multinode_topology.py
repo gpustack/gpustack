@@ -12,6 +12,7 @@ Covers:
 """
 
 from unittest.mock import MagicMock
+import shlex
 
 import pytest
 
@@ -1411,6 +1412,47 @@ def test_vllm_option_normalization_preserves_values_and_nested_fields():
         '--hf-overrides={"rope_type":"custom_value"}',
     ]
     assert parameters == original
+
+
+@pytest.mark.parametrize(
+    'value',
+    [
+        "You're helpful. {{ messages[0].content }}",
+        'text --data-parallel-hybrid-lb --tp=8 --uds=/tmp/model.sock',
+        ' leading and trailing spaces ',
+    ],
+)
+@pytest.mark.parametrize('form', ['equal', 'space', 'pasted'])
+@pytest.mark.parametrize(
+    'mode', ['internal', 'external', 'hybrid', 'multi_port_external']
+)
+def test_vllm_topology_preserves_opaque_parameter_values(value, form, mode):
+    from gpustack.utils.vllm_topology import (
+        managed_lb_parallelism,
+        managed_lb_port_requests,
+        parse_user_parallelism,
+        vllm_lb_mode,
+    )
+
+    parameters = ['--tp=2', '--dp=2', '--dpl=2']
+    if mode != 'internal':
+        parameters.append(f'--data-parallel-{mode.replace("_", "-")}-lb')
+    template = (
+        f'--chat-template={shlex.quote(value)}'
+        if form == 'equal'
+        else f'--chat-template {shlex.quote(value)}'
+    )
+    parameters = [template, *parameters]
+    if form == 'pasted':
+        parameters = [' '.join(parameters)]
+    assert vllm_lb_mode(parameters) == mode
+    assert parse_user_parallelism(parameters).tp == 2
+    topology = managed_lb_parallelism(parameters, [4])
+    assert (topology.tp, topology.dp, topology.dpl_per_node) == (2, 2, [2])
+    assert managed_lb_port_requests(parameters, [4])[0][0] in (
+        '_vllm_external_api',
+        '_vllm_mp_connecting',
+    )
 
 
 @pytest.mark.parametrize('option', ['ssl_keyfile', 'ssl_certfile'])

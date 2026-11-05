@@ -2104,6 +2104,14 @@ async def resolve_instance_address_from_model_header(
     destination = Headers(headers).get(router_header_key)
     if not destination or not destination.startswith("model-"):
         return None, 0
+    from gpustack.api.auth import authenticate_worker_by_request_headers
+    from gpustack.schemas.principals import PrincipalType
+
+    principal = await authenticate_worker_by_request_headers(headers)
+    if principal is None or principal.kind != PrincipalType.SYSTEM:
+        raise HTTPException(
+            status_code=403, detail="Model routing requires internal credentials"
+        )
     try:
         target = parse_model_instance_target(destination)
     except ValueError as exc:
@@ -2114,20 +2122,13 @@ async def resolve_instance_address_from_model_header(
         instance = await ModelInstance.one_by_id(
             session, target.instance_id, refresh=True
         )
-        if instance is None or instance.model_id != target.model_id:
+        await _assert_rank_destination_visible(session, principal, instance)
+        if instance.model_id != target.model_id:
             raise HTTPException(status_code=404, detail="Model destination not found")
         try:
             endpoint = resolve_model_instance_endpoint(instance, target)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        from gpustack.api.auth import authenticate_worker_by_request_headers
-        from gpustack.schemas.principals import PrincipalType
-
-        principal = await authenticate_worker_by_request_headers(headers)
-        if principal is None or principal.kind != PrincipalType.SYSTEM:
-            raise HTTPException(
-                status_code=403, detail="Model routing requires internal credentials"
-            )
         worker = await Worker.one_by_id(session, endpoint.worker_id, refresh=True)
         if (
             worker is None
@@ -2141,12 +2142,12 @@ async def resolve_instance_address_from_model_header(
             raise HTTPException(
                 status_code=404, detail="Destination Worker is unavailable"
             )
-        await _assert_rank_destination_visible(session, principal, instance, worker)
+        await _assert_rank_destination_binding(session, principal, instance, worker)
         return worker.ip, endpoint.port
 
 
-async def _assert_rank_destination_visible(session, principal, instance, worker):
-    """Fence model routing to the current internal principal binding."""
+async def _assert_rank_destination_visible(session, principal, instance):
+    """Check tenant visibility before resolving endpoints or Worker state."""
     from fastapi import Request
     from gpustack.api.tenant import resolve_tenant_context, assert_resource_visible
 
@@ -2160,6 +2161,10 @@ async def _assert_rank_destination_visible(session, principal, instance, worker)
         raise HTTPException(status_code=404, detail=exc.message) from exc
     except ForbiddenException as exc:
         raise HTTPException(status_code=403, detail=exc.message) from exc
+
+
+async def _assert_rank_destination_binding(session, principal, instance, worker):
+    """Fence model routing to the current internal principal binding."""
     if principal.worker is not None and (
         principal.worker.id != worker.id or worker.system_principal_id != principal.id
     ):

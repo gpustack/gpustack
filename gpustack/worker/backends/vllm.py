@@ -464,7 +464,7 @@ class VLLMServer(InferenceServer):
         parameters = normalize_vllm_parameters(
             list(command or []) + arguments, tokenized=True
         )
-        validate_multi_port_external_lb_parameters(parameters)
+        validate_multi_port_external_lb_parameters(parameters, tokenized=True)
         config = get_hf_text_config(self._get_pretrained_config())
         if not any(
             getattr(config, key, 0)
@@ -498,13 +498,16 @@ class VLLMServer(InferenceServer):
         topology = multi_port_external_lb_parallelism(
             self._model.backend_parameters, counts
         )
-        if multi_port_external_lb_parallelism(parameters, counts) != topology:
+        if (
+            multi_port_external_lb_parallelism(parameters, counts, tokenized=True)
+            != topology
+        ):
             raise ValueError(
                 "Multi-port External-LB command must match the allocated parallelism."
             )
         fragments = external_lb_fragments(counts, topology, index)
         start = find_last_parameter(
-            parameters, ["data-parallel-start-rank", "dpr", "dps"]
+            parameters, ["data-parallel-start-rank", "dpr", "dps"], tokenized=True
         )
         if start is not None and int(start) != fragments[0].dp_rank:
             raise ValueError(
@@ -525,7 +528,9 @@ class VLLMServer(InferenceServer):
             raise ValueError(
                 "Multi-port External-LB API, RPC and supervisor ports must be allocated first."
             )
-        requested = find_last_parameter(parameters, ["data-parallel-supervisor-port"])
+        requested = find_last_parameter(
+            parameters, ["data-parallel-supervisor-port"], tokenized=True
+        )
         if requested is not None and int(requested) != supervisor.base:
             raise ValueError(
                 "Multi-port External-LB command must use the reserved supervisor port."
@@ -562,7 +567,9 @@ class VLLMServer(InferenceServer):
         ]
         container = plan.containers[0]
         if mi.role in ("prefill", "decode"):
-            base, pd_env = self._managed_pd_endpoint(base, api.base, container)
+            base, pd_env = self._managed_pd_endpoint(
+                base, api.base + fragments[0].dp_rank, container
+            )
             env = {item.name: item.value for item in container.envs or []}
             env.update(pd_env)
             container.envs = [
@@ -607,8 +614,8 @@ class VLLMServer(InferenceServer):
         parameters = normalize_vllm_parameters(
             list(command or []) + arguments, tokenized=True
         )
-        validate_managed_http_parameters(parameters)
-        if vllm_lb_mode(parameters) not in ("internal", "hybrid"):
+        validate_managed_http_parameters(parameters, tokenized=True)
+        if vllm_lb_mode(parameters, tokenized=True) not in ("internal", "hybrid"):
             raise ValueError("The command must preserve the selected Hybrid-LB mode.")
         devices = self._get_selected_gpu_devices()
         members = [mi] + list(mi.distributed_servers.subordinate_workers or [])
@@ -644,7 +651,10 @@ class VLLMServer(InferenceServer):
                 ContainerEnv(name=name, value=value) for name, value in env.items()
             ]
         if owns_api:
-            if find_last_parameter(parameters, ["api-server-count"]) == "0":
+            if (
+                find_last_parameter(parameters, ["api-server-count"], tokenized=True)
+                == "0"
+            ):
                 raise ValueError("A Hybrid API task requires API server processes.")
             child = base + self._hybrid_launch_arguments(
                 topology, fragments[0], len(fragments)
@@ -758,8 +768,8 @@ class VLLMServer(InferenceServer):
         parameters = normalize_vllm_parameters(
             list(command or []) + arguments, tokenized=True
         )
-        validate_managed_http_parameters(parameters)
-        if vllm_lb_mode(parameters) not in ("internal", "external"):
+        validate_managed_http_parameters(parameters, tokenized=True)
+        if vllm_lb_mode(parameters, tokenized=True) not in ("internal", "external"):
             raise ValueError("The command must preserve the selected External-LB mode.")
         if (
             mi.role not in (None, "prefill", "decode")
@@ -946,11 +956,18 @@ class VLLMServer(InferenceServer):
             raise ValueError(
                 "Managed External-LB requires a directly executable vllm serve command."
             )
-        if find_last_parameter(argv, ["distributed-executor-backend"]) not in (
+        if find_last_parameter(
+            argv, ["distributed-executor-backend"], tokenized=True
+        ) not in (
             None,
             "mp",
             "uni",
-        ) or find_last_parameter(argv, ["data-parallel-backend"]) not in (None, "mp"):
+        ) or find_last_parameter(
+            argv, ["data-parallel-backend"], tokenized=True
+        ) not in (
+            None,
+            "mp",
+        ):
             raise ValueError(
                 "Managed External-LB requires local multiprocessing executors."
             )

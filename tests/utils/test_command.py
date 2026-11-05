@@ -7,6 +7,7 @@ from gpustack.utils.command import (
     drop_empty_flag_values,
     extract_flag_arguments,
     find_parameter,
+    find_int_parameter,
     find_bool_parameter,
     find_last_int_parameter,
     find_last_parameter,
@@ -425,6 +426,30 @@ def test_find_bool_parameter_argv_stream():
         ['--tp 8 --max-model-len 1024'],
         ['enable-expert-parallel'],
     )
+
+
+@pytest.mark.parametrize(
+    'reader, names, expected',
+    [
+        (find_parameter, ['tp'], '2'),
+        (find_last_parameter, ['tp'], '4'),
+        (find_int_parameter, ['tp'], 2),
+        (find_last_int_parameter, ['tp'], 4),
+        (find_bool_parameter, ['data-parallel-hybrid-lb'], False),
+        (
+            find_parameter,
+            ['chat-template'],
+            "You're helpful. --data-parallel-hybrid-lb --tp=8",
+        ),
+    ],
+)
+def test_parameter_readers_preserve_tokenized_argument_values(reader, names, expected):
+    argv = [
+        "--chat-template=You're helpful. --data-parallel-hybrid-lb --tp=8",
+        '--tp=2',
+        '--tp=4',
+    ]
+    assert reader(argv, names, tokenized=True) == expected
 
 
 @pytest.mark.parametrize(

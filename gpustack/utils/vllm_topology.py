@@ -54,12 +54,12 @@ def manual_dp_enabled(env: Optional[Dict[str, str]]) -> bool:
 
 
 def managed_lb_port_requests(
-    parameters: Optional[List[str]], gpu_per_node: List[int]
+    parameters: Optional[List[str]], gpu_per_node: List[int], *, tokenized: bool = False
 ) -> List[Tuple[str, int]]:
     """Ordered platform port bands shared by scheduling and Worker allocation."""
-    parameters = normalize_vllm_parameters(parameters)
-    topology = managed_lb_parallelism(parameters, gpu_per_node)
-    mode = vllm_lb_mode(parameters)
+    parameters = normalize_vllm_parameters(parameters, tokenized=tokenized)
+    topology = managed_lb_parallelism(parameters, gpu_per_node, tokenized=True)
+    mode = vllm_lb_mode(parameters, tokenized=True)
     hybrid = mode == "hybrid"
     requests = [
         ("_vllm_external_api", 1 if hybrid else topology.dp),
@@ -71,31 +71,42 @@ def managed_lb_port_requests(
         requests.append(("_vllm_external_store", topology.dp))
     if (
         mode == "multi_port_external"
-        and find_last_parameter(parameters, ["data-parallel-supervisor-port"]) is None
+        and find_last_parameter(
+            parameters, ["data-parallel-supervisor-port"], tokenized=True
+        )
+        is None
     ):
         requests.append(("_vllm_multi_port_external_supervisor", 1))
     return requests
 
 
-def vllm_lb_mode(parameters: Optional[List[str]]) -> str:
+def vllm_lb_mode(parameters: Optional[List[str]], *, tokenized: bool = False) -> str:
     """Identify explicitly selected load balancing and reject conflicting modes."""
-    parameters = normalize_vllm_parameters(parameters)
+    parameters = normalize_vllm_parameters(parameters, tokenized=tokenized)
     external = find_bool_parameter(
-        parameters, ["data-parallel-external-lb", "dpe"], last_wins=True
+        parameters, ["data-parallel-external-lb", "dpe"], last_wins=True, tokenized=True
     )
     multi_port_external = find_bool_parameter(
-        parameters, ["data-parallel-multi-port-external-lb", "dpm"], last_wins=True
+        parameters,
+        ["data-parallel-multi-port-external-lb", "dpm"],
+        last_wins=True,
+        tokenized=True,
     )
     hybrid = find_bool_parameter(
-        parameters, ["data-parallel-hybrid-lb", "dph"], last_wins=True
+        parameters, ["data-parallel-hybrid-lb", "dph"], last_wins=True, tokenized=True
     ) or (
         not multi_port_external
-        and find_last_parameter(parameters, ["data-parallel-start-rank", "dpr", "dps"])
+        and find_last_parameter(
+            parameters, ["data-parallel-start-rank", "dpr", "dps"], tokenized=True
+        )
         is not None
     )
     if sum((external, multi_port_external, hybrid)) > 1 or (
         multi_port_external
-        and find_last_parameter(parameters, ["data-parallel-rank", "dpn"]) is not None
+        and find_last_parameter(
+            parameters, ["data-parallel-rank", "dpn"], tokenized=True
+        )
+        is not None
     ):
         raise ValueError("Choose only one vLLM data parallel load balancing mode.")
     for mode, enabled in (
@@ -109,10 +120,10 @@ def vllm_lb_mode(parameters: Optional[List[str]]) -> str:
 
 
 def external_lb_parallelism(
-    parameters: List[str], gpu_count: Union[int, List[int]]
+    parameters: List[str], gpu_count: Union[int, List[int]], *, tokenized: bool = False
 ) -> "ValidatedTopology":
     """Validate the complete allocation and split uniform rank fragments."""
-    parameters = normalize_vllm_parameters(parameters)
+    parameters = normalize_vllm_parameters(parameters, tokenized=tokenized)
     values = {}
     for field, names in (
         ("dp", ["data-parallel-size", "dp"]),
@@ -121,8 +132,8 @@ def external_lb_parallelism(
         ("pcp", ["prefill-context-parallel-size", "pcp"]),
         ("dpl", ["data-parallel-size-local", "dpl"]),
     ):
-        raw = find_last_parameter(parameters, names)
-        value = find_last_int_parameter(parameters, names)
+        raw = find_last_parameter(parameters, names, tokenized=True)
+        value = find_last_int_parameter(parameters, names, tokenized=True)
         if raw is not None and (value is None or value <= 0):
             raise ValueError(f"--{names[0]} must be a positive integer.")
         values[field] = value
@@ -155,15 +166,17 @@ def external_lb_parallelism(
     return result
 
 
-def validate_managed_http_parameters(parameters: Optional[List[str]]) -> None:
+def validate_managed_http_parameters(
+    parameters: Optional[List[str]], *, tokenized: bool = False
+) -> None:
     """Keep managed rank APIs compatible with platform HTTP routes and probes."""
-    parameters = normalize_vllm_parameters(parameters)
-    if any(token.partition("=")[0] == "--uds" for token in flatten_to_argv(parameters)):
+    parameters = normalize_vllm_parameters(parameters, tokenized=tokenized)
+    if any(token.partition("=")[0] == "--uds" for token in parameters):
         raise ValueError(
             "Managed rank routes and health checks require TCP HTTP; --uds is unsupported."
         )
     if any(
-        find_last_parameter(parameters, [name]) is not None
+        find_last_parameter(parameters, [name], tokenized=True) is not None
         for name in ("ssl-keyfile", "ssl-certfile")
     ):
         raise ValueError(
@@ -171,62 +184,81 @@ def validate_managed_http_parameters(parameters: Optional[List[str]]) -> None:
         )
 
 
-def validate_multi_port_external_lb_parameters(parameters: Optional[List[str]]) -> None:
+def validate_multi_port_external_lb_parameters(
+    parameters: Optional[List[str]], *, tokenized: bool = False
+) -> None:
     """Reject multi-port External-LB options that cannot represent managed rank APIs."""
-    parameters = normalize_vllm_parameters(parameters)
-    if vllm_lb_mode(parameters) != "multi_port_external":
+    parameters = normalize_vllm_parameters(parameters, tokenized=tokenized)
+    if vllm_lb_mode(parameters, tokenized=True) != "multi_port_external":
         raise ValueError(
             "Multi-port External-LB requires --data-parallel-multi-port-external-lb."
         )
     for names in (["api-server-count"], ["prefill-context-parallel-size", "pcp"]):
-        raw = find_last_parameter(parameters, names)
-        if raw is not None and find_last_int_parameter(parameters, names) != 1:
+        raw = find_last_parameter(parameters, names, tokenized=True)
+        if (
+            raw is not None
+            and find_last_int_parameter(parameters, names, tokenized=True) != 1
+        ):
             raise ValueError(f"Multi-port External-LB requires --{names[0]}=1.")
     for names, minimum in (
         (["data-parallel-size", "dp"], 2),
         (["data-parallel-size-local", "dpl"], 2),
     ):
-        if find_last_parameter(parameters, names) is not None:
-            value = find_last_int_parameter(parameters, names)
+        if find_last_parameter(parameters, names, tokenized=True) is not None:
+            value = find_last_int_parameter(parameters, names, tokenized=True)
             if value is None or value < minimum:
                 raise ValueError(
                     f"Multi-port External-LB requires --{names[0]} >= {minimum}."
                 )
-    nnodes = find_last_parameter(parameters, ["nnodes"])
-    if nnodes is not None and find_last_int_parameter(parameters, ["nnodes"]) != 1:
+    nnodes = find_last_parameter(parameters, ["nnodes"], tokenized=True)
+    if (
+        nnodes is not None
+        and find_last_int_parameter(parameters, ["nnodes"], tokenized=True) != 1
+    ):
         raise ValueError(
             "Multi-port External-LB requires every rank to fit on one Worker."
         )
     for flag in ("headless", "grpc"):
-        if find_bool_parameter(parameters, [flag], last_wins=True):
+        if find_bool_parameter(parameters, [flag], last_wins=True, tokenized=True):
             raise ValueError(f"Multi-port External-LB does not support --{flag}.")
-    validate_managed_http_parameters(parameters)
+    validate_managed_http_parameters(parameters, tokenized=True)
     for name, allowed in (
         ("distributed-executor-backend", ("mp", "uni")),
         ("data-parallel-backend", ("mp",)),
     ):
-        if find_last_parameter(parameters, [name]) not in (None, *allowed):
+        if find_last_parameter(parameters, [name], tokenized=True) not in (
+            None,
+            *allowed,
+        ):
             raise ValueError(f"Multi-port External-LB requires a local --{name}.")
 
 
-def validate_managed_lb_parameters(parameters: Optional[List[str]]) -> None:
+def validate_managed_lb_parameters(
+    parameters: Optional[List[str]], *, tokenized: bool = False
+) -> None:
     """Validate an explicit LB mode before scheduling without device assumptions."""
-    mode = vllm_lb_mode(parameters)
+    parameters = normalize_vllm_parameters(parameters, tokenized=tokenized)
+    mode = vllm_lb_mode(parameters, tokenized=True)
     if mode != "internal":
-        validate_managed_http_parameters(parameters)
+        validate_managed_http_parameters(parameters, tokenized=True)
     if mode == "multi_port_external":
-        validate_multi_port_external_lb_parameters(parameters)
+        validate_multi_port_external_lb_parameters(parameters, tokenized=True)
 
 
 def multi_port_external_lb_parallelism(
-    parameters: List[str], gpu_count: Union[int, List[int]]
+    parameters: List[str], gpu_count: Union[int, List[int]], *, tokenized: bool = False
 ) -> "ValidatedTopology":
     """Resolve multi-port External-LB with complete, evenly allocated local DP replicas."""
-    parameters = normalize_vllm_parameters(parameters)
-    validate_multi_port_external_lb_parameters(parameters)
+    parameters = normalize_vllm_parameters(parameters, tokenized=tokenized)
+    validate_multi_port_external_lb_parameters(parameters, tokenized=True)
     counts = [gpu_count] if isinstance(gpu_count, int) else gpu_count
-    result = external_lb_parallelism(parameters, counts)
-    if find_last_parameter(parameters, ["data-parallel-size-local", "dpl"]) is None:
+    result = external_lb_parallelism(parameters, counts, tokenized=True)
+    if (
+        find_last_parameter(
+            parameters, ["data-parallel-size-local", "dpl"], tokenized=True
+        )
+        is None
+    ):
         width = result.tp * result.pp
         local = counts[0] // width
         if counts[0] % width or local < 2:
@@ -234,7 +266,9 @@ def multi_port_external_lb_parallelism(
                 "Multi-port External-LB requires complete local ranks and local DP >= 2."
             )
         result = external_lb_parallelism(
-            [*parameters, "--data-parallel-size-local", str(local)], counts
+            [*parameters, "--data-parallel-size-local", str(local)],
+            counts,
+            tokenized=True,
         )
     if result.dp < 2 or min(result.dpl_per_node) < 2:
         raise ValueError("Multi-port External-LB requires DP > 1 and local DP >= 2.")
@@ -243,16 +277,21 @@ def multi_port_external_lb_parallelism(
             "Multi-port External-LB requires every rank to fit on one Worker."
         )
     if (
-        find_last_parameter(parameters, ["distributed-executor-backend"]) == "uni"
+        find_last_parameter(
+            parameters, ["distributed-executor-backend"], tokenized=True
+        )
+        == "uni"
         and result.tp * result.pp > 1
     ):
         raise ValueError(
             "Multi-port External-LB TP/PP ranks require multiprocessing executors."
         )
-    start = find_last_parameter(parameters, ["data-parallel-start-rank", "dpr", "dps"])
+    start = find_last_parameter(
+        parameters, ["data-parallel-start-rank", "dpr", "dps"], tokenized=True
+    )
     if start is not None:
         value = find_last_int_parameter(
-            parameters, ["data-parallel-start-rank", "dpr", "dps"]
+            parameters, ["data-parallel-start-rank", "dpr", "dps"], tokenized=True
         )
         if value is None or value < 0 or value + result.dpl_per_node[0] > result.dp:
             raise ValueError(
@@ -262,31 +301,33 @@ def multi_port_external_lb_parallelism(
 
 
 def hybrid_lb_parallelism(
-    parameters: List[str], gpu_count: Union[int, List[int]]
+    parameters: List[str], gpu_count: Union[int, List[int]], *, tokenized: bool = False
 ) -> "ValidatedTopology":
     """Resolve a complete Hybrid-LB group with the MP topology constraints.
 
     Omitted local DP is derived from the allocation. Node roles and rank starts
     use ``external_lb_fragments`` in persisted allocation order.
     """
+    parameters = normalize_vllm_parameters(parameters, tokenized=tokenized)
     counts = [gpu_count] if isinstance(gpu_count, int) else gpu_count
-    external_lb_parallelism(parameters, counts)
+    external_lb_parallelism(parameters, counts, tokenized=True)
     return validate_multinode_topology(
-        counts, parse_user_parallelism(parameters, last_wins=True)
+        counts, parse_user_parallelism(parameters, last_wins=True, tokenized=True)
     )
 
 
 def managed_lb_parallelism(
-    parameters: List[str], gpu_count: Union[int, List[int]]
+    parameters: List[str], gpu_count: Union[int, List[int]], *, tokenized: bool = False
 ) -> "ValidatedTopology":
     """Resolve the topology for the explicitly selected managed LB mode."""
-    validate_managed_lb_parameters(parameters)
-    mode = vllm_lb_mode(parameters)
+    parameters = normalize_vllm_parameters(parameters, tokenized=tokenized)
+    validate_managed_lb_parameters(parameters, tokenized=True)
+    mode = vllm_lb_mode(parameters, tokenized=True)
     if mode == "multi_port_external":
-        return multi_port_external_lb_parallelism(parameters, gpu_count)
+        return multi_port_external_lb_parallelism(parameters, gpu_count, tokenized=True)
     if mode == "hybrid":
-        return hybrid_lb_parallelism(parameters, gpu_count)
-    return external_lb_parallelism(parameters, gpu_count)
+        return hybrid_lb_parallelism(parameters, gpu_count, tokenized=True)
+    return external_lb_parallelism(parameters, gpu_count, tokenized=True)
 
 
 @dataclass(frozen=True)
@@ -503,14 +544,21 @@ def parse_user_parallelism(
     backend_parameters: Optional[List[str]],
     *,
     last_wins: bool = False,
+    tokenized: bool = False,
 ) -> MultinodeUserParallelism:
     """Extract MultinodeUserParallelism from user-provided backend_parameters."""
-    backend_parameters = normalize_vllm_parameters(backend_parameters)
+    backend_parameters = normalize_vllm_parameters(
+        backend_parameters, tokenized=tokenized
+    )
     read = find_last_int_parameter if last_wins else find_int_parameter
     return MultinodeUserParallelism(
-        tp=read(backend_parameters, ["tensor-parallel-size", "tp"]),
-        pp=read(backend_parameters, ["pipeline-parallel-size", "pp"]),
-        dp=read(backend_parameters, ["data-parallel-size", "dp"]),
-        dpl=read(backend_parameters, ["data-parallel-size-local", "dpl"]),
-        pcp=read(backend_parameters, ["prefill-context-parallel-size", "pcp"]),
+        tp=read(backend_parameters, ["tensor-parallel-size", "tp"], tokenized=True),
+        pp=read(backend_parameters, ["pipeline-parallel-size", "pp"], tokenized=True),
+        dp=read(backend_parameters, ["data-parallel-size", "dp"], tokenized=True),
+        dpl=read(
+            backend_parameters, ["data-parallel-size-local", "dpl"], tokenized=True
+        ),
+        pcp=read(
+            backend_parameters, ["prefill-context-parallel-size", "pcp"], tokenized=True
+        ),
     )

@@ -59,6 +59,32 @@ def _cache_instance(worker_id, ports=None, port=None):
 
 
 class TestMemberDemand:
+    @pytest.mark.parametrize(
+        'mode, expected',
+        [
+            ('internal', 14),
+            ('external', 15),
+            ('hybrid', 2),
+            ('multi_port_external', 16),
+        ],
+    )
+    def test_template_values_cannot_change_vllm_port_demand(self, mode, expected):
+        parameters = [
+            '--tp=2',
+            '--dp=4',
+            '--dpl=2',
+            '--distributed_executor_backend=mp',
+            '--chat-template="You\'re helpful. --data-parallel-hybrid-lb --tp=8"',
+        ]
+        if mode != 'internal':
+            parameters.append(f'--data-parallel-{mode.replace("_", "-")}-lb')
+        assert (
+            port_budget.member_port_demand(
+                _model(backend_parameters=parameters), None, 4, gpu_per_node=[4, 4]
+            )
+            == expected
+        )
+
     def test_non_vllm_parameters_do_not_use_vllm_mode_validation(self):
         model = _model(
             NIXL,

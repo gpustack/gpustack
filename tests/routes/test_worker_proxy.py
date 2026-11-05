@@ -909,6 +909,8 @@ def test_rank_registry_construction_uses_actual_owner(rank_instance, mode):
         'deleted_worker',
         'missing_worker',
         'unbound_system',
+        'server_token',
+        'stale_cluster_binding',
     ],
 )
 @pytest.mark.parametrize(
@@ -955,10 +957,11 @@ async def test_tunnel_model_resolver_checks_identity_and_releases_session(
         owner_principal_id=20,
     )
     principal = SimpleNamespace(
-        id=9,
+        id=None if case == 'server_token' else 9,
+        name='system/worker/server-token',
         kind=PrincipalType.SYSTEM,
         is_admin=False,
-        worker=None if case == 'unbound_system' else worker,
+        worker=None if case in ('unbound_system', 'server_token') else worker,
         cluster=None,
     )
     if case == 'null_cluster':
@@ -969,7 +972,7 @@ async def test_tunnel_model_resolver_checks_identity_and_releases_session(
         rank_instance.owner_principal_id = None
     elif case == 'deleted_worker':
         worker.deleted_at = 'deleted'
-    elif case == 'cluster':
+    elif case in ('cluster', 'stale_cluster_binding'):
         principal.worker = None
         principal.cluster = SimpleNamespace(id=11, owner_principal_id=20)
     elif case == 'user':
@@ -1007,7 +1010,11 @@ async def test_tunnel_model_resolver_checks_identity_and_releases_session(
     monkeypatch.setattr(
         Cluster,
         'one_by_id',
-        AsyncMock(return_value=SimpleNamespace(system_principal_id=9)),
+        AsyncMock(
+            return_value=SimpleNamespace(
+                system_principal_id=10 if case == 'stale_cluster_binding' else 9
+            )
+        ),
     )
     headers = {
         utils.router_header_key: {
@@ -1019,7 +1026,10 @@ async def test_tunnel_model_resolver_checks_identity_and_releases_session(
             'legacy_distributed_instance': 'model-1-7.static',
         }[kind]
     }
-    if case in ('worker', 'cluster', 'stale_epoch') and kind != 'sglang_engine':
+    if (
+        case in ('worker', 'cluster', 'stale_epoch', 'server_token')
+        and kind != 'sglang_engine'
+    ):
         resolved = await utils.resolve_instance_address_from_model_header(headers)
         assert resolved == (
             '10.0.0.2',
@@ -1033,27 +1043,36 @@ async def test_tunnel_model_resolver_checks_identity_and_releases_session(
     else:
         with pytest.raises(HTTPException) as exc:
             await utils.resolve_instance_address_from_model_header(headers)
-        if case in ('null_cluster', 'foreign_owner', 'null_owner', 'unbound_system'):
-            assert exc.value.status_code == {('unbound_system', False): 403}.get(
-                (case, kind == 'sglang_engine'), 404
-            )
-    assert closed == [True]
+        if case in (
+            'null_cluster',
+            'foreign_owner',
+            'null_owner',
+            'unbound_system',
+            'stale_cluster_binding',
+        ):
+            assert exc.value.status_code == {
+                'unbound_system': 403,
+                'stale_cluster_binding': 404 if kind == 'sglang_engine' else 403,
+            }.get(case, 404)
+    assert closed == ([] if case == 'user' else [True])
 
 
 @pytest.mark.asyncio
-async def test_legacy_header_rejects_managed_instance_before_rank_visibility(
+async def test_legacy_header_checks_visibility_before_rejecting_managed_instance(
     rank_instance, monkeypatch
 ):
     from unittest.mock import AsyncMock
+    from types import SimpleNamespace
     from fastapi import HTTPException
     from gpustack.gateway import utils
     from gpustack.schemas.models import ModelInstance
+    from gpustack.schemas.principals import PrincipalType
     from gpustack.schemas.workers import Worker
     from tests.utils.mock import mock_async_session
 
     assert utils.model_instance_endpoints(rank_instance)
     session = mock_async_session()
-    authenticate = AsyncMock(return_value=None)
+    authenticate = AsyncMock(return_value=SimpleNamespace(kind=PrincipalType.SYSTEM))
     visibility = AsyncMock()
     worker_lookup = AsyncMock()
     monkeypatch.setattr(utils, 'async_session', lambda: session)
@@ -1070,9 +1089,169 @@ async def test_legacy_header_rejects_managed_instance_before_rank_visibility(
             {utils.router_header_key: 'model-1-7.static'}
         )
     assert error.value.status_code == 404
-    authenticate.assert_not_awaited()
-    visibility.assert_not_awaited()
+    authenticate.assert_awaited_once()
+    visibility.assert_awaited_once()
     worker_lookup.assert_not_awaited()
+    session.__aexit__.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('credential', ['missing', 'user'])
+@pytest.mark.parametrize(
+    'destination', ['model-invalid', 'model-1-7.static', 'model-1-7-dp1.static']
+)
+async def test_tunnel_rejects_credentials_before_processing_model_targets(
+    monkeypatch, credential, destination
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import HTTPException
+    from gpustack.gateway import utils
+    from gpustack.schemas.models import ModelInstance
+    from gpustack.schemas.principals import PrincipalType
+
+    principal = (
+        SimpleNamespace(kind=PrincipalType.USER) if credential == 'user' else None
+    )
+    authenticate = AsyncMock(return_value=principal)
+    session = MagicMock()
+    lookup = AsyncMock()
+    resolve = MagicMock()
+    monkeypatch.setattr(
+        'gpustack.api.auth.authenticate_worker_by_request_headers', authenticate
+    )
+    monkeypatch.setattr(utils, 'async_session', session)
+    monkeypatch.setattr(ModelInstance, 'one_by_id', lookup)
+    monkeypatch.setattr(utils, 'resolve_model_instance_endpoint', resolve)
+    headers = {utils.router_header_key: destination}
+    with pytest.raises(HTTPException) as error:
+        await utils.resolve_instance_address_from_model_header(headers)
+    assert error.value.status_code == 403
+    assert error.value.detail == 'Model routing requires internal credentials'
+    authenticate.assert_awaited_once_with(headers)
+    session.assert_not_called()
+    lookup.assert_not_awaited()
+    resolve.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'principal_kind, scope_mismatch',
+    [
+        ('worker', 'cluster'),
+        ('worker', 'owner'),
+        ('cluster', 'cluster'),
+        ('cluster', 'owner'),
+        ('unbound', None),
+    ],
+)
+@pytest.mark.parametrize(
+    'target_state',
+    [
+        'missing',
+        'ready',
+        'unready',
+        'unknown_rank',
+        'missing_worker',
+        'deleted_worker',
+        'no_address',
+        'draining',
+    ],
+)
+async def test_tunnel_hides_invisible_model_state(
+    rank_instance, monkeypatch, principal_kind, scope_mismatch, target_state
+):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+    from gpustack.gateway import utils
+    from gpustack.schemas.models import ModelInstance
+    from gpustack.schemas.principals import PrincipalType
+    from gpustack.schemas.workers import Worker
+    from gpustack.websocket_proxy.proxy_server import HTTPSProxyServer
+    from tests.utils.mock import mock_async_session
+
+    rank_instance.cluster_id, rank_instance.owner_principal_id = 11, 20
+    scope = SimpleNamespace(
+        id=2 if principal_kind == 'worker' else 11,
+        cluster_id=12 if scope_mismatch == 'cluster' else 11,
+        owner_principal_id=21 if scope_mismatch == 'owner' else 20,
+    )
+    if principal_kind == 'cluster':
+        scope.id = scope.cluster_id
+    principal = SimpleNamespace(
+        id=9,
+        kind=PrincipalType.SYSTEM,
+        is_admin=False,
+        worker=scope if principal_kind == 'worker' else None,
+        cluster=scope if principal_kind == 'cluster' else None,
+    )
+    worker = SimpleNamespace(
+        id=1,
+        cluster_id=11,
+        owner_principal_id=20,
+        system_principal_id=9,
+        ip=None if target_state == 'no_address' else '10.0.0.1',
+        deleted_at=(
+            datetime.now(timezone.utc) if target_state == 'deleted_worker' else None
+        ),
+    )
+    if target_state == 'unready':
+        for workload in rank_instance.distributed_servers.workloads:
+            for placement in workload.dp_rank_placements:
+                placement.ready = False
+    if target_state == 'draining':
+        rank_instance.draining_since = datetime.now(timezone.utc)
+    session = mock_async_session()
+    monkeypatch.setattr(utils, 'async_session', lambda: session)
+    monkeypatch.setattr(
+        'gpustack.api.auth.authenticate_worker_by_request_headers',
+        AsyncMock(return_value=principal),
+    )
+    monkeypatch.setattr(
+        ModelInstance,
+        'one_by_id',
+        AsyncMock(return_value=None if target_state == 'missing' else rank_instance),
+    )
+    resolve = MagicMock(wraps=utils.resolve_model_instance_endpoint)
+    worker_lookup = AsyncMock(
+        return_value=None if target_state == 'missing_worker' else worker
+    )
+    monkeypatch.setattr(utils, 'resolve_model_instance_endpoint', resolve)
+    monkeypatch.setattr(Worker, 'one_by_id', worker_lookup)
+
+    reader = asyncio.StreamReader()
+    rank = 8 if target_state == 'unknown_rank' else 1
+    reader.feed_data(
+        (
+            'GET http://ignored/v1/models HTTP/1.1\r\n'
+            f'X-GPUStack-Model-Instance: model-1-7-dp{rank}.static\r\n\r\n'
+        ).encode()
+    )
+    reader.feed_eof()
+    response = bytearray()
+    writer = MagicMock()
+    writer.write.side_effect = response.extend
+    writer.drain, writer.wait_closed = AsyncMock(), AsyncMock()
+    connections = MagicMock()
+    proxy = HTTPSProxyServer(
+        '127.0.0.1',
+        0,
+        connections,
+        authenticator=AsyncMock(return_value=True),
+        header_router=utils.resolve_instance_address_from_model_header,
+    )
+    await proxy._handle_client(reader, writer)
+    headers, body = bytes(response).split(b'\r\n\r\n', 1)
+    if principal_kind == 'unbound':
+        assert headers.startswith(b'HTTP/1.1 403 ')
+        assert body == b'System principal has no cluster scope'
+    else:
+        assert headers.startswith(b'HTTP/1.1 404 ')
+        assert body == b'Model destination not found'
+    resolve.assert_not_called()
+    worker_lookup.assert_not_awaited()
+    connections.assert_not_called()
     session.__aexit__.assert_awaited_once()
 
 
