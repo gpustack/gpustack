@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 import asyncio
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -160,6 +160,11 @@ def _managed_plans(items):
     ]
 
 
+def _finish_managed_tasks(state):
+    for job in list(state.serve._managed_tasks.values()):
+        job.result(timeout=2)
+
+
 def _running_managed(state):
     for item in _local_manifest(state):
         state.runtime.append(
@@ -204,6 +209,138 @@ def test_managed_registration_precedes_every_runtime_creation(managed, hybrid):
         assert call.args[0].labels["gpustack.ai/worker-id"] == str(
             state.serve._worker_id
         )
+
+
+@pytest.mark.parametrize('check', ['state', 'health'])
+def test_slow_managed_creation_does_not_block_state_reconciliation(managed, check):
+    state = managed
+    local = _local_manifest(state)
+    state.instance.distributed_servers.workloads = []
+    state.instance.distributed_servers.orchestration_mode = 'managed'
+    connection = MagicMock()
+    connection.poll.return_value = True
+    connection.recv.return_value = (local, _managed_plans(local))
+    state.serve._managed_launches[(state.instance.id, state.instance.restart_count)] = (
+        connection
+    )
+    entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+    errors = []
+    create = state.create.side_effect
+
+    def slow_create(plan):
+        entered.set()
+        assert release.wait(10)
+        create(plan)
+
+    def reconcile():
+        try:
+            state.serve._sync_managed_model_instance(state.instance)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            returned.set()
+
+    def check_health():
+        try:
+            state.serve._sync_managed_rank_health(state.instance)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            returned.set()
+
+    state.create.side_effect = slow_create
+    caller = threading.Thread(target=reconcile, daemon=True)
+    try:
+        caller.start()
+        assert entered.wait(2)
+        assert returned.wait(2), 'A slow image pull must not hold the sync caller'
+        caller.join(2)
+        returned.clear()
+        caller = threading.Thread(
+            target=reconcile if check == 'state' else check_health, daemon=True
+        )
+        caller.start()
+        assert returned.wait(2), 'A busy instance must not hold the next sync pass'
+        assert state.create.call_count == 1
+    finally:
+        release.set()
+        caller.join(2)
+        executor = getattr(state.serve, '_managed_task_executor', None)
+        if executor is not None:
+            executor.shutdown(wait=True)
+    assert not errors
+    assert state.create.call_count == len(local)
+    connection.close.assert_called_once()
+
+
+def test_managed_preparation_has_a_bounded_queue_and_reuses_finished_slots(manager):
+    serve, _ = manager
+    jobs = []
+
+    def submit(*args):
+        job = Future()
+        jobs.append(job)
+        return job
+
+    executor = MagicMock()
+    executor.submit.side_effect = submit
+    serve._managed_task_executor = executor
+    instances = [_instance().model_copy(update={'id': i}) for i in range(10)]
+
+    for instance in instances:
+        serve._schedule_managed_task(instance, serve._prepare_managed_model_instance)
+        serve._schedule_managed_task(instance, serve._prepare_managed_model_instance)
+    assert executor.submit.call_count == 4
+    assert len(serve._managed_tasks) == 4
+
+    jobs[0].set_result(None)
+    serve._schedule_managed_task(instances[-1], serve._prepare_managed_model_instance)
+    assert executor.submit.call_count == 5
+    assert len(serve._managed_tasks) == 4
+
+
+@pytest.mark.parametrize(
+    'entrypoint', ['sync_model_instances_state', '_retry_managed_stops']
+)
+def test_slow_managed_stop_keeps_reconciliation_free_and_ports_reserved(
+    managed, entrypoint
+):
+    state = managed
+    instance = _running_managed(state)
+    state.instance.state = ModelInstanceStateEnum.ERROR
+    entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+    delete = state.delete.side_effect
+    errors = []
+
+    def slow_delete(name):
+        entered.set()
+        assert release.wait(10)
+        delete(name)
+
+    def reconcile():
+        try:
+            state.serve._sync_managed_model_instance(state.instance)
+            getattr(state.serve, entrypoint)()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            returned.set()
+
+    state.delete.side_effect = slow_delete
+    caller = threading.Thread(target=reconcile, daemon=True)
+    try:
+        caller.start()
+        assert entered.wait(2)
+        assert returned.wait(2), 'Pending teardown must not hold shared reconciliation'
+        assert instance.id in state.serve._assigned_ports
+        state.client.model_instances.report_workloads.assert_not_called()
+    finally:
+        release.set()
+        caller.join(2)
+        state.serve._managed_task_executor.shutdown(wait=True)
+    assert not errors
+    assert not state.runtime
+    assert instance.id not in state.serve._assigned_ports
 
 
 @pytest.mark.parametrize(
@@ -336,6 +473,7 @@ def test_managed_launch_payloads_precede_local_registration(managed, monkeypatch
     receiver.poll.return_value = True
     receiver.recv.return_value = (local, _managed_plans(local))
     serve._sync_managed_model_instance(mi.model_copy(deep=True))
+    _finish_managed_tasks(state)
     assert phases == ["preparation", "preparation", "registration"]
     assert state.create.call_count == len(local)
 
@@ -354,6 +492,7 @@ def test_external_preparation_returns_to_parent_before_registration(
         state.receiver.poll.return_value = True
         state.receiver.recv.return_value = (local, _managed_plans(local))
         state.serve._sync_managed_model_instance(mi)
+        _finish_managed_tasks(state)
         assert state.events[0] == "report"
         assert state.create.call_count == len(local)
         state.receiver.close.assert_called_once()
@@ -372,6 +511,7 @@ def test_external_stop_during_preparation_closes_channel_before_any_create(
     state.preparer.is_alive.return_value = not stopped
     state.receiver.poll.return_value = True
     state.serve._sync_managed_model_instance(state.instance)
+    _finish_managed_tasks(state)
     state.receiver.recv.assert_not_called()
     state.receiver.close.assert_called_once()
     state.create.assert_not_called()
@@ -388,6 +528,7 @@ def test_ordinary_preparation_can_launch_while_other_replicas_are_stale(
     state.receiver.recv.return_value = (local, _managed_plans(local))
 
     state.serve._sync_managed_model_instance(state.instance)
+    _finish_managed_tasks(state)
 
     assert state.events[0] == 'report'
     state.create.assert_called_once()
@@ -402,6 +543,7 @@ def test_managed_stop_intent_without_local_snapshot_resumes_from_server(managed)
     state.serve._model_instance_by_instance_id.clear()
 
     state.serve.sync_model_instances_state()
+    _finish_managed_tasks(state)
 
     state.create.assert_not_called()
     assert all(
@@ -439,6 +581,7 @@ def test_external_failed_preparation_never_creates_a_container(
             "stale generation"
         )
     state.serve._sync_managed_model_instance(state.instance)
+    _finish_managed_tasks(state)
     state.create.assert_not_called()
     state.receiver.close.assert_called_once()
     assert (
@@ -527,6 +670,7 @@ def test_managed_unhealthy_runtime_stops_group_and_retains_claims(managed):
     state.delete.side_effect = lambda name: None
 
     state.serve._sync_managed_model_instance(state.instance)
+    _finish_managed_tasks(state)
 
     failed = next(item for item in _local_manifest(state) if item.name == failed_name)
     assert failed.state == ModelInstanceWorkloadStateEnum.FAILED
@@ -727,6 +871,7 @@ def test_managed_watch_stops_only_local_tasks_and_keeps_other_workers_reports(
     state.serve._dispatch_model_instance_event(
         Event(type=EventType.UPDATED, data=state.instance)
     )
+    _finish_managed_tasks(state)
     assert [item.name for item in state.runtime] == ["unrelated-model"]
     assert state.delete.call_count == 2
     assert [
@@ -974,12 +1119,14 @@ def test_pending_managed_cleanup_retries_locally_while_server_reads_fail(
     state.client.workers.get.side_effect = ReadTimeout("server unavailable")
     if cached:
         state.serve.sync_model_instances_state()
+        _finish_managed_tasks(state)
     else:
         state.client.model_instances.list.side_effect = ReadTimeout(
             "server unavailable"
         )
         with pytest.raises(ReadTimeout):
             state.serve.sync_model_instances_state()
+        _finish_managed_tasks(state)
     assert not state.runtime
     assert instance.id in state.serve._assigned_ports
     state.client.model_instances.report_workloads.assert_not_called()
@@ -1055,7 +1202,9 @@ def manager(request, tmp_path, monkeypatch):
         MagicMock(return_value=SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING)),
     )
     monkeypatch.setattr("gpustack.utils.network.is_port_available", lambda *args: True)
-    return manager, clientset
+    yield manager, clientset
+    if manager._managed_task_executor is not None:
+        manager._managed_task_executor.shutdown(wait=True)
 
 
 @pytest.mark.parametrize("delete_event", [False, True])
@@ -2250,6 +2399,7 @@ def test_managed_stop_follows_server_intent_without_worker_clock(
     )
     state.instance.distributed_servers.stop_requested = stop_requested
     state.serve._sync_managed_model_instance(state.instance)
+    _finish_managed_tasks(state)
     if stop_requested:
         assert not state.runtime
         assert all(
@@ -2279,6 +2429,7 @@ def test_managed_stop_resumes_when_the_same_worker_reconnects(managed):
         state=WorkerStateEnum.UNREACHABLE, unreachable=True
     )
     state.serve._sync_managed_model_instance(state.instance)
+    _finish_managed_tasks(state)
     assert state.instance.id in state.serve._assigned_ports
     assert all(
         item.state == ModelInstanceWorkloadStateEnum.UNKNOWN
@@ -2288,6 +2439,7 @@ def test_managed_stop_resumes_when_the_same_worker_reconnects(managed):
         state=WorkerStateEnum.READY, unreachable=False
     )
     state.serve._sync_managed_model_instance(state.instance)
+    _finish_managed_tasks(state)
     assert state.instance.id not in state.serve._assigned_ports
     assert all(
         item.state == ModelInstanceWorkloadStateEnum.STOPPED
@@ -2677,6 +2829,7 @@ def test_owned_older_engine_retains_resources_until_runtime_deletion(older_engin
     )
     state.delete.side_effect = delete
     state.serve._retry_managed_stops()
+    _finish_managed_tasks(state)
     assert not state.runtime
     assert state.instance.id not in state.serve._assigned_ports
 
@@ -3357,6 +3510,7 @@ def test_instance_global_error_stops_engine_and_smg(smg):
     s = smg
     s.instance.state = ModelInstanceStateEnum.ERROR
     s.serve._sync_managed_model_instance(s.instance)
+    _finish_managed_tasks(s)
     assert not s.runtime
     assert s.instance.id not in s.serve._assigned_ports
 
@@ -3375,6 +3529,7 @@ def test_cpu_server_read_failure_after_create_preserves_engine_and_retries_clean
 
     s.create.side_effect = lost
     s.serve._sync_managed_model_instance(s.instance)
+    _finish_managed_tasks(s)
     assert any(w.name == 'engine-1' for w in s.runtime)
     assert s.serve._smg_stopping
     assert all(
@@ -3382,6 +3537,7 @@ def test_cpu_server_read_failure_after_create_preserves_engine_and_retries_clean
     )
     s.client.model_instances.get.side_effect = get
     s.serve._retry_managed_stops()
+    _finish_managed_tasks(s)
     assert not s.serve._smg_stopping
     assert (
         next(
@@ -3567,6 +3723,7 @@ def test_ordinary_deleted_manifest_cleans_all_local_rank_tasks(managed, event_ty
     expected = {w.name for w in _local_manifest(state)}
     state.client.model_instances.get.side_effect = NotFoundException('instance deleted')
     state.serve._dispatch_model_instance_event(Event(type=event_type, data=instance))
+    _finish_managed_tasks(state)
     assert {call.args[0] for call in state.delete.call_args_list} == expected
     assert not state.runtime
     assert instance.id not in state.serve._assigned_ports
@@ -3804,6 +3961,7 @@ def test_hybrid_runtime_failure_withdraws_whole_group_and_retains_pending_claims
     state.runtime[0].state = WorkloadStatusStateEnum.UNHEALTHY
     state.delete.side_effect = lambda name: None
     state.serve._sync_managed_model_instance(state.instance)
+    _finish_managed_tasks(state)
     failed = _local_manifest(state)[0]
     assert failed.state == ModelInstanceWorkloadStateEnum.FAILED
     assert failed.component.ready is (False if failed.component.api_port else None)
@@ -3841,6 +3999,7 @@ def test_hybrid_stop_waits_for_local_absence_and_available_worker(
     state.list.side_effect, state.delete.side_effect = normal_list, normal_delete
     state.client.workers.get.return_value.unreachable = False
     state.serve._retry_managed_stops()
+    _finish_managed_tasks(state)
     stopped = _local_manifest(state)[0]
     assert stopped.state == ModelInstanceWorkloadStateEnum.STOPPED
     assert stopped.component.ready is (False if stopped.component.api_port else None)
