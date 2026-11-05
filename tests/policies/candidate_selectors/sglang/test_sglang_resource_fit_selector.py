@@ -45,6 +45,39 @@ from tests.utils.scheduler import compare_candidates
 from gpustack.utils.unit import byte_to_gib
 
 
+@pytest.fixture(autouse=True)
+def _qwen_image_repository(monkeypatch):
+    """Freeze diffusion placement inputs without accessing the model hub."""
+    from gpustack.utils import hub
+
+    list_repo, read_file = hub.list_repo, hub.read_repo_file_content
+
+    def files(repo_id, *args, **kwargs):
+        if repo_id != 'Qwen/Qwen-Image':
+            return list_repo(repo_id, *args, **kwargs)
+        return [
+            {'name': 'transformer/model.safetensors', 'size': 40_000_000_000},
+            {'name': 'text_encoder/model.safetensors', 'size': 17_000_000_000},
+            {'name': 'vae/diffusion_pytorch_model.safetensors', 'size': 699_249_390},
+            {'name': 'unused/model.safetensors', 'size': 1_000_000_000},
+        ]
+
+    def content(model, filename, *args, **kwargs):
+        if model.huggingface_repo_id != 'Qwen/Qwen-Image':
+            return read_file(model, filename, *args, **kwargs)
+        assert filename == 'model_index.json'
+        return {
+            '_class_name': 'QwenImagePipeline',
+            '_diffusers_version': '0.35.0',
+            'transformer': ['diffusers', 'QwenImageTransformer2DModel'],
+            'text_encoder': ['transformers', 'Qwen2_5_VLForConditionalGeneration'],
+            'vae': ['diffusers', 'AutoencoderKLQwenImage'],
+        }
+
+    monkeypatch.setattr(hub, 'list_repo', files)
+    monkeypatch.setattr(hub, 'read_repo_file_content', content)
+
+
 def expected_candidate(
     worker_id, worker_name, gpu_indexes, vram, subworkers=None, ram=None
 ):

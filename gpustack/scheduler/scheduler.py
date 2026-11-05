@@ -1565,7 +1565,7 @@ async def prioritize_workers_with_model_files(
 
 
 async def evaluate_pretrained_config(
-    model: Model,
+    model: Union[Model, ModelSpec],
     workers: Optional[List[Worker]] = None,
     raise_raw: bool = False,
 ) -> bool:
@@ -1678,7 +1678,9 @@ def _pd_prefill_model(model: Union[Model, ModelSpec]):
     )
 
 
-async def _pd_layout_config(model: Model, config, workers: Optional[List[Worker]]):
+async def _pd_layout_config(
+    model: Union[Model, ModelSpec], config, workers: Optional[List[Worker]]
+):
     """Inspect source KV layout even when an architecture override supplies categories."""
     from gpustack.server.pd_mode_catalog import get_pd_mode
 
@@ -1704,7 +1706,7 @@ async def _pd_layout_config(model: Model, config, workers: Optional[List[Worker]
 
 
 def _record_pd_connector_variant(
-    model: Model, config, architectures: List[str]
+    model: Union[Model, ModelSpec], config, architectures: List[str]
 ) -> bool:
     """Pin a layout, including conservative fallbacks, to the deployment inputs."""
     import hashlib
