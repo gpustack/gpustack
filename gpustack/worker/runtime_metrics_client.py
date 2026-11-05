@@ -5,7 +5,8 @@ from prometheus_client.parser import text_string_to_metric_families
 from prometheus_client.openmetrics.parser import (
     text_string_to_metric_families as openmetrics_text_string_to_metric_families,
 )
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait
+from time import monotonic
 
 from gpustack.schemas.models import BackendEnum
 
@@ -21,7 +22,9 @@ BackendVersionAPI = {
 }
 
 
-def parse_metrics_text(text: str, content_type: Optional[str] = None):
+def parse_metrics_text(
+    text: str, content_type: Optional[str] = None, *, raise_on_error: bool = False
+):
     """
     Parse an exposition response, picking the parser that matches its content type.
 
@@ -49,23 +52,42 @@ def parse_metrics_text(text: str, content_type: Optional[str] = None):
         # raise while the caller iterates and be retried as if it were a
         # request failure, which no amount of retrying can fix.
         logger.warning(f"Failed to parse metrics exposition: {e}")
+        if raise_on_error:
+            raise ValueError("Invalid metrics exposition") from e
         return []
+
+
+class MetricsScrapeResult(dict):
+    """A mapping compatible result with a bounded collection outcome."""
+
+    def __init__(self, metrics=None, *, status: str):
+        super().__init__(metrics or {})
+        self.status = status
 
 
 class Config:
     def __init__(
-        self, timeout=3, max_retries=2, base_delay=1, max_delay=3, insecure_tls=True
+        self,
+        timeout=3,
+        max_retries=2,
+        base_delay=1,
+        max_delay=3,
+        insecure_tls=True,
+        batch_timeout=10,
     ):
         self.timeout = timeout
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
         self.insecure_tls = insecure_tls
+        self.batch_timeout = batch_timeout
 
 
 class Client:
     def __init__(self, config=None):
         self.config = config or Config()
+        self._executor = None
+        self._inflight = {}
 
     def fetch_metrics_from_endpoint(self, endpoint):
         url = f"http://{endpoint}/metrics"
@@ -80,12 +102,18 @@ class Client:
                     verify=not self.config.insecure_tls,
                 )
                 if resp.status_code == 200:
-                    metrics = {}
-                    for family in parse_metrics_text(
-                        resp.text, resp.headers.get("Content-Type")
-                    ):
-                        metrics[family.name] = family
-                    return metrics
+                    try:
+                        families = parse_metrics_text(
+                            resp.text,
+                            resp.headers.get("Content-Type"),
+                            raise_on_error=True,
+                        )
+                    except ValueError:
+                        return MetricsScrapeResult(status="parse_error")
+                    metrics = {f.name: f for f in families if f.samples}
+                    return MetricsScrapeResult(
+                        metrics, status="success" if metrics else "empty"
+                    )
                 else:
                     logger.warning(
                         f"[{endpoint}] Attempt {attempt + 1}: Bad status {resp.status_code}"
@@ -100,19 +128,58 @@ class Client:
                 import time
 
                 time.sleep(delay)
-        return None
+        return MetricsScrapeResult(status="error")
+
+    def _fetch_batch(self, endpoints, fetch, max_workers=16):
+        """Bound batch latency and reuse threads still finishing timed-out HTTP."""
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix="runtime-metrics"
+            )
+        deadline = monotonic() + self.config.batch_timeout
+        self._inflight = {
+            key: future for key, future in self._inflight.items() if not future.done()
+        }
+        futures = {}
+        for endpoint in endpoints:
+            key = (fetch.__name__, endpoint)
+            if key in self._inflight:
+                # A previous batch may belong to a retired generation. Keep its
+                # thread bounded, but never publish its late result as this batch.
+                continue
+            future = self._executor.submit(fetch, endpoint)
+            self._inflight[key] = future
+            futures[future] = endpoint
+        if not futures:
+            return {}
+        done, pending = wait(futures, timeout=max(0, deadline - monotonic()))
+        results = {}
+        for future in done:
+            try:
+                results[futures[future]] = future.result()
+            except Exception as exc:
+                logger.warning("Runtime probe failed for %s: %s", futures[future], exc)
+        for future in pending:
+            # Pending work must not build up behind unresponsive endpoints.
+            future.cancel()
+        return results
 
     def fetch_metrics_from_endpoints(self, endpoints, max_workers=16):
-        results = {}
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(self.fetch_metrics_from_endpoint, ep): ep
-                for ep in endpoints
-            }
-            for future in as_completed(futures):
-                ep = futures[future]
-                results[ep] = future.result()
-        return results
+        results = self._fetch_batch(
+            endpoints, self.fetch_metrics_from_endpoint, max_workers
+        )
+        return {
+            endpoint: results.get(endpoint, MetricsScrapeResult(status="error"))
+            for endpoint in endpoints
+        }
+
+    def fetch_runtime_versions(self, endpoints):
+        def fetch_version(endpoint):
+            return self.fetch_runtime_version_from_endpoint(
+                endpoint, endpoints[endpoint]
+            )
+
+        return self._fetch_batch(endpoints, fetch_version)
 
     def fetch_runtime_version_from_endpoint(
         self, endpoint: str, runtime: str

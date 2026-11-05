@@ -1,4 +1,7 @@
-from typing import Callable, Tuple
+from collections.abc import Mapping
+from dataclasses import dataclass
+from time import monotonic
+from typing import Callable, Iterator, Tuple
 from cachetools import TTLCache
 from prometheus_client.core import (  # noqa: F401
     GaugeMetricFamily,
@@ -14,6 +17,12 @@ from gpustack.utils.command import find_parameter
 from gpustack.utils.metrics import (
     get_builtin_metrics_config,
     get_runtime_metrics_config,
+    runtime_metric_labels,
+)
+from gpustack.utils.model_instance_workers import (
+    ModelInstanceMetricsSource,
+    get_model_instance_workloads,
+    model_instance_metrics_sources,
 )
 from gpustack.worker.runtime_metrics_client import (
     Config as RunTimeMetricsClientConfig,
@@ -23,7 +32,6 @@ from gpustack.schemas.models import (
     BackendEnum,
     Model,
     ModelInstance,
-    ModelInstanceStateEnum,
     ModelInstanceUpdate,
     get_backend,
     is_audio_model,
@@ -36,13 +44,70 @@ from gpustack.utils import version
 
 logger = logging.getLogger(__name__)
 
-METRICS_CONFIG_FETCH_TIMEOUT_SECONDS = 30
+METRICS_CONFIG_FETCH_TIMEOUT_SECONDS = 2
 
 # unified registry
 unified_registry = CollectorRegistry()
 
 # raw metrics registry
 raw_registry = CollectorRegistry()
+
+
+@dataclass(frozen=True)
+class _RuntimeMetricsEndpoint:
+    instance: ModelInstance
+    source: ModelInstanceMetricsSource
+    host: str
+    worker_name: str
+    worker_identity: tuple = ()
+
+    def same_owner(self, other) -> bool:
+        return (
+            self.source == other.source
+            and self.host == other.host
+            and self.worker_identity == other.worker_identity
+        )
+
+
+# Ten collection intervals (Worker schedules aggregation every three seconds).
+_RUNTIME_METRICS_CACHE_TTL_SECONDS = 30
+
+
+class _RuntimeMetricsSnapshot(Mapping):
+    """A published batch whose samples stop being readable after its TTL."""
+
+    def __init__(self, metrics: dict, collected_at: float):
+        self._metrics = metrics
+        self._expires_at = collected_at + _RUNTIME_METRICS_CACHE_TTL_SECONDS
+
+    def __getitem__(self, key):
+        if monotonic() >= self._expires_at:
+            raise KeyError(key)
+        return self._metrics[key]
+
+    def __iter__(self):
+        for key, _ in self.items():
+            yield key
+
+    def __len__(self):
+        return len(self._metrics) if monotonic() < self._expires_at else 0
+
+    def items(self):
+        for key, metric in self._metrics.items():
+            if monotonic() >= self._expires_at:
+                return
+            yield key, metric
+
+    def values(self):
+        for _, metric in self.items():
+            yield metric
+
+
+def runtime_metrics_values(cache: Optional[dict], kind: str) -> Iterator:
+    """Read a batch through its freshness boundary at each exported family."""
+    metrics = cache.get(kind) if cache is not None else None
+    if metrics is not None:
+        yield from metrics.values()
 
 
 class RuntimeMetricsAggregator:
@@ -54,11 +119,13 @@ class RuntimeMetricsAggregator:
     ):
         self._cache = cache
         self._metrics_client_config = RunTimeMetricsClientConfig(
-            timeout=5, max_retries=2, insecure_tls=True
+            timeout=2, max_retries=0, insecure_tls=True
         )
         self._metrics_client = RuntimeMetricsClient(self._metrics_client_config)
         self._worker_id_getter = worker_id_getter
         self._clientset = clientset
+
+        self._runtime_version_cache = TTLCache(maxsize=1024, ttl=300)
 
         # Cache for metrics config (refresh every 300 seconds)
         self._metrics_config_cache = TTLCache(maxsize=1, ttl=300)
@@ -121,20 +188,37 @@ class RuntimeMetricsAggregator:
         # 3. Batch fetch metrics from all endpoints
         endpoint_metrics = self._metrics_client.fetch_metrics_from_endpoints(endpoints)
 
+        # Version probes are per instance, never per sample or logical rank.
+        runtime_versions = self._fetch_source_versions(
+            endpoint_to_instance, endpoint_metrics
+        )
+
+        # A request can finish after a task was replaced, stopped, or reassigned.
+        # Re-read the entire scoped set once, rather than issuing a GET per sample.
+        _, current_sources, _ = self._find_active_model_endpoints(
+            worker_id, metrics_config
+        )
+
         # 4. Unified and raw aggregation
         unified_metrics = {}
         raw_metrics = {}
-        for ep, metrics in endpoint_metrics.items():
-            if not metrics:
+        for ep in endpoints:
+            previous = endpoint_to_instance[ep]
+            current = current_sources.get(ep)
+            if current is None or not previous.same_owner(current):
                 continue
+            metrics = endpoint_metrics.get(ep)
             try:
-                mi = endpoint_to_instance[ep]
+                mi = current.instance
                 m = instance_id_to_model.get(mi.id)
-
                 runtime = get_backend(m)
-                runtime_version = self.fetch_and_update_api_backend_version(mi, ep)
-
-                base_labels = self._build_base_labels(mi, m, runtime)
+                runtime_version = runtime_versions.get(mi.id)
+                base_labels = self._build_base_labels(mi, m, runtime, current)
+                self._add_scrape_status(
+                    unified_metrics, raw_metrics, base_labels, metrics
+                )
+                if not metrics:
+                    continue
                 self._process_endpoint_metrics(
                     metrics,
                     base_labels,
@@ -152,19 +236,73 @@ class RuntimeMetricsAggregator:
                     ("endpoint", ep), f"Skipping metrics from endpoint {ep}: {e}"
                 )
 
-        self._cache["unified"] = unified_metrics
-        self._cache["raw"] = raw_metrics
+        collected_at = monotonic()
+        self._cache["unified"] = _RuntimeMetricsSnapshot(unified_metrics, collected_at)
+        self._cache["raw"] = _RuntimeMetricsSnapshot(raw_metrics, collected_at)
         logger.trace(f"trace_id: {trace_id}, completed fetching runtime metrics.")
+
+    def _fetch_source_versions(self, endpoints: dict, endpoint_metrics: dict) -> dict:
+        versions, pending = {}, {}
+        for endpoint, context in endpoints.items():
+            mi, source = context.instance, context.source
+            if (
+                source.kind == "sglang_smg"
+                or mi.id in versions
+                or not endpoint_metrics.get(endpoint)
+            ):
+                continue
+            if mi.api_detected_backend_version is not None:
+                versions[mi.id] = mi.api_detected_backend_version
+                continue
+            key = (mi.id, source, context.host, context.worker_identity, mi.backend)
+            if key in self._runtime_version_cache:
+                versions[mi.id] = self._runtime_version_cache[key]
+            else:
+                versions[mi.id] = mi.backend_version
+                api = f"{context.host}:{source.api_port}"
+                pending.setdefault(mi.backend, {})[api] = (mi, key)
+        # Probe each runtime concurrently within one shared batch deadline.
+        probes = {api: runtime for runtime, items in pending.items() for api in items}
+        detected = self._metrics_client.fetch_runtime_versions(probes) if probes else {}
+        for runtime, items in pending.items():
+            for api, (mi, key) in items.items():
+                detected_version = detected.get(api)
+                value = detected_version or mi.backend_version
+                if detected_version:
+                    self._runtime_version_cache[key] = detected_version
+                versions[mi.id] = value
+                if detected_version and get_model_instance_workloads(mi) is None:
+                    self._update_model_instance(
+                        mi.id,
+                        expected_instance=mi,
+                        api_detected_backend_version=detected_version,
+                    )
+        return versions
+
+    def _add_scrape_status(self, unified_metrics, raw_metrics, labels, metrics):
+        name = "gpustack:runtime_metrics_scrape_status"
+        status = getattr(metrics, "status", None) or (
+            "error" if metrics is None else "success" if metrics else "empty"
+        )
+        if status not in ("success", "empty", "error", "parse_error"):
+            status = "error"
+        if name not in raw_metrics:
+            raw_metrics[name] = GaugeMetricFamily(name, "Runtime source scrape outcome")
+            unified_metrics[name] = raw_metrics[name]
+        raw_metrics[name].add_sample(name, {**labels, "status": status}, 1)
 
     def fetch_and_update_api_backend_version(
         self,
         model_instance: ModelInstance,
         endpoint: str,
+        api_endpoint: Optional[str] = None,
     ) -> Optional[str]:
         if model_instance.api_detected_backend_version is not None:
             return model_instance.api_detected_backend_version
 
-        api_endpoint = f"{model_instance.worker_ip}:{_api_port(model_instance)}"
+        api_endpoint = api_endpoint or (
+            f"{model_instance.worker_ip}:{_api_port(model_instance)}"
+        )
         if api_endpoint != endpoint:
             # The caller hands us the EXPOSITION endpoint, which for a router is a
             # separate port band (see `_metrics_port`). `/version` does not live
@@ -181,8 +319,13 @@ class RuntimeMetricsAggregator:
             api_endpoint, model_instance.backend
         )
         if version is not None:
+            fence = (
+                {"expected_instance": model_instance}
+                if getattr(self, "_clientset", None) is not None
+                else {}
+            )
             self._update_model_instance(
-                model_instance.id, api_detected_backend_version=version
+                model_instance.id, api_detected_backend_version=version, **fence
             )
             return version
 
@@ -190,10 +333,9 @@ class RuntimeMetricsAggregator:
 
     def _find_active_model_endpoints(
         self, worker_id: int, metrics_config: dict
-    ) -> tuple[set, dict[str, ModelInstance], dict[int, Model]]:
+    ) -> tuple[set, dict[str, _RuntimeMetricsEndpoint], dict[int, Model]]:
         """
-        Get all endpoints and related mappings for RUNNING model instances on this worker.
-        Returns: (endpoints, endpoint->instance, instance_id->model)
+        Get real exposition sources owned by this Worker's current identity.
         """
         model_instances, models = self._list_worker_models(worker_id)
         if not model_instances or not models:
@@ -203,10 +345,10 @@ class RuntimeMetricsAggregator:
         endpoints = set()
         endpoint_to_instance = {}
         instance_id_to_model = {}
+        conflicting = set()
         for mi in model_instances.items:
             model = model_id_to_model.get(mi.model_id)
-
-            if self._should_skip_endpoint(
+            if mi.cluster_id != self._worker.cluster_id or self._should_skip_endpoint(
                 model=model,
                 model_instance=mi,
                 metrics_config=metrics_config,
@@ -214,26 +356,67 @@ class RuntimeMetricsAggregator:
                 logger.trace(f"Skipping model instance {mi.id} in metrics aggregation.")
                 continue
 
-            endpoint = f"{mi.worker_ip}:{_metrics_port(mi)}"
-            endpoints.add(endpoint)
-            endpoint_to_instance[endpoint] = mi
-            instance_id_to_model[mi.id] = model
+            for source in model_instance_metrics_sources(mi):
+                if source.worker_id != worker_id:
+                    continue
+                endpoint = f"{self._worker.ip}:{source.metrics_port}"
+                if endpoint in conflicting:
+                    continue
+                context = _RuntimeMetricsEndpoint(
+                    mi,
+                    source,
+                    self._worker.ip,
+                    self._worker.name,
+                    (
+                        self._worker.cluster_id,
+                        getattr(self._worker, "system_principal_id", None),
+                    ),
+                )
+                previous = endpoint_to_instance.get(endpoint)
+                if previous is not None and not previous.same_owner(context):
+                    # A socket cannot carry two authoritative instance identities.
+                    conflicting.add(endpoint)
+                    endpoint_to_instance.pop(endpoint)
+                    endpoints.discard(endpoint)
+                    self._warn_once(
+                        ("source_conflict", endpoint),
+                        "Skipping runtime metrics socket with conflicting ownership",
+                    )
+                    continue
+                endpoints.add(endpoint)
+                endpoint_to_instance[endpoint] = context
+                instance_id_to_model[mi.id] = model
 
         return endpoints, endpoint_to_instance, instance_id_to_model
 
     def _list_worker_models(self, worker_id: int):
         """
-        Query all model instances and model objects on this worker.
+        Read the full scoped set; worker_id only filters primary ownership.
         """
+        self._worker = self._clientset.workers.get(id=worker_id, use_cache=False)
+        if (
+            self._worker.id != worker_id
+            or self._worker.cluster_id is None
+            or getattr(self._worker, "me", None) is not True
+        ):
+            raise ValueError("Runtime metrics require the current cluster-bound Worker")
         model_instances = self._clientset.model_instances.list(
-            params={"worker_id": str(worker_id)}
+            params={"cluster_id": self._worker.cluster_id},
+            use_cache=True,
         )
-        models = self._clientset.models.list()
+        models = self._clientset.models.list(use_cache=True)
         return model_instances, models
 
-    def _update_model_instance(self, id: int, **kwargs):
+    def _update_model_instance(self, id: int, expected_instance=None, **kwargs):
         try:
-            mi_public = self._clientset.model_instances.get(id=id)
+            mi_public = self._clientset.model_instances.get(id=id, use_cache=False)
+            if (
+                expected_instance is None
+                or get_model_instance_workloads(mi_public) is not None
+                or model_instance_metrics_sources(mi_public)
+                != model_instance_metrics_sources(expected_instance)
+            ):
+                return
 
             mi = ModelInstanceUpdate(**mi_public.model_dump())
             for key, value in kwargs.items():
@@ -243,13 +426,13 @@ class RuntimeMetricsAggregator:
         except Exception as e:
             logger.error(f"Failed to update model instance {id}: {e}")
 
-    def _build_base_labels(self, mi, m, runtime):
+    def _build_base_labels(self, mi, m, runtime, context=None):
         """
         Build base labels for each metric.
         """
-        return {
-            "worker_id": str(mi.worker_id) if mi.worker_id else "",
-            "worker_name": mi.worker_name if mi.worker_name else "",
+        labels = {
+            "worker_id": str(context.source.worker_id if context else mi.worker_id),
+            "worker_name": context.worker_name if context else mi.worker_name or "",
             "model_id": str(m.id) if m else "",
             "model_name": m.name if m else "",
             "model_instance_id": str(mi.id),
@@ -261,6 +444,20 @@ class RuntimeMetricsAggregator:
             # figure averaged over both roles describes neither.
             "role": mi.role or "",
         }
+        if context is not None:
+            source = context.source
+            labels.update(
+                restart_count=str(source.restart_count),
+                source_kind=source.kind,
+                source_name=source.name,
+                workload_name=source.workload_name,
+            )
+            if source.dp_rank is not None:
+                labels["endpoint_dp_rank"] = str(source.dp_rank)
+                labels["gpu_indexes"] = ",".join(str(i) for i in source.gpu_indexes)
+            if source.attempt is not None:
+                labels["component_attempt"] = str(source.attempt)
+        return labels
 
     def _process_endpoint_metrics(
         self,
@@ -311,134 +508,108 @@ class RuntimeMetricsAggregator:
         """
         Aggregate a single metric family into the unified and raw collections.
         """
-        first_sample = family.samples[0] if family.samples else None
-        if not first_sample:
-            return
-
-        label_keys = list(base_labels.keys())
-        for k in first_sample.labels.keys():
-            if k not in label_keys:
-                label_keys.append(k)
-
-        # raw metrics
-        if source_family_name not in raw_metrics:
-            raw_metrics[source_family_name] = create_prom_metric_family(
-                name=source_family_name,
-                type=family.type,
-                description=family.documentation,
-                labels=label_keys,
-            )
-        raw_family = raw_metrics[source_family_name]
-
-        # unified metrics
-        unified_family = None
-        resolved = get_unified_metric_family_name(
-            metrics_config, source_family_name, runtime, runtime_version
+        mapping_domain = (
+            "SGLangSMG" if base_labels.get("source_kind") == "sglang_smg" else runtime
         )
-        unified_metric_family_name, unified_scale = resolved or (None, 1.0)
-        if unified_metric_family_name:
-            cfg = get_unified_metric_family_config(
-                metrics_config, unified_metric_family_name
-            )
-            if cfg:
-                if unified_metric_family_name not in unified_metrics:
-                    unified_metrics[unified_metric_family_name] = (
-                        create_prom_metric_family(
-                            name=unified_metric_family_name,
-                            type=cfg.get("type"),
-                            description=cfg.get("description"),
-                            labels=label_keys,
-                        )
-                    )
-                unified_family = unified_metrics[unified_metric_family_name]
-
-        # Histogram, summary and info samples are added under the names the
-        # runtime gave them. Everything else goes through add_metric, which
-        # appends the type's own suffix: OpenMetrics keeps a counter's _created
-        # sample inside the family (the Prometheus text parser splits it off
-        # into one of its own), and passing that through would emit a second
-        # _total series carrying a creation timestamp under identical labels —
-        # a duplicate Prometheus rejects an entire scrape over.
+        resolved = get_unified_metric_family_name(
+            metrics_config, source_family_name, mapping_domain, runtime_version
+        )
+        unified_name, unified_scale = resolved or (None, 1.0)
+        cfg = get_unified_metric_family_config(metrics_config, unified_name)
         keeps_sample_names = family.type in ("histogram", "summary", "info")
-        value_sample_names = {source_family_name}
-        if family.type == "counter":
-            value_sample_names.add(f"{source_family_name}_total")
-
+        value_names = {source_family_name, f"{source_family_name}_total"}
         for sample in family.samples:
-            if not keeps_sample_names and sample.name not in value_sample_names:
+            # OpenMetrics includes creation timestamps inside counter families.
+            if not keeps_sample_names and sample.name not in value_names:
                 continue
-
-            label_values = [
-                (
-                    base_labels.get(k, sample.labels.get(k, ""))
-                    if k in base_labels
-                    else sample.labels.get(k, "")
+            platform_labels, can_unify = self._sample_scope(
+                sample, base_labels, runtime
+            )
+            if platform_labels is None:
+                continue
+            labels = runtime_metric_labels(sample.labels, platform_labels)
+            if source_family_name not in raw_metrics:
+                raw_metrics[source_family_name] = create_prom_metric_family(
+                    name=source_family_name,
+                    type=family.type,
+                    description=family.documentation,
                 )
-                for k in label_keys
-            ]
-            labels = sample.labels.copy()
-            labels.update(base_labels)
-
+            raw_name = (
+                f"{raw_metrics[source_family_name].name}_total"
+                if family.type == "counter"
+                else sample.name
+            )
+            raw_metrics[source_family_name].add_sample(
+                name=raw_name,
+                labels=labels,
+                value=sample.value,
+                timestamp=sample.timestamp,
+            )
+            if not (can_unify and unified_name and cfg):
+                continue
+            if unified_name not in unified_metrics:
+                unified_metrics[unified_name] = create_prom_metric_family(
+                    name=unified_name,
+                    type=cfg.get("type"),
+                    description=cfg.get("description"),
+                )
+            value, scaled_labels = scale_sample(
+                sample.name,
+                source_family_name,
+                family.type,
+                labels,
+                sample.value,
+                unified_scale,
+            )
+            unified_family = unified_metrics[unified_name]
+            unified_sample_name = unified_family.name
             if keeps_sample_names:
-                # The raw passthrough is never scaled: it exists to be the
-                # engine's own numbers under the engine's own names.
-                raw_family.add_sample(
-                    name=sample.name,
-                    labels=labels,
-                    value=sample.value,
-                    timestamp=sample.timestamp,
+                unified_sample_name = raw_name.replace(
+                    source_family_name, unified_family.name, 1
                 )
-                if unified_family:
-                    new_name = sample.name.replace(
-                        source_family_name, unified_metric_family_name
-                    )
-                    unified_value, unified_labels = scale_sample(
-                        sample.name,
-                        source_family_name,
-                        family.type,
-                        labels,
-                        sample.value,
-                        unified_scale,
-                    )
-                    unified_family.add_sample(
-                        name=new_name,
-                        labels=unified_labels,
-                        value=unified_value,
-                        timestamp=sample.timestamp,
-                    )
-            else:
-                raw_family.add_metric(
-                    labels=label_values,
-                    value=sample.value,
-                    timestamp=sample.timestamp,
-                )
-                if unified_family:
-                    unified_value, _ = scale_sample(
-                        sample.name,
-                        source_family_name,
-                        family.type,
-                        labels,
-                        sample.value,
-                        unified_scale,
-                    )
-                    unified_family.add_metric(
-                        labels=label_values,
-                        value=unified_value,
-                        timestamp=sample.timestamp,
-                    )
+            elif unified_family.type == "counter":
+                unified_sample_name += "_total"
+            unified_family.add_sample(
+                name=unified_sample_name,
+                labels=scaled_labels,
+                value=value,
+                timestamp=sample.timestamp,
+            )
+
+    def _sample_scope(self, sample, base_labels, runtime):
+        labels = dict(base_labels)
+        kind = labels.get("source_kind")
+        if kind == "sglang_smg":
+            labels["exposition_scope"] = "router"
+            return labels, True
+        if kind == "sglang_engine":
+            labels["exposition_scope"] = "shared_engine"
+            return labels, True
+        if kind != "vllm_engine":
+            return labels, True
+        # The supported Python shape uses a native global DP engine index.
+        # Missing/unknown shapes (including unverified frontends) stay raw;
+        # another engine's samples can never inherit this endpoint's rank.
+        engine = sample.labels.get("engine")
+        known_engine = (
+            runtime == BackendEnum.VLLM
+            and isinstance(engine, str)
+            and engine.isdecimal()
+        )
+        if known_engine and int(engine) != int(labels["endpoint_dp_rank"]):
+            return None, False
+        owns_engine = known_engine
+        labels["exposition_scope"] = "engine" if owns_engine else "unknown"
+        if not owns_engine:
+            labels.pop("endpoint_dp_rank", None)
+            labels.pop("gpu_indexes", None)
+        return labels, owns_engine
 
     def _should_skip_endpoint(
         self, model: Model, model_instance: ModelInstance, metrics_config: dict
     ) -> bool:
         # model and model instance must be valid
         if not model:
-            return True
-
-        if (
-            model_instance.state != ModelInstanceStateEnum.RUNNING
-            or model_instance.worker_ip is None
-            or not model_instance.ports
-        ):
             return True
 
         # skip image and audio models

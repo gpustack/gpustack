@@ -438,3 +438,504 @@ def test_a_slow_scan_does_not_hold_up_another_log(tmp_path: Path):
             scanner.join(5)
             if other.ident is not None:
                 other.join(5)
+
+
+def test_component_log_file_has_a_distinct_source_namespace(tmp_path):
+    from gpustack.worker.log_sources import parse_serve_log_path
+
+    directory = tmp_path / 'model.42' / '3'
+    component = parse_serve_log_path(directory / 'component.sglang_smg.log')
+    sidecar = parse_serve_log_path(directory / 'container.sglang_smg.log')
+    assert component is not None
+    assert component.kind != sidecar.kind
+
+
+def _rank_source_archive(tmp_path, multi_port_external=False):
+    from tests.utils.model import new_model_instance
+    from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+    from gpustack.worker.log_sources import (
+        write_log_sources,
+        restart_log_dir,
+        list_log_sources,
+    )
+
+    instance = new_model_instance(42, 'model', model_id=1, worker_id=7)
+    instance.restart_count = 3
+    instance.distributed_servers = DistributedServers(
+        workloads=[
+            ModelInstanceWorkload(
+                name='rank-workload',
+                worker_id=7,
+                state='running',
+                dp_rank_placements=[
+                    dict(dp_rank=0, node_rank=0, gpu_indexes=[0], api_port=8000),
+                    dict(dp_rank=1, node_rank=1, gpu_indexes=[1]),
+                ],
+            )
+        ]
+    )
+    write_log_sources(tmp_path, instance, 7, multi_port_external)
+    directory = restart_log_dir(tmp_path, instance.name, 42, 3)
+    (directory / 'container.log').write_bytes(
+        b'[dp0-node0] first\ncommon\n[dp1-node1] headless\n[dp0-node0] last\n'
+    )
+    return instance, directory, list_log_sources(tmp_path, 42, 7, 3)
+
+
+def test_archived_rank_views_use_trusted_generation_metadata(tmp_path):
+    from gpustack.worker.log_sources import list_log_sources, resolve_log_source
+
+    instance, directory, sources = _rank_source_archive(tmp_path)
+    ranks = [s for s in sources if s.descriptor.kind == 'rank']
+    assert [(s.descriptor.dp_rank, s.descriptor.main) for s in ranks] == [
+        (0, True),
+        (1, False),
+    ]
+    assert ranks[0].accepts(b'[dp0-node0] first\n')
+    assert not ranks[0].accepts(b'continuation\n')
+    assert next(s for s in sources if s.descriptor.kind == 'public').accepts(
+        b'[dp99-node0] unknown\n'
+    )
+    assert (
+        resolve_log_source(tmp_path, 42, 7, 3, ranks[0].descriptor.id).descriptor
+        == ranks[0].descriptor
+    )
+    with pytest.raises(ValueError):
+        resolve_log_source(tmp_path, 42, 8, 3, ranks[0].descriptor.id)
+    assert not any(
+        s.descriptor.kind == 'rank' for s in list_log_sources(tmp_path, 42, 7, 6)
+    )
+    (directory / 'sources.json').unlink()
+    assert not any(
+        s.descriptor.kind == 'rank' for s in list_log_sources(tmp_path, 42, 7, 3)
+    )
+
+
+def test_multi_port_external_logs_only_attribute_explicit_api_prefix(tmp_path):
+    _, _, sources = _rank_source_archive(tmp_path, multi_port_external=True)
+    rank = next(
+        s for s in sources if s.descriptor.kind == 'rank' and s.descriptor.dp_rank == 0
+    )
+    common = next(s for s in sources if s.descriptor.kind == 'public')
+    assert rank.accepts(b'\x1b[0;36m(APIServer_DP0 pid=123)\x1b[0m INFO hello\n')
+    for line in (
+        b'(EngineCore_DP0 pid=123) hello\n',
+        b'raw traceback\n',
+        b'(APIServer_DP99 pid=123) bad\n',
+    ):
+        assert not rank.accepts(line)
+        assert common.accepts(line)
+
+
+@pytest.mark.asyncio
+async def test_source_filter_precedes_offset_tail_and_download_length(tmp_path):
+    from gpustack.worker.logs import (
+        plan_source_window,
+        source_window_generator,
+        LogOptions,
+    )
+
+    _, _, sources = _rank_source_archive(tmp_path)
+    source = next(
+        s for s in sources if s.descriptor.kind == 'rank' and s.descriptor.dp_rank == 0
+    )
+    window = plan_source_window(source, 1, 1)
+    assert window.total_lines == 2
+    data = b''.join(
+        [
+            chunk
+            async for chunk in source_window_generator(
+                window, LogOptions(), lambda: source
+            )
+        ]
+    )
+    assert data == b'[dp0-node0] last\n'
+    tail = plan_source_window(source, tail=1)
+    assert tail.offset == 1
+    whole = plan_source_window(source, limit=100)
+    data = b''.join(
+        [
+            chunk
+            async for chunk in source_window_generator(
+                whole, LogOptions(), lambda: source
+            )
+        ]
+    )
+    assert whole.byte_count == len(data)
+    assert b'common' not in data and b'headless' not in data
+
+
+@pytest.mark.asyncio
+async def test_rank_follow_preserves_line_attribution_and_closes_on_cancel(
+    tmp_path, monkeypatch
+):
+    import asyncio
+    from gpustack.worker.logs import (
+        plan_source_window,
+        source_window_generator,
+        LogOptions,
+    )
+    from gpustack.worker.log_sources import list_log_sources
+
+    _, directory, sources = _rank_source_archive(tmp_path)
+    head = directory / 'container.log'
+    head.write_bytes(b'[dp0-node0] partial')
+    source = next(
+        s for s in sources if s.descriptor.kind == 'rank' and s.descriptor.dp_rank == 0
+    )
+    window = plan_source_window(source, limit=100)
+    opened = []
+    real_open = Path.open
+
+    def track_open(path, mode='r', *args, **kwargs):
+        stream = real_open(path, mode, *args, **kwargs)
+        if mode == 'rb':
+            opened.append(stream)
+        return stream
+
+    monkeypatch.setattr(Path, 'open', track_open)
+
+    async def append(_):
+        with head.open('ab') as stream:
+            stream.write(b' continuation\ncommon\n[dp0-node0] new\n')
+
+    monkeypatch.setattr(asyncio, 'sleep', append)
+    generator = source_window_generator(
+        window,
+        LogOptions(follow=True),
+        lambda: next(
+            s
+            for s in list_log_sources(tmp_path, 42, 7, 3)
+            if s.descriptor.id == source.descriptor.id
+        ),
+    )
+    assert await anext(generator) == b'[dp0-node0] partial'
+    assert await anext(generator) == b' continuation\n'
+    assert await anext(generator) == b'[dp0-node0] new\n'
+    await generator.aclose()
+    assert window.cancelled.is_set()
+    assert opened and all(stream.closed for stream in opened)
+
+
+def test_component_source_shares_bounded_cap_shards_and_generation_window(tmp_path):
+    from gpustack.worker.log_sources import (
+        CappedLogWriter,
+        list_log_sources,
+        parse_serve_log_path,
+    )
+
+    directory = tmp_path / 'model.42' / '3'
+    directory.mkdir(parents=True)
+    head = directory / 'component.sglang_smg.log'
+    with CappedLogWriter(head, max_bytes=128, head_bytes=32) as writer:
+        for index in range(100):
+            writer.write(f'line {index}\n')
+    files = [p for p in directory.iterdir() if parse_serve_log_path(p)]
+    assert len(files) < 66
+    assert all(parse_serve_log_path(p).kind.value == 'component' for p in files)
+    sources = list_log_sources(tmp_path, 42, 7, 4)
+    assert len(sources) == 1 and sources[0].descriptor.previous
+    assert sources[0].descriptor.kind == 'workload'
+    assert set(sources[0].paths) == set(files)
+    assert list_log_sources(tmp_path, 42, 7, 5) == []
+
+
+@pytest.mark.parametrize(
+    'damage',
+    [
+        'null',
+        'list',
+        'string',
+        'version',
+        'identity',
+        'placements_string',
+        'placement_null',
+        'placement_negative',
+    ],
+)
+def test_damaged_source_metadata_only_offers_unattributed_physical_logs(
+    tmp_path, damage
+):
+    import json
+    from gpustack.worker.log_sources import list_log_sources
+
+    _, directory, _ = _rank_source_archive(tmp_path)
+    path = directory / 'sources.json'
+    payload = json.loads(path.read_text())
+    if damage in ('null', 'list', 'string'):
+        payload = {'null': None, 'list': [], 'string': 'broken'}[damage]
+    elif damage == 'version':
+        payload['version'] = 99
+    elif damage == 'identity':
+        payload['instance_id'] = 999
+    else:
+        record = next(s for s in payload['streams'] if s['key'] == 'engine')
+        record['placements'] = {
+            'placements_string': 'broken',
+            'placement_null': [None],
+            'placement_negative': [dict(dp_rank=-1, node_rank=0)],
+        }[damage]
+    path.write_text(json.dumps(payload))
+    sources = list_log_sources(tmp_path, 42, 7, 3)
+    assert not any(s.descriptor.kind == 'rank' for s in sources)
+    assert any(
+        s.descriptor.kind == 'workload' and s.descriptor.available for s in sources
+    )
+
+
+@pytest.mark.parametrize('damage', ['json', 'shape', 'record'])
+def test_invalid_source_manifest_has_a_debug_diagnostic(tmp_path, caplog, damage):
+    import json
+    from gpustack.worker.log_sources import read_log_sources
+
+    _, directory, _ = _rank_source_archive(tmp_path)
+    path = directory / 'sources.json'
+    payload = json.loads(path.read_text())
+    if damage == 'json':
+        path.write_text('{')
+    elif damage == 'shape':
+        path.write_text('null')
+    else:
+        payload['streams'][0]['physical_kind'] = 'untrusted'
+        path.write_text(json.dumps(payload))
+    with caplog.at_level('DEBUG', logger='gpustack.worker.log_sources'):
+        records = read_log_sources(path, 42, 7, 3)
+    assert len(caplog.records) == 1
+    assert str(path) in caplog.text
+    if damage == 'record':
+        assert len(records) == len(payload['streams']) - 1
+    else:
+        assert records == []
+
+
+@pytest.mark.asyncio
+async def test_follow_open_seek_and_read_run_off_the_event_loop(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    path = tmp_path / 'follow.log'
+    path.write_bytes(b'old\nnew\n')
+    main_thread = threading.get_ident()
+    calls = []
+    opened = []
+    real_open = Path.open
+
+    class Reader:
+        def __init__(self):
+            calls.append(('open', threading.get_ident()))
+            self.stream = real_open(path, 'rb')
+            opened.append(self.stream)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.stream.close()
+
+        def seek(self, offset):
+            calls.append(('seek', threading.get_ident()))
+            return self.stream.seek(offset)
+
+        def readline(self, size):
+            calls.append(('read', threading.get_ident()))
+            return self.stream.readline(size)
+
+    monkeypatch.setattr(Path, 'open', lambda *args, **kwargs: Reader())
+    source = SimpleNamespace(accepts=lambda block: True)
+    data = b''.join(
+        [
+            block
+            async for block in worker_logs._follow_source_path(path, source, 4, 8, {})
+        ]
+    )
+    assert data == b'new\n'
+    assert {name for name, _ in calls} == {'open', 'seek', 'read'}
+    assert all(thread != main_thread for _, thread in calls)
+    assert all(stream.closed for stream in opened)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_follow_open_closes_file_when_background_work_finishes(
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    path = tmp_path / 'follow.log'
+    path.write_bytes(b'line\n')
+    real_open = Path.open
+    entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+
+    class Reader:
+        def __init__(self):
+            self.stream = real_open(path, 'rb')
+
+        def __enter__(self):
+            entered.set()
+            release.wait(2)
+            return self
+
+        def __exit__(self, *args):
+            self.stream.close()
+            closed.set()
+
+        def seek(self, offset):
+            self.stream.seek(offset)
+
+        def readline(self, size):
+            return self.stream.readline(size)
+
+    monkeypatch.setattr(Path, 'open', lambda *args, **kwargs: Reader())
+    source = SimpleNamespace(accepts=lambda block: True)
+    reader = worker_logs._follow_source_path(path, source, 0, 5, {})
+    task = asyncio.create_task(anext(reader))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        await reader.aclose()
+    assert await asyncio.to_thread(closed.wait, 2)
+
+
+def test_physical_selector_survives_source_manifest_publication(tmp_path):
+    from gpustack.worker.log_sources import list_log_sources
+
+    _, directory, sources = _rank_source_archive(tmp_path)
+    known = {
+        s.descriptor.kind: s.descriptor.id
+        for s in sources
+        if s.descriptor.kind in ('workload', 'preparation')
+    }
+    (directory / 'sources.json').unlink()
+    fallback = list_log_sources(tmp_path, 42, 7, 3)
+    for source in fallback:
+        assert source.descriptor.id == known[source.descriptor.kind]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('unavailable', [False, True])
+async def test_source_follow_does_not_rescan_the_archive_for_every_poll(
+    monkeypatch, unavailable
+):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    clock = [0.0]
+    stop = asyncio.Event()
+    source = SimpleNamespace(paths=[], descriptor=SimpleNamespace(previous=False))
+    window = worker_logs.plan_source_window(source)
+    refresh = Mock(
+        return_value=source,
+        side_effect=ValueError('Log source is unavailable') if unavailable else None,
+    )
+
+    async def advance(_):
+        clock[0] += 0.2
+        if clock[0] >= 1:
+            stop.set()
+
+    monkeypatch.setattr(worker_logs, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(worker_logs.asyncio, 'sleep', advance)
+    chunks = [
+        chunk
+        async for chunk in worker_logs.source_window_generator(
+            window, LogOptions(follow=True, stop_event=stop), refresh
+        )
+    ]
+    assert chunks == []
+    assert refresh.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_closing_source_stream_closes_the_snapshot_reader(monkeypatch):
+    from types import SimpleNamespace
+    import threading
+
+    closed = []
+
+    def read(window):
+        try:
+            yield b'first line\n'
+            yield b'second line\n'
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(worker_logs, '_read_source_window', read)
+    window = SimpleNamespace(cancelled=threading.Event())
+    stream = worker_logs.source_window_generator(window, LogOptions(), lambda: None)
+    assert await anext(stream) == b'first line\n'
+    await stream.aclose()
+    assert window.cancelled.is_set()
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_cancelling_snapshot_read_tolerates_an_executing_generator(monkeypatch):
+    from types import SimpleNamespace
+
+    entered, release, finished = (threading.Event() for _ in range(3))
+    window = SimpleNamespace(cancelled=threading.Event())
+
+    def read(window):
+        try:
+            entered.set()
+            assert release.wait(timeout=3)
+            if not window.cancelled.is_set():
+                yield b'line\n'
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(worker_logs, '_read_source_window', read)
+    reader = worker_logs._read_source_window_chunks(window)
+    task = asyncio.create_task(anext(reader))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert window.cancelled.is_set()
+    finally:
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 2)
+        await reader.aclose()
+
+
+@pytest.mark.parametrize('worker_id', [1, 2, 3, 4])
+def test_hybrid_logs_preserve_current_and_previous_worker_task_without_rank_views(
+    tmp_path, worker_id
+):
+    from tests.routes.test_worker_proxy import rank_instance
+    from tests.worker.test_runtime_metrics import _hybrid_tasks
+    from gpustack.schemas.models import ModelInstanceWorkload
+    from gpustack.worker.log_sources import (
+        write_log_sources,
+        restart_log_dir,
+        list_log_sources,
+        resolve_log_source,
+    )
+
+    instance = rank_instance.__wrapped__()
+    instance.distributed_servers.workloads = [
+        ModelInstanceWorkload.model_validate(t) for t in _hybrid_tasks()
+    ]
+    instance.distributed_servers.orchestration_mode = "managed"
+    write_log_sources(tmp_path, instance, worker_id)
+    directory = restart_log_dir(tmp_path, instance.name, instance.id, 3)
+    (directory / 'container.log').write_bytes(b'[dp0-node1] compute\ncommon\n')
+    for current in (3, 4):
+        sources = list_log_sources(tmp_path, instance.id, worker_id, current)
+        workload = next(s for s in sources if s.descriptor.kind == 'workload')
+        assert workload.descriptor.component_kind == 'vllm_hybrid'
+        assert workload.descriptor.workload_name == f'hybrid-{worker_id}'
+        assert workload.descriptor.main == (worker_id in (1, 3))
+        assert workload.descriptor.previous == (current == 4)
+        assert not any(s.descriptor.kind == 'rank' for s in sources)
+        assert (
+            resolve_log_source(
+                tmp_path, instance.id, worker_id, current, workload.descriptor.id
+            ).paths
+            == workload.paths
+        )
+    assert list_log_sources(tmp_path, instance.id, worker_id, 5) == []

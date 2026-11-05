@@ -38,6 +38,7 @@ from gpustack.schemas.clusters import Cluster, GatherStrategyEnum
 from gpustack.schemas.models import (
     Model,
     ModelInstance,
+    role_effective_model,
     role_takes_no_accelerator,
 )
 from gpustack.schemas.workers import Worker
@@ -285,7 +286,7 @@ async def schedule_group(
             ]
         for row, candidate in zip(rows, candidates):
             by_instance[row.id] = candidate
-            already.append(stand_in(candidate))
+            already.append(stand_in(candidate, role_effective_model(model, role)))
 
     return by_instance, []
 
@@ -316,29 +317,8 @@ async def cache_instances_in(
     )
 
 
-def stand_in(candidate) -> object:
-    """What the allocation accounting reads off a placed instance.
+def stand_in(candidate, model: Optional[Model] = None) -> object:
+    """Share the capacity counter's resource and backend policy projection."""
+    from gpustack.scheduler.offer_slot import _stand_in_for
 
-    The same four fields `offer_slot._PlacedStandIn` carries, and for the same
-    reason: a real `ModelInstance` would mean either touching the session or
-    filling in values that are lies.
-    """
-    from gpustack.scheduler.offer_slot import _PlacedStandIn
-
-    subordinates = getattr(candidate, "subordinate_workers", None)
-    return _PlacedStandIn(
-        worker_id=candidate.worker.id,
-        gpu_indexes=candidate.gpu_indexes,
-        gpu_type=candidate.gpu_type,
-        computed_resource_claim=candidate.computed_resource_claim,
-        distributed_servers=(
-            _Subordinates(subordinate_workers=list(subordinates))
-            if subordinates
-            else None
-        ),
-    )
-
-
-class _Subordinates:
-    def __init__(self, subordinate_workers):
-        self.subordinate_workers = subordinate_workers
+    return _stand_in_for(candidate, model)

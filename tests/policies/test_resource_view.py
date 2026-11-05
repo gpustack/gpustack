@@ -239,6 +239,49 @@ def test_distributed_deployment_limit_uses_model_bindings(worker_id):
     assert "distributed-model" in selector.get_messages()[0]
 
 
+@pytest.mark.parametrize("worker_id", [1, 2])
+@pytest.mark.parametrize("backend, allowed", [("vllm", True), ("sglang", False)])
+def test_managed_vllm_bindings_use_resource_and_port_admission(
+    worker_id, backend, allowed
+):
+    from gpustack.schemas.models import BackendEnum
+
+    model = _model()
+    model.backend = BackendEnum.VLLM if backend == "vllm" else BackendEnum.SGLANG
+    existing = _instance(1)
+    existing.name = "managed-model"
+    existing.model = model
+    existing.distributed_servers = SimpleNamespace(
+        subordinate_workers=[SimpleNamespace(worker_id=2)], workloads=[]
+    )
+    instances = [existing]
+    selector = VLLMResourceFitSelector(
+        SimpleNamespace(), model, instances, resource_view=ResourceView(instances)
+    )
+    worker = _worker()
+    worker.id = worker_id
+
+    assert selector._validate_distributed_limit_per_worker(worker) is allowed
+    assert ResourceView(instances).allocated(1).vram == {0: 20}
+
+
+@pytest.mark.parametrize("task_state", ["unknown", "stopped"])
+def test_managed_worker_loss_keeps_main_and_headless_claims(task_state):
+    instance = _instance(1)
+    instance.state = "unreachable"
+    instance.distributed_servers = SimpleNamespace(
+        workloads=[SimpleNamespace(worker_id=2, state=task_state)],
+        subordinate_workers=[
+            SimpleNamespace(
+                worker_id=2, computed_resource_claim=ComputedResourceClaim(vram={1: 30})
+            )
+        ],
+    )
+    view = ResourceView([instance])
+    assert view.allocated(1) == Allocated(ram=10, vram={0: 20})
+    assert view.allocated(2) == Allocated(ram=0, vram={1: 30})
+
+
 @pytest.mark.parametrize("gpu_type", [None, "cuda", "rocm"])
 @pytest.mark.parametrize(
     "roles,expected_ram,expected_vram",

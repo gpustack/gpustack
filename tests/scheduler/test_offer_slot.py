@@ -266,6 +266,54 @@ async def test_a_distributed_placement_keeps_its_other_halves_visible():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["internal", "external", "hybrid"])
+async def test_distributed_capacity_keeps_backend_and_managed_identity(mode):
+    from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
+    from gpustack.policies.resource_view import ResourceView
+    from gpustack.schemas.models import BackendEnum, Model
+
+    model = Model(
+        name="pd",
+        source="local_path",
+        local_path="/models/moe",
+        backend=BackendEnum.VLLM,
+        backend_parameters=[f"--data-parallel-{mode}-lb"] if mode != "internal" else [],
+    )
+
+    class Distributed(FakeSelector):
+        def __init__(self, instances):
+            super().__init__(instances, free_gpus=[0, 1])
+            self._model = model
+
+        async def select_candidates(self, workers):
+            guard = VLLMResourceFitSelector(
+                SimpleNamespace(),
+                model,
+                self._instances,
+                resource_view=ResourceView(self._instances),
+            )
+            if not all(
+                guard._validate_distributed_limit_per_worker(w) for w in workers
+            ):
+                return []
+            found = await super().select_candidates(workers)
+            for c in found:
+                c.subordinate_workers = [
+                    SimpleNamespace(
+                        worker_id=2,
+                        gpu_indexes=c.gpu_indexes,
+                        computed_resource_claim=c.computed_resource_claim,
+                    )
+                ]
+            return found
+
+    result = await count_offer_slots(Distributed, [worker(), worker(2)], [], limit=2)
+
+    assert result.unavailable is None
+    assert result.slots == (1 if mode == "internal" else 2)
+
+
+@pytest.mark.asyncio
 async def test_the_stand_in_is_readable_by_the_real_allocation_function():
     """The load-bearing claim of this module: the pretence is exact because it
     goes through the same accounting the scheduler will. Asserted against the
@@ -424,3 +472,23 @@ async def test_a_selector_that_prices_nothing_is_not_a_member_that_costs_nothing
     )
 
     assert result.claim is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('free_gpus,expected', [([0], 10), ([], 1)])
+async def test_capacity_keeps_measured_claim_and_uses_fallback_when_nothing_fits(
+    free_gpus, expected
+):
+    class Priced(FakeSelector):
+        def get_resource_claim(self):
+            measured = len(self._instances) < len(self._free)
+            return MemberResourceClaim(vram=10 if measured else 1, ram=0)
+
+    result = await count_offer_slots(
+        lambda instances: Priced(instances, free_gpus=free_gpus),
+        [worker()],
+        [],
+        limit=2,
+    )
+    assert result.claim.vram == expected
+    assert result.slots == len(free_gpus)

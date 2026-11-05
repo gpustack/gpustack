@@ -199,3 +199,53 @@ def test_instance_list_and_watch_apply_the_same_system_scope(workload_api, monke
         response = client.get("/v2/model-instances?watch=true")
         assert response.status_code == 200, response.text
     assert [row.id for row in rows if captured["filter"](row)] == [1]
+
+
+@pytest.mark.parametrize('endpoint', ['workload-report', 'stop-confirmation'])
+@pytest.mark.parametrize('identity', ['org_user', 'unbound_worker', 'other_org'])
+def test_worker_reports_require_bound_identity_and_resource_scope(
+    workload_api, monkeypatch, endpoint, identity
+):
+    from uuid import uuid4
+    from gpustack.schemas.models import DistributedServers
+    from gpustack.schemas.workers import Worker
+
+    api = workload_api
+    instance = api.lookup.return_value
+    instance.worker_id = 11
+    instance.distributed_servers = DistributedServers(workloads=[])
+    monkeypatch.setattr(
+        Worker,
+        'one_by_id',
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id=11,
+                cluster_id=1,
+                system_principal_id=7,
+                deleted_at=None,
+            )
+        ),
+    )
+    if identity == 'org_user':
+        api.ctx.user.kind = PrincipalType.USER
+        api.ctx.scoped_cluster_id = None
+        api.ctx.current_principal_id = 10
+        api.ctx.org_role = OrgRole.OWNER
+        api.ctx.accessible_cluster_ids = {1}
+    elif identity == 'unbound_worker':
+        api.ctx.user.worker = None
+    else:
+        instance.owner_principal_id = 20
+    method, body = (
+        ('PUT', {'restart_count': 0, 'workloads': []})
+        if endpoint == 'workload-report'
+        else ('POST', {'restart_count': 0, 'token': str(uuid4())})
+    )
+    with TestClient(api.app) as client:
+        response = client.request(
+            method, f'/v2/model-instances/2/{endpoint}', json=body
+        )
+    assert response.status_code == (
+        404 if identity == 'other_org' else 403
+    ), response.text
+    api.save.assert_not_awaited()

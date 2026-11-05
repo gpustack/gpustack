@@ -8,12 +8,14 @@ use the configuration loader.
 
 from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 
 from gpustack.scheduler.calculator import (
     get_pretrained_config_with_workers as _orig_get_pretrained_config_with_workers,
 )
+from gpustack.schemas.port_reservations import WorkerPortAvailability
 
 
 _MOCK_PRETRAINED_DEEPSEEK_R1 = SimpleNamespace(
@@ -145,3 +147,23 @@ def _mock_deepseek_pretrained_configs():
         new=_mock_or_real_get_pretrained_config_with_workers,
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _mock_worker_port_availability(monkeypatch):
+    """Keep resource-selection cases independent of live Worker port RPCs."""
+
+    async def snapshots(workers, exclude_instance_id=None):
+        return {
+            worker.id: WorkerPortAvailability(
+                worker_id=worker.id,
+                generation=uuid4(),
+                port_range="40000-40063",
+                unavailable_ports=[],
+            )
+            for worker in workers
+        }
+
+    monkeypatch.setattr(
+        "gpustack.scheduler.port_budget.worker_port_snapshots", snapshots
+    )

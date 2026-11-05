@@ -65,11 +65,28 @@ translation_status: translated
 
     如果某项条件不满足，导致自动调度无法分配资源，例如显存不满足 `gpu_memory_utilization`，请将 `Scheduling Mode` 切换为 `Manual` 或 `Specify GPU`，再通过 `GPU Selector` 在两个 Worker 上各选择 8 张 GPU，共 16 张。完整自动调度条件见[内置推理后端](../user-guide/built-in-inference-backends.md)。
 
-!!! note "手动拆成多个部署时，使用 `GPUSTACK_SKIP_GPU_COUNT_CHECK` 跳过 GPU 数量检查"
+!!! note "通过多个独立部署手动部署 DP"
 
-    某些场景中可能希望每个节点创建一个部署，例如自行管理外部负载均衡器，手动选择 GPU，并设置 `--data-parallel-size-local 1`。此时每个部署只选择 8 张 GPU，而 `tensor-parallel-size × data-parallel-size = 16`，GPU 数量与 world size 不一致，因此 GPUStack 会报错：`the selected gpu count (8) does not match the world size (16)`。
+    GPUStack 2.3.1 之后新增 `GPUSTACK_MANUAL_DP` 环境变量，用于在新版 vLLM MP 部署中保留手动创建多个部署组成 DP 的方式。在每个部署的 `Environment Variables` 中设置：
 
-    如果这正是预期布局，请在每个部署的 `Environment Variables` 中设置 `GPUSTACK_SKIP_GPU_COUNT_CHECK=1`，跳过检查并保留手动选择的 GPU 数量。此开关**仅在手动选择 GPU 时生效**，即 `Scheduling Mode` 为 `Manual` 或 `Specify GPU`，不影响自动调度。
+    ```bash
+    GPUSTACK_MANUAL_DP=1
+    ```
+
+    例如，两个节点各有 8 张 GPU 时，创建两个部署，分别手动选择各自节点的 8 张 GPU，并配置以下 `Backend Parameters`：
+
+    ```bash
+    --distributed-executor-backend=mp
+    --tensor-parallel-size=8
+    --data-parallel-size=2
+    --data-parallel-size-local=1
+    --data-parallel-external-lb
+    --data-parallel-rank=0
+    --data-parallel-address=<your-dp-coordinator-ip>
+    --data-parallel-rpc-port=13345
+    ```
+
+    将 `<your-dp-coordinator-ip>` 替换为第一个节点的 IP。第二个部署使用相同参数，将 `--data-parallel-rank` 改为 `1`。无需额外设置 `GPUSTACK_SKIP_GPU_COUNT_CHECK`。
 
 ## 步骤 3：监控部署 { #step-3-monitor-deployment }
 

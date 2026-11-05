@@ -1,8 +1,10 @@
+from time import monotonic
 import asyncio
 import bisect
 import itertools
 import threading
 from collections import OrderedDict
+from contextlib import aclosing
 from dataclasses import dataclass, field, replace
 import os
 import logging
@@ -671,3 +673,193 @@ async def follow_file(
                 yield remaining
             return
         await asyncio.sleep(0.1)  # wait before retrying
+
+
+@dataclass
+class SourceLogWindow:
+    files: list
+    source: object
+    offset: int
+    limit: int
+    total_lines: int
+    byte_count: int
+    cancelled: object
+    partial: dict
+
+
+def _source_blocks(files, source, cancelled=None, partial=None):
+    """Yield bounded pieces with logical line boundaries from fixed file sizes."""
+    for path, inode, size in files:
+        with path.open('rb') as stream:
+            if os.fstat(stream.fileno()).st_ino != inode:
+                raise OSError('Log source changed while reading')
+            remaining = size
+            accepted = None
+            while remaining:
+                if cancelled is not None and cancelled.is_set():
+                    return
+                block = stream.readline(min(65536, remaining))
+                if not block:
+                    raise OSError('Log source was truncated while reading')
+                remaining -= len(block)
+                if accepted is None:
+                    accepted = is_marker_log_path(path) or source.accepts(block)
+                    if is_marker_log_path(path) and source.descriptor.kind in (
+                        'rank',
+                        'public',
+                    ):
+                        block = (
+                            b'[physical stream: dropped rank counts unknown] ' + block
+                        )
+                ended = block.endswith(b'\n') or remaining == 0
+                if partial is not None:
+                    partial[str(path)] = accepted if not block.endswith(b'\n') else None
+                if accepted:
+                    yield block, ended
+                if ended:
+                    accepted = None
+
+
+def plan_source_window(source, offset=0, limit=1000, tail=0, cancelled=None):
+    """Count the filtered view before pagination, without retaining log lines."""
+    cancelled = cancelled or threading.Event()
+    files = []
+    for path in source.paths:
+        info = path.stat()
+        files.append((path, info.st_ino, info.st_size))
+    lines = total_bytes = 0
+    partial = {}
+    for block, ended in _source_blocks(files, source, cancelled, partial):
+        total_bytes += len(block)
+        lines += int(ended)
+    if tail > 0:
+        offset, limit = max(0, lines - tail), tail
+    return SourceLogWindow(
+        files, source, offset, limit, lines, total_bytes, cancelled, partial
+    )
+
+
+def _read_source_window(window):
+    position = 0
+    for block, ended in _source_blocks(window.files, window.source, window.cancelled):
+        if window.offset <= position < window.offset + window.limit:
+            yield block
+        position += int(ended)
+        if position >= window.offset + window.limit:
+            return
+
+
+async def _read_source_window_chunks(window):
+    """Read a fixed source snapshot with bounded background disk work."""
+    async with aclosing(
+        _read_source_chunks(_read_source_window(window), window.cancelled)
+    ) as chunks:
+        async for chunk in chunks:
+            yield chunk
+
+
+async def _read_source_chunks(iterator, cancelled):
+    """Keep bounded source file operations off the event loop."""
+    # Pull disk work in bounded pieces without blocking the event loop.
+    sentinel = object()
+    try:
+        while True:
+            chunk = await asyncio.to_thread(next, iterator, sentinel)
+            if chunk is sentinel:
+                break
+            yield chunk
+    finally:
+        try:
+            iterator.close()
+        except ValueError:
+            # A cancelled bounded thread read may still be completing.
+            cancelled.set()
+
+
+async def _source_window_generator(window, options, refresh):
+    """Read the planned view and follow only newly appended source bytes."""
+    async with aclosing(_read_source_window_chunks(window)) as chunks:
+        async for chunk in chunks:
+            yield chunk
+    if not options.follow or window.source.descriptor.previous:
+        return
+    seen = {str(path): (inode, size) for path, inode, size in window.files}
+    partial = window.partial.copy()
+    source = window.source
+    refreshed_at = monotonic()
+    while not options.stop_event or not options.stop_event.is_set():
+        await asyncio.sleep(0.2)
+        # Existing files still stream at 200ms; rediscover rotations and
+        # generation metadata once per second instead of walking for every poll.
+        if monotonic() - refreshed_at >= 1:
+            try:
+                source = await asyncio.to_thread(refresh)
+            except ValueError:
+                return
+            refreshed_at = monotonic()
+        current = {}
+        for path in source.paths:
+            try:
+                info = await asyncio.to_thread(path.stat)
+            except FileNotFoundError:
+                continue
+            key = str(path)
+            inode, start = seen.get(key, (info.st_ino, 0))
+            if is_marker_log_path(path) and inode != info.st_ino:
+                inode, start = info.st_ino, 0
+            if inode != info.st_ino or start > info.st_size:
+                raise OSError('Log source changed while following')
+            current[key] = (inode, info.st_size)
+            if info.st_size == start:
+                continue
+            async with aclosing(
+                _follow_source_path(path, source, start, info.st_size, partial)
+            ) as chunks:
+                async for block in chunks:
+                    yield block
+        seen = current
+        partial = {key: value for key, value in partial.items() if key in seen}
+
+
+async def _follow_source_path(path, source, start, size, partial):
+    iterator = _read_follow_source_path(path, source, start, size, partial)
+    async with aclosing(_read_source_chunks(iterator, threading.Event())) as chunks:
+        async for block in chunks:
+            yield block
+
+
+def _read_follow_source_path(path, source, start, size, partial):
+    """Continue a physical line across polls without attributing the next line."""
+    key = str(path)
+    with path.open('rb') as stream:
+        stream.seek(start)
+        accepted = partial.get(key)
+        remaining = size - start
+        while remaining:
+            block = stream.readline(min(65536, remaining))
+            if not block:
+                break
+            remaining -= len(block)
+            if accepted is None:
+                accepted = is_marker_log_path(path) or source.accepts(block)
+                if is_marker_log_path(path) and source.descriptor.kind in (
+                    'rank',
+                    'public',
+                ):
+                    block = b'[physical stream: dropped rank counts unknown] ' + block
+            if accepted:
+                yield block
+            if block.endswith(b'\n'):
+                accepted = None
+        partial[key] = accepted
+
+
+async def source_window_generator(window, options, refresh):
+    """Stop bounded background disk work when a client cancels its source read."""
+    generator = _source_window_generator(window, options, refresh)
+    try:
+        async for block in generator:
+            yield block
+    finally:
+        window.cancelled.set()
+        await generator.aclose()

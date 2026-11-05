@@ -62,8 +62,9 @@ from gpustack.policies.worker_filters.status_filter import StatusFilter
 from gpustack import envs
 from gpustack.schemas.inference_backend import is_built_in_backend
 from gpustack.schemas.clusters import Cluster, GatherStrategyEnum
-from gpustack.schemas.workers import Worker
+from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.schemas.models import (
+    ROUTER_DEFAULT_MEMORY,
     BackendEnum,
     CategoryEnum,
     DistributedServers,
@@ -78,8 +79,18 @@ from gpustack.schemas.models import (
     role_effective_model,
     role_container_resources,
     role_takes_no_accelerator,
+    member_worker_ids,
 )
 from gpustack.schemas.model_files import ModelFileStateEnum
+from gpustack.utils.unit import byte_to_gib
+from gpustack.utils.model_instance_workers import (
+    get_model_instance_workloads,
+    model_instance_legacy_stop,
+    model_requires_managed_worker_binding,
+    sglang_smg_mode,
+    worker_supports_model_instance_workloads,
+)
+
 from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
 from gpustack.scheduler.group_schedule import (
@@ -109,6 +120,7 @@ from gpustack.utils.gpu import group_gpu_ids_by_worker
 from gpustack.utils.hub import has_diffusers_model_index
 from gpustack.utils.math import largest_power_of_2_leq
 from gpustack.utils.model_source import get_draft_model_source
+from gpustack.utils.vllm_topology import manual_dp_enabled, vllm_lb_mode
 from gpustack.scheduler.calculator import get_pretrained_config_with_workers
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -327,6 +339,12 @@ class Scheduler:
         Args:
             instance: ModelInstance to check.
         """
+        if (
+            getattr(instance, "draining_since", None) is not None
+            or model_instance_legacy_stop(instance) is not None
+            or get_model_instance_workloads(instance)
+        ):
+            return False
         newly_created = (instance.updated_at - instance.created_at) < timedelta(
             seconds=1
         )
@@ -405,14 +423,43 @@ class Scheduler:
         if not is_group_forming(model, group_instances):
             return False
 
-        by_instance, messages = await schedule_group(
-            session,
-            self._config,
-            model,
-            workers,
-            model_instances,
-            group_instances,
+        required = model_requires_managed_worker_binding(model_instances, model.id)
+        admission_message = _incompatible_cohort_message(
+            model, workers, model_instances, required
         )
+        if admission_message:
+            by_instance, messages = None, [admission_message]
+        else:
+            workers, admission_messages = await StatusFilter(model, required).filter(
+                workers
+            )
+            by_instance, messages = await schedule_group(
+                session,
+                self._config,
+                model,
+                workers,
+                model_instances,
+                group_instances,
+            )
+            messages = admission_messages + messages
+        model_name, group_id = model.name, model_instance.group_id
+        if by_instance is None:
+            locked = await _lock_scheduling_instances(session, group_instances)
+        else:
+            admission = await _lock_scheduling_admission(
+                session, model, group_instances, by_instance, instances=model_instances
+            )
+            locked = list(admission.values()) if admission is not None else None
+        if locked is None:
+            logger.debug(
+                "Group placement was fenced by a concurrent lifecycle or Worker change "
+                "for model %s, group %s",
+                model_name,
+                group_id,
+            )
+            return True
+        group_instances = locked
+        model_instance = next(row for row in locked if row.id == model_instance.id)
         if by_instance is None:
             # All-or-nothing: not one member is placed, and the reason
             # is put on the instance that triggered the solve so it surfaces
@@ -440,9 +487,11 @@ class Scheduler:
             row = next((i for i in group_instances if i.id == instance_id), None)
             if row is None:
                 continue
-            await apply_candidate_to_instance(
-                session, model, row, candidate, commit=False
-            )
+            if not await apply_candidate_to_instance(
+                session, model, row, candidate, commit=False, admission=admission
+            ):
+                await session.rollback()
+                return True
             placed.append(row)
 
         # One commit for the whole group, and the log comes after it: saying a
@@ -517,12 +566,18 @@ class Scheduler:
                         model_instances,
                         role=model_instance.role,
                         exclude_instance_id=model_instance.id,
+                        managed_sglang=get_model_instance_workloads(model_instance)
+                        is not None,
                         group_id=getattr(model_instance, "group_id", None),
                     )
                 except Exception as e:
                     state_message = f"Failed to find candidate: {e}"
 
             if candidate is None:
+                locked = await _lock_scheduling_instances(session, [model_instance])
+                if locked is None:
+                    return
+                model_instance = locked[0]
                 # update model instance.
                 if model_instance.state in (
                     ModelInstanceStateEnum.SCHEDULED,
@@ -537,6 +592,12 @@ class Scheduler:
                     # placed; a sibling that came back here keeps its own, and
                     # every later attempt is measured against it.
                     model_instance.computed_resource_claim = None
+                if messages and model_requires_managed_worker_binding(
+                    _model_cohort(model_instances, model.id), model.id
+                ):
+                    model_instance.state_message = (
+                        "No suitable workers.\nDetails:\n" + "".join(messages)
+                    )
                 if state_message != "":
                     model_instance.state_message = state_message
 
@@ -545,14 +606,166 @@ class Scheduler:
                     f"No suitable workers for model instance {model_instance.name}, state: {model_instance.state}"
                 )
             else:
-                await apply_candidate_to_instance(
+                instance_id = model_instance.id
+                if not await apply_candidate_to_instance(
                     session, model, model_instance, candidate
-                )
+                ):
+                    logger.debug(
+                        "Scheduling admission changed for instance %s; retrying on the next pending scan",
+                        instance_id,
+                    )
+                    return
 
                 logger.debug(
                     f"Scheduled model instance {model_instance.name} to worker "
                     f"{model_instance.worker_name} gpu {candidate.gpu_indexes}"
                 )
+
+
+_MANAGED_WORKER_MESSAGE = (
+    "Managed workloads require READY candidate Workers and bound identities for "
+    "every candidate and assigned cohort Worker; re-register unbound Workers."
+)
+
+
+def _model_cohort(instances, model_id):
+    return [row for row in instances if getattr(row, 'model_id', None) == model_id]
+
+
+def _cohort_worker_ids(instances):
+    return {wid for row in instances for wid in member_worker_ids(row)}
+
+
+def _candidate_worker_ids(candidates):
+    return {
+        wid
+        for candidate in candidates
+        for wid in (
+            [candidate.worker.id]
+            + [w.worker_id for w in candidate.subordinate_workers or []]
+        )
+        if wid is not None
+    }
+
+
+def _scheduling_identity(row):
+    return (
+        row.restart_count or 0,
+        row.worker_id,
+        row.model_id,
+        row.group_id,
+        row.spec_digest,
+        get_model_instance_workloads(row) is not None,
+        tuple(sorted(member_worker_ids(row))),
+        row.state,
+    )
+
+
+def _worker_admitted(worker, model, requires_managed, *, require_ready=True):
+    return (
+        worker is not None
+        and worker.deleted_at is None
+        and (not require_ready or worker.state == WorkerStateEnum.READY)
+        and worker.cluster_id == model.cluster_id
+        and (not requires_managed or worker_supports_model_instance_workloads(worker))
+    )
+
+
+def _incompatible_cohort_message(model, workers, instances, required):
+    if not required:
+        return None
+    indexed = {worker.id: worker for worker in workers}
+    if any(
+        not _worker_admitted(indexed.get(wid), model, True, require_ready=False)
+        for wid in _cohort_worker_ids(_model_cohort(instances, model.id))
+    ):
+        return _MANAGED_WORKER_MESSAGE
+    return None
+
+
+async def _lock_scheduling_admission(
+    session, model, expected, candidates, instances=None
+):
+    """Lock Workers before current-reading the complete instance cohort."""
+    identities = {row.id: _scheduling_identity(row) for row in expected}
+    discovery = (
+        await ModelInstance.all_by_field(session, 'model_id', model.id, refresh=True)
+        if instances is None
+        else _model_cohort(instances, model.id)
+    )
+    discovery = list(discovery) + [
+        row for row in expected if row.id not in {i.id for i in discovery}
+    ]
+    required = model_requires_managed_worker_binding(discovery, model.id)
+    candidate_ids = _candidate_worker_ids(candidates.values())
+    worker_ids = set(candidate_ids)
+    if required:
+        worker_ids |= _cohort_worker_ids(discovery)
+    workers = await Worker.all_by_ids(
+        session, worker_ids, for_update=True, refresh=True
+    )
+    indexed = {worker.id: worker for worker in workers}
+    if set(indexed) != worker_ids or any(
+        not _worker_admitted(w, model, required, require_ready=w.id in candidate_ids)
+        for w in workers
+    ):
+        await session.rollback()
+        return None
+    current = await ModelInstance.all_by_field(
+        session, 'model_id', model.id, for_update=True, refresh=True
+    )
+    required = model_requires_managed_worker_binding(current, model.id)
+    rows = {row.id: row for row in current}
+    if (
+        (required and not _cohort_worker_ids(current).issubset(worker_ids))
+        or any(
+            not _worker_admitted(
+                w, model, required, require_ready=w.id in candidate_ids
+            )
+            for w in workers
+        )
+        or any(
+            identity not in rows
+            or rows[identity].deleted_at is not None
+            or rows[identity].draining_since is not None
+            or model_instance_legacy_stop(rows[identity]) is not None
+            or get_model_instance_workloads(rows[identity])
+            or _scheduling_identity(rows[identity]) != snapshot
+            for identity, snapshot in identities.items()
+        )
+        or not set(candidates).issubset(identities)
+    ):
+        await session.rollback()
+        return None
+    for candidate in candidates.values():
+        candidate.worker = indexed[candidate.worker.id]
+        for subordinate in candidate.subordinate_workers or []:
+            worker = indexed[subordinate.worker_id]
+            subordinate.worker_name, subordinate.worker_ip = worker.name, worker.ip
+            subordinate.worker_ifname = worker.ifname
+    return {identity: rows[identity] for identity in identities}
+
+
+async def _lock_scheduling_instances(session, expected):
+    """Fence every candidate against stop intent and ownership before any write."""
+    identities = {row.id: _scheduling_identity(row) for row in expected}
+    locked = []
+    for identity in sorted(identities):
+        current = await ModelInstance.one_by_id(
+            session, identity, for_update=True, refresh=True
+        )
+        if (
+            current is None
+            or current.deleted_at is not None
+            or current.draining_since is not None
+            or model_instance_legacy_stop(current) is not None
+            or get_model_instance_workloads(current)
+            or _scheduling_identity(current) != identities[identity]
+        ):
+            await session.rollback()
+            return None
+        locked.append(current)
+    return locked
 
 
 async def apply_candidate_to_instance(
@@ -562,8 +775,12 @@ async def apply_candidate_to_instance(
     candidate: ModelInstanceScheduleCandidate,
     *,
     commit: bool = True,
-) -> None:
+    admission: Optional[Dict[int, ModelInstance]] = None,
+) -> bool:
     """Write a chosen candidate onto its instance row.
+
+    Returns whether placement was accepted. A caller passing ``commit=False``
+    must lock and validate the complete group before changing any member.
 
     Extracted verbatim from `_schedule_one` so the group path writes members
     the same way the single path writes one. The alternative was a second
@@ -572,6 +789,22 @@ async def apply_candidate_to_instance(
     are conditional on things a reader of the group path would not think to
     check.
     """
+    if admission is None:
+        admission = await _lock_scheduling_admission(
+            session, model, [model_instance], {model_instance.id: candidate}
+        )
+        if admission is None:
+            return False
+    if model_instance.id not in admission:
+        return False
+    model_instance = admission[model_instance.id]
+    # Recovery retires a registered manifest before its allocation can change.
+    if (
+        model_instance.draining_since is not None
+        or model_instance_legacy_stop(model_instance) is not None
+        or get_model_instance_workloads(model_instance)
+    ):
+        return False
     model_instance.state = ModelInstanceStateEnum.SCHEDULED
     model_instance.state_message = ""
     model_instance.worker_id = candidate.worker.id
@@ -585,6 +818,11 @@ async def apply_candidate_to_instance(
     model_instance.gpu_addresses = candidate.gpu_addresses
     model_instance.distributed_servers = DistributedServers(
         subordinate_workers=candidate.subordinate_workers,
+        workloads=(
+            model_instance.distributed_servers.workloads
+            if model_instance.distributed_servers is not None
+            else None
+        ),
     )
     if get_backend(model) in (
         BackendEnum.VLLM,
@@ -613,6 +851,7 @@ async def apply_candidate_to_instance(
 
     if commit:
         await ModelInstanceService(session).update(model_instance)
+    return True
 
 
 def _cards_per_member(model: Model) -> int:
@@ -655,6 +894,7 @@ def build_candidate_selector(
     ram_claim: Optional[int] = None,
     *,
     resource_view: ResourceView,
+    managed_sglang: bool = False,
 ) -> ScheduleCandidatesSelector:
     """Which resource-fit selector answers "does one more member fit here".
 
@@ -722,7 +962,11 @@ def build_candidate_selector(
         )
     if model.backend == BackendEnum.SGLANG:
         return SGLangResourceFitSelector(
-            config, model, model_instances, resource_view=resource_view
+            config,
+            model,
+            model_instances,
+            resource_view=resource_view,
+            managed_sglang=managed_sglang,
         )
     return CustomBackendResourceFitSelector(
         config, model, model_instances, resource_view=resource_view
@@ -870,6 +1114,30 @@ def _gather_floor(
     )
 
 
+def _instance_scheduling_model(
+    model: Model, instance: Optional[ModelInstance]
+) -> Model:
+    """Keep placement checks aligned with the instance's persisted launcher."""
+    if instance is None or get_backend(model) != BackendEnum.VLLM:
+        return model
+    if (
+        not manual_dp_enabled(model.env)
+        and vllm_lb_mode(model.backend_parameters) == 'internal'
+    ):
+        return model
+    # Only the scheduling view changes; the desired env applies to replacements.
+    return model.model_copy(
+        update={
+            'env': {
+                **(model.env or {}),
+                'GPUSTACK_MANUAL_DP': (
+                    '0' if get_model_instance_workloads(instance) is not None else '1'
+                ),
+            }
+        }
+    )
+
+
 async def find_candidate(
     session: AsyncSession,
     config: Config,
@@ -880,6 +1148,7 @@ async def find_candidate(
     exclude_instance_id: Optional[int] = None,
     group_id: Optional[str] = None,
     resource_view: Optional[ResourceView] = None,
+    managed_sglang: bool = False,
 ) -> Tuple[Optional[ModelInstanceScheduleCandidate], List[str]]:
     """
     Find a schedule candidate for the model instance.
@@ -905,7 +1174,19 @@ async def find_candidate(
     # available workers. Exclude its main and subordinate bindings from both
     # placement rules and resource accounting.
     # Keep the caller's instance list intact for group membership checks.
+    require_managed = managed_sglang or model_requires_managed_worker_binding(
+        _model_cohort(model_instances, model.id), model.id
+    )
+    admission_message = _incompatible_cohort_message(
+        model, workers, model_instances, require_managed
+    )
+    if admission_message:
+        return None, [admission_message]
+    instance = None
     if exclude_instance_id is not None:
+        instance = next(
+            (mi for mi in model_instances if mi.id == exclude_instance_id), None
+        )
         model_instances = [mi for mi in model_instances if mi.id != exclude_instance_id]
     resource_view = (
         resource_view.with_model_instances(model_instances)
@@ -948,13 +1229,16 @@ async def find_candidate(
     # below is constructed from `model` and reads Model-level fields directly;
     # none of them knows about roles. A role-less model comes back unchanged.
     model = role_effective_model(model, role)
+    model = _instance_scheduling_model(model, instance)
+
+    managed_sglang = managed_sglang and role is None and sglang_smg_mode(model)
 
     # Filter workers.
     filters = [
         ClusterFilter(model),
         GPUMatchingFilter(model),
         LabelMatchingFilter(model),
-        StatusFilter(model),
+        StatusFilter(model, require_managed),
         BackendFrameworkFilter(model),
         LocalPathFilter(model),
         PDModeRuntimeFilter(model),
@@ -967,9 +1251,9 @@ async def find_candidate(
 
     worker_filter_chain = WorkerFilterChain(filters)
     workers, filter_messages = await worker_filter_chain.filter(workers)
-    messages = []
-    if filter_messages:
-        messages.append(str(ListMessageBuilder(filter_messages)) + "\n")
+    messages = (
+        [str(ListMessageBuilder(filter_messages)) + "\n"] if filter_messages else []
+    )
     if len(workers) == 0:
         return None, messages
 
@@ -982,12 +1266,28 @@ async def find_candidate(
             cpu_only=cpu_only,
             ram_claim=ram_claim,
             resource_view=resource_view,
+            managed_sglang=managed_sglang,
         )
     except Exception as e:
         return None, [f"Failed to initialize {model.backend} candidates selector: {e}"]
 
     # Select candidates.
     candidates = await candidates_selector.select_candidates(workers)
+    if (
+        managed_sglang
+        and candidates
+        and not isinstance(candidates_selector, SGLangResourceFitSelector)
+    ):
+        from gpustack.policies.candidate_selectors.sglang_resource_fit_selector import (
+            reserve_sglang_smg_ram,
+        )
+
+        candidates = reserve_sglang_smg_ram(candidates, candidates_selector)
+        if not candidates:
+            messages.append(
+                f"The primary Worker requires an additional "
+                f"{byte_to_gib(ROUTER_DEFAULT_MEMORY):g} GiB of RAM for SMG."
+            )
 
     if proximity is not None:
         # Before scoring, and by removal rather than by weight: "do not split
@@ -1006,6 +1306,12 @@ async def find_candidate(
         candidates = proximity.narrow_to_tightest_internal_spread(candidates)
 
     # Score candidates.
+    from gpustack.scheduler import port_budget
+
+    candidates, port_messages = await port_budget.filter_candidates(
+        session, model, role, candidates, workers, model_instances, exclude_instance_id
+    )
+    messages.extend(port_messages)
     candidate_scorers = [
         PlacementScorer(model, model_instances, resource_view=resource_view),
     ]

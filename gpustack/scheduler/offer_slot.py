@@ -40,13 +40,13 @@ _ABSURD_SLOTS = 1024
 
 @dataclass
 class _PlacedStandIn:
-    """What ``compute_worker_allocated`` reads off a model instance.
+    """Resource binding and backend policy identity of a planned member.
 
     A real ``ModelInstance`` is a table row with required columns and an
     identity; constructing one here would mean either touching the session or
-    filling in fields whose values would be lies. Only these four are read
-    while summing allocation, so only these four are carried — and the class is
-    named so that anything finding it in a list knows it is not a row.
+    filling in fields whose values would be lies. The model projection lets
+    selectors apply backend coexistence rules while claims account for both
+    primary and subordinate devices. This object is never persisted.
     """
 
     worker_id: Optional[int]
@@ -54,6 +54,7 @@ class _PlacedStandIn:
     gpu_type: Optional[str]
     computed_resource_claim: Any
     distributed_servers: Any = None
+    model: Any = field(default=None, repr=False)
 
 
 @dataclass
@@ -149,12 +150,13 @@ async def count_offer_slots(
             result.unavailable = f"{type(e).__name__}: {e}"
             return result
 
-        # Taken on every round rather than only on the one that finds no room:
-        # a role that fits still has to appear in a group's breakdown, priced
-        # the same way as the role that did not.
-        result.claim = _claim_of(selector) or result.claim
-
         candidate = _usable(candidates)
+        # A successful placement prices the actual reservation. An exhausted
+        # selector may only know the weights estimate, so keep the measured
+        # claim once a placement has supplied one.
+        if candidate is not None or result.claim is None:
+            result.claim = _claim_of(selector) or result.claim
+
         if candidate is None:
             # The round that found no room is the one worth quoting, and it is
             # always this one: the loop stops here. Asked of the selector
@@ -165,7 +167,7 @@ async def count_offer_slots(
 
         result.slots += 1
         result.placements.append(candidate)
-        hypothetical.append(_stand_in_for(candidate))
+        hypothetical.append(_stand_in_for(candidate, getattr(selector, "_model", None)))
 
     return result
 
@@ -220,7 +222,7 @@ def _usable(candidates) -> Optional[Any]:
     return None
 
 
-def _stand_in_for(candidate) -> _PlacedStandIn:
+def _stand_in_for(candidate, model=None) -> _PlacedStandIn:
     """The candidate as the allocation accounting reads it.
 
     Keyed off the candidate's own worker rather than the one the caller asked
@@ -233,11 +235,12 @@ def _stand_in_for(candidate) -> _PlacedStandIn:
         gpu_indexes=candidate.gpu_indexes,
         gpu_type=candidate.gpu_type,
         computed_resource_claim=candidate.computed_resource_claim,
-        distributed_servers=_subordinates_of(candidate),
+        distributed_servers=_subordinates_of(candidate, model),
+        model=model,
     )
 
 
-def _subordinates_of(candidate):
+def _subordinates_of(candidate, model=None):
     """Carry a multi-worker placement's other halves, or nothing.
 
     A distributed candidate consumes VRAM on workers besides this one, and
@@ -248,12 +251,21 @@ def _subordinates_of(candidate):
     subordinates = getattr(candidate, "subordinate_workers", None)
     if not subordinates:
         return None
-    # Duck-typed rather than constructing the schema object: the only consumer
-    # walks `.subordinate_workers`, and importing the model here would tie this
-    # module to the ORM for one attribute.
-    return _Subordinates(subordinate_workers=list(subordinates))
+    from gpustack.schemas.models import BackendEnum, get_backend
+    from gpustack.utils.vllm_topology import vllm_lb_mode
+
+    managed = (
+        model is not None
+        and get_backend(model) == BackendEnum.VLLM
+        and vllm_lb_mode(model.backend_parameters)
+        in ("external", "multi_port_external", "hybrid")
+    )
+    return _Subordinates(
+        subordinate_workers=list(subordinates), workloads=[] if managed else None
+    )
 
 
 @dataclass
 class _Subordinates:
     subordinate_workers: List[Any]
+    workloads: Optional[List[Any]] = None

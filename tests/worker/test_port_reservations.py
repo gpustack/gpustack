@@ -15,10 +15,14 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
+    ModelInstanceWorkload,
     PortBand,
 )
-from gpustack.worker.port_reservations import WorkerPortReservations
-from tests.utils.model import new_model_instance
+from gpustack.worker.port_reservations import (
+    WorkerPortReservations,
+    model_instance_ports,
+)
+from tests.utils.model import new_model_instance, new_model_instance_workload
 
 
 def _clientset(models=(), caches=()):
@@ -55,6 +59,39 @@ def test_local_and_persisted_reservations_both_block_allocation():
 
     with reservations.allocation(clientset, 1) as unavailable:
         assert unavailable == {40000, 40001, 40002, 40003, 40004, 40005, 40006}
+
+
+@pytest.mark.parametrize("worker_id", [1, 2])
+def test_managed_port_view_is_local_and_never_falls_back_to_primary_ports(worker_id):
+    model = new_model_instance(7, "model", 1, worker_id=1)
+    model.port, model.ports = 49998, [49998, 49999]
+    model.distributed_servers = DistributedServers(
+        workloads=[
+            ModelInstanceWorkload.model_validate(
+                new_model_instance_workload(worker_id=1)
+            ),
+            ModelInstanceWorkload.model_validate(
+                new_model_instance_workload(worker_id=2, node_rank=1)
+            ),
+        ]
+    )
+    assert model_instance_ports(model, worker_id) == (
+        {40000} if worker_id == 1 else set()
+    )
+    model.distributed_servers.workloads = []
+    model.distributed_servers.orchestration_mode = "managed"
+    assert model_instance_ports(model, worker_id) == set()
+
+
+def test_adopted_ports_remain_unavailable_until_explicit_release():
+    reservations = WorkerPortReservations()
+    reservations.hold_model(7, {40020})
+    reservations.hold_model(7, {40021})
+    with reservations.allocation(_clientset(), 1) as taken:
+        assert taken == {40020, 40021}
+        assert taken.pending_cleanup
+    reservations.release_model(7)
+    assert 7 not in reservations.model_ports
 
 
 @pytest.mark.parametrize("source", ["model", "claim", "cache"])

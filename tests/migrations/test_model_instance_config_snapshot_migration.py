@@ -21,6 +21,8 @@ def migration(monkeypatch):
     monkeypatch.setattr(module, "op", MagicMock())
     monkeypatch.setattr(module, "table_exists", lambda name: True)
     monkeypatch.setattr(module, "column_exists", lambda *args: False)
+    monkeypatch.setattr(module, "_upgrade_model_instance_lookup_indexes", MagicMock())
+    monkeypatch.setattr(module, "_downgrade_model_instance_lookup_indexes", MagicMock())
     return module
 
 

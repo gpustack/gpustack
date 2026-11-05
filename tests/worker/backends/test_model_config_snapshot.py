@@ -9,6 +9,7 @@ import pytest
 from gpustack.schemas.inference_backend import InferenceBackend
 from gpustack.schemas.models import (
     BackendEnum,
+    DistributedServers,
     Model,
     ModelConfigSnapshot,
     ModelInstance,
@@ -55,7 +56,9 @@ def test_capture_is_detached_from_model_and_backend_mutations(role):
     client.models.get.return_value = model
     server = SimpleNamespace(
         _clientset=client,
-        _model_instance=SimpleNamespace(model_id=1, group_id=None, role=role),
+        _model_instance=SimpleNamespace(
+            model_id=1, group_id=None, role=role, distributed_servers=None
+        ),
         _config=SimpleNamespace(data_dir="/worker"),
     )
     InferenceServer.get_model(server)
@@ -70,6 +73,30 @@ def test_capture_is_detached_from_model_and_backend_mutations(role):
     assert captured.env == {"MODE": "ROLE" if role else "A"}
     assert server._model.backend_parameters[0] == "--cache-dir=/worker/cache"
     client.model_instances.update.assert_not_called()
+
+
+@pytest.mark.parametrize('group_id', [None, 'pd-generation'])
+def test_managed_launch_reads_latest_config_while_other_replicas_are_stale(group_id):
+    model = _model(stale=True, backend_parameters=['--max-model-len=4096'])
+    client = MagicMock()
+    client.models.get.return_value = model
+    server = SimpleNamespace(
+        _clientset=client,
+        _model_instance=SimpleNamespace(
+            model_id=1,
+            group_id=group_id,
+            role=None,
+            distributed_servers=DistributedServers(workloads=[]),
+        ),
+        _config=SimpleNamespace(data_dir='/worker'),
+    )
+    if group_id:
+        with pytest.raises(RuntimeError, match='Configuration changed'):
+            InferenceServer.get_model(server)
+    else:
+        InferenceServer.get_model(server)
+        assert server._model.backend_parameters == ['--max-model-len=4096']
+    client.models.get.assert_called_once_with(id=1, use_cache=False)
 
 
 def _startup(monkeypatch, config, worker_id=1, failure=False):

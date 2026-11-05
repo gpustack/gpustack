@@ -223,7 +223,8 @@ async def test_generate_metrics_cache_survives_transient_db_error(monkeypatch):
     loop should keep the last cache and retry on the next tick.
     """
     exporter = MetricExporter(SimpleNamespace(metrics_port=10162))
-    exporter._cache_metrics = ["stale"]
+    previous_snapshot = ([], 100)
+    exporter._cache_metrics = previous_snapshot
 
     collect_calls = {"n": 0}
 
@@ -250,7 +251,7 @@ async def test_generate_metrics_cache_survives_transient_db_error(monkeypatch):
         await exporter.generate_metrics_cache()
 
     assert collect_calls["n"] == 1  # ran once, error swallowed, reached sleep
-    assert exporter._cache_metrics == ["stale"]  # kept last cache, no crash
+    assert exporter._cache_metrics is previous_snapshot
 
 
 @pytest.mark.asyncio
@@ -814,3 +815,525 @@ async def test_pd_cache_metrics_follow_role_references(
         f"qwen-{role}": expected_attached
         for role in (["prefill", "decode"] if decode_service else ["prefill"])
     }
+
+
+def _runtime_instance(workloads, **overrides):
+    from gpustack.schemas.models import DistributedServers, ModelInstance
+
+    fields = dict(
+        id=100,
+        model_id=10,
+        name='runtime-instance',
+        cluster_id=1,
+        worker_id=1,
+        worker_name='primary',
+        state='starting',
+        restart_count=4,
+        gpu_indexes=[3, 8],
+        distributed_servers=DistributedServers(workloads=workloads),
+    )
+    fields.update(overrides)
+    return ModelInstance(**fields)
+
+
+async def _runtime_info(instance, **model_overrides):
+    model = _pd_model(
+        None, disaggregation=None, instances=[instance], **model_overrides
+    )
+    exporter = MetricExporter(SimpleNamespace(metrics_port=10161))
+    cluster = _cluster_with_model(model)
+    cluster.cluster_workers = [
+        SimpleNamespace(id=i, name=name, state='ready', labels={})
+        for i, name in ((1, 'current-owner'), (2, 'current-headless'))
+    ]
+    with (
+        patch(
+            'gpustack.exporter.exporter.Cluster.all',
+            return_value=[cluster],
+        ),
+        patch('gpustack.exporter.exporter.CacheService.all_by_fields', return_value=[]),
+    ):
+        metrics = await exporter._collect_metrics(SimpleNamespace())
+    return exporter, metrics
+
+
+@pytest.mark.asyncio
+async def test_source_and_placement_info_separate_api_owner_and_headless_devices():
+    from tests.utils.model import new_model_instance_workload
+
+    tasks = [new_model_instance_workload(1, 2), new_model_instance_workload(2, 2, 1)]
+    tasks[0]['dp_rank_placements'][0]['gpu_indexes'] = [3, 8]
+    tasks[1]['dp_rank_placements'][0]['gpu_indexes'] = [7]
+    _, metrics = await _runtime_info(_runtime_instance(tasks))
+    source = next(
+        m for m in metrics if m.name == 'gpustack:model_instance_source'
+    ).samples
+    placements = next(
+        m for m in metrics if m.name == 'gpustack:model_instance_placement'
+    ).samples
+    assert len(source) == 1
+    assert source[0].labels['worker_id'] == '1'
+    assert source[0].labels['worker_name'] == 'current-owner'
+    assert source[0].labels['endpoint_dp_rank'] == '2'
+    assert source[0].labels['workload_state'] == 'pending'
+    assert source[0].labels['ready'] == 'false'
+    assert source[0].labels['restart_count'] == '4'
+    assert source[0].labels['model_instance_id'] == '100'
+    assert set(source[0].labels) == {
+        'cluster_id',
+        'cluster_name',
+        'model_id',
+        'model_name',
+        'model_instance_id',
+        'model_instance_name',
+        'restart_count',
+        'source_kind',
+        'source_name',
+        'endpoint_dp_rank',
+        'worker_id',
+        'worker_name',
+        'workload_name',
+        'workload_state',
+        'ready',
+    }
+    assert {
+        (s.labels['placement_worker_id'], s.labels['node_rank'], s.labels['gpu_index'])
+        for s in placements
+    } == {('1', '0', '3'), ('1', '0', '8'), ('2', '1', '7')}
+    assert {s.labels['source_worker_id'] for s in placements} == {'1'}
+    assert all(
+        set(s.labels)
+        == {
+            'cluster_id',
+            'cluster_name',
+            'model_id',
+            'model_name',
+            'model_instance_id',
+            'model_instance_name',
+            'restart_count',
+            'source_kind',
+            'source_name',
+            'endpoint_dp_rank',
+            'source_worker_id',
+            'placement_worker_id',
+            'placement_worker_name',
+            'workload_name',
+            'gpu_index',
+            'node_rank',
+        }
+        for s in placements
+    )
+    assert all(s.value == 1 for s in source + placements)
+
+
+@pytest.mark.asyncio
+async def test_sglang_shared_allocation_info_has_no_invented_native_ranks_or_smg_gpu():
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+
+    instance = _runtime_instance(
+        [
+            dict(
+                name='engine-main',
+                worker_id=1,
+                state='failed',
+                component={'kind': 'sglang_engine', 'api_port': 40000, 'dp_size': 4},
+            ),
+            dict(
+                name='engine-headless',
+                worker_id=2,
+                state='running',
+                component={'kind': 'sglang_engine'},
+            ),
+            dict(
+                name='smg',
+                worker_id=1,
+                state='pending',
+                component={
+                    'kind': 'sglang_smg',
+                    'api_port': 41000,
+                    'metrics_port': 42000,
+                    'attempt': 3,
+                },
+            ),
+        ]
+    )
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
+            worker_id=2, worker_name='second', gpu_indexes=[7]
+        )
+    ]
+    exporter, metrics = await _runtime_info(instance)
+    source = next(
+        m for m in metrics if m.name == 'gpustack:model_instance_source'
+    ).samples
+    placements = next(
+        m for m in metrics if m.name == 'gpustack:model_instance_placement'
+    ).samples
+    assert {(s.labels['source_kind'], s.labels['workload_state']) for s in source} == {
+        ('sglang_engine', 'failed'),
+        ('sglang_smg', 'pending'),
+    }
+    assert (
+        next(s for s in source if s.labels['source_kind'] == 'sglang_smg').labels[
+            'component_attempt'
+        ]
+        == '3'
+    )
+    assert len(placements) == 3
+    assert {s.labels['source_kind'] for s in placements} == {'sglang_engine'}
+    assert all(
+        not ({'endpoint_dp_rank', 'dp_rank', 'tp_rank', 'node_rank'} & s.labels.keys())
+        for s in placements
+    )
+    from prometheus_client import CollectorRegistry, generate_latest
+    from prometheus_client.parser import text_string_to_metric_families
+
+    exporter._cache_metrics = (metrics, 100)
+    with patch('gpustack.exporter.exporter.monotonic', return_value=100):
+        registry = CollectorRegistry()
+        registry.register(exporter)
+        samples = [
+            s
+            for f in text_string_to_metric_families(generate_latest(registry).decode())
+            for s in f.samples
+        ]
+    identities = [(s.name, tuple(sorted(s.labels.items()))) for s in samples]
+    assert len(identities) == len(set(identities))
+
+
+@pytest.mark.asyncio
+async def test_only_new_runtime_info_expires_when_server_snapshot_stops(monkeypatch):
+    from tests.utils.model import new_model_instance_workload
+    from prometheus_client import CollectorRegistry, generate_latest
+    import gpustack.exporter.exporter as module
+
+    exporter, metrics = await _runtime_info(
+        _runtime_instance([new_model_instance_workload()])
+    )
+    clock = [100]
+    monkeypatch.setattr(module, 'monotonic', lambda: clock[0])
+    exporter._cache_metrics = (metrics, clock[0])
+    registry = CollectorRegistry()
+    registry.register(exporter)
+    assert b'gpustack:model_instance_source_info{' in generate_latest(registry)
+    clock[0] = 129
+    assert b'gpustack:model_instance_placement_info{' in generate_latest(registry)
+    clock[0] = 130
+    rendered = generate_latest(registry)
+    assert b'gpustack:model_instance_source_info{' not in rendered
+    assert b'gpustack:model_instance_placement_info{' not in rendered
+    assert b'gpustack:model_instance_restart_count{' in rendered
+
+
+@pytest.mark.asyncio
+async def test_info_refresh_failure_does_not_renew_freshness_and_empty_refresh_clears(
+    monkeypatch,
+):
+    from tests.utils.model import new_model_instance_workload
+    import gpustack.exporter.exporter as module
+
+    exporter, metrics = await _runtime_info(
+        _runtime_instance([new_model_instance_workload()])
+    )
+    exporter._cache_metrics = (metrics, 100)
+    clock = [129]
+    monkeypatch.setattr(module, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(module, 'async_session', lambda: _NoopSession())
+    monkeypatch.setattr(
+        exporter,
+        '_collect_metrics',
+        AsyncMock(side_effect=RuntimeError('DB unavailable')),
+    )
+
+    async def stop(_seconds):
+        clock[0] += 2
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(module.asyncio, 'sleep', stop)
+    with pytest.raises(asyncio.CancelledError):
+        await exporter.generate_metrics_cache()
+    assert exporter._cache_metrics == (metrics, 100)
+    assert all(m.name not in module._RUNTIME_INFO_FAMILIES for m in exporter.collect())
+    monkeypatch.setattr(exporter, '_collect_metrics', AsyncMock(return_value=[]))
+    with pytest.raises(asyncio.CancelledError):
+        await exporter.generate_metrics_cache()
+    assert list(exporter.collect()) == []
+
+
+@pytest.mark.asyncio
+async def test_info_snapshot_replaces_epoch_attempt_and_empty_managed_inventory():
+    instance = _runtime_instance(
+        [
+            dict(
+                name='engine',
+                worker_id=1,
+                state='running',
+                component={
+                    'kind': 'sglang_engine',
+                    'api_port': 40000,
+                    'dp_size': 4,
+                    'ready': True,
+                },
+            ),
+            dict(
+                name='smg',
+                worker_id=1,
+                state='pending',
+                component={
+                    'kind': 'sglang_smg',
+                    'api_port': 41000,
+                    'metrics_port': 42000,
+                    'attempt': 3,
+                },
+            ),
+        ]
+    )
+    _, metrics = await _runtime_info(instance)
+    before = next(
+        m for m in metrics if m.name == 'gpustack:model_instance_source'
+    ).samples
+    assert {s.labels.get('component_attempt') for s in before} == {None, '3'}
+    instance.restart_count = 5
+    instance.distributed_servers.workloads[1].component.attempt = 4
+    _, metrics = await _runtime_info(instance)
+    after = next(
+        m for m in metrics if m.name == 'gpustack:model_instance_source'
+    ).samples
+    assert {s.labels['restart_count'] for s in after} == {'5'}
+    assert {s.labels.get('component_attempt') for s in after} == {None, '4'}
+    instance.distributed_servers.workloads = []
+    instance.distributed_servers.orchestration_mode = "managed"
+    _, metrics = await _runtime_info(instance)
+    assert all(
+        not m.samples
+        for m in metrics
+        if m.name
+        in ('gpustack:model_instance_source', 'gpustack:model_instance_placement')
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_source_inventory_preserves_named_metrics_port_without_rank():
+    instance = _runtime_instance(
+        None,
+        state='running',
+        port=40020,
+        ports=[40020, 40030],
+        named_ports={'prometheus': {'base': 40030}},
+    )
+    _, metrics = await _runtime_info(instance)
+    source = next(
+        m for m in metrics if m.name == 'gpustack:model_instance_source'
+    ).samples
+    assert len(source) == 1
+    assert source[0].labels['source_kind'] == 'legacy'
+    assert 'endpoint_dp_rank' not in source[0].labels
+    assert 'ready' not in source[0].labels
+    assert 'dp_size' not in source[0].labels
+
+
+@pytest.mark.asyncio
+async def test_incomplete_new_info_does_not_discard_existing_instance_metrics():
+    instance = SimpleNamespace(
+        id=100,
+        model_id=10,
+        name='incomplete',
+        worker_id=1,
+        worker_name='primary',
+        state='running',
+        restart_count=4,
+        last_restart_time=None,
+    )
+    _, metrics = await _runtime_info(instance)
+    assert _sample_value(metrics, 'gpustack:model_instance_restart_count') == 4
+    assert all(
+        not m.samples
+        for m in metrics
+        if m.name
+        in ('gpustack:model_instance_source', 'gpustack:model_instance_placement')
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cross_worker', [False, True])
+async def test_hybrid_shared_api_device_info_uses_existing_topology(cross_worker):
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+    from tests.worker.test_runtime_metrics import _hybrid_tasks
+
+    tasks = _hybrid_tasks()
+    if not cross_worker:
+        tasks = [tasks[0], tasks[2]]
+        for task in tasks:
+            task['component']['dp_size'] = 2
+    instance = _runtime_instance(tasks, gpu_indexes=[0, 2, 4, 6])
+    allocations = {2: [1, 3, 5, 7], 3: [0, 1, 2, 3], 4: [4, 5, 6, 7]}
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=i, gpu_indexes=gpus)
+        for i, gpus in allocations.items()
+        if cross_worker or i == 3
+    ]
+    from gpustack.schemas.models import ModelConfigSnapshot, ModelInstanceLaunchIdentity
+
+    instance.pid = 123
+    instance.model_config_snapshot = ModelConfigSnapshot(
+        backend_parameters=[
+            '--data-parallel-hybrid-lb',
+            '--tensor-parallel-size',
+            '8' if cross_worker else '2',
+            '--data-parallel-size',
+            '2' if cross_worker else '4',
+            '--data-parallel-size-local',
+            '1' if cross_worker else '2',
+        ],
+        launch_identity=ModelInstanceLaunchIdentity.from_instance(instance),
+    )
+    _, metrics = await _runtime_info(
+        instance,
+        backend_parameters=[
+            '--data-parallel-hybrid-lb',
+            '--tensor-parallel-size',
+            '8' if cross_worker else '2',
+            '--data-parallel-size',
+            '2' if cross_worker else '4',
+            '--data-parallel-size-local',
+            '1' if cross_worker else '2',
+        ],
+    )
+    sources = next(
+        m for m in metrics if m.name == 'gpustack:model_instance_source'
+    ).samples
+    placements = next(
+        m for m in metrics if m.name == 'gpustack:model_instance_placement'
+    ).samples
+    assert {s.labels['worker_id'] for s in sources} == {'1', '3'}
+    assert len(sources) == 2
+    expected = {
+        (str(worker), str(gpu), str(1 if worker in (1, 2) else 3))
+        for worker, gpus in {1: [0, 2, 4, 6], **allocations}.items()
+        if cross_worker or worker in (1, 3)
+        for gpu in gpus
+    }
+    assert {
+        (
+            s.labels['placement_worker_id'],
+            s.labels['gpu_index'],
+            s.labels['source_worker_id'],
+        )
+        for s in placements
+    } == expected
+    assert all(s.labels['source_kind'] == 'vllm_hybrid' for s in placements)
+    assert all(
+        not ({'endpoint_dp_rank', 'dp_rank', 'engine'} & s.labels.keys())
+        for s in placements
+    )
+
+
+@pytest.mark.parametrize(
+    'parameters',
+    [None, [], ['--data-parallel-hybrid-lb', '--tensor-parallel-size', '99']],
+)
+def test_hybrid_device_mapping_requires_model_and_valid_topology(parameters):
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+    from gpustack.utils.model_instance_workers import (
+        model_instance_metrics_source_inventory,
+        model_instance_metrics_placements,
+    )
+    from tests.worker.test_runtime_metrics import _hybrid_tasks
+    from tests.utils.model import make_model
+
+    instance = _runtime_instance(_hybrid_tasks(), gpu_indexes=[0, 1, 2, 3])
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=i, gpu_indexes=[0, 1, 2, 3])
+        for i in (2, 3, 4)
+    ]
+    model = (
+        None
+        if parameters is None
+        else make_model(backend='vLLM', backend_parameters=parameters)
+    )
+    assert (
+        model_instance_metrics_placements(
+            instance, model_instance_metrics_source_inventory(instance), model
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("edited", [["--tensor-parallel-size", "4"], []])
+def test_hybrid_device_mapping_uses_launch_snapshot_after_role_edit(edited):
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker, RoleSpec
+    from gpustack.utils.model_instance_workers import (
+        model_instance_metrics_source_inventory,
+        model_instance_metrics_placements,
+    )
+    from tests.worker.test_runtime_metrics import _hybrid_tasks
+    from tests.utils.model import make_model
+
+    instance = _runtime_instance(
+        _hybrid_tasks(), gpu_indexes=[0, 1, 2, 3], role='prefill'
+    )
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=i, gpu_indexes=[0, 1, 2, 3])
+        for i in (2, 3, 4)
+    ]
+    model = make_model(
+        backend='vLLM', backend_parameters=['--tensor-parallel-size', '99']
+    )
+    model.roles = [
+        RoleSpec(
+            name='prefill',
+            backend_parameters=[
+                '--data-parallel-hybrid-lb',
+                '--tensor-parallel-size',
+                '8',
+                '--data-parallel-size',
+                '2',
+            ],
+        )
+    ]
+    sources = model_instance_metrics_source_inventory(instance)
+    from gpustack.schemas.models import ModelConfigSnapshot, ModelInstanceLaunchIdentity
+
+    instance.pid = 123
+    instance.model_config_snapshot = ModelConfigSnapshot(
+        backend_parameters=list(model.roles[0].backend_parameters),
+        launch_identity=ModelInstanceLaunchIdentity.from_instance(instance),
+    )
+    model.roles[0].backend_parameters = edited
+    placements = model_instance_metrics_placements(instance, sources, model)
+    assert len(placements) == 16
+    assert {(p.worker_id, p.source.worker_id) for p in placements} == {
+        (1, 1),
+        (2, 1),
+        (3, 3),
+        (4, 3),
+    }
+
+
+@pytest.mark.parametrize('change', ['missing', 'generation', 'worker', 'pid'])
+def test_hybrid_mapping_rejects_unmatched_launch_snapshot(change):
+    from gpustack.schemas.models import ModelConfigSnapshot, ModelInstanceLaunchIdentity
+    from gpustack.utils.model_instance_workers import (
+        model_instance_metrics_source_inventory,
+        model_instance_metrics_placements,
+    )
+    from tests.worker.test_runtime_metrics import _hybrid_tasks
+
+    instance = _runtime_instance(_hybrid_tasks(), pid=123)
+    snapshot = ModelConfigSnapshot(
+        backend_parameters=['--data-parallel-hybrid-lb'],
+        launch_identity=ModelInstanceLaunchIdentity.from_instance(instance),
+    )
+    instance.model_config_snapshot = None if change == 'missing' else snapshot
+    if change == 'generation':
+        instance.restart_count += 1
+    elif change == 'worker':
+        instance.worker_id = 2
+    elif change == 'pid':
+        instance.pid += 1
+    assert (
+        model_instance_metrics_placements(
+            instance, model_instance_metrics_source_inventory(instance)
+        )
+        == []
+    )

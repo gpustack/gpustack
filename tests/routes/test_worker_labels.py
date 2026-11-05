@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy.dialects import mysql, postgresql
 
-from gpustack.api.exceptions import register_handlers
+from gpustack.api.exceptions import ConflictException, register_handlers
 from gpustack.api.tenant import TenantContext, get_tenant_context
 from gpustack.routes import workers
 from gpustack.schemas.principals import OrgRole, PrincipalType
@@ -193,3 +193,60 @@ async def test_single_worker_edit_still_replaces_labels(batch, monkeypatch, labe
         worker_in=WorkerUpdate(name=worker.name, labels=labels),
     )
     assert worker.labels == labels
+
+
+def test_worker_delete_preserves_stop_barrier_conflict(batch, monkeypatch):
+    lookup = AsyncMock(return_value=batch.rows[0])
+    monkeypatch.setattr(Worker, "one_by_id", lookup)
+    delete = AsyncMock(
+        side_effect=ConflictException(message="Stop managed tasks first")
+    )
+    monkeypatch.setattr(WorkerService, "delete", delete)
+    response = batch.client.delete("/v2/workers/1")
+    assert response.status_code == 409
+    assert "Stop managed tasks" in response.text
+    assert lookup.await_args.kwargs["for_update"] is True
+
+
+def test_worker_delete_checks_tenant_before_stop_barrier(batch, monkeypatch):
+    batch.rows[0].owner_principal_id = 20
+    monkeypatch.setattr(Worker, "one_by_id", AsyncMock(return_value=batch.rows[0]))
+    delete = AsyncMock()
+    monkeypatch.setattr(WorkerService, "delete", delete)
+    assert batch.client.delete("/v2/workers/1").status_code == 404
+    delete.assert_not_awaited()
+
+
+def test_cloud_worker_delete_locks_before_changing_state(batch, monkeypatch):
+    from gpustack.schemas.models import ModelInstance
+    from gpustack.schemas.workers import WorkerStateEnum
+
+    worker = batch.rows[0]
+    worker.external_id = 'acceptance-cloud-instance'
+    worker.state = WorkerStateEnum.READY
+    batch.session.new = []
+    batch.session.dirty = [worker]
+    batch.session.deleted = []
+    batch.session.is_modified = MagicMock(
+        side_effect=lambda *args, **kwargs: worker.state == WorkerStateEnum.DELETING
+    )
+    batch.session.no_autoflush = MagicMock()
+    batch.session.get.return_value = worker
+    read_worker = Worker.one_by_id
+
+    async def lookup(session, id, **kwargs):
+        if kwargs.get('refresh'):
+            return await read_worker(session, id, **kwargs)
+        return worker
+
+    monkeypatch.setattr(Worker, 'one_by_id', lookup)
+    monkeypatch.setattr(ModelInstance, 'all_by_field', AsyncMock(return_value=[]))
+    deleted = AsyncMock()
+    monkeypatch.setattr(Worker, 'delete', deleted)
+    monkeypatch.setattr('gpustack.server.services.delete_cache_by_key', AsyncMock())
+    response = batch.client.delete('/v2/workers/1')
+    assert response.status_code == 200, response.text
+    deleted.assert_awaited_once_with(batch.session, soft=True)
+    assert worker.state == WorkerStateEnum.DELETING
+    options = batch.session.get.await_args.kwargs['options']
+    assert options[0].path[1].key == 'system_principal'

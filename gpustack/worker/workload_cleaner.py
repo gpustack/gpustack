@@ -12,6 +12,7 @@ from gpustack.utils import network
 from gpustack.utils.datetimex import parse_iso8601_to_utc
 from gpustack.schemas.benchmark import BenchmarkStateEnum
 from gpustack.utils.runtime import is_benchmark_workload, is_cache_service_workload
+from gpustack.utils.model_instance_workers import get_model_instance_workloads
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +54,14 @@ class WorkloadCleaner:
             return set()
 
         names = set()
-        model_instances_page = self._clientset.model_instances.list()
+        model_instances_page = self._clientset.model_instances.list(
+            params={"page": -1}, use_cache=False
+        )
         for model_instance in model_instances_page.items or []:
+            managed = get_model_instance_workloads(model_instance, self._worker_id)
+            if managed is not None:
+                names.update(item.name for item in managed)
+                continue
             deployment_metadata = model_instance.get_deployment_metadata(
                 self._worker_id,
             )

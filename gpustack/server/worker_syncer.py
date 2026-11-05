@@ -58,6 +58,10 @@ class WorkerSyncer:
         if not all_workers:
             return
 
+        identities = {worker.id: _probe_identity(worker) for worker in all_workers}
+
+        original_unreachable = {worker.id: worker.unreachable for worker in all_workers}
+
         if self._should_check_unreachable(len(all_workers)):
             tasks = [
                 self._set_worker_unreachable(worker)
@@ -67,6 +71,14 @@ class WorkerSyncer:
             await asyncio.gather(*tasks)
 
         state_changed_workers = self.filter_state_change_workers(all_workers)
+        # Maintenance can hold state constant while endpoint reachability changes.
+        changed_ids = {worker.id for worker in state_changed_workers}
+        state_changed_workers.extend(
+            worker
+            for worker in all_workers
+            if worker.id not in changed_ids
+            and worker.unreachable != original_unreachable[worker.id]
+        )
 
         should_update_workers = []
         state_to_worker_name = {
@@ -78,17 +90,30 @@ class WorkerSyncer:
         for worker in state_changed_workers:
             if worker and worker.state in state_to_worker_name:
                 should_update_workers.append(worker)
-                state_to_worker_name[worker.state].append(worker.name)
 
         async with async_session() as session:
-            for worker in should_update_workers:
-                # reload from DB and update states only
-                to_update_worker = await WorkerService(session).get_by_id(worker.id)
-                if to_update_worker:
-                    to_update_worker.unreachable = worker.unreachable
-                    to_update_worker.state = worker.state
-                    to_update_worker.state_message = worker.state_message
-                    await WorkerService(session).update(to_update_worker)
+            current = await Worker.all_by_ids(
+                session,
+                [worker.id for worker in should_update_workers],
+                for_update=True,
+                refresh=True,
+            )
+            observed = {worker.id: worker for worker in should_update_workers}
+            changed = []
+            for worker in current:
+                if (
+                    worker.deleted_at is not None
+                    or worker.state.is_provisioning
+                    or _probe_identity(worker) != identities.get(worker.id)
+                ):
+                    continue
+                prior = (worker.unreachable, worker.state, worker.state_message)
+                worker.unreachable = observed[worker.id].unreachable
+                worker.compute_state()
+                if (worker.unreachable, worker.state, worker.state_message) != prior:
+                    changed.append(worker)
+                    state_to_worker_name[worker.state].append(worker.name)
+            await WorkerService(session).batch_update(changed)
 
         for state, worker_names in state_to_worker_name.items():
             if worker_names:
@@ -154,3 +179,18 @@ class WorkerSyncer:
             ):
                 state_changed_workers.append(worker)
         return state_changed_workers
+
+
+def _probe_identity(worker: Worker) -> tuple:
+    """Bind a network observation to the registration that was actually probed."""
+    return (
+        worker.cluster_id,
+        worker.system_principal_id,
+        worker.worker_uuid,
+        worker.ip,
+        worker.advertise_address,
+        worker.port,
+        worker.proxy_mode,
+        worker.proxy_address,
+        worker.token,
+    )

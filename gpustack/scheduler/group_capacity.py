@@ -848,7 +848,7 @@ class GroupCapacity:
             # The candidate carries its own primary worker and, when it spans
             # machines, its subordinates -- which `compute_worker_allocated`
             # bills to the right one. Nothing here has to know which.
-            out.append(_stand_in_for(offers[index]))
+            out.append(_stand_in_for(offers[index], self._projected[role].model))
         return out
 
     def _selector(self, model, instances, cpu_only, ram_claim=None):

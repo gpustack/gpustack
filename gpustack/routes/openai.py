@@ -6,7 +6,7 @@ from typing import AsyncGenerator, List, Optional, Tuple, Union, Dict
 import aiohttp
 import logging
 
-from fastapi import APIRouter, Query, Request, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from openai.types import Model as OAIModel
 from openai.pagination import SyncPage
 from sqlmodel import or_, select
@@ -19,6 +19,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     OpenAIAPIError,
     OpenAIAPIErrorResponse,
+    OpenAIAPIException,
     ServiceUnavailableException,
     GatewayTimeoutException,
 )
@@ -27,6 +28,10 @@ from gpustack import envs
 from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.model_common import build_category_conditions
 from gpustack.schemas.models import Model, servable_instances
+from gpustack.utils.model_instance_workers import (
+    get_model_instance_workloads,
+    model_instance_endpoints,
+)
 from gpustack.schemas.model_routes import (
     ModelRoute,
     MyModel,
@@ -265,18 +270,30 @@ async def proxy_request_by_model(
         instance = await get_running_instance(
             session, model, target.overridden_model_name
         )
-        worker: Worker = await WorkerService(session).get_by_id(instance.worker_id)
-        if not worker:
+        instance, rank_endpoint = await _select_managed_endpoint(session, instance)
+        lookup_worker_id = (
+            rank_endpoint.worker_id if rank_endpoint else instance.worker_id
+        )
+        worker: Worker = await WorkerService(session).get_by_id(lookup_worker_id)
+        if not worker or getattr(worker, "deleted_at", None) is not None:
             raise InternalServerErrorException(
-                message=f"Worker with ID {instance.worker_id} not found",
+                message=f"Worker with ID {lookup_worker_id} not found",
                 is_openai_exception=True,
             )
     extra_headers = {
-        router_header_key: f"{model_instance_prefix(instance)}.static",
+        router_header_key: (
+            f"{rank_endpoint.registry_name}.static"
+            if rank_endpoint
+            else f"{model_instance_prefix(instance)}.static"
+        ),
     }
     path = f"v1/{endpoint}"
     logger.debug(
-        f"proxying to {instance.worker_ip}:{instance.port}, instance port: {instance.port}"
+        "Proxying instance %s to Worker %s at %s:%s",
+        instance.id,
+        worker.id,
+        worker.ip,
+        rank_endpoint.port if rank_endpoint else instance.port,
     )
 
     try:
@@ -327,6 +344,10 @@ async def proxy_request_by_model(
                 headers=_worker_response_headers(resp.headers),
                 content=body,
             )
+    except HTTPException as exc:
+        raise OpenAIAPIException(
+            status_code=exc.status_code, reason="InvalidRequest", message=exc.detail
+        ) from exc
     except asyncio.TimeoutError as e:
         error_message = f"Request to worker {worker.id} timed out"
         if str(e):
@@ -405,6 +426,22 @@ async def parse_json_body(request: Request):
             message=f"We could not parse the JSON body of your request: {e}",
             is_openai_exception=True,
         )
+
+
+async def _select_managed_endpoint(session, instance):
+    rank_endpoint = None
+    if get_model_instance_workloads(instance) is not None:
+        from gpustack.schemas.models import ModelInstance
+
+        instance = await ModelInstance.one_by_id(session, instance.id, refresh=True)
+        endpoints = model_instance_endpoints(instance) if instance is not None else []
+        if not endpoints:
+            raise ServiceUnavailableException(
+                message="No running rank endpoints available",
+                is_openai_exception=True,
+            )
+        rank_endpoint = random.choice(endpoints)
+    return instance, rank_endpoint
 
 
 def _prepare_proxy_request(

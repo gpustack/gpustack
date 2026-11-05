@@ -8,6 +8,7 @@ import httpx
 from gpustack.api.exceptions import (
     raise_if_response_error,
     async_raise_if_response_error,
+    ServiceUnavailableException,
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.schemas import *
@@ -297,6 +298,19 @@ class ModelClient:
                         self._watch_started = False
                         self._cache.clear()
 
+    def get_cached(self, id: int) -> Optional[ModelPublic]:
+        """Read the current watch snapshot without falling back to HTTP.
+
+        A disconnected or disabled cache cannot establish current ownership.
+        Callers that permit control-plane HTTP should use get() instead.
+        """
+        with self._cache_lock:
+            if not self._enable_cache or not self._watch_started:
+                raise ServiceUnavailableException(
+                    message="Model cache is not synchronized"
+                )
+            return self._cache.get(id)
+
     def get(self, id: int, use_cache: bool = True) -> ModelPublic:
         """
         Get a resource by ID.
@@ -346,3 +360,9 @@ class ModelClient:
     def delete(self, id: int):
         response = self._client.get_httpx_client().delete(f"{self._url}/{id}")
         raise_if_response_error(response)
+
+    def restart(self, id: int) -> ModelRestartResult:
+        """Request a restart; observe GET/watch for replacement readiness."""
+        response = self._client.get_httpx_client().post(f"{self._url}/{id}/restart")
+        raise_if_response_error(response)
+        return ModelRestartResult.model_validate(response.json())

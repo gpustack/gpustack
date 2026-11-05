@@ -19,6 +19,7 @@ from gpustack.api.streaming import tenant_streaming
 from gpustack.mixins.immutable import allow_immutable_field_update
 from gpustack.api.exceptions import (
     AlreadyExistsException,
+    ConflictException,
     InternalServerErrorException,
     NotFoundException,
     ForbiddenException,
@@ -42,6 +43,10 @@ from gpustack.server.worker_status_buffer import (
     heartbeat_flush_buffer_lock,
     worker_status_flush_buffer,
     worker_status_flush_buffer_lock,
+)
+from gpustack.schemas.models import ModelInstance
+from gpustack.utils.model_instance_workers import (
+    get_model_instance_worker_match,
 )
 from gpustack.schemas.workers import (
     WorkerCreate,
@@ -832,12 +837,43 @@ async def _persist_worker_registration(
     return worker
 
 
+async def _registration_instances(session, worker):
+    """Lock related cohorts by instance ID after the caller locks the Worker."""
+    if worker is None:
+        return []
+    discovery = await ModelInstance.all_by_field(
+        session, 'cluster_id', worker.cluster_id, refresh=True
+    )
+    model_ids = sorted(
+        {
+            instance.model_id
+            for instance in discovery
+            if get_model_instance_worker_match(instance, worker_id=worker.id).matched
+        }
+    )
+    if not model_ids:
+        return []
+    statement = (
+        select(ModelInstance)
+        .where(ModelInstance.model_id.in_(model_ids))
+        .order_by(ModelInstance.id)
+        .execution_options(populate_existing=True, autoflush=False)
+        .with_for_update()
+    )
+    with session.no_autoflush:
+        result = await session.exec(statement)
+        return result.all()
+
+
 @router.post("", response_model=WorkerRegistrationPublic)
 async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
     cluster_id = _resolve_create_worker_cluster_id(user, worker_in)
     async with create_worker_semaphore:
+        # End discovery before locking the Worker so MySQL repeatable reads
+        # include assignments committed before that lock was acquired.
         async with async_session() as session:
             all_workers = await Worker.all_by_fields(session, {"deleted_at": None})
+        async with async_session() as session:
             existing_worker = get_existing_worker(cluster_id, worker_in, all_workers)
             check_existing_worker_ownership(user, existing_worker)
             check_worker_name_conflict(
@@ -852,12 +888,26 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                 )
             if existing_worker is not None:
                 existing_worker = await Worker.one_by_id(
-                    session=session, id=existing_worker.id, for_update=True
+                    session, existing_worker.id, for_update=True, refresh=True
                 )
+                if existing_worker is None or existing_worker.deleted_at is not None:
+                    raise NotFoundException(message="Worker not found")
+                check_existing_worker_ownership(user, existing_worker)
+                if existing_worker.cluster_id != cluster_id:
+                    raise ForbiddenException(
+                        message="Worker no longer belongs to this cluster"
+                    )
 
             cluster = await Cluster.one_by_id(session, cluster_id)
             if cluster is None or cluster.deleted_at is not None:
                 raise NotFoundException(message="Cluster not found")
+
+            instances = await _registration_instances(session, existing_worker)
+            existing_principal = await _resolve_existing_worker_principal(
+                session, existing_worker
+            )
+            if existing_worker is not None and existing_principal is None:
+                WorkerService.assert_model_cohort_stopped(existing_worker, instances)
 
             worker_config = _build_worker_config_dict(cluster)
 
@@ -878,9 +928,6 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
             if new_worker.worker_uuid == "":
                 new_worker.worker_uuid = retry_create_unique_worker_uuid(all_workers)
 
-            existing_principal = await _resolve_existing_worker_principal(
-                session, existing_worker
-            )
             to_create_principal = (
                 Principal(
                     name=f'{system_name_prefix}-{hashed_suffix}',
@@ -962,7 +1009,7 @@ async def delete_worker(ctx: TenantContextDep, session: SessionDep, id: int):
     # principal is left dangling (the FK is inverted — ``ON DELETE SET NULL``
     # only fires the other direction, so the DB can't clean it up).
     worker = await Worker.one_by_id(
-        session, id, options=[selectinload(Worker.system_principal)]
+        session, id, for_update=True, options=[selectinload(Worker.system_principal)]
     )
     if worker is not None and worker.deleted_at is not None:
         worker = None
@@ -970,9 +1017,9 @@ async def delete_worker(ctx: TenantContextDep, session: SessionDep, id: int):
     assert_org_owned_writable(ctx, worker, resource_label="worker")
     try:
         soft = worker.external_id is not None
-        if soft:
-            worker.state = WorkerStateEnum.DELETING
         await WorkerService(session).delete(worker, soft=soft)
+    except ConflictException:
+        raise
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete worker: {e}")
 

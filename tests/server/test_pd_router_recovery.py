@@ -59,6 +59,7 @@ def recovery(monkeypatch, config):
             port=40000 + i,
             restart_count=0,
             last_restart_time=None,
+            distributed_servers=None,
         )
         for i, role in enumerate(("prefill", "decode", "router"), start=1)
     ]
@@ -103,6 +104,11 @@ def recovery(monkeypatch, config):
     monkeypatch.setattr(pd_membership, "_ADMISSION_WINDOW_SECONDS", 0)
     monkeypatch.setattr(pd_membership, "reconcile", reconcile_with_client)
     monkeypatch.setattr(controllers, "async_session", session)
+    monkeypatch.setattr(
+        controllers.ModelInstance,
+        "all_by_field",
+        AsyncMock(return_value=state.instances),
+    )
     monkeypatch.setattr(
         controllers, "_router_dial", AsyncMock(return_value=("10.0.0.1", None, None))
     )

@@ -57,7 +57,12 @@ def _request():
 def _stub_pipeline(monkeypatch):
     """Stub every lookup that precedes the worker call, so only it remains."""
     instance = SimpleNamespace(
-        id=11, model_id=1, worker_id=1, port=9000, worker_ip="10.0.0.1"
+        id=11,
+        model_id=1,
+        worker_id=1,
+        port=9000,
+        worker_ip="10.0.0.1",
+        distributed_servers=None,
     )
     worker = SimpleNamespace(
         id=1,

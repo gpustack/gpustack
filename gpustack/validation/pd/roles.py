@@ -1,10 +1,11 @@
 """Validate PD role graphs and mode-specific deployment constraints."""
 
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 from gpustack.api.exceptions import BadRequestException
 from gpustack.schemas.models import (
     PD_BACKENDS,
+    BackendEnum,
     DisaggregationSpec,
     Model,
     ModelCreate,
@@ -14,7 +15,16 @@ from gpustack.schemas.models import (
     RoleNameEnum,
 )
 from gpustack.server.pd_mode_catalog import get_pd_mode
-from gpustack.utils.command import flatten_to_argv
+from gpustack.utils.command import (
+    find_last_int_parameter,
+    find_last_parameter,
+    flatten_to_argv,
+)
+from gpustack.utils.vllm_topology import (
+    ValidatedTopology,
+    validate_managed_lb_parameters,
+    vllm_lb_mode,
+)
 from gpustack.validation.pd.common import model_field
 
 
@@ -178,6 +188,28 @@ def validate_roles(  # noqa: C901
     _reject_cache_under_a_hand_written_mode(field, roles, disaggregation)
     _reject_a_policy_the_mode_cannot_apply(disaggregation)
     _reject_router_params_the_platform_owns(roles, disaggregation)
+    launch_fields = ("backend", "backend_parameters", "disaggregation")
+    changed = stored is None or any(
+        field(name) != getattr(stored, name) for name in launch_fields
+    )
+    previous = {role.name: role for role in (stored.roles or [])} if stored else {}
+    for role in roles:
+        old = previous.get(role.name)
+        role_changed = old is None or (role.backend, role.backend_parameters) != (
+            old.backend,
+            old.backend_parameters,
+        )
+        if role.name in ("prefill", "decode") and (changed or role_changed):
+            validate_external_pd_membership(
+                disaggregation.mode.value,
+                role.backend or field("backend") or BackendEnum.VLLM,
+                (
+                    role.backend_parameters
+                    if role.backend_parameters is not None
+                    else field("backend_parameters")
+                ),
+            )
+    _reject_static_hybrid_local_dp(field, roles, disaggregation)
 
     # A recipe injects one engine's connector configuration into every role,
     # so a role on a different engine would receive settings it cannot read.
@@ -201,6 +233,97 @@ def validate_roles(  # noqa: C901
                         f"connection parameters are yours to supply."
                     )
                 )
+
+
+def _reject_static_hybrid_local_dp(field, roles, disaggregation) -> None:
+    """Reject known API scopes that one static Mooncake DP setting cannot express."""
+    if disaggregation.mode != PDModeEnum.VLLM_MOONCAKE:
+        return
+    router = next((role for role in roles if role.name == "router"), None)
+    if router is not None and router.run_command:
+        return
+    sizes, hybrid = set(), False
+    for role in roles:
+        if role.name not in ("prefill", "decode"):
+            continue
+        if (role.backend or field("backend") or BackendEnum.VLLM) != BackendEnum.VLLM:
+            continue
+        parameters = (
+            role.backend_parameters
+            if role.backend_parameters is not None
+            else field("backend_parameters")
+        )
+        try:
+            mode = vllm_lb_mode(parameters)
+        except ValueError as exc:
+            raise BadRequestException(message=str(exc)) from exc
+        if mode == "hybrid":
+            hybrid = True
+            names = ["data-parallel-size-local", "dpl"]
+        elif mode == "internal":
+            names = ["data-parallel-size", "dp"]
+        else:
+            sizes.add(1)
+            continue
+        size = find_last_int_parameter(parameters, names)
+        if find_last_parameter(parameters, names) is not None and (
+            size is None or size <= 0
+        ):
+            raise BadRequestException(
+                message=f"Role {role.name} --{names[0]} must be a positive integer."
+            )
+        if size is not None:
+            sizes.add(size)
+    if hybrid and len(sizes) > 1:
+        raise BadRequestException(
+            message="CUDA Mooncake shared APIs must have the same local DP size; "
+            "the static router has only one --intra-node-data-parallel-size."
+        )
+
+
+def validate_external_pd_membership(
+    mode_name: str, backend: Optional[str], parameters: Optional[List[str]]
+) -> None:
+    """Reject PD combinations without a managed connector launch path."""
+    if backend != BackendEnum.VLLM:
+        return
+    try:
+        validate_managed_lb_parameters(parameters)
+        lb_mode = vllm_lb_mode(parameters)
+    except ValueError as exc:
+        raise BadRequestException(message=str(exc)) from exc
+    if lb_mode != "multi_port_external" or mode_name == "vllm-nixl":
+        return
+    if mode_name == "vllm-mooncake":
+        # Supervisor children share bootstrap configuration and register the
+        # same local rank. Track the upstream contract before enabling it:
+        # https://github.com/vllm-project/vllm/issues/51531
+        # https://github.com/vllm-project/vllm/pull/51532
+        raise BadRequestException(
+            message="Multi-port External-LB with CUDA Mooncake PD is not supported: "
+            "Supervisor children share bootstrap configuration and local ranks. "
+            "See https://github.com/vllm-project/vllm/issues/51531."
+        )
+    detail = "Ascend PD" if mode_name == "vllm-ascend-mooncake" else mode_name
+    raise BadRequestException(
+        message=f"Multi-port External-LB with {detail} is not supported by GPUStack; "
+        "only CUDA NIXL PD has a managed Multi-port integration."
+    )
+
+
+def validate_managed_pd_topology(model: Model, topology: ValidatedTopology) -> None:
+    """Reject transport layouts that cannot launch on the selected Workers."""
+    if (
+        model.disaggregation is not None
+        and model.disaggregation.mode == PDModeEnum.VLLM_MOONCAKE
+        and vllm_lb_mode(model.backend_parameters) == "external"
+        and topology.nnodes_within_dp > 1
+    ):
+        # Native bootstrap services are node-local to each complete DP rank.
+        raise ValueError(
+            "CUDA Mooncake External-LB requires each DP rank to fit on one Worker; "
+            "cross-Worker TP/PP needs a separately managed bootstrap service."
+        )
 
 
 def _reject_router_params_the_platform_owns(roles, disaggregation) -> None:

@@ -412,6 +412,7 @@ async def get_benchmark_dashboard(
         model,
         cluster_name=cluster.name if cluster is not None else None,
         extra_params=_dashboard_window(benchmark),
+        request=request,
     )
     if dashboard_url is None:
         raise InternalServerErrorException(

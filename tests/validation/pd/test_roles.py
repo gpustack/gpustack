@@ -230,17 +230,19 @@ def test_disaggregation_requires_one_prefill_and_one_decode(roles, expected):
             validate_roles(model)
 
 
-def test_mismatched_role_backend_is_rejected():
-    # vllm-nixl expands into NixlConnector plus VLLM_NIXL_* env; handing that
-    # to another engine fails silently at run time, so reject it at submit.
-    with rejects("pd mode 'vllm-nixl' cannot configure"):
+@pytest.mark.parametrize('mode', [PDModeEnum.VLLM_NIXL, PDModeEnum.VLLM_MOONCAKE])
+def test_mismatched_role_backend_is_rejected(mode):
+    # A recipe supplies backend-specific connector settings to every role.
+    with rejects(f"pd mode '{mode.value}' cannot configure"):
         validate_roles(
             _model(
                 roles=[
-                    RoleSpec(name="prefill"),
-                    RoleSpec(name="decode", backend="SGLang"),
+                    RoleSpec(name="prefill", backend_parameters=['--dph', '--dpl=2']),
+                    RoleSpec(
+                        name="decode", backend="SGLang", backend_parameters=['--dp=8']
+                    ),
                 ],
-                disaggregation=_pd(),
+                disaggregation=_pd(mode),
                 replicas=1,
             )
         )
@@ -471,5 +473,129 @@ def test_sglang_never_touched_that_flag_and_is_unaffected():
             extended_kv_cache=_cache(),
             roles=[RoleSpec(name="prefill"), RoleSpec(name="decode")],
             disaggregation=_pd(mode=PDModeEnum.SGLANG_MOONCAKE),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "prefill_params,decode_params",
+    [
+        (["--data-parallel-size-local", "2"], ["--dpl=1"]),
+        (["--dpl=2"], ["--data-parallel-size-local=4"]),
+    ],
+)
+def test_static_hybrid_roles_refuse_explicit_different_local_dp(
+    prefill_params, decode_params
+):
+    with rejects("same local DP"):
+        validate_roles(
+            _model(
+                roles=[
+                    RoleSpec(
+                        name="prefill", backend_parameters=["--dph", *prefill_params]
+                    ),
+                    RoleSpec(
+                        name="decode",
+                        backend_parameters=[
+                            "--data-parallel-hybrid-lb",
+                            *decode_params,
+                        ],
+                    ),
+                    RoleSpec(name="router"),
+                ],
+                disaggregation=_pd(PDModeEnum.VLLM_MOONCAKE),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    'flag,hybrid',
+    [
+        ('data-parallel-size-local', True),
+        ('dpl', True),
+        ('data-parallel-size', False),
+        ('dp', False),
+    ],
+)
+@pytest.mark.parametrize('value', ['invalid', '0', '-1'])
+def test_static_hybrid_roles_reject_invalid_explicit_api_dp_size(flag, hybrid, value):
+    parameters = [f'--{flag}={value}']
+    if hybrid:
+        parameters.insert(0, '--dph')
+    with rejects('positive integer'):
+        validate_roles(
+            _model(
+                roles=[
+                    RoleSpec(name='prefill', backend_parameters=parameters),
+                    RoleSpec(name='decode', backend_parameters=['--dph', '--dpl=2']),
+                    RoleSpec(name='router'),
+                ],
+                disaggregation=_pd(PDModeEnum.VLLM_MOONCAKE),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "mode", [PDModeEnum.VLLM_NIXL, PDModeEnum.VLLM_ASCEND_MOONCAKE]
+)
+def test_dynamic_hybrid_roles_keep_independent_local_dp(mode):
+    validate_roles(
+        _model(
+            roles=[
+                RoleSpec(name="prefill", backend_parameters=["--dph", "--dpl=2"]),
+                RoleSpec(name="decode", backend_parameters=["--dph", "--dpl=1"]),
+                RoleSpec(name="router"),
+            ],
+            disaggregation=_pd(mode),
+        )
+    )
+
+
+def test_static_hybrid_roles_use_inherited_parameters_on_sparse_update():
+    model = Model.model_validate(
+        _model(
+            backend_parameters=["--dph", "--dpl=2"],
+            roles=[
+                RoleSpec(name="prefill"),
+                RoleSpec(name="decode"),
+                RoleSpec(name="router"),
+            ],
+            disaggregation=_pd(PDModeEnum.VLLM_MOONCAKE),
+        ).model_dump()
+    )
+    validate_roles(
+        ModelUpdate(
+            name=model.name,
+            source=model.source,
+            local_path=model.local_path,
+            description="unchanged layout",
+        ),
+        model,
+    )
+    with rejects("same local DP"):
+        validate_roles(
+            ModelUpdate(
+                name=model.name,
+                source=model.source,
+                local_path=model.local_path,
+                roles=[
+                    RoleSpec(name="prefill"),
+                    RoleSpec(name="decode", backend_parameters=["--dph", "--dpl=1"]),
+                    RoleSpec(name="router"),
+                ],
+            ),
+            model,
+        )
+
+
+def test_static_hybrid_hand_written_router_keeps_independent_role_parameters():
+    validate_roles(
+        _model(
+            roles=[
+                RoleSpec(name="prefill", backend_parameters=["--dph", "--dpl=2"]),
+                RoleSpec(name="decode", backend_parameters=["--dph", "--dpl=1"]),
+                RoleSpec(name="router", run_command="my-router"),
+            ],
+            disaggregation=_pd(PDModeEnum.VLLM_MOONCAKE),
         )
     )
