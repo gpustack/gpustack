@@ -3633,23 +3633,27 @@ class ServeManager(ContainerLogPersister):
             self._sync_component_log_persistence(mi, persistence)
             return
 
-
         logger.info(
             f"Re-attaching container log persistence for adopted model instance "
             f"{mi.name}"
         )
-        self._start_container_log_persistence(
-            mi, resume=True, restart_count=restart
-        )
+        self._start_container_log_persistence(mi, resume=True, restart_count=restart)
 
     def _record_log_sources(self, mi: ModelInstance, persistence=None) -> None:
         """Publish accepted identities without making logging an Engine fault."""
         try:
+            if persistence is not None:
+                restart_count = persistence.restart_count
+            elif mi.worker_id == self._worker_id:
+                restart_count = mi.restart_count or 0
+            else:
+                restart_count = self._current_follower_log_restart_count(mi)
+                if restart_count is None:
+                    return
             with self._log_persistence_lock:
                 current = self._log_persistence.get(mi.id)
                 if (persistence is not None and current is not persistence) or (
-                    current is not None
-                    and current.restart_count != (mi.restart_count or 0)
+                    current is not None and current.restart_count != restart_count
                 ):
                     return
                 bands = mi.named_ports or {}
@@ -3666,7 +3670,11 @@ class ServeManager(ContainerLogPersister):
                 ):
                     multi_port_external = False
                 write_log_sources(
-                    Path(self._serve_log_dir), mi, self._worker_id, multi_port_external
+                    Path(self._serve_log_dir),
+                    mi,
+                    self._worker_id,
+                    multi_port_external,
+                    restart_count=restart_count,
                 )
         except Exception as exc:
             logger.warning("Cannot persist log sources for instance %s: %s", mi.id, exc)
@@ -3683,10 +3691,15 @@ class ServeManager(ContainerLogPersister):
         )
         if task is None:
             return
+        expected_restart = (
+            (mi.restart_count or 0)
+            if mi.worker_id == self._worker_id
+            else persistence.restart_count
+        )
         with self._log_persistence_lock:
             if (
                 self._log_persistence.get(mi.id) is not persistence
-                or persistence.restart_count != (mi.restart_count or 0)
+                or persistence.restart_count != expected_restart
                 or persistence.stop_event.is_set()
                 or task.component.attempt < persistence.component_attempt
             ):
@@ -3709,7 +3722,7 @@ class ServeManager(ContainerLogPersister):
             root = find_instance_log_dir(
                 Path(self._serve_log_dir), mi.id
             ) or instance_log_dir(Path(self._serve_log_dir), mi.name, mi.id)
-            path = root / str(mi.restart_count or 0) / 'component.sglang_smg.log'
+            path = root / str(expected_restart) / 'component.sglang_smg.log'
             stopped = threading.Event()
             thread = threading.Thread(
                 target=self._persist_container_logs,

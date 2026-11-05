@@ -5507,6 +5507,71 @@ def test_stopped_component_writer_cannot_append_a_new_lineage_boundary(tmp_path)
     assert path.read_text() == 'existing\n'
 
 
+def test_follower_component_log_uses_the_local_generation(tmp_path):
+    """The SMG component log follows the follower's per-worker generation, not
+    the server restart count."""
+    from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+
+    manager, _ = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(tmp_path)
+    mi = new_model_instance(42, 'model', model_id=1, worker_id=1)
+    mi.restart_count = 0
+    mi.distributed_servers = DistributedServers(
+        workloads=[
+            ModelInstanceWorkload(
+                name='model-r5-smg-a0',
+                worker_id=2,
+                state='running',
+                component=dict(
+                    kind='sglang_smg', api_port=8000, metrics_port=9000, attempt=0
+                ),
+            )
+        ]
+    )
+    persistence = _LogPersistence(threading.Event(), MagicMock(), 5)
+    manager._log_persistence[mi.id] = persistence
+
+    created = []
+
+    class Writer:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            created.append(self)
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            pass
+
+    with patch('gpustack.worker.serve_manager.threading.Thread', Writer):
+        manager._sync_component_log_persistence(mi, persistence)
+
+    assert len(created) == 1
+    path = Path(created[0].kwargs['args'][1])
+    assert path.parent.name == '5'
+    assert path.name == 'component.sglang_smg.log'
+
+
+def test_follower_log_sources_use_the_local_generation(tmp_path):
+    """sources.json follows the follower generation too."""
+    manager, _ = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(tmp_path)
+    mi = new_model_instance(42, 'model', model_id=1, worker_id=1)
+    mi.restart_count = 0
+    persistence = _LogPersistence(threading.Event(), MagicMock(), 5)
+    manager._log_persistence[mi.id] = persistence
+
+    manager._record_log_sources(mi, persistence)
+
+    assert (tmp_path / 'model.42' / '5' / 'sources.json').exists()
+    assert not (tmp_path / 'model.42' / '0' / 'sources.json').exists()
+
+
 def test_late_old_generation_cannot_touch_new_log_writers_or_metadata(tmp_path):
     from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
     from gpustack.worker.log_sources import restart_log_dir
