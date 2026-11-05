@@ -1857,6 +1857,23 @@ def test_follower_log_scan_error_is_reported_as_unknown(tmp_path: Path):
         assert manager._fallback_follower_log_restart_count(instance) == 5
 
 
+def test_follower_fallback_avoids_the_server_count_when_stat_fails(tmp_path: Path):
+    """If even the existence check is denied, do not assume the server count is
+    free: a colliding head would be truncated."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(tmp_path / "serve")
+    instance = _follower_instance(5)
+
+    with patch(
+        "gpustack.worker.serve_manager.os.stat",
+        side_effect=PermissionError("denied"),
+    ):
+        generation = manager._fallback_follower_log_restart_count(instance)
+
+    assert generation != 5
+    assert generation > 0
+
+
 def test_follower_launch_survives_a_log_scan_failure(tmp_path: Path):
     """A transient log-directory read failure falls back to the server count
     instead of aborting the follower launch."""

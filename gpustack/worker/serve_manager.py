@@ -303,6 +303,22 @@ class _LogPersistence:
         return gone
 
 
+def _log_file_present(path: Path) -> Optional[bool]:
+    """Whether a serve log exists, or None when the check itself failed.
+
+    `Path.exists()` swallows permission errors as "absent", which would let a
+    fallback generation collide with a file it cannot see. `os.stat` keeps that
+    distinction.
+    """
+    try:
+        os.stat(path)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+
+
 def _describe_workload_failure(workload) -> str:
     """
     Explain why a workload stopped serving, for the instance's state message.
@@ -3333,24 +3349,30 @@ class ServeManager(ContainerLogPersister):
         log_dir = Path(self._serve_log_dir)
         base = mi.restart_count or 0
         if base > 0:
-            main = main_log_path(log_dir, mi.name, mi.id, base)
-            container = container_log_path(log_dir, mi.name, mi.id, base)
-            try:
-                if not main.exists() and not container.exists():
-                    return base
-            except OSError:
-                pass
+            main_present = _log_file_present(
+                main_log_path(log_dir, mi.name, mi.id, base)
+            )
+            container_present = _log_file_present(
+                container_log_path(log_dir, mi.name, mi.id, base)
+            )
+            if main_present is False and container_present is False:
+                return base
 
         candidate = time.time_ns()
-        try:
-            while (
-                main_log_path(log_dir, mi.name, mi.id, candidate).exists()
-                or container_log_path(log_dir, mi.name, mi.id, candidate).exists()
-            ):
-                candidate += 1
-        except OSError:
-            pass
-        return candidate
+        while True:
+            main_present = _log_file_present(
+                main_log_path(log_dir, mi.name, mi.id, candidate)
+            )
+            container_present = _log_file_present(
+                container_log_path(log_dir, mi.name, mi.id, candidate)
+            )
+            if main_present is False and container_present is False:
+                return candidate
+            if main_present is None or container_present is None:
+                # Cannot prove the candidate is free. The timestamp is already
+                # far outside the normal generation range.
+                return candidate
+            candidate += 1
 
     def _get_numbered_log_path(
         self, mi: ModelInstance, restart_count: Optional[int] = None
