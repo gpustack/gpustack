@@ -561,9 +561,12 @@ class ServeManager(ContainerLogPersister):
         )
 
     def _managed_runtime_workloads(
-        self, mi: ModelInstance
+        self, mi: ModelInstance, *, allow_older_generation: bool = False
     ) -> Dict[str, List[WorkloadStatus]]:
-        """Read local matches and probe names omitted by the node-scoped listing."""
+        """Read local matches and probe names omitted by the node-scoped listing.
+
+        Teardown may include older objects only after fresh ownership checks.
+        """
         found = {
             item.name: [] for item in get_model_instance_workloads(mi, self._worker_id)
         }
@@ -594,12 +597,55 @@ class ServeManager(ContainerLogPersister):
                     **labels,
                     **self._component_workload_labels(local[status.name]),
                 }.items()
+            ) and not (
+                allow_older_generation
+                and self._can_cleanup_older_workload(mi, local[status.name], status)
             ):
                 raise RuntimeError(
                     f"Workload {status.name} does not match this instance generation"
                 )
             found[status.name].append(status)
         return found
+
+    def _can_cleanup_older_workload(self, mi, item, status) -> bool:
+        """Authorize older runtime cleanup against the current registered owner."""
+        labels = status.labels or {}
+        if any(
+            labels.get(key) != value
+            for key, value in {
+                'gpustack.ai/model-instance-id': str(mi.id),
+                'gpustack.ai/worker-id': str(self._worker_id),
+                'gpustack.ai/component-kind': (
+                    item.component.kind if item.component is not None else None
+                ),
+            }.items()
+        ):
+            return False
+        try:
+            restart = int(labels.get('gpustack.ai/restart-count', ''))
+        except (TypeError, ValueError):
+            return False
+        if not 0 <= restart < (mi.restart_count or 0):
+            return False
+        current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+        registered = next(
+            (
+                workload
+                for workload in get_model_instance_workloads(current, self._worker_id)
+                or []
+                if workload.name == item.name
+            ),
+            None,
+        )
+        return bool(
+            current.id == mi.id
+            and current.restart_count == mi.restart_count
+            and current.cluster_id == mi.cluster_id
+            and self._worker_id in member_worker_ids(current)
+            and registered is not None
+            and self._component_workload_labels(registered)
+            == self._component_workload_labels(item)
+        )
 
     def _hold_managed_instance(self, mi: ModelInstance) -> None:
         self._model_instance_by_instance_id[mi.id] = mi.model_copy(deep=True)
@@ -1383,7 +1429,7 @@ class ServeManager(ContainerLogPersister):
             terminate_process_tree(self._provisioning_processes[mi.id].pid)
             if self._is_provisioning(mi):
                 return False
-        observed = self._managed_runtime_workloads(mi)
+        observed = self._managed_runtime_workloads(mi, allow_older_generation=True)
         for name, matches in observed.items():
             if matches:
                 try:
@@ -1394,7 +1440,9 @@ class ServeManager(ContainerLogPersister):
                     )
         # Runtime deletion may only be accepted. Even INACTIVE/FAILED objects
         # still reserve their identity until runtime reads confirm absence.
-        return not any(self._managed_runtime_workloads(mi).values())
+        return not any(
+            self._managed_runtime_workloads(mi, allow_older_generation=True).values()
+        )
 
     def _confirm_managed_stop(self, mi: ModelInstance) -> bool:
         worker = self._clientset.workers.get(self._worker_id, use_cache=False)

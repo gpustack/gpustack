@@ -496,7 +496,9 @@ async def get_serve_logs(
     serve_log_dir = Path(log_dir) / "serve"
 
     if source is not None:
-        if container_name or log_options.previous or current_restart_count is None:
+        if current_restart_count is None:
+            raise BadRequestException(message="source requires current_restart_count")
+        if container_name or log_options.previous:
             raise BadRequestException(
                 message="A source cannot be combined with container or previous"
             )

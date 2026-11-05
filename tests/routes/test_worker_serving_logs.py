@@ -197,6 +197,33 @@ async def test_explicit_rank_source_reads_the_same_filtered_window_and_length(tm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'restart,container,previous,message',
+    [
+        (None, None, False, 'source requires current_restart_count'),
+        (None, 'default', False, 'source requires current_restart_count'),
+        (3, 'default', False, 'A source cannot be combined with container or previous'),
+        (3, None, True, 'A source cannot be combined with container or previous'),
+    ],
+)
+async def test_source_selector_reports_the_invalid_parameter(
+    tmp_path, restart, container, previous, message
+):
+    with pytest.raises(BadRequestException) as raised:
+        await get_serve_logs(
+            _request(tmp_path),
+            7,
+            LogOptions(previous=previous),
+            source='opaque',
+            current_restart_count=restart,
+            container_name=container,
+            model_file_id=None,
+        )
+    assert raised.value.status_code == 400
+    assert raised.value.message == message
+
+
+@pytest.mark.asyncio
 async def test_missing_previous_source_never_reads_current(tmp_path):
     from tests.worker.test_logs import _rank_source_archive
     from gpustack.api.exceptions import NotFoundException

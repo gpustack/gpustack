@@ -2597,7 +2597,7 @@ def _sglang_local_components(state):
     if primary:
         items.append(
             ModelInstanceWorkload(
-                name=f"{state.instance.name}-r3-smg-a0",
+                name=f"{state.instance.name}-r{state.instance.restart_count}-smg-a0",
                 worker_id=worker_id,
                 state="pending",
                 component={
@@ -2608,6 +2608,154 @@ def _sglang_local_components(state):
             )
         )
     return items
+
+
+@pytest.fixture
+def older_engine(managed):
+    state = managed
+    local = _sglang_local_components(state)
+    state.instance.distributed_servers.workloads = local
+    engine = local[0]
+    labels = {
+        **state.serve._managed_workload_labels(state.instance),
+        **state.serve._component_workload_labels(engine),
+        'gpustack.ai/restart-count': str(state.instance.restart_count - 1),
+    }
+    state.runtime.append(
+        SimpleNamespace(
+            name=engine.name, labels=labels, state=WorkloadStatusStateEnum.RUNNING
+        )
+    )
+    return state
+
+
+@pytest.mark.parametrize('listed', [False, True])
+def test_owned_older_engine_cleanup_allows_the_next_generation_to_start(
+    older_engine, listed
+):
+    state = older_engine
+    if not listed:
+        state.list.side_effect = lambda: []
+    local = _local_manifest(state)
+    assert not state.serve._start_managed_workloads(
+        state.instance, local, _managed_plans(local)
+    )
+    state.create.assert_not_called()
+    assert not state.runtime
+    assert (state.instance.id, state.instance.restart_count) not in (
+        state.serve._managed_stopping
+    )
+    assert state.instance.id not in state.serve._assigned_ports
+    assert all(
+        item.state == ModelInstanceWorkloadStateEnum.STOPPED
+        for item in _local_manifest(state)
+    )
+
+    state.instance.restart_count += 1
+    state.instance.distributed_servers.workloads = []
+    local = _sglang_local_components(state)
+    assert state.serve._start_managed_workloads(
+        state.instance, local, _managed_plans(local)
+    )
+    assert state.create.call_count == len(local)
+    assert all(
+        status.labels['gpustack.ai/restart-count'] == str(state.instance.restart_count)
+        for status in state.runtime
+    )
+
+
+def test_owned_older_engine_retains_resources_until_runtime_deletion(older_engine):
+    state = older_engine
+    delete = state.delete.side_effect
+    state.delete.side_effect = lambda name: None
+    assert not state.serve._stop_model_instance(state.instance)
+    state.delete.assert_called_once_with(state.runtime[0].name)
+    assert state.instance.id in state.serve._assigned_ports
+    assert all(
+        item.state != ModelInstanceWorkloadStateEnum.STOPPED
+        for item in _local_manifest(state)
+    )
+    state.delete.side_effect = delete
+    state.serve._retry_managed_stops()
+    assert not state.runtime
+    assert state.instance.id not in state.serve._assigned_ports
+
+
+def test_owned_older_engine_is_never_adopted_as_current(older_engine):
+    state = older_engine
+    with pytest.raises(RuntimeError, match='does not match this instance generation'):
+        state.serve._managed_runtime_workloads(state.instance)
+    state.delete.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'labels',
+    [
+        {'model-instance-id': '999'},
+        {'worker-id': '999'},
+        {'restart-count': '4'},
+        {'restart-count': '-1'},
+        {'restart-count': 'invalid'},
+        {'restart-count': None},
+        {'component-kind': 'sglang_smg'},
+        {'component-kind': None},
+        {'restart-count': '3', 'component-attempt': '1'},
+    ],
+)
+def test_older_engine_cleanup_preserves_runtime_identity_fences(older_engine, labels):
+    state = older_engine
+    for key, value in labels.items():
+        name = f'gpustack.ai/{key}'
+        if value is None:
+            state.runtime[0].labels.pop(name)
+        else:
+            state.runtime[0].labels[name] = value
+    assert not state.serve._stop_model_instance(state.instance)
+    state.delete.assert_not_called()
+    assert state.instance.id in state.serve._assigned_ports
+
+
+@pytest.mark.parametrize(
+    'change',
+    [
+        'unavailable',
+        'missing',
+        'identity',
+        'generation',
+        'cluster',
+        'worker',
+        'unregistered',
+        'attempt',
+    ],
+)
+def test_older_engine_cleanup_requires_current_server_authority(older_engine, change):
+    state = older_engine
+    current = state.instance.model_copy(deep=True)
+    if change in ('unavailable', 'missing'):
+        error = (
+            ReadTimeout('unavailable')
+            if change == 'unavailable'
+            else NotFoundException()
+        )
+        state.client.model_instances.get.side_effect = error
+    else:
+        if change == 'identity':
+            current.id += 1
+        elif change == 'generation':
+            current.restart_count += 1
+        elif change == 'cluster':
+            current.cluster_id += 1
+        elif change == 'worker':
+            current.worker_id = 999
+            current.distributed_servers.subordinate_workers = []
+        elif change == 'unregistered':
+            current.distributed_servers.workloads = []
+        else:
+            current.distributed_servers.workloads[0].component.attempt += 1
+        state.client.model_instances.get.side_effect = lambda **kwargs: current
+    assert not state.serve._stop_model_instance(state.instance)
+    state.delete.assert_not_called()
+    assert state.instance.id in state.serve._assigned_ports
 
 
 def test_sglang_component_registration_precedes_both_creates(managed):
