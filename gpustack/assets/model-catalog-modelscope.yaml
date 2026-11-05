@@ -4118,3 +4118,80 @@ model_sets:
       backend: VoxBox
       env:
         GPUSTACK_MODEL_VRAM_CLAIM: "12884901888" # 12 GiB, it depends on the audio length. This value works for ~10 minutes audio input.
+- name: Kimi-K3.1-Pro
+  description: Kimi-K3.1-Pro is a native multimodal MoE model with 2.8T total and 104B activated parameters, Kimi Delta Attention, gated sparse attention, MXFP4 expert weights, and a 1M-token context for reasoning, coding, and tool use.
+  home: https://www.moonshot.ai
+  icon: /static/catalog_icons/kimi.png
+  size: 2.8
+  size_unit: T
+  activated_size: 104
+  categories:
+  - llm
+  capabilities:
+  - context/1M
+  - vision
+  - tools
+  licenses:
+  - kimi-k3.1-pro
+  release_date: '2026-11-04'
+  specs:
+  - mode: standard
+    quantization: MXFP4
+    gpu_filters:
+      vendor: nvidia
+      compute_capability: '>=10.0,<11.0'
+    source: model_scope
+    model_scope_model_id: moonshotai/Kimi-K3.1-Pro
+    backend: vLLM
+    image_name: vllm/vllm-openai:kimi-k31
+    env:
+      VLLM_ENGINE_READY_TIMEOUT_S: '3600'
+    backend_parameters:
+    - --max-model-len=65536
+    - --distributed-executor-backend=mp
+    - --tensor-parallel-size=8
+    - --load-format=fastsafetensors
+    - --trust-remote-code
+    - --enable-auto-tool-choice
+    - --tool-call-parser=kimi_k3
+    - --reasoning-parser=kimi_k3
+- name: Mistral-Large-4-1T-A52B
+  description: Mistral Large 4 is a native multimodal MoE model with 1T total and 52B activated parameters (including embeddings and output layers), FP8 weights, sparse attention, and a 1M-token context for reasoning, coding, and tool use.
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  size: 1
+  size_unit: T
+  activated_size: 52
+  categories:
+  - llm
+  capabilities:
+  - context/1M
+  - vision
+  - tools
+  licenses:
+  - mistral-ecosystem-open-weight
+  release_date: '2026-10-29'
+  specs:
+  - mode: standard
+    quantization: FP8
+    gpu_filters:
+      vendor: nvidia
+      compute_capability: '>=9.0,<11.0'
+    source: model_scope
+    model_scope_model_id: mistralai/Mistral-Large-4-1T-A52B
+    backend: vLLM
+    image_name: vllm/vllm-openai:mistral-large-4
+    env:
+      VLLM_ENGINE_READY_TIMEOUT_S: '6000'
+    backend_parameters:
+    - --max-model-len=65536
+    - --distributed-executor-backend=mp
+    - --tokenizer-mode=mistral
+    - --config-format=mistral
+    - --load-format=mistral
+    - --max-num-batched-tokens=8192
+    - --max-num-seqs=128
+    - --gpu-memory-utilization=0.85
+    - --enable-auto-tool-choice
+    - --tool-call-parser=mistral
+    - --reasoning-parser=mistral
