@@ -25,6 +25,7 @@ from gpustack.schemas.models import (
     CategoryEnum,
     DistributedServerCoordinateModeEnum,
     DistributedServers,
+    ModelInstance,
     ModelInstanceSubordinateWorker,
     ModelInstanceStateEnum,
     SourceEnum,
@@ -133,7 +134,10 @@ def _build_serve_manager(worker_id: int = 1):
     clientset = MagicMock()
     clientset.model_instances.list.return_value = SimpleNamespace(items=[])
     clientset.cache_service_instances.list.return_value = SimpleNamespace(items=[])
-    cfg = SimpleNamespace(log_dir="/tmp")
+    cfg = SimpleNamespace(
+        log_dir="/tmp",
+        system_default_container_registry=None,
+    )
     manager = ServeManager(lambda: worker_id, lambda: clientset, cfg)
     manager._inference_backend_manager = MagicMock()
     return manager, clientset
@@ -1684,6 +1688,27 @@ def test_cleanup_old_logs_keeps_only_current_and_previous_restart(tmp_path: Path
     ]
 
 
+def test_cleanup_old_logs_keeps_the_latest_previous_generation_after_a_jump(
+    tmp_path: Path,
+):
+    """When the current generation jumps ahead, keep the actual latest previous
+    generation rather than a non-existent R-1, and retire stale generations
+    above the current one."""
+    serve_dir = tmp_path / "serve"
+    for count in (0, 1, 5, 6):
+        _write_restart_logs(serve_dir, "follower", 7, count, "main.log")
+
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(serve_dir)
+
+    manager._cleanup_old_logs(7, 5)
+
+    assert sorted(p.name for p in (serve_dir / "follower.7").iterdir()) == [
+        "1",
+        "5",
+    ]
+
+
 def test_cleanup_old_logs_restart_zero_purges_all(tmp_path: Path):
     """Fresh start (restart_count 0) removes every log for the id, incl. sidecar
     and {id}.log, but leaves other instances' and model-file download logs."""
@@ -1756,6 +1781,401 @@ def test_permanent_teardown_purges_logs_but_restart_keeps_them(tmp_path: Path):
         # Permanent teardown removes them.
         manager._stop_model_instance(model_instance, delete_logs=True)
         assert not log.exists()
+
+
+def _follower_instance(restart_count: int = 0) -> ModelInstance:
+    instance = new_model_instance(
+        7,
+        "follower",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.RUNNING,
+    )
+    instance.worker_ip = "127.0.0.1"
+    instance.port = 40000
+    instance.ports = [40000]
+    instance.restart_count = restart_count
+    instance.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.RUN_FIRST,
+        subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
+    )
+    return instance
+
+
+@pytest.mark.parametrize(
+    "restart_count, existing, expected_next",
+    [
+        (5, (), 5),
+        (0, (0,), 1),
+        (0, (0, 1), 2),
+        (5, (0,), 5),
+    ],
+)
+def test_follower_log_generation_advances_past_existing_logs(
+    tmp_path: Path, restart_count, existing, expected_next
+):
+    """A follower's own restarts move its log generation forward, even when the
+    server's restart count has not changed."""
+    serve_dir = tmp_path / "serve"
+    for count in existing:
+        _write_restart_logs(serve_dir, "follower", 7, count, "container.log")
+
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(serve_dir)
+    instance = _follower_instance(restart_count)
+
+    assert manager._next_follower_log_restart_count(instance) == expected_next
+    assert manager._current_follower_log_restart_count(instance) == (
+        max(existing) if existing else restart_count
+    )
+
+
+def test_follower_log_generation_counts_flat_logs(tmp_path: Path):
+    """A pre-v2.2.0 flat log is a generation too; the next follower start must
+    not reuse its directory."""
+    serve_dir = _write_serve_logs(tmp_path, "7.0.log")
+
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(serve_dir)
+
+    assert manager._next_follower_log_restart_count(_follower_instance(0)) == 1
+
+
+def test_follower_log_scan_error_is_reported_as_unknown(tmp_path: Path):
+    """An unreadable serve-log directory is unknown, not an empty history."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(tmp_path / "serve")
+    instance = _follower_instance(5)
+
+    with patch(
+        "gpustack.worker.serve_manager.restart_log_dirs",
+        side_effect=OSError("stale file handle"),
+    ):
+        assert manager._next_follower_log_restart_count(instance) is None
+        assert manager._current_follower_log_restart_count(instance) is None
+        # No files exist for count 5, so the server count is a safe fallback.
+        assert manager._fallback_follower_log_restart_count(instance) == 5
+
+
+def test_follower_fallback_avoids_the_server_count_when_stat_fails(tmp_path: Path):
+    """If even the existence check is denied, do not assume the server count is
+    free: a colliding head would be truncated."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(tmp_path / "serve")
+    instance = _follower_instance(5)
+
+    with patch(
+        "gpustack.worker.serve_manager.os.stat",
+        side_effect=PermissionError("denied"),
+    ):
+        generation = manager._fallback_follower_log_restart_count(instance)
+
+    assert generation != 5
+    assert generation > 0
+
+
+def test_follower_launch_survives_a_log_scan_failure(tmp_path: Path):
+    """A transient log-directory read failure falls back to the server count
+    instead of aborting the follower launch."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(tmp_path / "serve")
+    instance = _follower_instance(5)
+    model = new_model(1, "model", huggingface_repo_id="Qwen/Qwen3-0.6B")
+
+    with (
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_assign_ports"),
+        patch.object(manager, "_update_model_instance"),
+        patch.object(manager, "_start_container_log_persistence"),
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+        patch(
+            "gpustack.worker.serve_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.serve_manager.restart_log_dirs",
+            side_effect=OSError("stale file handle"),
+        ),
+    ):
+        manager._launch_model_instance(instance)
+
+    log_path = process.call_args.kwargs["args"][3]
+    assert log_path.endswith("/5/main.log")
+
+
+def test_follower_launch_does_not_truncate_a_colliding_generation(
+    tmp_path: Path,
+):
+    """When the server count already has a main log, the unreadable-scan
+    fallback must not open that head for write."""
+    serve_dir = tmp_path / "serve"
+    existing = _write_restart_logs(serve_dir, "follower", 7, 5, "main.log")
+    (existing / "main.log").write_text("old main", encoding="utf-8")
+
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(serve_dir)
+    instance = _follower_instance(5)
+    model = new_model(1, "model", huggingface_repo_id="Qwen/Qwen3-0.6B")
+
+    with (
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_assign_ports"),
+        patch.object(manager, "_update_model_instance"),
+        patch.object(manager, "_start_container_log_persistence"),
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+        patch(
+            "gpustack.worker.serve_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.serve_manager.restart_log_dirs",
+            side_effect=OSError("stale file handle"),
+        ),
+    ):
+        manager._launch_model_instance(instance)
+
+    log_path = process.call_args.kwargs["args"][3]
+    generation = int(Path(log_path).parent.name)
+    assert generation != 5
+    assert generation > 0
+    assert (existing / "main.log").read_text(encoding="utf-8") == "old main"
+
+
+def test_follower_launch_does_not_purge_when_scan_fails_at_zero(tmp_path: Path):
+    """An unreadable scan at server count 0 must not take the fresh-start
+    purge branch."""
+    serve_dir = tmp_path / "serve"
+    previous = _write_restart_logs(serve_dir, "follower", 7, 0, "main.log")
+    (previous / "main.log").write_text("old main", encoding="utf-8")
+
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(serve_dir)
+    instance = _follower_instance(0)
+    model = new_model(1, "model", huggingface_repo_id="Qwen/Qwen3-0.6B")
+
+    with (
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_assign_ports"),
+        patch.object(manager, "_update_model_instance"),
+        patch.object(manager, "_start_container_log_persistence"),
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+        patch(
+            "gpustack.worker.serve_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+        patch(
+            "gpustack.worker.serve_manager.restart_log_dirs",
+            side_effect=OSError("stale file handle"),
+        ),
+    ):
+        manager._launch_model_instance(instance)
+
+    log_path = process.call_args.kwargs["args"][3]
+    assert int(Path(log_path).parent.name) > 0
+    assert (previous / "main.log").read_text(encoding="utf-8") == "old main"
+
+
+def test_follower_adoption_defers_when_log_scan_fails(tmp_path: Path):
+    """Adoption cannot pick a generation from an unreadable directory, so it
+    retries on the next sync instead of creating a new one."""
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(tmp_path / "serve")
+    instance = _follower_instance(0)
+
+    with (
+        patch.object(manager, "_start_container_log_persistence") as persistence,
+        patch(
+            "gpustack.worker.serve_manager.restart_log_dirs",
+            side_effect=OSError("stale file handle"),
+        ),
+    ):
+        manager._ensure_container_log_persistence(instance)
+
+    persistence.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_follower_launch_keeps_the_previous_log_generation(tmp_path: Path):
+    """A follower start writes into a new generation and leaves the previous
+    run's files intact, so the log viewer still resolves it as previous."""
+    serve_dir = tmp_path / "serve"
+    previous = _write_restart_logs(
+        serve_dir, "follower", 7, 0, "container.log", "main.log"
+    )
+    (previous / "container.log").write_text("old", encoding="utf-8")
+    (previous / "main.log").write_text("old main", encoding="utf-8")
+
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(serve_dir)
+    instance = _follower_instance(0)
+    model = new_model(1, "model", huggingface_repo_id="Qwen/Qwen3-0.6B")
+
+    with (
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_assign_ports"),
+        patch.object(manager, "_update_model_instance"),
+        patch.object(manager, "_start_container_log_persistence") as persistence,
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+        patch(
+            "gpustack.worker.serve_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+    ):
+        manager._launch_model_instance(instance)
+
+    log_path = process.call_args.kwargs["args"][3]
+    assert log_path.endswith("/1/main.log")
+    assert (previous / "container.log").read_text(encoding="utf-8") == "old"
+
+    current = serve_dir / "follower.7" / "1" / "main.log"
+    current.parent.mkdir(parents=True, exist_ok=True)
+    current.write_text("new main", encoding="utf-8")
+    assert await resolve_restart_count(serve_dir, 7, previous=False) == 1
+    assert await resolve_restart_count(serve_dir, 7, previous=True) == 0
+    assert (previous / "main.log").read_text(encoding="utf-8") == "old main"
+    assert persistence.call_args.kwargs["restart_count"] == 1
+    assert instance.restart_count == 0
+
+
+@pytest.mark.asyncio
+async def test_follower_launch_aligns_with_a_higher_server_count(tmp_path: Path):
+    """A server count ahead of the local logs becomes the new generation, while
+    cleanup retains the actual previous local run."""
+    serve_dir = tmp_path / "serve"
+    previous = _write_restart_logs(
+        serve_dir, "follower", 7, 0, "container.log", "main.log"
+    )
+    (previous / "container.log").write_text("old", encoding="utf-8")
+    (previous / "main.log").write_text("old main", encoding="utf-8")
+
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(serve_dir)
+    instance = _follower_instance(5)
+    model = new_model(1, "model", huggingface_repo_id="Qwen/Qwen3-0.6B")
+
+    with (
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_assign_ports"),
+        patch.object(manager, "_update_model_instance"),
+        patch.object(manager, "_start_container_log_persistence") as persistence,
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+        patch(
+            "gpustack.worker.serve_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+    ):
+        manager._launch_model_instance(instance)
+
+    log_path = process.call_args.kwargs["args"][3]
+    assert log_path.endswith("/5/main.log")
+    assert (previous / "container.log").read_text(encoding="utf-8") == "old"
+
+    current = serve_dir / "follower.7" / "5" / "main.log"
+    current.parent.mkdir(parents=True, exist_ok=True)
+    current.write_text("new main", encoding="utf-8")
+    assert await resolve_restart_count(serve_dir, 7, previous=False) == 5
+    assert await resolve_restart_count(serve_dir, 7, previous=True) == 0
+    assert (previous / "main.log").read_text(encoding="utf-8") == "old main"
+    assert persistence.call_args.kwargs["restart_count"] == 5
+    assert instance.restart_count == 5
+
+
+def test_main_worker_launch_uses_the_server_restart_count(tmp_path: Path):
+    """The main worker keeps the server's restart count as its log
+    generation."""
+    serve_dir = tmp_path / "serve"
+    _write_restart_logs(serve_dir, "main", 7, 3, "container.log")
+
+    manager, _clients = _build_serve_manager(worker_id=1)
+    manager._serve_log_dir = str(serve_dir)
+    instance = new_model_instance(
+        7,
+        "main",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.RUNNING,
+    )
+    instance.worker_ip = "127.0.0.1"
+    instance.port = 40000
+    instance.ports = [40000]
+    instance.restart_count = 3
+    model = new_model(1, "model", huggingface_repo_id="Qwen/Qwen3-0.6B")
+
+    with (
+        patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_assign_ports"),
+        patch.object(manager, "_update_model_instance"),
+        patch.object(manager, "_start_container_log_persistence") as persistence,
+        patch("gpustack.worker.serve_manager.multiprocessing.Process") as process,
+        patch(
+            "gpustack.worker.serve_manager.registration.determine_default_registry",
+            return_value=None,
+        ),
+    ):
+        manager._launch_model_instance(instance)
+
+    log_path = process.call_args.kwargs["args"][3]
+    assert log_path.endswith("/3/main.log")
+    assert persistence.call_args.kwargs["restart_count"] == 3
+
+
+def test_follower_adoption_resumes_the_current_log_generation(tmp_path: Path):
+    """After a worker restart, the follower resumes the generation already on
+    disk instead of appending to an older one."""
+    serve_dir = tmp_path / "serve"
+    _write_restart_logs(serve_dir, "follower", 7, 0, "main.log")
+    _write_restart_logs(serve_dir, "follower", 7, 1, "main.log")
+
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(serve_dir)
+    instance = _follower_instance(0)
+
+    with patch.object(manager, "_start_container_log_persistence") as persistence:
+        manager._ensure_container_log_persistence(instance)
+
+    assert persistence.call_args.kwargs == {"resume": True, "restart_count": 1}
+
+
+def test_main_worker_adoption_uses_the_server_restart_count(tmp_path: Path):
+    """Main-worker adoption keeps using the server's restart count."""
+    serve_dir = tmp_path / "serve"
+    _write_restart_logs(serve_dir, "main", 7, 0, "main.log")
+    _write_restart_logs(serve_dir, "main", 7, 1, "main.log")
+
+    manager, _clients = _build_serve_manager(worker_id=1)
+    manager._serve_log_dir = str(serve_dir)
+    instance = new_model_instance(
+        7,
+        "main",
+        1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.RUNNING,
+    )
+    instance.restart_count = 3
+
+    with patch.object(manager, "_start_container_log_persistence") as persistence:
+        manager._ensure_container_log_persistence(instance)
+
+    assert persistence.call_args.kwargs == {"resume": True, "restart_count": 3}
+
+
+def test_follower_adoption_files_a_legacy_log_under_the_current_generation(
+    tmp_path: Path,
+):
+    """A flat legacy main log follows the follower's current generation, not the
+    server's restart count."""
+    serve_dir = _write_serve_logs(tmp_path, "7.log")
+    _write_restart_logs(serve_dir, "follower", 7, 1, "container.log")
+
+    manager, _clients = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(serve_dir)
+    instance = _follower_instance(0)
+
+    with patch.object(manager, "_start_container_log_persistence"):
+        manager._ensure_container_log_persistence(instance)
+
+    assert (serve_dir / "follower.7" / "1" / "main.log").exists()
+    assert not (serve_dir / "7.log").exists()
 
 
 def test_reap_stale_instance_purges_logs(tmp_path: Path):
@@ -2601,7 +3021,7 @@ def test_adoption_reattaches_container_log_persistence(tmp_path: Path):
 
     # A fresh worker process has no threads registered: re-attach, don't restart.
     start_logs, start_instance = sync()
-    start_logs.assert_called_once_with(model_instance, resume=True)
+    start_logs.assert_called_once_with(model_instance, resume=True, restart_count=0)
     start_instance.assert_not_called()
 
     # A live main log thread is left alone: two would interleave their appends.
@@ -2613,7 +3033,7 @@ def test_adoption_reattaches_container_log_persistence(tmp_path: Path):
     # folding the two together would never fire here.
     manager._log_persistence[1] = _log_persistence(main_alive=False)
     start_logs, _ = sync()
-    start_logs.assert_called_once_with(model_instance, resume=True)
+    start_logs.assert_called_once_with(model_instance, resume=True, restart_count=0)
 
 
 def test_stop_container_log_persistence_tears_down_the_whole_generation():
@@ -2738,7 +3158,7 @@ def test_adoption_aligns_legacy_main_log_with_restart_count(tmp_path: Path):
         manager._ensure_container_log_persistence(model_instance)
 
     assert start_logs.call_count == 2
-    start_logs.assert_called_with(model_instance, resume=True)
+    start_logs.assert_called_with(model_instance, resume=True, restart_count=5)
     # The instance name holds a dot, which sanitizing turns into a dash so that
     # the directory name keeps exactly two segments.
     assert sorted(p.name for p in serve_dir.iterdir()) == ["1.log", "qwen3-0-6b.1"]
@@ -2799,7 +3219,10 @@ def _build_vgpu_manager(worker_id=1, device_index=1):
             gpu_devices=[SimpleNamespace(uuid="GPU-uuid-1", index=device_index)]
         )
     )
-    cfg = SimpleNamespace(log_dir="/tmp")
+    cfg = SimpleNamespace(
+        log_dir="/tmp",
+        system_default_container_registry=None,
+    )
     manager = ServeManager(lambda: worker_id, lambda: clientset, cfg)
     manager._inference_backend_manager = MagicMock()
     return manager, clientset
@@ -5082,6 +5505,71 @@ def test_stopped_component_writer_cannot_append_a_new_lineage_boundary(tmp_path)
         'model-r3-smg-a1', str(path), stopped, resume=True, lineage='model-r3-smg-a1'
     )
     assert path.read_text() == 'existing\n'
+
+
+def test_follower_component_log_uses_the_local_generation(tmp_path):
+    """The SMG component log follows the follower's per-worker generation, not
+    the server restart count."""
+    from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+
+    manager, _ = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(tmp_path)
+    mi = new_model_instance(42, 'model', model_id=1, worker_id=1)
+    mi.restart_count = 0
+    mi.distributed_servers = DistributedServers(
+        workloads=[
+            ModelInstanceWorkload(
+                name='model-r5-smg-a0',
+                worker_id=2,
+                state='running',
+                component=dict(
+                    kind='sglang_smg', api_port=8000, metrics_port=9000, attempt=0
+                ),
+            )
+        ]
+    )
+    persistence = _LogPersistence(threading.Event(), MagicMock(), 5)
+    manager._log_persistence[mi.id] = persistence
+
+    created = []
+
+    class Writer:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            created.append(self)
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            pass
+
+    with patch('gpustack.worker.serve_manager.threading.Thread', Writer):
+        manager._sync_component_log_persistence(mi, persistence)
+
+    assert len(created) == 1
+    path = Path(created[0].kwargs['args'][1])
+    assert path.parent.name == '5'
+    assert path.name == 'component.sglang_smg.log'
+
+
+def test_follower_log_sources_use_the_local_generation(tmp_path):
+    """sources.json follows the follower generation too."""
+    manager, _ = _build_serve_manager(worker_id=2)
+    manager._serve_log_dir = str(tmp_path)
+    mi = new_model_instance(42, 'model', model_id=1, worker_id=1)
+    mi.restart_count = 0
+    persistence = _LogPersistence(threading.Event(), MagicMock(), 5)
+    manager._log_persistence[mi.id] = persistence
+
+    manager._record_log_sources(mi, persistence)
+
+    assert (tmp_path / 'model.42' / '5' / 'sources.json').exists()
+    assert not (tmp_path / 'model.42' / '0' / 'sources.json').exists()
 
 
 def test_late_old_generation_cannot_touch_new_log_writers_or_metadata(tmp_path):

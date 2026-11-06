@@ -1645,18 +1645,24 @@ async def monitor_container_content(
 
 
 def write_log_sources(
-    log_dir: Path, instance, worker_id: int, multi_port_external: Optional[bool] = None
+    log_dir: Path,
+    instance,
+    worker_id: int,
+    multi_port_external: Optional[bool] = None,
+    restart_count: Optional[int] = None,
 ) -> None:
     """Persist only this generation's accepted local identities beside its logs."""
     from gpustack.utils.model_instance_workers import get_model_instance_workloads
 
+    if restart_count is None:
+        restart_count = instance.restart_count or 0
     root = find_instance_log_dir(log_dir, instance.id) or instance_log_dir(
         log_dir, instance.name, instance.id
     )
-    directory = root / str(instance.restart_count or 0)
+    directory = root / str(restart_count)
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / 'sources.json'
-    old = read_log_sources(target, instance.id, worker_id, instance.restart_count or 0)
+    old = read_log_sources(target, instance.id, worker_id, restart_count)
     streams = {s['key']: s for s in old}
     streams.setdefault('preparation', dict(key='preparation', physical_kind='main'))
     tasks = get_model_instance_workloads(instance, worker_id)

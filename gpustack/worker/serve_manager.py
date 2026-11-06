@@ -304,6 +304,22 @@ class _LogPersistence:
         return gone
 
 
+def _log_file_present(path: Path) -> Optional[bool]:
+    """Whether a serve log exists, or None when the check itself failed.
+
+    `Path.exists()` swallows permission errors as "absent", which would let a
+    fallback generation collide with a file it cannot see. `os.stat` keeps that
+    distinction.
+    """
+    try:
+        os.stat(path)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+
+
 def _describe_workload_failure(workload) -> str:
     """
     Explain why a workload stopped serving, for the instance's state message.
@@ -3432,17 +3448,112 @@ class ServeManager(ContainerLogPersister):
             f"UPDATED event: started model instance {mi.name} on subordinate worker."
         )
 
-    def _get_numbered_log_path(self, mi: ModelInstance) -> str:
+    def _log_restart_counts_on_disk(self, model_instance_id: int) -> Optional[Set[int]]:
+        """Serve-log generations that already exist for one instance.
+
+        A follower's logs are local to this worker, so what is on disk decides
+        its next generation. Both the numbered layout and a pre-v2.2.0 flat log
+        are counted.
+
+        Returns None when the directory cannot be read. That is not the same as
+        "no logs": callers must not fall back to a count that may already hold
+        files, because opening an existing head for write would truncate it.
+        """
+        log_dir = Path(self._serve_log_dir)
+        try:
+            counts = set(restart_log_dirs(log_dir, model_instance_id))
+            counts.update(
+                parsed.restart_count
+                for _path, parsed in flat_instance_logs(log_dir, model_instance_id)
+            )
+        except OSError as e:
+            logger.warning(
+                "Failed to read serve logs for model instance %s: %s",
+                model_instance_id,
+                e,
+            )
+            return None
+        return counts
+
+    def _current_follower_log_restart_count(self, mi: ModelInstance) -> Optional[int]:
+        """The serve-log generation a follower is already writing to, if known."""
+        counts = self._log_restart_counts_on_disk(mi.id)
+        if counts is None:
+            return None
+        return max(counts) if counts else (mi.restart_count or 0)
+
+    def _next_follower_log_restart_count(self, mi: ModelInstance) -> Optional[int]:
+        """The next serve-log generation for a follower, if the disk is readable.
+
+        A follower can restart without the server changing `mi.restart_count`.
+        Reusing that count would truncate the previous run's files, so a
+        follower with existing logs advances past the highest one on disk. The
+        chosen generation is also at least the server's count, keeping the
+        worker's generation aligned when the server has moved ahead.
+
+        `_cleanup_old_logs` retains the highest existing generation below the
+        chosen one, so that alignment does not drop the previous local run.
+        """
+        counts = self._log_restart_counts_on_disk(mi.id)
+        if counts is None:
+            return None
+        if not counts:
+            return mi.restart_count or 0
+        return max(max(counts) + 1, mi.restart_count or 0)
+
+    def _fallback_follower_log_restart_count(self, mi: ModelInstance) -> int:
+        """A generation for a follower whose log directory cannot be read.
+
+        The server count is safe only when neither of its log files exists:
+        opening an existing head for write would truncate it, and count 0
+        would take the fresh-start purge. Otherwise use a nanosecond timestamp,
+        which is positive and cannot realistically collide with an existing
+        generation.
+        """
+        log_dir = Path(self._serve_log_dir)
+        base = mi.restart_count or 0
+        if base > 0:
+            main_present = _log_file_present(
+                main_log_path(log_dir, mi.name, mi.id, base)
+            )
+            container_present = _log_file_present(
+                container_log_path(log_dir, mi.name, mi.id, base)
+            )
+            if main_present is False and container_present is False:
+                return base
+
+        candidate = time.time_ns()
+        while True:
+            main_present = _log_file_present(
+                main_log_path(log_dir, mi.name, mi.id, candidate)
+            )
+            container_present = _log_file_present(
+                container_log_path(log_dir, mi.name, mi.id, candidate)
+            )
+            if main_present is False and container_present is False:
+                return candidate
+            if main_present is None or container_present is None:
+                # Cannot prove the candidate is free. The timestamp is already
+                # far outside the normal generation range.
+                return candidate
+            candidate += 1
+
+    def _get_numbered_log_path(
+        self, mi: ModelInstance, restart_count: Optional[int] = None
+    ) -> str:
         """Get log file path with restart count.
 
         Args:
             mi: The model instance.
+            restart_count: Log generation to use; defaults to the server's
+                restart count.
 
         Returns:
             Log file path with format:
             {log_dir}/{name}.{model_instance_id}/{restart_count}/main.log
         """
-        restart_count = mi.restart_count or 0
+        if restart_count is None:
+            restart_count = mi.restart_count or 0
         return str(
             main_log_path(Path(self._serve_log_dir), mi.name, mi.id, restart_count)
         )
@@ -3554,7 +3665,12 @@ class ServeManager(ContainerLogPersister):
                 f"{names}"
             )
 
-    def _start_container_log_persistence(self, mi: ModelInstance, resume: bool = False):
+    def _start_container_log_persistence(
+        self,
+        mi: ModelInstance,
+        resume: bool = False,
+        restart_count: Optional[int] = None,
+    ):
         """Start a background thread to persist container logs.
 
         Starts a single "main" log persistence thread. The thread will
@@ -3565,13 +3681,16 @@ class ServeManager(ContainerLogPersister):
             mi: The model instance.
             resume: Append to log files left behind by a previous worker process
                 instead of rewriting them.
+            restart_count: Log generation to write; defaults to the server's
+                restart count.
         """
         # Use deployment metadata name for the actual workload name,
         # which differs for subordinate workers (e.g., "model-f0").
         deployment_metadata = mi.get_deployment_metadata(self._worker_id)
         workload_name = deployment_metadata.name if deployment_metadata else mi.name
 
-        restart_count = mi.restart_count or 0
+        if restart_count is None:
+            restart_count = mi.restart_count or 0
         log_path = str(
             container_log_path(Path(self._serve_log_dir), mi.name, mi.id, restart_count)
         )
@@ -3644,7 +3763,19 @@ class ServeManager(ContainerLogPersister):
         """
         # Only the main log thread counts: the sidecar discovery thread beside it
         # polls forever on a single-container workload.
-        restart = mi.restart_count or 0
+        if mi.worker_id == self._worker_id:
+            restart = mi.restart_count or 0
+        else:
+            current = self._current_follower_log_restart_count(mi)
+            if current is None:
+                logger.warning(
+                    "Deferring container log persistence for follower %s: "
+                    "serve-log directory is unreadable",
+                    mi.name,
+                )
+                return
+            restart = current
+
         with self._log_persistence_lock:
             persistence = self._log_persistence.get(mi.id)
             if persistence and persistence.restart_count > restart:
@@ -3659,7 +3790,7 @@ class ServeManager(ContainerLogPersister):
             if not reuse:
                 # Hold the epoch check through local directory maintenance.
                 self._align_instance_log_dir(mi)
-                self._align_legacy_main_log(mi)
+                self._align_legacy_main_log(mi, restart)
                 self._migrate_flat_logs(mi)
         if reuse:
             self._record_log_sources(mi, persistence)
@@ -3670,16 +3801,28 @@ class ServeManager(ContainerLogPersister):
             f"Re-attaching container log persistence for adopted model instance "
             f"{mi.name}"
         )
-        self._start_container_log_persistence(mi, resume=True)
+        self._start_container_log_persistence(mi, resume=True, restart_count=restart)
 
     def _record_log_sources(self, mi: ModelInstance, persistence=None) -> None:
         """Publish accepted identities without making logging an Engine fault."""
         try:
+            if persistence is not None:
+                restart_count = persistence.restart_count
+            elif mi.worker_id == self._worker_id:
+                restart_count = mi.restart_count or 0
+            else:
+                restart_count = self._current_follower_log_restart_count(mi)
+                if restart_count is None:
+                    logger.warning(
+                        "Skipping log sources for follower %s: "
+                        "serve-log directory is unreadable",
+                        mi.name,
+                    )
+                    return
             with self._log_persistence_lock:
                 current = self._log_persistence.get(mi.id)
                 if (persistence is not None and current is not persistence) or (
-                    current is not None
-                    and current.restart_count != (mi.restart_count or 0)
+                    current is not None and current.restart_count != restart_count
                 ):
                     return
                 bands = mi.named_ports or {}
@@ -3696,7 +3839,11 @@ class ServeManager(ContainerLogPersister):
                 ):
                     multi_port_external = False
                 write_log_sources(
-                    Path(self._serve_log_dir), mi, self._worker_id, multi_port_external
+                    Path(self._serve_log_dir),
+                    mi,
+                    self._worker_id,
+                    multi_port_external,
+                    restart_count=restart_count,
                 )
         except Exception as exc:
             logger.warning("Cannot persist log sources for instance %s: %s", mi.id, exc)
@@ -3713,10 +3860,15 @@ class ServeManager(ContainerLogPersister):
         )
         if task is None:
             return
+        expected_restart = (
+            (mi.restart_count or 0)
+            if mi.worker_id == self._worker_id
+            else persistence.restart_count
+        )
         with self._log_persistence_lock:
             if (
                 self._log_persistence.get(mi.id) is not persistence
-                or persistence.restart_count != (mi.restart_count or 0)
+                or persistence.restart_count != expected_restart
                 or persistence.stop_event.is_set()
                 or task.component.attempt < persistence.component_attempt
             ):
@@ -3739,7 +3891,7 @@ class ServeManager(ContainerLogPersister):
             root = find_instance_log_dir(
                 Path(self._serve_log_dir), mi.id
             ) or instance_log_dir(Path(self._serve_log_dir), mi.name, mi.id)
-            path = root / str(mi.restart_count or 0) / 'component.sglang_smg.log'
+            path = root / str(expected_restart) / 'component.sglang_smg.log'
             stopped = threading.Event()
             thread = threading.Thread(
                 target=self._persist_container_logs,
@@ -3752,7 +3904,9 @@ class ServeManager(ContainerLogPersister):
                 persistence.component_writer = (task.name, thread, stopped)
                 persistence.component_attempt = task.component.attempt
 
-    def _align_legacy_main_log(self, mi: ModelInstance):
+    def _align_legacy_main_log(
+        self, mi: ModelInstance, restart_count: Optional[int] = None
+    ):
         """Rename a pre-v2.2.0 main log to carry the current restart_count.
 
         A {id}.log counts as restart 0, so the log viewer would otherwise file it
@@ -3760,10 +3914,12 @@ class ServeManager(ContainerLogPersister):
 
         Args:
             mi: The model instance.
+            restart_count: Log generation to file the legacy log under; defaults
+                to the server's restart count.
         """
         try:
             legacy_log = legacy_main_log_path(Path(self._serve_log_dir), mi.id)
-            numbered_log = Path(self._get_numbered_log_path(mi))
+            numbered_log = Path(self._get_numbered_log_path(mi, restart_count))
             if not legacy_log.exists() or numbered_log.exists():
                 return
             numbered_log.parent.mkdir(parents=True, exist_ok=True)
@@ -3859,16 +4015,17 @@ class ServeManager(ContainerLogPersister):
         return stopped
 
     def _cleanup_old_logs(self, model_instance_id: int, current_restart_count: int):
-        """Keep serve logs for restart_count in {R, R-1}.
+        """Keep the current serve-log generation and the latest previous one.
 
         R==0 is a fresh lifecycle start, so all existing files are purged (any
-        present belong to a previous owner of a reused id).
+        present belong to a previous owner of a reused id). Otherwise the
+        highest existing generation below R is retained, even when R jumped
+        ahead of it, so the log viewer still has a previous run.
         """
         if current_restart_count == 0:
             self._purge_instance_logs(model_instance_id)
             return
 
-        keep = {current_restart_count, current_restart_count - 1}
         log_dir = Path(self._serve_log_dir)
 
         # Runs before every start, and a failed listing must not stop one.
@@ -3878,6 +4035,19 @@ class ServeManager(ContainerLogPersister):
         except Exception as e:
             logger.error(f"Failed to cleanup old logs for {model_instance_id}: {e}")
             return
+
+        previous_counts = {
+            count for count in restart_dirs if count < current_restart_count
+        }
+        previous_counts.update(
+            parsed.restart_count
+            for _path, parsed in flat_logs
+            if parsed.restart_count < current_restart_count
+        )
+
+        keep = {current_restart_count}
+        if previous_counts:
+            keep.add(max(previous_counts))
 
         for restart_count, path in restart_dirs.items():
             if restart_count in keep:
@@ -4002,12 +4172,25 @@ class ServeManager(ContainerLogPersister):
         # Follow a rename before anything writes under the new name, or the
         # instance's logs end up split across two directories.
         self._align_instance_log_dir(mi)
-        # Clean up old log files before starting
-        self._cleanup_old_logs(mi.id, mi.restart_count or 0)
 
         is_main_worker = mi.worker_id == self._worker_id
+        if is_main_worker:
+            log_restart_count = mi.restart_count or 0
+        else:
+            log_restart_count = self._next_follower_log_restart_count(mi)
+            if log_restart_count is None:
+                log_restart_count = self._fallback_follower_log_restart_count(mi)
+                logger.warning(
+                    "Serve-log directory for follower %s is unreadable; "
+                    "starting with log generation %s",
+                    mi.name,
+                    log_restart_count,
+                )
 
-        log_file_path = self._get_numbered_log_path(mi)
+        # Clean up old log files before starting. A fallback generation above
+        # zero never takes the fresh-start purge branch.
+        self._cleanup_old_logs(mi.id, log_restart_count)
+        log_file_path = self._get_numbered_log_path(mi, log_restart_count)
 
         sw_pos: Optional[int] = None
         sw: Optional[ModelInstanceSubordinateWorker] = None
@@ -4094,7 +4277,7 @@ class ServeManager(ContainerLogPersister):
             self._provisioning_processes[mi.id] = process
 
             # Start container log persistence for containerized backends
-            self._start_container_log_persistence(mi)
+            self._start_container_log_persistence(mi, restart_count=log_restart_count)
 
             # Get patch dict for main worker.
             if is_main_worker:
