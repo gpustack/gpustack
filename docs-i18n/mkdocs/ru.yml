@@ -5,6 +5,7 @@ theme_translations:
   Switch to dark mode: Переключить на тёмную тему
   Switch to system preference: Использовать системную тему
 nav_translations:
+  Site Settings: Настройки сайта
   Home: Главная
   Overview: Обзор
   Quickstart: Краткое руководство

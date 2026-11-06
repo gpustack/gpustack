@@ -33,6 +33,7 @@ from gpustack.routes import (
     probes,
     proxy,
     source_probe,
+    site_settings,
     update,
     user_groups,
     users,
@@ -439,6 +440,11 @@ tenant_routers = model_routers + [
 
 # Platform-only routers — admin can manage globally; non-admin gets 403.
 admin_routers = [
+    {
+        "router": site_settings.router,
+        "prefix": "/site-settings",
+        "tags": ["Site Settings"],
+    },
     {"router": users.router, "prefix": "/users", "tags": ["Users"]},
     {
         "router": organizations.router,
@@ -591,6 +597,11 @@ api_router.include_router(
 )
 
 # Following routes should not check api scope as it is publicly accessible and used for authentication by external services.
+api_router.include_router(
+    site_settings.public_router,
+    prefix=f"{versioned_prefix}/site-settings",
+    tags=["Site Settings"],
+)
 api_router.include_router(probes.router, tags=["Probes"])
 # Workers retrieve this public-key material before they can authenticate. The
 # registration command's checksum gates what an unverified download may install.

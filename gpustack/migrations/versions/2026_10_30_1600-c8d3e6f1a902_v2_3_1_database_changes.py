@@ -1,6 +1,6 @@
 """v2.3.1 database changes.
 
-Persist model launch configuration and index instance membership lookups.
+Persist model launch configuration and site branding, and index instance membership lookups.
 
 Revision ID: c8d3e6f1a902
 Revises: a7e2c9d4f681
@@ -11,6 +11,8 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
+from gpustack.schemas.common import UTCDateTime
 
 from gpustack.migrations.utils import column_exists, table_exists
 
@@ -22,6 +24,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    if not table_exists('site_settings'):
+        op.create_table(
+            'site_settings',
+            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=False),
+            sa.Column('site_name', sa.String(128), nullable=False),
+            sa.Column('primary_color', sa.String(7), nullable=False),
+            sa.Column('logo', sa.Text().with_variant(MEDIUMTEXT(), 'mysql'), nullable=True),
+            sa.Column('logo_dark', sa.Text().with_variant(MEDIUMTEXT(), 'mysql'), nullable=True),
+            sa.Column('mini_logo', sa.Text().with_variant(MEDIUMTEXT(), 'mysql'), nullable=True),
+            sa.Column('mini_logo_dark', sa.Text().with_variant(MEDIUMTEXT(), 'mysql'), nullable=True),
+            sa.Column('favicon', sa.Text().with_variant(MEDIUMTEXT(), 'mysql'), nullable=True),
+            sa.Column('footer_name', sa.String(128), nullable=True),
+            sa.Column('footer_url', sa.String(2048), nullable=True),
+            sa.Column('updated_at', UTCDateTime(), nullable=True),
+            sa.CheckConstraint('id = 1', name='ck_site_settings_singleton'),
+        )
     if table_exists('model_instances') and not column_exists(
         'model_instances', 'model_config_snapshot'
     ):
@@ -39,6 +57,8 @@ def downgrade() -> None:
         'model_instances', 'model_config_snapshot'
     ):
         op.drop_column('model_instances', 'model_config_snapshot')
+    if table_exists('site_settings'):
+        op.drop_table('site_settings')
 
 
 _MODEL_INSTANCE_LOOKUP_FIELDS = ('cluster_id', 'model_id')
