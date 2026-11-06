@@ -1,10 +1,7 @@
-from typing import Union
-
 from gpustack.api.exceptions import raise_if_response_error
 from gpustack.schemas.models import (
     ModelInstancePublic,
-    ModelInstanceWorkloadUpdate,
-    ModelInstanceLegacyUpdate,
+    ModelInstanceMemberReport,
     ModelInstanceStopReport,
 )
 
@@ -31,13 +28,11 @@ class ModelInstanceClient(GeneratedModelInstanceClient):
     def report_workloads(
         self,
         id: int,
-        report: Union[ModelInstanceWorkloadUpdate, ModelInstanceLegacyUpdate],
+        report: ModelInstanceMemberReport,
     ) -> ModelInstancePublic:
         response = self._client.get_httpx_client().put(
             f"{self._url}/{id}/workload-report",
-            content=report.model_dump_json(
-                exclude_unset=isinstance(report, ModelInstanceLegacyUpdate)
-            ),
+            content=report.model_dump_json(exclude_unset=True),
             headers={"Content-Type": "application/json"},
         )
         raise_if_response_error(response)

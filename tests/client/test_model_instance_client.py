@@ -10,7 +10,7 @@ from gpustack.client import ClientSet
 from gpustack.client.model_instance_client import ModelInstanceClient
 from gpustack.schemas.models import (
     ModelInstancePublic,
-    ModelInstanceWorkloadUpdate,
+    ModelInstanceMemberReport,
     ModelInstanceStopReport,
     ModelInstanceUpdate,
     SourceEnum,
@@ -70,7 +70,7 @@ def test_cached_lookup_never_falls_back_to_http(instance, enabled, watching, pre
         ),
         (
             'report_workloads',
-            ModelInstanceWorkloadUpdate(restart_count=3, workloads=[]),
+            ModelInstanceMemberReport(restart_count=3, workloads=[]),
             '/model-instances/7/workload-report',
             'put',
         ),
@@ -92,7 +92,9 @@ def test_requests_use_their_dedicated_endpoint(
     assert getattr(client, operation)(instance.id, payload) == instance
     send.assert_called_once_with(
         path,
-        content=payload.model_dump_json(),
+        content=payload.model_dump_json(
+            exclude_unset=isinstance(payload, ModelInstanceMemberReport)
+        ),
         headers={'Content-Type': 'application/json'},
     )
 

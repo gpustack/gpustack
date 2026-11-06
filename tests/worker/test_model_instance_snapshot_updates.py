@@ -102,7 +102,7 @@ def test_explicit_startup_update_includes_configuration_snapshot():
 
 
 def test_managed_startup_snapshot_uses_the_generation_fenced_report():
-    from gpustack.schemas.models import ModelInstanceWorkloadUpdate
+    from gpustack.schemas.models import ModelInstanceMemberReport
 
     owner, http_client = _client(None)
     owner._worker.id = 1
@@ -113,7 +113,7 @@ def test_managed_startup_snapshot_uses_the_generation_fenced_report():
     )
     InferenceServer._update_model_instance(owner, 11, model_config_snapshot=snapshot)
     payload = json.loads(http_client.put.call_args.kwargs['content'])
-    report = ModelInstanceWorkloadUpdate.model_validate(payload)
+    report = ModelInstanceMemberReport.model_validate(payload)
     assert report.restart_count == 0
     assert report.workloads is None
     assert report.observations is None

@@ -21,7 +21,7 @@ from gpustack.schemas.models import (
     DistributedServers,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
-    ModelInstanceWorkloadUpdate,
+    ModelInstanceMemberReport,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
     PortBand,
@@ -85,7 +85,7 @@ def managed(manager, monkeypatch):
 
     def report(*, id, report):
         model_update = report
-        assert isinstance(model_update, ModelInstanceWorkloadUpdate)
+        assert isinstance(model_update, ModelInstanceMemberReport)
         assert model_update.restart_count == state.instance.restart_count
         from gpustack.routes.model_instances import _apply_workload_observations
         from gpustack.utils.model_instance_workers import get_model_instance_workloads
@@ -1055,7 +1055,7 @@ def test_managed_launch_payloads_precede_local_registration(managed, monkeypatch
 
     def report(*, id, report):
         model_update = report
-        update = ModelInstanceWorkloadUpdate.model_validate(model_update.model_dump())
+        update = ModelInstanceMemberReport.model_validate(model_update.model_dump())
         if update.preparation is None:
             phases.append("registration")
             return normal_report(id=id, report=update)
@@ -1765,8 +1765,6 @@ def _instance(instance_id=1):
     'state', [ModelInstanceStateEnum.STARTING, ModelInstanceStateEnum.RUNNING]
 )
 def test_legacy_failed_member_reports_without_restarting_locally(manager, state):
-    from gpustack.schemas.models import ModelInstanceLegacyUpdate
-
     serve, client = manager
     mi = _instance()
     mi.backend = BackendEnum.VLLM
@@ -1790,7 +1788,7 @@ def test_legacy_failed_member_reports_without_restarting_locally(manager, state)
     start.assert_not_called()
     stop.assert_not_called()
     report = client.model_instances.report_workloads.call_args.kwargs['report']
-    assert isinstance(report, ModelInstanceLegacyUpdate)
+    assert isinstance(report, ModelInstanceMemberReport)
     assert report.restart_count == 7
     assert report.state == ModelInstanceStateEnum.ERROR
     assert mi.restart_count == 7

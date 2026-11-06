@@ -40,7 +40,7 @@ from gpustack.schemas.models import (
     ModelInstanceLegacyStop,
     ModelInstanceSubordinateWorker,
     ModelInstanceWorkload,
-    ModelInstanceWorkloadUpdate,
+    ModelInstanceMemberReport,
     RoleSpec,
     SourceEnum,
 )
@@ -391,7 +391,7 @@ async def test_deployment_teardown_with_no_reachable_worker_releases_worker_dele
     worker = await Worker.one_by_id(session, 1)
     await worker.update(session, {'unreachable': True})
     instance_id = instance.id
-    late_report = ModelInstanceWorkloadUpdate(
+    late_report = ModelInstanceMemberReport(
         restart_count=instance.restart_count or 0,
         workloads=[w.model_dump() for w in instance.distributed_servers.workloads],
     )

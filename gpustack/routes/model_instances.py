@@ -2,7 +2,7 @@ import asyncio
 import json
 import sys
 from contextlib import aclosing, suppress
-from typing import AsyncIterator, List, Optional, Tuple, Union
+from typing import AsyncIterator, List, Optional, Tuple
 import aiohttp
 from fastapi import APIRouter, Request, Response, status, HTTPException
 from fastapi.responses import (
@@ -47,8 +47,7 @@ from gpustack.schemas.models import (
     ModelInstanceLogOptions,
     ModelInstanceLogWorkerOption,
     ModelInstancePublic,
-    ModelInstanceWorkloadUpdate,
-    ModelInstanceLegacyUpdate,
+    ModelInstanceMemberReport,
     ModelInstanceStopReport,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
@@ -1333,7 +1332,7 @@ def _validate_reported_workloads(worker_id, local, incoming, registration):
 
 
 def _merge_workload_report(
-    instance: ModelInstance, ctx: TenantContext, report: ModelInstanceWorkloadUpdate
+    instance: ModelInstance, ctx: TenantContext, report: ModelInstanceMemberReport
 ) -> DistributedServers:
     """Validate and merge a local report while the caller holds the instance row lock."""
     worker = ctx.user.worker
@@ -1735,7 +1734,7 @@ def _preserve_model_config_snapshot(instance, update, source, ctx):
         update.model_fields_set.discard("model_config_snapshot")
         return
     managed = get_model_instance_workloads(instance) is not None or isinstance(
-        update, ModelInstanceLegacyUpdate
+        update, ModelInstanceMemberReport
     )
     worker_id = getattr(getattr(ctx.user, "worker", None), "id", None)
     if getattr(ctx.user, "kind", None) != PrincipalType.SYSTEM or (
@@ -1783,7 +1782,7 @@ async def report_model_instance_workloads(
     session: SessionDep,
     ctx: TenantContextDep,
     id: int,
-    model_instance_in: Union[ModelInstanceWorkloadUpdate, ModelInstanceLegacyUpdate],
+    model_instance_in: ModelInstanceMemberReport,
 ):
     return await _update_model_instance(session, ctx, id, model_instance_in)
 
@@ -1799,18 +1798,15 @@ async def confirm_model_instance_stop(
 
 
 async def _update_model_instance(session, ctx, id, model_instance_in):
-    legacy_report = isinstance(model_instance_in, ModelInstanceLegacyUpdate)
-    workload_report = (
-        isinstance(model_instance_in, ModelInstanceWorkloadUpdate) or legacy_report
-    )
+    member_report = isinstance(model_instance_in, ModelInstanceMemberReport)
     stop_report = isinstance(model_instance_in, ModelInstanceStopReport)
-    worker = ctx.user.worker if workload_report or stop_report else None
+    worker = ctx.user.worker if member_report or stop_report else None
     current_worker = (
         await _locked_reporting_worker(session, ctx)
-        if workload_report or stop_report
+        if member_report or stop_report
         else None
     )
-    if workload_report or stop_report:
+    if member_report or stop_report:
         model_instance = await ModelInstance.one_by_id(
             session, id, for_update=True, refresh=True
         )
@@ -1828,7 +1824,7 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
                 model_instance, ctx, model_instance_in, current_worker
             )
         }
-    elif workload_report:
+    elif member_report:
         # Authentication can precede a concurrent Worker deletion or rebind.
         # The instance lock serializes registration with the deletion guard.
         if (
@@ -1844,7 +1840,7 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
             raise ForbiddenException(
                 message="Worker identity is no longer bound to this instance and cluster"
             )
-        if legacy_report:
+        if get_model_instance_workloads(model_instance) is None:
             source = await _legacy_runtime_fields(
                 session, model_instance, ctx, model_instance_in
             )
@@ -1896,10 +1892,19 @@ async def _legacy_runtime_fields(session, instance, ctx, report):
         raise ConflictException(
             message='Runtime report does not match the active round'
         )
+    if report.workloads is not None or report.observations is not None:
+        raise BadRequestException(message='Instance does not use managed workloads')
     main = worker.id == instance.worker_id
     source = report.model_dump(
-        exclude_unset=True, exclude={'kind', 'restart_count', 'model_config_snapshot'}
+        exclude_unset=True,
+        exclude={
+            'restart_count',
+            'model_config_snapshot',
+            'workloads',
+            'observations',
+        },
     )
+    source.update(source.pop('preparation', None) or {})
     if source.get('state') is None:
         source.pop('state', None)
     if main and 'arguments' in source:
@@ -1955,6 +1960,29 @@ async def _legacy_runtime_fields(session, instance, ctx, report):
 
 
 async def _managed_report_fields(session, model_instance, ctx, model_instance_in):
+    if model_instance_in.state not in (None, ModelInstanceStateEnum.ERROR):
+        raise BadRequestException(
+            message='Managed instance state belongs to the Server'
+        )
+    if (
+        model_instance_in.state == ModelInstanceStateEnum.ERROR
+        and not model_instance_in.state_message
+    ):
+        raise BadRequestException(
+            message='A rank health failure requires a diagnostic message'
+        )
+    if any(
+        getattr(model_instance_in, field) is not None
+        for field in (
+            'arguments',
+            'gpu_indexes',
+            'gpu_addresses',
+            'computed_resource_claim',
+        )
+    ):
+        raise BadRequestException(
+            message='Managed members report workload observations'
+        )
     worker = ctx.user.worker
     source = {
         "distributed_servers": _merge_workload_report(
