@@ -421,6 +421,43 @@ class MessageServerHandler:
                 foreign.append(cidr)
         return foreign
 
+    async def release_client(self, client_id: uuid.UUID) -> bool:
+        """Drop a client's registration and route claims without waiting for its socket.
+
+        ``handle_client`` releases these in its ``finally`` block, which only
+        runs once the websocket reports a disconnect. A tunnel that is
+        half-open — NAT keepalives never reach the server, or the socket was
+        never detected as closed — keeps its claims reserved indefinitely, and
+        ``_foreign_cidr_claims`` then rejects the next worker that claims the
+        same CIDR. Callers use this when the client is known to be gone for
+        another reason (its worker row was deleted) so the claims are freed
+        immediately instead of after an unbounded wait.
+
+        Returns whether anything was registered for ``client_id``.
+        """
+        client_info = self.client_registry.pop(client_id, None)
+        connection_manager = self.connection_managers.pop(client_id, None)
+        if client_info is None and connection_manager is None:
+            return False
+
+        self._cidr_registry.remove_client(client_id)
+        # Advance the generation so the socket's own disconnect path treats
+        # its callback as stale: the client is gone on purpose, and writing
+        # its state back to the database would resurrect a deleted worker.
+        await self._get_next_generation(client_id)
+
+        if connection_manager is not None and connection_manager.websocket is not None:
+            try:
+                await connection_manager.websocket.close()
+            except Exception as e:
+                logger.debug(f"[Server] Error closing released client {client_id}: {e}")
+
+        cidr_list = client_info.cidrs if client_info else []
+        socket_list = client_info.unix_sockets if client_info else []
+        await self.broadcast_client_update("remove", client_id, cidr_list, socket_list)
+        logger.debug(f"[Server] Released client: {client_id}")
+        return True
+
     async def handle_peer_client_update(self, msg: ClientUpdateMessage):
         """Handle client update from peer"""
         for update in msg.updates:
