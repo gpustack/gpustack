@@ -122,8 +122,9 @@ from gpustack.utils.model_instance_workers import (
     model_instance_legacy_stop,
     has_model_instance_stop_barrier,
     managed_instance_update,
-    legacy_group_recovery,
-    legacy_instance_update,
+    requires_group_recovery,
+    calculate_group_recovery_policy,
+    build_member_state_report,
     worker_workload_report,
     ModelInstanceTarget,
     ModelInstanceEndpoint,
@@ -2646,9 +2647,7 @@ class ServeManager(ContainerLogPersister):
                 sw.computed_resource_claim = new_claim
                 changed = True
             if changed:
-                if legacy_group_recovery(model_instance) and legacy_group_recovery(
-                    model_instance, self._get_model(model_instance)
-                ):
+                if self._uses_group_recovery(model_instance):
                     self._report_model_instance(
                         model_instance,
                         gpu_addresses=sw.gpu_addresses,
@@ -3489,11 +3488,7 @@ class ServeManager(ContainerLogPersister):
             ModelInstanceStateEnum.SCHEDULED,
             ModelInstanceStateEnum.DOWNLOADING,
         )
-        if (
-            legacy_group_recovery(mi)
-            and legacy_group_recovery(mi, self._get_model(mi))
-            and not initial_start
-        ):
+        if self._uses_group_recovery(mi) and not initial_start:
             if self._is_provisioning(mi):
                 return
             if subordinate.state != ModelInstanceStateEnum.ERROR:
@@ -4083,10 +4078,8 @@ class ServeManager(ContainerLogPersister):
             if model_instance_legacy_stop(current) is not None:
                 self._stop_model_instance(ModelInstance.model_validate(current))
                 return
-            if (
-                legacy_group_recovery(mi)
-                and legacy_group_recovery(mi, self._get_model(mi))
-                and not self._legacy_start_allowed(mi, current)
+            if self._uses_group_recovery(mi) and not self._legacy_start_allowed(
+                mi, current
             ):
                 return
         except NotFoundException:
@@ -4871,7 +4864,7 @@ class ServeManager(ContainerLogPersister):
         if get_model_instance_workloads(mi) is not None:
             self._sync_managed_model_instance(mi)
             return
-        if legacy_group_recovery(mi) and legacy_group_recovery(mi, self._get_model(mi)):
+        if self._uses_group_recovery(mi):
             current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
             if (
                 (current.restart_count or 0) == (mi.restart_count or 0)
@@ -4907,11 +4900,25 @@ class ServeManager(ContainerLogPersister):
 
     def _report_model_instance(self, mi: ModelInstance, **fields):
         """Keep the observed round attached to local runtime state reports."""
-        if legacy_group_recovery(mi) and legacy_group_recovery(mi, self._get_model(mi)):
+        if self._uses_group_recovery(mi):
             return self._clientset.model_instances.report_workloads(
-                id=mi.id, report=legacy_instance_update(mi, self._worker_id, **fields)
+                id=mi.id,
+                report=build_member_state_report(mi, self._worker_id, **fields),
             )
         return self._update_model_instance(mi.id, **fields)
+
+    def _uses_group_recovery(self, mi: ModelInstance) -> bool:
+        """Read the Server's round policy without consulting mutable model inputs."""
+        if calculate_group_recovery_policy(mi, None) is None:
+            return False
+        if mi.distributed_servers.group_recovery is None:
+            current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+            if (current.restart_count or 0) != (mi.restart_count or 0):
+                raise RuntimeError('Instance generation changed during recovery')
+            mi.distributed_servers = current.distributed_servers.model_copy(deep=True)
+        if mi.distributed_servers.group_recovery is None:
+            raise RuntimeError('Instance recovery policy is not initialized')
+        return requires_group_recovery(mi)
 
     def _update_model_instance(self, id: int, **kwargs):
         """
@@ -5064,7 +5071,7 @@ class ServeManager(ContainerLogPersister):
             self._report_model_instance(mi, **patch_dict)
             self._pending_model_instance_errors.pop(mi.id, None)
 
-        if legacy_group_recovery(mi) and legacy_group_recovery(mi, self._get_model(mi)):
+        if self._uses_group_recovery(mi):
             return
 
         if self._is_provisioning(mi):

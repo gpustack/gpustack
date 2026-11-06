@@ -2910,6 +2910,7 @@ def test_sync_vgpu_allocation_patches_subordinate_worker(coordinated):
     )
     if coordinated:
         model_instance.backend = BackendEnum.VLLM
+        model_instance.distributed_servers.group_recovery = True
     clientset.model_instances.list.return_value = SimpleNamespace(
         items=[model_instance]
     )

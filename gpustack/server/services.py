@@ -81,7 +81,8 @@ from gpustack.utils.model_instance_workers import (
     get_model_instance_worker_match,
     model_instance_workloads_stopped,
     model_instance_legacy_stop,
-    legacy_group_recovery,
+    requires_group_recovery,
+    calculate_group_recovery_policy,
 )
 
 logger = logging.getLogger(__name__)
@@ -1258,6 +1259,7 @@ class ModelInstanceService:
         return results
 
     async def create(self, model_instance):
+        await self._prepare_recovery_policy(model_instance, None)
         # Denormalize the shared-cache connection info onto the instance so
         # the worker can inject engine config without a server round-trip.
         model = await Model.one_by_id(self.session, model_instance.model_id)
@@ -1299,6 +1301,7 @@ class ModelInstanceService:
         try:
             created = []
             for model_instance in model_instances:
+                await self._prepare_recovery_policy(model_instance, None)
                 model = models.get(model_instance.model_id)
                 if model is not None:
                     model_instance.cache_config = (
@@ -1348,11 +1351,68 @@ class ModelInstanceService:
     async def update(
         self, model_instance: ModelInstance, source: Union[dict, SQLModel, None] = None
     ):
+        source = await self._prepare_recovery_policy(model_instance, source)
         result = await model_instance.update(self.session, source)
         await delete_cache_by_key(self.get_running_instances, model_instance.model_id)
         await delete_cache_by_key(self.get_by_id, model_instance.id)
         await invalidate_workers_allocated([model_instance])
         return result
+
+    async def ensure_recovery_policy(self, instance: ModelInstance) -> None:
+        """Backfill a bound legacy round before exposing it to a Worker."""
+        if (
+            calculate_group_recovery_policy(instance, None) is not None
+            and instance.distributed_servers.group_recovery is None
+        ):
+            await self.update(instance, {})
+
+    async def _prepare_recovery_policy(self, instance, source):
+        fields = (
+            {key: getattr(source, key) for key in source.model_fields_set}
+            if isinstance(source, SQLModel)
+            else dict(source or {})
+        )
+        candidate = instance.model_copy(update=fields)
+        if calculate_group_recovery_policy(candidate, None) is None:
+            return source
+        servers = candidate.distributed_servers.model_copy(deep=True)
+        new_round = (candidate.restart_count or 0) != (instance.restart_count or 0)
+        if not new_round and instance.distributed_servers is not None:
+            servers.group_recovery = instance.distributed_servers.group_recovery
+        if new_round:
+            # An old launch snapshot must not select the next launch's policy.
+            servers.group_recovery = None
+            servers.legacy_stop = None
+            fields['model_config_snapshot'] = None
+            candidate.model_config_snapshot = None
+        candidate.distributed_servers = servers
+        if servers.group_recovery is None:
+            model = await Model.one_by_id(self.session, instance.model_id, refresh=True)
+            if model is None:
+                raise ConflictException(
+                    message='Model is unavailable for launch policy'
+                )
+            servers.group_recovery = requires_group_recovery(candidate, model)
+        if (
+            new_round
+            and instance.distributed_servers is not None
+            and instance.distributed_servers.group_recovery is False
+            and servers.group_recovery
+            and not model_instance_workloads_stopped(instance)
+        ):
+            return {
+                'state': ModelInstanceStateEnum.ERROR,
+                'state_message': 'Stopping all members before changing recovery policy',
+                'distributed_servers': await self._legacy_stop_servers(instance),
+            }
+        if not new_round and servers == instance.distributed_servers:
+            return source
+        fields['distributed_servers'] = servers
+        if source is None:
+            for key, value in fields.items():
+                setattr(instance, key, value)
+            return None
+        return fields
 
     async def reconcile_managed_instance(
         self, instance_id: int, restart_count: int, *, allow_restart: bool = True
@@ -1452,7 +1512,7 @@ class ModelInstanceService:
 
     async def _legacy_recovery(self, instance, allow_restart):
         model = await Model.one_by_id(self.session, instance.model_id, refresh=True)
-        if model is None or not legacy_group_recovery(instance, model):
+        if model is None or not requires_group_recovery(instance, model):
             return {}, None
         if instance.draining_since is not None:
             return {}, None
@@ -2051,7 +2111,8 @@ class ModelInstanceService:
         ids = set()
         try:
             for m in model_instances:
-                await m.update(self.session, source, auto_commit=False)
+                prepared = await self._prepare_recovery_policy(m, source)
+                await m.update(self.session, prepared, auto_commit=False)
                 ids.add(m.model_id)
             await self.session.commit()
 

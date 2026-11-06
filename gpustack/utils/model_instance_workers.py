@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 import re
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from gpustack.schemas.models import (
     BackendEnum,
     DistributedServerCoordinateModeEnum,
     Model,
+    ModelBase,
+    ModelConfigSnapshot,
     ModelInstance,
     ModelInstanceLegacyStop,
     ModelInstanceBase,
@@ -131,10 +133,34 @@ def workload_topology(workloads: List[ModelInstanceWorkload]) -> Dict:
     }
 
 
-def legacy_group_recovery(
+def requires_group_recovery(
     instance: ModelInstanceBase, model: Optional[Model] = None
 ) -> bool:
     """Identify fixed-topology groups whose members must initialize together."""
+    if calculate_group_recovery_policy(instance, None) is None:
+        return False
+    if model_instance_legacy_stop(instance) is not None:
+        return True
+    if instance.distributed_servers.group_recovery is not None:
+        return instance.distributed_servers.group_recovery
+    config = getattr(instance, 'model_config_snapshot', None)
+    identity = getattr(config, 'launch_identity', None)
+    if identity is not None and (
+        identity.instance_id,
+        identity.worker_id,
+        identity.restart_count,
+    ) != (instance.id, instance.worker_id, instance.restart_count or 0):
+        config = None
+    if config is None and model is not None:
+        config = role_effective_model(model, instance.role)
+    return bool(calculate_group_recovery_policy(instance, config))
+
+
+def calculate_group_recovery_policy(
+    instance: ModelInstanceBase,
+    config: Optional[Union[ModelBase, ModelConfigSnapshot]],
+) -> Optional[bool]:
+    """Calculate a launch policy without consulting a round's stored decision."""
     servers = instance.distributed_servers
     if (
         get_model_instance_workloads(instance) is not None
@@ -142,13 +168,10 @@ def legacy_group_recovery(
         or servers.mode != DistributedServerCoordinateModeEnum.INITIALIZE_LATER
         or not servers.subordinate_workers
     ):
-        return False
-    config = getattr(instance, 'model_config_snapshot', None)
-    if config is None and model is not None:
-        config = role_effective_model(model, instance.role)
+        return None
     backend = instance.backend
     if backend not in (BackendEnum.VLLM, BackendEnum.SGLANG, BackendEnum.ASCEND_MINDIE):
-        return False
+        return None
     parameters = config.backend_parameters if config is not None else []
     if backend == BackendEnum.VLLM:
         if any(
@@ -167,7 +190,7 @@ def legacy_group_recovery(
     )
 
 
-def legacy_instance_update(
+def build_member_state_report(
     instance: ModelInstanceBase, worker_id: int, **fields
 ) -> ModelInstanceMemberReport:
     """Report explicit local runtime fields against the observed instance round."""

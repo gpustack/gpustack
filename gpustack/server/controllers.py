@@ -94,7 +94,7 @@ from gpustack.utils.model_instance_workers import (
     requires_model_instance_stop_barrier,
     model_instance_legacy_stop,
     model_instance_workloads_stopped,
-    legacy_group_recovery,
+    requires_group_recovery,
 )
 from gpustack.utils.network import is_offline
 from gpustack.server.workqueue import WorkEvent, WorkEventType, WorkQueue
@@ -631,7 +631,7 @@ class ModelController:
         for instance in instances:
             workloads = get_model_instance_workloads(instance)
             if workloads is None:
-                if not legacy_group_recovery(instance, model) or not (
+                if not requires_group_recovery(instance, model) or not (
                     instance.state == ModelInstanceStateEnum.ERROR
                     or any(
                         w.state == ModelInstanceStateEnum.ERROR
@@ -923,7 +923,7 @@ class ModelInstanceController:
                 if event.type == EventType.DELETED or (
                     (
                         has_model_instance_stop_barrier(model_instance)
-                        or legacy_group_recovery(model_instance, model)
+                        or requires_group_recovery(model_instance, model)
                     )
                     and _model_instance_runtime_changed(event)
                 ):

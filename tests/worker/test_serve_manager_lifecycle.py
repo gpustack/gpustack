@@ -1756,9 +1756,48 @@ def _instance(instance_id=1):
     instance.named_ports = {"_vllm_mp_connecting": PortBand(base=40001, count=10)}
     instance.distributed_servers = DistributedServers(
         mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        group_recovery=True,
         subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
     )
     return instance
+
+
+@pytest.mark.parametrize('group_recovery', [False, True])
+@pytest.mark.parametrize('missing_policy', [False, True])
+def test_member_reporting_keeps_server_policy_after_worker_reload(
+    manager, group_recovery, missing_policy
+):
+    from gpustack.schemas.models import ModelInstancePublic
+
+    serve, client = manager
+    mi = _instance()
+    mi.backend = BackendEnum.VLLM
+    mi.distributed_servers.group_recovery = group_recovery
+    mi.created_at = mi.updated_at = datetime.now(timezone.utc)
+    current = ModelInstancePublic.model_validate(mi.model_dump())
+    client.model_instances.get.return_value = current
+    edited = new_model(
+        1,
+        'model',
+        huggingface_repo_id='org/repo',
+        backend_parameters=['--enable-elastic-ep'] if group_recovery else [],
+    )
+    client.models.get.return_value = edited
+    serve._model_cache_by_instance.clear()
+    serve._refresh_model(mi)
+    client.models.get.reset_mock()
+    mi = current.model_copy(deep=True)
+    if missing_policy:
+        mi.distributed_servers.group_recovery = None
+    serve._report_model_instance(
+        mi, state=ModelInstanceStateEnum.ERROR, state_message='engine failed'
+    )
+    client.models.get.assert_not_called()
+    assert client.model_instances.report_workloads.call_count == int(group_recovery)
+    assert serve._update_model_instance.call_count == int(not group_recovery)
+    assert mi.distributed_servers.group_recovery is group_recovery
+    if missing_policy:
+        client.model_instances.get.assert_called_once_with(id=mi.id, use_cache=False)
 
 
 @pytest.mark.parametrize(
@@ -1874,12 +1913,14 @@ def test_legacy_stop_finishes_when_server_advances_after_its_ack(managed, monkey
     )
 
 
-def test_legacy_preparer_rejects_a_later_starting_round():
+@pytest.mark.parametrize('policy', [False, True])
+def test_legacy_preparer_rejects_a_later_starting_round(policy):
     from gpustack.worker.backends.base import ModelInstanceStateError
 
     mi = _instance()
     mi.backend = BackendEnum.VLLM
     mi.restart_count = 3
+    mi.distributed_servers.group_recovery = policy
     owner = SimpleNamespace(
         _model_instance=mi, _model=new_model(1, 'm', huggingface_repo_id='org/repo')
     )

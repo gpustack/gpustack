@@ -2104,6 +2104,10 @@ class DistributedServers(BaseModel):
     legacy_stop: Optional[ModelInstanceLegacyStop] = PydanticField(
         default=None, json_schema_extra={"readOnly": True}
     )
+    # The Server fixes this policy before a round creates inference workloads.
+    group_recovery: Optional[bool] = PydanticField(
+        default=None, json_schema_extra={"readOnly": True}
+    )
     model_config = ConfigDict(from_attributes=True)
 
     @model_validator(mode="before")

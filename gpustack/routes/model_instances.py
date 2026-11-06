@@ -80,7 +80,8 @@ from gpustack.utils.model_instance_workers import (
     workload_topology,
     model_instance_legacy_stop,
     model_instance_metrics_source_inventory,
-    legacy_group_recovery,
+    requires_group_recovery,
+    calculate_group_recovery_policy,
 )
 
 router = APIRouter()
@@ -209,6 +210,15 @@ async def get_model_instance(
         model_instance,
         not_found_message="Model instance not found",
     )
+    if (
+        calculate_group_recovery_policy(model_instance, None) is not None
+        and model_instance.distributed_servers.group_recovery is None
+    ):
+        model_instance = await ModelInstance.one_by_id(
+            session, id, for_update=True, refresh=True
+        )
+        assert_resource_visible(ctx, model_instance)
+        await ModelInstanceService(session).ensure_recovery_policy(model_instance)
     if check_configuration:
         model = await Model.one_by_id(session, model_instance.model_id, refresh=True)
         if model is None or await model_members_stale(session, model, [model_instance]):
@@ -1158,7 +1168,10 @@ async def create_model_instance(
         or model_instance_legacy_stop(model_instance_in) is not None
         or (
             model_instance_in.distributed_servers is not None
-            and model_instance_in.distributed_servers.stop_requested
+            and (
+                model_instance_in.distributed_servers.stop_requested
+                or model_instance_in.distributed_servers.group_recovery is not None
+            )
         )
     ):
         raise BadRequestException(
@@ -1640,6 +1653,22 @@ def _preserve_managed_fields(
     incoming = get_model_instance_workloads(update)
     guard = model_instance_legacy_stop(instance)
     if (
+        update.distributed_servers is None
+        and instance.distributed_servers is not None
+        and instance.distributed_servers.group_recovery is not None
+    ):
+        update.distributed_servers = instance.distributed_servers.model_copy(deep=True)
+    if update.distributed_servers is not None:
+        policy = update.distributed_servers.group_recovery
+        stored_policy = (
+            instance.distributed_servers.group_recovery
+            if instance.distributed_servers is not None
+            else None
+        )
+        if policy is not None and policy != stored_policy:
+            raise ConflictException(message='Recovery policy is server-owned')
+        update.distributed_servers.group_recovery = stored_policy
+    if (
         update.distributed_servers is not None
         and update.distributed_servers.stop_requested
         and not (
@@ -1747,6 +1776,15 @@ def _preserve_model_config_snapshot(instance, update, source, ctx):
                 else "Only system principals can update model configuration snapshots"
             )
         )
+    if (
+        instance.distributed_servers is not None
+        and instance.distributed_servers.group_recovery is not None
+        and calculate_group_recovery_policy(instance, snapshot)
+        != instance.distributed_servers.group_recovery
+    ):
+        raise ConflictException(
+            message='Launch configuration differs from recovery policy'
+        )
     if isinstance(source, dict):
         source["model_config_snapshot"] = snapshot
 
@@ -1851,11 +1889,13 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
     else:
         _preserve_download_state(model_instance, model_instance_in)
         legacy = False
-        if legacy_group_recovery(model_instance):
+        if requires_group_recovery(model_instance):
             model = await Model.one_by_id(
                 session, model_instance.model_id, refresh=True
             )
-            legacy = model is not None and legacy_group_recovery(model_instance, model)
+            legacy = model is not None and requires_group_recovery(
+                model_instance, model
+            )
         _preserve_managed_fields(model_instance, model_instance_in, legacy=legacy)
         source = model_instance_in
     _preserve_model_config_snapshot(model_instance, model_instance_in, source, ctx)
@@ -1882,7 +1922,7 @@ async def _legacy_runtime_fields(session, instance, ctx, report):
             message='Runtime reports require an assigned bound Worker'
         )
     model = await Model.one_by_id(session, instance.model_id, refresh=True)
-    if model is None or not legacy_group_recovery(instance, model):
+    if model is None or not requires_group_recovery(instance, model):
         raise ConflictException(message='Instance does not use legacy group recovery')
     if (
         report.restart_count != (instance.restart_count or 0)
