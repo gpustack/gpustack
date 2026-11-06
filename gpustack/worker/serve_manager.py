@@ -2022,7 +2022,14 @@ class ServeManager(ContainerLogPersister):
             try:
                 await asyncio.to_thread(self._retry_distributed_port_releases)
                 for mi in list(self._error_model_instances.values()):
-                    await asyncio.to_thread(self._restart_error_model_instance, mi)
+                    try:
+                        await asyncio.to_thread(self._restart_error_model_instance, mi)
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to restart model instance %s (%s)",
+                            mi.name,
+                            type(e).__name__,
+                        )
                 await asyncio.sleep(10)
             except Exception as e:
                 logger.error(f"Error restarting model instances: {e}")
@@ -2167,307 +2174,325 @@ class ServeManager(ContainerLogPersister):
             model_instances,
             key=lambda mi: self._rank_health_last_dispatch.get(mi.id, 0),
         ):
-            if model_instance_legacy_stop(model_instance) is not None:
-                self._stop_model_instance(model_instance)
-                continue
-            if get_model_instance_workloads(model_instance) is not None:
-                # A stop intent can outlive its local snapshot. Reconcile from
-                # Server authority so that cleanup can recover that ownership.
-                self._sync_managed_model_instance(model_instance)
-                continue
-            # Skip if the provision process has not exited yet.
-            if self._is_provisioning(model_instance):
-                logger.trace(
-                    f"Model instance {model_instance.name} is provisioning. Skipping sync."
-                )
-                continue
-
-            is_main_worker = model_instance.worker_id == self._worker_id
-
-            # INITIALIZE_LATER followers have no workload until the main worker
-            # finishes downloading. A missing container is expected while waiting.
-            if (
-                not is_main_worker
-                and model_instance.distributed_servers.mode
-                == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
-                and model_instance.state
-                not in (
-                    ModelInstanceStateEnum.STARTING,
-                    ModelInstanceStateEnum.RUNNING,
-                    ModelInstanceStateEnum.ERROR,
-                    ModelInstanceStateEnum.UNREACHABLE,
-                )
-            ):
-                continue
-
-            # Skip if the workload is still launching.
-            # Use deployment metadata name for subordinate workers (e.g., "model-f0")
-            # since their workload name differs from the model instance name.
-            if is_main_worker:
-                workload = get_workload(model_instance.name)
-            else:
-                deployment_metadata = model_instance.get_deployment_metadata(
-                    self._worker_id
-                )
-                workload_name = (
-                    deployment_metadata.name
-                    if deployment_metadata
-                    else model_instance.name
-                )
-                workload = get_workload(workload_name)
-
-            if workload and workload.state in [
-                WorkloadStatusStateEnum.PENDING,
-                WorkloadStatusStateEnum.INITIALIZING,
-            ]:
-                if is_main_worker:
-                    subordinate_state = self._get_main_worker_distributed_state(
-                        model_instance
-                    )
-                    if (
-                        subordinate_state
-                        and subordinate_state.get("state")
-                        == ModelInstanceStateEnum.ERROR
-                        and not self._auto_restart_enabled(model_instance)
-                    ):
-                        # The main engine may wait for a follower indefinitely.
-                        # Surface a terminal follower failure instead of waiting
-                        # for an HTTP listener that cannot finish initializing.
-                        if subordinate_state["should_update"]:
-                            self._report_model_instance(
-                                model_instance,
-                                state=subordinate_state['state'],
-                                state_message=subordinate_state['state_message'],
-                            )
-                        continue
-                # "Still launching" is also what a crash loop looks like. A
-                # container that binds, fails and is restarted never reaches
-                # FAILED, so the branch below never runs and the instance sits
-                # at `starting` for as long as anyone leaves it — which is the
-                # shape every port-level failure in a disaggregated deployment
-                # takes. Ask whether it is launching or looping before
-                # accepting the former.
-                if self._mark_crash_loop(model_instance, workload, is_main_worker):
-                    continue
-                logger.trace(
-                    f"Model instance {model_instance.name} workload is still launching. Skipping sync."
-                )
-                continue
-
-            # Update model instance state to ERROR if the workload is not existed, unhealthy, inactive or failed.
-            if not workload or workload.state in [
-                WorkloadStatusStateEnum.UNKNOWN,  # Rare, but possible, for example, leaving pause container.
-                WorkloadStatusStateEnum.UNHEALTHY,
-                WorkloadStatusStateEnum.INACTIVE,
-                WorkloadStatusStateEnum.FAILED,
-            ]:
-                # Only if not in ERROR state yet.
-                if model_instance.state != ModelInstanceStateEnum.ERROR:
-                    # Surface the workload's own diagnosis (e.g. a device-plugin
-                    # admission rejection, an image-pull failure, an exit code)
-                    # when available.
-                    failure_message = _describe_workload_failure(workload)
-                    # And then the log's, because the workload's is often just
-                    # a number. A container that exits once and permanently —
-                    # `exit code 127`, a command the image does not contain —
-                    # never reaches the crash-loop path, so without this
-                    # call the failure that can never recover would be the one
-                    # explained least.
-                    failure_message = self._append_log_diagnosis(
-                        model_instance, failure_message
-                    )
-                    with contextlib.suppress(NotFoundException):
-                        # Get patch dict for main worker.
-                        if is_main_worker:
-                            patch_dict = {
-                                "state": ModelInstanceStateEnum.ERROR,
-                                "state_message": failure_message,
-                            }
-                        # Get patch dict for subordinate worker.
-                        else:
-                            sw_pos = next(
-                                (
-                                    i
-                                    for i, sw in enumerate(
-                                        model_instance.distributed_servers.subordinate_workers
-                                    )
-                                    if sw.worker_id == self._worker_id
-                                ),
-                            )
-                            sw = model_instance.distributed_servers.subordinate_workers[
-                                sw_pos
-                            ]
-                            sw.state = ModelInstanceStateEnum.ERROR
-                            # Keep workload failures identifiable after the runtime
-                            # clears its diagnosis, without losing the details.
-                            if not failure_message.startswith(_WORKLOAD_FAILED_MESSAGE):
-                                failure_message = (
-                                    f"{_WORKLOAD_FAILED_MESSAGE} {failure_message}"
-                                )
-                            sw.state_message = failure_message
-                            patch_dict = {
-                                f"distributed_servers.subordinate_workers.{sw_pos}": sw,
-                            }
-                        # Update model instance.
-                        self._report_model_instance(model_instance, **patch_dict)
-                continue
-
-            # The workload is alive and this worker did not necessarily start it,
-            # so reconcile the log persistence threads that belong to it.
-            self._ensure_container_log_persistence(model_instance)
-
-            # Otherwise, update model instance state to RUNNING if everything is fine.
+            # Isolate each instance so stale state or a failed report cannot block peers.
             try:
-                model = self._get_model(model_instance)
-                if model.gpu_type_selector:
-                    # vGPU: read back the real device allocation the operator
-                    # device plugin wrote onto the workload's annotations.
-                    self._sync_vgpu_allocation(model_instance, workload, is_main_worker)
-                if not model.backend_version:
-                    # backend version may be empty on initialization.
-                    # try to refresh to get updated model info on syncs.
-                    model = self._refresh_model(model_instance)
-            except NotFoundException:
-                # An instance can briefly outlive its deleted model in the watch cache.
-                continue
-
-            backend = get_backend(model)
-            health_check_path = self._get_health_check_path(
-                backend, model.owner_principal_id
-            )
-            if not health_check_path:
-                # A managed router runs as a custom backend, which registers no
-                # health path, and the generic probe reads that as "always
-                # ready". The recipe declares the router's own path, and the
-                # router is the group's only entrance -- the one member whose
-                # liveness must not be assumed.
-                health_check_path = managed_router_health_path(
-                    model, model_instance.role
-                )
-            if model.env and 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in model.env:
-                # A model-specific path can match a custom image whose health
-                # endpoint differs from the backend's default.
-                health_check_path = model.env['GPUSTACK_MODEL_HEALTH_CHECK_PATH']
-
-            with contextlib.suppress(NotFoundException):
-                # Get patch dict for main worker.
-                if is_main_worker:
-                    subordinate_state = self._get_main_worker_distributed_state(
-                        model_instance
+                if model_instance_legacy_stop(model_instance) is not None:
+                    self._stop_model_instance(model_instance)
+                    continue
+                if get_model_instance_workloads(model_instance) is not None:
+                    # A stop intent can outlive its local snapshot. Reconcile from
+                    # Server authority so that cleanup can recover that ownership.
+                    self._sync_managed_model_instance(model_instance)
+                    continue
+                # Skip if the provision process has not exited yet.
+                if self._is_provisioning(model_instance):
+                    logger.trace(
+                        f"Model instance {model_instance.name} is provisioning. Skipping sync."
                     )
-                    if subordinate_state is None:
-                        if model_instance.state == ModelInstanceStateEnum.RUNNING:
+                    continue
+
+                is_main_worker = model_instance.worker_id == self._worker_id
+
+                # INITIALIZE_LATER followers have no workload until the main worker
+                # finishes downloading. A missing container is expected while waiting.
+                if (
+                    not is_main_worker
+                    and model_instance.distributed_servers.mode
+                    == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                    and model_instance.state
+                    not in (
+                        ModelInstanceStateEnum.STARTING,
+                        ModelInstanceStateEnum.RUNNING,
+                        ModelInstanceStateEnum.ERROR,
+                        ModelInstanceStateEnum.UNREACHABLE,
+                    )
+                ):
+                    continue
+
+                # Skip if the workload is still launching.
+                # Use deployment metadata name for subordinate workers (e.g., "model-f0")
+                # since their workload name differs from the model instance name.
+                if is_main_worker:
+                    workload = get_workload(model_instance.name)
+                else:
+                    deployment_metadata = model_instance.get_deployment_metadata(
+                        self._worker_id
+                    )
+                    workload_name = (
+                        deployment_metadata.name
+                        if deployment_metadata
+                        else model_instance.name
+                    )
+                    workload = get_workload(workload_name)
+
+                if workload and workload.state in [
+                    WorkloadStatusStateEnum.PENDING,
+                    WorkloadStatusStateEnum.INITIALIZING,
+                ]:
+                    if is_main_worker:
+                        subordinate_state = self._get_main_worker_distributed_state(
+                            model_instance
+                        )
+                        if (
+                            subordinate_state
+                            and subordinate_state.get("state")
+                            == ModelInstanceStateEnum.ERROR
+                            and not self._auto_restart_enabled(model_instance)
+                        ):
+                            # The main engine may wait for a follower indefinitely.
+                            # Surface a terminal follower failure instead of waiting
+                            # for an HTTP listener that cannot finish initializing.
+                            if subordinate_state["should_update"]:
+                                self._report_model_instance(
+                                    model_instance,
+                                    state=subordinate_state['state'],
+                                    state_message=subordinate_state['state_message'],
+                                )
+                            continue
+                    # "Still launching" is also what a crash loop looks like. A
+                    # container that binds, fails and is restarted never reaches
+                    # FAILED, so the branch below never runs and the instance sits
+                    # at `starting` for as long as anyone leaves it — which is the
+                    # shape every port-level failure in a disaggregated deployment
+                    # takes. Ask whether it is launching or looping before
+                    # accepting the former.
+                    if self._mark_crash_loop(model_instance, workload, is_main_worker):
+                        continue
+                    logger.trace(
+                        f"Model instance {model_instance.name} workload is still launching. Skipping sync."
+                    )
+                    continue
+
+                # Update model instance state to ERROR if the workload is not existed, unhealthy, inactive or failed.
+                if not workload or workload.state in [
+                    WorkloadStatusStateEnum.UNKNOWN,  # Rare, but possible, for example, leaving pause container.
+                    WorkloadStatusStateEnum.UNHEALTHY,
+                    WorkloadStatusStateEnum.INACTIVE,
+                    WorkloadStatusStateEnum.FAILED,
+                ]:
+                    # Only if not in ERROR state yet.
+                    if model_instance.state != ModelInstanceStateEnum.ERROR:
+                        # Surface the workload's own diagnosis (e.g. a device-plugin
+                        # admission rejection, an image-pull failure, an exit code)
+                        # when available.
+                        failure_message = _describe_workload_failure(workload)
+                        # And then the log's, because the workload's is often just
+                        # a number. A container that exits once and permanently —
+                        # `exit code 127`, a command the image does not contain —
+                        # never reaches the crash-loop path, so without this
+                        # call the failure that can never recover would be the one
+                        # explained least.
+                        failure_message = self._append_log_diagnosis(
+                            model_instance, failure_message
+                        )
+                        with contextlib.suppress(NotFoundException):
+                            # Get patch dict for main worker.
+                            if is_main_worker:
+                                patch_dict = {
+                                    "state": ModelInstanceStateEnum.ERROR,
+                                    "state_message": failure_message,
+                                }
+                            # Get patch dict for subordinate worker.
+                            else:
+                                sw_pos = next(
+                                    (
+                                        i
+                                        for i, sw in enumerate(
+                                            model_instance.distributed_servers.subordinate_workers
+                                        )
+                                        if sw.worker_id == self._worker_id
+                                    ),
+                                )
+                                sw = model_instance.distributed_servers.subordinate_workers[
+                                    sw_pos
+                                ]
+                                sw.state = ModelInstanceStateEnum.ERROR
+                                # Keep workload failures identifiable after the runtime
+                                # clears its diagnosis, without losing the details.
+                                if not failure_message.startswith(
+                                    _WORKLOAD_FAILED_MESSAGE
+                                ):
+                                    failure_message = (
+                                        f"{_WORKLOAD_FAILED_MESSAGE} {failure_message}"
+                                    )
+                                sw.state_message = failure_message
+                                patch_dict = {
+                                    f"distributed_servers.subordinate_workers.{sw_pos}": sw,
+                                }
+                            # Update model instance.
+                            self._report_model_instance(model_instance, **patch_dict)
+                    continue
+
+                # The workload is alive and this worker did not necessarily start it,
+                # so reconcile the log persistence threads that belong to it.
+                self._ensure_container_log_persistence(model_instance)
+
+                # Otherwise, update model instance state to RUNNING if everything is fine.
+                try:
+                    model = self._get_model(model_instance)
+                    if model.gpu_type_selector:
+                        # vGPU: read back the real device allocation the operator
+                        # device plugin wrote onto the workload's annotations.
+                        self._sync_vgpu_allocation(
+                            model_instance, workload, is_main_worker
+                        )
+                    if not model.backend_version:
+                        # backend version may be empty on initialization.
+                        # try to refresh to get updated model info on syncs.
+                        model = self._refresh_model(model_instance)
+                except NotFoundException:
+                    # An instance can briefly outlive its deleted model in the watch cache.
+                    continue
+
+                backend = get_backend(model)
+                health_check_path = self._get_health_check_path(
+                    backend, model.owner_principal_id
+                )
+                if not health_check_path:
+                    # A managed router runs as a custom backend, which registers no
+                    # health path, and the generic probe reads that as "always
+                    # ready". The recipe declares the router's own path, and the
+                    # router is the group's only entrance -- the one member whose
+                    # liveness must not be assumed.
+                    health_check_path = managed_router_health_path(
+                        model, model_instance.role
+                    )
+                if model.env and 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in model.env:
+                    # A model-specific path can match a custom image whose health
+                    # endpoint differs from the backend's default.
+                    health_check_path = model.env['GPUSTACK_MODEL_HEALTH_CHECK_PATH']
+
+                with contextlib.suppress(NotFoundException):
+                    # Get patch dict for main worker.
+                    if is_main_worker:
+                        subordinate_state = self._get_main_worker_distributed_state(
+                            model_instance
+                        )
+                        if subordinate_state is None:
+                            if model_instance.state == ModelInstanceStateEnum.RUNNING:
+                                self._restart_backoff_counts.pop(
+                                    model_instance.id, None
+                                )
+                                self._error_model_instances.pop(model_instance.id, None)
+                                self._pending_model_instance_errors.pop(
+                                    model_instance.id, None
+                                )
+                                continue
+
+                            # A recovered follower can clear its propagated failure;
+                            # independent leader failures still require recovery.
+                            if (
+                                model_instance.state == ModelInstanceStateEnum.ERROR
+                                and not (
+                                    model_instance.distributed_servers
+                                    and model_instance.distributed_servers.mode
+                                    == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                                    and (model_instance.state_message or "").startswith(
+                                        _SUBORDINATE_ERROR_PREFIX
+                                    )
+                                )
+                            ):
+                                continue
+                            if not is_ready(
+                                backend, model_instance, health_check_path, model
+                            ):
+                                continue
+
                             self._restart_backoff_counts.pop(model_instance.id, None)
+                            # A member that served is not a member that never
+                            # started: a later crash loop is a different failure
+                            # and must not be reported as a bad configuration.
+                            self._restart_tracker.observe_running(model_instance.id)
+                            patch_dict = {
+                                "state": ModelInstanceStateEnum.RUNNING,
+                                "state_message": "",
+                            }
+
+                            # Fetch model meta once running.
+                            meta = get_meta_from_running_instance(
+                                model_instance, backend, model
+                            )
+                            if meta:
+                                # Some meta is set in server evaluation and should be preserved, so we update meta instead of overwrite.
+                                merged_meta = dict(model.meta or {})
+                                merged_meta.update(meta)
+                                if merged_meta != model.meta:
+                                    self._update_model(model.id, meta=merged_meta)
+                        elif subordinate_state["should_update"]:
+                            patch_dict = {
+                                "state": subordinate_state["state"],
+                                "state_message": subordinate_state["state_message"],
+                            }
+                        else:
+                            continue
+                    # Get patch dict for subordinate worker.
+                    else:
+                        sw_pos = next(
+                            (
+                                i
+                                for i, sw in enumerate(
+                                    model_instance.distributed_servers.subordinate_workers
+                                )
+                                if sw.worker_id == self._worker_id
+                            ),
+                        )
+                        sw = model_instance.distributed_servers.subordinate_workers[
+                            sw_pos
+                        ]
+                        if sw.state == ModelInstanceStateEnum.RUNNING:
                             self._error_model_instances.pop(model_instance.id, None)
                             self._pending_model_instance_errors.pop(
                                 model_instance.id, None
                             )
                             continue
-
-                        # A recovered follower can clear its propagated failure;
-                        # independent leader failures still require recovery.
                         if (
-                            model_instance.state == ModelInstanceStateEnum.ERROR
-                            and not (
-                                model_instance.distributed_servers
-                                and model_instance.distributed_servers.mode
-                                == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
-                                and (model_instance.state_message or "").startswith(
-                                    _SUBORDINATE_ERROR_PREFIX
+                            model_instance.distributed_servers.mode
+                            == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                        ):
+                            # Reconcile surviving workloads without starting work.
+                            # The leader owns engine readiness; explicit backend and
+                            # inference failures remain terminal.
+                            if workload.state != WorkloadStatusStateEnum.RUNNING or (
+                                sw.state == ModelInstanceStateEnum.ERROR
+                                and not (sw.state_message or "").startswith(
+                                    _WORKLOAD_FAILED_MESSAGE
                                 )
-                            )
-                        ):
-                            continue
-                        if not is_ready(
-                            backend, model_instance, health_check_path, model
-                        ):
-                            continue
-
-                        self._restart_backoff_counts.pop(model_instance.id, None)
-                        # A member that served is not a member that never
-                        # started: a later crash loop is a different failure
-                        # and must not be reported as a bad configuration.
-                        self._restart_tracker.observe_running(model_instance.id)
-                        patch_dict = {
-                            "state": ModelInstanceStateEnum.RUNNING,
-                            "state_message": "",
-                        }
-
-                        # Fetch model meta once running.
-                        meta = get_meta_from_running_instance(
-                            model_instance, backend, model
+                            ):
+                                continue
+                            if recovery_worker is None:
+                                recovery_worker = self._clientset.workers.get(
+                                    self._worker_id, use_cache=False
+                                )
+                            if (
+                                recovery_worker.state != WorkerStateEnum.READY
+                                or recovery_worker.unreachable
+                            ):
+                                continue
+                        # Do not mutate the watch cache before the update succeeds:
+                        # a failed write must leave recovery eligible for retry.
+                        sw = sw.model_copy(
+                            update={
+                                "state": ModelInstanceStateEnum.RUNNING,
+                                "state_message": "",
+                            }
                         )
-                        if meta:
-                            # Some meta is set in server evaluation and should be preserved, so we update meta instead of overwrite.
-                            merged_meta = dict(model.meta or {})
-                            merged_meta.update(meta)
-                            if merged_meta != model.meta:
-                                self._update_model(model.id, meta=merged_meta)
-                    elif subordinate_state["should_update"]:
                         patch_dict = {
-                            "state": subordinate_state["state"],
-                            "state_message": subordinate_state["state_message"],
+                            f"distributed_servers.subordinate_workers.{sw_pos}": sw,
                         }
-                    else:
-                        continue
-                # Get patch dict for subordinate worker.
-                else:
-                    sw_pos = next(
-                        (
-                            i
-                            for i, sw in enumerate(
-                                model_instance.distributed_servers.subordinate_workers
-                            )
-                            if sw.worker_id == self._worker_id
-                        ),
-                    )
-                    sw = model_instance.distributed_servers.subordinate_workers[sw_pos]
-                    if sw.state == ModelInstanceStateEnum.RUNNING:
+                    # Update model instance.
+                    self._report_model_instance(model_instance, **patch_dict)
+                    if (
+                        patch_dict.get("state") == ModelInstanceStateEnum.RUNNING
+                        or not is_main_worker
+                    ):
                         self._error_model_instances.pop(model_instance.id, None)
                         self._pending_model_instance_errors.pop(model_instance.id, None)
-                        continue
-                    if (
-                        model_instance.distributed_servers.mode
-                        == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
-                    ):
-                        # Reconcile surviving workloads without starting work.
-                        # The leader owns engine readiness; explicit backend and
-                        # inference failures remain terminal.
-                        if workload.state != WorkloadStatusStateEnum.RUNNING or (
-                            sw.state == ModelInstanceStateEnum.ERROR
-                            and not (sw.state_message or "").startswith(
-                                _WORKLOAD_FAILED_MESSAGE
-                            )
-                        ):
-                            continue
-                        if recovery_worker is None:
-                            recovery_worker = self._clientset.workers.get(
-                                self._worker_id, use_cache=False
-                            )
-                        if (
-                            recovery_worker.state != WorkerStateEnum.READY
-                            or recovery_worker.unreachable
-                        ):
-                            continue
-                    # Do not mutate the watch cache before the update succeeds:
-                    # a failed write must leave recovery eligible for retry.
-                    sw = sw.model_copy(
-                        update={
-                            "state": ModelInstanceStateEnum.RUNNING,
-                            "state_message": "",
-                        }
-                    )
-                    patch_dict = {
-                        f"distributed_servers.subordinate_workers.{sw_pos}": sw,
-                    }
-                # Update model instance.
-                self._report_model_instance(model_instance, **patch_dict)
-                if (
-                    patch_dict.get("state") == ModelInstanceStateEnum.RUNNING
-                    or not is_main_worker
-                ):
-                    self._error_model_instances.pop(model_instance.id, None)
-                    self._pending_model_instance_errors.pop(model_instance.id, None)
+            except Exception as e:
+                logger.warning(
+                    "Failed to sync model instance %s (%s)",
+                    model_instance.name,
+                    type(e).__name__,
+                )
 
     @staticmethod
     def _get_main_worker_distributed_state(
@@ -3230,70 +3255,76 @@ class ServeManager(ContainerLogPersister):
         for model_instance in model_instances:
             try:
                 model = self._get_model(model_instance)
-            except NotFoundException:
-                continue
-            if not model:
-                continue
+                if not model:
+                    continue
 
-            # Read per-model config from model.env.
-            config = _get_inference_health_check_config(model, model_instance.role)
-            if not config["enabled"]:
-                continue
+                # Read per-model config from model.env.
+                config = _get_inference_health_check_config(model, model_instance.role)
+                if not config["enabled"]:
+                    continue
 
-            interval = config["interval"]
-            timeout = config["timeout"]
-            threshold = config["threshold"]
+                interval = config["interval"]
+                timeout = config["timeout"]
+                threshold = config["threshold"]
 
-            # Skip if the model is still provisioning.
-            if self._is_provisioning(model_instance):
-                continue
+                # Skip if the model is still provisioning.
+                if self._is_provisioning(model_instance):
+                    continue
 
-            # Skip if not enough time has passed since last check.
-            last_check = self._last_health_check_time.get(model_instance.id, 0)
-            if now - last_check < interval:
-                continue
+                # Skip if not enough time has passed since last check.
+                last_check = self._last_health_check_time.get(model_instance.id, 0)
+                if now - last_check < interval:
+                    continue
 
-            self._last_health_check_time[model_instance.id] = now
+                self._last_health_check_time[model_instance.id] = now
 
-            # Skip if recent successful inference was observed for this instance.
-            last_success = self._last_successful_inference.get(model_instance.id, 0)
-            if last_success > now - interval:
-                logger.debug(
-                    f"Model instance {model_instance.name} had recent successful "
-                    f"inference, skipping health check."
-                )
-                # Reset failure count since real traffic is succeeding.
-                self._inference_health_check_failures.pop(model_instance.id, None)
-                continue
-
-            # Perform inference health check.
-            if not self._probe_running_instance(model_instance, model, timeout):
-                failure_count = self._inference_health_check_failures.get(
-                    model_instance.id, 0
-                )
-                failure_count += 1
-                self._inference_health_check_failures[model_instance.id] = failure_count
-
-                if failure_count >= threshold:
-                    logger.warning(
-                        f"Model instance {model_instance.name} inference health check failed "
-                        f"{failure_count} times, updating state to ERROR."
-                    )
-                    patch_dict = {
-                        "state": ModelInstanceStateEnum.ERROR,
-                        "state_message": _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE,
-                    }
-                    self._report_model_instance(model_instance, **patch_dict)
-                    # Reset failure count after marking as error.
-                    del self._inference_health_check_failures[model_instance.id]
-                else:
+                # Skip if recent successful inference was observed for this instance.
+                last_success = self._last_successful_inference.get(model_instance.id, 0)
+                if last_success > now - interval:
                     logger.debug(
-                        f"Model instance {model_instance.name} inference health check failed "
-                        f"{failure_count}/{threshold} times."
+                        f"Model instance {model_instance.name} had recent successful "
+                        f"inference, skipping health check."
                     )
-            else:
-                # Reset failure count on success.
-                self._inference_health_check_failures.pop(model_instance.id, None)
+                    # Reset failure count since real traffic is succeeding.
+                    self._inference_health_check_failures.pop(model_instance.id, None)
+                    continue
+
+                # Perform inference health check.
+                if not self._probe_running_instance(model_instance, model, timeout):
+                    failure_count = self._inference_health_check_failures.get(
+                        model_instance.id, 0
+                    )
+                    failure_count += 1
+                    self._inference_health_check_failures[model_instance.id] = (
+                        failure_count
+                    )
+
+                    if failure_count >= threshold:
+                        logger.warning(
+                            f"Model instance {model_instance.name} inference health check failed "
+                            f"{failure_count} times, updating state to ERROR."
+                        )
+                        patch_dict = {
+                            "state": ModelInstanceStateEnum.ERROR,
+                            "state_message": _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE,
+                        }
+                        self._report_model_instance(model_instance, **patch_dict)
+                        # Reset failure count after marking as error.
+                        del self._inference_health_check_failures[model_instance.id]
+                    else:
+                        logger.debug(
+                            f"Model instance {model_instance.name} inference health check failed "
+                            f"{failure_count}/{threshold} times."
+                        )
+                else:
+                    # Reset failure count on success.
+                    self._inference_health_check_failures.pop(model_instance.id, None)
+            except Exception as e:
+                logger.warning(
+                    "Failed to sync inference health for model instance %s (%s)",
+                    model_instance.name,
+                    type(e).__name__,
+                )
 
     def _handle_model_instance_event(self, event: Event):
         """Handle a model instance event without ever crashing the watch stream.

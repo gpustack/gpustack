@@ -1801,6 +1801,112 @@ def test_member_reporting_keeps_server_policy_after_worker_reload(
 
 
 @pytest.mark.parametrize(
+    'failure', ['round_changed', 'missing_policy', 'read_failure', 'report_rejected']
+)
+@pytest.mark.parametrize('operation', ['state', 'inference', 'restart'])
+def test_instance_failure_does_not_starve_peers_or_prevent_retry(
+    manager, monkeypatch, failure, operation
+):
+    serve, client = manager
+    first, second = _instance(1), _instance(2)
+    for instance in (first, second):
+        instance.backend = BackendEnum.VLLM
+        instance.restart_count = 3
+        instance.state = (
+            ModelInstanceStateEnum.ERROR
+            if operation == 'restart'
+            else ModelInstanceStateEnum.RUNNING
+        )
+        if operation == 'inference':
+            instance.worker_id = serve._worker_id
+            instance.distributed_servers.subordinate_workers[0].worker_id = (
+                3 - serve._worker_id
+            )
+    first.distributed_servers.group_recovery = (
+        True if failure == 'report_rejected' else None
+    )
+    current = first.model_copy(deep=True)
+    if failure == 'round_changed':
+        current.restart_count = 4
+        current.distributed_servers.group_recovery = True
+    client.model_instances.list.side_effect = lambda **kwargs: SimpleNamespace(
+        items=[first.model_copy(deep=True), second.model_copy(deep=True)]
+    )
+    client.model_instances.get.side_effect = (
+        ConnectionError('Server unavailable') if failure == 'read_failure' else None
+    )
+    client.model_instances.get.return_value = current
+    monkeypatch.setattr('gpustack.worker.serve_manager.get_workload', lambda name: None)
+    monkeypatch.setattr(
+        serve, '_append_log_diagnosis', lambda instance, message: message
+    )
+    monkeypatch.setattr(serve, '_is_provisioning', lambda instance: False)
+    reported = []
+    reject_report = failure == 'report_rejected'
+
+    def report(*, id, report):
+        if id == first.id and reject_report:
+            raise ConflictException(message='Instance round changed')
+        reported.append((id, report.restart_count))
+
+    client.model_instances.report_workloads.side_effect = report
+
+    if operation == 'inference':
+        serve._get_model.return_value.env = {
+            'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED': 'true',
+            'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD': '1',
+        }
+        monkeypatch.setattr(serve, '_probe_running_instance', lambda *args: False)
+    if operation == 'restart':
+        serve._pending_model_instance_errors = {
+            instance.id: {'state': ModelInstanceStateEnum.ERROR}
+            for instance in (first, second)
+        }
+        monkeypatch.setattr(
+            'gpustack.worker.serve_manager.asyncio.sleep',
+            AsyncMock(side_effect=asyncio.CancelledError),
+        )
+
+    def run_pass():
+        if operation == 'state':
+            serve.sync_model_instances_state()
+        elif operation == 'inference':
+            serve._model_instance_by_instance_id = {first.id: first, second.id: second}
+            serve._last_health_check_time.clear()
+            serve.sync_model_instances_inference_health()
+        else:
+            serve._error_model_instances = {first.id: first, second.id: second}
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(serve.watch_model_instances())
+
+    run_pass()
+
+    assert reported == [(second.id, 3)]
+    assert first.restart_count == 3
+    serve._update_model_instance.assert_not_called()
+    if failure == 'report_rejected':
+        client.model_instances.get.assert_not_called()
+    else:
+        client.model_instances.get.assert_called_once_with(id=first.id, use_cache=False)
+
+    # A refreshed watch snapshot makes the skipped instance eligible next pass.
+    first = current.model_copy(deep=True)
+    first.distributed_servers.group_recovery = True
+    client.model_instances.get.side_effect = None
+    reject_report = False
+    reported.clear()
+
+    run_pass()
+
+    assert reported == (
+        [(first.id, first.restart_count)]
+        if operation == 'restart'
+        else [(first.id, first.restart_count), (second.id, 3)]
+    )
+    serve._update_model_instance.assert_not_called()
+
+
+@pytest.mark.parametrize(
     'state', [ModelInstanceStateEnum.STARTING, ModelInstanceStateEnum.RUNNING]
 )
 def test_legacy_failed_member_reports_without_restarting_locally(manager, state):
