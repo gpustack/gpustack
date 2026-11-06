@@ -389,6 +389,11 @@ async def reconcile_cache_providers(
             await row.delete(session, auto_commit=False)
 
     await session.commit()
+    from gpustack.server.cache_provider_catalog import (
+        invalidate_cache_provider_catalog,
+    )
+
+    await invalidate_cache_provider_catalog()
 
 
 def dump_cache_providers(providers: List[CacheProvider]) -> str:

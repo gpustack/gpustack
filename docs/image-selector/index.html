@@ -12,10 +12,10 @@
 <body>
 <header>
     <div class="header-content">
-        <div class="logo">
+        <a class="logo" href="../">
             <img src="assets/logo-white.png" alt="GPUStack" class="logo-wide">
             <span class="subtitle" data-i18n="subtitle"></span>
-        </div>
+        </a>
         <div class="header-controls">
             <div class="official-link">
                 <a href="../" target="_blank">
@@ -34,6 +34,9 @@
                     <div class="dropdown-inner">
                         <a href="#" data-lang="en">English</a>
                         <a href="#" data-lang="zh">简体中文</a>
+                        <a href="#" data-lang="ja">日本語</a>
+                        <a href="#" data-lang="ru">Русский</a>
+                        <a href="#" data-lang="tr">Türkçe</a>
                     </div>
                 </div>
             </div>
@@ -120,7 +123,7 @@
                     <div class="button-grid" id="arch-selector">
                         <button class="option-button active" data-value="amd64">AMD64</button>
                         <button class="option-button" data-value="arm64">ARM64</button>
-                        <button class="option-button" data-value="auto">Auto</button>
+                        <button class="option-button" data-value="auto" data-i18n="auto_arch">Auto</button>
                     </div>
                 </div>
 
@@ -147,7 +150,7 @@
                         <div class="code-block-wrapper">
                             <pre id="image-list" class="image-commands"><code class="placeholder"
                                                                               data-i18n="placeholder_select"></code></pre>
-                            <button id="copy-all-btn" class="copy-icon-btn" title="Copy all commands"
+                            <button id="copy-all-btn" class="copy-icon-btn" title="Copy all commands" data-i18n-title="copy_all"
                                     style="display: none;">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                      stroke-width="2">

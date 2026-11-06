@@ -6,10 +6,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.orm.attributes import set_committed_value
+from sqlalchemy.orm import Session
 
 from gpustack.mixins.active_record import send_post_commit_events
 from gpustack.schemas.cache_services import CacheService, CacheServiceInstance
 from gpustack.server.bus import EventType, event_bus
+from gpustack.server import services
 
 
 @pytest.mark.asyncio
@@ -34,22 +36,39 @@ async def test_service_cascade_emits_instance_deletions_only_after_commit(monkey
     # reverse relationship, which is configured as noload.
     set_committed_value(service, "instances", instances)
     published = AsyncMock()
+    delivered = asyncio.Event()
+
+    async def on_publish(name, event):
+        if published.await_count == 3:
+            delivered.set()
+
+    published.side_effect = on_publish
     monkeypatch.setattr(event_bus, "publish", published)
     monkeypatch.setattr(CacheService, "save", AsyncMock())
     monkeypatch.setattr(CacheService, "_invalidate_cached_all", AsyncMock())
-    session = SimpleNamespace(info={}, refresh=AsyncMock(), delete=AsyncMock())
+    sync_session = Session()
+    session = SimpleNamespace(
+        info=sync_session.info,
+        sync_session=sync_session,
+        refresh=AsyncMock(),
+        delete=AsyncMock(),
+    )
+    invalidate = AsyncMock()
+    monkeypatch.setattr(services, "invalidate_cache_workers_ram", invalidate)
 
     async def commit():
         published.assert_not_awaited()
+        invalidate.assert_not_awaited()
         assert [call.args[0] for call in session.delete.await_args_list] == [
             *instances,
             service,
         ]
-        send_post_commit_events(session)
+        send_post_commit_events(sync_session)
 
     session.commit = AsyncMock(side_effect=commit)
-    await service.delete(session)
-    await asyncio.sleep(0)
+    await services.CacheServiceService(session).delete(service)
+    invalidate.assert_awaited_once()
+    await asyncio.wait_for(delivered.wait(), timeout=2)
     session.commit.assert_awaited_once()
     deleted = [
         call.args[1]
@@ -60,3 +79,15 @@ async def test_service_cascade_emits_instance_deletions_only_after_commit(monkey
     assert all(event.type == EventType.DELETED for event in deleted)
     assert {event.data.worker_id for event in deleted} == {1, 2}
     assert all(event.data.cache_service_id == 9 for event in deleted)
+
+
+@pytest.mark.asyncio
+async def test_failed_service_delete_preserves_reservation_cache(monkeypatch):
+    service = SimpleNamespace(
+        delete=AsyncMock(side_effect=RuntimeError("commit failed"))
+    )
+    invalidate = AsyncMock()
+    monkeypatch.setattr(services, "invalidate_cache_workers_ram", invalidate)
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await services.CacheServiceService(object()).delete(service)
+    invalidate.assert_not_awaited()

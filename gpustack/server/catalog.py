@@ -1,7 +1,7 @@
 from datetime import date
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import List, Optional
 from urllib.parse import urlparse
 from pathlib import Path
 from fastapi import APIRouter
@@ -19,8 +19,10 @@ from gpustack.schemas.catalog_source import (
     KIND_DRAFT,
     KIND_MODEL_SET,
 )
+from gpustack.schemas.workers import GPUDeviceStatus
 from gpustack.utils import file
 from gpustack.utils.compat_importlib import pkg_resources
+from gpustack.utils.model_catalog import filter_specs_by_gpu
 
 logger = logging.getLogger(__name__)
 
@@ -92,21 +94,54 @@ async def get_catalog_draft_models(session: AsyncSession) -> List[DraftModel]:
 
 
 async def get_catalog_spec_by_source_key(
-    session: AsyncSession, model_source_key: str
+    session: AsyncSession,
+    model_source_key: str,
+    gpus: Optional[List[GPUDeviceStatus]] = None,
+    backend: Optional[str] = None,
 ) -> Optional[ModelSpec]:
-    """The catalog spec matching a model_source_key.
+    """Find a default recipe compatible with the candidate GPUs and backend.
 
-    Within a set (specs reversed) and across sets in display order, the first
-    match wins — prioritizing standard specs, matching the old in-memory lookup.
+    Catalog display order takes precedence across model sets. Within a set,
+    use the catalog's first matching recipe per mode, preferring standard mode.
+    Without GPUs, only unrestricted recipes are eligible. If candidate GPUs
+    select different deployment settings, leave the choice to the caller.
     """
     model_sets = sort_model_sets(
         [_entry_to_model_set(entry) for entry in await _model_set_entries(session)]
     )
-    by_key: Dict[str, ModelSpec] = {}
     for model_set in model_sets:
-        for spec in reversed(model_set.specs):
-            by_key.setdefault(spec.model_source_key, spec)
-    return by_key.get(model_source_key)
+        specs = [
+            spec
+            for spec in model_set.specs
+            if spec.model_source_key == model_source_key
+            and (backend is None or spec.backend == backend)
+        ]
+        if specs:
+            return _default_spec_for_gpus(specs, gpus or [])
+    return None
+
+
+def _default_spec_for_gpus(
+    specs: List[ModelSpec], gpus: List[GPUDeviceStatus]
+) -> Optional[ModelSpec]:
+    selected = None
+    excluded = {"gpu_filters", "mode", "name"}
+    # Evaluate each GPU separately so a mixed fleet cannot lend one device's
+    # vendor and another device's compute capability to the same recipe.
+    gpu_groups = [[gpu] for gpu in gpus] or [[]]
+    for devices in gpu_groups:
+        matches = filter_specs_by_gpu(devices, specs)
+        if not matches:
+            return None
+        candidate = next(
+            (spec for spec in matches if spec.mode == "standard"), matches[-1]
+        )
+        if selected is not None and selected.model_dump(
+            exclude=excluded
+        ) != candidate.model_dump(exclude=excluded):
+            return None
+        selected = candidate
+    return selected
 
 
 def prepare_chat_templates(data_dir: str):

@@ -5,6 +5,8 @@ rows default to ``None`` (= active). Camel-case round-trip is verified since the
 status is what the finalizer controllers read/write.
 """
 
+from datetime import datetime
+
 from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolume,
     GPUInstancePersistentVolumeSpec,
@@ -33,6 +35,44 @@ def test_pvt_status_fields():
     assert st.phase == "Deleting"
     assert st.finalizing == []
     assert st.phase_message is None
+
+
+def test_pv_status_carries_the_unreachable_clock():
+    """The finalizer's wait is clocked per cluster, on a field of the hold
+    itself, so the clock survives a restart and is not reset by an unrelated
+    write to the row. The status is a JSON column, so the field needs no
+    database migration — but it still has to survive the JSON round trip."""
+    st = GPUInstancePersistentVolumeStatus(
+        phase="Deleting",
+        finalizing=[7],
+        unreachable_since={7: datetime(2026, 10, 22, 3, 0, 0)},
+    )
+    dumped = st.model_dump(mode="json", by_alias=True, exclude_none=True)
+    assert dumped["unreachableSince"] == {"7": "2026-10-22T03:00:00"}
+    back = GPUInstancePersistentVolumeStatus.model_validate(dumped)
+    assert back.unreachable_since == {7: datetime(2026, 10, 22, 3, 0, 0)}
+    assert back.finalizing == [7]
+
+
+def test_pvt_status_carries_the_unreachable_clock():
+    st = GPUInstancePersistentVolumeTypeStatus(
+        phase="Deleting",
+        finalizing=[7],
+        unreachable_since={7: datetime(2026, 10, 22, 3, 0, 0)},
+    )
+    dumped = st.model_dump(mode="json", by_alias=True, exclude_none=True)
+    assert dumped["unreachableSince"] == {"7": "2026-10-22T03:00:00"}
+    back = GPUInstancePersistentVolumeTypeStatus.model_validate(dumped)
+    assert back.unreachable_since == {7: datetime(2026, 10, 22, 3, 0, 0)}
+
+
+def test_the_unreachable_clock_defaults_to_none():
+    st = GPUInstancePersistentVolumeStatus(phase="Deleting")
+    assert st.unreachable_since is None
+    assert (
+        GPUInstancePersistentVolumeTypeStatus(phase="Deleting").unreachable_since
+        is None
+    )
 
 
 def test_pv_status_defaults_none():

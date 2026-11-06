@@ -424,8 +424,7 @@ async def test_get_worker_privatekey_for_soft_deleted_worker_returns_not_found()
 
 def test_worker_visibility_filter_scopes_cluster_bound_system():
     """The watch-stream row filter must narrow a cluster-bound SYSTEM
-    account to its own cluster — the plain SYSTEM bypass would otherwise
-    leak every cluster's workers."""
+    account to workers with matching cluster and owner bindings."""
     from gpustack.api.tenant import tenant_stream_filter
     from gpustack.schemas.principals import PrincipalType
 
@@ -434,10 +433,14 @@ def test_worker_visibility_filter_scopes_cluster_bound_system():
         is_platform_admin=False,
         current_principal_id=None,
         scoped_cluster_id=3,
+        scoped_cluster_owner_id=10,
     )
     visible = tenant_stream_filter(scoped, Worker)
-    assert visible(SimpleNamespace(cluster_id=3, owner_principal_id=None))
-    assert not visible(SimpleNamespace(cluster_id=4, owner_principal_id=None))
+    assert visible(SimpleNamespace(cluster_id=3, owner_principal_id=10))
+    assert not visible(SimpleNamespace(cluster_id=3, owner_principal_id=None))
+    assert not visible(SimpleNamespace(cluster_id=3, owner_principal_id=20))
+    assert not visible(SimpleNamespace(cluster_id=4, owner_principal_id=10))
+    assert not visible(SimpleNamespace(cluster_id=None, owner_principal_id=10))
 
     # Legacy SYSTEM principal (no cluster linkage) keeps the full bypass.
     legacy = SimpleNamespace(

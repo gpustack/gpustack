@@ -168,6 +168,11 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("GATEWAY_NAMESPACE"),
     )
     common_group.add_argument(
+        "--trusted-proxy-cidrs",
+        action="append",
+        help="CIDR networks of proxies deployed in front of the gateway (e.g. --trusted-proxy-cidrs 10.0.0.0/8). The client IP resolution walks X-Forwarded-For through these proxies; when unset, only the address the gateway itself observed is used, so client-supplied forwarding headers cannot spoof the source address. List a subnet only when the proxy in front appends X-Forwarded-For itself.",
+    )
+    common_group.add_argument(
         "--service-discovery-name",
         type=str,
         help="the name of the service discovery service in DNS. Only useful when deployed in Kubernetes with service discovery.",
@@ -788,7 +793,7 @@ def run(args: argparse.Namespace):
         setup_logging(cfg.debug)
         debug_env_info()
         set_third_party_env(cfg=cfg)
-        start_tracemalloc_if_debug(cfg)
+        start_tracemalloc_if_enabled()
         initialize_gateway(cfg)
         multiprocessing.set_start_method('spawn')
 
@@ -821,6 +826,8 @@ def run_server(cfg: Config):
 
 
 def run_worker(cfg: Config):
+    # Spawned workers initialize process-local tracing before allocating state.
+    start_tracemalloc_if_enabled()
     set_global_config(cfg)
     worker = Worker(cfg)
     worker.start()
@@ -879,6 +886,7 @@ def set_common_options(args, config_data: dict):
         "gateway_mode",
         "gateway_kubeconfig",
         "gateway_namespace",
+        "trusted_proxy_cidrs",
         "service_discovery_name",
         "namespace",
     ]
@@ -992,12 +1000,13 @@ def debug_env_info():
         logger.debug(f"Using HF_ENDPOINT: {hf_endpoint}")
 
 
-def start_tracemalloc_if_debug(cfg: Config):
-    if cfg.debug:
+def start_tracemalloc_if_enabled() -> None:
+    if envs.DEBUG_ENABLE_TRACEMALLOC:
         import tracemalloc
 
-        tracemalloc.start()
-        logger.debug("tracemalloc started for memory profiling")
+        if not tracemalloc.is_tracing():
+            tracemalloc.start()
+            logger.info("tracemalloc started for memory profiling")
 
 
 def set_third_party_env(cfg: Config):

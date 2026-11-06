@@ -2,7 +2,7 @@ import logging
 import math
 import random
 import secrets
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from urllib.parse import unquote, urlencode
 
 import aiohttp
@@ -38,10 +38,11 @@ from gpustack.api.tenant import (
     cluster_visibility_conditions,
     assert_cluster_visible,
     assert_cluster_writable,
+    assert_resource_visible,
     validate_owner_principal,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.server.bus import event_field
+from gpustack.server.bus import Event, event_field
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.server.worker_request import stream_to_worker
@@ -49,6 +50,8 @@ from gpustack.schemas.clusters import (
     ClusterListParams,
     ClusterUpdate,
     ClusterCreate,
+    ClusterCreateBase,
+    CloudCredential,
     ClusterPublic,
     ClustersPublic,
     Cluster,
@@ -73,6 +76,7 @@ from gpustack.schemas.cluster_access import ClusterAccess
 from gpustack.schemas.gpu_instances import GPUInstance
 from gpustack.schemas.models import Model
 from gpustack.schemas.principals import (
+    OrgRole,
     PrincipalType,
     get_authenticated_principal_id,
     platform_principal_id,
@@ -99,6 +103,7 @@ from gpustack.config.config import (
 )
 from gpustack.utils.certificates import read_server_ca_bundle, server_ca_checksum
 from gpustack.utils.grafana import resolve_grafana_base_url
+from gpustack.cloud_providers.common import validate_cluster_credential
 from gpustack_runtime.detector import ManufacturerEnum
 
 logger = logging.getLogger(__name__)
@@ -109,6 +114,20 @@ CLUSTER_LOAD_OPTIONS = [
 ]
 
 router = APIRouter()
+
+# Pydantic SecretStr uses this fixed mask in public JSON responses.
+MASKED_CLUSTER_SECRET = "**********"
+
+
+async def _redact_cluster_event(event: Event) -> None:
+    # Configurations are already projected in data. Their raw history and
+    # non-public fields can contain credentials, including retired secrets.
+    event.changed_fields = {
+        key: value
+        for key, value in event.changed_fields.items()
+        if key in ClusterPublic.model_fields
+        and key not in {"worker_config", "k8s_options"}
+    }
 
 
 def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
@@ -148,8 +167,7 @@ def _is_cluster_visible(cluster: Cluster, ctx: TenantContext) -> bool:
 
 
 def _is_cluster_manageable(cluster: Cluster, ctx: TenantContext) -> bool:
-    """Manageability mirror: drops cross-Org grants. Bypass for admin
-    in "All" mode (sees everything regardless)."""
+    """Match cluster write permissions, including ownership and Org role."""
     if cluster_scoped_system(ctx):
         return event_field(cluster, "id") == ctx.scoped_cluster_id
     if bypass_tenant_filter(ctx):
@@ -157,6 +175,10 @@ def _is_cluster_manageable(cluster: Cluster, ctx: TenantContext) -> bool:
     return (
         ctx.current_principal_id is not None
         and cluster.owner_principal_id == ctx.current_principal_id
+        and (
+            ctx.is_platform_admin
+            or (not ctx.current_is_personal_scope and ctx.org_role == OrgRole.OWNER)
+        )
     )
 
 
@@ -166,7 +188,10 @@ def _cluster_manageable_conditions(ctx: TenantContext) -> List[Any]:
         return [Cluster.id == ctx.scoped_cluster_id]
     if bypass_tenant_filter(ctx):
         return []
-    if ctx.current_principal_id is None:
+    if ctx.current_principal_id is None or (
+        not ctx.is_platform_admin
+        and (ctx.current_is_personal_scope or ctx.org_role != OrgRole.OWNER)
+    ):
         return [Cluster.id == -1]
     return [Cluster.owner_principal_id == ctx.current_principal_id]
 
@@ -208,10 +233,10 @@ async def get_clusters(
     Default visibility is "everything the caller can use" — own-Org
     clusters plus clusters granted via ``cluster_access``.
 
-    ``mine=true`` restricts to clusters owned by the caller's current
-    principal — drops grants from other Orgs, so management pages
-    don't surface read-only rows the caller can't actually edit.
-    Platform admin still sees everything (bypass).
+    ``mine=true`` restricts to clusters the caller can manage: ownership
+    must match the current principal and the caller must be an Org owner
+    or platform admin. Cluster-scoped system accounts see their own cluster;
+    platform admin in "All" mode sees everything.
 
     ``gpu_instance_enabled`` partitions visible clusters by purpose so
     the deploy picker and the GPU-instance picker each see only the
@@ -251,6 +276,7 @@ async def get_clusters(
                 options=CLUSTER_LOAD_OPTIONS,
                 visibility_filter=visibility_check,
                 filter_func=_matches_gpu_filter,
+                event_transform=_redact_cluster_event,
             ),
             media_type="text/event-stream",
         )
@@ -423,9 +449,98 @@ def apply_shuihua_defaults(
         input.worker_config.proxy_mode = fallback
 
 
+def _post_update_worker_config(
+    input: Union[ClusterCreate, ClusterUpdate],
+    existing: Optional[Cluster] = None,
+) -> Optional[PredefinedConfigNoDefaults]:
+    """
+    The worker_config once the update lands.
+
+    Sending one replaces it wholesale, while a partial PUT keeps what is
+    stored.
+    """
+    if isinstance(input, ClusterCreate) or "worker_config" in input.model_fields_set:
+        return input.worker_config
+    return existing.worker_config if existing is not None else None
+
+
+def _post_update_cluster_registry(
+    input: Union[ClusterCreate, ClusterUpdate],
+    existing: Optional[Cluster] = None,
+) -> Optional[str]:
+    """
+    The cluster's registry once the update lands.
+
+    Mirrors the column get_cluster_image_name reads, plus the value already on
+    the cluster: a partial PUT need not resend it, and Cluster.update keeps
+    what it doesn't touch, so ignoring the stored one would reject an update to
+    a cluster that is in fact configured. The legacy worker_config location is
+    accepted for inputs that have not been hoisted onto the column yet.
+    """
+    worker_config = input.worker_config
+    for candidate in (
+        input.system_default_container_registry,
+        worker_config.system_default_container_registry if worker_config else None,
+        existing.system_default_container_registry if existing is not None else None,
+    ):
+        if candidate:
+            return candidate
+    return None
+
+
+def _shuihua_pull_decision(
+    input: Union[ClusterCreate, ClusterUpdate],
+    existing: Optional[Cluster] = None,
+) -> Tuple[Optional[str], str, str]:
+    """
+    The (registry, source label, missing-registry message) the Shuihua check
+    validates, mirroring get_cluster_image_name.
+
+    A full image override decides the image outright — the cluster's own, or
+    the server-level one for a cluster pinning neither a registry nor a
+    repository, which a Helm install always sets. Otherwise the resolved
+    registry does, so that is what gets validated instead.
+    """
+    cfg = get_global_config()
+    effective_config = _post_update_worker_config(input, existing)
+    override = effective_config.image_name_override if effective_config else None
+    cluster_repo = effective_config.image_repo if effective_config else None
+    cluster_registry = _post_update_cluster_registry(input, existing)
+    server_override = (
+        cfg.image_name_override
+        if cluster_registry is None and cluster_repo is None
+        else None
+    )
+
+    image = override or server_override
+    if image:
+        source = (
+            f"the server-level image_name_override '{image}'"
+            if server_override and not override
+            else f"worker_config.image_name_override '{image}'"
+        )
+        return (
+            image_ref_registry(image),
+            source,
+            f"{source} carries no registry host, so it resolves to Docker Hub, "
+            f"which {ClusterProvider.Shuihua.value} instances cannot reach.",
+        )
+
+    registry = cluster_registry or cfg.system_default_container_registry
+    source = "system_default_container_registry"
+    return (
+        registry,
+        source,
+        f"{source} is required for provider {ClusterProvider.Shuihua.value}: "
+        "its instances cannot reach Docker Hub, so the registry to pull the "
+        "worker image from has to be set on the cluster or as the server's "
+        "default.",
+    )
+
+
 def check_shuihua_requirements(
     input: Union[ClusterCreate, ClusterUpdate], existing: Optional[Cluster] = None
-):
+) -> None:
     """
     Require a registry the Shuihua instances can actually pull from.
 
@@ -439,53 +554,13 @@ def check_shuihua_requirements(
     every PUT would block unrelated edits such as a rename.
     """
     is_create = isinstance(input, ClusterCreate)
-    worker_config = input.worker_config
     sends_worker_config = "worker_config" in input.model_fields_set
     sends_registry = "system_default_container_registry" in input.model_fields_set
 
     if not (is_create or sends_worker_config or sends_registry):
         return
 
-    # A full image override wins over the registry column in
-    # get_cluster_image_name, so validate whichever one actually decides where
-    # the instance pulls from.
-    override = worker_config.image_name_override if worker_config else None
-    if override:
-        registry = image_ref_registry(override)
-        source = f"worker_config.image_name_override '{override}'"
-        missing_message = (
-            f"{source} carries no registry host, so it resolves to Docker Hub, "
-            f"which {ClusterProvider.Shuihua.value} instances cannot reach."
-        )
-    else:
-        # Mirror get_cluster_image_name's resolution order, which falls back to
-        # the server-level setting — rejecting a cluster that would in fact
-        # pull from a reachable registry would be a false alarm.
-        # Mirrors get_cluster_image_name, plus the value already on the
-        # cluster: a partial PUT need not resend it, and Cluster.update keeps
-        # what it doesn't touch, so ignoring the stored one would reject an
-        # update to a cluster that is in fact configured.
-        registry = (
-            input.system_default_container_registry
-            or (
-                worker_config.system_default_container_registry
-                if worker_config
-                else None
-            )
-            or (
-                existing.system_default_container_registry
-                if existing is not None
-                else None
-            )
-            or get_global_config().system_default_container_registry
-        )
-        source = "system_default_container_registry"
-        missing_message = (
-            f"{source} is required for provider {ClusterProvider.Shuihua.value}: "
-            "its instances cannot reach Docker Hub, so the registry to pull the "
-            "worker image from has to be set on the cluster or as the server's "
-            "default."
-        )
+    registry, source, missing_message = _shuihua_pull_decision(input, existing)
 
     if not registry:
         raise InvalidException(message=missing_message)
@@ -497,6 +572,26 @@ def check_shuihua_requirements(
                 "mirror or a private registry."
             )
         )
+
+
+async def check_cluster_credential(
+    session: AsyncSession, ctx: TenantContext, cluster: ClusterCreateBase
+) -> None:
+    """Authorize the credential before persisting or updating a cluster."""
+    if cluster.credential_id is None and cluster.provider in (
+        ClusterProvider.Docker,
+        ClusterProvider.Kubernetes,
+    ):
+        return
+    credential = await CloudCredential.one_by_id(session, cluster.credential_id)
+    message = f"cloud credential {cluster.credential_id} not found"
+    if credential is None or credential.deleted_at is not None:
+        raise NotFoundException(message=message)
+    assert_resource_visible(ctx, credential, not_found_message=message)
+    try:
+        validate_cluster_credential(cluster, credential)
+    except ValueError as e:
+        raise InvalidException(message=str(e)) from e
 
 
 def create_update_check(
@@ -697,6 +792,65 @@ def enforce_data_dir_mounts(input: Union[ClusterCreate, ClusterUpdate]):
         )
 
 
+def _resolve_cluster_secret(
+    value: Optional[str], supplied: bool, stored: Optional[str]
+) -> Optional[str]:
+    if supplied and value != MASKED_CLUSTER_SECRET:
+        return value
+    if value == MASKED_CLUSTER_SECRET and not stored:
+        raise BadRequestException(
+            message="No stored credential matches the mask; provide a new secret."
+        )
+    return stored
+
+
+def _preserve_image_credentials(
+    options: K8sOptions, stored: Optional[K8sOptions]
+) -> None:
+    if "image_credentials" not in options.model_fields_set:
+        if stored is not None:
+            options.image_credentials = stored.model_copy(deep=True).image_credentials
+        return
+
+    stored_credentials = (stored.image_credentials or []) if stored else []
+    for credential in options.image_credentials or []:
+        supplied = "password" in credential.model_fields_set
+        if supplied and credential.password != MASKED_CLUSTER_SECRET:
+            continue
+        # Identity, rather than list position, prevents a reorder or a registry
+        # edit from attaching a stored password to a different destination.
+        matches = [
+            item
+            for item in stored_credentials
+            if (item.registry, item.username)
+            == (credential.registry, credential.username)
+        ]
+        if len(matches) > 1:
+            raise BadRequestException(
+                message="Ambiguous registry credential; provide an explicit password."
+            )
+        credential.password = _resolve_cluster_secret(
+            credential.password, supplied, matches[0].password if matches else None
+        )
+
+
+def preserve_cluster_credentials(
+    input: ClusterUpdate, existing: Optional[Cluster] = None
+) -> None:
+    """Keep omitted or masked secrets; explicit null or empty values clear them."""
+    if input.worker_config is not None:
+        stored = existing.worker_config if existing else None
+        input.worker_config.huggingface_token = _resolve_cluster_secret(
+            input.worker_config.huggingface_token,
+            "huggingface_token" in input.worker_config.model_fields_set,
+            stored.huggingface_token if stored else None,
+        )
+    if input.k8s_options is not None:
+        _preserve_image_credentials(
+            input.k8s_options, existing.k8s_options if existing else None
+        )
+
+
 @router.post("", response_model=ClusterPublic, response_model_exclude_none=True)
 async def create_cluster(
     session: SessionDep, ctx: TenantContextDep, input: ClusterCreate
@@ -724,6 +878,8 @@ async def create_cluster(
         )
 
     create_update_check(input.provider, input)
+    await check_cluster_credential(session, ctx, input)
+    preserve_cluster_credentials(input)
     if input.provider == ClusterProvider.Kubernetes:
         enforce_data_dir_mounts(input)
     hoist_system_default_container_registry(input)
@@ -840,6 +996,8 @@ async def update_cluster(
             )
 
     create_update_check(cluster.provider, input, existing=cluster)
+    await check_cluster_credential(session, ctx, cluster)
+    preserve_cluster_credentials(input, cluster)
     if cluster.provider == ClusterProvider.Kubernetes:
         enforce_data_dir_mounts(input)
         await check_cluster_purpose_switch(session, cluster, input)

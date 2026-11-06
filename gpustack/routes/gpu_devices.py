@@ -11,7 +11,7 @@ from gpustack.server.bus import Event, EventType
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.server.worker_allocated_cache import (
-    get_worker_allocated,
+    get_worker_vram_allocated,
     vram_allocated_for_index,
 )
 from gpustack.schemas.gpu_devices import (
@@ -27,8 +27,7 @@ router = APIRouter()
 async def _lookup_vram_allocated(worker_id: int) -> Dict[int, int]:
     """Cache-backed {gpu_index: vram} lookup for a worker (see
     server.worker_allocated_cache)."""
-    allocated = await get_worker_allocated(worker_id)
-    return allocated.vram
+    return await get_worker_vram_allocated(worker_id)
 
 
 def to_gpu_device_public(device: GPUDevice, vram: Dict[int, int]) -> GPUDevicePublic:

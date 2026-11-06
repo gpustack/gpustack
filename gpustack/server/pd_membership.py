@@ -61,15 +61,20 @@ no such route at all — see `_read_registry`.
 
 import asyncio
 import logging
+import json
 import re
 import time
 from urllib.parse import quote, urlsplit
-from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 import aiohttp
 
 from gpustack.schemas.models import Model, ModelInstance, RoleNameEnum
-from gpustack.schemas.pd_modes import PDMembershipAPI, PDMode
+from gpustack.schemas.pd_modes import (
+    PDMembershipAPI,
+    PDMode,
+    PDRouterMembershipUpdateEnum,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +114,7 @@ class MembershipOutcome:
         reason: Optional[str] = None,
         registered: Optional[Sequence[str]] = None,
         unreadable: bool = False,
+        peer_snapshot: Optional[List[Dict[str, Any]]] = None,
     ):
         self.ok = ok
         self.reason = reason
@@ -121,25 +127,17 @@ class MembershipOutcome:
         # thing: the process itself is not answering, and restarting is the
         # only move left.
         self.unreadable = unreadable
+        self.peer_snapshot = peer_snapshot
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"MembershipOutcome(ok={self.ok}, reason={self.reason!r})"
 
 
-def member_url(instance: ModelInstance) -> Optional[str]:
-    """The address the router knows a member by.
-
-    `host:port` of the serving listener, which is what upstream stores and
-    what `DELETE /workers/{url}` matches on — measured: the `worker` label on
-    the router's own request counters carries the whole URL it was launched
-    with, not a worker name or id.
-    """
-    if not instance.worker_ip or not instance.port:
-        return None
-    return f"http://{instance.worker_ip}:{instance.port}"
-
-
-def desired_members(model: Model, instances: Sequence[ModelInstance]) -> Dict[str, str]:
+def desired_members(
+    model: Model,
+    instances: Sequence[ModelInstance],
+    worker_ip_by_id: Optional[Mapping[int, str]] = None,
+) -> Dict[str, str]:
     """`{url: role}` for every member that should be in the router's registry.
 
     Only RUNNING GPU roles. The router is excluded because it is not its own
@@ -154,24 +152,18 @@ def desired_members(model: Model, instances: Sequence[ModelInstance]) -> Dict[st
     address is exactly that distinction, and it is measured at 18ms with
     requests in flight — so changing the ratio does not interrupt them.
     """
-    from gpustack.schemas.models import ModelInstanceStateEnum
+    from gpustack.utils.pd_router_membership import instance_router_peers
 
-    members: Dict[str, str] = {}
-    for instance in instances:
-        if instance.role == RoleNameEnum.ROUTER.value or not instance.role:
-            continue
-        if instance.state != ModelInstanceStateEnum.RUNNING:
-            continue
-        if getattr(instance, "draining_since", None) is not None:
-            continue
-        url = member_url(instance)
-        if url:
-            members[url] = instance.role
-    return members
+    return {
+        f"http://{ip}:{port}": instance.role
+        for instance in instances
+        for ip, port, _ in instance_router_peers(instance, worker_ip_by_id)
+    }
 
 
 def desired_member_ports(
     instances: Sequence[ModelInstance],
+    worker_ip_by_id: Optional[Mapping[int, str]] = None,
 ) -> Dict[str, Dict[str, int]]:
     """`{url: {band name: base port}}` for the members that declare any.
 
@@ -183,20 +175,48 @@ def desired_member_ports(
     request and decode has nowhere to rendezvous. The band is the same one the
     peer flag renders from, so the two paths cannot drift apart.
     """
-    ports: Dict[str, Dict[str, int]] = {}
-    for instance in instances:
-        url = member_url(instance)
-        if not url:
-            continue
-        bands = getattr(instance, "named_ports", None) or {}
-        named = {
-            name: int(band.base)
-            for name, band in bands.items()
-            if getattr(band, "base", None) is not None
-        }
-        if named:
-            ports[url] = named
-    return ports
+    from gpustack.utils.pd_router_membership import instance_router_peers
+
+    return {
+        f"http://{ip}:{port}": named
+        for instance in instances
+        for ip, port, named in instance_router_peers(instance, worker_ip_by_id)
+        if named
+    }
+
+
+def desired_member_snapshot(
+    instances: Sequence[ModelInstance],
+    worker_ip_by_id: Optional[Mapping[int, str]] = None,
+) -> List[Dict[str, Any]]:
+    """Snapshot managed peer epochs using the same endpoints as registration."""
+    from gpustack.utils.pd_router_membership import router_peer_snapshot
+
+    return sorted(
+        [
+            peer
+            for instance in instances
+            if getattr(
+                getattr(instance, "distributed_servers", None), "workloads", None
+            )
+            is not None
+            for peer in router_peer_snapshot(
+                [instance], getattr(instance, "group_id", None), worker_ip_by_id
+            )
+        ],
+        key=lambda peer: (peer["role"], peer["ip"], peer["port"]),
+    )
+
+
+def _peer_epochs(snapshot: Sequence[Dict[str, Any]]) -> Dict[str, Tuple]:
+    return {
+        f"http://{peer['ip']}:{peer['port']}": (
+            peer.get("id"),
+            peer.get("restart_count", 0),
+            peer.get("last_restart_time"),
+        )
+        for peer in snapshot
+    }
 
 
 class RegistryEntry(NamedTuple):
@@ -547,6 +567,8 @@ async def reconcile(  # noqa: C901
     client: Optional[aiohttp.ClientSession] = None,
     proxy: Optional[str] = None,
     proxy_token: Optional[str] = None,
+    peer_snapshot: Optional[List[Dict[str, Any]]] = None,
+    worker_ip_by_id: Optional[Mapping[int, str]] = None,
 ) -> MembershipOutcome:
     """Make the router's registry match the group's members, and say whether it does.
 
@@ -568,8 +590,8 @@ async def reconcile(  # noqa: C901
     returns None for every other proxy mode, so the direct path is unchanged.
 
     `proxy_token` is not optional in practice once `proxy` is set: the
-    server's forward proxy authenticates every request that is not
-    `GET /metrics`, so an unauthenticated hop answers 401 and the read looks
+    server's forward proxy authenticates every request, so an
+    unauthenticated hop answers 401 and the read looks
     like an unreadable registry — which then trips the router restart, and no
     restart can supply a missing credential. It rides `Proxy-Authorization`
     rather than `Authorization`: the token authorises the HOP, and the router
@@ -587,9 +609,14 @@ async def reconcile(  # noqa: C901
         )
 
     api = mode.router.membership_api
-    wanted = desired_members(model, instances)
-    ports = desired_member_ports(instances)
-    if not wanted:
+    wanted = desired_members(model, instances, worker_ip_by_id)
+    ports = desired_member_ports(instances, worker_ip_by_id)
+    managed = mode.name.startswith("vllm-") and any(
+        getattr(getattr(instance, "distributed_servers", None), "workloads", None)
+        is not None
+        for instance in instances
+    )
+    if not wanted and not managed:
         return MembershipOutcome(
             ok=False, reason="no member is running yet, so none can be registered"
         )
@@ -623,6 +650,11 @@ async def reconcile(  # noqa: C901
                 client, api, base, proxy=proxy, headers=proxy_headers
             )
             if read.absent:
+                if managed:
+                    return MembershipOutcome(
+                        ok=False,
+                        reason="managed PD requires router membership read-back",
+                    )
                 # This build serves no membership API, so its peers are the
                 # ones it was launched with and there is nothing to reconcile.
                 # Same answer as an undeclared API, for the same reason: the
@@ -638,6 +670,46 @@ async def reconcile(  # noqa: C901
                         "it can serve is unknown"
                     ),
                 )
+
+            snapshot = (
+                desired_member_snapshot(instances, worker_ip_by_id) if managed else None
+            )
+            if managed:
+                expected_epochs = _peer_epochs(snapshot)
+                previous_epochs = _peer_epochs(peer_snapshot or [])
+                refresh = {
+                    url
+                    for url, epoch in expected_epochs.items()
+                    if url in current and previous_epochs.get(url) != epoch
+                }
+                if refresh:
+                    await _remove_stale(
+                        client,
+                        api,
+                        base,
+                        {
+                            url: role
+                            for url, role in wanted.items()
+                            if url not in refresh
+                        },
+                        current,
+                        proxy=proxy,
+                        headers=proxy_headers,
+                    )
+                    current = (
+                        await _read_registry(
+                            client, api, base, proxy=proxy, headers=proxy_headers
+                        )
+                    ).entries
+                    if current is None or refresh.intersection(current):
+                        return MembershipOutcome(
+                            ok=False,
+                            unreadable=current is None,
+                            reason=(
+                                "the router has not released obsolete "
+                                "managed PD peer epochs"
+                            ),
+                        )
 
             await _add_missing(
                 client,
@@ -695,6 +767,16 @@ async def reconcile(  # noqa: C901
                     registered=sorted(set(wanted) & set(final)),
                 )
             extra = sorted(set(final) - set(wanted))
+            if managed and (not wanted or extra):
+                return MembershipOutcome(
+                    ok=False,
+                    reason=(
+                        "no managed PD member is ready"
+                        if not wanted
+                        else f"stale managed PD members remain: {', '.join(extra)}"
+                    ),
+                    registered=sorted(final),
+                )
             if extra:
                 # Servable, so `ok` stays True — every wanted member is in.
                 # But the reason carries what did not leave, because a
@@ -708,7 +790,9 @@ async def reconcile(  # noqa: C901
                     ),
                     registered=sorted(final),
                 )
-            return MembershipOutcome(ok=True, registered=sorted(final))
+            return MembershipOutcome(
+                ok=True, registered=sorted(final), peer_snapshot=snapshot
+            )
 
         return await asyncio.wait_for(_run(), timeout=_RECONCILE_DEADLINE_SECONDS)
     except asyncio.TimeoutError:
@@ -799,37 +883,46 @@ _settled: Dict[int, Tuple[str, float]] = {}
 # How long a confirmation is allowed to stand before the registry is read
 # again even though nothing about the group has changed.
 #
-# The skip below is keyed on what the SERVER knows -- the member set and where
-# the routers are. A router that restarts and comes back with an empty
-# registry changes none of that, and nothing else in the product would notice:
-# the row keeps its id and its port, the members keep running, and the group
-# would sit behind a router serving 503s with every pass agreeing there was
-# nothing to do. Re-reading on a timer is what bounds that window, and it is
-# the whole reason `reconcile` was built to cost one read when nothing changed.
-#
-# A minute, because that is the scale of the damage. The window is an outage
-# for the whole group -- one router, the gateway's only upstream -- so it has
-# to be short enough to be a blip rather than an incident, and long enough
-# that the steady state is one request per group per minute instead of one per
-# instance event.
+# A process can lose its registry without a model-instance event. Periodic
+# reads bound that outage while keeping settled groups to one check per minute.
 RESETTLE_AFTER_SECONDS = 60.0
+_RETRY_AFTER_SECONDS = 5.0
+_MAX_RETRY_AFTER_SECONDS = 60.0
 
 
 def membership_fingerprint(
     mode_name: Optional[str],
     members: Dict[str, str],
     routers: Sequence[ModelInstance],
+    *,
+    instances: Optional[Sequence[ModelInstance]] = None,
+    worker_ip_by_id: Optional[Mapping[int, str]] = None,
 ) -> str:
     """What the server knows about who should be registered, and with whom.
 
     Both halves matter. The members decide what `reconcile` would send; the
     routers decide who it would be sent to, so a router that moves to another
     worker or comes back on another port has to read as a change even when the
-    member set is identical. The mode is in it because it chooses the API.
+    member set is identical. Restart metadata distinguishes new processes at
+    the same address. The mode is in it because it chooses the API.
     """
     member_part = ";".join(f"{url}={role}" for url, role in sorted(members.items()))
-    router_part = ";".join(sorted(f"{r.id}@{r.worker_id}:{r.port}" for r in routers))
-    return f"{mode_name or ''}|{member_part}|{router_part}"
+    router_part = ";".join(
+        sorted(
+            f"{r.id}@{r.worker_id}:{r.port}:"
+            f"{getattr(r, 'restart_count', 0) or 0}:"
+            f"{getattr(r, 'last_restart_time', None)}"
+            for r in routers
+        )
+    )
+    fingerprint = f"{mode_name or ''}|{member_part}|{router_part}"
+    if (mode_name or "").startswith("vllm-") and instances is not None:
+        snapshot = desired_member_snapshot(instances, worker_ip_by_id)
+        if snapshot:
+            fingerprint += "|" + json.dumps(
+                snapshot, sort_keys=True, separators=(",", ":")
+            )
+    return fingerprint
 
 
 def settled(model_id: int, fingerprint: str, now: Optional[float] = None) -> bool:
@@ -858,6 +951,29 @@ def note_settled(model_id: int, fingerprint: str, now: Optional[float] = None) -
     _settled[model_id] = (fingerprint, at)
 
 
+def reconcile_after(model: Model) -> Optional[float]:
+    """Return the next dynamic membership check delay for an active deployment."""
+    from gpustack.server.pd_router_membership import membership_policy
+
+    if (
+        model.deleted_at is not None
+        or model.replicas == 0
+        or model.disaggregation is None
+        or membership_policy(model) != PDRouterMembershipUpdateEnum.DYNAMIC
+    ):
+        return None
+    outcome = outcome_for(model.id)
+    if outcome is None or not outcome.ok:
+        return min(
+            _RETRY_AFTER_SECONDS * max(1, consecutive_failures(model.id)),
+            _MAX_RETRY_AFTER_SECONDS,
+        )
+    remembered = _settled.get(model.id)
+    if remembered is None:
+        return RESETTLE_AFTER_SECONDS
+    return max(0.0, RESETTLE_AFTER_SECONDS - (time.monotonic() - remembered[1]))
+
+
 def record(model_id: int, outcome: MembershipOutcome) -> None:
     # Tracked apart from `_failures`: that counter drives the wording of a
     # persistent failure, this one drives an action.
@@ -876,9 +992,11 @@ def record(model_id: int, outcome: MembershipOutcome) -> None:
     if outcome.ok:
         _failures.pop(model_id, None)
     else:
+        _settled.pop(model_id, None)
         count = _failures.get(model_id, 0) + 1
         _failures[model_id] = count
         if count >= PERSISTENT_FAILURE_PASSES and outcome.reason:
+            # Stable diagnostics keep status events from bypassing the retry timer.
             outcome = MembershipOutcome(
                 ok=False,
                 # Carried, not defaulted. Escalating the wording does not
@@ -888,7 +1006,8 @@ def record(model_id: int, outcome: MembershipOutcome) -> None:
                 # the reader has no way to notice it.
                 unreadable=outcome.unreadable,
                 reason=(
-                    f"{outcome.reason} (unchanged for {count} passes, so the "
+                    f"{outcome.reason} (failed for at least "
+                    f"{PERSISTENT_FAILURE_PASSES} passes, so the "
                     "member management API is failing consistently rather "
                     "than transiently. Read the router's own member list — "
                     "`GET /workers` on the router's address — and the "

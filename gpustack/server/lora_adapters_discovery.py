@@ -1,4 +1,4 @@
-"""Discover LoRA adapters by base model id (HF Hub API / ModelScope lineage / local cache)."""
+"""List local LoRA adapters and discover remote adapters by base model id."""
 
 import asyncio
 import logging
@@ -6,10 +6,10 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 import httpx
-from sqlalchemy import func, or_
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from gpustack.api.tenant import TenantContext, tenant_list_conditions
 from gpustack.schemas.model_files import ModelFile
 from gpustack.schemas.models import SourceEnum
 from gpustack.routes.proxy import hf_hub_api_headers, replace_hf_endpoint
@@ -32,10 +32,6 @@ _LOCAL_LORA_NAME_FIELD: Dict[str, str] = {
     SourceEnum.MODEL_SCOPE.value: "model_scope_model_id",
     SourceEnum.LOCAL_PATH.value: "local_path",
 }
-
-
-def _normalize_base(base: str) -> str:
-    return (base or "").strip().lower()
 
 
 def _looks_like_hf_or_ms_repo_id(base: str) -> bool:
@@ -75,18 +71,11 @@ def _merge_adapters(
 
 
 async def list_local_loras(
-    session: AsyncSession, base: str, *, q: Optional[str] = None
+    session: AsyncSession, ctx: TenantContext, *, q: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    nb = _normalize_base(base)
-    if not nb:
-        return []
     stmt = select(ModelFile).where(
         ModelFile.is_lora.is_(True),  # noqa: E712
-        or_(
-            func.lower(ModelFile.base_model) == nb,
-            ModelFile.base_model.is_(None),
-            ModelFile.base_model == "",
-        ),
+        *tenant_list_conditions(ctx, ModelFile),
     )
     files = (await session.exec(stmt)).all()
     out: List[Dict[str, Any]] = []
@@ -346,11 +335,12 @@ async def list_adapters_for_base(
     session: AsyncSession,
     base_model_id: str,
     *,
+    ctx: TenantContext,
     q: Optional[str] = None,
     limit: int = 40,
 ) -> Dict[str, Any]:
     """
-    Discover LoRA adapters for a base model (repo id like ``Qwen/Qwen3-8B``).
+    List visible local LoRAs and remote recommendations for a base model.
 
     Without ``q``: local ModelFile LoRAs only (remote skipped, returns immediately).
     With ``q``: local merged with Hugging Face + ModelScope.
@@ -359,10 +349,10 @@ async def list_adapters_for_base(
 
     # No search keyword: local only, never touch remote.
     if not (q and q.strip()):
-        loc = await list_local_loras(session, base_model_id)
+        loc = await list_local_loras(session, ctx)
         return {"lora_list": loc}
 
-    loc = await list_local_loras(session, base_model_id, q=q)
+    loc = await list_local_loras(session, ctx, q=q)
 
     hf, ms = [], []
     if _looks_like_hf_or_ms_repo_id(base_model_id):

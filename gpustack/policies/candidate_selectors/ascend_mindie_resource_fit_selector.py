@@ -19,6 +19,8 @@ from gpustack.policies.utils import (
     estimate_lora_weights_bytes,
     ListMessageBuilder,
     get_local_model_weight_size,
+    get_ram_claim_from_model_env,
+    get_vram_claim_from_model_env,
 )
 from gpustack.scheduler.model_registry import is_multimodal_model
 from gpustack.schemas.models import (
@@ -74,9 +76,8 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         # Parse model params.
         model = self._model
         max_seq_len = self._model_params.derived_max_seq_len
-        if max_seq_len > 8192:
-            max_seq_len = 8192
-        self._serving_params.max_seq_len = max_seq_len
+        if max_seq_len is not None:
+            self._serving_params.max_seq_len = min(max_seq_len, 8192)
         try:
             self._serving_params.from_args_and_envs(
                 model.backend_parameters or [], model.env or {}
@@ -185,27 +186,24 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             VRAM = FOOTPRINT + WEIGHT + KV_CACHE + COMPUTATION
         """
 
-        # A potential workaround if the empirical resource estimation is biased greatly.
-        if self._model.env:
-            reqeust_ram = safe_int(self._model.env.get("GPUSTACK_MODEL_RAM_CLAIM", 0))
-            request_vram = safe_int(self._model.env.get("GPUSTACK_MODEL_VRAM_CLAIM", 0))
-            if request_vram > 0:
-                return RequestEstimateUsage(reqeust_ram, request_vram)
+        # RAM and VRAM declarations independently replace their estimates.
+        ram_footprint = 512 * 1024**2
+        ram_kv_cache_swappable = self._serving_params.cpu_mem_size * 1024**3
+        declared_ram = get_ram_claim_from_model_env(self._model)
+        ram = (
+            declared_ram
+            if declared_ram is not None
+            else ram_footprint + ram_kv_cache_swappable
+        )
+        request_vram = get_vram_claim_from_model_env(self._model)
+        if request_vram is not None and request_vram > 0:
+            return RequestEstimateUsage(ram, request_vram)
 
+        self._validate_resource_metadata()
         is_multimodal = (
             is_multimodal_model(self._model_params.architectures)
             and compare_versions(self._model.backend_version or "0.0.0", "2.2.rc1") >= 0
         )
-
-        """
-        RAM
-        """
-
-        # Hardcode the RAM footprint for now.
-        ram_footprint = 512 * 1024**2
-
-        # Get KV cache swappable size.
-        ram_kv_cache_swappable = self._serving_params.cpu_mem_size * 1024**3
 
         """
         VRAM
@@ -293,6 +291,21 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     self._model_params.qk_nope_head_dim
                     + self._model_params.qk_nope_head_dim
                 )
+            elif (
+                attention_type == ModelAttentionTypeEnum.UNK
+                and self._model_params.num_attention_heads_per_layer
+            ):
+                # Independent per-layer maxima can fail the GQA divisibility check.
+                # KV head and dimension maxima still bound the standard KV cache.
+                n_heads = 2 * self._model_params.num_key_value_heads
+            elif attention_type == ModelAttentionTypeEnum.UNK:
+                # Use full multi-head attention as a conservative KV cache estimate.
+                n_heads = 2 * self._model_params.num_attention_heads
+                logger.warning(
+                    "Unknown KV head layout; estimating MindIE cache memory using "
+                    "all %s attention heads",
+                    self._model_params.num_attention_heads,
+                )
 
             vram_kv_cache = n_heads * d_head * n_layers * n_tokens * ct_size
 
@@ -338,7 +351,6 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 * (n_layers * d_head * 4)
             )
 
-        ram = ram_footprint + ram_kv_cache_swappable
         vram = vram_footprint + vram_weight + vram_kv_cache + vram_computation
 
         logger.info(
@@ -349,9 +361,31 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
         return RequestEstimateUsage(ram, vram)
 
+    def _validate_resource_metadata(self) -> None:
+        """Require the dimensions used by MindIE's KV and activation estimates."""
+        required = ["num_hidden_layers", "num_attention_heads", "head_dim"]
+        if self._model_params.get_attention_type() == ModelAttentionTypeEnum.MLA:
+            required.append("qk_nope_head_dim")
+        missing = [
+            key
+            for key in required
+            if not isinstance(getattr(self._model_params, key), int)
+            or getattr(self._model_params, key) <= 0
+        ]
+        if missing:
+            raise ValueError(
+                "Cannot estimate MindIE memory: model configuration is missing valid "
+                + ", ".join(missing)
+                + ". Provide complete configuration metadata or explicit resource claims."
+            )
+
     async def _validate_parallelized(self) -> bool:  # noqa: C901
         # Validate whether model can be parallelized.
-        if num_attention_heads := self._model_params.num_attention_heads:
+        for num_attention_heads in self._model_params.num_attention_heads_per_layer or [
+            self._model_params.num_attention_heads
+        ]:
+            if not num_attention_heads:
+                continue
             if self._serving_params.pipeline_parallel_size > 1:
                 if num_attention_heads % self._serving_params.tensor_parallel_size != 0:
                     self._diagnostic_messages.append(

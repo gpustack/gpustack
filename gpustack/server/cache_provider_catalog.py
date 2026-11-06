@@ -2,17 +2,19 @@
 
 The catalog is materialized into ``CacheProviderEntry`` by the leader, from the
 source rows an admin configures — the same shape the model catalog and the
-community backends already have. Readers query that table, so every server
-serves what was last written without any process state to keep in step.
+community backends already have. Readers share a snapshot of that table,
+invalidated across servers after the leader commits a catalog rewrite.
 
 What stays here is the packaged side of it: reading the bundled asset and the
 ones installed plugins contribute, which is what the leader seeds the baseline
 row from and what an admin downloads to edit against.
 """
 
+import asyncio
 import logging
 from importlib.resources import files
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -28,10 +30,16 @@ from gpustack.schemas.cache_providers import (
     resolved_field_values,
     with_runner_versions,
 )
+from gpustack.server.cache import delete_cache_by_key, locked_cached
+from gpustack.server.db import async_session
 
 logger = logging.getLogger(__name__)
 
 BUNDLED_CATALOG_ASSET = ("gpustack.assets", "cache-providers.yaml")
+CATALOG_CACHE_KEY = "CacheProviderEntry.catalog"
+_catalog_lock = asyncio.Lock()
+_catalog_revision: Optional[str] = None
+_catalog: List[CacheProvider] = []
 
 
 def _catalog_assets() -> List[Tuple[str, str]]:
@@ -118,13 +126,51 @@ def providers_from_documents(
     return with_runner_versions(providers, runners)
 
 
-async def get_cache_providers(session: AsyncSession) -> List[CacheProvider]:
-    """The catalog as it serves, in card order."""
+@locked_cached(key=CATALOG_CACHE_KEY)
+async def _get_catalog_revision() -> str:
+    """Apply the shared cache's TTL and distributed invalidation to the snapshot."""
+    return uuid4().hex
+
+
+async def invalidate_cache_provider_catalog() -> None:
+    """Invalidate the catalog on all servers after materialization commits."""
+    await delete_cache_by_key(_key=CATALOG_CACHE_KEY)
+
+
+async def _load_catalog(session: AsyncSession) -> List[CacheProvider]:
     entries = await CacheProviderEntry.all(session)
     return [
         CacheProvider(**entry.payload)
         for entry in sorted(entries, key=lambda entry: entry.position)
     ]
+
+
+async def _get_catalog(session: AsyncSession) -> List[CacheProvider]:
+    global _catalog, _catalog_revision
+    if session.in_transaction():
+        # A caller holding a connection must not wait for a loader that needs
+        # another pool slot. Read its transaction's view even when the shared
+        # cache is warm, and keep that view out of the shared snapshot.
+        return await _load_catalog(session)
+    revision = await _get_catalog_revision()
+    if revision == _catalog_revision:
+        return _catalog
+    async with _catalog_lock:
+        revision = await _get_catalog_revision()
+        if revision != _catalog_revision:
+            # A fresh session keeps callers' transaction snapshots and pending
+            # writes out of the shared catalog.
+            async with async_session() as fresh_session:
+                providers = await _load_catalog(fresh_session)
+            # Keep the revision captured before the query: an invalidation while
+            # it is in flight must force the next reader to reload.
+            _catalog, _catalog_revision = providers, revision
+        return _catalog
+
+
+async def get_cache_providers(session: AsyncSession) -> List[CacheProvider]:
+    """The catalog in card order, with independent objects per caller."""
+    return [provider.model_copy(deep=True) for provider in await _get_catalog(session)]
 
 
 async def get_cache_provider(
@@ -133,9 +179,9 @@ async def get_cache_provider(
     """One provider by name, case-insensitively — the name a cache service
     stores is whatever case the document declared it in."""
     wanted = (name or "").lower()
-    for entry in await CacheProviderEntry.all(session):
-        if entry.name.lower() == wanted:
-            return CacheProvider(**entry.payload)
+    for provider in await _get_catalog(session):
+        if provider.name.lower() == wanted:
+            return provider.model_copy(deep=True)
     return None
 
 

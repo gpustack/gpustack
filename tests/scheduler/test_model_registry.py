@@ -60,6 +60,33 @@ def test_vllm_031_model_categories(architecture, category, multimodal):
 
 
 @pytest.mark.parametrize(
+    "architecture,category,multimodal",
+    [
+        ("AliceAIForCausalLM", CategoryEnum.LLM, False),
+        ("BeamForCausalLM", CategoryEnum.LLM, False),
+        ("DomynEdgeForCausalLM", CategoryEnum.LLM, False),
+        ("DoryForCausalLM", CategoryEnum.LLM, False),
+        ("FlintForCausalLM", CategoryEnum.LLM, False),
+        ("Step5ForCausalLM", CategoryEnum.LLM, False),
+        ("Lfm2BidirectionalModel", CategoryEnum.EMBEDDING, False),
+        ("ColUltraVBertForRetrieval", CategoryEnum.EMBEDDING, False),
+        ("ModernVBertModel", CategoryEnum.EMBEDDING, False),
+        ("ClefFlashForJointSchema", CategoryEnum.RERANKER, False),
+        ("D3ForSequenceClassification", CategoryEnum.RERANKER, False),
+        ("Alpamayo2Super", CategoryEnum.LLM, True),
+        ("MiniCPMOcrForConditionalGeneration", CategoryEnum.LLM, True),
+        ("MuseSparkForConditionalGeneration", CategoryEnum.LLM, True),
+        ("RadioMBartPrefixForCausalLM", CategoryEnum.LLM, True),
+        ("Step5ForConditionalGeneration", CategoryEnum.LLM, True),
+        ("Kolibri1ForCausalLM", CategoryEnum.LLM, False),
+    ],
+)
+def test_vllm_033_model_categories(architecture, category, multimodal):
+    assert detect_model_type([architecture]) == category
+    assert is_multimodal_model([architecture]) is multimodal
+
+
+@pytest.mark.parametrize(
     "architecture,multimodal",
     [
         ("DeepseekV41ForCausalLM", True),
@@ -87,6 +114,14 @@ def test_catalog_model_classification(architecture, multimodal):
     [
         "BailingMoeV3MTPModel",
         "DFlash2DraftModel",
+        "DFlash2BeamDraftModel",
+        "DFlashQwen3XPressModel",
+        "MuseSparkDSparkModel",
+        "ParseAuxMTPModel",
+        "Qwen3XPressModel",
+        "Step5MTP",
+        "TransformersForMTP",
+        "TransformersMoEForMTP",
         "DFlashMuseGlimmerAssistantModel",
         "DSparkV41DraftModel",
         "Dots3NoteMTPModel",

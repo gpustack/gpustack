@@ -237,3 +237,79 @@ def test_distributed_deployment_limit_uses_model_bindings(worker_id):
 
     assert not selector._validate_distributed_limit_per_worker(worker)
     assert "distributed-model" in selector.get_messages()[0]
+
+
+@pytest.mark.parametrize("worker_id", [1, 2])
+@pytest.mark.parametrize("backend, allowed", [("vllm", True), ("sglang", False)])
+def test_managed_vllm_bindings_use_resource_and_port_admission(
+    worker_id, backend, allowed
+):
+    from gpustack.schemas.models import BackendEnum
+
+    model = _model()
+    model.backend = BackendEnum.VLLM if backend == "vllm" else BackendEnum.SGLANG
+    existing = _instance(1)
+    existing.name = "managed-model"
+    existing.model = model
+    existing.distributed_servers = SimpleNamespace(
+        subordinate_workers=[SimpleNamespace(worker_id=2)], workloads=[]
+    )
+    instances = [existing]
+    selector = VLLMResourceFitSelector(
+        SimpleNamespace(), model, instances, resource_view=ResourceView(instances)
+    )
+    worker = _worker()
+    worker.id = worker_id
+
+    assert selector._validate_distributed_limit_per_worker(worker) is allowed
+    assert ResourceView(instances).allocated(1).vram == {0: 20}
+
+
+@pytest.mark.parametrize("task_state", ["unknown", "stopped"])
+def test_managed_worker_loss_keeps_main_and_headless_claims(task_state):
+    instance = _instance(1)
+    instance.state = "unreachable"
+    instance.distributed_servers = SimpleNamespace(
+        workloads=[SimpleNamespace(worker_id=2, state=task_state)],
+        subordinate_workers=[
+            SimpleNamespace(
+                worker_id=2, computed_resource_claim=ComputedResourceClaim(vram={1: 30})
+            )
+        ],
+    )
+    view = ResourceView([instance])
+    assert view.allocated(1) == Allocated(ram=10, vram={0: 20})
+    assert view.allocated(2) == Allocated(ram=0, vram={1: 30})
+
+
+@pytest.mark.parametrize("gpu_type", [None, "cuda", "rocm"])
+@pytest.mark.parametrize(
+    "roles,expected_ram,expected_vram",
+    [("main", 30, 20), ("subordinate", 40, 10), ("both", 70, 30)],
+)
+def test_gpu_type_filter_preserves_host_ram(
+    gpu_type, roles, expected_ram, expected_vram
+):
+    main = _instance(1, ram=30, vram=20)
+    subordinate = _instance(2, ram=80, vram=90)
+    subordinate.worker_id = 2
+    subordinate.distributed_servers = SimpleNamespace(
+        subordinate_workers=[
+            SimpleNamespace(
+                worker_id=1,
+                gpu_type="cuda",
+                computed_resource_claim=ComputedResourceClaim(ram=40, vram={0: 10}),
+            )
+        ]
+    )
+    instances = {
+        "main": [main],
+        "subordinate": [subordinate],
+        "both": [main, subordinate],
+    }
+    view = ResourceView(instances[roles])
+
+    allocated = view.allocated(1, gpu_type)
+    assert allocated.ram == expected_ram
+    assert allocated.vram == ({0: expected_vram} if gpu_type != "rocm" else {})
+    assert view.allocatable(_worker(), gpu_type).ram == 90 - expected_ram

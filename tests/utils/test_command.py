@@ -7,6 +7,7 @@ from gpustack.utils.command import (
     drop_empty_flag_values,
     extract_flag_arguments,
     find_parameter,
+    find_int_parameter,
     find_bool_parameter,
     find_last_int_parameter,
     find_last_parameter,
@@ -16,7 +17,9 @@ from gpustack.utils.command import (
     format_backend_parameters,
     is_parameter_key,
     merge_flag_arguments,
+    parse_bool_flag_value,
     resolve_executor_backend,
+    rewrite_value_bool_flags,
     safe_split,
     sanitize_args,
 )
@@ -426,6 +429,30 @@ def test_find_bool_parameter_argv_stream():
 
 
 @pytest.mark.parametrize(
+    'reader, names, expected',
+    [
+        (find_parameter, ['tp'], '2'),
+        (find_last_parameter, ['tp'], '4'),
+        (find_int_parameter, ['tp'], 2),
+        (find_last_int_parameter, ['tp'], 4),
+        (find_bool_parameter, ['data-parallel-hybrid-lb'], False),
+        (
+            find_parameter,
+            ['chat-template'],
+            "You're helpful. --data-parallel-hybrid-lb --tp=8",
+        ),
+    ],
+)
+def test_parameter_readers_preserve_tokenized_argument_values(reader, names, expected):
+    argv = [
+        "--chat-template=You're helpful. --data-parallel-hybrid-lb --tp=8",
+        '--tp=2',
+        '--tp=4',
+    ]
+    assert reader(argv, names, tokenized=True) == expected
+
+
+@pytest.mark.parametrize(
     "arguments, expected",
     [
         # Flag with empty value pair is dropped entirely.
@@ -649,3 +676,165 @@ def test_find_last_int_parameter_takes_the_last_value_and_fails_quiet():
     )
     # A value the engine would reject is not a value to draw conclusions from.
     assert find_last_int_parameter(['--tp', 'eight'], ['tp']) is None
+
+
+FLASH_FLAGS = {
+    '--flash-attention': '--no-flash-attention',
+    '--flash-attn': '--no-flash-attn',
+    '--diffusion-fa': '--no-diffusion-fa',
+    '-fa': '--no-flash-attn',
+}
+
+
+@pytest.mark.parametrize(
+    'argv,expected,expected_unrecognized',
+    [
+        # A value in a separate token.
+        (
+            ['--flash-attn', 'on'],
+            ['--flash-attn'],
+            [],
+        ),
+        # A value attached to the flag.
+        (
+            ['--flash-attn=on'],
+            ['--flash-attn'],
+            [],
+        ),
+        # A value that turns the flag off.
+        (
+            ['--flash-attn', 'off'],
+            ['--no-flash-attn'],
+            [],
+        ),
+        (
+            ['--flash-attn=off'],
+            ['--no-flash-attn'],
+            [],
+        ),
+        # "auto" leaves the decision to the backend, so the estimate assumes the
+        # feature is off.
+        (
+            ['--flash-attn', 'auto'],
+            ['--no-flash-attn'],
+            [],
+        ),
+        # The values are matched case-insensitively.
+        (
+            ['--flash-attn', 'OFF'],
+            ['--no-flash-attn'],
+            [],
+        ),
+        # A bare flag carries no value.
+        (
+            ['--flash-attn'],
+            ['--flash-attn'],
+            [],
+        ),
+        # A flag that is not followed by a value keeps its own spelling.
+        (
+            ['--flash-attn', '--ctx-size', '24576'],
+            ['--flash-attn', '--ctx-size', '24576'],
+            [],
+        ),
+        # The other flags are left alone.
+        (
+            ['--ctx-size', '24576', '--parallel', '1'],
+            ['--ctx-size', '24576', '--parallel', '1'],
+            [],
+        ),
+        # An unrecognized value drops the flag and is reported.
+        (
+            ['--flash-attn', 'maybe', '--ctx-size', '24576'],
+            ['--ctx-size', '24576'],
+            ['maybe'],
+        ),
+        # An unrecognized value attached to the flag drops it as well.
+        (
+            ['--flash-attn=maybe'],
+            [],
+            ['maybe'],
+        ),
+        # "enable" and "disable" are not the words llama.cpp accepts.
+        (
+            ['--flash-attn', 'enable'],
+            [],
+            ['enable'],
+        ),
+        (
+            ['--flash-attn=disable'],
+            [],
+            ['disable'],
+        ),
+    ],
+)
+def test_rewrite_value_bool_flags(argv, expected, expected_unrecognized):
+    result, unrecognized = rewrite_value_bool_flags(argv, FLASH_FLAGS)
+    assert result == expected
+    assert unrecognized == expected_unrecognized
+
+
+@pytest.mark.parametrize(
+    'value,expected',
+    [
+        ('on', True),
+        ('enabled', True),
+        ('true', True),
+        ('1', True),
+        ('auto', False),
+        ('-1', False),
+        ('off', False),
+        ('disabled', False),
+        ('false', False),
+        ('0', False),
+        ('maybe', None),
+        ('enable', None),
+        ('disable', None),
+        ('', None),
+    ],
+)
+def test_parse_bool_flag_value(value, expected):
+    assert parse_bool_flag_value(value) == expected
+
+
+@pytest.mark.parametrize(
+    'parameters,expected',
+    [
+        (None, False),
+        ([], False),
+        (['--foo=false', '--foo'], True),
+        (['--foo', '--foo=false'], False),
+        (['--foo=false --bar true'], True),
+        (['--bar=true', '--foo', 'OFF'], False),
+        (['--foo', '--bar=unknown'], True),
+    ],
+)
+def test_find_bool_parameter_can_use_the_last_alias(parameters, expected):
+    assert find_bool_parameter(parameters, ['foo', 'bar'], last_wins=True) == expected
+
+
+@pytest.mark.parametrize('tokenized', [False, True])
+@pytest.mark.parametrize(
+    'parameters,expected',
+    [
+        (['--no-foo'], False),
+        (['--foo', '--no-foo'], False),
+        (['--no-foo', '--bar'], True),
+        (['--bar', '--no-foo', '--foo'], True),
+        (['--no-foo', '--bar=false'], False),
+        (['--foo', '--unrelated'], True),
+    ],
+)
+def test_find_bool_parameter_resolves_explicit_negative_aliases(
+    parameters, expected, tokenized
+):
+    assert (
+        find_bool_parameter(
+            parameters if tokenized else [' '.join(parameters)],
+            ['foo', 'bar'],
+            negative_param_names=['no-foo'],
+            last_wins=True,
+            tokenized=tokenized,
+        )
+        is expected
+    )

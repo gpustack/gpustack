@@ -3,7 +3,7 @@ import sys
 import sysconfig
 from os.path import dirname, abspath, join
 import shutil
-from typing import Any, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
 import shlex
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
@@ -69,7 +69,7 @@ def is_command_available(command_name):
     return shutil.which(command_name) is not None
 
 
-def _iter_param_pairs(parameters):
+def _iter_param_pairs(parameters, *, tokenized=False):
     """
     Yield ``(key_without_dashes, value_or_None)`` over the argv stream produced
     by :func:`flatten_to_argv`.
@@ -77,8 +77,10 @@ def _iter_param_pairs(parameters):
     Bare flags yield ``(key, None)``. Multi-value parameters (``--lora-modules
     v1 v2``) yield ``(key, v1)`` only — present consumers only need to detect
     a key's presence or read its first value; nobody needs the value list.
+
+    Set ``tokenized`` for an existing argv so quoted values are not split again.
     """
-    tokens = flatten_to_argv(parameters)
+    tokens = (parameters or []) if tokenized else flatten_to_argv(parameters)
     i = 0
     n = len(tokens)
     while i < n:
@@ -100,20 +102,26 @@ def _iter_param_pairs(parameters):
             i += 1
 
 
-def find_parameter(parameters: List[str], param_names: List[str]) -> Optional[str]:
+def find_parameter(
+    parameters: List[str], param_names: List[str], *, tokenized: bool = False
+) -> Optional[str]:
     """
     Return the value of the first parameter whose key (without leading dashes)
     is in ``param_names``. ``None`` if not found or the key is flag-only.
+
+    Set ``tokenized`` when ``parameters`` is already an argv token list.
     """
     if parameters is None:
         return None
-    for key, value in _iter_param_pairs(parameters):
+    for key, value in _iter_param_pairs(parameters, tokenized=tokenized):
         if key in param_names and value is not None:
             return value
     return None
 
 
-def find_last_parameter(parameters: List[str], param_names: List[str]) -> Optional[str]:
+def find_last_parameter(
+    parameters: List[str], param_names: List[str], *, tokenized: bool = False
+) -> Optional[str]:
     """
     Return the value of the *last* parameter whose key is in ``param_names`` --
     the one argparse would end up with.
@@ -132,18 +140,20 @@ def find_last_parameter(parameters: List[str], param_names: List[str]) -> Option
     if parameters is None:
         return None
     found = None
-    for key, value in _iter_param_pairs(parameters):
+    for key, value in _iter_param_pairs(parameters, tokenized=tokenized):
         if key in param_names and value is not None:
             found = value
     return found
 
 
-def find_int_parameter(parameters: List[str], param_names: List[str]) -> Optional[int]:
+def find_int_parameter(
+    parameters: List[str], param_names: List[str], *, tokenized: bool = False
+) -> Optional[int]:
     """
     Find specified integer parameter by name from the parameters.
     Return the integer value of the parameter if found, otherwise return None.
     """
-    value = find_parameter(parameters, param_names)
+    value = find_parameter(parameters, param_names, tokenized=tokenized)
     if value is not None:
         try:
             return int(value)
@@ -153,7 +163,7 @@ def find_int_parameter(parameters: List[str], param_names: List[str]) -> Optiona
 
 
 def find_last_int_parameter(
-    parameters: List[str], param_names: List[str]
+    parameters: List[str], param_names: List[str], *, tokenized: bool = False
 ) -> Optional[int]:
     """
     :func:`find_last_parameter` for an integer-valued key. ``None`` when the
@@ -161,7 +171,7 @@ def find_last_int_parameter(
     :func:`find_int_parameter` takes, since a value the engine will reject is
     not a value to draw conclusions from.
     """
-    value = find_last_parameter(parameters, param_names)
+    value = find_last_parameter(parameters, param_names, tokenized=tokenized)
     if value is not None:
         try:
             return int(value)
@@ -170,7 +180,14 @@ def find_last_int_parameter(
     return None
 
 
-def find_bool_parameter(parameters: List[str], param_names: List[str]) -> bool:
+def find_bool_parameter(
+    parameters: List[str],
+    param_names: List[str],
+    *,
+    last_wins: bool = False,
+    tokenized: bool = False,
+    negative_param_names: Optional[List[str]] = None,
+) -> bool:
     """
     Return whether any parameter whose key is in ``param_names`` is "enabled".
 
@@ -182,19 +199,105 @@ def find_bool_parameter(parameters: List[str], param_names: List[str]) -> bool:
       validates the value itself, GPUStack should not silently treat unrecognized
       values as "off")
 
-    Values are matched case-insensitively. The first occurrence wins.
+    Values are matched case-insensitively. The first occurrence wins unless
+    ``last_wins`` is set to follow argparse override semantics.
+    Explicit ``negative_param_names`` disable the flag in the same order;
+    negative spellings are only recognized when the caller declares them.
     """
-    if parameters is None:
-        return False
-    for key, value in _iter_param_pairs(parameters):
-        if key not in param_names:
+    enabled = False
+    for key, value in _iter_param_pairs(parameters, tokenized=tokenized):
+        if key in (negative_param_names or []):
+            enabled = False
+        elif key in param_names:
+            enabled = value is None or value.lower() not in _FALSY_VALUES
+        else:
             continue
-        if value is None:
-            return True
-        if value.lower() in _FALSY_VALUES:
-            return False
+        if not last_wins:
+            return enabled
+    return enabled
+
+
+# The value words llama.cpp accepts for a boolean flag that takes a value,
+# e.g. "--flash-attn on|off|auto".
+_BOOL_FLAG_ON_VALUES = frozenset({"1", "true", "on", "enabled"})
+_BOOL_FLAG_OFF_VALUES = frozenset({"0", "false", "off", "disabled"})
+# "auto" leaves the decision to the backend. The estimate cannot tell whether
+# the device runs the feature, and the backend turns the feature off when the
+# device does not support it, so the estimate assumes the feature is off.
+_BOOL_FLAG_AUTO_VALUES = frozenset({"auto", "-1"})
+
+
+def parse_bool_flag_value(value: str) -> Optional[bool]:
+    """
+    Return the state a value-taking boolean flag stands for.
+
+    "auto" counts as off. The backend decides whether it runs the feature, and
+    it turns the feature off when the device does not support it, so the
+    estimate takes the state that uses more memory.
+
+    Returns None when the value is not one of the words llama.cpp accepts.
+    """
+    normalized = value.lower()
+    if normalized in _BOOL_FLAG_ON_VALUES:
         return True
-    return False
+    if normalized in _BOOL_FLAG_OFF_VALUES or normalized in _BOOL_FLAG_AUTO_VALUES:
+        return False
+    return None
+
+
+def rewrite_value_bool_flags(
+    argv: List[str], flags: Dict[str, str]
+) -> Tuple[List[str], List[str]]:
+    """
+    Rewrite boolean flags that carry a value into their ``--flag`` / ``--no-flag`` form.
+
+    llama.cpp turned some boolean flags into flags that take a value, for
+    example ``--flash-attn on``. A parser that models them as plain booleans
+    cannot read the value, so it is folded into the flag spelling here.
+
+    Args:
+        argv: The argument vector, already flattened.
+        flags: Maps every accepted spelling of a boolean flag to the spelling
+            that turns the flag off, e.g. ``{"--flash-attn": "--no-flash-attn"}``.
+
+    Returns:
+        The rewritten argument vector and the values that could not be
+        interpreted. A flag with an unrecognized value is dropped, so that it
+        neither enables the feature nor aborts the parse of the other flags.
+    """
+    result: List[str] = []
+    unrecognized: List[str] = []
+    index = 0
+    count = len(argv)
+    while index < count:
+        token = argv[index]
+        key, separator, value = token.partition("=")
+        if key not in flags:
+            result.append(token)
+            index += 1
+            continue
+
+        # "--flag value": the value is the next token, unless it is a flag itself.
+        attached = False
+        if not separator:
+            if index + 1 < count and not is_parameter_key(argv[index + 1]):
+                value = argv[index + 1]
+                attached = True
+            else:
+                result.append(token)
+                index += 1
+                continue
+
+        state = parse_bool_flag_value(value)
+        if state is None:
+            unrecognized.append(value)
+        elif state:
+            result.append(key)
+        else:
+            result.append(flags[key])
+        index += 2 if attached else 1
+
+    return result, unrecognized
 
 
 def get_versioned_command(command_name: str, version: str) -> str:
@@ -632,6 +735,8 @@ def resolve_executor_backend(
     backend_parameters: Optional[List[str]],
     backend_version: Optional[str],
     image_name: Optional[str] = None,
+    *,
+    tokenized: bool = False,
 ) -> ExecutorBackend:
     """
     Resolve the dispatch branch for vLLM distributed execution.
@@ -646,7 +751,9 @@ def resolve_executor_backend(
     2. Otherwise the default depends on whether the runtime is user-supplied,
        via :func:`should_default_to_ray`.
     """
-    user_value = find_parameter(backend_parameters, ["distributed-executor-backend"])
+    user_value = find_parameter(
+        backend_parameters, ["distributed-executor-backend"], tokenized=tokenized
+    )
     if user_value is not None:
         return "mp" if user_value == "mp" else "ray"
 

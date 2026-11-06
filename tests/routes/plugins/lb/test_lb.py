@@ -821,3 +821,83 @@ class TestEnrichFromMeta:
 
         route = ModelRoute(id=1, name="r", targets=0, ready_targets=0)
         assert asyncio.run(LBPlugin().enrich_routes([route], session=None)) == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('hybrid', [False, True])
+async def test_rank_candidates_keep_deployment_weight_and_counter_identity(
+    monkeypatch, hybrid
+):
+    from gpustack.gateway.utils import model_instances_registry_list
+    from gpustack.routes.plugins.lb import reconciler
+    from gpustack.schemas.model_routes import (
+        ModelRoute,
+        ModelRouteTarget,
+        TargetStateEnum,
+    )
+    from gpustack.schemas.models import ModelInstance
+    from gpustack.schemas.workers import Worker
+    from tests.routes.test_worker_proxy import rank_instance
+    from unittest.mock import AsyncMock
+
+    managed = rank_instance.__wrapped__()
+    if hybrid:
+        from tests.routes.test_worker_proxy import hybrid_instance
+
+        managed = hybrid_instance.__wrapped__(managed)
+    worker = Worker(id=1, ip='10.0.0.1', port=10150, proxy_mode='worker')
+    legacy = ModelInstance(id=1, model_id=2, worker_ip='10.0.0.1', port=8000)
+    targets = [
+        ModelRouteTarget(
+            id=target_id,
+            name=f't{target_id}',
+            route_name='moe',
+            route_id=1,
+            weight=50,
+            max_running_requests=8,
+            state=TargetStateEnum.ACTIVE,
+        )
+        for target_id in (1, 2)
+    ]
+    monkeypatch.setattr(
+        ModelRouteTarget, 'all_by_field', AsyncMock(return_value=targets)
+    )
+
+    async def destinations(session, target):
+        if target.id == 1:
+            return model_instances_registry_list(
+                [legacy], downstream_model_name='other'
+            )
+        return model_instances_registry_list(
+            [managed],
+            {1: worker, 2: worker.model_copy(update={'id': 2})},
+            downstream_model_name='moe:adapter',
+        )
+
+    monkeypatch.setattr(reconciler, '_destinations_for_target', destinations)
+    route = ModelRoute(id=1, name='moe')
+    candidates, _ = await reconciler.render_route(None, route)
+    assert [candidate['weight'] for candidate in candidates] == [100, 50, 50]
+    ranks = candidates[1:]
+    assert len({candidate['cluster'] for candidate in ranks}) == 2
+    assert all(
+        candidate['targetId'] == '2' and candidate['maxRunningRequests'] == 8
+        for candidate in ranks
+    )
+    assert all(candidate['modelName'] == 'moe:adapter' for candidate in ranks)
+    old_keys = {(candidate['cluster'], candidate['targetId']) for candidate in ranks}
+    targets[1].id = 3
+    candidates, _ = await reconciler.render_route(None, route)
+    alias_keys = {
+        (candidate['cluster'], candidate['targetId']) for candidate in candidates[1:]
+    }
+    assert old_keys.isdisjoint(alias_keys)
+    assert {key[0] for key in old_keys} == {key[0] for key in alias_keys}
+    managed.restart_count += 1
+    candidates, _ = await reconciler.render_route(None, route)
+    new_keys = {
+        (candidate['cluster'], candidate['targetId']) for candidate in candidates[1:]
+    }
+    assert alias_keys == new_keys
+    identity = '-w' if hybrid else '-dp'
+    assert all(identity in candidate['cluster'] for candidate in candidates[1:])

@@ -1557,8 +1557,8 @@ model_sets:
         - --reasoning-parser=deepseek_v4
         - --tool-call-parser=deepseek_v4
         - --enable-auto-tool-choice
-- name: DeepSeek-V4.1-Flash
-  description: DeepSeek-V4.1-Flash is a vision-language MoE model with a 552B-parameter backbone and 196B of Engram memory, activating 8B parameters per prompt token and 16B per output token. It supports a 1M-token context window and tool calling.
+- name: DeepSeek-V4.1-Flash-1017
+  description: DeepSeek-V4.1-Flash-1017 is a vision-language MoE model with a 552B-parameter backbone and 196B of Engram memory, activating 8B parameters per prompt token and 16B per output token. It supports a 1M-token context window and tool calling.
   home: https://www.deepseek.com
   icon: /static/catalog_icons/deepseek.png
   size: 552
@@ -1571,7 +1571,7 @@ model_sets:
     - tools
   licenses:
     - mit
-  release_date: "2026-09-10"
+  release_date: "2026-10-17"
   specs:
     - mode: standard
       quantization: MXFP4
@@ -1579,7 +1579,7 @@ model_sets:
         vendor: nvidia
         compute_capability: ">=9.0" # Hopper or later
       source: huggingface
-      huggingface_repo_id: deepseek-ai/DeepSeek-V4.1-Flash
+      huggingface_repo_id: deepseek-ai/DeepSeek-V4.1-Flash-1017
       backend: vLLM
       backend_parameters:
         - --max-model-len=65536
@@ -1814,6 +1814,43 @@ model_sets:
         - --enable-auto-tool-choice
         - --trust-remote-code
         - --enable-expert-parallel
+- name: Kimi-K3.1-Pro
+  description: Kimi-K3.1-Pro is a native multimodal MoE model with 2.8T total and 104B activated parameters, Kimi Delta Attention, gated sparse attention, MXFP4 expert weights, and a 1M-token context for reasoning, coding, and tool use.
+  home: https://www.moonshot.ai
+  icon: /static/catalog_icons/kimi.png
+  size: 2.8
+  size_unit: T
+  activated_size: 104
+  categories:
+  - llm
+  capabilities:
+  - context/1M
+  - vision
+  - tools
+  licenses:
+  - kimi-k3.1-pro
+  release_date: '2026-11-04'
+  specs:
+  - mode: standard
+    quantization: MXFP4
+    gpu_filters:
+      vendor: nvidia
+      compute_capability: '>=10.0,<11.0'
+    source: huggingface
+    huggingface_repo_id: moonshotai/Kimi-K3.1-Pro
+    backend: vLLM
+    image_name: quay.io/gpustack/vllm-openai:kimi-k31
+    env:
+      VLLM_ENGINE_READY_TIMEOUT_S: '6000'
+    backend_parameters:
+    - --max-model-len=auto
+    - --max-num-seqs=256
+    - --distributed-executor-backend=mp
+    - --load-format=fastsafetensors
+    - --trust-remote-code
+    - --enable-auto-tool-choice
+    - --tool-call-parser=kimi_k3
+    - --reasoning-parser=kimi_k3
 - name: Kimi-K3
   description: Kimi-K3 is a native multimodal MoE model with 2.8T total parameters and 104B activated parameters, Kimi Delta Attention, Attention Residuals, native MXFP4 quantization, and a 1M-token context window for reasoning, coding, and tool use.
   home: https://www.moonshot.ai
@@ -1855,7 +1892,7 @@ model_sets:
       huggingface_repo_id: moonshotai/Kimi-K3
       backend: vLLM
       env:
-        VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+        VLLM_ENGINE_READY_TIMEOUT_S: "6000"
         VLLM_USE_V2_MODEL_RUNNER: "1"
         PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       backend_parameters:
@@ -2050,6 +2087,30 @@ model_sets:
         - --enable-auto-tool-choice
         - --tool-call-parser=step3p5
         - --trust-remote-code
+- name: Nanbeige4.3-33B
+  description: Nanbeige4.3-33B is a 33B-parameter language model from Nanbeige LLM Lab with a 512K context window, configurable reasoning, and tool use for coding and professional agent workflows.
+  home: https://huggingface.co/Nanbeige
+  icon: /static/catalog_icons/nanbeige.png
+  size: 33
+  categories:
+    - llm
+  capabilities:
+    - context/512K
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-10-24"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: Nanbeige/Nanbeige4.3-33B
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --reasoning-parser=qwen3
+        - --tool-call-parser=qwen3_coder
+        - --enable-auto-tool-choice
 - name: Nanbeige4.1-3B
   description: Nanbeige4.1-3B is a 3B-parameter language model from Nanbeige LLM Lab, optimized for long-context reasoning, agentic tasks, and tool use.
   home: https://huggingface.co/Nanbeige
@@ -2320,6 +2381,46 @@ model_sets:
       backend_parameters:
         - --max-model-len=65536
         - --trust-remote-code
+- name: Mistral-Large-4-1T-A52B
+  description: Mistral Large 4 is a native multimodal MoE model with 1T total and 52B activated parameters (including embeddings and output layers), FP8 weights, sparse attention, and a 1M-token context for reasoning, coding, and tool use.
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  size: 1
+  size_unit: T
+  activated_size: 52
+  categories:
+  - llm
+  capabilities:
+  - context/1M
+  - vision
+  - tools
+  licenses:
+  - mistral-ecosystem-open-weight
+  release_date: '2026-10-29'
+  specs:
+  - mode: standard
+    quantization: FP8
+    gpu_filters:
+      vendor: nvidia
+      compute_capability: '>=9.0,<11.0'
+    source: huggingface
+    huggingface_repo_id: mistralai/Mistral-Large-4-1T-A52B
+    backend: vLLM
+    image_name: quay.io/gpustack/vllm-openai:mistral-large-4
+    env:
+      VLLM_ENGINE_READY_TIMEOUT_S: '6000'
+    backend_parameters:
+    - --max-model-len=auto
+    - --distributed-executor-backend=mp
+    - --tokenizer-mode=mistral
+    - --config-format=mistral
+    - --load-format=mistral
+    - --max-num-batched-tokens=8192
+    - --max-num-seqs=128
+    - --gpu-memory-utilization=0.85
+    - --enable-auto-tool-choice
+    - --tool-call-parser=mistral
+    - --reasoning-parser=mistral
 - name: Mistral-Medium-3.5-128B
   description: Mistral-Medium-3.5-128B is a multilingual mid-tier model from Mistral AI with the mistral3 architecture, supporting 26 languages and FP8 weights.
   home: https://mistral.ai

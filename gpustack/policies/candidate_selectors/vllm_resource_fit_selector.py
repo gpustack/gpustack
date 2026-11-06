@@ -1,9 +1,12 @@
 import json
 from collections import defaultdict
+from itertools import accumulate
 import logging
+from math import ceil
 import re
 from typing import Dict, List, Optional, Tuple
 from gpustack.policies.resource_view import ResourceView
+from gpustack.policies.lookup_table import estimate_offloaded_lookup_bytes
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
@@ -22,9 +25,9 @@ from gpustack.policies.utils import (
     ListMessageBuilder,
     estimate_model_vram,
     group_workers_by_gpu_type,
-    ram_not_enough,
     get_model_ram_claim,
     get_computed_ram_claim,
+    get_ram_claim_from_model_env,
     sort_workers_by_gpu_count,
 )
 from gpustack.schemas.models import (
@@ -43,12 +46,21 @@ from gpustack.utils.command import (
     resolve_executor_backend,
 )
 from gpustack.utils.unit import byte_to_gib
+from gpustack.validation.pd.roles import validate_managed_pd_topology
 from gpustack.utils.vllm_topology import (
     parse_user_parallelism,
     validate_multinode_topology,
+    vllm_lb_mode,
+    managed_lb_parallelism,
+    manual_dp_enabled,
 )
 
 logger = logging.getLogger(__name__)
+
+# Bound synchronous subset search across all GPU counts for one worker.
+_MAX_GPU_SUBSET_SEARCH_STATES = 4096
+_EVENT_ACTION_GPU_SUBSET_SEARCH_LIMIT = "gpu_subset_search_limit"
+_EVENT_ACTION_RAM_NOT_ENOUGH = "ram_not_enough"
 
 
 def parse_model_size_by_name(model_name: str) -> int:
@@ -76,6 +88,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         self._vram_claim = 0
         self._ram_claim = 0
+        self._offloaded_ram = 0
         self._largest_single_gpu_vram = 0
         self._largest_single_gpu_vram_utilization = 0
         self._largest_multi_gpu_vram = 0
@@ -126,7 +139,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
     def get_world_size_from_backend_parameters(
         model: Model,
     ) -> Tuple[Optional[int], Optional[List[str]]]:
-        parallelism = parse_user_parallelism(model.backend_parameters)
+        parallelism = parse_user_parallelism(model.backend_parameters, last_wins=True)
         tp = parallelism.tp
         pp = parallelism.pp
         dp = parallelism.dp
@@ -144,19 +157,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if value is not None and value <= 0:
                 raise ValueError(f"vLLM: --{name} {value} must be positive.")
 
-        # Hybrid-LB: --data-parallel-size is a GLOBAL count spanning separate
-        # deployments (e.g. one per node), so it must NOT size this deployment's
-        # local GPU need. Only `dpl` ranks run here, each taking tp*pp GPUs, so
-        # the local world is tp*pp*dpl. Without dpl we can't infer it; leave
-        # world_size unset and let the manual GPU selection stand.
-        hybrid_lb = find_bool_parameter(
-            model.backend_parameters, ["data-parallel-hybrid-lb"]
-        )
-        if hybrid_lb:
-            if dpl is None:
-                return None, None
-            dp = dpl
-
         # Each parallel dimension multiplies the world size in a fixed order
         # (tp, pp, pcp, dp).
         # DP-Local is a strategy label only — its ranks live inside the dp
@@ -170,9 +170,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     strategies.append(name)
                     world_size *= value
 
-            # In hybrid-lb, dp already carries the dpl value above, so the "dp"
-            # strategy already reflects the local world; don't double-count dpl.
-            if dpl and not hybrid_lb:
+            if dpl:
                 strategies.append("dpl")
 
             return world_size, strategies
@@ -257,10 +255,16 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             EVENT_ACTION_AUTO_SINGLE_GPU: "",
         }
 
+        ram_messages = []
         for event in self._event_collector.events:
-            event_messages[event.action] = event.message
+            if event.action == _EVENT_ACTION_RAM_NOT_ENOUGH:
+                ram_messages.append(event.message)
+            else:
+                event_messages[event.action] = event.message
 
         messages = event_messages[EVENT_ACTION_DEFAULT] + "\n"
+        if ram_messages:
+            messages += str(ListMessageBuilder(ram_messages)) + "\n"
         for action in [
             EVENT_ACTION_MANUAL_MULTI,
             EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
@@ -270,6 +274,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if event_messages[action]:
                 messages += event_messages[action]
                 break
+
+        if search_limit := event_messages.get(_EVENT_ACTION_GPU_SUBSET_SEARCH_LIMIT):
+            messages += "\n" + search_limit
 
         self._messages.append(messages)
 
@@ -304,10 +311,19 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         # Initialize model parameters.
         await self._init_model_parameters(workers)
 
-        self._vram_claim = await estimate_model_vram(
-            self._model, self._config.huggingface_token, workers
+        offloaded_weights = estimate_offloaded_lookup_bytes(
+            self._model, self._pretrained_config
         )
-        self._ram_claim = get_model_ram_claim(self._model)
+        estimate_kwargs = (
+            {"offloaded_weights": offloaded_weights} if offloaded_weights else {}
+        )
+        self._vram_claim = await estimate_model_vram(
+            self._model, self._config.huggingface_token, workers, **estimate_kwargs
+        )
+        # Keep the base table size separate from candidate PCP copies. Local DP
+        # shares one table budget per PCP replica, without extra headroom.
+        self._offloaded_ram = offloaded_weights
+        self._ram_claim = get_model_ram_claim(self._model, self._offloaded_ram)
         logger.info(
             f"Calculated resource claim for model {self._model.readable_source}, "
             f"VRAM claim: {self._vram_claim}, RAM claim: {self._ram_claim}"
@@ -345,6 +361,16 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             )
 
             candidates = candidate_func(workers)
+            if not manual_dp_enabled(self._model.env) and vllm_lb_mode(
+                self._model.backend_parameters
+            ) in (
+                "external",
+                "multi_port_external",
+                "hybrid",
+            ):
+                candidates = self._validate_managed_candidates(candidates)
+            for candidate in candidates:
+                self._finalize_candidate_ram(candidate)
 
             if len(candidates) >= 1 and candidates[0].overcommit:
                 # Manually selected candidate with overcommit. Also add the message.
@@ -356,6 +382,34 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         self._set_messages()
         return []
+
+    def _validate_managed_candidates(
+        self, candidates: List[ModelInstanceScheduleCandidate]
+    ) -> List[ModelInstanceScheduleCandidate]:
+        """Apply the complete-group layout to manual and automatic placements."""
+        accepted = []
+        for candidate in candidates:
+            members = [candidate, *(candidate.subordinate_workers or [])]
+            counts = [len(member.gpu_indexes or []) for member in members]
+            try:
+                topology = managed_lb_parallelism(
+                    self._model.backend_parameters, counts
+                )
+                validate_managed_pd_topology(self._model, topology)
+            except ValueError as error:
+                self._event_collector.add(
+                    EventLevelEnum.INFO, EVENT_ACTION_DEFAULT, str(error)
+                )
+                continue
+            self._reserved_vram = max(
+                self._reserved_vram,
+                sum(
+                    sum((member.computed_resource_claim.vram or {}).values())
+                    for member in members
+                ),
+            )
+            accepted.append(candidate)
+        return accepted
 
     def should_skip_candidate_func(self, candidate_func) -> bool:
         # Skip conditions for manual GPU selection.
@@ -388,6 +442,114 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             request,
             self._event_collector,
         )
+
+    def _compute_ram_claim(
+        self,
+        vram_claim: Dict[int, int],
+        static_ram: Optional[int] = None,
+        *,
+        gpu_per_node: Optional[List[int]] = None,
+        node_index: int = 0,
+    ) -> Optional[int]:
+        """Estimate one worker's table and LOCAL KV cache RAM in bytes.
+
+        Local DP replicas are assumed to share table storage; the complete
+        candidate layout determines independent PCP copies. An explicit RAM
+        claim overrides the estimate. static_ram is accepted for the base
+        interface but unused: table copies and ratio-based cache RAM depend on
+        this worker's GPU allocation.
+
+        gpu_per_node and node_index identify the worker in a complete candidate
+        or projected homogeneous layout. Without them, estimate a single node.
+
+        This is an approximate scheduling reservation without extra headroom,
+        intended to avoid rejecting deployments solely on worst-case estimates.
+        The DP sharing assumption does not enable sharing in the engine and
+        does not cover architecture, version, Hybrid DP, or Elastic EP sharing
+        conditions. Private DP copies and other engine allocations or loading
+        peaks may exceed this budget; passing RAM admission does not guarantee
+        sufficient runtime memory. Set GPUSTACK_MODEL_RAM_CLAIM to override it.
+        """
+        copies = (
+            self._lookup_table_copies(gpu_per_node or [len(vram_claim)])[node_index]
+            if self._offloaded_ram
+            else 0
+        )
+        return get_computed_ram_claim(
+            self._model, vram_claim, offloaded_ram=self._offloaded_ram * copies
+        )
+
+    def _lookup_table_copies(self, gpu_per_node: List[int]) -> List[int]:
+        """Assume one shared DP table budget per local PCP replica.
+
+        This scheduling convention avoids engine-specific DP sharing rules.
+        PCP replicas retain independent TP-sharded tables; when PCP spans nodes,
+        count only the replicas that can reside on each worker.
+        """
+        user = parse_user_parallelism(self._model.backend_parameters)
+        pcp = user.pcp or 1
+        if pcp == 1:
+            return [1] * len(gpu_per_node)
+        tp = user.tp or 1
+        if (
+            len(gpu_per_node) > 1
+            and resolve_executor_backend(
+                self._model.backend_parameters,
+                self._model.backend_version,
+                self._model.image_name,
+            )
+            == "mp"
+        ):
+            try:
+                tp = validate_multinode_topology(gpu_per_node, user).tp
+            except ValueError:
+                if not self._selected_gpu_workers:
+                    raise
+                # Manual placements leave execution topology validation to the
+                # backend. Keep explicit TP (or 1) for the approximate PCP budget.
+        elif user.tp is None and user.pp is None and user.dp is None:
+            # Match single-node defaults and the Ray worker's TP fallback.
+            tp = gpu_per_node[0] if len(set(gpu_per_node)) == 1 else 1
+        return [min(pcp, max(1, ceil(count / tp))) for count in gpu_per_node]
+
+    def _auto_topology_valid(self, gpu_per_node: List[int]) -> bool:
+        """Validate automatic allocations against the MP executor's topology rules."""
+        if (
+            resolve_executor_backend(
+                self._model.backend_parameters,
+                self._model.backend_version,
+                self._model.image_name,
+            )
+            != "mp"
+        ):
+            return True
+        try:
+            validate_multinode_topology(
+                gpu_per_node, parse_user_parallelism(self._model.backend_parameters)
+            )
+        except ValueError as e:
+            logger.debug("Skipping automatic GPU allocation %s: %s", gpu_per_node, e)
+            return False
+        return True
+
+    def _worker_ram_fits(
+        self,
+        worker: Worker,
+        vram_claim: Dict[int, int],
+        gpu_type: Optional[str],
+        gpu_per_node: Optional[List[int]] = None,
+    ) -> bool:
+        """Check the full worker RAM claim and record a scheduling reason on failure."""
+        message = self._worker_ram_overcommit_message(
+            worker,
+            self._compute_ram_claim(vram_claim, gpu_per_node=gpu_per_node),
+            gpu_type,
+        )
+        if message:
+            self._event_collector.add(
+                EventLevelEnum.INFO, _EVENT_ACTION_RAM_NOT_ENOUGH, message
+            )
+        return not message
 
     def find_single_worker_single_gpu_full_offloading_candidates(
         self, workers: List[Worker]
@@ -428,9 +590,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         candidates = []
 
         allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
-
-        if ram_not_enough(self._ram_claim, allocatable):
-            return []
 
         if not worker.status.gpu_devices:
             return []
@@ -475,6 +634,8 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             )
 
             vram_claim = {gpu_index: vram_claim_bytes}
+            if not self._worker_ram_fits(worker, vram_claim, gpu_type):
+                continue
             candidates.append(
                 ModelInstanceScheduleCandidate(
                     worker=worker,
@@ -482,7 +643,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     gpu_type=gpu.type,
                     computed_resource_claim=ComputedResourceClaim(
                         vram=vram_claim,
-                        ram=get_computed_ram_claim(self._model, vram_claim),
+                        ram=self._compute_ram_claim(vram_claim),
                     ),
                 )
             )
@@ -532,6 +693,147 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         ]
         return final_candidates
 
+    @staticmethod
+    def _find_resource_fit_gpu_subset(
+        groups: List[List[int]],
+        claims: Dict[int, int],
+        gpu_count: int,
+        vram_range: Tuple[int, int],
+        search_budget: int,
+    ) -> Tuple[Optional[List[int]], int]:
+        """Find a subset within joint resource bounds and return states visited.
+
+        Equal-claim GPUs are interchangeable. Suffix sums bound every partial
+        allocation by its cheapest and most expensive possible completion.
+        The iterative search preserves group preference and stops at its budget;
+        None means no fit was found, including when the budget was exhausted.
+        """
+        suffix_sums = [[0] for _ in range(len(groups) + 1)]
+        values = []
+        for position in range(len(groups) - 1, -1, -1):
+            values.extend(claims[index] for index in groups[position])
+            values.sort()
+            suffix_sums[position] = list(accumulate(values, initial=0))
+
+        lower, upper = vram_range
+        stack = [(0, gpu_count, 0, [])]
+        visited = 0
+        while stack and visited < search_budget:
+            position, remaining, total, indexes = stack.pop()
+            visited += 1
+            sums = suffix_sums[position]
+            if remaining >= len(sums):
+                continue
+            if (
+                total + sums[remaining] > upper
+                or total + sums[-1] - sums[-remaining - 1] < lower
+            ):
+                continue
+            if remaining == 0:
+                return indexes, visited
+            group = groups[position]
+            for count in range(min(len(group), remaining) + 1):
+                stack.append(
+                    (
+                        position + 1,
+                        remaining - count,
+                        total + claims[group[0]] * count,
+                        indexes + group[:count],
+                    )
+                )
+        return None, visited
+
+    def _single_worker_vram_bounds(
+        self,
+        worker: Worker,
+        claims: Dict[int, int],
+        count: int,
+        gpu_type: Optional[str],
+    ) -> Optional[Tuple[int, int]]:
+        """Find the feasible VRAM sum interval for a fixed GPU count.
+
+        RAM is monotonic in total VRAM at a fixed topology. Synthetic claims
+        preserve the GPU count while varying the sum, so table copies, explicit
+        overrides, cache sizes, and ratio rounding use the normal RAM estimator.
+        """
+        indexes = sorted(claims, key=claims.get)
+        sample = {index: claims[index] for index in indexes[:count]}
+        lower = max(ceil(self._vram_claim), sum(sample.values()))
+        upper = sum(claims[index] for index in indexes[-count:])
+        if lower > upper:
+            return None
+        first = indexes[0]
+        other_vram = sum(sample.values()) - sample[first]
+        sample[first] = lower - other_vram
+        if not self._worker_ram_fits(worker, sample, gpu_type):
+            return None
+
+        available_ram = self.get_worker_allocatable_resource(worker, gpu_type).ram
+
+        def ram_fits(total: int) -> bool:
+            sample[first] = total - other_vram
+            return (self._compute_ram_claim(sample) or 0) <= available_ram
+
+        if ram_fits(upper):
+            return lower, upper
+        left, right = lower, upper
+        while left < right:
+            middle = (left + right + 1) // 2
+            if ram_fits(middle):
+                left = middle
+            else:
+                right = middle - 1
+        return lower, left
+
+    def _find_single_worker_gpu_claim(
+        self,
+        worker: Worker,
+        gpu_devices: GPUDevicesStatus,
+        allocatable: Allocatable,
+        gpu_type: Optional[str],
+    ) -> Dict[int, int]:
+        """Find an automatic multi-GPU allocation satisfying both VRAM and RAM.
+
+        Input GPUs must already satisfy per-device utilization requirements.
+        Prefer fewer GPUs unless a count is specified; prune impossible counts
+        and equivalent subsets. Return per-GPU VRAM bytes, or an empty mapping
+        when no fit is found within the per-worker search budget.
+        """
+        claims = {
+            gpu.index: (
+                int(gpu.memory.total * self._gpu_memory_utilization)
+                if self._gpu_memory_utilization > 0
+                else allocatable.vram.get(gpu.index, 0)
+            )
+            for gpu in gpu_devices
+        }
+        groups = {}
+        for index, claim in claims.items():
+            groups.setdefault(claim, []).append(index)
+        counts = [self._gpu_count] if self._gpu_count else range(2, len(claims) + 1)
+        remaining_budget = _MAX_GPU_SUBSET_SEARCH_STATES
+        for count in counts:
+            if count > len(claims) or not self._is_tp_size_divisible(count):
+                continue
+            bounds = self._single_worker_vram_bounds(worker, claims, count, gpu_type)
+            if bounds is None:
+                continue
+            indexes, visited = self._find_resource_fit_gpu_subset(
+                list(groups.values()), claims, count, bounds, remaining_budget
+            )
+            remaining_budget -= visited
+            if indexes is not None:
+                return {index: claims[index] for index in indexes}
+            if remaining_budget == 0:
+                self._event_collector.add(
+                    EventLevelEnum.INFO,
+                    _EVENT_ACTION_GPU_SUBSET_SEARCH_LIMIT,
+                    f"Automatic GPU selection on {worker.name} reached its search limit. "
+                    "Select GPUs manually to use a known feasible combination.",
+                )
+                break
+        return {}
+
     def _find_single_worker_multi_gpu_full_offloading_candidates(  # noqa: C901
         self, worker: Worker, gpu_type: Optional[str] = None
     ) -> List[ModelInstanceScheduleCandidate]:
@@ -545,9 +847,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             return None
 
         allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
-
-        if ram_not_enough(self._ram_claim, allocatable):
-            return []
 
         gpu_list = []
         total_allocatable_vram = 0
@@ -576,35 +875,12 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             reverse=True,
         )
 
-        vram_sum = 0
-        gpu_sum = 0
-        gpu_indexes = []
-        vram_claim: Dict[int, int] = {}
-        found_candidate = False
-        for _, gpu in enumerate(sorted_gpu_devices):
-            gpu_indexes.append(gpu.index)
-            vram_claim[gpu.index] = (
-                int(gpu.memory.total * self._gpu_memory_utilization)
-                if self._gpu_memory_utilization > 0  # LLMs
-                else allocatable.vram.get(gpu.index, 0)  # non LLMs
-            )
-            gpu_sum += 1
-            vram_sum += vram_claim[gpu.index]
-
-            if not self._is_tp_size_divisible(gpu_sum):
-                continue
-
-            if self._gpu_count and gpu_sum >= self._gpu_count:
-                if vram_sum >= self._vram_claim:
-                    found_candidate = True
-                # if self._gpu_count is set, cannot return more than gpu_count
-                break
-
-            if (not self._gpu_count) and vram_sum >= self._vram_claim:
-                found_candidate = True
-                break
-
-        if found_candidate:
+        vram_claim = self._find_single_worker_gpu_claim(
+            worker, sorted_gpu_devices, allocatable, gpu_type
+        )
+        if vram_claim:
+            vram_sum = sum(vram_claim.values())
+            gpu_indexes = list(vram_claim)
             # The reservation this member would hold across all of its cards,
             # recorded for the same reason the single-GPU scan records its own:
             # `get_resource_claim` quotes it in a group's refusal, and without
@@ -619,7 +895,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     gpu_indexes=gpu_indexes,
                     computed_resource_claim=ComputedResourceClaim(
                         vram=vram_claim,
-                        ram=get_computed_ram_claim(self._model, vram_claim),
+                        ram=self._compute_ram_claim(vram_claim),
                     ),
                 )
             ]
@@ -711,16 +987,22 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if not self._is_tp_size_divisible(gpu_count):
                 continue
 
+            if self._gpu_count and self._gpu_count % gpu_count:
+                continue
+            # Automatic multi-node candidates use equal GPU counts. This gives
+            # each worker the complete layout needed for RAM admission before
+            # selecting it, so an insufficient worker cannot hide later fits.
+            projected_layout = [gpu_count] * (
+                self._gpu_count // gpu_count if self._gpu_count else 2
+            )
+            if not self._auto_topology_valid(projected_layout):
+                continue
+
             selected_workers: List[Worker] = []
             gpu_sum = 0
             vram_sum = 0
             for worker in worker_group:
                 allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
-
-                if ram_not_enough(self._ram_claim, allocatable):
-                    # The RAM resource(for extended KV cache) is required per worker.
-                    # Skip the worker if it does not satisfy the RAM requirement.
-                    continue
 
                 if any(
                     gpu.memory is None
@@ -732,6 +1014,14 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     for gpu in worker.status.gpu_devices
                 ):
                     # Skip the worker if any GPU does not satisfy the gpu_memory_utilization requirement.
+                    continue
+                vram_claim = {
+                    gpu.index: int(gpu.memory.total * self._gpu_memory_utilization)
+                    for gpu in worker.status.gpu_devices
+                }
+                if not self._worker_ram_fits(
+                    worker, vram_claim, gpu_type, projected_layout
+                ):
                     continue
                 selected_workers.append(worker)
                 gpu_sum += gpu_count
@@ -795,6 +1085,26 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         return []
 
+    def _finalize_candidate_ram(
+        self, candidate: ModelInstanceScheduleCandidate
+    ) -> None:
+        """Record topology-aware RAM before admission or overcommit classification."""
+        if (
+            not self._offloaded_ram
+            and get_ram_claim_from_model_env(self._model) is None
+        ):
+            return
+        claims = [candidate.computed_resource_claim]
+        claims.extend(
+            worker.computed_resource_claim
+            for worker in candidate.subordinate_workers or []
+        )
+        gpu_per_node = [len(claim.vram) for claim in claims]
+        for index, claim in enumerate(claims):
+            claim.ram = self._compute_ram_claim(
+                claim.vram, gpu_per_node=gpu_per_node, node_index=index
+            )
+
     def _validate_arguments(self):
         tp = find_int_parameter(
             self._model.backend_parameters, ["tensor-parallel-size", "tp"]
@@ -854,23 +1164,37 @@ def _create_candidate(
     tries the next one — without raising, because a different combination
     may still satisfy the requirements.
     """
-    if len(selected_workers) > 1 and (
-        resolve_executor_backend(
-            model.backend_parameters, model.backend_version, model.image_name
+    try:
+        mode = (
+            'internal'
+            if manual_dp_enabled(model.env)
+            else vllm_lb_mode(model.backend_parameters)
         )
-        == "mp"
-    ):
-        gpu_per_node = [len(w.status.gpu_devices or []) for w in selected_workers]
-        try:
-            validate_multinode_topology(
-                gpu_per_node, parse_user_parallelism(model.backend_parameters)
+        if mode in ("external", "multi_port_external", "hybrid") or (
+            len(selected_workers) > 1
+            and (
+                resolve_executor_backend(
+                    model.backend_parameters, model.backend_version, model.image_name
+                )
+                == "mp"
             )
-        except ValueError as e:
-            logger.info(
-                f"Skipping worker combination {[w.name for w in selected_workers]} "
-                f"for {model.name}: {e}"
-            )
-            return None, str(e)
+        ):
+            gpu_per_node = [len(w.status.gpu_devices or []) for w in selected_workers]
+            if mode in ("external", "multi_port_external", "hybrid"):
+                topology = managed_lb_parallelism(
+                    model.backend_parameters, gpu_per_node
+                )
+                validate_managed_pd_topology(model, topology)
+            else:
+                validate_multinode_topology(
+                    gpu_per_node, parse_user_parallelism(model.backend_parameters)
+                )
+    except ValueError as e:
+        logger.info(
+            f"Skipping worker combination {[w.name for w in selected_workers]} "
+            f"for {model.name}: {e}"
+        )
+        return None, str(e)
 
     main_worker = selected_workers[0]
     vram_claim_main = {

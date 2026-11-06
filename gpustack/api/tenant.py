@@ -11,6 +11,8 @@ Each authenticated request resolves to a TenantContext that captures:
 - which clusters are accessible in that context
 
 Read resolution order for current_principal_id:
+0. SYSTEM principals have no acting organization; their scope comes from
+   their worker/cluster relationship.
 1. If authenticated via API key, use api_key.owner_principal_id (header
    is ignored)
 2. Else, X-Organization-Id request header if provided
@@ -30,7 +32,11 @@ from sqlalchemy.orm import aliased
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from gpustack.api.auth import _optional_session, get_current_user
+from gpustack.api.auth import (
+    _optional_session,
+    get_current_user,
+    is_server_token_principal,
+)
 from gpustack.api.exceptions import (
     ForbiddenException,
     InvalidException,
@@ -85,7 +91,7 @@ class TenantContext:
     # For SYSTEM principals tied to exactly one cluster — worker
     # registration accounts (workers.system_principal_id) and cluster
     # bootstrap accounts (clusters.system_principal_id) — the cluster
-    # they serve and that cluster's owner principal. Read paths use
+    # they serve and that cluster's owner principal. Resource guards use
     # these to scope the SYSTEM bypass down to the principal's own
     # cluster instead of every tenant's rows. Both stay None for the
     # legacy ``config.token`` principal (in-memory, platform-level
@@ -252,6 +258,10 @@ def _resolve_requested_principal_id(
     user: Principal,
     header_value: Optional[str],
 ) -> Optional[int]:
+    # Service accounts derive their scope from their cluster relationship,
+    # never from an organization header or an API key's owner.
+    if user.kind == PrincipalType.SYSTEM:
+        return None
     api_key: Optional[ApiKey] = getattr(request.state, "api_key", None)
     if api_key is not None and api_key.owner_principal_id is not None:
         return api_key.owner_principal_id
@@ -394,6 +404,8 @@ async def resolve_tenant_context(
         elif user.cluster is not None:
             scoped_cluster_id = user.cluster.id
             scoped_cluster_owner_id = user.cluster.owner_principal_id
+        if scoped_cluster_id is None and not is_server_token_principal(user):
+            raise ForbiddenException(message="System principal has no cluster scope")
 
     ctx = TenantContext(
         user=user,
@@ -426,16 +438,15 @@ def bypass_tenant_filter(ctx: TenantContext) -> bool:
     - Platform admin with no principal context (cross-principal platform
       view).
     - System principals (worker / cluster service accounts that the server
-      itself spawns). They authenticate as ``kind=SYSTEM`` and need to
-      read every tenant's resources to do their job — e.g. a worker
-      fetching the Model row for an instance assigned to it.
+      itself spawns). They authenticate as ``kind=SYSTEM`` and need
+      runtime access — e.g. a worker fetching the Model row for an
+      instance assigned to it.
 
     NOTE on reads: for SYSTEM principals tied to one cluster, the read
     helpers below narrow this bypass to that cluster's rows via
-    :func:`cluster_scoped_system` BEFORE consulting this function. This
-    function stays permissive because write/role gates
-    (``require_org_role``, ``assert_org_owned_writable``) rely on the
-    SYSTEM bypass regardless of cluster.
+    :func:`cluster_scoped_system` BEFORE consulting this function.
+    Role gates use this bypass for worker callbacks. Resource write gates
+    must enforce the service account's cluster scope before consulting it.
     """
     if ctx.user is not None and ctx.user.kind == PrincipalType.SYSTEM:
         return True
@@ -465,31 +476,33 @@ _UNSET = object()
 
 
 def scoped_cluster_row_visible(ctx: TenantContext, resource: Any) -> bool:
-    """Row-level mirror of the scoped-SYSTEM cluster filter.
+    """Require both the resource's explicit cluster and its owning Org.
 
-    Visible when the row belongs to the principal's cluster, or isn't
-    pinned to any cluster (NULL ``cluster_id`` — e.g. models that rely
-    on default-cluster resolution), or isn't cluster-bound at all (no
-    ``cluster_id`` attribute — such resources keep the plain SYSTEM
-    bypass).
+    Missing scope or binding fields cannot establish access. Global catalogs
+    and parent-owned resources must supply their own visibility policy.
     """
-    cluster_id = getattr(resource, "cluster_id", _UNSET)
-    if cluster_id is _UNSET:
-        return True
-    return cluster_id is None or cluster_id == ctx.scoped_cluster_id
+    return (
+        ctx.scoped_cluster_id is not None
+        and ctx.scoped_cluster_owner_id is not None
+        and getattr(resource, "cluster_id", _UNSET) == ctx.scoped_cluster_id
+        and getattr(resource, "owner_principal_id", _UNSET)
+        == ctx.scoped_cluster_owner_id
+    )
 
 
 def _scoped_cluster_conditions(ctx: TenantContext, model: Any) -> List[Any]:
     """List-query mirror of :func:`scoped_cluster_row_visible`."""
-    from sqlalchemy import or_
+    from sqlalchemy import false
 
-    if not hasattr(model, "cluster_id"):
-        return []
+    if (
+        ctx.scoped_cluster_owner_id is None
+        or not hasattr(model, "cluster_id")
+        or not hasattr(model, "owner_principal_id")
+    ):
+        return [false()]
     return [
-        or_(
-            model.cluster_id == ctx.scoped_cluster_id,
-            model.cluster_id.is_(None),
-        )
+        model.cluster_id == ctx.scoped_cluster_id,
+        model.owner_principal_id == ctx.scoped_cluster_owner_id,
     ]
 
 
@@ -500,8 +513,9 @@ def tenant_list_conditions(
     """Build SQLAlchemy WHERE clauses to scope a list query to the caller.
 
     Visibility model:
-    - Cluster-bound system principals see their cluster's rows and rows
-      with NULL cluster_id. Models without cluster_id remain unfiltered.
+    - Cluster-bound system principals see only rows explicitly bound to their
+      cluster and its owner. Missing bindings deny access; shared catalogs and
+      parent-owned resources require a dedicated policy.
     - Other system principals and platform admins without org context
       see everything — returns no conditions.
     - Everyone else with a principal context filters by
@@ -525,8 +539,8 @@ def tenant_stream_filter(ctx: TenantContext, model: Any) -> Callable[[Any], bool
     """Mirror ``tenant_list_conditions`` for resolved tenant contexts in SSE.
 
     Apply it before public projection to both cached replay and bus events.
-    Cluster-bound system principals retain the list's bypass for models
-    without cluster_id and its visibility of rows with NULL cluster_id.
+    Cluster-bound system principals require matching cluster and owner fields
+    in both the model and the event payload.
     Missing fields required by a scoped caller's policy cannot establish
     visibility. Those payloads and non-bypass contexts without a principal
     are rejected, even though the list helper assumes a resolved context.
@@ -534,10 +548,11 @@ def tenant_stream_filter(ctx: TenantContext, model: Any) -> Callable[[Any], bool
 
     def visible(resource: Any) -> bool:
         if cluster_scoped_system(ctx):
-            if not hasattr(model, "cluster_id"):
-                return True
-            cluster_id = getattr(resource, "cluster_id", _UNSET)
-            return cluster_id is None or cluster_id == ctx.scoped_cluster_id
+            if not hasattr(model, "cluster_id") or not hasattr(
+                model, "owner_principal_id"
+            ):
+                return False
+            return scoped_cluster_row_visible(ctx, resource)
         if bypass_tenant_filter(ctx):
             return True
         if ctx.current_principal_id is None:
@@ -631,7 +646,9 @@ def assert_org_owned_writable(
     backends — anything with a nullable ``owner_principal_id`` and these
     write rules:
 
-    - Platform admin / system principal → allowed (bypass via
+    - Cluster-bound system principal: only rows with matching cluster and owner
+      bindings. Org-wide resources require a management identity.
+    - Platform admin / platform-level system principal → allowed (bypass via
       ``bypass_tenant_filter`` for "All" mode admin and system
       principals; admin in act-as falls through to row-owner check,
       where they're treated like an Org owner).
@@ -650,6 +667,12 @@ def assert_org_owned_writable(
     Member can manage workloads scoped to the Org they belong to —
     consistent with how Personal-scope users manage their own.
     """
+    if cluster_scoped_system(ctx):
+        if not scoped_cluster_row_visible(ctx, resource):
+            raise ForbiddenException(
+                message=f"System principal cannot modify this {resource_label}"
+            )
+        return
     if bypass_tenant_filter(ctx):
         return
     res_owner = getattr(resource, "owner_principal_id", None)
@@ -683,6 +706,9 @@ def assert_cluster_writable(
     ctx: TenantContext,
     cluster: Any,
 ) -> None:
+    if cluster_scoped_system(ctx):
+        assert_cluster_visible(ctx, cluster)
+        return
     assert_org_owned_writable(ctx, cluster, resource_label="cluster")
 
 
@@ -765,17 +791,27 @@ def assert_resource_visible(
         raise NotFoundException(message=not_found_message)
 
 
-def require_org_role(*allowed: OrgRole):
+def require_org_role(*allowed: OrgRole, allow_system: bool = False):
     """Build a dependency that requires the requesting user to hold one of the
-    given roles in `current_principal_id`. Platform admins and SYSTEM
-    principals (worker / cluster service accounts) always pass — mirrors
-    ``bypass_tenant_filter`` so write endpoints shared with worker callbacks
-    (e.g. benchmark metrics) keep working.
+    given roles in `current_principal_id`.
+
+    Platform admins and the legacy platform-level server token bypass the role
+    check. Worker / cluster service accounts require explicit ``allow_system``
+    for shared runtime endpoints, which must also enforce resource scope.
     """
 
     async def _dep(
         ctx: Annotated[TenantContext, Depends(get_tenant_context)],
     ) -> TenantContext:
+        if (
+            ctx.user is not None
+            and ctx.user.kind == PrincipalType.SYSTEM
+            and not allow_system
+            and not is_server_token_principal(ctx.user)
+        ):
+            raise OrgRoleError(
+                message="System principals cannot access organization management"
+            )
         if bypass_tenant_filter(ctx) or ctx.is_platform_admin:
             return ctx
         if ctx.current_principal_id is None:

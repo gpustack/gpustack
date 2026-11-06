@@ -4,6 +4,7 @@ from datetime import datetime
 from enum import Enum
 import hashlib
 from pathlib import Path
+from uuid import UUID
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -12,12 +13,14 @@ from typing import (
     List,
     Literal,
     Optional,
+    Tuple,
     Union,
 )
 from croniter import croniter
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field as PydanticField,
     field_serializer,
     field_validator,
     model_validator,
@@ -50,6 +53,7 @@ from gpustack.schemas.model_routes import (
     ModelRoute,
     ModelRouteTarget,
     AccessPolicyEnum,
+    validate_model_route_name,
 )
 from gpustack.schemas.principals import _platform_principal_id
 from gpustack.schemas.cache_services import CacheConfigSnapshot
@@ -79,6 +83,13 @@ class CategoryEnum(str, Enum):
     RERANKER = "reranker"
     SPEECH_TO_TEXT = "speech_to_text"
     TEXT_TO_SPEECH = "text_to_speech"
+    # A deployment serving the Jev/System One decision API (``POST
+    # /v1/systemone``) rather than generation semantics. Distinct from the
+    # "decision" category ``determine_model_category`` already puts on decision
+    # providers' model cache: this one marks a servable deployment, and it is
+    # also what routes may filter on and what the decision-service plugin
+    # accepts as a local decision target.
+    DECISION = "decision"
     UNKNOWN = "unknown"
 
 
@@ -1059,6 +1070,7 @@ class ModelSpecBase(SQLModel, ModelSource):
     replicas: int = Field(default=1, ge=0)
     ready_replicas: int = Field(default=0, ge=0)
     categories: List[str] = Field(sa_type=JSON, default=[])
+
     placement_strategy: PlacementStrategyEnum = PlacementStrategyEnum.SPREAD
     cpu_offloading: Optional[bool] = None
     distributed_inference_across_workers: Optional[bool] = Field(
@@ -1300,12 +1312,75 @@ class ModelListParams(ListParams):
     ]
 
 
-class ModelCreate(ModelBase):
+class ModelWriteBase(ModelBase):
+    """The API write boundary: a request-only base for the create/update
+    schemas.
+
+    The categories whitelist does NOT live here: ``ModelUpdate`` is also
+    the round-trip vessel for internal whole-object PUTs (workers
+    persisting ``backend_version`` via ``ModelUpdate(**row.model_dump())``,
+    the UI echoing the stored row), and a legacy row holding a category
+    string outside ``CategoryEnum`` — the column predates the whitelist —
+    must keep flowing through them. Create validates in the schema (fresh
+    values, nothing stored to compare against); update validates against
+    the stored row in the route layer (``_validate_categories_update``),
+    where an unchanged echo passes and only a change to an unknown string
+    is rejected.
+    """
+
+
+class ModelCreate(ModelWriteBase):
     enable_model_route: Optional[bool] = Field(default=None)
 
+    @model_validator(mode="after")
+    def validate_auto_route_name(self):
+        # The automatic route copies the deployment name. Validate it at the
+        # request boundary, before creating the model or its related records.
+        if self.enable_model_route:
+            validate_model_route_name(self.name)
+        return self
 
-class ModelUpdate(ModelBase):
+    @field_validator("categories", mode="before")
+    @classmethod
+    def _categories_are_known(cls, v):
+        """Reject category strings outside ``CategoryEnum``, mirroring the
+        route-side whitelist.
+
+        Decision is the case this guards hardest: its identity IS the
+        string, there is no auto-detection to correct a typo (unlike
+        llm/embedding/reranker, which the scheduler derives from the model
+        artifacts when ``categories`` is empty), so ``"Decision"`` or
+        ``"decisions"`` would silently create a model that is not a
+        decision provider and not filterable as one — failing nowhere,
+        working nowhere. ``None`` passes through untouched, as the
+        route-side validator does.
+        """
+        if v is None:
+            return v
+        known = {e.value for e in CategoryEnum}
+        for category in v:
+            if category not in known:
+                raise ValueError(f"Invalid category: {category}")
+        return v
+
+
+class ModelUpdate(ModelWriteBase):
     pass
+
+
+class ModelRestartResult(BaseModel):
+    """Acknowledge a restart while replacement startup is observed separately."""
+
+    accepted: bool = True
+    completed: bool
+    phase: Literal["stopping", "restarting", "completed"]
+    record_deleted: bool = False
+    runtime_termination_confirmed: Optional[bool] = None
+    observe_url: Optional[str] = None
+    spec_digest: str
+    restarted: bool
+    deleted_instances: List[str] = PydanticField(default_factory=list)
+    message: Optional[str] = None
 
 
 class ModelPublic(
@@ -1326,6 +1401,10 @@ class ModelPublic(
     restarting_since: Optional[datetime] = None
     # Populated only by the detail endpoint; None on list responses.
     has_stale_lora_instances: Optional[bool] = None
+
+    deleted_at: Optional[datetime] = PydanticField(
+        default=None, json_schema_extra={"readOnly": True}
+    )
 
     @field_serializer("lora_list")
     def _strip_lora_prefix(self, lora_list, _info):
@@ -1583,6 +1662,43 @@ def role_effective_model(model, role_name: Optional[str]):
 # Model Instances
 
 
+class ModelInstanceLaunchIdentity(BaseModel):
+    """Instance placement and process generation that supplied a snapshot."""
+
+    instance_id: int
+    worker_id: int
+    pid: int
+    restart_count: int
+
+    @classmethod
+    def from_instance(
+        cls, instance: "ModelInstance"
+    ) -> Optional["ModelInstanceLaunchIdentity"]:
+        if any(
+            value is None for value in (instance.id, instance.worker_id, instance.pid)
+        ):
+            return None
+        return cls(
+            instance_id=instance.id,
+            worker_id=instance.worker_id,
+            pid=instance.pid,
+            restart_count=instance.restart_count or 0,
+        )
+
+
+class ModelConfigSnapshot(BaseModel):
+    """Effective user configuration read for one instance launch."""
+
+    backend_parameters: Optional[List[str]] = None
+    env: Optional[Dict[str, str]] = None
+    image_name: Optional[str] = None
+    run_command: Optional[str] = None
+    extended_kv_cache: Optional[ExtendedKVCacheConfig] = None
+    speculative_config: Optional[SpeculativeConfig] = None
+    launch_identity: Optional[ModelInstanceLaunchIdentity] = None
+    """The launch these inputs belong to; missing identity cannot establish freshness."""
+
+
 class ModelInstanceStateEnum(str, Enum):
     r"""
     Enum for Model Instance State
@@ -1661,6 +1777,310 @@ class DistributedServerCoordinateModeEnum(Enum):
     RUN_FIRST = "run_first"
 
 
+class ModelInstanceWorkloadStateEnum(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    STOPPED = "stopped"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+
+class DPRankPlacement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dp_rank: int = PydanticField(ge=0)
+    node_rank: int = PydanticField(ge=0)
+    gpu_indexes: List[int] = PydanticField(min_length=1)
+    api_port: Optional[int] = PydanticField(default=None, ge=1, le=65535)
+    ready: Optional[bool] = None
+
+    @field_validator("gpu_indexes")
+    @classmethod
+    def validate_gpu_indexes(cls, value: List[int]) -> List[int]:
+        if any(index < 0 for index in value) or len(set(value)) != len(value):
+            raise ValueError("GPU indexes must be nonnegative and unique")
+        return value
+
+    @model_validator(mode="after")
+    def validate_api(self):
+        if self.node_rank == 0:
+            if self.api_port is None:
+                raise ValueError("A main rank placement requires an API port")
+            if self.ready is None:
+                self.ready = False
+        elif self.api_port is not None or self.ready is not None:
+            raise ValueError(
+                "A headless placement cannot report an API port or readiness"
+            )
+        return self
+
+
+class ModelInstanceComponent(BaseModel):
+    """A managed task sharing the instance's existing device allocation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["sglang_engine", "sglang_smg", "vllm_hybrid"]
+    api_port: Optional[int] = PydanticField(default=None, ge=1, le=65535)
+    metrics_port: Optional[int] = PydanticField(default=None, ge=1, le=65535)
+    ready: Optional[bool] = None
+    dp_size: Optional[int] = PydanticField(default=None, ge=1)
+    image: Optional[str] = PydanticField(default=None, min_length=1)
+    router_version: Optional[Literal["0.3.2"]] = None
+    attempt: int = PydanticField(default=0, ge=0)
+    stop_requested: bool = False
+    last_restart_time: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def validate_component(self):
+        if self.kind in ("sglang_engine", "vllm_hybrid"):
+            if self.kind == "vllm_hybrid" and (
+                self.image is not None or self.router_version is not None
+            ):
+                raise ValueError("Hybrid components cannot carry Engine image evidence")
+            if (self.image is None) != (self.router_version is None):
+                raise ValueError(
+                    "Engine image and router version must be recorded together"
+                )
+            if self.image is not None and not self.image.strip():
+                raise ValueError("Engine image must be nonempty")
+            if (
+                self.attempt
+                or self.stop_requested
+                or self.last_restart_time is not None
+            ):
+                raise ValueError(
+                    "Engine and Hybrid components cannot carry SMG recovery state"
+                )
+            if self.metrics_port is not None:
+                raise ValueError("Engine and Hybrid metrics share their API")
+            if (self.api_port is None) != (self.dp_size is None):
+                raise ValueError("A serving component requires its API and DP size")
+        elif (
+            self.api_port is None
+            or self.metrics_port is None
+            or self.api_port == self.metrics_port
+            or self.dp_size is not None
+            or self.image is not None
+            or self.router_version is not None
+        ):
+            raise ValueError("SMG requires separate API/metrics ports and no DP size")
+        if self.api_port is None:
+            if self.ready is not None:
+                raise ValueError("A headless component cannot report API readiness")
+        elif self.ready is None:
+            self.ready = False
+        return self
+
+
+class ModelInstanceWorkload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = PydanticField(min_length=1)
+    worker_id: int = PydanticField(gt=0)
+    state: ModelInstanceWorkloadStateEnum
+    dp_rank_placements: List[DPRankPlacement] = PydanticField(default_factory=list)
+    component: Optional[ModelInstanceComponent] = None
+
+    @model_validator(mode="after")
+    def validate_readiness(self):
+        if (self.component is None) == (not self.dp_rank_placements):
+            raise ValueError(
+                "A workload requires either rank placements or a component"
+            )
+        if (
+            self.component is not None
+            and self.component.ready
+            and self.state != ModelInstanceWorkloadStateEnum.RUNNING
+        ):
+            raise ValueError("Only a running workload can have a ready API")
+        if self.state != ModelInstanceWorkloadStateEnum.RUNNING and any(
+            placement.ready for placement in self.dp_rank_placements
+        ):
+            raise ValueError("Only a running workload can have a ready API")
+        return self
+
+
+def validate_workload_manifest(workloads: List[ModelInstanceWorkload]) -> None:
+    """Reject ambiguous task names, rank coordinates, devices, and local ports."""
+    names, coordinates, devices, ports = set(), set(), set(), set()
+    kinds = {w.component.kind if w.component is not None else None for w in workloads}
+    if len(kinds) > 1 and (None in kinds or "vllm_hybrid" in kinds):
+        raise ValueError(
+            "Component families and rank workloads cannot share a manifest"
+        )
+    components = set()
+    for workload in workloads:
+        if workload.component is not None:
+            component = workload.component
+            identity = (workload.worker_id, component.kind)
+            if identity in components:
+                raise ValueError("A Worker can own only one component of each kind")
+            components.add(identity)
+            for number in (component.api_port, component.metrics_port):
+                if number is None:
+                    continue
+                port = (workload.worker_id, number)
+                if port in ports:
+                    raise ValueError("Component ports must be unique on a Worker")
+                ports.add(port)
+        if workload.name in names:
+            raise ValueError("Workload names must be unique within an instance")
+        names.add(workload.name)
+        for placement in workload.dp_rank_placements:
+            coordinate = (placement.dp_rank, placement.node_rank)
+            if coordinate in coordinates:
+                raise ValueError("Rank placement coordinates must be unique")
+            coordinates.add(coordinate)
+            for index in placement.gpu_indexes:
+                device = (workload.worker_id, index)
+                if device in devices:
+                    raise ValueError("A device cannot belong to multiple placements")
+                devices.add(device)
+            if placement.api_port is not None:
+                port = (workload.worker_id, placement.api_port)
+                if port in ports:
+                    raise ValueError("Rank API ports must be unique on a Worker")
+                ports.add(port)
+
+
+class ModelInstancePreparation(BaseModel):
+    """Fenced preparation metadata; no runtime task may be replaced through it."""
+
+    model_config = ConfigDict(extra="forbid")
+    port: Optional[int] = PydanticField(default=None, ge=1, le=65535)
+    ports: Optional[List[int]] = None
+    named_ports: Optional[Dict[str, PortBand]] = None
+    pid: Optional[int] = PydanticField(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_ports(self):
+        if self.ports is not None and (
+            len(set(self.ports)) != len(self.ports)
+            or any(p < 1 or p > 65535 for p in self.ports)
+        ):
+            raise ValueError("Preparation ports must be valid and unique")
+        occupied = set()
+        for band in (self.named_ports or {}).values():
+            if band.base < 1 or band.count < 1 or band.base + band.count > 65536:
+                raise ValueError("Invalid preparation port band")
+            ports = set(range(band.base, band.base + band.count))
+            if occupied & ports:
+                raise ValueError("Preparation port bands must not overlap")
+            occupied.update(ports)
+        return self
+
+
+class ModelInstanceComponentRegistration(BaseModel):
+    """Worker-discovered topology; recovery intent belongs to the Server."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["sglang_engine", "sglang_smg", "vllm_hybrid"]
+    api_port: Optional[int] = PydanticField(default=None, ge=1, le=65535)
+    metrics_port: Optional[int] = PydanticField(default=None, ge=1, le=65535)
+    ready: Optional[bool] = None
+    dp_size: Optional[int] = PydanticField(default=None, ge=1)
+    image: Optional[str] = None
+    router_version: Optional[Literal["0.3.2"]] = None
+    attempt: int = PydanticField(default=0, ge=0, description="Current attempt fence")
+
+    @model_validator(mode="after")
+    def validate_component(self):
+        component = ModelInstanceComponent.model_validate(self.model_dump())
+        self.ready = component.ready
+        return self
+
+
+class ModelInstanceWorkloadRegistrationItem(ModelInstanceWorkload):
+    component: Optional[ModelInstanceComponentRegistration] = None
+
+
+class ModelInstanceWorkloadObservation(BaseModel):
+    """Update observations without resubmitting topology or recovery intent."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = PydanticField(min_length=1)
+    state: ModelInstanceWorkloadStateEnum
+    rank_readiness: Dict[int, bool] = PydanticField(default_factory=dict)
+    component_ready: Optional[bool] = None
+    component_attempt: Optional[int] = PydanticField(default=None, ge=0)
+
+
+class ModelInstanceMemberReport(BaseModel):
+    """Worker-local runtime facts, validated against the Server's instance mode."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    restart_count: int = PydanticField(ge=0)
+    workloads: Optional[List[ModelInstanceWorkloadRegistrationItem]] = None
+    observations: Optional[List[ModelInstanceWorkloadObservation]] = None
+    model_config_snapshot: Optional[ModelConfigSnapshot] = None
+    state: Optional[
+        Literal[
+            ModelInstanceStateEnum.INITIALIZING,
+            ModelInstanceStateEnum.DOWNLOADING,
+            ModelInstanceStateEnum.STARTING,
+            ModelInstanceStateEnum.RUNNING,
+            ModelInstanceStateEnum.UNREACHABLE,
+            ModelInstanceStateEnum.ERROR,
+        ]
+    ] = None
+    state_message: Optional[str] = None
+    preparation: Optional[ModelInstancePreparation] = None
+    backend_version: Optional[str] = None
+    injected_backend_parameters: Optional[List[str]] = None
+    arguments: Optional[List[str]] = None
+    gpu_indexes: Optional[List[int]] = None
+    gpu_addresses: Optional[List[str]] = None
+    computed_resource_claim: Optional[ComputedResourceClaim] = None
+
+    @field_validator("workloads")
+    @classmethod
+    def validate_workloads(cls, value):
+        if value is not None:
+            validate_workload_manifest(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_report(self):
+        if self.workloads is not None and self.observations is not None:
+            raise ValueError("Register workloads or report observations, not both")
+        if self.preparation is not None and (
+            self.workloads is not None or self.observations is not None
+        ):
+            raise ValueError("Preparation must precede task registration")
+        return self
+
+
+class ModelInstanceLegacyStop(BaseModel):
+    """Server-owned proof barrier for stopping a legacy model group."""
+
+    model_config = ConfigDict(extra="forbid")
+    token: UUID
+    restart_count: int = PydanticField(ge=0)
+    worker_ids: List[int]
+    worker_principal_ids: Dict[int, Optional[int]]
+    confirmed_worker_ids: List[int] = PydanticField(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_workers(self):
+        workers = set(self.worker_ids)
+        if len(workers) != len(self.worker_ids) or any(value <= 0 for value in workers):
+            raise ValueError("Stop Worker IDs must be positive and unique")
+        if (
+            set(self.worker_principal_ids) != workers
+            or not set(self.confirmed_worker_ids) <= workers
+        ):
+            raise ValueError("Stop confirmations must belong to the frozen Workers")
+        return self
+
+
+class ModelInstanceStopReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: UUID
+    restart_count: int = PydanticField(ge=0)
+
+
 class DistributedServers(BaseModel):
     # Indicates how the distributed servers coordinate with the main worker.
     mode: DistributedServerCoordinateModeEnum = (
@@ -1671,7 +2091,51 @@ class DistributedServers(BaseModel):
     subordinate_workers: Optional[List[ModelInstanceSubordinateWorker]] = Field(
         sa_column=Column(JSON), default=[]
     )
+    orchestration_mode: Literal["legacy", "managed"] = PydanticField(
+        default="legacy", json_schema_extra={"readOnly": True}
+    )
+    workloads: Optional[List[ModelInstanceWorkload]] = PydanticField(
+        default=None, json_schema_extra={"readOnly": True}
+    )
+    # Server releases physical teardown after any traffic drain window.
+    stop_requested: bool = PydanticField(
+        default=False, json_schema_extra={"readOnly": True}
+    )
+    legacy_stop: Optional[ModelInstanceLegacyStop] = PydanticField(
+        default=None, json_schema_extra={"readOnly": True}
+    )
+    # The Server fixes this policy before a round creates inference workloads.
+    group_recovery: Optional[bool] = PydanticField(
+        default=None, json_schema_extra={"readOnly": True}
+    )
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_legacy_mode(cls, value):
+        if isinstance(value, dict) and "orchestration_mode" not in value:
+            return {
+                **value,
+                "orchestration_mode": (
+                    "managed" if value.get("workloads") is not None else "legacy"
+                ),
+            }
+        return value
+
+    @model_validator(mode="after")
+    def validate_legacy_stop(self):
+        if (self.orchestration_mode == "managed") != (self.workloads is not None):
+            raise ValueError("Orchestration mode must match the workload manifest")
+        if self.legacy_stop is not None and self.workloads is not None:
+            raise ValueError("A legacy stop guard cannot replace a managed manifest")
+        return self
+
+    @field_validator("workloads")
+    @classmethod
+    def validate_workloads(cls, value):
+        if value is not None:
+            validate_workload_manifest(value)
+        return value
 
 
 @dataclass
@@ -1740,7 +2204,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
     gpu_indexes: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])
     gpu_addresses: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
 
-    model_id: int = Field(default=None, foreign_key="models.id")
+    model_id: int = Field(default=None, foreign_key="models.id", index=True)
     model_name: str
 
     backend: Optional[str] = None
@@ -1749,7 +2213,6 @@ class ModelInstanceBase(SQLModel, ModelSource):
     injected_backend_parameters: Optional[List[str]] = Field(
         sa_column=Column(JSON), default=None
     )
-
     distributed_servers: Optional[DistributedServers] = Field(
         sa_column=Column(pydantic_column_type(DistributedServers)), default=None
     )
@@ -1757,7 +2220,9 @@ class ModelInstanceBase(SQLModel, ModelSource):
     # Disable it given that it's not a real issue for this particular field.
     model_config = ConfigDict(protected_namespaces=())
 
-    cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
+    cluster_id: Optional[int] = Field(
+        default=None, foreign_key="clusters.id", index=True
+    )
     owner_principal_id: int = Field(
         default_factory=_platform_principal_id,
         sa_column=Column(
@@ -1891,7 +2356,13 @@ class ModelInstanceBase(SQLModel, ModelSource):
 
 class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
     __tablename__ = 'model_instances'
+    __immutable_fields__: ClassVar[Tuple[str, ...]] = ("model_id", "cluster_id")
     id: Optional[int] = Field(default=None, primary_key=True)
+    model_config_snapshot: Optional[ModelConfigSnapshot] = Field(
+        default=None,
+        sa_column=Column(pydantic_column_type(ModelConfigSnapshot), nullable=True),
+    )
+    """Internal launch configuration recorded by the main worker."""
 
     model: Optional[Model] = Relationship(
         back_populates="instances",
@@ -1921,6 +2392,8 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
         session,
         instance_id: int,
         populate_existing: bool = True,
+        *,
+        for_update: bool = False,
     ) -> Optional["ModelInstance"]:
         """Load a model instance with primary/LoRA + draft model_files and model spec eagerly loaded."""
         stmt = (
@@ -1932,6 +2405,8 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
                 selectinload(cls.model),
             )
         )
+        if for_update:
+            stmt = stmt.with_for_update()
         if populate_existing:
             stmt = stmt.execution_options(populate_existing=True)
         return (await session.exec(stmt)).first()
@@ -1946,7 +2421,21 @@ class ModelInstanceCreate(ModelInstanceBase):
 
 
 class ModelInstanceUpdate(ModelInstanceBase):
-    pass
+    model_config_snapshot: Optional[ModelConfigSnapshot] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_workload_report(cls, value):
+        if isinstance(value, dict) and (
+            "workload_report" in value
+            or "rank_report" in value
+            or "stop_report" in value
+            or "workloads" in value
+            or "observations" in value
+            or "preparation" in value
+        ):
+            raise ValueError("Use the workload-report or stop-confirmation endpoint")
+        return value
 
 
 class ModelInstancePublic(
@@ -1965,9 +2454,35 @@ class ModelInstanceLogWorker(BaseModel):
     name: str
 
 
+class ModelInstanceLogSource(BaseModel):
+    """A Worker-local archived stream or a filtered view of that stream."""
+
+    id: str
+    worker_id: int
+    restart_count: int
+    previous: bool = False
+    kind: Literal["preparation", "workload", "rank", "public"]
+    label: str
+    component_kind: Optional[Literal["sglang_engine", "sglang_smg", "vllm_hybrid"]] = (
+        None
+    )
+    workload_name: Optional[str] = None
+    container_name: Optional[str] = None
+    dp_rank: Optional[int] = None
+    node_rank: Optional[int] = None
+    main: Optional[bool] = None
+    attribution: Literal[
+        "all", "supervisor_rank", "multi_port_external_api_rank", "unattributed"
+    ] = "all"
+    available: bool = False
+    active_workload_name: Optional[str] = None
+    active_attempt: Optional[int] = None
+
+
 class ModelInstanceLogRestartEntry(BaseModel):
     """One main serve log session on disk, with optional UX label time."""
 
+    sources: List[ModelInstanceLogSource] = Field(default_factory=list)
     previous: bool = False
     started_at: Optional[datetime] = Field(
         default=None,
@@ -2140,6 +2655,16 @@ def is_reranker_model(model: Model):
         model: Model to check.
     """
     return "reranker" in model.categories
+
+
+def is_decision_model(model: Model) -> bool:
+    """
+    Check if the model serves the decision API (System One / Jev contract,
+    ``POST /v1/systemone``).
+    Args:
+        model: Model to check.
+    """
+    return "decision" in (model.categories or [])
 
 
 def get_backend(model: Model) -> str:

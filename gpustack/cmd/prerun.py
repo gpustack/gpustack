@@ -302,6 +302,11 @@ scrape_configs:
   - job_name: gpustack-proxy-worker-discovery
     scrape_interval: 5s
     proxy_url: "http://127.0.0.1:{cfg.get_proxy_port()}"
+    # The forward proxy authenticates every request, so scrapes routed
+    # through it present the derived gateway token. Prometheus sends this
+    # as the Authorization header on the proxied absolute-URI request.
+    authorization:
+      credentials: "{cfg.get_derived_gateway_token()}"
     http_sd_configs:
       - url: "http://127.0.0.1:{cfg.metrics_port}/metrics/proxy-targets"
         refresh_interval: 1m
@@ -363,6 +368,16 @@ scrape_configs:
 """
 
     prometheus_config_path.write_text(prometheus_config)
+    # The config carries the gateway token, so keep it to the services that
+    # read it. A read-only or exotic mount can refuse chmod even on a file
+    # this process just wrote; failing to tighten the mode must not take
+    # the whole server down with it.
+    try:
+        os.chmod(prometheus_config_path, 0o600)
+    except OSError as e:
+        logger.warning(
+            f"Failed to restrict permissions on {prometheus_config_path}: {e}"
+        )
 
     grafana_provisioning_dir = Path(
         os.getenv("GF_PATHS_PROVISIONING", "/etc/grafana/provisioning")

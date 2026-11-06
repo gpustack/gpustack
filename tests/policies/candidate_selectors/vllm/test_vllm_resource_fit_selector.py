@@ -2,6 +2,7 @@ from gpustack.policies.resource_view import ResourceView
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from transformers import AutoConfig, PretrainedConfig
 
 from tests.utils.mock import mock_async_session
 
@@ -11,6 +12,9 @@ from gpustack.policies.utils import (
 )
 from tests.utils.model import make_model, new_model, new_model_instance
 from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
+from gpustack.policies.candidate_selectors.base_candidate_selector import (
+    ModelParameters,
+)
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.scheduler import scheduler
 from gpustack.schemas.models import (
@@ -45,6 +49,7 @@ from tests.fixtures.workers.fixtures import (
 )
 from tests.utils.scheduler import compare_candidates
 from gpustack.utils.unit import byte_to_gib
+from gpustack.utils.model_config import safe_pretrained_config_from_dict
 
 
 def expected_candidate(
@@ -1350,7 +1355,7 @@ async def test_tp_divisibility_checks_vision_heads_for_vllm(config):
     resource_fit_selector = VLLMResourceFitSelector(
         config, m, [], resource_view=ResourceView([])
     )
-    resource_fit_selector._num_attention_heads = 0
+    resource_fit_selector._num_attention_heads = 12
     resource_fit_selector._vision_num_attention_heads = 16
     resource_fit_selector._model_params.vocab_size = None
 
@@ -1383,7 +1388,7 @@ async def test_tp_divisibility_skips_vision_heads_in_language_only_mode_for_vllm
     resource_fit_selector = VLLMResourceFitSelector(
         config, m, [], resource_view=ResourceView([])
     )
-    resource_fit_selector._num_attention_heads = 0
+    resource_fit_selector._num_attention_heads = 12
     resource_fit_selector._vision_num_attention_heads = 16
     resource_fit_selector._model_params.vocab_size = None
 
@@ -1696,6 +1701,246 @@ def test_vision_num_attention_heads(pretrained_config, expect_num):
     )
 
 
+@pytest.mark.parametrize("allow_global_access", [False, True])
+@pytest.mark.parametrize("serialized", [False, True], ids=["auto", "worker"])
+@pytest.mark.parametrize(
+    "model_type,text_config,expected_heads,expected_kv_heads",
+    [
+        (
+            "gemma4",
+            {
+                "num_attention_heads": 16,
+                "num_key_value_heads": 8,
+                "num_global_key_value_heads": 2,
+                "attention_k_eq_v": True,
+            },
+            16,
+            8,
+        ),
+        (
+            "gemma4",
+            {
+                "num_attention_heads": 8,
+                "num_key_value_heads": 2,
+                "num_hidden_layers": 42,
+                "attention_k_eq_v": False,
+            },
+            8,
+            2,
+        ),
+        ("gemma4_unified", {}, 8, 4),
+        ("diffusion_gemma", {}, 8, 4),
+        ("embedding_gemma2", {}, 4, 2),
+    ],
+    ids=["gemma4-26b", "gemma4-e4b", "unified", "diffusion", "embedding"],
+)
+@pytest.mark.asyncio
+async def test_heterogeneous_model_candidates(
+    config,
+    model_type,
+    text_config,
+    expected_heads,
+    expected_kv_heads,
+    serialized,
+    allow_global_access,
+):
+    pretrained = AutoConfig.for_model(model_type, text_config=text_config)
+    pretrained.text_config.allow_global_per_layer_attribute_access = allow_global_access
+    if serialized:
+        pretrained = safe_pretrained_config_from_dict(pretrained.to_dict())
+    model = make_model(1, backend=BackendEnum.VLLM)
+    selector = VLLMResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    worker = linux_nvidia_1_4090_24gx1()
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=pretrained),
+        ),
+        patch(
+            "gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram",
+            new=AsyncMock(return_value=2 * 1024**3),
+        ),
+    ):
+        candidates = await selector.select_candidates([worker])
+
+    assert len(candidates) == 1
+    assert selector._model_params.num_attention_heads == expected_heads
+    assert selector._model_params.num_key_value_heads == expected_kv_heads
+    assert selector._model_params.head_dim == 512
+    if not serialized:
+        assert (
+            pretrained.text_config.allow_global_per_layer_attribute_access
+            == allow_global_access
+        )
+
+
+@pytest.mark.parametrize("model_type", ["llama", "qwen3"])
+def test_homogeneous_model_parameters(model_type):
+    pretrained = AutoConfig.for_model(model_type)
+    params = ModelParameters()
+
+    params.from_model_pretrained_config(make_model(), pretrained)
+
+    assert params.num_attention_heads == pretrained.num_attention_heads
+    assert params.num_attention_heads_per_layer is None
+    assert params.num_key_value_heads == pretrained.num_key_value_heads
+    assert params.head_dim == (
+        pretrained.head_dim or pretrained.hidden_size // pretrained.num_attention_heads
+    )
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["text", "multimodal"])
+@pytest.mark.parametrize(
+    "attention_config,expected_kv_heads,expected_head_dim",
+    [
+        (
+            {
+                "num_key_value_heads": None,
+                "per_layer_config": {"1": {"num_key_value_heads": 4}},
+            },
+            16,
+            256,
+        ),
+        ({"per_layer_config": {"1": {"num_attention_heads": 32}}}, 4, 256),
+        (
+            {"head_dim": None, "per_layer_config": {"1": {"head_dim": 128}}},
+            4,
+            256,
+        ),
+        (
+            {
+                "num_key_value_heads": None,
+                "head_dim": None,
+                "per_layer_config": {
+                    "1": {
+                        "num_attention_heads": 32,
+                        "num_key_value_heads": 4,
+                        "head_dim": 128,
+                    }
+                },
+            },
+            16,
+            256,
+        ),
+        (
+            {
+                "head_dim": 128,
+                "per_layer_config": {"1": {"num_attention_heads": 32}},
+            },
+            4,
+            128,
+        ),
+        (
+            {
+                "num_key_value_heads": None,
+                "per_layer_config": {"1": {"num_attention_heads": 32}},
+            },
+            32,
+            256,
+        ),
+        (
+            {
+                "num_key_value_heads": None,
+                "head_dim": None,
+                "per_layer_config": {"1": {"head_dim": 128}},
+            },
+            16,
+            256,
+        ),
+    ],
+    ids=[
+        "optional-kv",
+        "derived-dim",
+        "optional-dim",
+        "combined",
+        "explicit-dim",
+        "global-kv-varying-heads",
+        "global-kv-varying-dim",
+    ],
+)
+def test_worker_heterogeneous_attention_defaults(
+    attention_config, expected_kv_heads, expected_head_dim, wrapped
+):
+    raw_config = {
+        "model_type": "llama",
+        "num_hidden_layers": 2,
+        "hidden_size": 4096,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 4,
+        "max_position_embeddings": 8192,
+        **attention_config,
+    }
+    if wrapped:
+        raw_config = {"text_config": raw_config}
+    pretrained = safe_pretrained_config_from_dict(raw_config)
+    params = ModelParameters()
+
+    params.from_model_pretrained_config(make_model(), pretrained)
+
+    assert params.num_key_value_heads == expected_kv_heads
+    assert params.head_dim == expected_head_dim
+
+
+@pytest.mark.parametrize("tp_size,invalid_heads", [(8, None), (64, 96), (96, 64)])
+@pytest.mark.asyncio
+async def test_heterogeneous_attention_heads_tp_divisibility(
+    config, tp_size, invalid_heads
+):
+    pretrained = PretrainedConfig(
+        architectures=["TestForCausalLM"],
+        text_config={
+            "num_hidden_layers": 2,
+            "num_attention_heads": 64,
+            "vocab_size": 98304,
+            "per_layer_config": {1: {"num_attention_heads": 96}},
+        },
+    )
+    selector = VLLMResourceFitSelector(
+        config,
+        make_model(1, backend=BackendEnum.VLLM),
+        [],
+        resource_view=ResourceView([]),
+    )
+    with patch(
+        "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+        new=AsyncMock(return_value=pretrained),
+    ):
+        await selector._init_model_parameters([])
+
+    assert selector._model_params.num_attention_heads == 96
+    assert selector._is_tp_size_divisible(tp_size) == (invalid_heads is None)
+    if invalid_heads is None:
+        assert selector._check_tp_size_divisibility(tp_size) is None
+    else:
+        assert selector._check_tp_size_divisibility(tp_size) == (
+            f"Total number of attention heads ({invalid_heads})"
+            f" must be divisible by tensor parallel size ({tp_size})."
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_parameters_preserve_unrelated_config_errors(config):
+    class InvalidConfig:
+        @property
+        def num_key_value_heads(self):
+            raise RuntimeError("invalid configuration")
+
+    selector = VLLMResourceFitSelector(
+        config,
+        make_model(1, backend=BackendEnum.VLLM),
+        [],
+        resource_view=ResourceView([]),
+    )
+    with patch(
+        "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+        new=AsyncMock(return_value=InvalidConfig()),
+    ):
+        with pytest.raises(ValueError, match="invalid configuration"):
+            await selector._init_model_parameters([])
+
+
 @pytest.mark.parametrize(
     "index, workers, model, expect_msg",
     [
@@ -1963,3 +2208,174 @@ async def test_a_member_is_priced_by_what_it_reserves_not_by_its_weights(config)
     assert claim.vram > selector._vram_claim * 2
     # And it is the same number the placement itself carries.
     assert sum(candidates[0].computed_resource_claim.vram.values()) == booked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('manual', [False, True])
+@pytest.mark.parametrize('local,accepted', [(None, True), (2, True), (1, False)])
+@pytest.mark.parametrize(
+    'flag',
+    [
+        '--data-parallel-external-lb',
+        '--data-parallel-multi-port-external-lb',
+        '--data-parallel-hybrid-lb',
+    ],
+)
+async def test_managed_manual_and_auto_require_the_same_complete_group(
+    config, manual, local, accepted, flag
+):
+    workers = [linux_nvidia_22_H100_80gx8(), linux_nvidia_23_H100_80gx8()]
+    for worker in workers:
+        worker.status.gpu_devices = worker.status.gpu_devices[:4]
+    parameters = [flag, '--tp=2', '--dp=4']
+    if local is not None:
+        parameters.append(f'--dpl={local}')
+    ids = [
+        f'{worker.name}:cuda:{gpu.index}'
+        for worker in workers
+        for gpu in worker.status.gpu_devices
+    ]
+    if manual:
+        workers = [linux_nvidia_22_H100_80gx8(), linux_nvidia_23_H100_80gx8()]
+    model = make_model(
+        8,
+        ids if manual else None,
+        backend=BackendEnum.VLLM,
+        backend_parameters=parameters,
+    )
+    selector = VLLMResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    selector._set_gpu_memory_utilization()
+    with (
+        patch.object(selector, '_init_model_parameters', new=AsyncMock()),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram',
+            new=AsyncMock(return_value=1),
+        ),
+    ):
+        candidates = await selector.select_candidates(workers)
+    assert bool(candidates) == accepted
+    if accepted:
+        candidate = candidates[0]
+        assert candidate.worker.id == workers[0].id
+        assert candidate.gpu_indexes == [0, 1, 2, 3]
+        assert len(candidate.subordinate_workers) == 1
+        assert candidate.subordinate_workers[0].worker_id == workers[1].id
+        assert candidate.subordinate_workers[0].gpu_indexes == [0, 1, 2, 3]
+        assert sum(candidate.computed_resource_claim.vram.values()) == sum(
+            int(gpu.memory.total * 0.9) for gpu in workers[0].status.gpu_devices[:4]
+        )
+
+
+@pytest.mark.asyncio
+async def test_hybrid_global_group_does_not_fit_one_local_allocation(config):
+    worker = linux_nvidia_22_H100_80gx8()
+    worker.status.gpu_devices = worker.status.gpu_devices[:4]
+    model = make_model(
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--data-parallel-hybrid-lb', '--tp=2', '--dp=4', '--dpl=2'],
+    )
+    selector = VLLMResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    selector._set_gpu_memory_utilization()
+    with (
+        patch.object(selector, '_init_model_parameters', new=AsyncMock()),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram',
+            new=AsyncMock(return_value=1),
+        ),
+    ):
+        assert await selector.select_candidates([worker]) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('manual', [False, True])
+@pytest.mark.parametrize('cards_per_worker', [4, 8])
+@pytest.mark.parametrize(
+    'mode', [None, 'vllm-mooncake', 'vllm-ascend-mooncake', 'vllm-nixl']
+)
+async def test_external_pd_transport_checks_candidate_rank_locality(
+    config, manual, cards_per_worker, mode
+):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    workers = [
+        linux_nvidia_22_H100_80gx8(),
+        linux_nvidia_23_H100_80gx8(),
+        linux_nvidia_24_H100_80gx8(),
+        linux_nvidia_25_H100_80gx8(),
+    ][: 16 // cards_per_worker]
+    for worker in workers:
+        worker.status.gpu_devices = worker.status.gpu_devices[:cards_per_worker]
+    ids = [
+        f'{worker.name}:cuda:{gpu.index}'
+        for worker in workers
+        for gpu in worker.status.gpu_devices
+    ]
+    model = make_model(
+        16,
+        ids if manual else None,
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--data-parallel-external-lb', '--dp=2', '--tp=8'],
+        disaggregation=DisaggregationSpec(mode=mode) if mode else None,
+    )
+    selector = VLLMResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    selector._set_gpu_memory_utilization()
+    with (
+        patch.object(selector, '_init_model_parameters', new=AsyncMock()),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram',
+            new=AsyncMock(return_value=1),
+        ),
+    ):
+        candidates = await selector.select_candidates(workers)
+    assert bool(candidates) is (mode != 'vllm-mooncake' or cards_per_worker == 8)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_offer_capacity_reserves_every_node_of_each_global_group(config):
+    from gpustack.scheduler.offer_slot import count_offer_slots
+
+    workers = [
+        linux_nvidia_22_H100_80gx8(),
+        linux_nvidia_23_H100_80gx8(),
+        linux_nvidia_24_H100_80gx8(),
+        linux_nvidia_25_H100_80gx8(),
+    ]
+    for worker in workers:
+        worker.status.gpu_devices = worker.status.gpu_devices[:4]
+    model = make_model(
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--data-parallel-hybrid-lb', '--tp=2', '--dp=4', '--dpl=2'],
+    )
+
+    def factory(instances):
+        selector = VLLMResourceFitSelector(
+            config, model, instances, resource_view=ResourceView(instances)
+        )
+        selector._set_gpu_memory_utilization()
+        return selector
+
+    with (
+        patch.object(
+            VLLMResourceFitSelector, '_init_model_parameters', new=AsyncMock()
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram',
+            new=AsyncMock(return_value=1),
+        ),
+    ):
+        result = await count_offer_slots(factory, workers, [], limit=3)
+    assert result.unavailable is None
+    assert result.slots == 2
+    assert [candidate.worker.id for candidate in result.placements] == [22, 24]
+    assert [
+        candidate.subordinate_workers[0].worker_id for candidate in result.placements
+    ] == [23, 25]
+    assert result.claim.vram == 8 * int(
+        workers[0].status.gpu_devices[0].memory.total * 0.9
+    )

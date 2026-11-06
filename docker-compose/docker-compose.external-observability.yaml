@@ -23,6 +23,10 @@ services:
       - '--web.enable-remote-write-receiver'
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Hop credential for the gpustack-proxy-worker-discovery job; see the
+      # comment on that job for what to put in it. Create the file before
+      # starting, or Docker mounts a directory in its place.
+      - ./prometheus/proxy-token:/etc/prometheus/proxy-token:ro
       - prom_data:/prometheus
 
   grafana:

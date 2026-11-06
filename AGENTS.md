@@ -42,8 +42,9 @@ Formatting and linting are enforced by pre-commit; run `make lint` before you fi
 - **flake8** (`.flake8`): `select = C,E,F,W,B,B950`, `ignore = E203,E501,W503,E701,E704`
   and pre-commit runs it with `--max-complexity=15`; that is the gate you must pass. A
   genuinely irreducible function gets `# noqa: C901` with the reason clear from context.
-- `gpustack/migrations/` and `*/generated*` are excluded from black and flake8. Match
-  the surrounding file's style there anyway.
+- `gpustack/migrations/` is excluded from black and flake8; `*/generated*` is
+  excluded from flake8. Black still formats generated files, so run lint after
+  regenerating them. Match the surrounding file's style in excluded files.
 - **shellcheck** runs over `hack/*.sh` with `-x`. New scripts start with
   `set -o errexit -o nounset -o pipefail` and source `hack/lib/init.sh`, like the
   existing ones.
@@ -114,8 +115,12 @@ Rules:
 
 ## Documentation
 
-- `docs/` is the MkDocs source and is **English-only**. A new page must also be added to
-  the `nav:` tree in `mkdocs.yml`, or it will not be published.
+- `docs/` is the English source of truth; translations use matching paths under
+  `docs-i18n/<language>/`. Preserve technical literals and English heading IDs.
+- Add published pages to `mkdocs.yml` navigation; translate labels in
+  `docs-i18n/mkdocs/<language>.yml`.
+- See [Updating Documentation](docs/contributing.md#updating-documentation) for
+  translation status, multilingual builds, deployment and live preview.
 - `README.md` is canonical; `README_CN.md` and `README_JP.md` are translations — if you
   change one meaningfully, note in the PR that the others need updating.
 

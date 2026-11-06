@@ -63,6 +63,7 @@ from gpustack.server.cache_provider_catalog import (
     get_cache_providers,
 )
 from gpustack.server.cache_service_resources import load_resource_view
+from gpustack.server.services import CacheServiceInstanceService, CacheServiceService
 from gpustack.server.db import async_session
 from gpustack.schemas.principals import OrgRole
 from gpustack.server.cache_service_metrics import (
@@ -414,7 +415,7 @@ async def delete_cache_service_instance(
     instance = await _fetch_service_instance(session, cache_service, instance_id)
 
     try:
-        await instance.delete(session)
+        await CacheServiceInstanceService(session).delete(instance)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to delete cache service instance: {e}"
@@ -1573,7 +1574,7 @@ async def delete_cache_service(session: SessionDep, ctx: TenantContextDep, id: i
         )
 
     try:
-        await cache_service.delete(session)
+        await CacheServiceService(session).delete(cache_service)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to delete cache service: {e}"

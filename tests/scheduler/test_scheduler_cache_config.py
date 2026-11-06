@@ -59,6 +59,12 @@ def _instance():
         state=ModelInstanceStateEnum.PENDING,
         state_message="",
         worker_id=None,
+        restart_count=0,
+        group_id=None,
+        spec_digest=None,
+        deleted_at=None,
+        draining_since=None,
+        distributed_servers=None,
         spans_workers=False,
         # Which role of a multi-role model this instance serves; None for a
         # single-role deployment. `_schedule_one` reads it to project the
@@ -91,12 +97,20 @@ def _schedule_patches(model, model_instance, candidate, resolve_mock, service_mo
             AsyncMock(return_value=[worker]),
         ),
         patch(
+            "gpustack.scheduler.scheduler.Worker.all_by_ids",
+            AsyncMock(return_value=[worker]),
+        ),
+        patch(
             "gpustack.scheduler.scheduler.Model.one_by_id",
             AsyncMock(return_value=model),
         ),
         patch(
             "gpustack.scheduler.scheduler.ModelInstance.one_by_id",
             AsyncMock(return_value=model_instance),
+        ),
+        patch(
+            "gpustack.scheduler.scheduler.ModelInstance.all_by_field",
+            AsyncMock(return_value=[model_instance]),
         ),
         patch(
             "gpustack.scheduler.scheduler.ModelInstance.all",
@@ -117,6 +131,9 @@ def _schedule_patches(model, model_instance, candidate, resolve_mock, service_mo
 def _worker():
     return SimpleNamespace(
         id=7,
+        cluster_id=None,
+        deleted_at=None,
+        state="ready",
         name="node-a",
         ip="10.0.0.7",
         advertise_address="10.0.0.7",

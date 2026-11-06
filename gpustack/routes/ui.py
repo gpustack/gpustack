@@ -200,6 +200,36 @@ class PrecompressedStaticFiles(StaticFiles):
         return response
 
 
+class HelpStaticFiles(PrecompressedStaticFiles):
+    """Keep an unknown documentation URL's error page in its selected language."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        try:
+            response = await super().get_response(path, scope)
+        except HTTPException as error:
+            if error.status_code != 404:
+                raise
+            response = None
+        if response is None or response.status_code == 404:
+            language = path.split("/", 1)[0]
+            if language in ("zh", "ja", "ru", "tr"):
+                full_path, stat_result = await anyio.to_thread.run_sync(
+                    self.lookup_path, f"{language}/404.html"
+                )
+                if stat_result is not None and stat.S_ISREG(stat_result.st_mode):
+                    response = FileResponse(
+                        full_path, status_code=404, stat_result=stat_result
+                    )
+                    self._apply_policy(response, path)
+        if response is None:
+            raise HTTPException(status_code=404)
+        if response.status_code == 404:
+            # A missing hashed asset is still an error page, not an immutable
+            # resource. Revalidate it so a later build can repair the URL.
+            response.headers["cache-control"] = CACHE_REVALIDATE
+        return response
+
+
 def _content_type_for(path: str) -> str:
     """The Content-Type ``path`` would get if it were served uncompressed.
 
@@ -247,7 +277,7 @@ def register(app: FastAPI):
         # each of those is a 404.
         app.mount(
             "/help",
-            PrecompressedStaticFiles(directory=help_dir, html=True),
+            HelpStaticFiles(directory=help_dir, html=True),
             name="help",
         )
     else:

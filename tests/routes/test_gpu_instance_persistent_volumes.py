@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import ConflictException, NotFoundException
+from gpustack.api.tenant import TenantContext
 from gpustack.routes import gpu_instance_persistent_volumes as pv_routes
 from gpustack.schemas.gpu_instance_persistent_volumes import (
     GPUInstancePersistentVolume,
@@ -24,11 +25,12 @@ from gpustack.schemas.gpu_instance_persistent_volumes import (
 from gpustack.schemas.gpu_instances import GPUInstance
 from gpustack.schemas.principals import PrincipalType
 
-# Bypass tenant scoping: a SYSTEM principal passes assert_org_owned_writable.
-CTX = SimpleNamespace(
-    user=SimpleNamespace(kind=PrincipalType.SYSTEM, id=1),
+# A platform admin can manage volumes across organizations.
+CTX = TenantContext(
+    user=SimpleNamespace(kind=PrincipalType.USER, id=1),
     is_platform_admin=True,
     current_principal_id=None,
+    org_role=None,
 )
 
 

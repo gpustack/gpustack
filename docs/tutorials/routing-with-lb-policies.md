@@ -6,7 +6,7 @@ This tutorial walks through GPUStack's route-level load-balancing policies in pr
 
 - A running GPUStack installation. The AI gateway that applies these policies is deployed by default with GPUStack, so a standard installation needs no extra setup.
 - Two deployed models serving as route targets, e.g. `qwen3-0.6b` and `qwen3-32b` (the examples below use these).
-- For the decision-service part: a Jev decision service registered on the `Model` - `Provider` page as a `TypeSafe Decision Service (Jev)` provider (see [Model Provider Management](../user-guide/model-provider-management.md)).
+- For the decision-service part: a decision service — either a Jev decision service registered on the `Model` - `Provider` page as a `TypeSafe Decision Service (Jev)` provider (see [Model Provider Management](../user-guide/model-provider-management.md)), or a locally deployed decision model (see [Using Decision Models](../using-models/using-decision-models.md)).
 
 ## Step 1: Create the Route
 
@@ -58,8 +58,7 @@ Note which key sources actually apply on each path: header keys (e.g. `session-i
 Now make the route model-aware: instead of always pinning a session to whichever model it started on, ask the decision engine which model each request deserves.
 
 1. Edit the route and enable `Decision Service Routing`:
-    - `Decision Service` — select the registered provider.
-    - `Decision Model` — e.g. `jev-latest`.
+    - `Decision Service` — pick the registered provider, then one of its engines (e.g. `jev-latest`), or pick a locally deployed decision model instead.
     - `Instructions` — "Pick the smallest model that can handle the request well. Simple, short or factual requests go to the fast model; complex reasoning, math or code requests go to the large model."
     - `Model Criteria` — one entry per target (or click `Generate from targets` and refine):
         - `qwen3-0.6b` — "Very fast, low-cost 0.6B model. Handles greetings, simple factual questions, formatting and short chit-chat. Fails on multi-step reasoning, math and code."

@@ -1,0 +1,19 @@
+{
+  "LiquidAI/LFM3-1.7B": {
+    "model_type": "lfm3",
+    "architectures": ["Lfm3ForCausalLM"]
+  },
+  "google-t5/t5-base": {
+    "model_type": "t5",
+    "architectures": ["T5ForConditionalGeneration"]
+  },
+  "deepseek-ai/DeepSeek-OCR": {
+    "model_type": "deepseek_vl_v2",
+    "architectures": ["DeepseekOCRForCausalLM"],
+    "auto_map": {"AutoConfig": "configuration_deepseek_vl_v2.DeepseekVLV2Config"}
+  },
+  "Tongyi-MAI/Z-Image-Turbo": {
+    "_class_name": "ZImagePipeline",
+    "_diffusers_version": "0.36.0"
+  }
+}

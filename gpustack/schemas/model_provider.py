@@ -548,6 +548,38 @@ class OpenAIConfig(BaseProviderConfig):
         chat_uri = f"{parsed_url.path.rstrip('/')}/chat/completions"
         return self.get_base_url(), chat_uri
 
+    def ai_proxy_derived_fields(self) -> Dict[str, Any]:
+        """The custom URL's path prefix as ai-proxy's generic base-path knob.
+
+        The plugin's openai provider reads ``openaiCustomUrl`` itself -- for
+        the authority and for the APIs in its capability map, whose paths get
+        the custom prefix joined in. That leaves every other request with no
+        prefix at all: paths the plugin does not map (``/v1/messages`` under
+        ``protocol: original``, ``/v1/messages/count_tokens``) are forwarded
+        as the client sent them, only the authority rewritten, and reach the
+        upstream at the bare path -- a 404 from an endpoint mounted under a
+        prefix. ``providerBasePath`` is prepended to exactly those, and never
+        doubles: it is applied after the capability mapping and skipped for a
+        path that already starts with it.
+
+        The field documents the URL as the full API base ending in ``/v1``;
+        the prefix is whatever precedes that, so a URL without it derives
+        nothing. A URL without a scheme parses as one long path -- the host
+        would then come back out as the prefix -- so it derives nothing too.
+        """
+        if not self.openaiCustomUrl:
+            return {}
+        parsed = urlparse(self.openaiCustomUrl)
+        if not parsed.scheme or not parsed.netloc:
+            return {}
+        path = parsed.path.rstrip("/")
+        if not path.endswith("/v1"):
+            return {}
+        base_path = path[: -len("/v1")]
+        if not base_path:
+            return {}
+        return {"providerBasePath": base_path}
+
 
 class OpenrouterConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.OPENROUTER]
@@ -555,14 +587,53 @@ class OpenrouterConfig(BaseProviderConfig):
 
 
 class QwenConfig(BaseProviderConfig):
+    """Qwen / DashScope, or anything that speaks its API.
+
+    ``qwenDomain`` replaces ``dashscope.aliyuncs.com`` as both the connection
+    target (the McpBridge registry, via ``get_base_url``) and the Host header
+    the plugin sends -- ai-proxy reads the field directly, ``doubaoDomain``
+    style, so there is nothing to derive. The main DashScope use case is a
+    workspace entry: the per-workspace ``maas.aliyuncs.com`` domains serve
+    APIs the legacy domain does not (image generation among them), and a
+    private Qwen-compatible entry works the same way.
+    """
+
     type: Literal[ModelProviderTypeEnum.QWEN]
     qwenEnableSearch: Optional[bool] = None
     qwenFileIds: Optional[List[str]] = None
     qwenEnableCompatible: Optional[bool] = None
+    qwenDomain: Optional[str] = None
     _public_endpoint: str = "dashscope.aliyuncs.com"
     _model_uri = "/compatible-mode/v1/models"
     _chat_uri = "/compatible-mode/v1/chat/completions"
     _default_override = {"qwenEnableCompatible": True}
+
+    @field_validator("qwenDomain")
+    @classmethod
+    def normalize_qwen_domain(cls, value: Optional[str]) -> Optional[str]:
+        """Reduce a pasted URL to the bare authority the field stores.
+
+        The provider always speaks https and only the host (with an
+        optional port) is ever read, so a scheme, a path, or credentials
+        left in the value would produce a ``https://https://`` base URL
+        and a registry nothing can connect to. The intent of a pasted URL
+        is unambiguous, so they are stripped rather than rejected.
+        """
+        if value is None:
+            return value
+        value = value.strip()
+        if "://" in value:
+            parsed = urlparse(value)
+            if not parsed.hostname:
+                raise ValueError(f"qwenDomain has no usable host in {value!r}")
+            if parsed.port:
+                return f"{parsed.hostname}:{parsed.port}"
+            return parsed.hostname
+        return value.split("/", 1)[0]
+
+    def get_base_url(self) -> Optional[str]:
+        domain = self.qwenDomain or self._public_endpoint
+        return f"{self._default_schema}://{domain}"
 
 
 class SparkConfig(BaseProviderConfig):

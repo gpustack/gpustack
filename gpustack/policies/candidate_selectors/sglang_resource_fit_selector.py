@@ -1,10 +1,12 @@
 import logging
 from collections import defaultdict
+from dataclasses import replace
 from typing import Dict, List, Optional, Tuple
 from transformers.utils import strtobool
 
 from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack.policies.resource_view import ResourceView
+from gpustack.policies.lookup_table import estimate_offloaded_lookup_bytes
 from gpustack.policies.candidate_selectors.base_candidate_selector import (
     EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
     EVENT_ACTION_AUTO_SINGLE_GPU,
@@ -35,6 +37,7 @@ from gpustack.schemas.models import (
     Model,
     ModelInstanceSubordinateWorker,
     CategoryEnum,
+    ROUTER_DEFAULT_MEMORY,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.config import Config
@@ -44,8 +47,33 @@ from gpustack.utils.command import (
     find_int_parameter,
 )
 from gpustack.utils.unit import byte_to_gib, byte_to_mib
+from gpustack.utils.model_instance_workers import sglang_parallelism
+
+
+def reserve_sglang_smg_ram(
+    candidates, selector
+) -> List[ModelInstanceScheduleCandidate]:
+    """Add one CPU router's RAM to each feasible primary, leaving Engines unchanged."""
+    result = []
+    for candidate in candidates:
+        ram = (candidate.computed_resource_claim.ram or 0) + ROUTER_DEFAULT_MEMORY
+        available = selector.get_worker_allocatable_resource(
+            candidate.worker, candidate.gpu_type
+        )
+        if ram_not_enough(ram, available):
+            continue
+        reserved = replace(
+            candidate,
+            computed_resource_claim=candidate.computed_resource_claim.model_copy(
+                update={"ram": ram}
+            ),
+        )
+        result.append(reserved)
+    return result
+
 
 logger = logging.getLogger(__name__)
+_EVENT_ACTION_RAM_NOT_ENOUGH = "ram_not_enough"
 
 
 class SGLangResourceFitSelector(ScheduleCandidatesSelector):
@@ -56,11 +84,14 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         model_instances: List[ModelInstance],
         *,
         resource_view: ResourceView,
+        managed_sglang: bool = False,
     ):
         super().__init__(cfg, model, model_instances, resource_view=resource_view)
+        self._managed_sglang = managed_sglang
 
         self._vram_claim = 0
         self._ram_claim = 0
+        self._offloaded_ram = 0
         self._messages = []
         self._event_collector = EventCollector(self._model, logger)
 
@@ -124,9 +155,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         dp = find_int_parameter(
             model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
         )
-        dp_attention = find_bool_parameter(
-            model.backend_parameters, ["enable-dp-attention"]
-        )
+        ranks, _, dp_attention = sglang_parallelism(model.backend_parameters)
+        if dp is not None:
+            dp = ranks
         if dp_attention:
             # For DP attention, it's using the TP group GPUs for data parallelism.
             # So we don't need to consider DP size for GPU count calculation.
@@ -183,11 +214,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             )
             or 1
         )
-        self._dp_size = (
-            find_int_parameter(
-                model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
-            )
-            or 1
+        self._dp_size, _, _enable_dp_attention = sglang_parallelism(
+            model.backend_parameters
         )
 
         enable_mixed_chunk_param = find_parameter(
@@ -216,9 +244,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     "Pipeline parallelism is not compatible with overlap schedule, speculative decoding, mixed chunked prefill."
                 )
 
-        _enable_dp_attention = find_bool_parameter(
-            model.backend_parameters, ["enable-dp-attention"]
-        )
         if self._dp_size and int(self._dp_size) > 1 and nnodes != 1:
             if not _enable_dp_attention:
                 raise ValueError(
@@ -259,10 +284,16 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             EVENT_ACTION_AUTO_SINGLE_GPU: "",
         }
 
+        ram_messages = []
         for event in self._event_collector.events:
-            event_messages[event.action] = event.message
+            if event.action == _EVENT_ACTION_RAM_NOT_ENOUGH:
+                ram_messages.append(event.message)
+            else:
+                event_messages[event.action] = event.message
 
         messages = event_messages[EVENT_ACTION_DEFAULT] + "\n"
+        if ram_messages:
+            messages += str(ListMessageBuilder(ram_messages)) + "\n"
         for action in [
             EVENT_ACTION_MANUAL_MULTI,
             EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
@@ -297,10 +328,22 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             )
         else:
             self.cal_mem_fraction_static(workers)
-            self._vram_claim = await estimate_model_vram(
-                self._model, self._config.huggingface_token, workers
+            self._offloaded_ram = estimate_offloaded_lookup_bytes(
+                self._model, self._pretrained_config
             )
-        self._ram_claim = get_model_ram_claim(self._model)
+            estimate_kwargs = (
+                {"offloaded_weights": self._offloaded_ram}
+                if self._offloaded_ram
+                else {}
+            )
+            self._vram_claim = await estimate_model_vram(
+                self._model, self._config.huggingface_token, workers, **estimate_kwargs
+            )
+        # Reserve one full table set per worker, assuming local DP sharing.
+        # Pinned and file-backed storage use the same budget. File-backed tables
+        # may use less resident RAM; dynamic residency and reclaimable page cache
+        # are not modeled. Users can override the RAM claim if needed.
+        self._ram_claim = get_model_ram_claim(self._model, self._offloaded_ram)
 
         logger.info(
             f"Calculated SGLang resource claim for model {self._model.readable_source}, "
@@ -347,6 +390,13 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             )
 
             candidates = candidate_func(workers)
+            if self._managed_sglang and candidates:
+                candidates = reserve_sglang_smg_ram(candidates, self)
+                if not candidates:
+                    self._add_message(
+                        "The primary Worker requires an additional "
+                        f"{byte_to_gib(ROUTER_DEFAULT_MEMORY):g} GiB of RAM for SMG."
+                    )
 
             if len(candidates) == 1 and candidates[0].overcommit:
                 self._set_messages()
@@ -356,6 +406,34 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         self._set_messages()
         return []
+
+    def _compute_ram_claim(
+        self, vram_claim: Dict[int, int], static_ram: Optional[int] = None
+    ) -> Optional[int]:
+        """Add table storage to the local cache, honoring the total RAM override.
+
+        With offloaded tables, recompute from the candidate's VRAM reservation
+        because static_ram does not include a ratio-sized KV cache.
+        """
+        return get_computed_ram_claim(
+            self._model,
+            vram_claim,
+            static_ram if not self._offloaded_ram else None,
+            offloaded_ram=self._offloaded_ram,
+        )
+
+    def _worker_ram_fits(
+        self, worker: Worker, vram_claim: Dict[int, int], gpu_type: Optional[str]
+    ) -> bool:
+        """Check the worker's full RAM claim and retain its refusal reason."""
+        message = self._worker_ram_overcommit_message(
+            worker, self._compute_ram_claim(vram_claim), gpu_type
+        )
+        if message:
+            self._event_collector.add(
+                EventLevelEnum.INFO, _EVENT_ACTION_RAM_NOT_ENOUGH, message
+            )
+        return not message
 
     def cal_mem_fraction_static(self, workers: List[Worker]):
         """Calculate mem_fraction_static for SGLang for all type gpus."""
@@ -460,7 +538,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
 
-        if ram_not_enough(self._ram_claim, allocatable):
+        if not self._worker_ram_fits(worker, {}, gpu_type):
             return []
 
         if not worker.status.gpu_devices:
@@ -510,6 +588,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 request=request_usage,
                 gpu_type=gpu_type,
             )
+            if not self._worker_ram_fits(worker, vram_claim, gpu_type):
+                continue
             candidates.append(
                 ModelInstanceScheduleCandidate(
                     worker=worker,
@@ -517,7 +597,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     gpu_indexes=[gpu_index],
                     computed_resource_claim=ComputedResourceClaim(
                         vram=vram_claim,
-                        ram=get_computed_ram_claim(self._model, vram_claim),
+                        ram=self._compute_ram_claim(vram_claim),
                         vram_utilization=self._mem_fraction_static_by_gpu_type.get(
                             gpu_type
                         ),
@@ -569,6 +649,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
     ) -> List[ModelInstanceScheduleCandidate]:
         """Find single worker multi GPU candidates for a specific worker."""
         if not worker.status.gpu_devices or len(worker.status.gpu_devices) < 2:
+            return []
+        if not self._worker_ram_fits(worker, {}, gpu_type):
             return []
 
         # SGLang performs VRAM balancing checks. We group all GPUs based on available VRAM capacity
@@ -645,6 +727,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     break
 
             if found_candidate:
+                if not self._worker_ram_fits(worker, vram_claim, gpu_type):
+                    continue
                 # Same reason as the single-GPU scan above: `get_resource_claim`
                 # quotes this in a group's refusal, and a multi-GPU member
                 # without it falls back to the weights estimate — smaller than
@@ -657,7 +741,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                         gpu_indexes=gpu_indexes,
                         computed_resource_claim=ComputedResourceClaim(
                             vram=vram_claim,
-                            ram=get_computed_ram_claim(self._model, vram_claim),
+                            ram=self._compute_ram_claim(vram_claim),
                             vram_utilization=self._mem_fraction_static_by_gpu_type.get(
                                 gpu_type
                             ),
@@ -813,9 +897,14 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             for worker in worker_group:
                 allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
 
-                if ram_not_enough(self._ram_claim, allocatable):
-                    # The RAM resource(for extended KV cache) is required per worker.
-                    # Skip the worker if it does not satisfy the RAM requirement.
+                vram_claim = {
+                    gpu.index: int(
+                        gpu.memory.total
+                        * self._mem_fraction_static_by_gpu_type.get(gpu_type)
+                    )
+                    for gpu in worker.status.gpu_devices
+                }
+                if not self._worker_ram_fits(worker, vram_claim, gpu_type):
                     continue
 
                 if not self._is_diffusion and any(
@@ -847,6 +936,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                             self._model,
                             selected_workers,
                             self._mem_fraction_static_by_gpu_type.get(gpu_type),
+                            offloaded_ram=self._offloaded_ram,
                         )
                     ]
             if vram_sum > largest_vram:
@@ -887,6 +977,8 @@ def _create_candidate(
     model: Model,
     selected_workers: List[Worker],
     mem_fraction_static: float = 0.9,
+    *,
+    offloaded_ram: int = 0,
 ) -> ModelInstanceScheduleCandidate:
     """Create a candidate with SGLang-specific parameters and primary node confirmation."""
     if not selected_workers:
@@ -927,7 +1019,9 @@ def _create_candidate(
                 gpu_indexes=gpu_indexes,
                 computed_resource_claim=ComputedResourceClaim(
                     vram=vram_claim,
-                    ram=get_computed_ram_claim(model, vram_claim),
+                    ram=get_computed_ram_claim(
+                        model, vram_claim, offloaded_ram=offloaded_ram
+                    ),
                     vram_utilization=mem_fraction_static,
                 ),
             )
@@ -935,7 +1029,9 @@ def _create_candidate(
 
     computed_resource_claim = ComputedResourceClaim(
         vram=primary_vram_claim,
-        ram=get_computed_ram_claim(model, primary_vram_claim),
+        ram=get_computed_ram_claim(
+            model, primary_vram_claim, offloaded_ram=offloaded_ram
+        ),
     )
 
     return ModelInstanceScheduleCandidate(
@@ -986,8 +1082,8 @@ class MemFractionStaticCalculator:
         self._cuda_graph_max_bs = find_int_parameter(
             self._model.backend_parameters, ["cuda-graph-max-bs"]
         )
-        self._enable_dp_attention = find_bool_parameter(
-            model.backend_parameters, ["enable-dp-attention"]
+        self._dp_size, _, self._enable_dp_attention = sglang_parallelism(
+            model.backend_parameters
         )
         self._speculative_algorithm = find_parameter(
             model.backend_parameters, ["speculative-algorithm"]
@@ -1004,13 +1100,6 @@ class MemFractionStaticCalculator:
             )
             or 1
         )
-        self._dp_size = (
-            find_int_parameter(
-                model.backend_parameters, ["dp-size", "data-parallel-size", "dp"]
-            )
-            or 1
-        )
-
         self._max_pp_size = max(
             self._pp_size,
             len(

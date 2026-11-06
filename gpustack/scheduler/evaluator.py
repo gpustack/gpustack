@@ -16,6 +16,7 @@ from gpustack.api.exceptions import HTTPException
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.config.config import Config
 from gpustack.policies.base import ModelInstanceScheduleCandidate
+from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack import envs
 from gpustack.routes.models import validate_model_in
 from gpustack.scheduler import scheduler
@@ -40,6 +41,7 @@ from gpustack.schemas.models import (
     is_gguf_model,
     is_audio_model,
     role_container_resources,
+    role_effective_model,
     role_takes_no_accelerator,
 )
 from gpustack.schemas.principals import _platform_principal_id
@@ -65,7 +67,7 @@ from gpustack.scheduler.group_solver import (
 from gpustack.topology.tree import TopologyError
 from gpustack.topology.view import build_view
 from gpustack.schemas.workers import GPUDeviceStatus, Worker, WorkerStateEnum
-from gpustack.server.worker_selector import WorkerSelector
+from gpustack.server.worker_selector import WorkerPathCheckError, WorkerSelector
 
 from gpustack.utils.gpu import (
     all_gpu_match,
@@ -358,7 +360,7 @@ async def evaluate_model(
 ) -> ModelEvaluationResult:
     result = ModelEvaluationResult()
 
-    if await set_default_spec(session, model):
+    if await set_default_spec(session, model, workers):
         result.default_spec = model.model_copy()
 
     await set_gguf_model_file_path(config, model)
@@ -663,7 +665,9 @@ async def evaluate_group(
                 role, [summarize_candidate_resource_claim(c) for c in candidates]
             )
         )
-        already.extend(stand_in(c) for c in candidates)
+        already.extend(
+            stand_in(c, role_effective_model(group_model, role)) for c in candidates
+        )
 
     claims.extend(free_claims)
     claims.sort(key=lambda claim: order.get(claim.role, len(order)))
@@ -1178,13 +1182,11 @@ async def evaluate_model_metadata(
                                 "Please ensure the model file is accessible from at least one node."
                             ]
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to check path on workers: {e}, falling back to local check"
-                    )
-                    # Fallback to original warning
-                    return False, [
-                        "Failed to get model metadata. The model file path you specified does not exist."
-                    ]
+                    logger.warning(f"Failed to check path on workers: {e}")
+                    raise WorkerPathCheckError(
+                        "The model file path could not be checked on workers. "
+                        "Please check Worker connectivity and logs."
+                    ) from e
 
         if model.source in [
             SourceEnum.HUGGING_FACE,
@@ -1210,6 +1212,10 @@ async def evaluate_model_metadata(
             logger.warning(f"Ignore model evaluation error for model {model.name}: {e}")
             return True, []
 
+        if isinstance(e, WorkerPathCheckError):
+            # Unavailable checks must not become cached compatibility results.
+            raise
+
         return False, [str(e)]
 
     return True, []
@@ -1230,12 +1236,18 @@ async def evaluate_model_input(
     return True, []
 
 
-async def set_default_spec(session: AsyncSession, model: ModelSpec) -> bool:
+async def set_default_spec(
+    session: AsyncSession, model: ModelSpec, workers: List[Worker]
+) -> bool:
     """
     Set the default spec for the model if it matches the catalog spec.
     """
+    selected_workers, _ = await LabelMatchingFilter(model).filter(workers)
     model_spec_in_catalog = await get_catalog_spec_by_source_key(
-        session, model.model_source_key
+        session,
+        model.model_source_key,
+        gpus=candidate_gpus(model, selected_workers),
+        backend=model.backend,
     )
 
     modified = False
@@ -1244,11 +1256,11 @@ async def set_default_spec(session: AsyncSession, model: ModelSpec) -> bool:
             model_spec_in_catalog.backend_parameters
             and model.backend_parameters is None
         ):
-            model.backend_parameters = model_spec_in_catalog.backend_parameters
+            model.backend_parameters = model_spec_in_catalog.backend_parameters.copy()
             modified = True
 
         if model_spec_in_catalog.env and model.env is None:
-            model.env = model_spec_in_catalog.env
+            model.env = model_spec_in_catalog.env.copy()
             modified = True
 
         if model_spec_in_catalog.categories and not model.categories:

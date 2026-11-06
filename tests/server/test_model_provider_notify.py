@@ -17,6 +17,7 @@ from gpustack.schemas.model_provider import (
     ModelProvider,
     ModelProviderTypeEnum,
     OpenAIConfig,
+    QwenConfig,
 )
 from gpustack.server import controllers as controllers_module
 from gpustack.server.bus import Event, EventType
@@ -73,6 +74,20 @@ class TestProviderRouteReannounce:
         event = _config_change(
             _claude(url="http://192.168.50.14:8080"),
             _claude(url="https://gw.example.com/anthropic"),
+        )
+
+        assert await _looked_up_routes(monkeypatch, event) is True
+
+    @pytest.mark.asyncio
+    async def test_a_new_qwen_entry_reannounces(self, monkeypatch):
+        # qwenDomain decides the registry's domain, port, protocol and
+        # static-vs-dns type, the same way the other endpoint fields do.
+        event = _config_change(
+            QwenConfig(type=ModelProviderTypeEnum.QWEN),
+            QwenConfig(
+                type=ModelProviderTypeEnum.QWEN,
+                qwenDomain="dashscope-gw.example.com",
+            ),
         )
 
         assert await _looked_up_routes(monkeypatch, event) is True

@@ -19,7 +19,7 @@ from gpustack.schemas.dashboard import (
     TimeSeriesData,
 )
 from gpustack.api.exceptions import ForbiddenException
-from gpustack.api.tenant import assert_cluster_visible
+from gpustack.api.tenant import TenantContext, assert_cluster_visible
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.principals import OrgRole
@@ -33,7 +33,7 @@ from gpustack.server.system_load import compute_system_load
 router = APIRouter()
 
 
-def _resolve_dashboard_scope(ctx) -> Optional[int]:
+def _resolve_dashboard_scope(ctx: TenantContext) -> Optional[int]:
     """Owner-principal id to scope dashboard queries by, or None for
     unscoped (platform-wide).
 
@@ -62,24 +62,36 @@ async def dashboard(
     ctx: TenantContextDep,
     cluster_id: Optional[int] = None,
 ):
-    # Permission split: the cluster-detail header (Cluster Basic +
-    # System Load tiles) calls this with ``cluster_id`` and is open to
-    # any caller who can see the cluster — that's the same audience
-    # cluster-detail itself uses. The aggregate dashboard (no
-    # ``cluster_id``) is open to platform admin and to Org owners; the
-    # latter sees the same panels scoped to their org via
-    # owner_principal_id filters in each helper.
+    # Cluster visibility grants infrastructure statistics. Model activity
+    # requires dashboard permissions and is scoped to the caller's tenant.
     if cluster_id is not None:
         cluster = await Cluster.one_by_id(session, cluster_id)
         assert_cluster_visible(ctx, cluster, not_found_message="Cluster not found")
-        owner_principal_id: Optional[int] = None
-    else:
-        owner_principal_id = _resolve_dashboard_scope(ctx)
 
-    resource_counts = await get_resource_counts(session, cluster_id, owner_principal_id)
-    system_load = await get_system_load(session, cluster_id, owner_principal_id)
-    model_usage = await get_model_usage_summary(session, cluster_id, owner_principal_id)
-    active_models = await get_active_models(session, cluster_id, owner_principal_id)
+    try:
+        owner_principal_id = _resolve_dashboard_scope(ctx)
+    except ForbiddenException:
+        if cluster_id is None:
+            raise
+        owner_principal_id = None
+        model_usage = ModelUsageSummary(
+            api_request_history=[],
+            prompt_token_history=[],
+            completion_token_history=[],
+            top_users=[],
+        )
+        active_models = []
+    else:
+        model_usage = await get_model_usage_summary(
+            session, cluster_id, owner_principal_id
+        )
+        active_models = await get_active_models(session, cluster_id, owner_principal_id)
+
+    infrastructure_owner_id = owner_principal_id if cluster_id is None else None
+    resource_counts = await get_resource_counts(
+        session, cluster_id, infrastructure_owner_id
+    )
+    system_load = await get_system_load(session, cluster_id, infrastructure_owner_id)
     summary = SystemSummary(
         cluster_id=cluster_id,
         resource_counts=resource_counts,
@@ -269,9 +281,6 @@ async def get_model_usage_stats(
     if start_date is None or end_date is None:
         end_date = date.today()
         start_date = end_date - timedelta(days=31)
-    if model_ids is None and cluster_id is not None:
-        models = await Model.all_by_fields(session, fields={"cluster_id": cluster_id})
-        model_ids = [model.id for model in models]
     statement = (
         select(
             ModelUsage.date,
@@ -302,6 +311,12 @@ async def get_model_usage_stats(
     if user_ids is not None:
         statement = statement.where(col(ModelUsage.user_id).in_(user_ids))
 
+    if cluster_id is not None:
+        statement = statement.where(
+            col(ModelUsage.model_id).in_(
+                select(Model.id).where(Model.cluster_id == cluster_id)
+            )
+        )
     if owner_principal_id is not None:
         statement = statement.where(ModelUsage.owner_principal_id == owner_principal_id)
 
@@ -377,6 +392,12 @@ async def get_model_usage_summary(
         .limit(10)
     )
 
+    if cluster_id is not None:
+        statement = statement.where(
+            col(ModelUsage.model_id).in_(
+                select(Model.id).where(Model.cluster_id == cluster_id)
+            )
+        )
     if owner_principal_id is not None:
         statement = statement.where(ModelUsage.owner_principal_id == owner_principal_id)
 
@@ -561,6 +582,9 @@ def active_model_statement(
     cluster_id: Optional[int],
     owner_principal_id: Optional[int] = None,
 ) -> select:
+    usage_conditions = [Model.id == ModelUsage.model_id]
+    if owner_principal_id is not None:
+        usage_conditions.append(ModelUsage.owner_principal_id == owner_principal_id)
     usage_sum_query = (
         select(
             Model.id.label('model_id'),
@@ -568,7 +592,7 @@ def active_model_statement(
                 ModelUsage.prompt_token_count + ModelUsage.completion_token_count
             ).label('total_token_count'),
         )
-        .outerjoin(ModelUsage, Model.id == ModelUsage.model_id)
+        .outerjoin(ModelUsage, and_(*usage_conditions))
         .group_by(Model.id)
     ).alias('usage_sum')
 

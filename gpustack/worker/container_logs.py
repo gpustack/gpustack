@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import io
+import json
 import logging
 import os
 from pathlib import Path
@@ -133,7 +134,9 @@ class _LogCursor:
     record behind.
     """
 
-    def __init__(self, log_path: str):
+    def __init__(self, log_path: str, lineage: Optional[str] = None):
+        self.lineage = lineage
+        self.changed_lineage = False
         self.path = Path(f"{log_path}.cursor")
         self.epoch: Optional[int] = None
         self.count = 0
@@ -145,8 +148,16 @@ class _LogCursor:
     def load(self):
         """Read the position a previous worker process left behind."""
         try:
-            match = _CURSOR_RE.match(self.path.read_text(encoding='utf-8'))
-        except (OSError, ValueError):
+            text = self.path.read_text(encoding='utf-8')
+            if self.lineage is not None:
+                saved = json.loads(text)
+                if not isinstance(saved, dict) or saved.get('lineage') != self.lineage:
+                    self.changed_lineage = True
+                    return
+                text = _CURSOR_RECORD.format(epoch=saved['epoch'], count=saved['count'])
+            match = _CURSOR_RE.match(text)
+        except (OSError, ValueError, KeyError, TypeError):
+            self.changed_lineage = self.lineage is not None
             return
         if match:
             self.epoch = int(match.group("epoch"))
@@ -182,7 +193,13 @@ class _LogCursor:
         temporary = self.path.with_name(f"{self.path.name}.tmp")
         try:
             temporary.write_text(
-                _CURSOR_RECORD.format(epoch=self.epoch, count=self.count),
+                (
+                    json.dumps(
+                        dict(lineage=self.lineage, epoch=self.epoch, count=self.count)
+                    )
+                    if self.lineage is not None
+                    else _CURSOR_RECORD.format(epoch=self.epoch, count=self.count)
+                ),
                 encoding='utf-8',
             )
             os.replace(temporary, self.path)
@@ -291,6 +308,7 @@ class ContainerLogPersister:
         stop_event: threading.Event,
         token: Optional[str] = None,
         resume: bool = False,
+        lineage: Optional[str] = None,
     ):
         """Persist container logs to local file (runs in a separate thread).
 
@@ -311,9 +329,19 @@ class ContainerLogPersister:
                 appending to it instead of rewriting it from the runtime's replay.
         """
         retry_count = 0
-        cursor = _LogCursor(log_path)
+        cursor = _LogCursor(log_path, lineage)
         if resume:
             cursor.load()
+        if (
+            lineage is not None
+            and not stop_event.is_set()
+            and cursor.changed_lineage
+            and not _log_archive_is_empty(log_path)
+        ):
+            with CappedLogWriter(log_path, append=True) as archive:
+                archive.write(
+                    f"\n[GPUStack log source] component=sglang_smg runtime={lineage}\n"
+                )
 
         while not stop_event.is_set():
             try:
@@ -404,7 +432,7 @@ class ContainerLogPersister:
             # A cursor into an archive that is gone would relocate into a log
             # that no longer exists.
             cursor.clear()
-        elif cursor.epoch is None:
+        elif cursor.epoch is None and cursor.lineage is None:
             # An archive written before the cursor existed says nothing about
             # where it ends. Resuming here keeps it whole, at the cost of
             # whatever was logged meanwhile -- which the marker announces.

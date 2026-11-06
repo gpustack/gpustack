@@ -13,6 +13,7 @@ from transformers import PretrainedConfig
 
 from gpustack_runner.runner import BackendVersionedRunner
 from gpustack_runtime.deployer import (
+    ContainerFile,
     ContainerResources,
     ContainerMount,
     ContainerMountModeEnum,
@@ -47,26 +48,42 @@ from gpustack.schemas.runner_source import (
     merged_backend_runners,
 )
 from gpustack.schemas.models import (
+    member_worker_ids,
     get_backend,
     role_container_resources,
     role_takes_no_accelerator,
     BackendEnum,
     Model,
+    ModelConfigSnapshot,
     ModelInstance,
+    ModelInstanceLaunchIdentity,
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
     ModelUpdate,
     ModelInstanceDeploymentMetadata,
     role_effective_model,
 )
+from gpustack.schemas.cache_providers import CACHE_ENV_RUNTIME_VARIABLES
 from gpustack.schemas.workers import GPUDevicesStatus
 from gpustack.server.bus import Event
 from gpustack.utils.command import flatten_to_argv, is_parameter_key
+from gpustack.utils.model_instance_workers import (
+    get_model_instance_workloads,
+    managed_instance_update,
+    requires_group_recovery,
+    calculate_group_recovery_policy,
+    build_member_state_report,
+    model_instance_legacy_stop,
+)
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars
 from gpustack.utils.template import deployment_variables, render, render_values
-from gpustack.utils.hub import get_hf_text_config, get_max_model_len
-from gpustack.utils.hub import get_pretrained_config, safe_pretrained_config_from_dict
+from gpustack.utils.hub import get_pretrained_config
+from gpustack.utils.model_config import (
+    get_hf_text_config,
+    get_max_model_len,
+    safe_pretrained_config_from_dict,
+)
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
 from gpustack.utils.version import pick_runtime_version
@@ -74,6 +91,11 @@ from gpustack.utils.runtime import transform_workload_plan
 from gpustack.worker.pd_injection import PDInjection, render_pd_injection
 
 logger = logging.getLogger(__name__)
+
+PD_CONFIGURATION_CHANGED_MESSAGE = (
+    "Configuration changed; stop the deployment, wait for all instances to be "
+    "removed, then start it to rebuild the whole group."
+)
 
 # Distinguishes "the caller said nothing" from "the caller said None". A
 # managed router legitimately has no backend row of its own, and passing None
@@ -260,6 +282,30 @@ class InferenceServer(ABC):
 
             self._until_model_instance_starting()
 
+            if self._model_instance.worker_id == worker_id:
+                try:
+                    self._model_config_snapshot.launch_identity = (
+                        ModelInstanceLaunchIdentity(
+                            instance_id=self._model_instance.id,
+                            worker_id=worker_id,
+                            pid=os.getpid(),
+                            restart_count=self._model_instance.restart_count or 0,
+                        )
+                    )
+                    self._update_model_instance(
+                        self._model_instance.id,
+                        model_config_snapshot=self._model_config_snapshot,
+                    )
+                except Exception as e:
+                    # Snapshot metadata is optional for serving. Exception text
+                    # can contain configuration values, so log only its type.
+                    logger.warning(
+                        "Failed to persist model configuration snapshot for %s (%s); "
+                        "continuing inference startup",
+                        self._model_instance.name,
+                        type(e).__name__,
+                    )
+
             logger.info("Model files are ready.")
         except ModelInstanceStateError:
             sys.exit(1)
@@ -277,20 +323,35 @@ class InferenceServer(ABC):
             sys.exit(1)
 
     def _stop_when_starting(self, event: Event) -> bool:
-        if event.data["state"] == ModelInstanceStateEnum.ERROR:
+        data = event.data
+        if calculate_group_recovery_policy(self._model_instance, None) is not None:
+            current = ModelInstance.model_validate(data)
+            if (
+                (current.restart_count or 0)
+                != (self._model_instance.restart_count or 0)
+                or model_instance_legacy_stop(current) is not None
+                or current.draining_since is not None
+            ):
+                raise ModelInstanceStateError()
+            policy = self._model_instance.distributed_servers.group_recovery
+            if current.distributed_servers.group_recovery not in (None, policy):
+                raise ModelInstanceStateError()
+            current.distributed_servers.group_recovery = policy
+            data = current.model_dump()
+        if data["state"] == ModelInstanceStateEnum.ERROR:
             raise ModelInstanceStateError()
-        elif event.data["state"] == ModelInstanceStateEnum.STARTING:
-            resolved_path = event.data["resolved_path"]
+        elif data["state"] == ModelInstanceStateEnum.STARTING:
+            resolved_path = data["resolved_path"]
             if not resolved_path:
                 raise ValueError(
                     "Model instance reached STARTING without a resolved model path"
                 )
             self._model_path = str(Path(resolved_path).absolute())
-            if event.data["draft_model_resolved_path"]:
+            if data["draft_model_resolved_path"]:
                 self._draft_model_path = str(
-                    Path(event.data["draft_model_resolved_path"]).absolute()
+                    Path(data["draft_model_resolved_path"]).absolute()
                 )
-            self._model_instance = ModelInstance.model_validate(event.data)
+            self._model_instance = ModelInstance.model_validate(data)
             return True
 
         return False
@@ -300,7 +361,15 @@ class InferenceServer(ABC):
         pass
 
     def get_model(self):
-        model = self._clientset.models.get(id=self._model_instance.model_id)
+        managed = get_model_instance_workloads(self._model_instance) is not None
+        model = self._clientset.models.get(
+            id=self._model_instance.model_id,
+            use_cache=not bool(self._model_instance.group_id or managed),
+        )
+        # The subprocess reads configuration independently of the manager;
+        # an edit after its launch decision must not reach the container.
+        if self._model_instance.group_id and getattr(model, "stale", None) is True:
+            raise RuntimeError(PD_CONFIGURATION_CHANGED_MESSAGE)
         # Keep the model as the server holds it, for the one path that writes
         # back: a projection must never be persisted, and a PUT built from one
         # would push a role's overrides up to the Model-level spec.
@@ -312,6 +381,23 @@ class InferenceServer(ABC):
         # `{data_dir}` substitution, which they would miss the other way
         # round.
         model = role_effective_model(model, self._model_instance.role)
+        policy = calculate_group_recovery_policy(self._model_instance, model)
+        if policy is not None:
+            current = self._clientset.model_instances.get(
+                id=self._model_instance.id, use_cache=False
+            )
+            if (current.restart_count or 0) != (
+                self._model_instance.restart_count or 0
+            ):
+                raise ModelInstanceStateError()
+            self._model_instance = ModelInstance.model_validate(current.model_dump())
+            if current.distributed_servers.group_recovery != policy:
+                raise RuntimeError('Launch configuration differs from recovery policy')
+        # Freeze user inputs before substitutions and command builders mutate
+        # the effective model. Reports must describe this launch's inputs.
+        self._model_config_snapshot = ModelConfigSnapshot.model_validate(
+            model, from_attributes=True
+        ).model_copy(deep=True)
         data_dir = self._config.data_dir
         for i, param in enumerate(model.backend_parameters or []):
             model.backend_parameters[i] = param.replace("{data_dir}", data_dir)
@@ -326,7 +412,24 @@ class InferenceServer(ABC):
         )
 
     def _update_model_instance(self, id: int, **kwargs):
+        if requires_group_recovery(self._model_instance, getattr(self, '_model', None)):
+            return self._clientset.model_instances.report_workloads(
+                id=id,
+                report=build_member_state_report(
+                    self._model_instance, self._worker.id, **kwargs
+                ),
+            )
         mi_public = self._clientset.model_instances.get(id=id)
+        if get_model_instance_workloads(mi_public) is not None:
+            current = self._clientset.model_instances.get(id=id, use_cache=False)
+            if (current.restart_count or 0) != (
+                self._model_instance.restart_count or 0
+            ):
+                raise RuntimeError("Instance generation changed during preparation")
+            return self._clientset.model_instances.report_workloads(
+                id=id,
+                report=managed_instance_update(current, **kwargs),
+            )
 
         mi = ModelInstanceUpdate(**mi_public.model_dump())
         for key, value in kwargs.items():
@@ -366,6 +469,16 @@ class InferenceServer(ABC):
         Fetches the latest model instance to get the current subordinate worker state,
         then updates only this worker's entry.
         """
+        if get_model_instance_workloads(
+            self._model_instance
+        ) is not None or requires_group_recovery(
+            self._model_instance, getattr(self, '_model', None)
+        ):
+            return self._update_model_instance(
+                self._model_instance.id,
+                state=ModelInstanceStateEnum.ERROR,
+                state_message=error_message,
+            )
         mi_public = self._clientset.model_instances.get(id=self._model_instance.id)
         mi = ModelInstanceUpdate(**mi_public.model_dump())
         sw_pos = next(
@@ -408,12 +521,12 @@ class InferenceServer(ABC):
         Get the pretrained model configuration, if available.
 
         Returns:
-            The pretrained model configuration dictionary, or None if not available.
+            The pretrained model configuration object, or None if not available.
         """
         if self._pretrained_config_initialized:
             return self._pretrained_config
 
-        auto_config_error: Optional[Exception] = None
+        config_load_error: Optional[Exception] = None
         try:
             pretrained_config = get_pretrained_config(self._model)
             if isinstance(pretrained_config, dict):
@@ -426,9 +539,9 @@ class InferenceServer(ABC):
             return pretrained_config
         except Exception as e:
             logger.debug(
-                f"Failed to get pretrained config via AutoConfig, falling back to local config.json. Error: {e}"
+                f"Failed to read model configuration metadata, falling back to local config.json. Error: {e}"
             )
-            auto_config_error = e
+            config_load_error = e
 
         try:
             fallback_config = self._load_pretrained_config_from_local_config_json()
@@ -438,7 +551,7 @@ class InferenceServer(ABC):
         except Exception as e:
             raise RuntimeError(
                 "Failed to load pretrained config. "
-                f"AutoConfig error: {auto_config_error}. "
+                f"Configuration metadata error: {config_load_error}. "
                 f"Local config.json fallback error: {e}."
             ) from e
 
@@ -477,7 +590,9 @@ class InferenceServer(ABC):
         try:
             pretrained_config = self._get_pretrained_config()
             pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
-            return get_max_model_len(pretrained_or_hf_text_config)
+            return get_max_model_len(
+                pretrained_or_hf_text_config, fallback_config=pretrained_config
+            )
         except Exception as e:
             logger.warning(
                 f"Failed to derive max model length: {e}, continuing with default"
@@ -537,7 +652,9 @@ class InferenceServer(ABC):
         variables.update(overrides)
         return variables
 
-    def _pd_injection(self) -> Optional[PDInjection]:
+    def _pd_injection(
+        self, *, dp_rank: Optional[int] = None, port: Optional[int] = None
+    ) -> Optional[PDInjection]:
         """What this instance's PD role adds to its launch, or None when the
         deployment is not disaggregated — in which case every seam below falls
         through to the path it takes today, byte for byte.
@@ -550,7 +667,7 @@ class InferenceServer(ABC):
         failure. The injector re-derives the running role's own effective
         values itself.
         """
-        if self._pd_injection_resolved:
+        if dp_rank is None and self._pd_injection_resolved:
             return self._pd_injection_cache
 
         model = self._model_spec or getattr(self, "_model", None)
@@ -568,6 +685,9 @@ class InferenceServer(ABC):
         # Marked resolved only once it is: a refused injection raises, and
         # caching "nothing to inject" for the seams that come after would turn
         # that hard failure into the silent aggregated start it exists to stop.
+        if dp_rank is not None:
+            variables.update(dp_rank=dp_rank, port=port)
+            return render_pd_injection(model, instance, variables, dp_rank=dp_rank)
         injection = render_pd_injection(model, instance, variables)
         self._pd_injection_cache = injection
         self._pd_injection_resolved = True
@@ -586,6 +706,7 @@ class InferenceServer(ABC):
             apply_managed_router,
             group_peer_addresses,
             is_managed_router,
+            static_hybrid_router_variables,
         )
 
         instance = self._model_instance
@@ -597,20 +718,28 @@ class InferenceServer(ABC):
         )
         members = getattr(siblings, "items", siblings) or []
         worker_ips = {}
-        for member in members:
-            if member.worker_id and member.worker_id not in worker_ips:
-                try:
-                    worker = self._clientset.workers.get(id=member.worker_id)
-                    if worker and worker.ip:
-                        worker_ips[member.worker_id] = worker.ip
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to resolve worker {member.worker_id} "
-                        f"while rendering the router: {e}"
-                    )
+        for worker_id in sorted(
+            {owner_id for member in members for owner_id in member_worker_ids(member)}
+        ):
+            try:
+                worker = self._clientset.workers.get(id=worker_id)
+                if worker and worker.ip:
+                    worker_ips[worker_id] = worker.ip
+            except Exception as e:
+                logger.warning(
+                    f"Failed to resolve worker {worker_id} "
+                    f"while rendering the router: {e}"
+                )
 
         peers = group_peer_addresses(members, instance.group_id, worker_ips)
         variables = self._template_variables(**self._pd_template_variables())
+        variables.update(
+            static_hybrid_router_variables(
+                getattr(self, "_model_spec", None) or model,
+                members,
+                instance.group_id,
+            )
+        )
         # A router's own named bands. The engine roles get these from the
         # injector, which builds its own context; the router does not go
         # through the injector at all, so without this its
@@ -636,6 +765,11 @@ class InferenceServer(ABC):
                     members, instance.group_id, worker_ips
                 ),
             )
+        # Managed routers receive their launch configuration from the catalog,
+        # including parameters that replace inherited engine arguments.
+        self._model_config_snapshot = ModelConfigSnapshot.model_validate(
+            rendered, from_attributes=True
+        ).model_copy(deep=True)
         return rendered
 
     def _net_device_plane(self):
@@ -1200,12 +1334,8 @@ class InferenceServer(ABC):
                 ),
             )
 
-        # The PD recipe's host mounts, unlike the model directory, apply under
-        # mirrored deployment too: mirroring copies what the *worker* container
-        # happens to have, and a transport's host file is a property of the
-        # recipe rather than of how the worker was launched. The runtime merges
-        # explicit mounts with mirrored ones and keeps the explicit entry, so
-        # naming a path the worker already carries is harmless.
+        # Recipe directories are required even when the worker's own mounts
+        # are mirrored. Explicit mounts take precedence over mirrored mounts.
         pd_injection = self._pd_injection()
         if pd_injection and pd_injection.host_mounts:
             declared = {m.path for m in mounts}
@@ -1219,6 +1349,18 @@ class InferenceServer(ABC):
                     ),
                 )
         return mounts
+
+    def _get_configured_files(self) -> List[ContainerFile]:
+        """Bind the PD role's host files read-only, including in mirrored deployments.
+
+        Returns:
+            Host file bindings without generated or copied contents.
+        """
+        injection = self._pd_injection()
+        return [
+            ContainerFile(path=path, mode=0o444)
+            for path in (injection.host_files if injection else [])
+        ]
 
     def _get_configured_ports(self) -> List[ContainerPort]:
         """
@@ -1295,6 +1437,16 @@ class InferenceServer(ABC):
             else self._model_instance.port
         )
 
+    def _render_cache_injection_env(
+        self, env: Optional[Dict[str, str]]
+    ) -> Dict[str, str]:
+        """Resolve cache env placeholders from the current worker's attributes."""
+        variables = {
+            name: getattr(self._worker, attribute)
+            for name, attribute in CACHE_ENV_RUNTIME_VARIABLES.items()
+        }
+        return render_values(env, variables) or {}
+
     def _cache_injection_files(self) -> dict[str, str]:
         """Connector config files (container path -> contents) the serving
         script writes before the engine starts — for a connector that reads
@@ -1313,7 +1465,14 @@ class InferenceServer(ABC):
             files.update(cache_config.files or {})
 
         pd_injection = self._pd_injection()
-        if pd_injection and pd_injection.files:
+        if (
+            pd_injection
+            and pd_injection.files
+            and not (
+                self._model_instance.role in ("prefill", "decode")
+                and get_model_instance_workloads(self._model_instance) is not None
+            )
+        ):
             collisions = sorted(set(files) & set(pd_injection.files))
             if collisions:
                 logger.warning(
@@ -1680,6 +1839,7 @@ exec "$@"
             image_name, backend_version
 
         """
+        self._resolved_image_dependencies = None
         model = spec if spec is not None else self._model
         if inference_backend is _INHERIT:
             inference_backend = self.inference_backend
@@ -1701,6 +1861,11 @@ exec "$@"
         """
 
         def get_docker_image(bvr: BackendVersionedRunner) -> str:
+            selected = bvr.variants[0].services[0].versions[0].platforms[0]
+            dependencies = getattr(selected, "dependencies", None)
+            self._resolved_image_dependencies = (
+                dict(dependencies) if dependencies is not None else None
+            )
             return bvr.variants[0].services[0].versions[0].platforms[0].docker_image
 
         backend, runtime_version, arch_family = self._get_device_info()
@@ -1827,7 +1992,12 @@ exec "$@"
         """
         if not service_version:
             return
+        managed = get_model_instance_workloads(self._model_instance) is not None
         try:
+            if managed:
+                self._update_model_instance(
+                    self._model_instance.id, backend_version=service_version
+                )
             if not self._model.backend_version:
                 # Write the *unprojected* model back. `self._model` carries the
                 # role's overrides merged in, so sending it as a ModelUpdate
@@ -1841,7 +2011,7 @@ exec "$@"
                 spec.backend_version = service_version
                 self._model.backend_version = service_version
                 self._clientset.models.update(spec.id, ModelUpdate(**spec.model_dump()))
-            if not self._model_instance.backend_version:
+            if not managed and not self._model_instance.backend_version:
                 self._update_model_instance(
                     self._model_instance.id, backend_version=service_version
                 )
@@ -1849,6 +2019,8 @@ exec "$@"
             logger.error(
                 f"Failed to update model service version {service_version}: {e}"
             )
+            if managed:
+                raise
 
     def _flatten_backend_param(self) -> List[str]:
         """
@@ -1916,14 +2088,29 @@ exec "$@"
         return _normalize_param_format(tokens, parameter_format)
 
     def _transform_workload_plan(
-        self, workload: WorkloadPlan
+        self, workload: WorkloadPlan, *, accelerator_free: bool = False
     ) -> Union[DockerWorkloadPlan, WorkloadPlan]:
         """
         If the deployer is docker, transform the generic WorkloadPlan to DockerWorkloadPlan,
         and fill the pause image and restart image with registry override.
         """
+        if calculate_group_recovery_policy(self._model_instance, None) is not None:
+            current = self._clientset.model_instances.get(
+                id=self._model_instance.id, use_cache=False
+            )
+            if (
+                (current.restart_count or 0)
+                != (self._model_instance.restart_count or 0)
+                or current.state == ModelInstanceStateEnum.ERROR
+                or current.draining_since is not None
+                or model_instance_legacy_stop(current) is not None
+                or self._worker.id not in member_worker_ids(current)
+                or current.distributed_servers.group_recovery
+                != self._model_instance.distributed_servers.group_recovery
+            ):
+                raise ModelInstanceStateError()
         selector = getattr(self._model, "gpu_type_selector", None)
-        if selector is not None:
+        if selector is not None and not accelerator_free:
             # Hand the operator InstanceType name to the runtime; the
             # runtime's Kubernetes deployer owns queue admission from here.
             workload.instance_type = selector.type

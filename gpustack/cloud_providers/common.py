@@ -1,15 +1,19 @@
 import base64
 import hashlib
 from datetime import timezone
-from typing import Dict, Tuple, Type, Callable
+from typing import Dict, Tuple, Type, Callable, Optional
 from .abstract import ProviderClientBase, CloudInstanceCreate
 from .digital_ocean import DigitalOceanClient
 from .shuihua import ShuihuaProviderClient
-from gpustack.schemas.clusters import ClusterProvider, CloudCredential, Credential
+from gpustack.schemas.clusters import (
+    ClusterCreateBase,
+    ClusterProvider,
+    CloudCredential,
+    Credential,
+)
 from gpustack.schemas.workers import Worker
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ed25519
-
 
 factory: Dict[
     ClusterProvider,
@@ -24,6 +28,25 @@ factory: Dict[
         lambda credential: ShuihuaProviderClient(api_key=credential.secret),
     ),
 }
+
+
+def validate_cluster_credential(
+    cluster: ClusterCreateBase, credential: Optional[CloudCredential]
+) -> None:
+    """Require a live credential owned by the cluster's tenant and provider.
+
+    Background provisioning has no request context, so the persisted binding
+    must establish authorization even when no user is present.
+    """
+    if credential is None or credential.deleted_at is not None:
+        raise ValueError("Cloud credential not found")
+    if (
+        cluster.owner_principal_id is None
+        or credential.owner_principal_id != cluster.owner_principal_id
+    ):
+        raise ValueError("Cloud credential must belong to the cluster's organization")
+    if credential.provider != cluster.provider:
+        raise ValueError("Cloud credential provider must match the cluster provider")
 
 
 def get_client_from_provider(

@@ -28,6 +28,7 @@ from gpustack.schemas.model_routes import TargetStateEnum
 from gpustack.schemas.principals import Principal
 from gpustack.schemas.models import (
     DegradationReasonEnum,
+    DistributedServers,
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
@@ -714,6 +715,92 @@ async def test_route_target_goes_unavailable_when_a_group_loses_a_role():
     assert target.state == TargetStateEnum.UNAVAILABLE
 
 
+@pytest.mark.asyncio
+async def test_notify_parents_publishes_recounted_counters():
+    """The route snapshot republished on a target state change carries
+    counters derived from the target rows, not the pre-reconcile row: the
+    route row is only corrected one reconcile later (``_sync_targets``,
+    triggered by this very event), and a pre-reconcile ``ready_targets``
+    on the snapshot can regress watch-stream clients past the value the
+    REST API already returned."""
+    from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget
+
+    controller = ModelRouteTargetController(config=MagicMock())
+    target = SimpleNamespace(
+        id=3,
+        name="t",
+        route_id=1,
+        model_id=1,
+        provider_id=None,
+        state=TargetStateEnum.ACTIVE,
+    )
+    route = ModelRoute(id=1, name="r1", targets=2, ready_targets=0)
+    route.route_targets = [
+        ModelRouteTarget(
+            id=11,
+            name="r1-aaaaa",
+            route_name="r1",
+            route_id=1,
+            model_id=1,
+            state=TargetStateEnum.ACTIVE,
+        ),
+        ModelRouteTarget(
+            id=12,
+            name="r1-bbbbb",
+            route_name="r1",
+            route_id=1,
+            model_id=2,
+            state=TargetStateEnum.UNAVAILABLE,
+        ),
+        # an ACTIVE row retired via soft delete must not count
+        ModelRouteTarget(
+            id=13,
+            name="r1-ccccc",
+            route_name="r1",
+            route_id=1,
+            model_id=3,
+            state=TargetStateEnum.ACTIVE,
+            deleted_at=datetime(2026, 1, 1),
+        ),
+    ]
+    published = []
+
+    async def fake_publish(topic, event):
+        published.append((topic, event))
+
+    with (
+        patch(
+            "gpustack.server.controllers.ModelRoute.one_by_id",
+            AsyncMock(return_value=route),
+        ),
+        patch(
+            "gpustack.server.controllers.event_bus.publish",
+            new=fake_publish,
+        ),
+        patch(
+            "gpustack.server.controllers.notify_model_ai_proxy_change",
+            AsyncMock(),
+        ),
+    ):
+        await controller._notify_parents(
+            MagicMock(),
+            target,
+            Event(
+                type=EventType.UPDATED,
+                data=target,
+                changed_fields={
+                    "state": (TargetStateEnum.UNAVAILABLE, TargetStateEnum.ACTIVE)
+                },
+            ),
+        )
+
+    assert published[0][0] == "modelroute"
+    copied = published[0][1].data
+    # derived from the loaded target rows, overriding the row's stale 0
+    assert copied.targets == 2
+    assert copied.ready_targets == 1
+
+
 # --- what the "state means servable, degradation sits beside it" choice buys
 
 
@@ -1203,3 +1290,127 @@ async def test_membership_refresh_reason_is_visible_in_model_status():
         assert reason in model.state_message
     finally:
         pd_membership.forget(model.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replicas", [0, 1])
+async def test_pending_managed_stop_keeps_the_restart_guard(replicas):
+    model = _model(replicas=replicas)
+    since = datetime.now(timezone.utc)
+    model.restarting_since = since
+    instance = _instance(1)
+    instance.draining_since = since
+    instance.distributed_servers = DistributedServers(workloads=[])
+    await _sync(model, [instance])
+    assert model.restarting_since == since
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'missing', ['none', 'not_ready', 'headless', 'worker', 'error', 'draining']
+)
+async def test_managed_readiness_requires_whole_manifest(monkeypatch, missing):
+    from gpustack.schemas.models import (
+        ModelInstanceWorkload,
+        ModelInstanceSubordinateWorker,
+    )
+    from gpustack.schemas.workers import WorkerStateEnum
+    from gpustack.server.services import ModelInstanceService
+    from tests.utils.model import new_model_instance_workload
+
+    mi = _instance(1, state=ModelInstanceStateEnum.STARTING)
+    mi.worker_id = 1
+    mi.distributed_servers = DistributedServers(
+        workloads=[
+            ModelInstanceWorkload.model_validate(
+                new_model_instance_workload(
+                    worker_id=w,
+                    node_rank=w - 1,
+                    state='running',
+                    dp_rank_placements=[
+                        dict(
+                            dp_rank=0,
+                            node_rank=w - 1,
+                            gpu_indexes=[0],
+                            **(dict(api_port=41000, ready=True) if w == 1 else {}),
+                        )
+                    ],
+                )
+            )
+            for w in (1, 2)
+        ],
+        subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
+    )
+    if missing == 'not_ready':
+        mi.distributed_servers.workloads[0].dp_rank_placements[0].ready = False
+    elif missing == 'headless':
+        mi.distributed_servers.workloads.pop()
+    elif missing == 'error':
+        mi.state = ModelInstanceStateEnum.ERROR
+    elif missing == 'draining':
+        mi.draining_since = datetime.now(timezone.utc)
+    session = MagicMock(commit=AsyncMock())
+    monkeypatch.setattr(ModelInstance, 'one_by_id', AsyncMock(return_value=mi))
+    worker_lookup = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                id=worker_id,
+                state=(
+                    WorkerStateEnum.UNREACHABLE
+                    if missing == 'worker'
+                    else WorkerStateEnum.READY
+                ),
+                deleted_at=None,
+                unreachable=missing == 'worker',
+                heartbeat_time=datetime.now(timezone.utc),
+            )
+            for worker_id in (1, 2)
+        ]
+    )
+    monkeypatch.setattr(controllers.Worker, 'all_by_ids', worker_lookup)
+    service = ModelInstanceService(session)
+    service.update = AsyncMock()
+    await service.reconcile_managed_instance(mi.id, 0, allow_restart=False)
+    if missing == 'none':
+        assert (
+            service.update.await_args.args[1]['state'] == ModelInstanceStateEnum.RUNNING
+        )
+    else:
+        service.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('missing', ['none', 'api', 'headless', 'member', 'worker'])
+async def test_hybrid_readiness_requires_all_tasks_and_actual_apis(
+    monkeypatch, missing
+):
+    from gpustack.server.services import ModelInstanceService
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+    from tests.utils.model import new_hybrid_workload
+
+    mi = _instance(1, state=ModelInstanceStateEnum.STARTING)
+    mi.worker_id = 1
+    tasks = [new_hybrid_workload(w, headless=w == 2, state='running') for w in (1, 2)]
+    tasks[0]['component']['ready'] = missing != 'api'
+    if missing == 'headless':
+        tasks[1]['state'] = 'unknown'
+    if missing == 'member':
+        tasks.pop()
+    mi.distributed_servers = DistributedServers(
+        workloads=tasks,
+        subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
+    )
+    monkeypatch.setattr(ModelInstance, 'one_by_id', AsyncMock(return_value=mi))
+    service = ModelInstanceService(MagicMock(commit=AsyncMock()))
+    service._managed_workers_ready = AsyncMock(return_value=missing != 'worker')
+    service._managed_smg_reconcile = AsyncMock(
+        side_effect=AssertionError('Hybrid is not SGLang')
+    )
+    service.update = AsyncMock()
+    await service.reconcile_managed_instance(mi.id, 0, allow_restart=False)
+    if missing == 'none':
+        assert (
+            service.update.await_args.args[1]['state'] == ModelInstanceStateEnum.RUNNING
+        )
+    else:
+        service.update.assert_not_awaited()

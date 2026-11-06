@@ -88,6 +88,20 @@ EOF
 # main
 #
 
+# A prepared single-language source can use this script without the optional
+# translation tree or the bilingual builder.
+if [[ -d "${ROOT_DIR}/docs-i18n" ]]; then
+  args=("$@")
+  if [[ "${1:-}" == "offline" ]]; then
+    args[0]=--offline
+  fi
+  if [[ "${1:-}" == "--offline" || "${1:-}" == "offline" ]]; then
+    stamp="$(docs_stamp)"
+    args+=(--stamp "${stamp}")
+  fi
+  exec uv run --group docs python "${ROOT_DIR}/hack/build_docs.py" "${args[@]}"
+fi
+
 case "${1:-}" in
 '')
   build_public

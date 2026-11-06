@@ -15,8 +15,19 @@
 {% endblock %}
 
 {% block outdated %}
-  You're not viewing the latest version.
-  <a href="{{ '../' ~ base_url }}">
-    <strong>Click here to go to latest.</strong>
+  {% set language = config.theme.language %}
+  {% set messages = {
+    "en": ["You're not viewing the latest version.", "Click here to go to latest."],
+    "zh": ["您正在查看的不是最新版本。", "点击此处前往最新版本。"],
+    "ja": ["最新バージョンのドキュメントではありません。", "最新バージョンはこちら。"],
+    "ru": ["Вы просматриваете не последнюю версию документации.", "Перейти к последней версии."],
+    "tr": ["Belgelerin en son sürümünü görüntülemiyorsunuz.", "En son sürüme gidin."]
+  } %}
+  {% set message = messages.get(language, messages.en) %}
+  {% set version_parent = '/..' if language == 'en' else '/../..' %}
+  {% set language_path = '' if language == 'en' else language ~ '/' %}
+  {{ message[0] }}
+  <a href="{{ base_url ~ version_parent ~ '/latest/' ~ language_path }}">
+    <strong>{{ message[1] }}</strong>
   </a>
 {% endblock %}

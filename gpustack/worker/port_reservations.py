@@ -7,10 +7,35 @@ from gpustack.client import ClientSet
 from gpustack.schemas.models import ModelInstance, member_worker_ids
 from gpustack.schemas.port_reservations import PortClaimResult
 from gpustack.utils import network
+from gpustack.utils.model_instance_workers import get_model_instance_workloads
 
 
 def model_instance_ports(instance: ModelInstance, worker_id: int) -> Set[int]:
     """Collect the serving ports and complete bands held on one worker."""
+    workloads = get_model_instance_workloads(instance, worker_id)
+    if workloads is not None:
+        ports = {
+            placement.api_port
+            for item in workloads
+            for placement in item.dp_rank_placements
+            if placement.api_port is not None
+        }
+        for item in workloads:
+            if item.component is not None:
+                ports.update(
+                    port
+                    for port in (item.component.api_port, item.component.metrics_port)
+                    if port is not None
+                )
+        # A published API band is an explicit pending allocation, including
+        # before manifest registration. It is never an inference fallback.
+        if workloads or any(
+            name in (instance.named_ports or {})
+            for name in ("_vllm_external_api", "_sglang_engine_api")
+        ):
+            for band in (instance.named_ports or {}).values():
+                ports.update(range(band.base, band.base + max(band.count, 1)))
+        return ports
     ports = set(instance.ports or [])
     if instance.port:
         ports.add(instance.port)
@@ -70,6 +95,20 @@ class WorkerPortReservations:
         self._claim_generations: Dict[int, UUID] = {}
         self._claim_versions: Dict[int, UUID] = {}
         self._generation = 0
+
+    def local_ports(self, model_instance_id: Optional[int] = None) -> Set[int]:
+        """Read pending and active local reservations without a server callback."""
+        with self.lock:
+            ports = set()
+            for instance_id, owned in self.model_ports.items():
+                if instance_id != model_instance_id:
+                    ports.update(owned)
+            for instance_id, (_, owned) in self.model_claims.items():
+                if instance_id != model_instance_id:
+                    ports.update(owned)
+            for owned in self.cache_ports.values():
+                ports.update(owned)
+            return ports
 
     @contextmanager
     def allocation(
@@ -198,6 +237,14 @@ class WorkerPortReservations:
                 self._claim_versions.pop(instance_id, None)
                 self._claim_generations[instance_id] = uuid4()
             self._generation += 1
+
+    def hold_model(self, instance_id: int, ports: Set[int]) -> None:
+        """Retain registered or adopted workload ports until confirmed cleanup."""
+        with self.lock:
+            held = self.model_ports.setdefault(instance_id, set())
+            if not ports.issubset(held):
+                held.update(ports)
+                self._generation += 1
 
     def release_model(self, instance_id: int, forget_generation: bool = False) -> None:
         """Release a model's local reservation after its workload stops."""

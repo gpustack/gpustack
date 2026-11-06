@@ -29,6 +29,7 @@ def _context(
         org_role=OrgRole.OWNER,
         accessible_cluster_ids={200} if shared else set(),
         scoped_cluster_id=scoped_cluster_id,
+        scoped_cluster_owner_id=10,
     )
 
 

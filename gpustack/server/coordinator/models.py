@@ -19,6 +19,11 @@ class _ModelRegistry:
     This avoids circular imports by only importing model classes when first accessed.
     """
 
+    # Topics added through :func:`register_topic`, tracked separately from
+    # the built-in entries so startup wiring can enumerate just the
+    # extension ones.
+    _EXTERNAL_TOPICS: list = []
+
     _REGISTRY: Dict[str, Callable[[], Optional[Type]]] = {
         'worker': lambda: _import_model('gpustack.schemas.workers', 'Worker'),
         'model': lambda: _import_model('gpustack.schemas.models', 'Model'),
@@ -80,6 +85,32 @@ class _ModelRegistry:
         loader = cls._REGISTRY.get(topic)
         return loader() if loader else None
 
+    @classmethod
+    def set_entry(cls, topic: str, model_class: Type) -> bool:
+        """Add a topic→model entry from an extension package.
+
+        Core's own entries win: an extension re-registering a built-in
+        topic is a bug on its side, logged and skipped rather than
+        allowed to silently repoint enrichment at another model.
+
+        Returns True when the entry took effect, False when an existing
+        registration was kept.
+        """
+        if topic in cls._REGISTRY:
+            logger.warning(
+                "Topic '%s' is already registered; ignoring extension "
+                "registration for it",
+                topic,
+            )
+            return False
+        cls._REGISTRY[topic] = lambda: model_class
+        return True
+
+
+def external_topics() -> list:
+    """Topics registered by extension packages via :func:`register_topic`."""
+    return list(_ModelRegistry._EXTERNAL_TOPICS)
+
 
 def _import_model(module_path: str, class_name: str) -> Optional[Type]:
     """Import a model class by module path and class name."""
@@ -94,3 +125,26 @@ def _import_model(module_path: str, class_name: str) -> Optional[Type]:
 def get_model_for_topic(topic: str) -> Optional[Type]:
     """Get the model class associated with a topic name."""
     return _ModelRegistry.get_model(topic)
+
+
+def register_topic(topic: str, model_class: Type) -> None:
+    """Register an extension package's model for cross-instance delivery.
+
+    An ``Event`` published on an unregistered topic is delivered to the
+    publishing instance's own subscribers only — cross-instance delivery
+    needs a topic→model entry so the receiving side can enrich the
+    id-only payload back into a full row (see ``bus``'s
+    ``_process_coordinator_event``). Extension packages that own tables
+    and want their writes visible to subscribers on other instances
+    (typically a leader-only controller) register each table here,
+    through the plugin contract's ``event_topics()``.
+
+    Must run before the event bus starts delivering cross-instance
+    events; the server collects plugin registrations during startup.
+
+    Registering a topic that is already registered — core's own or
+    another extension's — is logged and ignored, and the topic is not
+    tracked as external.
+    """
+    if _ModelRegistry.set_entry(topic, model_class):
+        _ModelRegistry._EXTERNAL_TOPICS.append(topic)

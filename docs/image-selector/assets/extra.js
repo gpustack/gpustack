@@ -1,4 +1,16 @@
 document.addEventListener("DOMContentLoaded", function () {
+    // Keep the current deep link and search state when changing languages.
+    document.addEventListener("click", function (event) {
+        if (!(event.target instanceof Element)) return;
+        const link = event.target.closest(".md-select__link[hreflang]");
+        if (!link) return;
+        const target = new URL(link.href);
+        if (target.origin !== window.location.origin) return;
+        target.search = window.location.search;
+        target.hash = window.location.hash;
+        link.href = target.href;
+    });
+
     // Find all horizontal navigation links pointing to the image selector
     let selectorLinks = document.querySelectorAll('a[href*="image-selector"]');
 

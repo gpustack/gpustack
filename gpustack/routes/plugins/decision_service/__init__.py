@@ -6,8 +6,10 @@ one CR, ``gpustack-lb-decision-service`` (AUTHN/328): for each task request it a
 the configured Jev decision service which candidate model should serve and
 publishes a rank entry the gpustack-lb finisher combines with the other
 capability opinions. The decision services themselves are
-``gpustack-lb-typesafe`` (TypeSafe) ModelProviders, rendered into the CR's
-``providers`` catalogue by ``providers.sync_decision_service_providers``.
+``gpustack-lb-typesafe`` (TypeSafe) ModelProviders and locally deployed
+decision Models, each rendered into the CR's ``providers`` catalogue as
+its own entry by ``providers.sync_decision_provider_entry`` /
+``providers.sync_decision_model_entry``.
 """
 
 from gpustack.routes.plugins.decision_service.plugin import (  # noqa: F401

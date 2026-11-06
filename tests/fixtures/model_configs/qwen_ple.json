@@ -1,0 +1,30 @@
+{
+  "architectures": ["Qwen4ExpForConditionalGeneration"],
+  "model_type": "qwen4_exp",
+  "text_config": {
+    "model_type": "qwen4_exp_text",
+    "dtype": "bfloat16",
+    "eos_token_id": 248044,
+    "num_hidden_layers": 48,
+    "num_attention_heads": 24,
+    "hidden_size": 2560,
+    "ple_layer_ids": [2],
+    "ple_embed_dim": 2560,
+    "ngram_vocab_size_base": 20000000,
+    "ngram_size": 3,
+    "heads_per_ngram": 8,
+    "make_ngram_vocab_size_divisible_by": 128,
+    "split_ngram_parts": 128
+  },
+  "quantization_config": {
+    "quant_method": "fp8",
+    "activation_scheme": "dynamic",
+    "weight_block_size": [128, 128],
+    "modules_to_not_convert": [
+      "model.language_model.layers.1.ple.key_proj",
+      "model.language_model.layers.1.ple.value_proj",
+      "model.language_model.layers.1.ple.conv1d"
+    ],
+    "modules_to_convert": ["ple.ple_embedding.ngram_embedding"]
+  }
+}

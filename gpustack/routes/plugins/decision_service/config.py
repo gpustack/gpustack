@@ -54,12 +54,17 @@ class DecisionServiceRouteConfig(BaseModel):
     the shared capability ``weight`` column and the matchRule config."""
 
     enabled: bool = True
-    providerId: int
-    """The ModelProvider id of the decision service, rendered as the
+    providerId: Optional[int] = None
+    """The ModelProvider id of an external decision service, rendered as the
     catalogue id ``provider-{id}`` (``activeProviderId`` on the rule).
-    Required: the wasm plugin's implicit catalogue selection would bypass
-    tenant isolation — an explicit reference is what gets ownership-checked
-    at write time."""
+    Required when ``modelId`` is absent: the wasm plugin's implicit catalogue
+    selection would bypass tenant isolation — an explicit reference is what
+    gets ownership-checked at write time."""
+    modelId: Optional[int] = None
+    """The id of a locally deployed decision Model (``decision`` in
+    ``categories``), rendered as the catalogue id ``gpustack-model-{id}``.
+    Mutually exclusive with ``providerId``: the entry points straight at the
+    deployment's running instance, so no provider row is involved."""
     weight: Optional[float] = Field(default=None, gt=0)
     """Contribution weight in the finisher's L1-weighted sum, in (0, N] —
     the wasm plugin's ``rankWeight``. None uses the plugin's compiled-in
@@ -69,8 +74,19 @@ class DecisionServiceRouteConfig(BaseModel):
     ``jev-preview``, discoverable via the service's ``/v1/models``).
     Required: when blank the decision request ships without a ``model``
     field and the service does not perform a routing decision, so the
-    policy would silently not run."""
+    policy would silently not run. For a local ``modelId`` target the
+    model's own name is the natural default — local engines accept any
+    alias."""
     modelSelection: Optional[ModelSelectionConfig] = None
+
+    @model_validator(mode="after")
+    def _exactly_one_decision_target(self):
+        if (self.providerId is None) == (self.modelId is None):
+            raise ValueError(
+                "exactly one of providerId (external decision service) or "
+                "modelId (locally deployed decision model) must be set"
+            )
+        return self
 
     @field_validator("decisionModel")
     @classmethod
@@ -83,11 +99,19 @@ class DecisionServiceRouteConfig(BaseModel):
     def to_gateway_rule(self) -> Dict[str, Any]:
         # Imported here to keep the schemas -> gateway dependency direction
         # one-way (gateway imports schemas at module level already).
-        from gpustack.gateway.utils import provider_registry_name
+        from gpustack.gateway.utils import (
+            model_ai_proxy_provider_id,
+            provider_registry_name,
+        )
 
+        catalogue_id = (
+            provider_registry_name(self.providerId)
+            if self.providerId is not None
+            else model_ai_proxy_provider_id(self.modelId)
+        )
         rule: Dict[str, Any] = {
             "enabled": self.enabled,
-            "activeProviderId": provider_registry_name(self.providerId),
+            "activeProviderId": catalogue_id,
             "decisionModel": self.decisionModel,
         }
         if self.modelSelection is not None:

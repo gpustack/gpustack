@@ -823,7 +823,9 @@ async def test_deleting_stalled_huggingface_download_aborts_before_cleanup(
         assert pool.submit(lambda: 'available').result(timeout=1) == 'available'
 
     abort.assert_called_once()
-    task._progress_clientset.http_client.get_httpx_client().close.assert_called_once()
+    # Closed eagerly when the download stops and again by the task teardown;
+    # HTTPClient.close is idempotent, so both calls are fine.
+    task._progress_clientset.http_client.close.assert_called()
     manager._delete_model_file.assert_awaited_once_with(task._model_file)
     assert 1 not in manager._active_downloads
     assert task._clientset.model_files.update.call_count == int(blocked_at == 'update')

@@ -72,6 +72,31 @@ caching, thinking blocks, tool-use blocks), but the provider then serves the
 **Anthropic protocol only** — OpenAI-style requests to `/v1/chat/completions` are no
 longer translated for it, so use the Anthropic paths (`/v1/messages`) with it.
 
+## Use Qwen Models Through a Provider
+
+An `Alibaba Qwen` provider talks to `dashscope.aliyuncs.com` by default and serves:
+
+- **LLM** — `/v1/chat/completions`
+- **Embedding** — `/v1/embeddings`
+- **Rerank** — `/v1/rerank`
+- **Image generation** — `/v1/images/generations` (e.g. the qwen-image models)
+
+Image generation is the one exception on the default domain: DashScope serves it
+**only on the per-workspace `maas.aliyuncs.com` domains** — `dashscope.aliyuncs.com`
+answers 404 for it. To use image models, set `qwenDomain` to your workspace domain
+(you can find it in your DashScope, i.e. Bailian, workspace page), and every other
+category keeps working on the same entry. A self-hosted or proxied Qwen-compatible
+service is configured the same way.
+
+`qwenDomain` takes the host, plus the port when it is not 443, e.g.
+`maas.aliyuncs.com`: it becomes both the address GPUStack connects to and the Host
+header sent upstream. The scheme is always https.
+
+Image responses carry `data[].url` — a presigned OSS link valid for 24 hours —
+rather than inline base64, so download or relay the image within that window. The
+`usage` object is DashScope-specific (`width`, `height`, `image_count`), not the
+OpenAI token usage.
+
 ## Add Route for Provider
 
 1. Go to `Providers` Page.

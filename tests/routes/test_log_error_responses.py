@@ -59,6 +59,7 @@ async def test_log_errors_keep_safe_hints_and_status(
                 return_value=SimpleNamespace(
                     id=7,
                     name="model",
+                    restart_count=0,
                     worker_id=1,
                     state=ModelInstanceStateEnum.RUNNING,
                     backend=BackendEnum.VLLM,

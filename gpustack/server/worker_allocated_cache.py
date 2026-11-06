@@ -1,5 +1,4 @@
-"""Server-side per-worker cache of ``Allocated`` aggregated from current
-ModelInstance bindings.
+"""Server-side allocation caches for worker and GPU resource displays.
 
 Cached at one key per worker (``WorkerAllocated.worker.{id}``) so that a
 single ModelInstance write only invalidates the workers actually bound to
@@ -11,6 +10,11 @@ create / update / delete (and their batch variants) calls
 ``invalidate_workers_allocated`` with the affected worker_ids after
 commit, so worker.status.allocated stays in sync with the ModelInstance
 table.
+
+Cache-service RAM uses a shared worker-indexed snapshot. CacheServiceInstanceService
+and CacheServiceService invalidate it after committing instance mutations or
+parent-service deletion, through the cross-server cache channel.
+Scheduling reads cache reservations directly from its database session.
 
 UPDATE caveat: when an UPDATE reassigns an instance to a different
 worker (rare; rescheduling), only the NEW worker's cache is dropped
@@ -25,8 +29,10 @@ workload→node bindings; recompute is driven by workload mutations, not
 by node heartbeats.
 """
 
+import asyncio
 import logging
 from typing import Dict, Iterable, Optional, Set
+from uuid import uuid4
 
 from sqlmodel import select, or_
 
@@ -37,6 +43,11 @@ from gpustack.server.cache import delete_cache_by_key, locked_cached
 from gpustack.server.db import async_session
 
 logger = logging.getLogger(__name__)
+
+CACHE_RAM_KEY = "CacheServiceInstance.worker_ram"
+_cache_ram_lock = asyncio.Lock()
+_cache_ram_revision: Optional[str] = None
+_cache_ram: Dict[int, int] = {}
 
 
 def vram_allocated_for_index(vram: Dict[int, int], index: Optional[int]) -> int:
@@ -84,13 +95,45 @@ async def _get_model_worker_allocated(worker_id: int) -> Allocated:
     return compute_worker_allocated(rows, worker_id)
 
 
-async def get_worker_allocated(worker_id: int) -> Allocated:
-    """Combine cached model allocations with current cache reservations."""
+@locked_cached(key=CACHE_RAM_KEY)
+async def _get_cache_ram_revision() -> str:
+    """Use the shared cache's expiry and invalidation to version the snapshot."""
+    return uuid4().hex
+
+
+async def _get_cache_workers_ram() -> Dict[int, int]:
+    """Share one reservation snapshot across worker lists and watch subscribers."""
     from gpustack.server.cache_service_resources import get_cache_ram_by_worker
 
+    global _cache_ram_revision, _cache_ram
+    revision = await _get_cache_ram_revision()
+    if revision == _cache_ram_revision:
+        return _cache_ram
+    async with _cache_ram_lock:
+        revision = await _get_cache_ram_revision()
+        if revision != _cache_ram_revision:
+            async with async_session() as session:
+                ram = await get_cache_ram_by_worker(session)
+            # A commit can invalidate the revision while this read is in flight.
+            # Keep its original revision so subsequent readers reload the snapshot.
+            _cache_ram, _cache_ram_revision = ram, revision
+        return _cache_ram
+
+
+async def invalidate_cache_workers_ram() -> None:
+    """Invalidate the reservation snapshot locally and on other servers."""
+    await delete_cache_by_key(_key=CACHE_RAM_KEY)
+
+
+async def get_worker_vram_allocated(worker_id: int) -> Dict[int, int]:
+    """Read model VRAM allocations without loading cache-service RAM claims."""
+    return dict((await _get_model_worker_allocated(worker_id)).vram)
+
+
+async def get_worker_allocated(worker_id: int) -> Allocated:
+    """Combine cached model allocations with committed cache reservations."""
     model_allocated = await _get_model_worker_allocated(worker_id)
-    async with async_session() as session:
-        cache_ram = await get_cache_ram_by_worker(session, worker_id=worker_id)
+    cache_ram = await _get_cache_workers_ram()
     return Allocated(
         ram=model_allocated.ram + cache_ram.get(worker_id, 0),
         vram=dict(model_allocated.vram),
@@ -98,18 +141,15 @@ async def get_worker_allocated(worker_id: int) -> Allocated:
 
 
 async def get_workers_allocated(worker_ids: Iterable[int]) -> Dict[int, Allocated]:
-    """Read current reservations once for a batch of workers.
+    """Share the reservation snapshot with single-worker and watch lookups.
 
     Workers whose model allocations cannot be read are omitted, so callers can
     conservatively report their capacity as unavailable.
     """
-    from gpustack.server.cache_service_resources import get_cache_ram_by_worker
-
     worker_ids = list(set(worker_ids))
     if not worker_ids:
         return {}
-    async with async_session() as session:
-        cache_ram = await get_cache_ram_by_worker(session, worker_ids=worker_ids)
+    cache_ram = await _get_cache_workers_ram()
     allocated = {}
     for worker_id in worker_ids:
         try:

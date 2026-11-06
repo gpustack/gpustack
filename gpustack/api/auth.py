@@ -1,17 +1,26 @@
 import asyncio
-import re
-import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from functools import lru_cache
+import hmac
+import ipaddress
 import logging
-import aiohttp
-from aiocache import cached
 from fastapi import Depends, Request, WebSocket
 from starlette.datastructures import Headers
-from gpustack.config.config import Config
+from gpustack.config.config import Config, get_global_config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.server.db import async_session
-from typing import Annotated, Optional, Set, Tuple, List, Dict
+from typing import (
+    Annotated,
+    Callable,
+    Iterable,
+    Optional,
+    Set,
+    Tuple,
+    List,
+    Dict,
+    Union,
+)
 from fastapi.security import (
     APIKeyCookie,
     APIKeyHeader,
@@ -34,7 +43,11 @@ from gpustack.schemas.users import User
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.security import (
     JWTManager,
+    LEGACY_TOKEN_ACCESS_KEY,
+    is_legacy_token_access_key,
+    is_valid_format,
     new_secret_key_digest,
+    parse_hyphen_uuid,
     secret_key_digest_usable,
     verify_hashed_secret,
     verify_secret_key_digest,
@@ -43,11 +56,17 @@ from gpustack.security import (
 from gpustack.server.cache import delete_cache_by_key
 from gpustack.server.passwords import verify_password
 from gpustack.server.services import APIKeyService, UserService
+from gpustack.extension import Plugin, plugin_needs_instantiation
 from gpustack.websocket_proxy.authenticator import (
     Authenticator as WebsocketAuthenticator,
 )
 
 logger = logging.getLogger(__name__)
+
+# The base no-op ``on_authenticated``. Comparing the underlying function
+# lets the per-request dispatch skip plugins that do not override the
+# hook without paying a coroutine per request.
+_DEFAULT_ON_AUTHENTICATED = Plugin.on_authenticated.__func__
 
 SESSION_COOKIE_NAME = "gpustack_session"
 OIDC_ID_TOKEN_COOKIE_NAME = "gpustack_oidc_id_token"
@@ -131,23 +150,96 @@ def client_ip_getter(request: Request) -> str:
     if request.app.state.server_config.gateway_mode != GatewayModeEnum.disabled:
         try:
             gateway_token_auth(request)
-            # Prefer X-Real-IP: the edge proxy (Higress/Envoy) sets it to the
-            # immediate downstream connection address, which the client cannot
-            # spoof.
-            real_ip = request.headers.get("X-Real-IP")
-            if real_ip:
-                return real_ip
-            # Fall back to X-Forwarded-For "client, proxy1, proxy2". Take the
-            # rightmost entry (the address the trusted edge proxy observed) to
-            # avoid trusting client-supplied leftmost values.
+            # X-Forwarded-For is the only forwarded header consulted, and
+            # only from the right. The gateway's Envoy listeners run with
+            # use_remote_address enabled, so Envoy itself appends the
+            # downstream address it observed to the END of X-Forwarded-For
+            # before any filter runs or anything is forwarded upstream — a
+            # client-supplied value can therefore only ever sit to the LEFT
+            # of that appended entry, which makes the rightmost entry (and,
+            # walking left, every entry a configured trusted proxy appended)
+            # a fact about the connection rather than a client-supplied
+            # claim. The gateway token checked above is what ties the
+            # request to that gateway; without it the headers are ignored
+            # entirely. X-Real-IP is deliberately not read: nothing in the
+            # gateway chain overwrites it, so preferring it would let any
+            # client assert an arbitrary source address behind a valid
+            # gateway token.
             xff = request.headers.get("X-Forwarded-For")
             if xff:
-                real_ip = xff.split(",")[-1].strip()
-                if real_ip:
-                    return real_ip
+                trusted_cidrs = getattr(
+                    request.app.state.server_config,
+                    "trusted_proxy_cidrs",
+                    None,
+                )
+                ip = _client_ip_from_xff(xff, trusted_cidrs)
+                if ip:
+                    return ip
         except UnauthorizedException:
             pass
     return request.client.host if request.client else ""
+
+
+@lru_cache(maxsize=16)
+def _trusted_proxy_networks(
+    cidrs: Optional[Tuple[str, ...]],
+) -> Tuple[Union[ipaddress.IPv4Network, ipaddress.IPv6Network], ...]:
+    return tuple(ipaddress.ip_network(cidr, strict=False) for cidr in (cidrs or ()))
+
+
+def _parse_forwarded_entry(
+    entry: str,
+) -> Optional[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]]:
+    """Parse one X-Forwarded-For entry to an address, or None.
+
+    An optional ``;params`` suffix and an optional trailing port
+    (``1.2.3.4:5678``, ``[2001:db8::1]:443``) are stripped; a bracketed IPv6
+    without a port keeps only the brackets stripped.
+    """
+    ip = entry.strip()
+    if not ip:
+        return None
+    ip = ip.split(";", 1)[0].strip()
+    if not ip:
+        return None
+    if ip.startswith("[") and "]" in ip:
+        host, _, rest = ip.partition("]")
+        if rest.startswith(":"):
+            ip = host[1:]
+        elif not rest:
+            ip = host[1:]
+        else:
+            return None
+    elif ip.count(":") == 1 and not ip.startswith(":"):
+        # An IPv4 entry with a trailing port; a bare IPv6 has more than one
+        # colon and falls through to the address parse below.
+        ip = ip.rsplit(":", 1)[0]
+    try:
+        return ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+
+
+def _client_ip_from_xff(xff: str, trusted_cidrs: Optional[List[str]]) -> Optional[str]:
+    """Resolve the client IP from X-Forwarded-For, walking from the right.
+
+    The rightmost entry is the address the nearest trusted proxy appended
+    (the gateway's own observation when the request reached it directly);
+    entries further left are only trusted when they fall inside
+    ``trusted_proxy_cidrs`` — the networks of proxies an operator declared as
+    correctly appending X-Forwarded-For. The walk stops at the first entry
+    outside them: that is the client. An unparseable entry, or a chain that
+    is trusted all the way through, cannot be verified and yields None so the
+    caller falls back to the connection address rather than guess.
+    """
+    trusted = _trusted_proxy_networks(tuple(trusted_cidrs) if trusted_cidrs else None)
+    for entry in reversed(xff.split(",")):
+        ip = _parse_forwarded_entry(entry)
+        if ip is None:
+            return None
+        if not any(ip in network for network in trusted):
+            return str(ip)
+    return None
 
 
 @asynccontextmanager
@@ -197,45 +289,179 @@ async def authenticate_request(
         return user
     api_key: Optional[ApiKey] = None
     user = None
+    error: Optional[HTTPException] = None
     try:
         server_config: Config = request.app.state.server_config
         if basic_credentials and is_system_user(basic_credentials.username):
-            user = await authenticate_system_principal(server_config, basic_credentials)
+            # Same short-scoped session as the other branches: the
+            # ``on_authenticated`` hooks run inside it and may query their
+            # own tables without opening a second connection.
+            async with _optional_session(session) as auth_session:
+                try:
+                    user = await authenticate_system_principal(
+                        server_config, basic_credentials
+                    )
+                except HTTPException as e:
+                    error = e
+                return await _settle_authentication(
+                    request, auth_session, user, api_key, error
+                )
         elif basic_credentials or cookie_token or bearer_token or x_api_key:
             # Scoped to just the auth lookup (not Depends(get_session)) so the
             # connection/transaction isn't held open for the lifetime of the
             # request -- otherwise a long-lived StreamingResponse (SSE watch,
             # streaming inference proxy) leaves it idle-in-transaction until
             # the stream ends, which can be hours. See #5678.
-            async with _optional_session(session) as session:
-                if basic_credentials:
-                    user = await authenticate_basic_user(session, basic_credentials)
-                elif cookie_token:
-                    jwt_manager: JWTManager = request.app.state.jwt_manager
-                    user = await get_user_from_jwt_token(
-                        session, jwt_manager, cookie_token
-                    )
-                elif bearer_token or x_api_key:
-                    token = (
-                        bearer_token.credentials if bearer_token else None
-                    ) or x_api_key
-                    if token is not None:
-                        user, api_key = await get_user_from_api_token(session, token)
-
-        if user:
-            if not user.is_active:
-                raise UnauthorizedException(message="User account is deactivated")
-            request.state.user = user
-            if api_key is not None:
-                request.state.api_key = api_key
-            return user
-
+            async with _optional_session(session) as auth_session:
+                user, api_key, error = await _resolve_request_identity(
+                    request,
+                    auth_session,
+                    basic_credentials,
+                    cookie_token,
+                    bearer_token,
+                    x_api_key,
+                )
+                return await _settle_authentication(
+                    request, auth_session, user, api_key, error
+                )
     except HTTPException:
         raise
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to authenticate user: {e}")
 
     raise credentials_exception()
+
+
+async def _resolve_request_identity(
+    request: Request,
+    session: AsyncSession,
+    basic_credentials: Optional[HTTPBasicCredentials],
+    cookie_token: Optional[str],
+    bearer_token: Optional[HTTPAuthorizationCredentials],
+    x_api_key: Optional[str],
+) -> Tuple[Optional[User], Optional[ApiKey], Optional[HTTPException]]:
+    """Resolve presented credentials into an identity.
+
+    Returns ``(user, api_key, error)``; every failure is an outcome
+    rather than a raise, so the ``on_authenticated`` hooks observe the
+    same result the client will get.
+    """
+    api_key: Optional[ApiKey] = None
+    user = None
+    try:
+        if basic_credentials:
+            user = await authenticate_basic_user(session, basic_credentials)
+        elif cookie_token:
+            jwt_manager: JWTManager = request.app.state.jwt_manager
+            user = await get_user_from_jwt_token(session, jwt_manager, cookie_token)
+        elif bearer_token or x_api_key:
+            token = (bearer_token.credentials if bearer_token else None) or x_api_key
+            if token is not None:
+                user, api_key = await get_user_from_api_token(session, token)
+    except HTTPException as e:
+        return None, None, e
+    except Exception as e:
+        return (
+            None,
+            None,
+            InternalServerErrorException(message=f"Failed to authenticate user: {e}"),
+        )
+    return user, api_key, None
+
+
+async def _settle_authentication(
+    request: Request,
+    session: AsyncSession,
+    user: Optional[User],
+    api_key: Optional[ApiKey],
+    error: Optional[HTTPException],
+) -> User:
+    """Finish the auth funnel once an outcome exists.
+
+    A deactivated account becomes a failure outcome here (one check for
+    both resolution branches), the resolved identity is attached to
+    ``request.state`` — the same place the rest of the request pipeline
+    reads it from — before the ``on_authenticated`` hooks observe it,
+    and whatever the request should fail with is raised only after the
+    hooks ran: a hook can reject an admitted request, but never rewrite
+    the identity it saw.
+    """
+    if error is None and user is not None and not user.is_active:
+        error = UnauthorizedException(message="User account is deactivated")
+    if error is None and user is not None:
+        request.state.user = user
+        if api_key is not None:
+            request.state.api_key = api_key
+    elif error is None:
+        # Credentials that resolved to nothing: the hooks observe the
+        # same 401 the client is about to get.
+        error = credentials_exception()
+    await _run_authenticated_hooks(request, session, error)
+    if error is not None:
+        raise error
+    return user
+
+
+# Flags an exception as a policy denial raised by an ``on_authenticated``
+# hook. ``/token-auth`` maps a plain 401 onto anonymous access (PUBLIC models
+# serve it), so it has to tell a 401 a hook *chose* apart from the 401 of a
+# missing or invalid credential: the first is a denial that must reach the
+# client, the second is the anonymous fallback.
+_POLICY_REJECTION_FLAG = "_gpustack_policy_rejection"
+
+
+def _mark_policy_rejection(exc: HTTPException) -> None:
+    setattr(exc, _POLICY_REJECTION_FLAG, True)
+
+
+def is_policy_rejection(exc: BaseException) -> bool:
+    """Whether ``exc`` is a policy denial an ``on_authenticated`` hook
+    raised, rather than an authentication failure."""
+    return getattr(exc, _POLICY_REJECTION_FLAG, False) is True
+
+
+async def _run_authenticated_hooks(
+    request: Request, session: AsyncSession, error: Optional[HTTPException]
+) -> None:
+    """Dispatch ``Plugin.on_authenticated`` in entry-point order.
+
+    Static plugins only — new capabilities land on the static shape.
+    Fail-closed: on an admitted request an unexpected hook crash
+    surfaces as a 500 instead of letting the request through; on an
+    already-failed one it is only logged, so it cannot mask the real
+    auth error.
+    """
+    state = getattr(getattr(request, "app", None), "state", None)
+    contexts = getattr(state, "plugin_contexts", None)
+    if not contexts:
+        return
+    for name, ctx in contexts.items():
+        if ctx.plugin_cls is None or plugin_needs_instantiation(ctx.plugin_cls):
+            continue
+        hook = ctx.plugin_cls.on_authenticated
+        if getattr(hook, "__func__", None) is _DEFAULT_ON_AUTHENTICATED:
+            continue
+        try:
+            await hook(ctx, request, session, error)
+        except HTTPException as e:
+            if error is None:
+                # A hook rejected an admitted request; marked so a caller
+                # that maps a 401 onto anonymous access keeps treating it
+                # as the denial it is (see ``is_policy_rejection``).
+                _mark_policy_rejection(e)
+                raise
+            logger.warning(
+                "on_authenticated hook of plugin %s raised %r on an "
+                "already-failed auth; keeping the original error",
+                name,
+                e,
+            )
+        except Exception:
+            logger.exception("on_authenticated hook of plugin %s crashed", name)
+            if error is None:
+                raise InternalServerErrorException(
+                    message="Authentication policy hook failed"
+                )
 
 
 async def get_admin_user(
@@ -257,6 +483,43 @@ def is_server_token_principal(principal: Principal) -> bool:
         and principal.id is None
         and principal.name.startswith(SYSTEM_WORKER_USER_PREFIX)
     )
+
+
+def require_system_route_access(
+    allowed_routes: Iterable[Tuple[str, Callable]],
+    *,
+    cluster_routes: Iterable[Tuple[str, Callable]] = (),
+) -> Callable:
+    """Build a default-deny management gate for ordinary SYSTEM principals.
+
+    Authorization uses the dispatched endpoint and HTTP method, including when
+    user and worker routers share a path. Users and the platform server token
+    retain their existing role and resource checks. An allowed route must still
+    enforce the service account's resource scope inside its handler.
+    Cluster-only routes additionally require a cluster-linked principal.
+    """
+    allowed = frozenset(allowed_routes)
+    cluster_allowed = frozenset(cluster_routes)
+
+    async def dependency(
+        request: Request,
+        user: Annotated[Principal, Depends(get_current_user)],
+    ) -> Principal:
+        if (
+            user.kind == PrincipalType.SYSTEM
+            and not is_server_token_principal(user)
+            and (request.method, request.scope.get("endpoint")) not in allowed
+            and not (
+                getattr(user, "cluster", None) is not None
+                and (request.method, request.scope.get("endpoint")) in cluster_allowed
+            )
+        ):
+            raise ForbiddenException(
+                message="Service accounts cannot access this management endpoint"
+            )
+        return user
+
+    return dependency
 
 
 async def get_cluster_principal(
@@ -360,18 +623,6 @@ async def get_user_from_jwt_token(
         raise InternalServerErrorException(message=f"Failed to get user: {e}")
 
     return user
-
-
-def parse_hyphen_uuid(value: str) -> Optional[str]:
-    if not re.match(
-        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", value, re.I
-    ):
-        return None
-    try:
-        uuid.UUID(value)
-        return value
-    except ValueError:
-        return None
 
 
 _backfill_tasks: Set[asyncio.Task] = set()
@@ -482,31 +733,73 @@ async def _backfill_secret_key_digest(
         _backfill_in_flight.discard(api_key_id)
 
 
+async def _verify_secret_against_key(api_key: ApiKey, plaintexts: List[str]) -> bool:
+    """Check the credential's presentations against the row's verifiers.
+
+    The digest goes first when the row carries a usable one: it covers the
+    same plaintext as the argon2 hash and costs microseconds. argon2 is the
+    permanent fallback, so a missing or unparsable value costs the request
+    the slow path instead of locking a valid key out.
+    """
+    if secret_key_digest_usable(api_key.secret_key_digest):
+        # A few microseconds, and cheap enough to stay on the event loop.
+        # Only secrets this server generated ever get a digest, so a fast
+        # hash here is not a downgrade -- see security.new_secret_key_digest.
+        return any(
+            verify_secret_key_digest(api_key.secret_key_digest, plaintext)
+            for plaintext in plaintexts
+        )
+
+    if api_key.secret_key_digest and api_key.id not in _warned_unusable_digest:
+        _warned_unusable_digest.add(api_key.id)
+        logger.warning(
+            f"API key {api_key.id} has an unusable secret_key_digest; "
+            "verifying via argon2 and replacing the value. The column held "
+            "something this version cannot parse."
+        )
+    # argon2 verification is synchronous and CPU-bound; run it off the
+    # event loop so concurrent requests keep flowing instead of
+    # serializing behind each hash.
+    for plaintext in plaintexts:
+        verified = await asyncio.to_thread(
+            verify_hashed_secret, api_key.hashed_secret_key, plaintext
+        )
+        if verified:
+            # The plaintext is in hand exactly here, and only here, for a key
+            # that predates the digest column. Fill it in so the next request
+            # takes the fast path.
+            _schedule_secret_key_digest_backfill(api_key, plaintext)
+            return True
+    return False
+
+
+async def _get_api_token_candidates(
+    session: AsyncSession, access_key: str
+) -> List[ApiKey]:
+    """An exact key owns its credential; legacy markers are independent candidates."""
+    service = APIKeyService(session)
+    if access_key and parse_hyphen_uuid(access_key) is None:
+        api_key = await service.get_by_access_key(access_key)
+        if api_key is not None:
+            return [api_key]
+
+    # Both representations can coexist, so a lookup hit alone cannot choose
+    # which deployment-token row owns the presented secret.
+    candidates = []
+    for marker in (LEGACY_TOKEN_ACCESS_KEY, ""):
+        api_key = await service.get_by_access_key(marker)
+        if api_key is not None:
+            candidates.append(api_key)
+    return candidates
+
+
 async def get_user_from_api_token(
     session: AsyncSession, token: str
 ) -> Tuple[Optional[Principal], Optional[ApiKey]]:
     try:
         access_key, secret_key = get_key_pair(token)
-        worker_uuid = parse_hyphen_uuid(access_key)
-        if worker_uuid is not None:
-            # if access_key is a valid uuid, it's legacy worker re-registering with legacy token
-            access_key = ""
-        access_keys = [access_key]
-        # the custom key should have 32 chars access key as it is generated by security.custom_key_hash which will return 32 chars hex string.
-        if len(access_key) == 32 and "" not in access_keys:
-            # this means it is custom key or legacy worker token, we should also try to find api key with empty access key for backward compatibility
-            access_keys.append("")
-        api_key: Optional[ApiKey] = None
-        for candidate in access_keys:
-            api_key = await APIKeyService(session).get_by_access_key(candidate)
-            if api_key:
-                logger.trace(f"Found API key for access key: {candidate}")
-                break
-        if api_key is None:
-            return None, None
-        if api_key.expires_at is not None and api_key.expires_at <= datetime.now(
-            timezone.utc
-        ):
+        candidates = await _get_api_token_candidates(session, access_key)
+        if not candidates:
             return None, None
 
         # ``get_by_access_key`` returns a detached ApiKey with all columns
@@ -517,38 +810,30 @@ async def get_user_from_api_token(
         # rollback() is safe -- this lookup is read-only.
         await session.rollback()
 
-        if secret_key_digest_usable(api_key.secret_key_digest):
-            # A few microseconds, and cheap enough to stay on the event loop.
-            # Only secrets this server generated ever get a digest, so a fast
-            # hash here is not a downgrade -- see security.new_secret_key_digest.
-            verified = verify_secret_key_digest(api_key.secret_key_digest, secret_key)
-        else:
-            # No digest, or one this build cannot check. argon2 is the permanent
-            # fallback verifier, so a malformed or unknown-algorithm value costs
-            # this request the slow path instead of locking a valid key out.
-            if api_key.secret_key_digest and api_key.id not in _warned_unusable_digest:
-                _warned_unusable_digest.add(api_key.id)
-                logger.warning(
-                    f"API key {api_key.id} has an unusable secret_key_digest; "
-                    "verifying via argon2 and replacing the value. The column held "
-                    "something this version cannot parse."
+        for api_key in candidates:
+            if api_key.expires_at is not None and api_key.expires_at <= datetime.now(
+                timezone.utc
+            ):
+                continue
+
+            # Deployment-token rows can hash the UUID-wrapped secret or the
+            # whole configured token. Standard-shaped tokens reaching this
+            # fallback need one argon2 verify per row, against the whole string.
+            # An exact access-key match always hashes the secret portion alone.
+            plaintexts = [secret_key]
+            if is_legacy_token_access_key(api_key.access_key):
+                valid, parsed_access, _ = is_valid_format(token)
+                if valid and parse_hyphen_uuid(parsed_access) is None:
+                    plaintexts = [token]
+                elif token != secret_key:
+                    plaintexts.append(token)
+
+            if await _verify_secret_against_key(api_key, plaintexts):
+                user: Optional[User] = await UserService(session).get_by_id(
+                    user_id=api_key.user_id,
                 )
-            # argon2 verification is synchronous and CPU-bound; run it off the
-            # event loop so concurrent requests keep flowing instead of
-            # serializing behind each hash.
-            verified = await asyncio.to_thread(
-                verify_hashed_secret, api_key.hashed_secret_key, secret_key
-            )
-            if verified:
-                # The plaintext is in hand exactly here, and only here, for a key
-                # that predates the digest column. Fill it in so the next request
-                # takes the fast path.
-                _schedule_secret_key_digest_backfill(api_key, secret_key)
-        if verified:
-            user: Optional[User] = await UserService(session).get_by_id(
-                user_id=api_key.user_id,
-            )
-            if user is not None:
+                if user is None:
+                    return None, None
                 return user, api_key
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to get user: {e}")
@@ -597,6 +882,12 @@ async def authenticate_gateway_asserted_identity(
     unauthenticated, which is what the credential path would have done for a
     revoked key anyway; on a PUBLIC route that still means allowed with the
     ``'none'`` consumer, exactly as today.
+
+    An honoured assertion settles through the same funnel as the credential
+    path: identity attached to ``request.state``, then the
+    ``on_authenticated`` hooks. The gateway verified the credential, not
+    the policy, so plugin policy applies to an asserted identity exactly as
+    it does to a presented one, and a hook rejection propagates from here.
     """
     # No gateway, no gateway assertions. Defence in depth rather than a check
     # that carries weight on its own -- the gateway token below is the boundary
@@ -664,10 +955,12 @@ async def authenticate_gateway_asserted_identity(
         )
         return None, None
 
-    # Same state the credential path publishes, so ``inference_scope`` and the
-    # rest of the authorization checks read the key's scope either way.
-    request.state.user = user
-    request.state.api_key = api_key
+    # Settle through the same funnel as the credential path: identity
+    # attached to request.state, then the ``on_authenticated`` hooks. The
+    # gateway verified the credential, not the policy, so an asserted
+    # identity is subject to exactly the plugin policy a presented one is,
+    # and a hook rejection propagates from here.
+    await _settle_authentication(request, session, user, api_key, None)
     return user, api_key
 
 
@@ -713,43 +1006,8 @@ async def worker_proxy_auth(
     ] = None,
     x_api_key: Annotated[Optional[str], Depends(api_key_header_auth)] = None,
 ) -> None:
-    """Allow delegated model authorization only for the inference proxy."""
-    try:
-        await worker_auth(request, bearer_token, x_api_key)
-        return
-    except UnauthorizedException:
-        pass
-
-    token_value = (bearer_token.credentials if bearer_token else None) or x_api_key
-    if not token_value:
-        raise UnauthorizedException(message="Invalid authentication credentials")
-    model_name = request.headers.get("X-Higress-Llm-Model")
-    if model_name is not None:
-        logger.debug("Verifying inference proxy credentials via server authentication")
-        cached_auth = make_auth_token_via_server(request.app.state.http_client_no_proxy)
-        server_url = request.app.state.config.get_server_url()
-        is_valid = await cached_auth(server_url, token_value, model_name)
-        if is_valid:
-            return
-    raise UnauthorizedException(message="Invalid authentication credentials")
-
-
-def make_auth_token_via_server(client: aiohttp.ClientSession):
-    @cached(ttl=60)
-    async def inner(server_url: str, token: str, model_name: str) -> bool:
-        auth_url = f"{server_url.rstrip('/')}/token-auth"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "X-Higress-Llm-Model": model_name,
-        }
-        try:
-            async with client.get(auth_url, headers=headers) as resp:
-                return resp.status == 200
-        except aiohttp.ClientError as e:
-            logger.error(f"Error verifying token via server: {e}")
-            return False
-
-    return inner
+    """Require internal credentials on every Worker inference proxy target."""
+    await worker_auth(request, bearer_token, x_api_key)
 
 
 def get_scopes(
@@ -816,6 +1074,58 @@ async def authenticate_worker_by_request_headers(
         # ``user.worker`` is populated by ``UserService.get_by_id`` via
         # selectinload — no extra fetch needed.
         return user
+
+
+async def authenticate_proxy_request_headers(header_dict: Dict[str, str]) -> bool:
+    """Authenticate a request to the server's forward proxy (tunnel mode).
+
+    Every proxied request must authenticate, metrics scrapes included: the
+    proxy reaches hosts the caller cannot, so a request that names its own
+    target must carry an internal credential.
+
+    Accepts a Bearer token in ``Proxy-Authorization`` (the hop credential,
+    preferred) or ``Authorization`` (end-to-end, as sent by Prometheus's
+    ``authorization`` scrape-config section through a forward proxy). The
+    credential is either:
+
+    * the derived gateway token — designed to be transmitted and compared
+      server-side (see ``Config.get_derived_gateway_token``), held by the
+      gateway and the built-in Prometheus scraper, or
+    * a SYSTEM principal's API key, the same check worker WebSocket registration
+      and ``pd_membership`` hops use (``Proxy-Authorization`` rides this
+      path too).
+
+    The gateway token authenticates the hop only, never the target.
+    Whenever it rides ``Authorization`` — an end-to-end header the proxy
+    forwards — it is consumed here, whichever credential ends up
+    authenticating the request. A token in ``Proxy-Authorization`` needs
+    no such handling: hop-by-hop headers are stripped before forwarding.
+    """
+    headers = Headers(header_dict)
+    authorization = headers.get("Proxy-Authorization") or headers.get("Authorization")
+    scheme, credentials = get_authorization_scheme_param(authorization)
+    if scheme.lower() != "bearer" or not credentials:
+        return False
+    gateway_token = get_global_config().get_derived_gateway_token()
+
+    # compare_digest raises TypeError on str arguments containing
+    # non-ASCII characters, and a client-supplied header can carry them;
+    # comparing the UTF-8 encodings keeps the comparison constant-time.
+    auth_header = headers.get("Authorization")
+    if auth_header:
+        _, auth_credentials = get_authorization_scheme_param(auth_header)
+        if auth_credentials and hmac.compare_digest(
+            auth_credentials.encode("utf-8"), gateway_token.encode("utf-8")
+        ):
+            for key in [k for k in header_dict if k.lower() == "authorization"]:
+                del header_dict[key]
+
+    if hmac.compare_digest(credentials.encode("utf-8"), gateway_token.encode("utf-8")):
+        return True
+    principal = await authenticate_worker_by_request_headers(
+        header_dict, validate_proxy=None
+    )
+    return principal is not None and principal.kind == PrincipalType.SYSTEM
 
 
 class BearerTokenAuthenticator(WebsocketAuthenticator):

@@ -15,10 +15,11 @@ from gpustack.schemas.models import (
     BackendEnum,
     Model,
     ModelInstance,
+    ModelInstanceStateEnum,
     RoleSpec,
     SourceEnum,
 )
-from gpustack.server.controllers import _stale_members, model_spec_digest
+from gpustack.server.controllers import model_members_stale, model_spec_digest
 
 
 def _model(**kwargs) -> Model:
@@ -78,7 +79,7 @@ async def _digest(model, **kwargs):
 
 async def _stale(model, instances):
     with _no_types:
-        return await _stale_members(_pass(), model, instances)
+        return await model_members_stale(_pass(), model, instances)
 
 
 @pytest.mark.asyncio
@@ -177,3 +178,89 @@ async def test_a_provider_shaped_row_is_untouched():
     assert await _stale(model, [stamped]) is False
     model.backend_version = "0.5.15.post1"
     assert await _stale(model, [stamped]) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [
+        ModelInstanceStateEnum.PENDING,
+        ModelInstanceStateEnum.ANALYZING,
+        ModelInstanceStateEnum.SCHEDULED,
+        ModelInstanceStateEnum.INITIALIZING,
+        ModelInstanceStateEnum.DOWNLOADING,
+        ModelInstanceStateEnum.STARTING,
+        ModelInstanceStateEnum.ERROR,
+    ],
+)
+@pytest.mark.parametrize("first_version_recorded", [False, True])
+async def test_group_can_finish_starting_while_detected_version_is_recorded(
+    state, first_version_recorded
+):
+    model = _model()
+    digest = await _digest(model)
+    first = _instance(digest, "0.5.15" if first_version_recorded else None)
+    first.group_id = "1-group"
+    first.state = (
+        ModelInstanceStateEnum.RUNNING
+        if first_version_recorded
+        else ModelInstanceStateEnum.STARTING
+    )
+    waiting = _instance(digest)
+    waiting.id = 2
+    waiting.group_id = first.group_id
+    waiting.state = state
+    model.backend_version = "0.5.15"
+
+    assert await _stale(model, [first, waiting]) is False
+    assert first.spec_digest == waiting.spec_digest == digest
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edit", ["parameters", "role-parameters", "version"])
+@pytest.mark.parametrize(
+    "waiting_state",
+    [
+        ModelInstanceStateEnum.SCHEDULED,
+        ModelInstanceStateEnum.STARTING,
+        ModelInstanceStateEnum.ERROR,
+    ],
+)
+async def test_version_writeback_during_startup_does_not_hide_a_real_edit(
+    edit, waiting_state
+):
+    model = _model()
+    digest = await _digest(model)
+    first = _instance(digest, "0.5.15")
+    first.group_id = "1-group"
+    first.state = ModelInstanceStateEnum.RUNNING
+    waiting = _instance(digest)
+    waiting.group_id = first.group_id
+    waiting.state = waiting_state
+    model.backend_version = "0.5.15"
+    if edit == "parameters":
+        model.backend_parameters = ["--mem-fraction-static=0.9"]
+    elif edit == "role-parameters":
+        model.roles[0].backend_parameters = ["--mem-fraction-static=0.9"]
+    else:
+        model.backend_version = "0.5.14"
+
+    assert await _stale(model, [first, waiting]) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [
+        ModelInstanceStateEnum.RUNNING,
+        ModelInstanceStateEnum.UNREACHABLE,
+    ],
+)
+async def test_unknown_version_of_running_or_unreachable_member_is_still_stale(state):
+    model = _model()
+    member = _instance(await _digest(model))
+    member.group_id = "1-group"
+    member.state = state
+    model.backend_version = "0.5.15"
+
+    assert await _stale(model, [member]) is True

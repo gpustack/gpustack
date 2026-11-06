@@ -25,7 +25,7 @@ from gpustack.api.exceptions import (
 from gpustack.api.tenant import TenantContext
 from gpustack.routes import clusters as clusters_route
 from gpustack.schemas.clusters import ClusterProvider
-from gpustack.schemas.principals import PrincipalType
+from gpustack.schemas.principals import OrgRole, PrincipalType
 
 CLUSTER_ID = 1
 PROXY_PATH = "apis/apiregistration.k8s.io/v1/apiservices/v1.worker.gpustack.ai"
@@ -186,3 +186,81 @@ async def test_traversal_shaped_tails_are_rejected_before_any_lookup(raw):
 )
 def test_plain_tails_canonicalize_to_the_forwarded_form(raw, canonical):
     assert clusters_route._canonicalize_proxy_path(raw) == canonical
+
+
+@pytest.mark.parametrize(
+    "scope",
+    ["member", "owner", "admin", "admin-all", "grantee", "roleless", "personal"],
+)
+@pytest.mark.parametrize(
+    "method,resource,readable",
+    [
+        ("GET", "own-workload", True),
+        ("HEAD", "own-workload", True),
+        ("OPTIONS", "own-workload", True),
+        ("POST", "own-workload", False),
+        ("PUT", "own-workload", False),
+        ("PATCH", "own-workload", False),
+        ("DELETE", "own-workload", False),
+        ("GET", "foreign-workload", False),
+        ("GET", "all-workloads", False),
+        ("GET", "secrets", False),
+        ("POST", "secrets", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_proxy_enforces_management_role_and_workload_scope(
+    monkeypatch, scope, method, resource, readable
+):
+    _empty_cluster(monkeypatch)
+    ctx = TenantContext(
+        user=SimpleNamespace(
+            id=1 if scope == "personal" else 11, kind=PrincipalType.USER
+        ),
+        is_platform_admin=scope in {"admin", "admin-all"},
+        current_principal_id=(
+            None if scope == "admin-all" else 2 if scope == "grantee" else 1
+        ),
+        org_role=(
+            None
+            if scope in {"roleless", "personal", "admin-all"}
+            else OrgRole.OWNER if scope == "owner" else OrgRole.MEMBER
+        ),
+        current_is_personal_scope=scope == "personal",
+        accessible_cluster_ids={CLUSTER_ID} if scope == "grantee" else set(),
+    )
+    namespace = "gpustack-user-1" if scope == "personal" else "gpustack-acme"
+    workload_api = "apis/worker.gpustack.ai/v1"
+    path = {
+        "own-workload": f"{workload_api}/namespaces/{namespace}/instances",
+        "foreign-workload": f"{workload_api}/namespaces/gpustack-other/instances",
+        "all-workloads": f"{workload_api}/instances",
+        "secrets": "api/v1/namespaces/default/secrets",
+    }[resource]
+    monkeypatch.setattr(
+        clusters_route.Principal,
+        "one_by_id",
+        AsyncMock(return_value=SimpleNamespace(kind=PrincipalType.ORG, name="acme")),
+    )
+    workers = AsyncMock(return_value=[SimpleNamespace(id=10)])
+    monkeypatch.setattr(clusters_route.Worker, "all_by_fields", workers)
+    forwarded = MagicMock(return_value=iter(()))
+    monkeypatch.setattr(clusters_route, "stream_to_worker", forwarded)
+    request = MagicMock(method=method, headers={}, query_params={})
+    request.body = AsyncMock(return_value=b'{}')
+
+    if scope in {"owner", "admin", "admin-all"} or readable:
+        await clusters_route.cluster_apiserver_proxy(
+            request=request, ctx=ctx, id=CLUSTER_ID, path=path
+        )
+        workers.assert_awaited_once()
+        forwarded.assert_called_once()
+        assert forwarded.call_args.kwargs["method"] == method
+        assert forwarded.call_args.kwargs["path"] == f"cluster-proxy/{path}"
+    else:
+        with pytest.raises(ForbiddenException):
+            await clusters_route.cluster_apiserver_proxy(
+                request=request, ctx=ctx, id=CLUSTER_ID, path=path
+            )
+        workers.assert_not_awaited()
+        forwarded.assert_not_called()

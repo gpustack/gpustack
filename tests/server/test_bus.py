@@ -1,11 +1,11 @@
 import asyncio
 import logging
-from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import patch
 
 import pytest
 from sqlmodel import SQLModel
+from sqlalchemy.orm import Session
 
 from gpustack.mixins.active_record import CommitEvent, send_post_commit_events
 
@@ -395,7 +395,7 @@ async def test_the_commit_hook_publishes_a_created_event_with_its_id():
         async def publish(self, name, event):
             published.append((name, event))
 
-    session = SimpleNamespace(info={"pending_events": [commit_event]})
+    session = Session(info={"pending_events": [commit_event]})
     with patch("gpustack.mixins.active_record.event_bus", _RecordingBus()):
         send_post_commit_events(session)
         await asyncio.sleep(0)

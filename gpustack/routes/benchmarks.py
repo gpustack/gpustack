@@ -1,8 +1,10 @@
 from sqlmodel import col
+import math
 import re
 import yaml
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence
+from urllib.parse import urlparse
 import aiohttp
 from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import (
@@ -21,6 +23,8 @@ from gpustack.api.exceptions import (
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.api.tenant import (
+    TenantContext,
+    assert_cluster_visible,
     assert_resource_visible,
     tenant_list_conditions,
 )
@@ -28,6 +32,7 @@ from gpustack.mixins.active_record import fuzzy_like
 from gpustack.schemas.cache_services import CacheService
 from gpustack.schemas.models import (
     Model,
+    ExtendedKVCacheConfig,
     ModelInstance,
     ModelInstanceStateEnum,
     RoleNameEnum,
@@ -35,7 +40,6 @@ from gpustack.schemas.models import (
     is_embedding_model,
     is_image_model,
     is_reranker_model,
-    role_effective_model,
     servable_instances,
 )
 from gpustack.schemas.clusters import Cluster
@@ -48,6 +52,7 @@ from gpustack.schemas.model_routes import (
 from gpustack.schemas.principals import Principal, platform_principal_id
 from gpustack.schemas.workers import Worker
 from gpustack.config.config import get_global_config
+from gpustack.routes.clusters import get_server_url
 from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.schemas.benchmark import (
@@ -92,6 +97,7 @@ from gpustack.worker.logs import LogOptionsDep
 from sqlalchemy.orm import defer
 
 MAX_EXPORT_RECORDS = 20
+MIN_STAGE_REQUEST_RATE = 0.001
 # Upper bound on the per-point grid a single benchmark may upload. The ramp's own
 # budget is max_points and a manual stage list is user-sized, so this sits far
 # above any real curve — it exists so a malformed upload is rejected at the
@@ -406,6 +412,7 @@ async def get_benchmark_dashboard(
         model,
         cluster_name=cluster.name if cluster is not None else None,
         extra_params=_dashboard_window(benchmark),
+        request=request,
     )
     if dashboard_url is None:
         raise InternalServerErrorException(
@@ -534,8 +541,17 @@ def _validate_stages(benchmark_in: BenchmarkCreate) -> None:
             raise BadRequestException(
                 message=f"Stage {i} must specify a numeric 'rate'"
             )
-        if rate <= 0:
-            raise BadRequestException(message=f"Stage {i} 'rate' must be > 0")
+        _validate_load_axis_value(rate, f"Stage {i} 'rate'", benchmark_in.load_type)
+        if (
+            benchmark_in.load_type != BenchmarkLoadTypeEnum.CONCURRENCY
+            and rate < MIN_STAGE_REQUEST_RATE
+        ):
+            raise BadRequestException(
+                message=(
+                    f"Stage {i} 'rate' must be >= {MIN_STAGE_REQUEST_RATE} "
+                    "requests per second"
+                )
+            )
         # The per-stage constraints ride into `--stages` as JSON verbatim, so an
         # unusable one is not caught until the container acts on it — the same
         # reason the top-level budgets are checked in _validate_positive_knobs.
@@ -551,10 +567,9 @@ def _validate_stages(benchmark_in: BenchmarkCreate) -> None:
 
 def _validate_search_range(benchmark_in: BenchmarkCreate) -> None:
     lower, upper = benchmark_in.lower_bound, benchmark_in.upper_bound
-    if lower is not None and lower <= 0:
-        raise BadRequestException(message="Field lower_bound must be > 0")
-    if upper is not None and upper <= 0:
-        raise BadRequestException(message="Field upper_bound must be > 0")
+    for name, value in (("lower_bound", lower), ("upper_bound", upper)):
+        if value is not None:
+            _validate_load_axis_value(value, f"Field {name}", benchmark_in.load_type)
     if lower is not None and upper is not None and lower >= upper:
         raise BadRequestException(
             message=(
@@ -562,6 +577,20 @@ def _validate_search_range(benchmark_in: BenchmarkCreate) -> None:
                 f"({upper}); the search range would otherwise be empty."
             )
         )
+
+
+def _validate_load_axis_value(
+    value: float, label: str, load_type: Optional[BenchmarkLoadTypeEnum]
+) -> None:
+    """Request rates are continuous; concurrency counts whole in-flight streams."""
+    try:
+        finite = math.isfinite(value)
+    except OverflowError:
+        finite = False
+    if not finite or value <= 0:
+        raise BadRequestException(message=f"{label} must be > 0 and finite")
+    if load_type == BenchmarkLoadTypeEnum.CONCURRENCY and value % 1 != 0:
+        raise BadRequestException(message=f"{label} must be an integer for concurrency")
 
 
 def _validate_positive_knobs(benchmark_in: BenchmarkCreate) -> None:
@@ -903,12 +932,95 @@ async def _resolve_placement(
     return sorted(decode or with_weights, key=lambda m: m.id)[0]
 
 
+def _assert_trusted_benchmark_request_url(
+    gateway_url: str, trusted_hosts: Optional[List[str]]
+) -> None:
+    """Require an explicit destination allowlist before sending worker credentials.
+
+    Unlike forwarded-header rewriting, wildcard trust cannot authorize a
+    credential destination. Bare hosts permit only the scheme's default port;
+    a non-default port must be named explicitly, e.g. gateway.example:8443.
+    """
+    message = (
+        "Route benchmark request entrance is not trusted. Configure the cluster "
+        "server_url or server_external_url with the Higress entrance, or add "
+        "its exact host and port to the server's trusted_hosts."
+    )
+    try:
+        target = urlparse(gateway_url)
+        default_port = {"http": 80, "https": 443}.get(target.scheme)
+        if (
+            not default_port
+            or not target.hostname
+            or target.username is not None
+            or target.password is not None
+        ):
+            raise ValueError("Invalid gateway authority")
+        target_port = target.port if target.port is not None else default_port
+    except ValueError:
+        raise BadRequestException(message=message)
+
+    for entry in trusted_hosts or []:
+        if "*" in entry:
+            continue
+        try:
+            allowed = urlparse(f"//{entry.strip()}")
+            if (
+                allowed.hostname != target.hostname
+                or allowed.username is not None
+                or allowed.password is not None
+                or allowed.path
+                or allowed.query
+                or allowed.fragment
+            ):
+                continue
+            allowed_port = allowed.port if allowed.port is not None else default_port
+            if 0 < target_port == allowed_port:
+                return
+        except ValueError:
+            continue
+    raise BadRequestException(message=message)
+
+
+async def _resolve_benchmark_gateway_url(
+    session: SessionDep,
+    ctx: TenantContext,
+    placement: ModelInstance,
+    request: Request,
+) -> str:
+    """Resolve the Higress entrance using the cluster registration URL policy."""
+    worker = await WorkerService(session).get_by_id(placement.worker_id)
+    if worker is None:
+        raise BadRequestException(message="Benchmark placement worker not found")
+    cluster = await Cluster.one_by_id(session, worker.cluster_id)
+    assert_cluster_visible(ctx, cluster)
+    if cluster.deleted_at is not None:
+        raise NotFoundException(message="Cluster not found")
+    cluster_url = (cluster.server_url or "").strip() or None
+    cfg = get_global_config()
+    if cluster_url or (cfg and cfg.server_external_url):
+        return get_server_url(request, cluster_url)
+
+    try:
+        gateway_url = get_server_url(request, None)
+    except ValueError:
+        raise BadRequestException(message="Invalid benchmark request entrance")
+    _assert_trusted_benchmark_request_url(
+        gateway_url, cfg.trusted_hosts if cfg else None
+    )
+    return gateway_url
+
+
 async def validate_and_mutate_benchmark_in(  # noqa: C901
-    session: SessionDep, benchmark_in: BenchmarkCreate
+    session: SessionDep,
+    benchmark_in: BenchmarkCreate,
+    ctx: TenantContext,
+    request: Request,
 ) -> Benchmark:
 
     mutated = Benchmark(**benchmark_in.model_dump())
     model = await _resolve_target_model(session, benchmark_in)
+    assert_resource_visible(ctx, model, not_found_message="Model not found")
     instance = await _resolve_target_endpoint(
         session, model, benchmark_in.model_instance_name
     )
@@ -918,6 +1030,7 @@ async def validate_and_mutate_benchmark_in(  # noqa: C901
     # and the snapshot still describes the deployment. What changes is only
     # where the load is SENT, which the runner reads off `target_mode`.
     route_name = None
+    gateway_url = None
     if mutated.target_mode == BenchmarkTargetModeEnum.ROUTE:
         # Named by the caller when it had a list to pick from (the form does),
         # derived when it did not (an API client naming only a model).
@@ -925,6 +1038,9 @@ async def validate_and_mutate_benchmark_in(  # noqa: C901
             await _resolve_named_route(session, model, benchmark_in.route_name)
             if benchmark_in.route_name
             else await _resolve_route_name(session, model)
+        )
+        gateway_url = await _resolve_benchmark_gateway_url(
+            session, ctx, placement, request
         )
 
     mutated.model_id = model.id
@@ -988,6 +1104,7 @@ async def validate_and_mutate_benchmark_in(  # noqa: C901
     snapshot = await get_benchmark_snapshot(
         session, instance, model, route_name=route_name
     )
+    snapshot.gateway_url = gateway_url
     mutated.snapshot = snapshot
     mutated.gpu_summary, mutated.gpu_vendor_summary = summary_gpu_snapshots(
         snapshot.gpus
@@ -1009,7 +1126,10 @@ async def validate_and_mutate_benchmark_in(  # noqa: C901
     response_model=BenchmarkPublic,
 )
 async def create_benchmark(
-    session: SessionDep, ctx: TenantContextDep, benchmark_in: BenchmarkCreate
+    session: SessionDep,
+    ctx: TenantContextDep,
+    benchmark_in: BenchmarkCreate,
+    request: Request,
 ):
     existing = await Benchmark.one_by_field(session, "name", benchmark_in.name)
     if existing:
@@ -1017,7 +1137,9 @@ async def create_benchmark(
             message=f"Benchmark with name '{benchmark_in.name}' already exists."
         )
 
-    mutated = await validate_and_mutate_benchmark_in(session, benchmark_in)
+    mutated = await validate_and_mutate_benchmark_in(
+        session, benchmark_in, ctx, request
+    )
     try:
         benchmark = await Benchmark.create(session, mutated)
     except Exception as e:
@@ -1117,20 +1239,15 @@ async def _snapshot_members(
 
 async def _attached_cache_service_name(
     session: SessionDep,
-    model: Model,
+    ext: Optional[ExtendedKVCacheConfig],
     resolved: Dict[int, Optional[str]],
 ) -> Optional[str]:
-    """The name of the shared cache service `model` attaches to, if any.
-
-    `model` here is the *effective* model of one member: `extended_kv_cache` is
-    a per-role override, so a group can point prefill and decode at different
-    services, or only one of them at a service at all.
+    """The shared cache service referenced by one benchmark member's config.
 
     The config carries only the id; the snapshot keeps the name so a report
     still says what it ran against after the service is deleted. `resolved`
     memoizes across the members of one snapshot.
     """
-    ext = model.extended_kv_cache
     if not (ext and ext.is_shared() and ext.cache_service_id):
         return None
     if ext.cache_service_id not in resolved:
@@ -1156,25 +1273,11 @@ async def get_benchmark_snapshot(
     cache_service_names: Dict[int, Optional[str]] = {}
 
     for member in await _snapshot_members(session, mi, model):
-        # Project the role's overrides before snapshotting, rather than handing
-        # every member the deployment's own values. `env` and
-        # `backend_parameters` are overridable per role precisely because
-        # prefill and decode need different ones -- on Ascend they differ down
-        # to `HCCL_CONNECT_TIMEOUT` (120 vs 1200). Reading the
-        # Model's copy for every member would freeze one intent as all of them,
-        # and the report would then attribute settings to a member that never
-        # ran with them.
-        #
-        # `role_effective_model` returns the model itself when there is no role
-        # to project, so a plain deployment snapshots the model unchanged.
-        effective = role_effective_model(model, getattr(member, "role", None))
-        instance_snapshots[member.name] = create_model_instance_snapshot(
-            member,
-            effective,
-            cache_service_name=await _attached_cache_service_name(
-                session, effective, cache_service_names
-            ),
+        instance_snapshot = create_model_instance_snapshot(member, model)
+        instance_snapshot.cache_service_name = await _attached_cache_service_name(
+            session, instance_snapshot.extended_kv_cache, cache_service_names
         )
+        instance_snapshots[member.name] = instance_snapshot
 
         if member.worker_id is None:
             continue

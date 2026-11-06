@@ -20,6 +20,7 @@ from gpustack.logging import RedirectStdoutStderr
 from gpustack.schemas.benchmark import (
     Benchmark,
     BenchmarkLoadModeEnum,
+    BenchmarkMetrics,
     BenchmarkStateEnum,
     BenchmarkTargetModeEnum,
     benchmark_load_mode,
@@ -66,23 +67,6 @@ BENCHMARK_TARGET_CHECK_INTERVAL_SECONDS = 15
 # to sit out those, short enough to beat the load generator's own per-request
 # timeout, which is what the run would otherwise wait on.
 BENCHMARK_TARGET_GONE_GRACE_SECONDS = 300
-
-
-def _without_raw_metrics(results: list) -> list:
-    """The point grid with each point's `raw_metrics` dump left out.
-
-    For partial syncs only. `raw_metrics` is the bulk of a point (~15KB against a
-    few hundred bytes of columns) and the whole grid is re-posted on every sync, so
-    a 12-point run was shipping the same dumps over and over for the life of the
-    run — and each POST is a full replace, so the route also rewrote every row.
-    The columns are what the running detail page draws from; the dumps back the
-    per-point percentile drill-down, which the terminal sync fills in.
-
-    The cost is stated rather than hidden: expanding a finished point mid-run shows
-    no percentile table until the run ends. Shallow copies — the same rows go on to
-    the analysis, which reads columns only.
-    """
-    return [{k: v for k, v in row.items() if k != "raw_metrics"} for row in results]
 
 
 class CollectedResults(NamedTuple):
@@ -1153,6 +1137,21 @@ class BenchmarkManager:
                     best = m
                 if len(point_results) == 1:
                     metric_points.append((point_results[0], m))
+                else:
+                    for point in point_results:
+                        values = {
+                            key: point[key]
+                            for key in BenchmarkMetrics.model_fields
+                            if key in point and key != "raw_metrics"
+                        }
+                        raw = point.get("raw_metrics")
+                        metrics = BenchmarkMetrics(
+                            **values,
+                            raw_metrics=(
+                                {"benchmarks": [raw]} if raw is not None else None
+                            ),
+                        )
+                        metric_points.append((point, metrics))
             # Keep the report with the MOST failed requests for error-sample
             # extraction: failures concentrate at the high-load points, so the
             # first (lowest-load) point's samples are usually empty.
@@ -1160,25 +1159,19 @@ class BenchmarkManager:
                 report = rep
                 worst_errs = errs
 
-        # Each report has one stage, so its full metrics can represent the
-        # recommended rate selected from the combined measured curve.
-        recommended_rate = analysis.compute_best_points(benchmark, results).get(
-            "recommended_rate"
-        )
-        matching = [
-            (point, metrics)
-            for point, metrics in metric_points
-            if recommended_rate is not None
-            and point.get("rate") == recommended_rate
-            and (
-                not analysis.has_slo(benchmark)
-                or (analysis.meets_slo(benchmark, point) and analysis.success_ok(point))
-            )
-        ]
+        primary, _peak = analysis.select_result_points(benchmark, results)
+        matching = [metrics for point, metrics in metric_points if point is primary]
         if matching:
-            best = max(
-                matching, key=lambda pair: pair[0].get("tokens_per_second_mean") or 0
-            )[1]
+            best = matching[0]
+        elif loaded and (
+            analysis.has_slo(benchmark) or analysis.measured_stages(results)
+        ):
+            # Empty metrics clear any earlier primary snapshot while preserving
+            # measured stages and failure evidence when no load meets the SLO.
+            best = BenchmarkMetrics()
+
+        if analysis.saturation_floor_ceiling(benchmark, results) is not None:
+            best = BenchmarkMetrics()
 
         return CollectedResults(results, best, report, loaded, skipped, skipped_reason)
 
@@ -1188,8 +1181,9 @@ class BenchmarkManager:
         Shared by the terminal sync and the in-progress partial sync so both
         aggregate points the same way — the only difference between a partial and a
         final read is how many point files happen to exist on disk at the time.
-        `metrics` is the recommended operating point (or throughput peak when
-        no point meets the SLO); `report` is the one used for error samples.
+        `metrics` represents the primary measured stage. SLO runs without a
+        passing stage have empty parent metrics; their grid and error-sample
+        report are preserved.
         """
         mode = benchmark_load_mode(benchmark)
         try:
@@ -1220,12 +1214,9 @@ class BenchmarkManager:
                     ],
                 )
 
-            # Single run: one report written at the end.
+            # Single-run files use the same stage selection as ramps and stages.
             path = artifacts.single_report_path(self._benchmark_dir, benchmark.id)
-            report = GenerativeBenchmarksReport.load_file(path)
-            metrics = report.to_metrics()
-            results = report.to_results(input_tokens=benchmark.dataset_input_tokens)
-            return CollectedResults(results, metrics, report, 1 if metrics else 0, 0)
+            return self._aggregate_points(benchmark, [path])
         except Exception as e:
             logger.error(
                 f"Failed to load metrics for benchmark {benchmark.name}(id={benchmark.id}): {e}"
@@ -1464,10 +1455,7 @@ class BenchmarkManager:
         validity = analysis.compute_validity(
             benchmark, results, best_points, self._read_ramp_facts(benchmark)
         )
-        if any(
-            w.get("code") == "saturated_at_lower_bound"
-            for w in validity.get("warnings", [])
-        ):
+        if analysis.saturation_floor_ceiling(benchmark, results) is not None:
             # The whole search range sits above saturation, so the single measured
             # "peak" is just the offered floor knob — which the banner explicitly
             # calls NOT the optimum ("lower the range"). Showing it as
@@ -1480,6 +1468,7 @@ class BenchmarkManager:
                 "slo_met_rate": None,
                 "recommended_rate": None,
             }
+            validity.update(primary_point=None, peak_point=None)
         if in_progress:
             # Not a warning code — a transient flag marking this analysis as a
             # SNAPSHOT taken after N points, not the run's verdict. Dropped by the
@@ -1534,9 +1523,10 @@ class BenchmarkManager:
 
         Only multi-point runs (auto-tune ramp / manual stages) have anything to
         stream — a single fixed run writes its one file at the very end. The
-        runner writes each point's result file as soon as that point finishes, so
-        the detail page can show the curve growing instead of staying empty until
-        the whole ramp completes.
+        runner writes each point's result file as soon as that point finishes.
+        Its flat metrics and raw statistics are uploaded together so the curve
+        and the stage's duration, extrema and distributions are available while
+        later points are still running.
 
         Throttled two ways: at most once per
         BENCHMARK_PARTIAL_SYNC_INTERVAL_SECONDS, and only when the number of
@@ -1570,7 +1560,7 @@ class BenchmarkManager:
             # attempts=1: a transient blip just retries on the next poll rather
             # than blocking this one with backoff (the terminal sync retries).
             self._post_metrics_and_results(
-                benchmark, collected.metrics, _without_raw_metrics(results), attempts=1
+                benchmark, collected.metrics, results, attempts=1
             )
             self._write_best_points_and_validity(
                 benchmark, results, in_progress=True, attempts=1

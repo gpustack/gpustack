@@ -17,7 +17,7 @@ from gpustack.schemas.gpu_devices import GPUDevice
 from gpustack.schemas.gpu_instances import GPUInstance
 from gpustack.schemas.model_files import ModelFile
 from gpustack.schemas.model_provider import ModelProvider
-from gpustack.schemas.models import Model
+from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.principals import PrincipalType
 from gpustack.schemas.workers import Worker
 
@@ -36,9 +36,25 @@ from gpustack.schemas.workers import Worker
         ("user", True, None, None, {"owner_principal_id": 20}, True),
         ("user", True, 10, None, {"owner_principal_id": 20}, False),
         ("system", False, None, None, {"cluster_id": 30}, True),
-        ("system", False, None, 30, {"cluster_id": 30}, True),
+        ("system", False, None, 30, {"cluster_id": 30, "owner_principal_id": 10}, True),
+        (
+            "system",
+            False,
+            None,
+            30,
+            {"cluster_id": 30, "owner_principal_id": 20},
+            False,
+        ),
+        ("system", False, None, 30, {"cluster_id": 30}, False),
         ("system", False, None, 30, {"cluster_id": 40}, False),
-        ("system", False, None, 30, {"cluster_id": None}, True),
+        (
+            "system",
+            False,
+            None,
+            30,
+            {"cluster_id": None, "owner_principal_id": 10},
+            False,
+        ),
         ("system", False, None, 30, {}, False),
     ],
 )
@@ -51,6 +67,7 @@ def test_owner_stream_visibility(
         current_principal_id=principal_id,
         org_role=None,
         scoped_cluster_id=cluster_id,
+        scoped_cluster_owner_id=10,
     )
     visible = tenant_stream_filter(ctx, model)
     assert visible(SimpleNamespace(**row)) is expected
@@ -63,6 +80,7 @@ def test_owner_stream_visibility(
         WorkerPool,
         ModelProvider,
         Model,
+        ModelInstance,
         Worker,
         GPUDevice,
         ModelFile,
@@ -93,6 +111,7 @@ def test_stream_predicate_matches_list_conditions(
         current_principal_id=principal_id,
         org_role=None,
         scoped_cluster_id=cluster_id,
+        scoped_cluster_owner_id=10,
     )
     conditions = tenant_list_conditions(ctx, model)
     # Evaluate the actual SQLAlchemy expressions with SQL NULL semantics,

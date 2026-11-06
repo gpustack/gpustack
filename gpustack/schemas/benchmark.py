@@ -2,7 +2,7 @@ import random
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Literal, Optional
 from pydantic import BaseModel
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, ForeignKey, Integer, SQLModel, Text
@@ -277,6 +277,10 @@ class ModelInstanceRuntimeInfo(BaseModel):
 class ModelInstanceSnapshot(ModelInstanceRuntimeInfo):
     id: int
     name: str
+    config_source: Optional[Literal["instance_snapshot", "current_model"]] = None
+    """Origin of configuration values; absent on reports without provenance."""
+    # The instance's model name can differ from the renamed deployment's name.
+    model_name: Optional[str] = None
     resolved_path: Optional[str] = None
     # Which role of its model this member served. None for a plain deployment,
     # and the only thing that tells a group's members apart once the run is
@@ -428,7 +432,7 @@ class BenchmarkBase(SQLModel):
     # (fixed_rate=req/s, concurrency=streams) with a geometric bracket + binary
     # search instead of running user-specified stages, and auto-detects the
     # answer. Target is derived: slo_* set -> SLO boundary (max knob meeting SLO);
-    # otherwise -> throughput saturation (peak output tok/s). Replaces the old
+    # otherwise -> throughput saturation (peak total tok/s). Replaces the old
     # guidellm `sweep` profile (removed).
     auto_tune: Optional[bool] = Field(default=None)
     # Auto-tune budget / bounds (used when auto_tune=true). None -> runner default.
@@ -529,6 +533,9 @@ class BenchmarkSnapshot(BaseModel):
     # else entirely — so "which route, under what name" is part of what the
     # numbers mean.
     route_name: Optional[str] = None
+    # Higress entrance resolved from the cluster override, server external URL,
+    # or creation request. Keeping it here fixes the target for this run.
+    gateway_url: Optional[str] = None
 
 
 class BenchmarkMetricsLite(SQLModel):
@@ -690,9 +697,10 @@ class BenchmarkResultBase(BenchmarkResultGrid):
     A measured point together with the benchmark it belongs to.
 
     A benchmark task produces N x M of these (N input lengths x M rates). The
-    parent `Benchmark` row keeps the recommended operating point in its flat metric
-    columns for list/sort, or the throughput peak when no point meets the SLO; the
-    full grid lives here.
+    parent `Benchmark` row keeps the primary stage's metrics for list/sort. The
+    primary stage is the highest passing SLO load, or the total-throughput peak
+    when no SLO applies. With no passing SLO stage those parent metrics are empty;
+    the complete measured grid remains here.
     """
 
     benchmark_id: int = Field(
@@ -766,15 +774,22 @@ class BenchmarkRuntime(SQLModel):
     progress: Optional[float] = Field(default=None)
     pid: Optional[int] = Field(default=None)
 
-    # Max rate that still meets the SLO targets (computed by the worker).
+    # Highest measured load meeting all SLO targets and the request-success floor.
     slo_met_rate: Optional[float] = Field(default=None)
-    # Recommended concurrency from over-saturation detection.
+    # Configured concurrency or req/s of the primary measured result. Equals
+    # slo_met_rate when SLO targets apply, otherwise peak_rate.
     recommended_rate: Optional[float] = Field(default=None)
-    # Best operating points (computed by the worker from the stage grid).
-    peak_rate: Optional[float] = Field(default=None)  # rate at throughput peak
-    # Test-coverage validity, computed by the worker from the stage grid:
-    # {"coverage_applicable": bool, "warnings": [{"code": str, "params": {...}}]}.
-    # Fixed-load runs have no coverage verdict but can still report point findings.
+    # Configured load at the highest observed total token throughput.
+    # Output throughput remains a separate metric of that same stage.
+    peak_rate: Optional[float] = Field(default=None)
+    # Runtime analysis: coverage warnings and optional exact stage coordinates
+    # primary_point / peak_point = {input_tokens, sequence, rate}, or None when
+    # absent. Selection metadata also applies to manual runs without a search
+    # coverage verdict; it avoids ambiguity between stages with equal load.
+    # throughput_decline can carry validated trigger-time policy, peak and point
+    # evidence when that protective stop ended the search. throughput_gain_evidence
+    # can carry a cross-checked saturation refinement window and its total-TPS
+    # baseline, peak and measured neighbors on normal gain convergence.
     validity: Optional[Dict[str, Any]] = Field(sa_type=JSON, default=None)
 
 
@@ -875,8 +890,8 @@ class BenchmarkStateUpdate(SQLModel):
     )
     pid: Optional[int] = Field(default=None)
     progress: Optional[float] = None
-    # Best operating points (computed by the worker from the stage grid; only
-    # the explicitly-set ones are persisted via model_fields_set).
+    # Primary-result load, SLO capacity and observed total-TPS peak. Only explicitly
+    # set fields are persisted through model_fields_set.
     peak_rate: Optional[float] = None
     slo_met_rate: Optional[float] = None
     recommended_rate: Optional[float] = None

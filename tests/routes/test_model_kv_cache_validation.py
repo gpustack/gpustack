@@ -208,8 +208,8 @@ async def test_shared_happy_path_vllm(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_shared_skips_cluster_check_without_effective_cluster(monkeypatch):
-    """No chosen cluster means default-cluster resolution runs later; the
-    cluster match can't be validated here and must not false-positive."""
+    """Without an effective model cluster, validation skips the cluster match
+    rather than inferring placement from the cache service's cluster."""
     _patch_lookups(monkeypatch, _service(cluster_id=2), provider_backends=("vLLM",))
 
     await models_route.validate_shared_kv_cache(

@@ -44,6 +44,19 @@ if TYPE_CHECKING:
 name_pattern = r'^[A-Za-z](?:[A-Za-z0-9_\-\.:]*[A-Za-z0-9])?$'
 
 
+def validate_model_route_name(name: str, field_name: str = "name") -> str:
+    """Validate a raw route name before adding an optional owner prefix."""
+    if not isinstance(name, str):
+        raise ValueError(f"{field_name} must be a string")
+    if not re.fullmatch(name_pattern, name):
+        raise ValueError(
+            f"{field_name} must start with a letter, "
+            "end with a letter or number, and contain only letters, numbers, "
+            "hyphens, underscores, dots, or colons"
+        )
+    return name
+
+
 def effective_route_name(
     route_name: str,
     owner_name: Optional[str],
@@ -204,12 +217,10 @@ class ModelRouteTargetUpdate(SQLModel):
         # "<base_model_name>:<lora_name>". The full base-prefix check lives in
         # the service layer (lora_route_name_for); schema only enforces shape.
         if self.model_id is not None and self.overridden_model_name is not None:
-            if not re.match(name_pattern, self.overridden_model_name):
-                raise ValueError(
-                    "overridden_model_name for a local-model target must start "
-                    "with a letter and contain only letters, numbers, hyphens, "
-                    "underscores, dots, or colons"
-                )
+            validate_model_route_name(
+                self.overridden_model_name,
+                "overridden_model_name for a local-model target",
+            )
             if ":" not in self.overridden_model_name:
                 raise ValueError(
                     "overridden_model_name for a local-model target must be of the "
@@ -258,14 +269,7 @@ class ModelRouteTargetBase(ModelRouteTargetCreate):
 
     @field_validator("route_name", mode="before")
     def validate_route_name(cls, v):
-        if not isinstance(v, str):
-            raise ValueError("route_name must be a string")
-        if not re.match(name_pattern, v):
-            raise ValueError(
-                "route_name must start with a letter, only contain letters, numbers, hyphens, "
-                "underscores, or dots, and not end with hyphen or underscore"
-            )
-        return v
+        return validate_model_route_name(v, "route_name")
 
 
 class ModelRouteTarget(ModelRouteTargetBase, BaseModelMixin, table=True):
@@ -342,6 +346,7 @@ class ModelRouteUpdateBase(SQLModel):
                 "reranker",
                 "speech_to_text",
                 "text_to_speech",
+                "decision",
                 "unknown",
             ]:
                 raise ValueError(f"Invalid category: {category}")
@@ -366,14 +371,7 @@ class ModelRouteUpdate(ModelRouteUpdateBase):
     # only ever applied to user-supplied input.
     @model_validator(mode="after")
     def validate_name(self):
-        name = self.name
-        if not isinstance(name, str):
-            raise ValueError("name must be a string")
-        if not re.match(name_pattern, name):
-            raise ValueError(
-                "name must start with a letter and contain only letters, numbers, hyphens, "
-                "underscores, or dots, and not end with hyphen or underscore"
-            )
+        validate_model_route_name(self.name)
         return self
 
 

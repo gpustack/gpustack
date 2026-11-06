@@ -40,6 +40,9 @@ def router_migration(monkeypatch):
     monkeypatch.setattr(module, "op", MagicMock())
     monkeypatch.setattr(module, "table_exists", lambda name: True)
     monkeypatch.setattr(module, "column_exists", lambda table, column: False)
+    inspector = MagicMock()
+    inspector.get_indexes.return_value = []
+    monkeypatch.setattr(module.sa, 'inspect', lambda bind: inspector)
     return module
 
 
@@ -134,3 +137,121 @@ def test_router_snapshot_absent_objects_make_downgrade_a_noop(
     monkeypatch.setattr(router_migration, "column_exists", lambda *args: column_exists)
     router_migration.downgrade()
     router_migration.op.drop_column.assert_not_called()
+
+
+@pytest.mark.parametrize('existing', [[], ['cluster_id'], ['cluster_id', 'model_id']])
+def test_instance_lookup_indexes_preserve_existing_fk_indexes(
+    lookup_migration, monkeypatch, existing
+):
+    migration = lookup_migration
+    indexes = [{'name': field, 'column_names': [field, 'id']} for field in existing]
+    inspector = MagicMock()
+    inspector.get_indexes.return_value = indexes
+    monkeypatch.setattr(migration.sa, 'inspect', lambda bind: inspector)
+    monkeypatch.setattr(migration, 'table_exists', lambda name: True)
+    migration._upgrade_model_instance_lookup_indexes()
+    created = {call.args[0] for call in migration.op.create_index.call_args_list}
+    assert created == {
+        f'ix_model_instances_{field}'
+        for field in ('cluster_id', 'model_id')
+        if field not in existing
+    }
+    migration._downgrade_model_instance_lookup_indexes()
+    migration.op.drop_index.assert_not_called()
+    migration.op.create_index.reset_mock()
+    inspector.get_indexes.return_value = [
+        {'name': f'ix_model_instances_{field}', 'column_names': [field]}
+        for field in ('cluster_id', 'model_id')
+    ]
+    migration._upgrade_model_instance_lookup_indexes()
+    migration.op.create_index.assert_not_called()
+    migration._downgrade_model_instance_lookup_indexes()
+    assert migration.op.drop_index.call_count == 2
+
+
+@pytest.mark.parametrize('dialect', [postgresql.dialect(), mysql.dialect()])
+def test_instance_lookup_index_ddl_is_portable(dialect):
+    from gpustack.schemas.models import ModelInstance
+    from sqlalchemy.schema import CreateIndex
+
+    for field in ('model_id', 'cluster_id'):
+        index = next(
+            ix
+            for ix in ModelInstance.__table__.indexes
+            if ix.name == f'ix_model_instances_{field}'
+        )
+        ddl = str(CreateIndex(index).compile(dialect=dialect))
+        assert f'ON model_instances ({field})' in ddl
+
+
+@pytest.fixture
+def lookup_migration(monkeypatch):
+    path = next(
+        (Path(__file__).resolve().parents[2] / "gpustack/migrations/versions").glob(
+            "*v2_3_1_database_changes.py"
+        )
+    )
+    spec = importlib.util.spec_from_file_location("v231_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "op", MagicMock())
+    module.op.get_bind.return_value.dialect.name = 'postgresql'
+    return module
+
+
+@pytest.mark.parametrize('dialect', ['postgresql', 'mysql'])
+def test_lookup_index_downgrade_preserves_required_mysql_fk_index(
+    lookup_migration, monkeypatch, dialect
+):
+    migration = lookup_migration
+    migration.op.get_bind.return_value.dialect.name = dialect
+    inspector = MagicMock()
+    inspector.get_indexes.return_value = [
+        {'name': f'ix_model_instances_{field}', 'column_names': [field]}
+        for field in ('cluster_id', 'model_id')
+    ]
+    inspector.get_foreign_keys.return_value = [
+        {'constrained_columns': [field]} for field in ('cluster_id', 'model_id')
+    ]
+    monkeypatch.setattr(migration.sa, 'inspect', lambda bind: inspector)
+    monkeypatch.setattr(migration, 'table_exists', lambda _: True)
+    migration._downgrade_model_instance_lookup_indexes()
+    assert migration.op.drop_index.call_count == (0 if dialect == 'mysql' else 2)
+
+
+def test_v231_indexes_run_for_databases_already_at_v230():
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    cfg = Config()
+    cfg.set_main_option(
+        "script_location",
+        str(Path(__file__).resolve().parents[2] / "gpustack/migrations"),
+    )
+    scripts = ScriptDirectory.from_config(cfg)
+    pending = list(
+        scripts.iterate_revisions(scripts.get_current_head(), "a7e2c9d4f681")
+    )
+    assert [step.revision for step in pending] == ["c8d3e6f1a902"]
+
+
+def test_v231_bundle_applies_snapshot_and_lookup_indexes(lookup_migration, monkeypatch):
+    migration = lookup_migration
+    inspector = MagicMock()
+    inspector.get_indexes.return_value = []
+    monkeypatch.setattr(migration.sa, 'inspect', lambda bind: inspector)
+    monkeypatch.setattr(migration, 'table_exists', lambda _: True)
+    monkeypatch.setattr(migration, 'column_exists', lambda *args: False)
+    migration.upgrade()
+    assert migration.op.add_column.call_args.args[1].name == 'model_config_snapshot'
+    assert migration.op.create_index.call_count == 2
+    inspector.get_indexes.return_value = [
+        {'name': f'ix_model_instances_{field}', 'column_names': [field]}
+        for field in ('cluster_id', 'model_id')
+    ]
+    monkeypatch.setattr(migration, 'column_exists', lambda *args: True)
+    migration.downgrade()
+    assert migration.op.drop_index.call_count == 2
+    migration.op.drop_column.assert_called_once_with(
+        'model_instances', 'model_config_snapshot'
+    )

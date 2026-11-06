@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Cache keys can contain authentication credentials and must not appear in logs.
 cache = Cache(Cache.MEMORY)
 # Cache locks for locked_cached decorator
 # Locks are created per cache key and should be cleaned up when cache expires
@@ -56,7 +57,7 @@ def _handle_cache_invalidate(event: "Event") -> None:
 
 async def _local_delete_cache(key: str) -> None:
     """Delete cache locally without broadcasting (for remote events)."""
-    logger.trace(f"Deleting cache for key: {key} (from remote)")
+    logger.trace("Deleting cache entry (from remote)")
     await cache.delete(key)
     _cache_locks.pop(key, None)
 
@@ -70,9 +71,9 @@ async def _broadcast_invalidation(key: str) -> None:
         await _coordinator.publish(
             "cache", Event(type=EventType.DELETED, data={"key": key})
         )
-        logger.trace(f"Broadcasted cache invalidation for key: {key}")
+        logger.trace("Broadcasted cache invalidation")
     except Exception as e:
-        logger.warning(f"Failed to broadcast cache invalidation: {e}")
+        logger.warning("Failed to broadcast cache invalidation (%s)", type(e).__name__)
 
 
 def build_cache_key(func: Callable, *args, **kwargs):
@@ -113,7 +114,7 @@ async def delete_cache_by_key(
         if func is None:
             raise ValueError("Either func or key must be provided")
         key = build_cache_key(func, *args, **kwargs)
-    logger.trace(f"Deleting cache for key: {key}")
+    logger.trace("Deleting cache entry")
     await cache.delete(key)
     _cache_locks.pop(key, None)
 
@@ -136,7 +137,7 @@ async def set_cache_by_key(key: str, value: Any, ttl: Optional[int] = None):
     """
     if ttl is None:
         ttl = envs.SERVER_CACHE_TTL_SECONDS
-    logger.trace(f"Set cache for key: {key}")
+    logger.trace("Set cache entry")
     await cache.set(key, value, ttl=ttl)
 
 
@@ -204,7 +205,9 @@ class locked_cached:
             if value is not None:
                 return value
 
-            logger.trace(f"cache miss for key: {key}")
+            logger.trace(
+                "cache miss for %s", getattr(f, "__qualname__", type(f).__name__)
+            )
             result = await f(*args, **kwargs)
             if result is not None:
                 await self.set_in_cache(key, result)

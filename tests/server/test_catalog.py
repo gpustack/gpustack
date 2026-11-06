@@ -72,7 +72,7 @@ def test_packaged_catalog_model_release_dates(catalog_file):
     # Dates identify the open-weight releases of these specific checkpoints.
     release_dates = {
         "Kimi-K3": "2026-07-27",
-        "DeepSeek-V4.1-Flash": "2026-09-10",
+        "DeepSeek-V4.1-Flash-1017": "2026-10-17",
         "GLM-5.3": "2026-08-28",
         "GLM-5.3-Flash": "2026-08-26",
         "Muse-Glimmer-30B": "2026-08-10",
@@ -82,6 +82,14 @@ def test_packaged_catalog_model_release_dates(catalog_file):
     for name, expected in release_dates.items():
         assert model_sets[name].release_date is not None
         assert model_sets[name].release_date.isoformat() == expected
+
+
+@pytest.mark.parametrize(
+    "catalog_file", ["model-catalog.yaml", "model-catalog-modelscope.yaml"]
+)
+def test_packaged_catalog_excludes_minimax31(catalog_file):
+    catalog_path = pkg_resources.files("gpustack.assets").joinpath(catalog_file)
+    assert "MiniMax-M3.1-Flash" not in _packaged_model_sets(str(catalog_path))
 
 
 @pytest.mark.parametrize(
@@ -106,7 +114,7 @@ def test_packaged_agentic_model_specs(catalog_file, source, repo_field, organiza
     model_sets = _packaged_model_sets(str(catalog_path))
     models = [
         ("Kimi-K3", "kimi_k3", "MXFP4"),
-        ("DeepSeek-V4.1-Flash", "deepseek_v41", "MXFP4"),
+        ("DeepSeek-V4.1-Flash-1017", "deepseek_v41", "MXFP4"),
         ("GLM-5.3", "glm47", "FP8"),
         ("Muse-Glimmer-30B", "muse_glimmer", "BF16"),
     ]
@@ -132,7 +140,7 @@ def test_packaged_agentic_model_specs(catalog_file, source, repo_field, organiza
             elif name == "GLM-5.3":
                 assert "--kv-cache-dtype=fp8" in spec.backend_parameters
 
-    deepseek = model_sets["DeepSeek-V4.1-Flash"]
+    deepseek = model_sets["DeepSeek-V4.1-Flash-1017"]
     assert "vision" in deepseek.capabilities
     assert deepseek.size == 552
     assert deepseek.activated_size == 16
@@ -367,8 +375,8 @@ def test_packaged_glm53_ascend_spec(arch_family):
             "glm47",
         ),
         (
-            "DeepSeek-V4.1-Flash",
-            "DeepSeek-V4.1-Flash-w8a8",
+            "DeepSeek-V4.1-Flash-1017",
+            "DeepSeek-V4.1-Flash-1017-w8a8",
             "deepseek_v41",
         ),
     ],
@@ -401,9 +409,9 @@ def test_packaged_a2_quantized_deployment(name, repo_id, reasoning):
     assert not any("parallel-size" in arg for arg in parameters)
     assert not any("fp8" in arg or "flashinfer" in arg for arg in parameters)
     assert not any(arg.startswith("--speculative-config") for arg in parameters)
-    if name in ("GLM-5.3-Flash", "DeepSeek-V4.1-Flash"):
+    if name in ("GLM-5.3-Flash", "DeepSeek-V4.1-Flash-1017"):
         assert model.env["VLLM_USE_V2_MODEL_RUNNER"] == "0"
-    if name == "DeepSeek-V4.1-Flash":
+    if name == "DeepSeek-V4.1-Flash-1017":
         # Engram storage and offload use the image defaults.
         additional_config = json.loads(
             find_parameter(parameters, ["additional-config"])
@@ -431,7 +439,8 @@ def test_packaged_a2_quantized_deployment(name, repo_id, reasoning):
 
 
 def test_packaged_qwen38_huggingface_a2_deployment():
-    model_set = _packaged_model_sets()["Qwen3.8-27B"]
+    catalog_path = pkg_resources.files("gpustack.assets").joinpath("model-catalog.yaml")
+    model_set = _packaged_model_sets(str(catalog_path))["Qwen3.8-27B"]
     specs = filter_specs_by_gpu(
         [GPUDevice(vendor="ascend", arch_family="Ascend910B3")], model_set.specs
     )

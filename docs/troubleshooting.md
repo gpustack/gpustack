@@ -26,6 +26,8 @@ You can also enable GPUStack's debug mode at runtime by running the following co
 gpustack reload-config --set debug=true
 ```
 
+`--debug` enables verbose logging without starting Python memory allocation tracing. To enable memory profiling, set `GPUSTACK_DEBUG_ENABLE_TRACEMALLOC=true` before starting GPUStack. This setting defaults to `false`, works independently of `--debug`, and requires a restart. Enable it when investigating memory usage, since tracing adds CPU and memory overhead.
+
 ## Configure Log Level
 
 The log level endpoints require authentication.

@@ -1698,7 +1698,8 @@ class AscendMindIEServer(InferenceServer):
             implicit_backend_parameters + user_backend_parameters
         )
         apply_backend_parameters = bool(user_backend_parameters) or (
-            find_parameter(implicit_backend_parameters, ["dtype"]) is not None
+            find_parameter(implicit_backend_parameters, ["dtype"], tokenized=True)
+            is not None
         )
         if apply_backend_parameters:
             formatted_backend_parameters = os.linesep.join(effective_backend_parameters)
@@ -1743,7 +1744,8 @@ class AscendMindIEServer(InferenceServer):
         # so users can still override it.
         if (
             is_ascend_310p(self._get_selected_gpu_devices())
-            and find_parameter(user_backend_parameters, ["dtype"]) is None
+            and find_parameter(user_backend_parameters, ["dtype"], tokenized=True)
+            is None
         ):
             implicit_backend_parameters.extend(["--dtype", "float16"])
 
@@ -1847,7 +1849,8 @@ class AscendMindIEServer(InferenceServer):
     ) -> int:
         if (
             derived_max_seq_len > 8192
-            and find_parameter(user_backend_parameters, ["max-seq-len"]) is None
+            and find_parameter(user_backend_parameters, ["max-seq-len"], tokenized=True)
+            is None
         ):
             return 8192
 

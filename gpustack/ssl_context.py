@@ -96,7 +96,7 @@ def _warn_unsupported_ssl_env_vars() -> None:
         )
 
 
-def _insecure_tls_requested() -> bool:
+def insecure_tls_requested() -> bool:
     """Whether either insecure-TLS switch is on.
 
     ``envs.INSECURE_TLS`` covers ``GPUSTACK_INSECURE_TLS`` — set by the
@@ -142,7 +142,7 @@ def make_ssl_context() -> ssl.SSLContext:
     subprocesses -- and nothing else: a client that builds its own context,
     like the model-source and update-service ones, still verifies.
     """
-    if _insecure_tls_requested():
+    if insecure_tls_requested():
         logger.warning(
             "%s or the insecure_tls config option is set: certificates are "
             "not verified on GPUStack's own HTTPS connections (the server, "

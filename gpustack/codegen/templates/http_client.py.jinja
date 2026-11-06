@@ -159,6 +159,31 @@ class HTTPClient:
         """Exit a context manager for underlying httpx.AsyncClient (see httpx docs)"""
         await self.get_async_httpx_client().__aexit__(*args, **kwargs)
 
+    def close(self) -> None:
+        """Close the underlying httpx.Client, releasing its pooled connections.
+
+        httpcore only evicts dead pooled connections once a later request
+        touches the pool, so a client that will not be used again must be
+        closed explicitly. Closing is idempotent; a request after close
+        lazily constructs a fresh client.
+        """
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    async def aclose(self) -> None:
+        """Close the underlying httpx clients, releasing their pooled connections.
+
+        The async client can only be released from async context; the sync
+        client is closed as well so a single call completes the teardown.
+        """
+        try:
+            self.close()
+        finally:
+            if self._async_client is not None:
+                await self._async_client.aclose()
+                self._async_client = None
+
 
 @define
 class AuthenticatedHTTPClient:
@@ -318,3 +343,28 @@ class AuthenticatedHTTPClient:
     async def __aexit__(self, *args: Any, **kwargs: Any) -> None:
         """Exit a context manager for underlying httpx.AsyncClient (see httpx docs)"""
         await self.get_async_httpx_client().__aexit__(*args, **kwargs)
+
+    def close(self) -> None:
+        """Close the underlying httpx.Client, releasing its pooled connections.
+
+        httpcore only evicts dead pooled connections once a later request
+        touches the pool, so a client that will not be used again must be
+        closed explicitly. Closing is idempotent; a request after close
+        lazily constructs a fresh client.
+        """
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    async def aclose(self) -> None:
+        """Close the underlying httpx clients, releasing their pooled connections.
+
+        The async client can only be released from async context; the sync
+        client is closed as well so a single call completes the teardown.
+        """
+        try:
+            self.close()
+        finally:
+            if self._async_client is not None:
+                await self._async_client.aclose()
+                self._async_client = None

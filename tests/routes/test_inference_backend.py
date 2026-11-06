@@ -12,7 +12,7 @@ from gpustack.schemas.inference_backend import (
     VersionConfig,
     VersionConfigDict,
 )
-from gpustack.schemas.models import BackendSourceEnum
+from gpustack.schemas.models import BackendSourceEnum, Model
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.runner_source import RunnerOverrideEntry
 
@@ -254,3 +254,118 @@ async def test_list_backend_configs_reports_database_failures(monkeypatch, faili
     assert e.value.status_code == 500
     assert "inference_backends" not in e.value.message
     assert str(e.value.__cause__) == db_error
+
+
+def _custom_backend_with_version(backend_id: int) -> InferenceBackend:
+    return InferenceBackend(
+        id=backend_id,
+        backend_name="custom-backend",
+        owner_principal_id=None,
+        backend_source=BackendSourceEnum.CUSTOM,
+        enabled=True,
+        default_version="v1-custom",
+        version_configs=VersionConfigDict(
+            root={
+                "v1-custom": VersionConfig(
+                    image_name="custom:v1", built_in_frameworks=None
+                )
+            }
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_backend_fails_closed_when_usage_query_fails(monkeypatch):
+    """A failed usage lookup must not be treated as proof that deletion is safe."""
+    backend = _custom_backend_with_version(backend_id=41)
+    db_error = "usage lookup unavailable"
+
+    monkeypatch.setattr(
+        Model,
+        "all_by_field",
+        AsyncMock(side_effect=RuntimeError(db_error)),
+    )
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    delete_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "delete", delete_mock)
+
+    with pytest.raises(InternalServerErrorException) as exc_info:
+        await ib_route.delete_inference_backend(MagicMock(), _org_ctx(66), backend.id)
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.message == (
+        "Failed to verify whether the inference backend is in use"
+    )
+    assert str(exc_info.value.__cause__) == db_error
+    delete_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_remove_version_fails_closed_when_usage_query_fails(monkeypatch):
+    """A failed usage lookup must abort the update before a version is removed."""
+    backend = _custom_backend_with_version(backend_id=42)
+    backend_in = InferenceBackendUpdate(
+        backend_name=backend.backend_name,
+        version_configs=VersionConfigDict(root={}),
+    )
+    db_error = "usage lookup unavailable"
+
+    monkeypatch.setattr(
+        Model,
+        "all_by_fields",
+        AsyncMock(side_effect=RuntimeError(db_error)),
+    )
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    monkeypatch.setattr(
+        ib_route,
+        "_redirect_global_edit_to_org_row",
+        AsyncMock(return_value=None),
+    )
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    with pytest.raises(InternalServerErrorException) as exc_info:
+        await ib_route.update_inference_backend(
+            MagicMock(), _org_ctx(66), backend.id, backend_in
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.message == (
+        "Failed to verify whether the inference backend is in use"
+    )
+    assert str(exc_info.value.__cause__) == db_error
+    update_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_remove_version_from_yaml_preserves_fail_closed_error(monkeypatch):
+    """The YAML update path must not wrap the usage-check 500 or lose its cause."""
+    backend = _custom_backend_with_version(backend_id=43)
+    db_error = "usage lookup unavailable"
+
+    monkeypatch.setattr(
+        Model,
+        "all_by_fields",
+        AsyncMock(side_effect=RuntimeError(db_error)),
+    )
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    with pytest.raises(InternalServerErrorException) as exc_info:
+        await ib_route.update_inference_backend_from_yaml(
+            MagicMock(),
+            _org_ctx(66),
+            backend.id,
+            {"content": "backend_name: custom-backend\nversion_configs: {}\n"},
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.message == (
+        "Failed to verify whether the inference backend is in use"
+    )
+    assert str(exc_info.value.__cause__) == db_error
+    update_mock.assert_not_awaited()

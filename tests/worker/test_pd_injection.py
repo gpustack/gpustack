@@ -779,7 +779,8 @@ def test_the_ascend_recipe_asks_for_the_hccn_map_on_both_sides():
             ),
             _variables(role=role),
         )
-        assert injection.host_mounts == ["/etc/hccn.conf"], role
+        assert injection.host_files == ["/etc/hccn.conf"], role
+        assert injection.host_mounts == [], role
 
 
 def test_a_recipe_that_needs_no_host_file_asks_for_none():
@@ -788,9 +789,11 @@ def test_a_recipe_that_needs_no_host_file_asks_for_none():
     containers that have no use for it."""
     injection = render_pd_injection(_model(), _instance(), _variables())
     assert injection.host_mounts == []
+    assert injection.host_files == []
 
 
-def test_an_unrendered_mount_path_stops_the_launch():
+@pytest.mark.parametrize("channel", ["host_mounts", "host_files"])
+def test_an_unrendered_mount_path_stops_the_launch(channel):
     """Same class as an unrendered env: the bind either fails or creates an
     empty directory where the transport expects a file, and neither says
     why."""
@@ -800,7 +803,7 @@ def test_an_unrendered_mount_path_stops_the_launch():
     mode = PDMode(
         name=PDModeEnum.VLLM_NIXL.value,
         backends=["vLLM"],
-        roles={"prefill": PDModeRole(host_mounts=["/etc/{{nowhere}}.conf"])},
+        roles={"prefill": PDModeRole(**{channel: ["/etc/{{nowhere}}.conf"]})},
     )
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(module, "get_pd_mode", lambda name: mode)
@@ -821,12 +824,113 @@ def test_the_mount_reaches_the_container_read_only():
         _model_path = None
 
         def _pd_injection(self):
-            return PDInjection(host_mounts=["/etc/hccn.conf"])
+            return PDInjection(host_mounts=["/host/config"])
 
     mounts = InferenceServer._get_configured_mounts(_Stub())
     assert [(m.path, m.mode) for m in mounts] == [
-        ("/etc/hccn.conf", ContainerMountModeEnum.ROX)
+        ("/host/config", ContainerMountModeEnum.ROX)
     ]
+
+
+@pytest.mark.parametrize("mirrored", [True, False])
+def test_host_files_generate_read_only_kubernetes_file_volumes(monkeypatch, mirrored):
+    from kubernetes import client as k8s
+    from gpustack_runtime import envs as runtime_envs
+    from gpustack_runtime.deployer import Container, WorkloadPlan
+    from gpustack_runtime.deployer.kubernetes import KubernetesDeployer
+    from gpustack.worker.backends.base import InferenceServer
+    from gpustack.worker.pd_injection import PDInjection
+
+    monkeypatch.setattr(
+        runtime_envs, "GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT", mirrored
+    )
+
+    class _Stub:
+        _model_path = "/models/model/config.json"
+
+        def _pd_injection(self):
+            return PDInjection(host_files=["/etc/hccn.conf"])
+
+    backend = _Stub()
+    container = Container(
+        name="engine",
+        image="test",
+        files=InferenceServer._get_configured_files(backend),
+        mounts=InferenceServer._get_configured_mounts(backend),
+    )
+    pod_container = k8s.V1Container(name="engine")
+    pod = k8s.V1Pod(spec=k8s.V1PodSpec(containers=[pod_container]))
+    plan = WorkloadPlan(name="test", containers=[container])
+    KubernetesDeployer._append_pod_volumes(pod, plan, {})
+    KubernetesDeployer._append_container_volume_mounts(pod_container, container, 0, {})
+
+    volume = next(v for v in pod.spec.volumes if v.host_path.path == "/etc/hccn.conf")
+    mount = next(m for m in pod_container.volume_mounts if m.name == volume.name)
+    assert volume.host_path.type == "File"
+    assert mount.mount_path == "/etc/hccn.conf"
+    assert mount.read_only is True
+    assert container.files[0].content is None
+    assert [m.path for m in container.mounts] == ([] if mirrored else ["/models/model"])
+
+
+def test_host_file_paths_are_rendered_and_deduplicated(monkeypatch):
+    from gpustack.schemas.pd_modes import PDMode, PDModeRole
+    from gpustack.worker import pd_injection as module
+
+    mode = PDMode(
+        name=PDModeEnum.VLLM_NIXL.value,
+        backends=["vLLM"],
+        roles={
+            "prefill": PDModeRole(
+                host_files=["{{model_path}}/config", "/models/llm/config"]
+            )
+        },
+    )
+    monkeypatch.setattr(module, "get_pd_mode", lambda name: mode)
+    injection = render_pd_injection(_model(), _instance(), _variables())
+    assert injection.host_files == ["/models/llm/config"]
+
+
+@pytest.mark.parametrize("leader", [True, False])
+def test_vllm_workload_passes_host_files_to_engine_and_ray(monkeypatch, leader):
+    from gpustack.schemas.inference_backend import ContainerEnvConfig
+    from gpustack.worker.backends import vllm
+    from gpustack.worker.pd_injection import PDInjection
+
+    backend = vllm.VLLMServer.__new__(vllm.VLLMServer)
+    backend._model = _model()
+    backend._model_instance = _instance()
+    backend._model_path = None
+    backend._pd_injection = lambda: PDInjection(host_files=["/etc/hccn.conf"])
+    backend._override_entrypoint = lambda command, args, script: (command, args)
+    backend._get_configured_resources = lambda: {}
+    backend._get_configured_ports = lambda: []
+    backend._get_container_env_config = lambda env: ContainerEnvConfig()
+    backend._host_ipc_enabled = lambda: False
+    backend._build_ray_configuration = lambda **kwargs: (["ray"], [], [])
+    backend._transform_workload_plan = lambda plan: plan
+    monkeypatch.setattr(vllm, "resolve_executor_backend", lambda *args: "ray")
+    plans = []
+    monkeypatch.setattr(vllm, "create_workload", plans.append)
+
+    backend._create_workload(
+        types.SimpleNamespace(
+            name="pd-engine", distributed_follower=not leader, distributed_leader=leader
+        ),
+        ["vllm"],
+        None,
+        [],
+        {},
+        "test",
+    )
+
+    assert len(plans) == 1
+    assert len(plans[0].containers) == (2 if leader else 1)
+    for container in plans[0].containers:
+        assert [(f.path, f.content, f.mode) for f in container.files] == [
+            ("/etc/hccn.conf", None, 0o444)
+        ]
+        assert all(m.path != "/etc/hccn.conf" for m in container.mounts)
 
 
 # --- whose cards are whose ------------------------------------------------- #
@@ -1050,3 +1154,342 @@ def test_nvidia_mooncake_renders_bootstrap_and_pd_roles():
         assert injection.env["VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT"] == "60"
         if role == "prefill":
             assert injection.env["VLLM_MOONCAKE_BOOTSTRAP_PORT"] == "5600"
+
+
+def test_managed_pd_injection_identifies_each_logical_engine():
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        backend_parameters=["--data-parallel-external-lb", "--dp=2", "--tp=2"]
+    )
+    instance = _instance(
+        gpu_indexes=[0, 1, 2, 3],
+        restart_count=3,
+        distributed_servers=DistributedServers(workloads=[]),
+    )
+    rank0 = render_pd_injection(model, instance, _variables(), dp_rank=0)
+    rank1 = render_pd_injection(model, instance, _variables(), dp_rank=1)
+    assert _connector(rank0)["engine_id"] == "gpustack-1-r3-dp0"
+    assert _connector(rank1)["engine_id"] == "gpustack-1-r3-dp1"
+    other_node = render_pd_injection(
+        model, instance, _variables(worker_ip="192.168.50.11"), dp_rank=1
+    )
+    assert _connector(other_node)["engine_id"] == _connector(rank1)["engine_id"]
+    instance.id = 2
+    assert (
+        _connector(render_pd_injection(model, instance, _variables(), dp_rank=1))[
+            "engine_id"
+        ]
+        == "gpustack-2-r3-dp1"
+    )
+    instance.id = 1
+    instance.restart_count += 1
+    assert (
+        _connector(render_pd_injection(model, instance, _variables(), dp_rank=0))[
+            "engine_id"
+        ]
+        == "gpustack-1-r4-dp0"
+    )
+
+
+@pytest.mark.parametrize('rank', [None, 1])
+def test_managed_pd_render_resolves_one_topology_for_all_role_references(
+    monkeypatch, rank
+):
+    from unittest.mock import Mock
+    from gpustack.schemas.models import DistributedServers
+    from gpustack.worker import pd_injection
+
+    model = _model(
+        PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        backend_parameters=['--data-parallel-external-lb', '--dp=2', '--tp=2'],
+    )
+    instance = _instance(
+        gpu_indexes=[0, 1, 2, 3],
+        distributed_servers=DistributedServers(workloads=[]),
+        named_ports={'kv_port': PortBand(base=5600, count=4)},
+    )
+    resolve = Mock(wraps=pd_injection._managed_parallelism)
+    monkeypatch.setattr(pd_injection, '_managed_parallelism', resolve)
+    injection = render_pd_injection(model, instance, _variables(), dp_rank=rank)
+    descriptor = _connector(injection)
+    assert descriptor['kv_connector_extra_config'] == {
+        'prefill': {'tp_size': 2, 'dp_size': 2},
+        'decode': {'tp_size': 2, 'dp_size': 2},
+    }
+    resolve.assert_called_once()
+
+
+@pytest.mark.parametrize('managed', [False, True])
+def test_pd_rank_diagnostics_distinguish_protocol_from_bounds(managed):
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(backend_parameters=['--dp=2', '--tp=2'])
+    instance = _instance(
+        gpu_indexes=[0, 1, 2, 3],
+        distributed_servers=DistributedServers(workloads=[]) if managed else None,
+    )
+    message = r'rank 2.*size 2' if managed else r'requires a managed vLLM'
+    with pytest.raises(PDInjectionError, match=message):
+        render_pd_injection(model, instance, _variables(), dp_rank=2)
+
+
+@pytest.mark.parametrize("rank", [-1, 2])
+def test_managed_pd_injection_refuses_invalid_engine_ranks(rank):
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        backend_parameters=["--data-parallel-external-lb", "--dp=2", "--tp=2"]
+    )
+    instance = _instance(
+        gpu_indexes=[0, 1, 2, 3],
+        distributed_servers=DistributedServers(workloads=[]),
+    )
+    with pytest.raises(PDInjectionError, match="rank"):
+        render_pd_injection(model, instance, _variables(), dp_rank=rank)
+
+
+def test_managed_pd_uses_each_roles_effective_parallelism():
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        backend_parameters=["--tp=16"],
+        roles=[
+            RoleSpec(
+                name="prefill",
+                replicas=1,
+                backend_parameters=[
+                    "--data-parallel-external-lb",
+                    "--dp=2",
+                    "--pp=2",
+                ],
+            ),
+            RoleSpec(
+                name="decode", replicas=1, backend_parameters=["--dp=1", "--tp=1"]
+            ),
+            RoleSpec(name="router", replicas=1),
+        ],
+    )
+    instance = _instance(
+        gpu_indexes=list(range(8)),
+        distributed_servers=DistributedServers(workloads=[]),
+        named_ports={"kv_port": PortBand(base=5600, count=8)},
+    )
+    descriptor = _connector(
+        render_pd_injection(model, instance, _variables(), dp_rank=1)
+    )
+    assert descriptor["kv_connector_extra_config"] == {
+        "prefill": {"tp_size": 2, "dp_size": 2},
+        "decode": {"tp_size": 1, "dp_size": 1},
+    }
+    assert descriptor["kv_port"] == 5600
+    assert model.backend_parameters == ["--tp=16"]
+
+
+def test_managed_ascend_decode_pp_warns_without_refusing(caplog):
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        roles=[
+            RoleSpec(
+                name="prefill", replicas=1, backend_parameters=["--tp=2", "--dp=1"]
+            ),
+            RoleSpec(
+                name="decode",
+                replicas=1,
+                backend_parameters=[
+                    "--data-parallel-external-lb",
+                    "--tp=1",
+                    "--dp=2",
+                    "--pp=2",
+                ],
+            ),
+            RoleSpec(name="router", replicas=1),
+        ],
+    )
+    instance = _instance(
+        role="decode",
+        gpu_indexes=list(range(4)),
+        distributed_servers=DistributedServers(workloads=[]),
+        named_ports={"kv_port": PortBand(base=5600, count=4)},
+    )
+    with caplog.at_level(logging.WARNING):
+        injection = render_pd_injection(
+            model, instance, _variables(role="decode"), dp_rank=0
+        )
+    assert _connector(injection)["engine_id"] == "gpustack-1-r0-dp0"
+    assert "pipeline parallelism" in caplog.text
+
+
+@pytest.mark.parametrize('role', ['prefill', 'decode'])
+def test_hybrid_pd_uses_the_same_topology_constraints_as_its_launcher(role):
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        backend_parameters=['--data-parallel-hybrid-lb', '--tp=4', '--dp=2', '--dpl=2']
+    )
+    instance = _instance(
+        role=role,
+        gpu_indexes=[0, 1, 2, 3],
+        distributed_servers=DistributedServers(
+            workloads=[],
+            subordinate_workers=[{'worker_id': 2, 'gpu_indexes': [0, 1, 2, 3]}],
+        ),
+    )
+    with pytest.raises(PDInjectionError, match='data-parallel-size-local'):
+        render_pd_injection(model, instance, _variables(role=role))
+
+
+@pytest.mark.parametrize('role,cards', [('prefill', 4), ('decode', 1)])
+@pytest.mark.parametrize('worker_ip', ['192.168.50.10', '192.168.50.11'])
+def test_hybrid_ascend_pd_keeps_each_roles_global_parallelism_and_local_address(
+    role, cards, worker_ip
+):
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        backend_parameters=['--tp=16'],
+        roles=[
+            RoleSpec(
+                name='prefill',
+                replicas=1,
+                backend_parameters=[
+                    '--data-parallel-hybrid-lb',
+                    '--tp=2',
+                    '--dp=4',
+                    '--dpl=2',
+                ],
+            ),
+            RoleSpec(
+                name='decode',
+                replicas=1,
+                backend_parameters=[
+                    '--data-parallel-hybrid-lb',
+                    '--tp=1',
+                    '--dp=2',
+                    '--dpl=1',
+                ],
+            ),
+            RoleSpec(name='router', replicas=1),
+        ],
+    )
+    instance = _instance(
+        role=role,
+        gpu_indexes=list(range(cards)),
+        distributed_servers=DistributedServers(
+            workloads=[],
+            subordinate_workers=[{'worker_id': 2, 'gpu_indexes': list(range(cards))}],
+        ),
+        named_ports={'kv_port': PortBand(base=5600, count=cards * 2)},
+    )
+    injection = render_pd_injection(
+        model, instance, _variables(role=role, worker_ip=worker_ip)
+    )
+    descriptor = _connector(injection)
+    assert descriptor['kv_connector_extra_config'] == {
+        'prefill': {'tp_size': 2, 'dp_size': 4},
+        'decode': {'tp_size': 1, 'dp_size': 2},
+    }
+    assert 'engine_id' not in descriptor
+    assert descriptor['kv_port'] == 5600
+    assert injection.env['HCCL_IF_IP'] == worker_ip
+    assert injection.env['HCCL_SOCKET_IFNAME'] == 'eth0'
+    assert model.backend_parameters == ['--tp=16']
+
+
+@pytest.mark.parametrize('role', ['prefill', 'decode'])
+@pytest.mark.parametrize('worker_ip', ['192.168.50.10', '192.168.50.11'])
+def test_hybrid_nixl_pd_keeps_shared_engine_identity_and_global_port_band(
+    role, worker_ip
+):
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        backend_parameters=['--data-parallel-hybrid-lb', '--tp=2', '--dp=4', '--dpl=2']
+    )
+    instance = _instance(
+        role=role,
+        gpu_indexes=[0, 1, 2, 3],
+        distributed_servers=DistributedServers(
+            workloads=[],
+            subordinate_workers=[{'worker_id': 2, 'gpu_indexes': [0, 1, 2, 3]}],
+        ),
+        named_ports={'kv_side_channel': PortBand(base=5600, count=4)},
+    )
+    injection = render_pd_injection(
+        model, instance, _variables(role=role, worker_ip=worker_ip)
+    )
+    descriptor = _connector(injection)
+    assert 'engine_id' not in descriptor
+    assert injection.env['VLLM_NIXL_SIDE_CHANNEL_HOST'] == worker_ip
+    assert injection.env['VLLM_NIXL_SIDE_CHANNEL_PORT'] == '5600'
+
+
+@pytest.mark.parametrize('counts', [[4], [2, 2]])
+@pytest.mark.parametrize('explicit', [False, True])
+def test_external_cuda_mooncake_bootstrap_budget_matches_global_rank_injection(
+    counts, explicit
+):
+    from gpustack.schemas.models import DistributedServers
+    from gpustack.worker.pd_injection import band_specs_for, member_band_width
+
+    parameters = ['--data-parallel-external-lb', '--tp=1']
+    if explicit:
+        parameters.append('--dp=4')
+    model = _model(mode='vllm-mooncake', backend='vLLM', backend_parameters=parameters)
+    instance = _instance(
+        gpu_indexes=list(range(counts[0])),
+        named_ports={'bootstrap': PortBand(base=5600, count=4)},
+        distributed_servers=DistributedServers(
+            workloads=[],
+            subordinate_workers=[
+                dict(worker_id=i + 2, gpu_indexes=list(range(n)))
+                for i, n in enumerate(counts[1:])
+            ],
+        ),
+    )
+    spec = band_specs_for(model, 'prefill')[0]
+    assert member_band_width(spec, model, counts) == 4
+    for rank in range(4):
+        injection = render_pd_injection(model, instance, _variables(), dp_rank=rank)
+        assert injection.env['VLLM_MOONCAKE_BOOTSTRAP_PORT'] == str(5600 + rank)
+        assert _connector(injection)['engine_id'].endswith(f'-dp{rank}')
+
+
+def test_external_mooncake_refuses_an_undersized_bootstrap_band():
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        mode='vllm-mooncake',
+        backend='vLLM',
+        backend_parameters=['--data-parallel-external-lb', '--dp=2', '--tp=1'],
+    )
+    instance = _instance(
+        gpu_indexes=[0, 1],
+        named_ports={'bootstrap': PortBand(base=5600)},
+        distributed_servers=DistributedServers(workloads=[]),
+    )
+    with pytest.raises(PDInjectionError, match='bootstrap'):
+        render_pd_injection(model, instance, _variables(), dp_rank=1)
+
+
+def test_cuda_mooncake_external_rejects_remote_fragments_of_one_rank():
+    from gpustack.schemas.models import DistributedServers
+
+    model = _model(
+        mode='vllm-mooncake',
+        backend='vLLM',
+        backend_parameters=['--data-parallel-external-lb', '--dp=1', '--tp=2'],
+    )
+    instance = _instance(
+        gpu_indexes=[0],
+        named_ports={'bootstrap': PortBand(base=5600)},
+        distributed_servers=DistributedServers(
+            workloads=[], subordinate_workers=[dict(worker_id=2, gpu_indexes=[0])]
+        ),
+    )
+    with pytest.raises(PDInjectionError, match='each DP rank to fit on one Worker'):
+        render_pd_injection(model, instance, _variables(), dp_rank=0)

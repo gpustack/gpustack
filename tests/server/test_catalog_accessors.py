@@ -11,6 +11,7 @@ from gpustack.schemas.catalog_source import (
 )
 from gpustack.server import catalog
 from gpustack.schemas.source import SourceContent, SourceTypeEnum
+from gpustack.schemas.workers import GPUDeviceStatus
 
 CATALOG = {
     "model_sets": [
@@ -91,3 +92,80 @@ async def test_db_backed_catalog_accessors():
         assert drafts[0].huggingface_repo_id == "draft/eagle"
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_default_recipe_filters_source_before_selecting_mode(monkeypatch):
+    def spec(repo, mode, parameters, gpu_filters=None):
+        return dict(
+            source="huggingface",
+            huggingface_repo_id=repo,
+            backend="vLLM",
+            mode=mode,
+            backend_parameters=parameters,
+            gpu_filters=gpu_filters,
+        )
+
+    entry = CatalogModelEntry(
+        kind="model_set",
+        name="model",
+        payload={
+            "name": "model",
+            "specs": [
+                spec("org/other", "standard", ["--other"]),
+                spec("org/model", "throughput", ["--throughput"]),
+                spec(
+                    "org/model",
+                    "standard",
+                    ["--hardware"],
+                    {"vendor": "nvidia"},
+                ),
+                spec("org/model", "standard", ["--fallback"]),
+            ],
+        },
+    )
+
+    async def entries(_session):
+        return [entry]
+
+    monkeypatch.setattr(catalog, "_model_set_entries", entries)
+    gpus = [GPUDeviceStatus(vendor="nvidia", compute_capability="9.0")]
+    selected = await catalog.get_catalog_spec_by_source_key(
+        None, "org/model", gpus=gpus
+    )
+    assert selected.backend_parameters == ["--hardware"]
+    selected = await catalog.get_catalog_spec_by_source_key(None, "org/model")
+    assert selected.backend_parameters == ["--fallback"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_env", [True, False])
+async def test_mixed_gpu_defaults_require_equivalent_settings(monkeypatch, same_env):
+    specs = [
+        dict(
+            source="huggingface",
+            huggingface_repo_id="org/model",
+            backend="vLLM",
+            mode="standard",
+            gpu_filters={"vendor": vendor},
+            backend_parameters=["--max-model-len=8192"],
+            env={"SETTING": "common" if same_env else vendor},
+        )
+        for vendor in ["nvidia", "amd"]
+    ]
+
+    async def entries(_session):
+        return [
+            CatalogModelEntry(
+                kind="model_set",
+                name="model",
+                payload={"name": "model", "specs": specs},
+            )
+        ]
+
+    monkeypatch.setattr(catalog, "_model_set_entries", entries)
+    gpus = [GPUDeviceStatus(vendor=vendor) for vendor in ["nvidia", "amd"]]
+    selected = await catalog.get_catalog_spec_by_source_key(
+        None, "org/model", gpus=gpus
+    )
+    assert (selected is not None) is same_env
