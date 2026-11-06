@@ -18,6 +18,8 @@ runs one ``calculate_destinations`` pass for everyone) and arrives via
 
 from typing import Any, Dict, List
 
+import logging
+
 from gpustack.routes.plugins import (
     RoutePlugin,
     RouteReconcileContext,
@@ -31,15 +33,18 @@ from gpustack.schemas.model_routes import ModelRouteTarget
 
 MAPPER_RULE_OWNER = "mapper"
 
+logger = logging.getLogger(__name__)
 
-async def _has_fallback_target(ctx: RouteReconcileContext) -> bool:
+
+async def _fallback_target_names(ctx: RouteReconcileContext) -> List[str]:
     targets = await ModelRouteTarget.all_by_field(
         ctx.session, "route_id", ctx.model_route.id
     )
-    return any(
-        target.deleted_at is None and bool(target.fallback_status_codes)
+    return [
+        target.name
         for target in targets
-    )
+        if target.deleted_at is None and bool(target.fallback_status_codes)
+    ]
 
 
 class FallbackPlugin(RoutePlugin):
@@ -115,7 +120,26 @@ class FallbackPlugin(RoutePlugin):
         from gpustack.gateway import utils as mcp_handler
         from gpustack.server.bus import EventType
 
-        has_fallback = not ctx.event_is_delete and await _has_fallback_target(ctx)
+        # The redirect must exist only when the fallback actually has a
+        # place to go. A declared fallback target whose model is stopped
+        # (or otherwise not ACTIVE) yields no fallback destination; with
+        # the filter installed anyway, the redirected request has no
+        # cluster to route to, fails with cluster_not_found (an empty
+        # 503) and matches the redirect's own 5xx branch, looping until
+        # max_internal_redirects while the route's retry policy replays
+        # the body. The declaration lingers as a warning instead — one
+        # per reconcile pass, and a pass only runs on a route/target/
+        # model row change, so a parked fallback model does not spam it.
+        declared = not ctx.event_is_delete and await _fallback_target_names(ctx)
+        has_fallback = bool(declared) and bool(ctx.fallback_destinations)
+        if declared and not has_fallback:
+            logger.warning(
+                "ModelRoute %s declares fallback status codes on %s but has no "
+                "active fallback destination; the fallback path stays disabled "
+                "until its target becomes ready",
+                ctx.model_route.name,
+                ", ".join(declared),
+            )
         fallback_event_type = EventType.UPDATED if has_fallback else EventType.DELETED
         fallback_name = mcp_handler.fallback_ingress_name(ctx.ingress_name)
         await mcp_handler.ensure_model_ingress(
