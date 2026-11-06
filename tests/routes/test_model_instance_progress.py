@@ -598,6 +598,16 @@ def report_api(monkeypatch):
             setattr(current, key, value)
 
     service.update = AsyncMock(side_effect=persist)
+    from gpustack.server.services import ModelInstanceService
+
+    actual_service = ModelInstanceService(MagicMock())
+
+    async def ensure_policy(current):
+        source = await actual_service._prepare_recovery_policy(current, {})
+        if source:
+            await service.update(current, source)
+
+    service.ensure_recovery_policy = AsyncMock(side_effect=ensure_policy)
     monkeypatch.setattr(routes, "ModelInstanceService", MagicMock(return_value=service))
     monkeypatch.setattr(
         routes.Model,
@@ -661,6 +671,150 @@ def _legacy_report_instance(api):
         subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
     )
     api.instance.state = ModelInstanceStateEnum.RUNNING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('worker_id', [1, 2])
+@pytest.mark.parametrize(
+    'backend,flag',
+    [
+        (BackendEnum.VLLM, '--enable-elastic-ep'),
+        (BackendEnum.VLLM, '--enable-fault-tolerance'),
+        (BackendEnum.VLLM, '--distributed-executor-backend=custom.Executor'),
+        (BackendEnum.SGLANG, '--elastic-ep-backend=mooncake'),
+    ],
+)
+@pytest.mark.parametrize('group_recovery', [False, True])
+async def test_running_member_uses_launch_policy_after_model_edit(
+    report_api, monkeypatch, worker_id, backend, flag, group_recovery
+):
+    from gpustack.schemas.models import ModelConfigSnapshot
+    from gpustack.utils.model_instance_workers import (
+        requires_group_recovery,
+        build_member_state_report,
+    )
+
+    api = report_api
+    _legacy_report_instance(api)
+    api.instance.backend = backend
+    api.instance.model_config_snapshot = ModelConfigSnapshot(
+        backend_parameters=[] if group_recovery else [flag]
+    )
+    model = new_model(
+        1,
+        'test',
+        huggingface_repo_id='org/repo',
+        cluster_id=1,
+        backend=backend,
+        backend_parameters=[flag] if group_recovery else [],
+    )
+    monkeypatch.setattr(routes.Model, 'one_by_id', AsyncMock(return_value=model))
+    api.ctx.user.worker.id = worker_id
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.get('/model-instances/7')
+        assert response.status_code == 200
+        public = ModelInstancePublic.model_validate(response.json())
+        assert public.distributed_servers.group_recovery is group_recovery
+        assert 'model_config_snapshot' not in response.json()
+        assert requires_group_recovery(public, model) is group_recovery
+        if group_recovery:
+            path = '/model-instances/7/workload-report'
+            payload = build_member_state_report(
+                public,
+                worker_id,
+                state=ModelInstanceStateEnum.ERROR,
+                state_message='engine failed',
+            ).model_dump(mode='json', exclude_unset=True)
+        else:
+            path = '/model-instances/7'
+            update = ModelInstanceUpdate(**public.model_dump())
+            member = (
+                update
+                if worker_id == 1
+                else update.distributed_servers.subordinate_workers[0]
+            )
+            member.state = ModelInstanceStateEnum.ERROR
+            member.state_message = 'engine failed'
+            payload = update.model_dump(mode='json')
+        response = await client.put(path, json=payload)
+    assert response.status_code == 200, response.text
+    member = (
+        api.instance
+        if worker_id == 1
+        else api.instance.distributed_servers.subordinate_workers[0]
+    )
+    assert member.state == ModelInstanceStateEnum.ERROR
+    assert member.state_message == 'engine failed'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('policy', [False, True])
+async def test_snapshot_cannot_change_server_recovery_policy(report_api, policy):
+    api = report_api
+    _legacy_report_instance(api)
+    api.instance.distributed_servers.group_recovery = policy
+    update = ModelInstanceUpdate(**api.instance.model_dump())
+    update.distributed_servers.group_recovery = not policy
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put(
+            '/model-instances/7', json=update.model_dump(mode='json')
+        )
+    assert response.status_code == 409
+    assert api.instance.distributed_servers.group_recovery is policy
+    api.service.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('policy', [False, True])
+@pytest.mark.parametrize('missing', ['field', 'null', 'servers'])
+async def test_old_snapshot_cannot_erase_server_recovery_policy(
+    report_api, policy, missing
+):
+    api = report_api
+    _legacy_report_instance(api)
+    api.instance.distributed_servers.group_recovery = policy
+    payload = ModelInstanceUpdate(**api.instance.model_dump()).model_dump(mode='json')
+    if missing == 'field':
+        payload['distributed_servers'].pop('group_recovery')
+    elif missing == 'null':
+        payload['distributed_servers']['group_recovery'] = None
+    else:
+        payload['distributed_servers'] = None
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put('/model-instances/7', json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()['distributed_servers']['group_recovery'] is policy
+
+
+@pytest.mark.asyncio
+async def test_missing_launch_snapshot_is_backfilled_only_once(report_api, monkeypatch):
+    api = report_api
+    _legacy_report_instance(api)
+    model = new_model(
+        1,
+        'test',
+        huggingface_repo_id='org/repo',
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--enable-elastic-ep'],
+    )
+    lookup = AsyncMock(return_value=model)
+    monkeypatch.setattr(routes.Model, 'one_by_id', lookup)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        first = await client.get('/model-instances/7')
+        model.backend_parameters = []
+        second = await client.get('/model-instances/7')
+    for response in (first, second):
+        assert response.status_code == 200
+        assert response.json()['distributed_servers']['group_recovery'] is False
+    lookup.assert_awaited_once()
 
 
 def test_member_report_endpoint_exposes_one_request_schema(report_api):
@@ -874,7 +1028,7 @@ async def test_legacy_runtime_report_keeps_ownership_and_stop_fences(
 def test_legacy_client_reports_only_explicit_local_fields(report_api, preparing):
     import json
     from gpustack.schemas.models import ModelInstancePublic
-    from gpustack.utils.model_instance_workers import legacy_instance_update
+    from gpustack.utils.model_instance_workers import build_member_state_report
 
     api = report_api
     _legacy_report_instance(api)
@@ -888,7 +1042,7 @@ def test_legacy_client_reports_only_explicit_local_fields(report_api, preparing)
         transport=httpx.MockTransport(receive), base_url='http://test'
     ) as client:
         wrapped = ModelInstanceClient(SimpleNamespace(get_httpx_client=lambda: client))
-        report = legacy_instance_update(
+        report = build_member_state_report(
             api.instance,
             2,
             state=ModelInstanceStateEnum.ERROR,
@@ -2678,11 +2832,15 @@ async def test_snapshot_cannot_forge_or_clear_server_stop_release(
 
 
 @pytest.mark.asyncio
-async def test_create_cannot_supply_a_server_stop_release(report_api):
+@pytest.mark.parametrize(
+    'intent',
+    [{'stop_requested': True}, {'group_recovery': False}, {'group_recovery': True}],
+)
+async def test_create_cannot_supply_server_recovery_intent(report_api, intent):
     api = report_api
     payload = api.instance.model_dump(mode="json")
     payload["distributed_servers"]["workloads"] = None
-    payload["distributed_servers"]["stop_requested"] = True
+    payload['distributed_servers'].update(intent)
     payload['distributed_servers']['orchestration_mode'] = 'legacy'
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api.app), base_url="http://test"

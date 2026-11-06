@@ -471,12 +471,12 @@ async def test_legacy_failure_stops_all_members_before_advancing_once(
 def test_legacy_group_recovery_respects_backend_recovery_boundary(
     legacy_recovery, backend, parameters, expected
 ):
-    from gpustack.utils.model_instance_workers import legacy_group_recovery
+    from gpustack.utils.model_instance_workers import requires_group_recovery
 
     ctx = legacy_recovery
     ctx.instance.backend = backend
     ctx.model.backend_parameters = parameters
-    assert legacy_group_recovery(ctx.instance, ctx.model) is expected
+    assert requires_group_recovery(ctx.instance, ctx.model) is expected
 
 
 @pytest.mark.parametrize(
@@ -499,7 +499,7 @@ def test_legacy_recovery_uses_role_parameters_before_startup_snapshot(
     legacy_recovery, backend, base_parameters, role_parameters, expected
 ):
     from gpustack.schemas.models import RoleSpec
-    from gpustack.utils.model_instance_workers import legacy_group_recovery
+    from gpustack.utils.model_instance_workers import requires_group_recovery
 
     ctx = legacy_recovery
     ctx.instance.backend = ctx.model.backend = backend
@@ -507,7 +507,7 @@ def test_legacy_recovery_uses_role_parameters_before_startup_snapshot(
     ctx.model.backend_parameters = base_parameters
     ctx.model.roles = [RoleSpec(name='engine', backend_parameters=role_parameters)]
 
-    assert legacy_group_recovery(ctx.instance, ctx.model) is expected
+    assert requires_group_recovery(ctx.instance, ctx.model) is expected
     assert ctx.model.backend_parameters == base_parameters
 
 
@@ -516,7 +516,7 @@ def test_legacy_recovery_prefers_launch_snapshot_to_edited_role(
     legacy_recovery, elastic_snapshot
 ):
     from gpustack.schemas.models import ModelConfigSnapshot, RoleSpec
-    from gpustack.utils.model_instance_workers import legacy_group_recovery
+    from gpustack.utils.model_instance_workers import requires_group_recovery
 
     ctx = legacy_recovery
     elastic = ['--enable-elastic-ep']
@@ -528,7 +528,130 @@ def test_legacy_recovery_prefers_launch_snapshot_to_edited_role(
         RoleSpec(name='engine', backend_parameters=[] if elastic_snapshot else elastic)
     ]
 
-    assert legacy_group_recovery(ctx.instance, ctx.model) is not elastic_snapshot
+    assert requires_group_recovery(ctx.instance, ctx.model) is not elastic_snapshot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('new_round', [False, True])
+@pytest.mark.parametrize('group_recovery', [False, True])
+@pytest.mark.parametrize('snapshot_present', [False, True])
+async def test_server_keeps_policy_until_the_next_round(
+    legacy_recovery, new_round, group_recovery, snapshot_present
+):
+    from gpustack.schemas.models import ModelConfigSnapshot
+
+    ctx = legacy_recovery
+    ctx.instance.restart_count = 3
+    ctx.instance.distributed_servers.group_recovery = group_recovery
+    ctx.instance.model_config_snapshot = (
+        ModelConfigSnapshot(
+            backend_parameters=[] if group_recovery else ['--enable-elastic-ep']
+        )
+        if snapshot_present
+        else None
+    )
+    ctx.model.backend_parameters = ['--enable-elastic-ep'] if group_recovery else []
+    if new_round and not group_recovery:
+        from gpustack.schemas.models import ModelInstanceLegacyStop
+        from uuid import uuid4
+
+        ctx.instance.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
+            token=uuid4(),
+            restart_count=3,
+            worker_ids=[1, 2],
+            worker_principal_ids={1: 10, 2: 20},
+            confirmed_worker_ids=[1, 2],
+        )
+    source = {'restart_count': 4} if new_round else {'state_message': 'observed'}
+    prepared = await ctx.service._prepare_recovery_policy(ctx.instance, source)
+    if new_round:
+        assert prepared['distributed_servers'].group_recovery is not group_recovery
+        assert prepared['model_config_snapshot'] is None
+        assert ctx.instance.distributed_servers.group_recovery is group_recovery
+    else:
+        assert prepared == source
+        assert ctx.instance.distributed_servers.group_recovery is group_recovery
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source_kind', ['in_place', 'dict', 'snapshot'])
+@pytest.mark.parametrize('group_recovery', [False, True])
+async def test_server_initializes_policy_without_a_launch_snapshot(
+    legacy_recovery, source_kind, group_recovery
+):
+    from gpustack.schemas.models import ModelInstanceUpdate
+
+    ctx = legacy_recovery
+    ctx.model.backend_parameters = [] if group_recovery else ['--enable-elastic-ep']
+    source = {
+        'state': ModelInstanceStateEnum.SCHEDULED,
+        'distributed_servers': ctx.instance.distributed_servers.model_copy(deep=True),
+    }
+    if source_kind == 'in_place':
+        source = None
+    elif source_kind == 'snapshot':
+        source = ModelInstanceUpdate(
+            **{
+                **ctx.instance.model_dump(),
+                **source,
+                'source': SourceEnum.LOCAL_PATH,
+                'local_path': '/model',
+            }
+        )
+    prepared = await ctx.service._prepare_recovery_policy(ctx.instance, source)
+    servers = (
+        ctx.instance.distributed_servers
+        if prepared is None
+        else prepared['distributed_servers']
+    )
+    assert servers.group_recovery is group_recovery
+
+
+@pytest.mark.asyncio
+async def test_old_round_snapshot_does_not_select_recovery_policy(legacy_recovery):
+    from gpustack.schemas.models import ModelConfigSnapshot, ModelInstanceLaunchIdentity
+
+    ctx = legacy_recovery
+    ctx.instance.restart_count = 4
+    ctx.instance.model_config_snapshot = ModelConfigSnapshot(
+        backend_parameters=[],
+        launch_identity=ModelInstanceLaunchIdentity(
+            instance_id=ctx.instance.id, worker_id=1, pid=100, restart_count=3
+        ),
+    )
+    ctx.model.backend_parameters = ['--enable-elastic-ep']
+    prepared = await ctx.service._prepare_recovery_policy(ctx.instance, {})
+    assert prepared['distributed_servers'].group_recovery is False
+
+
+@pytest.mark.asyncio
+async def test_entering_group_recovery_waits_for_every_old_member(legacy_recovery):
+    from gpustack.utils.model_instance_workers import requires_group_recovery
+
+    ctx = legacy_recovery
+    ctx.instance.restart_count = 3
+    ctx.instance.distributed_servers.group_recovery = False
+    ctx.model.backend_parameters = []
+    source = await ctx.service._prepare_recovery_policy(
+        ctx.instance, {'restart_count': 4, 'state': ModelInstanceStateEnum.SCHEDULED}
+    )
+    assert 'restart_count' not in source
+    assert source['state'] == ModelInstanceStateEnum.ERROR
+    assert source['distributed_servers'].group_recovery is False
+    assert source['distributed_servers'].legacy_stop.restart_count == 3
+    ctx.instance.distributed_servers = source['distributed_servers']
+    ctx.instance.state = source['state']
+    assert requires_group_recovery(ctx.instance, ctx.model)
+    for confirmed in ([], [1], [1, 2]):
+        ctx.instance.distributed_servers.legacy_stop.confirmed_worker_ids = confirmed
+        restart, _ = await ctx.service._managed_restart(ctx.instance, None)
+        if len(confirmed) < 2:
+            assert restart == {}
+        else:
+            prepared = await ctx.service._prepare_recovery_policy(ctx.instance, restart)
+            assert prepared['restart_count'] == 4
+            assert prepared['distributed_servers'].group_recovery is True
+            assert prepared['distributed_servers'].legacy_stop is None
 
 
 @pytest.mark.asyncio

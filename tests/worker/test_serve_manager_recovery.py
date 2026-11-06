@@ -124,6 +124,7 @@ def test_legacy_group_failure_waits_for_real_stops_then_starts_one_round(
 
     s = recovery
     s.instance.backend = BackendEnum.VLLM
+    s.instance.distributed_servers.group_recovery = True
     s.instance.cluster_id = 1
     s.instance.state = (
         ModelInstanceStateEnum.STARTING if starting else ModelInstanceStateEnum.RUNNING
