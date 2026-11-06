@@ -298,11 +298,12 @@ def test_managed_tasks_have_bounded_queues_and_reuse_finished_slots(manager, tea
     other = serve._managed_tasks if teardown else serve._managed_stop_tasks
 
     for instance in instances:
-        serve._schedule_managed_task(
+        admitted = serve._schedule_managed_task(
             instance, serve._prepare_managed_model_instance, teardown=teardown
         )
+        assert admitted == (instance.id < 4)
         if instance.id in tasks:
-            serve._schedule_managed_task(
+            assert not serve._schedule_managed_task(
                 instance, serve._stop_model_instance, teardown=not teardown
             )
     assert executor.submit.call_count == 4
@@ -529,6 +530,381 @@ def test_saturated_preparation_preserves_smg_observation_and_teardown(smg, opera
     assert any(w.name == 'engine-1' for w in state.runtime)
     assert len(state.runtime) == (1 if operation == 'stop' else 2)
     assert state.instance.id in state.serve._assigned_ports
+
+
+@pytest.mark.parametrize('manager', [1], indirect=True)
+def test_pending_smg_at_capacity_still_detects_and_stops_failed_engine(smg):
+    state = smg
+    _pending_cpu(state)
+    executor = MagicMock()
+    executor.submit.side_effect = lambda *args: Future()
+    state.serve._managed_task_executor = executor
+    for identity in range(10, 14):
+        state.serve._schedule_managed_task(
+            state.instance.model_copy(update={'id': identity}),
+            state.serve._prepare_managed_model_instance,
+        )
+    state.runtime[0].state = WorkloadStatusStateEnum.FAILED
+
+    state.serve._sync_managed_model_instance(state.instance)
+    for job in list(state.serve._managed_stop_tasks.values()):
+        job.result(timeout=2)
+
+    assert state.client.model_instances.report_workloads.called
+    assert not state.runtime
+    assert state.instance.id not in state.serve._assigned_ports
+    state.create.assert_not_called()
+
+
+@pytest.mark.parametrize('manager', [1], indirect=True)
+def test_unconfirmed_smg_cleanup_still_detects_and_stops_failed_engine(smg):
+    state = smg
+    state.instance.state = ModelInstanceStateEnum.STARTING
+    cpu = state.instance.distributed_servers.workloads[-1]
+    cpu.state = ModelInstanceWorkloadStateEnum.FAILED
+    cpu.component.ready = False
+    cpu.component.stop_requested = True
+    state.serve._hold_managed_instance(state.instance)
+    delete = state.delete.side_effect
+    state.delete.side_effect = lambda name: (
+        delete(name) if name.startswith('engine') else None
+    )
+    assert not state.serve._stop_smg(state.instance, cpu)
+    state.runtime[0].state = WorkloadStatusStateEnum.FAILED
+
+    state.serve._sync_managed_model_instance(state.instance)
+    _finish_managed_tasks(state)
+    state.serve._retry_managed_stops()
+    _finish_managed_tasks(state)
+
+    engine = next(
+        w for w in state.instance.distributed_servers.workloads if w.name == 'engine-1'
+    )
+    assert engine.state == ModelInstanceWorkloadStateEnum.FAILED
+    assert not any(w.name.startswith('engine') for w in state.runtime)
+    assert state.serve._managed_stopping
+    assert state.instance.id in state.serve._assigned_ports
+    state.create.assert_not_called()
+
+
+@pytest.mark.parametrize('manager', [1], indirect=True)
+@pytest.mark.parametrize('retired', [False, True])
+def test_whole_instance_stop_takes_priority_over_unconfirmed_smg_retry(smg, retired):
+    state = smg
+    cpu = state.instance.distributed_servers.workloads[-1]
+    state.instance.state = ModelInstanceStateEnum.ERROR
+    runtime_list = state.list.side_effect
+    state.list.side_effect = OSError('Runtime unavailable')
+    assert not state.serve._stop_smg(state.instance, cpu)
+    if retired:
+        current = cpu.model_copy(deep=True)
+        current.name = f'{state.instance.name}-r3-smg-a1'
+        current.component.attempt = 1
+        current.component.ready = False
+        current.state = ModelInstanceWorkloadStateEnum.PENDING
+        state.instance.distributed_servers.workloads[-1] = current
+        state.serve._hold_managed_instance(state.instance)
+    assert not state.serve._stop_model_instance(state.instance)
+    state.list.side_effect = runtime_list
+    entered, release = threading.Event(), threading.Event()
+    delete = state.delete.side_effect
+
+    def unconfirmed_cpu_delete(name):
+        if name.startswith('engine'):
+            return delete(name)
+        entered.set()
+        assert release.wait(5)
+
+    state.delete.side_effect = unconfirmed_cpu_delete
+    try:
+        state.serve._retry_managed_stops()
+        assert entered.wait(2)
+        assert not any(w.name.startswith('engine') for w in state.runtime)
+        assert state.instance.id in state.serve._assigned_ports
+    finally:
+        release.set()
+        _finish_managed_tasks(state)
+    assert state.serve._managed_stopping
+    assert state.serve._smg_stopping
+    state.delete.side_effect = delete
+    state.serve._retry_managed_stops()
+    _finish_managed_tasks(state)
+    assert not state.runtime
+    assert not state.serve._managed_stopping
+    assert not state.serve._smg_stopping
+    assert state.instance.id not in state.serve._assigned_ports
+
+
+@pytest.mark.parametrize('manager', [1], indirect=True)
+@pytest.mark.parametrize(
+    'stopping, pause_at',
+    [
+        ('component', 'runtime'),
+        ('instance', 'runtime'),
+        ('instance', 'logs'),
+        ('instance', 'ports'),
+        ('instance', 'forgotten'),
+    ],
+)
+def test_deleted_instance_reaping_does_not_wait_for_background_stop(
+    smg, monkeypatch, stopping, pause_at
+):
+    state = smg
+    cpu = state.instance.distributed_servers.workloads[-1]
+    entered, release, returned = [threading.Event() for _ in range(3)]
+    errors = []
+    delete = state.delete.side_effect
+    state.serve._purge_instance_logs = MagicMock()
+
+    def pause(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+
+    def slow_delete(name):
+        if stopping == 'instance' or not name.startswith('engine'):
+            pause()
+        delete(name)
+
+    if pause_at == 'runtime':
+        state.delete.side_effect = slow_delete
+    elif pause_at == 'logs':
+        monkeypatch.setattr(state.serve, '_stop_container_log_persistence', pause)
+    elif pause_at == 'ports':
+        monkeypatch.setattr(state.serve, '_release_distributed_ports', pause)
+    else:
+        forget = state.serve._forget_stopped_model_instance
+
+        def paused_forget(*args, **kwargs):
+            forget(*args, **kwargs)
+            pause()
+
+        monkeypatch.setattr(
+            state.serve, '_forget_stopped_model_instance', paused_forget
+        )
+    if stopping == 'instance':
+        state.serve._schedule_managed_stop(state.instance)
+    else:
+        state.serve._schedule_managed_task(
+            state.instance,
+            lambda mi: state.serve._retry_smg_stop(mi, cpu),
+            teardown=True,
+        )
+    assert entered.wait(2)
+    state.client.model_instances.list.side_effect = lambda **kwargs: SimpleNamespace(
+        items=[]
+    )
+    state.client.model_instances.get.side_effect = NotFoundException('Instance deleted')
+
+    def reconcile():
+        try:
+            state.serve.sync_model_instances_state()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            returned.set()
+
+    caller = threading.Thread(target=reconcile, daemon=True)
+    try:
+        caller.start()
+        assert returned.wait(2), 'Reaping must not wait for an in-flight stop'
+        if pause_at in ('runtime', 'logs', 'ports'):
+            assert state.instance.id in state.serve._assigned_ports
+        assert state.serve._managed_stopping[(state.instance.id, 3)] is True
+    finally:
+        release.set()
+        caller.join(2)
+        _finish_managed_tasks(state)
+    assert not errors
+    state.serve._retry_managed_stops()
+    _finish_managed_tasks(state)
+    assert not state.runtime
+    state.serve._purge_instance_logs.assert_called_once_with(state.instance.id)
+    assert state.instance.id not in state.serve._assigned_ports
+    assert state.instance.id not in state.serve._port_reservations._claim_generations
+
+
+@pytest.mark.parametrize('manager', [1], indirect=True)
+def test_deleted_instance_stop_retries_after_cleanup_until_its_future_finishes(smg):
+    state = smg
+    entered, release = threading.Event(), threading.Event()
+
+    def stop(mi):
+        assert state.serve._stop_model_instance(mi)
+        entered.set()
+        assert release.wait(5)
+
+    state.serve._schedule_managed_task(state.instance, stop, teardown=True)
+    try:
+        assert entered.wait(2)
+        assert state.instance.id not in state.serve._model_instance_by_instance_id
+        state.client.model_instances.get.side_effect = NotFoundException('Deleted')
+        state.serve._sync_managed_model_instance(state.instance)
+        assert state.serve._managed_stopping[(state.instance.id, 3)] is True
+    finally:
+        release.set()
+        _finish_managed_tasks(state)
+
+    state.serve._retry_managed_stops()
+    _finish_managed_tasks(state)
+    state.serve._purge_instance_logs.assert_called_once_with(state.instance.id)
+    assert not state.serve._managed_stopping
+    assert state.instance.id not in state.serve._model_instance_by_instance_id
+    assert state.instance.id not in state.serve._port_reservations._claim_generations
+
+
+@pytest.mark.parametrize('manager', [1], indirect=True)
+def test_managed_stop_retries_give_other_instances_smg_cleanup_a_turn(smg):
+    state = smg
+    # Give the waiting CPU cleanup a later identity than the blocked stops.
+    state.serve._model_instance_by_instance_id.pop(state.instance.id)
+    state.serve._port_reservations.release_model(state.instance.id)
+    state.instance.id = 100
+    for item in state.runtime:
+        item.labels['gpustack.ai/model-instance-id'] = str(state.instance.id)
+    cpu = state.instance.distributed_servers.workloads[-1]
+    cpu.state = ModelInstanceWorkloadStateEnum.FAILED
+    cpu.component.ready = False
+    cpu.component.stop_requested = True
+    state.instance.state = ModelInstanceStateEnum.STARTING
+    state.serve._hold_managed_instance(state.instance)
+    runtime_list = state.list.side_effect
+    state.list.side_effect = OSError('Runtime unavailable')
+    assert not state.serve._stop_smg(state.instance, cpu)
+    instances = {state.instance.id: state.instance}
+    entered = {i: threading.Event() for i in range(10, 14)}
+    release, cpu_deleted = threading.Event(), threading.Event()
+    engine = state.instance.distributed_servers.workloads[0]
+    for i in entered:
+        item = engine.model_copy(deep=True, update={'name': f'blocked-{i}'})
+        other = state.instance.model_copy(
+            deep=True,
+            update={
+                'id': i,
+                'name': f'blocked-instance-{i}',
+                'state': ModelInstanceStateEnum.ERROR,
+                'distributed_servers': DistributedServers(workloads=[item]),
+            },
+        )
+        instances[i] = other
+        state.runtime.append(
+            SimpleNamespace(
+                name=item.name,
+                labels={
+                    **state.serve._managed_workload_labels(other),
+                    **state.serve._component_workload_labels(item),
+                },
+                state=WorkloadStatusStateEnum.RUNNING,
+            )
+        )
+        state.serve._hold_managed_instance(other)
+        assert not state.serve._stop_model_instance(other)
+    state.list.side_effect = runtime_list
+    state.client.model_instances.get.side_effect = lambda **kwargs: instances[
+        kwargs['id']
+    ].model_copy(deep=True)
+    delete = state.delete.side_effect
+
+    def unconfirmed_delete(name):
+        if name.startswith('blocked-'):
+            entered[int(name.split('-')[-1])].set()
+            assert release.wait(5)
+        else:
+            delete(name)
+            cpu_deleted.set()
+
+    state.delete.side_effect = unconfirmed_delete
+    try:
+        state.serve._retry_managed_stops()
+        assert all(event.wait(2) for event in entered.values())
+        assert not cpu_deleted.is_set()
+        release.set()
+        _finish_managed_tasks(state)
+        release.clear()
+
+        state.serve._retry_managed_stops()
+        assert cpu_deleted.wait(2), 'Other instances must not monopolize stop retries'
+    finally:
+        release.set()
+        _finish_managed_tasks(state)
+    assert state.serve._managed_stopping
+    assert not state.serve._smg_stopping
+    assert any(item.name == 'engine-1' for item in state.runtime)
+    assert state.instance.id in state.serve._assigned_ports
+    assert all(call.args[0] != 'engine-1' for call in state.delete.call_args_list)
+
+
+@pytest.mark.parametrize('manager', [1], indirect=True)
+@pytest.mark.parametrize('entrypoint', ['state', 'health'])
+def test_instance_snapshot_survives_background_teardown(smg, monkeypatch, entrypoint):
+    state = smg
+    other = state.instance.model_copy(
+        deep=True,
+        update={
+            'id': 10,
+            'name': 'other',
+            'state': ModelInstanceStateEnum.SCHEDULED,
+            'distributed_servers': DistributedServers(workloads=[]),
+            'port': None,
+            'ports': None,
+            'named_ports': None,
+        },
+    )
+    state.serve._hold_managed_instance(other)
+    state.client.model_instances.get.side_effect = lambda **kwargs: (
+        other if kwargs['id'] == other.id else state.instance
+    ).model_copy(deep=True)
+    entered, release = threading.Event(), threading.Event()
+    errors = []
+
+    def pause():
+        entered.set()
+        assert release.wait(5)
+
+    if entrypoint == 'state':
+        is_local = state.serve._is_local_model_instance
+
+        def paused_local(mi):
+            if mi.id == state.instance.id:
+                pause()
+            return is_local(mi)
+
+        monkeypatch.setattr(state.serve, '_is_local_model_instance', paused_local)
+    else:
+        # Pause the legacy-health filter while its instance iterator is active.
+        state.instance.state = ModelInstanceStateEnum.STARTING
+
+        class PausedWorkerId(int):
+            def __eq__(self, other):
+                pause()
+                return super().__eq__(other)
+
+        state.serve._model_instance_by_instance_id[state.instance.id].worker_id = (
+            PausedWorkerId(1)
+        )
+
+    def reconcile():
+        try:
+            if entrypoint == 'state':
+                state.serve.sync_model_instances_state()
+            else:
+                state.serve.sync_model_instances_inference_health()
+        except BaseException as exc:
+            errors.append(exc)
+
+    caller = threading.Thread(target=reconcile, daemon=True)
+    try:
+        caller.start()
+        assert entered.wait(2)
+        state.serve._schedule_managed_task(
+            other, state.serve._stop_model_instance, teardown=True
+        )
+        _finish_managed_tasks(state)
+        assert other.id not in state.serve._model_instance_by_instance_id
+    finally:
+        release.set()
+        caller.join(2)
+    assert not caller.is_alive()
+    assert not errors
 
 
 @pytest.mark.parametrize(
@@ -4363,10 +4739,10 @@ async def test_blocked_smg_recovery_preserves_engine_observation(
     _finish_managed_tasks(s)
 
     s.create.assert_not_called()
-    observed_failure = status == 409 and engine_failed
+    observed_failure = engine_failed
     assert stop.call_count == int(observed_failure)
     assert s.client.model_instances.report_workloads.call_count == int(observed_failure)
-    assert s.serve._sync_managed_rank_health.call_count == int(status == 409)
+    assert s.serve._sync_managed_rank_health.call_count == 1
     engine = next(
         w for w in s.instance.distributed_servers.workloads if w.name == 'engine-1'
     )

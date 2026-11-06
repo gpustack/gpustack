@@ -466,6 +466,7 @@ class ServeManager(ContainerLogPersister):
         self._managed_task_executor: Optional[ThreadPoolExecutor] = None
         self._managed_stop_tasks: Dict[int, Future] = {}
         self._managed_stop_executor: Optional[ThreadPoolExecutor] = None
+        self._managed_stop_retry_cursor: Optional[int] = None
         self._smg_stopping: Dict[tuple, tuple] = {}
         self._distributed_port_claim_lock = threading.Lock()
         self._distributed_port_client: Optional[DistributedPortClient] = None
@@ -657,7 +658,8 @@ class ServeManager(ContainerLogPersister):
         )
 
     def _hold_managed_instance(self, mi: ModelInstance) -> None:
-        self._model_instance_by_instance_id[mi.id] = mi.model_copy(deep=True)
+        with self._model_instance_start_lock:
+            self._model_instance_by_instance_id[mi.id] = mi.model_copy(deep=True)
         ports = model_instance_ports(mi, self._worker_id)
         if (mi.id, mi.restart_count or 0) in self._managed_launches:
             ports |= self._assigned_ports.get(mi.id, set())
@@ -887,15 +889,11 @@ class ServeManager(ContainerLogPersister):
         if tracked and tracked.restart_count != mi.restart_count:
             if (tracked.restart_count or 0) > (mi.restart_count or 0):
                 return False
-            self._schedule_managed_task(
-                tracked, self._stop_model_instance, teardown=True
-            )
+            self._schedule_managed_stop(tracked)
             return False
         if not self._is_local_model_instance(mi):
             if tracked:
-                self._schedule_managed_task(
-                    tracked, self._stop_model_instance, teardown=True
-                )
+                self._schedule_managed_stop(tracked)
             return False
         local = get_model_instance_workloads(mi, self._worker_id)
         if local is None:
@@ -905,14 +903,12 @@ class ServeManager(ContainerLogPersister):
             and not local
             and get_model_instance_workloads(tracked, self._worker_id)
         ):
-            self._schedule_managed_task(
-                tracked, self._stop_model_instance, teardown=True
-            )
+            self._schedule_managed_stop(tracked)
             return False
         self._hold_managed_instance(mi)
         key = (mi.id, mi.restart_count or 0)
         if self._managed_stop_requested(mi) or key in self._managed_stopping:
-            self._schedule_managed_task(mi, self._stop_model_instance, teardown=True)
+            self._schedule_managed_stop(mi)
             return False
         return True
 
@@ -1260,11 +1256,10 @@ class ServeManager(ContainerLogPersister):
             )
             for w in local
         ):
-            self._schedule_managed_task(
-                current, self._stop_model_instance, teardown=True
-            )
+            self._schedule_managed_stop(current)
             return
         if not self._retire_smg_attempts(current, tracked, local):
+            self._observe_sglang_components(current)
             return
         smg = next((w for w in local if w.component.kind == 'sglang_smg'), None)
         if smg and (
@@ -1278,37 +1273,29 @@ class ServeManager(ContainerLogPersister):
             self._schedule_managed_task(
                 current, partial(self._retry_smg_stop, item=smg), teardown=True
             )
-            fresh = ModelInstance.model_validate(
-                self._clientset.model_instances.get(id=current.id, use_cache=False)
-            )
-            if not self._same_component_epoch(current, fresh):
-                return
-            current = fresh
-            local = get_model_instance_workloads(current, self._worker_id)
-            report = self._observe_managed_workloads(current)
-            if report != local:
-                current = self._report_managed_workloads(current, report)
-                self._hold_managed_instance(current)
-            self._sync_managed_rank_health(current)
+            self._observe_sglang_components(current)
             return
         if (
             smg
             and smg.state == ModelInstanceWorkloadStateEnum.PENDING
             and smg.component.attempt > 0
         ):
-            self._schedule_managed_task(
+            if self._schedule_managed_task(
                 current, partial(self._prepare_pending_smg, item=smg)
-            )
-            return
+            ):
+                return
         self._observe_sglang_components(current)
 
     @_model_lifecycle
     def _prepare_pending_smg(self, mi, item):
         try:
             self._create_pending_smg(mi, item)
-            self._observe_sglang_components(mi, background=True)
         except Exception as exc:
             logger.warning('Cannot prepare SMG %s: %s', item.name, exc)
+        try:
+            self._observe_sglang_components(mi, background=True)
+        except Exception as exc:
+            logger.warning('Cannot observe SGLang components %s: %s', mi.id, exc)
 
     def _observe_sglang_components(self, current, *, background=False):
         fresh = ModelInstance.model_validate(
@@ -1322,9 +1309,7 @@ class ServeManager(ContainerLogPersister):
             if background:
                 self._stop_model_instance(current)
             else:
-                self._schedule_managed_task(
-                    current, self._stop_model_instance, teardown=True
-                )
+                self._schedule_managed_stop(current)
             return
         report = self._observe_managed_workloads(current)
         if report != local:
@@ -1335,9 +1320,7 @@ class ServeManager(ContainerLogPersister):
             if background:
                 self._stop_model_instance(current)
             else:
-                self._schedule_managed_task(
-                    current, self._stop_model_instance, teardown=True
-                )
+                self._schedule_managed_stop(current)
         elif failed:
             if background:
                 self._stop_smg(current, failed[0])
@@ -1355,11 +1338,7 @@ class ServeManager(ContainerLogPersister):
             delete_logs = self._managed_stopping.get(key)
         if delete_logs is None:
             return False
-        self._schedule_managed_task(
-            mi,
-            partial(self._stop_model_instance, delete_logs=delete_logs),
-            teardown=True,
-        )
+        self._schedule_managed_stop(mi, delete_logs=delete_logs)
         return True
 
     @partial(_model_lifecycle, blocking=False)
@@ -1372,11 +1351,7 @@ class ServeManager(ContainerLogPersister):
                 self._clientset.model_instances.get(id=mi.id, use_cache=False)
             )
         except NotFoundException:
-            self._schedule_managed_task(
-                tracked or mi,
-                partial(self._stop_model_instance, delete_logs=True),
-                teardown=True,
-            )
+            self._schedule_managed_stop(tracked or mi, delete_logs=True)
             return
         except Exception as exc:
             logger.warning("Cannot reconcile managed model instance %s: %s", mi.id, exc)
@@ -1405,13 +1380,30 @@ class ServeManager(ContainerLogPersister):
             return
         self._sync_registered_workloads(current, tracked)
 
+    def _schedule_managed_stop(
+        self, mi: ModelInstance, *, delete_logs: bool = False
+    ) -> None:
+        """Retain whole-instance teardown intent even when task admission is busy."""
+        key = (mi.id, mi.restart_count or 0)
+        with self._model_instance_start_lock:
+            self._managed_stopping[key] = (
+                self._managed_stopping.get(key, False) or delete_logs
+            )
+            if mi.id not in self._model_instance_by_instance_id:
+                self._model_instance_by_instance_id[mi.id] = mi.model_copy(deep=True)
+        self._schedule_managed_task(
+            mi,
+            partial(self._stop_model_instance, delete_logs=delete_logs),
+            teardown=True,
+        )
+
     def _schedule_managed_task(
         self,
         mi: ModelInstance,
         operation: Callable[[ModelInstance], None],
         *,
         teardown: bool = False,
-    ) -> None:
+    ) -> bool:
         """Keep slow creation and teardown outside shared reconciliation loops."""
         with self._model_instance_start_lock:
             for tasks in (self._managed_tasks, self._managed_stop_tasks):
@@ -1432,7 +1424,7 @@ class ServeManager(ContainerLogPersister):
                 or mi.id in self._managed_stop_tasks
                 or len(tasks) >= _MANAGED_TASK_CONCURRENCY
             ):
-                return
+                return False
             executor = (
                 self._managed_stop_executor if teardown else self._managed_task_executor
             )
@@ -1448,6 +1440,7 @@ class ServeManager(ContainerLogPersister):
                 else:
                     self._managed_task_executor = executor
             tasks[mi.id] = executor.submit(operation, mi.model_copy(deep=True))
+            return True
 
     def _sync_registered_workloads(self, current, tracked):
         local = get_model_instance_workloads(current, self._worker_id)
@@ -1467,9 +1460,7 @@ class ServeManager(ContainerLogPersister):
             )
             for item in local
         ):
-            self._schedule_managed_task(
-                current, self._stop_model_instance, teardown=True
-            )
+            self._schedule_managed_stop(current)
             return
         report = self._observe_managed_workloads(current)
         try:
@@ -1483,9 +1474,7 @@ class ServeManager(ContainerLogPersister):
             if any(
                 item.state == ModelInstanceWorkloadStateEnum.FAILED for item in report
             ):
-                self._schedule_managed_task(
-                    current, self._stop_model_instance, teardown=True
-                )
+                self._schedule_managed_stop(current)
             else:
                 self._sync_managed_rank_health(
                     current, startup_only=tracked is not None
@@ -1610,23 +1599,34 @@ class ServeManager(ContainerLogPersister):
         """Continue accepted local teardown even when Server snapshots are unavailable."""
         with self._model_instance_start_lock:
             smg_stopping = list(self._smg_stopping.values())
-            managed_stopping = list(self._managed_stopping.items())
-        for old_mi, item in smg_stopping:
-            self._schedule_managed_task(
-                old_mi, partial(self._retry_smg_stop, item=item), teardown=True
-            )
-        for (instance_id, restart_count), delete_logs in managed_stopping:
+            managed_stopping = dict(self._managed_stopping.items())
+            cursor = self._managed_stop_retry_cursor
+        pending = {}
+        for (instance_id, restart_count), delete_logs in managed_stopping.items():
             mi = self._model_instance_by_instance_id.get(instance_id)
             if (
                 mi is not None
                 and (mi.restart_count or 0) == restart_count
                 and instance_id not in self._starting_model_instances
             ):
-                self._schedule_managed_task(
+                pending[instance_id] = (
                     mi,
                     partial(self._stop_model_instance, delete_logs=delete_logs),
-                    teardown=True,
                 )
+        for old_mi, item in smg_stopping:
+            if (old_mi.id, old_mi.restart_count or 0) not in managed_stopping:
+                pending.setdefault(
+                    old_mi.id, (old_mi, partial(self._retry_smg_stop, item=item))
+                )
+        # Rotate across instances; whole-instance intent wins within each instance.
+        for instance_id in sorted(
+            pending,
+            key=lambda identity: (cursor is not None and identity <= cursor, identity),
+        ):
+            mi, operation = pending[instance_id]
+            if self._schedule_managed_task(mi, operation, teardown=True):
+                with self._model_instance_start_lock:
+                    self._managed_stop_retry_cursor = instance_id
 
     def _stop_managed_model_instance(
         self, mi: ModelInstance, delete_logs: bool
@@ -1646,9 +1646,18 @@ class ServeManager(ContainerLogPersister):
         if mi.id in self._starting_model_instances:
             return False
         try:
-            if not self._delete_managed_workloads(mi) or not self._confirm_managed_stop(
-                mi
-            ):
+            if not self._delete_managed_workloads(mi):
+                return False
+            with self._model_instance_start_lock:
+                pending_smg = [
+                    (old_mi, item)
+                    for component_key, (old_mi, item) in self._smg_stopping.items()
+                    if component_key[:2] == key
+                ]
+            for old_mi, item in pending_smg:
+                if not self._stop_smg(old_mi, item):
+                    return False
+            if not self._confirm_managed_stop(mi):
                 return False
         except Exception as exc:
             logger.warning(
@@ -1656,10 +1665,18 @@ class ServeManager(ContainerLogPersister):
             )
             return False
         self._stop_container_log_persistence(mi.id)
+        with self._model_instance_start_lock:
+            delete_logs = self._managed_stopping.get(key, delete_logs)
         if delete_logs:
             self._purge_instance_logs(mi.id)
-        self._forget_stopped_model_instance(mi, delete_logs=delete_logs)
+        self._forget_stopped_model_instance(
+            mi, delete_logs=delete_logs, retain_instance=True
+        )
         with self._model_instance_start_lock:
+            # Log and port cleanup may yield while a permanent stop is appended.
+            if self._managed_stopping.get(key, False) and not delete_logs:
+                return False
+            self._model_instance_by_instance_id.pop(mi.id, None)
             self._managed_stopping.pop(key, None)
             for component_key in list(self._smg_stopping):
                 if component_key[:2] == key:
@@ -1833,7 +1850,8 @@ class ServeManager(ContainerLogPersister):
         persistence = self._log_persistence.get(mi.id)
         if getattr(persistence, "workload_name", None):
             names.add(persistence.workload_name)
-        self._model_instance_by_instance_id[mi.id] = mi
+        with self._model_instance_start_lock:
+            self._model_instance_by_instance_id[mi.id] = mi
         if mi.id in self._starting_model_instances:
             return False
         missing_allowed = False
@@ -1957,10 +1975,10 @@ class ServeManager(ContainerLogPersister):
 
         # Snapshot local state BEFORE the list call. Reversing this order
         # races with CREATED events and reaps freshly-assigned instances.
+        with self._model_instance_start_lock:
+            local_instances = list(self._model_instance_by_instance_id.items())
         local_assigned_ids = {
-            mid
-            for mid, mi in self._model_instance_by_instance_id.items()
-            if self._is_local_model_instance(mi)
+            mid for mid, mi in local_instances if self._is_local_model_instance(mi)
         }
 
         # Read from the watch-backed cache. It holds the full set, so the
@@ -2030,7 +2048,10 @@ class ServeManager(ContainerLogPersister):
             try:
                 # Equivalent to a dropped DELETED event, so purge logs too —
                 # otherwise a reused id would inherit this instance's stale logs.
-                self._stop_model_instance(stale, delete_logs=True)
+                if get_model_instance_workloads(stale) is not None:
+                    self._schedule_managed_stop(stale, delete_logs=True)
+                else:
+                    self._stop_model_instance(stale, delete_logs=True)
             except Exception as e:
                 logger.warning(f"Failed to reap stale model instance {stale.name}: {e}")
 
@@ -2941,9 +2962,7 @@ class ServeManager(ContainerLogPersister):
                     check.future = None
             if self._managed_stop_requested(current):
                 self._clear_rank_health(mi.id)
-                self._schedule_managed_task(
-                    current, self._stop_model_instance, teardown=True
-                )
+                self._schedule_managed_stop(current)
                 return
             if targets:
                 worker = self._clientset.workers.get(id=self._worker_id)
@@ -3107,8 +3126,10 @@ class ServeManager(ContainerLogPersister):
         (within the configured interval), the active health check is skipped.
         """
 
+        with self._model_instance_start_lock:
+            local_instances = list(self._model_instance_by_instance_id.values())
         for mi in sorted(
-            list(self._model_instance_by_instance_id.values()),
+            local_instances,
             key=lambda mi: self._rank_health_last_dispatch.get(mi.id, 0),
         ):
             if (
@@ -3120,7 +3141,7 @@ class ServeManager(ContainerLogPersister):
         # Use the event-driven local cache instead of an API call.
         model_instances = [
             mi
-            for mi in self._model_instance_by_instance_id.values()
+            for mi in local_instances
             if mi.worker_id == self._worker_id
             and mi.state == ModelInstanceStateEnum.RUNNING
             and get_model_instance_workloads(mi) is None
@@ -3246,7 +3267,8 @@ class ServeManager(ContainerLogPersister):
         is_main_worker = mi.worker_id == self._worker_id
 
         if is_main_worker:
-            self._model_instance_by_instance_id[mi.id] = mi
+            with self._model_instance_start_lock:
+                self._model_instance_by_instance_id[mi.id] = mi
             # Return if all subordinate workers aren't running.
             if (
                 mi.distributed_servers
@@ -3283,7 +3305,8 @@ class ServeManager(ContainerLogPersister):
                 return
             # Track local followers even while they wait to start. Reaping
             # needs their workload metadata after the server deletes the row.
-            self._model_instance_by_instance_id[mi.id] = mi
+            with self._model_instance_start_lock:
+                self._model_instance_by_instance_id[mi.id] = mi
             # Return if the main worker isn't initialized.
             if (
                 mi.distributed_servers.mode
@@ -3973,7 +3996,8 @@ class ServeManager(ContainerLogPersister):
 
         # Restart teardown removes the local entry. Restore it before taking
         # ports so failed starts and missed delete events can still be reaped.
-        self._model_instance_by_instance_id[mi.id] = mi
+        with self._model_instance_start_lock:
+            self._model_instance_by_instance_id[mi.id] = mi
 
         # Follow a rename before anything writes under the new name, or the
         # instance's logs end up split across two directories.
@@ -4263,7 +4287,8 @@ class ServeManager(ContainerLogPersister):
             sw.state_message = message
             patch_dict = {f"distributed_servers.subordinate_workers.{sw_pos}": sw}
 
-        self._model_instance_by_instance_id[mi.id] = mi
+        with self._model_instance_start_lock:
+            self._model_instance_by_instance_id[mi.id] = mi
         self._error_model_instances[mi.id] = mi
         self._pending_model_instance_errors[mi.id] = patch_dict
         logger.error(f"Failed to start model instance {mi.name}: {error}")
@@ -4811,8 +4836,13 @@ class ServeManager(ContainerLogPersister):
         mi: ModelInstance,
         clear_restart_backoff: bool = True,
         delete_logs: bool = False,
+        *,
+        retain_instance: bool = False,
     ) -> None:
-        """Release local state only after the caller has completed workload cleanup."""
+        """Release local state after workload cleanup.
+
+        Managed stop finalization retains the instance until all cleanup intent is consumed.
+        """
         try:
             self._release_distributed_ports(mi.id)
         except Exception:
@@ -4824,7 +4854,9 @@ class ServeManager(ContainerLogPersister):
         self._error_model_instances.pop(mi.id, None)
         self._pending_model_instance_errors.pop(mi.id, None)
         self._model_cache_by_instance.pop(mi.id, None)
-        self._model_instance_by_instance_id.pop(mi.id, None)
+        with self._model_instance_start_lock:
+            if not retain_instance:
+                self._model_instance_by_instance_id.pop(mi.id, None)
         if clear_restart_backoff:
             self._restart_backoff_counts.pop(mi.id, None)
             # Same condition as the backoff on purpose. The crash-loop verdict
