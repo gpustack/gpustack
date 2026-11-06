@@ -2088,7 +2088,7 @@ model_sets:
     backend: vLLM
     image_name: quay.io/gpustack/vllm-openai:kimi-k31
     env:
-      VLLM_ENGINE_READY_TIMEOUT_S: '3600'
+      VLLM_ENGINE_READY_TIMEOUT_S: '6000'
     backend_parameters:
     - --max-model-len=auto
     - --max-num-seqs=256
@@ -2139,7 +2139,7 @@ model_sets:
       model_scope_model_id: MoonshotAI/Kimi-K3
       backend: vLLM
       env:
-        VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+        VLLM_ENGINE_READY_TIMEOUT_S: "6000"
         VLLM_USE_V2_MODEL_RUNNER: "1"
         PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       backend_parameters:
