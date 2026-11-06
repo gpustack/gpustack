@@ -245,7 +245,17 @@ class ModelFileManager:
 
     async def _delete_model_file(self, model_file: ModelFile):
         try:
-            if model_file.resolved_paths:
+            if model_file.source == SourceEnum.LOCAL_PATH and model_file.resolved_paths:
+                # A local-path model file resolves to files the operator placed
+                # on the worker; GPUStack never downloaded them, so cleanup
+                # must not remove them. The download log below is ours and is
+                # still removed.
+                logger.info(
+                    f"Leaving {model_file.local_path} in place while deleting "
+                    f"model file {model_file.id}: it was not downloaded by "
+                    f"GPUStack."
+                )
+            elif model_file.resolved_paths:
                 for resolved_path in model_file.resolved_paths:
                     paths = (
                         await asyncio.to_thread(glob.glob, resolved_path)
@@ -262,8 +272,14 @@ class ModelFileManager:
                 _cleanup_download_log, self._config.log_dir, model_file.id
             )
 
+            outcome = (
+                " (its files were left in place)"
+                if model_file.source == SourceEnum.LOCAL_PATH
+                else " from disk"
+            )
             logger.info(
-                f"Deleted model file {model_file.readable_source}(id: {model_file.id}) from disk"
+                f"Deleted model file {model_file.readable_source}"
+                f"(id: {model_file.id}){outcome}"
             )
         except Exception as e:
             logger.error(
