@@ -4198,6 +4198,7 @@ def test_accelerator_free_plan_conversion_skips_model_instance_type(monkeypatch)
     import gpustack.worker.backends.base as base_module
 
     backend = _StubServer.__new__(_StubServer)
+    backend._model_instance = new_model_instance(1, 'engine', 1)
     backend._model = types.SimpleNamespace(
         gpu_type_selector=types.SimpleNamespace(type='gpu-instance-type')
     )

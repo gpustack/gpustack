@@ -1969,6 +1969,24 @@ def test_legacy_follower_preparation_is_not_reported_as_a_missing_runtime(manage
     client.model_instances.report_workloads.assert_not_called()
 
 
+@pytest.mark.parametrize('event_type', [EventType.CREATED, EventType.UPDATED])
+def test_legacy_nonmember_events_never_enter_restart(manager, event_type):
+    serve, _ = manager
+    mi = _instance()
+    mi.backend = BackendEnum.VLLM
+    mi.state = ModelInstanceStateEnum.SCHEDULED
+    mi.worker_id = 10
+    mi.distributed_servers.subordinate_workers[0].worker_id = 20
+    assert mi.get_deployment_metadata(serve._worker_id) is None
+    with (
+        patch.object(serve, '_restart_model_instance') as restart,
+        patch.object(serve, '_start_model_instance') as start,
+    ):
+        serve._dispatch_model_instance_event(Event(type=event_type, data=mi))
+    restart.assert_not_called()
+    start.assert_not_called()
+
+
 @pytest.fixture(params=[1, 2])
 def manager(request, tmp_path, monkeypatch):
     clientset = MagicMock()
