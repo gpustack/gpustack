@@ -143,7 +143,7 @@ def legacy_group_recovery(
         or not servers.subordinate_workers
     ):
         return False
-    config = instance.model_config_snapshot or model
+    config = getattr(instance, 'model_config_snapshot', None) or model
     backend = instance.backend
     if backend not in (BackendEnum.VLLM, BackendEnum.SGLANG, BackendEnum.ASCEND_MINDIE):
         return False

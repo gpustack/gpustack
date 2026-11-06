@@ -12,6 +12,7 @@ from gpustack.schemas.models import (
     DistributedServerCoordinateModeEnum,
     DistributedServers,
     ModelInstance,
+    ModelInstancePublic,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
     Model,
@@ -44,6 +45,7 @@ def recovery(monkeypatch, config):
     instance.source = model.source
     instance.huggingface_repo_id = model.huggingface_repo_id
     instance.worker_ip = "10.0.0.1"
+    instance.created_at = instance.updated_at = datetime.now(timezone.utc)
     instance.port = 8000
     instance.state_message = "Distributed serving unreachable"
     instance.distributed_servers = DistributedServers(
@@ -77,10 +79,12 @@ def recovery(monkeypatch, config):
         client = MagicMock()
         # Each API read is a separate snapshot, not a shared mutable record.
         client.model_instances.list.side_effect = lambda **kwargs: SimpleNamespace(
-            items=[state.instance.model_copy(deep=True)]
+            items=[ModelInstancePublic.model_validate(state.instance.model_dump())]
         )
         client.model_instances.get.side_effect = (
-            lambda **kwargs: state.instance.model_copy(deep=True)
+            lambda **kwargs: ModelInstancePublic.model_validate(
+                state.instance.model_dump()
+            )
         )
         client.model_instances.update.side_effect = update_instance
         client.models.get.return_value = model
