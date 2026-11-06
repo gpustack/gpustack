@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlmodel import SQLModel
-from sqlalchemy import DDL, event, text
+from sqlalchemy import DDL, Connection, event, text
+from sqlalchemy import inspect as sa_inspect
 
 from gpustack import envs
 from gpustack.server import db
@@ -397,6 +398,20 @@ async def create_db_and_tables(engine: AsyncEngine):
         )
 
 
+def _view_exists(connection: Connection, view_name: str) -> bool:
+    """Report whether ``view_name`` should be dropped on ``connection``.
+
+    MySQL and OceanBase accept ``DROP VIEW IF EXISTS`` on a missing view but
+    still count it as server warning 1051 ("Unknown table"), which the driver
+    logs on every fresh install. On those dialects the view is only dropped
+    when it actually exists; PostgreSQL and SQLite never warn on ``IF
+    EXISTS``, so they keep the unconditional drop.
+    """
+    if connection.dialect.name != "mysql":
+        return True
+    return view_name in sa_inspect(connection).get_view_names()
+
+
 def listen_events(engine: AsyncEngine):
     dialect_name = engine.dialect.name
 
@@ -412,21 +427,26 @@ def listen_events(engine: AsyncEngine):
             connection.execute(text(worker_after_drop_view_stmt_postgres))
             connection.execute(text(create_stmt))
         elif d == "mysql":
-            connection.execute(text(worker_after_drop_view_stmt_mysql))
+            if _view_exists(connection, "gpu_devices_view"):
+                connection.execute(text(worker_after_drop_view_stmt_mysql))
             connection.execute(text(worker_after_create_view_stmt_mysql))
         else:
             connection.execute(text(worker_after_drop_view_stmt_sqlite))
             connection.execute(text(worker_after_create_view_stmt_sqlite))
 
+    def _drop_model_user_view(target, connection, **kw):
+        if _view_exists(connection, "non_admin_user_models"):
+            connection.execute(text(model_user_after_drop_view_stmt))
+
+    def _drop_principal_users_view(target, connection, **kw):
+        if _view_exists(connection, "principal_users"):
+            connection.execute(text(principal_users_after_drop_view_stmt))
+
     event.listen(Worker.metadata, "after_create", _manage_worker_view)
     # ``non_admin_user_models`` references ``principal_users``; drop the
     # dependent view first and create the helper before the dependent.
-    event.listen(
-        SQLModel.metadata, "after_create", DDL(model_user_after_drop_view_stmt)
-    )
-    event.listen(
-        SQLModel.metadata, "after_create", DDL(principal_users_after_drop_view_stmt)
-    )
+    event.listen(SQLModel.metadata, "after_create", _drop_model_user_view)
+    event.listen(SQLModel.metadata, "after_create", _drop_principal_users_view)
     event.listen(
         SQLModel.metadata,
         "after_create",
