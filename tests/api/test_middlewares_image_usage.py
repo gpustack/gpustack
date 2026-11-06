@@ -180,18 +180,7 @@ async def test_image_stream_with_usage_event_is_metered_once(captured_metrics):
 
 
 @pytest.mark.asyncio
-async def test_failed_usage_event_recording_falls_back_at_stream_end(monkeypatch):
-    captured = []
-    attempts = 0
-
-    async def _flaky_accumulate(metrics):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise RuntimeError("buffer unavailable")
-        captured.extend(metrics)
-
-    monkeypatch.setattr(middlewares, "accumulate_gateway_metrics", _flaky_accumulate)
+async def test_disconnect_after_usage_event_is_not_metered(captured_metrics):
     request = _streaming_request(ImageRequestParams(n=1, size="512x512"))
     usage_event = {**_image_event(0, "stop", 100.0), "usage": {"total_tokens": 0}}
     upstream = _SSEStream([usage_event, "[DONE]"])
@@ -199,11 +188,12 @@ async def test_failed_usage_event_recording_falls_back_at_stream_end(monkeypatch
     response = await middlewares.process_request(
         request, upstream, ImagesResponse, OperationEnum.IMAGE_GENERATION
     )
-    await _drain(response)
+    body = response.body_iterator
+    # The client reads the usage event, then goes away before [DONE].
+    await body.__anext__()
+    await body.aclose()
 
-    (metric,) = captured
-    assert metric.image_count == 1
-    assert attempts == 2
+    assert captured_metrics == []
 
 
 @pytest.mark.asyncio

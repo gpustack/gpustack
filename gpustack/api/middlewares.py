@@ -355,16 +355,14 @@ async def handle_streaming_response(
                 yield chunk
         # Reached only when the upstream stream ended on its own; a client
         # disconnect cancels the generator before this point, so an
-        # abandoned generation is not billed.
-        if operation == OperationEnum.IMAGE_GENERATION and not getattr(
-            request.state, "usage_recorded", False
-        ):
-            # Image backends need not emit a usage event: the images are the
-            # billable unit, so meter them even when no usage chunk arrived.
+        # abandoned generation is never billed. Image streams are metered
+        # here, exactly once, whether or not the backend sent a usage event:
+        # the images are the billable unit.
+        if operation == OperationEnum.IMAGE_GENERATION:
             try:
                 await record_model_usage(
                     request,
-                    None,
+                    getattr(request.state, "image_stream_usage", None),
                     operation,
                     generated_image_count=_streamed_image_count(request),
                 )
@@ -432,19 +430,12 @@ async def process_chunk(
             response_chunk = response_class(**response_dict)
 
             if is_usage_chunk(response_chunk):
-                await record_model_usage(
-                    request,
-                    response_chunk.usage,
-                    operation,
-                    generated_image_count=(
-                        _streamed_image_count(request)
-                        if operation == OperationEnum.IMAGE_GENERATION
-                        else None
-                    ),
-                )
-                # Only once the metric is buffered: a failed attempt leaves
-                # the stream-end fallback free to record the request.
-                request.state.usage_recorded = True
+                if operation == OperationEnum.IMAGE_GENERATION:
+                    # A client can still drop the stream after this event;
+                    # keep it for the stream-end record instead of billing now.
+                    request.state.image_stream_usage = response_chunk.usage
+                else:
+                    await record_model_usage(request, response_chunk.usage, operation)
 
                 # Fill rate metrics. These are extended info not included in OAI APIs.
                 # llama-box provides them out-of-the-box. Align with other backends here.
