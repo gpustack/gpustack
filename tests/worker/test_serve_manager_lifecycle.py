@@ -1761,6 +1761,214 @@ def _instance(instance_id=1):
     return instance
 
 
+@pytest.mark.parametrize(
+    'state', [ModelInstanceStateEnum.STARTING, ModelInstanceStateEnum.RUNNING]
+)
+def test_legacy_failed_member_reports_without_restarting_locally(manager, state):
+    from gpustack.schemas.models import ModelInstanceLegacyUpdate
+
+    serve, client = manager
+    mi = _instance()
+    mi.backend = BackendEnum.VLLM
+    mi.state = state
+    mi.restart_count = 7
+    mi.distributed_servers.subordinate_workers[0].state = ModelInstanceStateEnum.RUNNING
+    client.model_instances.get.return_value = mi.model_copy(update={'restart_count': 8})
+    with (
+        patch('gpustack.worker.serve_manager.get_workload', return_value=None),
+        patch.object(serve, '_start_model_instance') as start,
+        patch.object(serve, '_stop_model_instance') as stop,
+    ):
+        if serve._worker_id == mi.worker_id:
+            mi.state = ModelInstanceStateEnum.ERROR
+            serve._restart_error_model_instance(mi)
+            serve._report_model_instance(
+                mi, state=ModelInstanceStateEnum.ERROR, state_message='failed'
+            )
+        else:
+            serve._start_or_restart_subordinate(mi)
+    start.assert_not_called()
+    stop.assert_not_called()
+    report = client.model_instances.report_workloads.call_args.kwargs['report']
+    assert isinstance(report, ModelInstanceLegacyUpdate)
+    assert report.restart_count == 7
+    assert report.state == ModelInstanceStateEnum.ERROR
+    assert mi.restart_count == 7
+
+
+@pytest.mark.parametrize('newer_local', [False, True])
+def test_late_legacy_stop_cannot_delete_or_forget_a_new_round(managed, newer_local):
+    from gpustack.schemas.models import ModelInstanceLegacyStop
+
+    s = managed
+    old = s.instance
+    old.distributed_servers.workloads = None
+    old.distributed_servers.orchestration_mode = 'legacy'
+    old.state = ModelInstanceStateEnum.ERROR
+    old.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
+        token=uuid4(),
+        restart_count=3,
+        worker_ids=[1, 2],
+        worker_principal_ids={1: 10, 2: 20},
+        confirmed_worker_ids=[1, 2],
+    )
+    new = old.model_copy(deep=True)
+    new.restart_count = 4
+    new.state = ModelInstanceStateEnum.STARTING
+    new.distributed_servers.legacy_stop = None
+    s.instance = new
+    tracked = new if newer_local else old
+    s.serve._model_instance_by_instance_id[old.id] = tracked
+    s.serve._assigned_ports[old.id] = {40000}
+    name = new.get_deployment_metadata(s.serve._worker_id).name
+    s.runtime.append(SimpleNamespace(name=name))
+    assert s.serve._stop_legacy_guarded_model_instance(old, False)
+    s.delete.assert_not_called()
+    if newer_local:
+        assert s.serve._model_instance_by_instance_id[new.id] is new
+        assert s.serve._assigned_ports[new.id] == {40000}
+        s.serve._stop_container_log_persistence.assert_not_called()
+    else:
+        assert old.id not in s.serve._model_instance_by_instance_id
+
+
+def test_legacy_stop_finishes_when_server_advances_after_its_ack(managed, monkeypatch):
+    from gpustack.schemas.models import ModelInstanceLegacyStop
+
+    s = managed
+    old = s.instance
+    old.distributed_servers.workloads = None
+    old.distributed_servers.orchestration_mode = 'legacy'
+    old.state = ModelInstanceStateEnum.ERROR
+    old.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
+        token=uuid4(),
+        restart_count=3,
+        worker_ids=[1, 2],
+        worker_principal_ids={1: 10, 2: 20},
+        confirmed_worker_ids=[3 - s.serve._worker_id],
+    )
+    monkeypatch.setattr(
+        'gpustack.worker.serve_manager.psutil.process_iter', lambda *a, **k: []
+    )
+    s.serve._model_instance_by_instance_id[old.id] = old
+    s.serve._assigned_ports[old.id] = {40000}
+
+    def acknowledge(**kwargs):
+        new = old.model_copy(deep=True)
+        new.restart_count = 4
+        new.distributed_servers.legacy_stop = None
+        new.state = ModelInstanceStateEnum.SCHEDULED
+        s.instance = new
+        s.serve._port_reservations.model_claims[old.id] = ('new-round-claim', {40000})
+        s.runtime.append(
+            SimpleNamespace(name=new.get_deployment_metadata(s.serve._worker_id).name)
+        )
+        return new
+
+    s.client.model_instances.confirm_stop.side_effect = acknowledge
+    assert s.serve._stop_legacy_guarded_model_instance(old, False)
+    s.client.model_instances.confirm_stop.assert_called_once()
+    s.delete.assert_not_called()
+    assert old.id not in s.serve._assigned_ports
+    assert s.serve._port_reservations.model_claims[old.id] == (
+        'new-round-claim',
+        {40000},
+    )
+
+
+def test_legacy_preparer_rejects_a_later_starting_round():
+    from gpustack.worker.backends.base import ModelInstanceStateError
+
+    mi = _instance()
+    mi.backend = BackendEnum.VLLM
+    mi.restart_count = 3
+    owner = SimpleNamespace(
+        _model_instance=mi, _model=new_model(1, 'm', huggingface_repo_id='org/repo')
+    )
+    later = mi.model_copy(
+        update={
+            'restart_count': 4,
+            'state': ModelInstanceStateEnum.STARTING,
+            'resolved_path': '/models/m',
+        }
+    )
+    with pytest.raises(ModelInstanceStateError):
+        InferenceServer._stop_when_starting(
+            owner, Event(type=EventType.UPDATED, data=later.model_dump())
+        )
+
+
+def test_confirmed_legacy_stop_waits_for_peers_without_deleting_again(
+    managed, monkeypatch
+):
+    from gpustack.schemas.models import ModelInstanceLegacyStop
+
+    s = managed
+    mi = s.instance
+    mi.distributed_servers.workloads = None
+    mi.distributed_servers.orchestration_mode = 'legacy'
+    mi.state = ModelInstanceStateEnum.ERROR
+    mi.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
+        token=uuid4(),
+        restart_count=3,
+        worker_ids=[1, 2],
+        worker_principal_ids={1: 10, 2: 20},
+        confirmed_worker_ids=[s.serve._worker_id],
+    )
+    proof = MagicMock(
+        side_effect=AssertionError('An acknowledged stop cannot delete again')
+    )
+    monkeypatch.setattr(s.serve, '_legacy_stop_runtime_absent', proof)
+    assert not s.serve._stop_legacy_guarded_model_instance(mi, False)
+    proof.assert_not_called()
+    s.client.model_instances.confirm_stop.assert_not_called()
+    assert mi.id not in s.serve._assigned_ports
+    s.serve._port_reservations.model_claims[mi.id] = ('new-round-claim', {40000})
+    mi.distributed_servers.legacy_stop.confirmed_worker_ids = [1, 2]
+    assert s.serve._stop_legacy_guarded_model_instance(mi, False)
+    proof.assert_not_called()
+    assert s.serve._port_reservations.model_claims[mi.id] == (
+        'new-round-claim',
+        {40000},
+    )
+
+
+@pytest.mark.parametrize('event_type', [EventType.CREATED, EventType.UPDATED])
+def test_replayed_legacy_schedule_cannot_restart_an_already_started_round(
+    manager, event_type
+):
+    serve, client = manager
+    mi = _instance()
+    mi.backend = BackendEnum.VLLM
+    mi.restart_count = 1
+    mi.state = ModelInstanceStateEnum.SCHEDULED
+    client.model_instances.get.return_value = mi.model_copy(
+        update={'state': ModelInstanceStateEnum.STARTING}
+    )
+    with (
+        patch.object(serve, '_launch_model_instance') as start,
+        patch.object(serve, '_stop_model_instance') as stop,
+    ):
+        serve._dispatch_model_instance_event(Event(type=event_type, data=mi))
+    start.assert_not_called()
+    stop.assert_not_called()
+
+
+@pytest.mark.parametrize('manager', [2], indirect=True)
+def test_legacy_follower_preparation_is_not_reported_as_a_missing_runtime(manager):
+    serve, client = manager
+    mi = _instance()
+    mi.backend = BackendEnum.VLLM
+    mi.state = ModelInstanceStateEnum.STARTING
+    mi.distributed_servers.subordinate_workers[0].state = ModelInstanceStateEnum.RUNNING
+    with (
+        patch('gpustack.worker.serve_manager.get_workload', return_value=None),
+        patch.object(serve, '_is_provisioning', return_value=True),
+    ):
+        serve._start_or_restart_subordinate(mi)
+    client.model_instances.report_workloads.assert_not_called()
+
+
 @pytest.fixture(params=[1, 2])
 def manager(request, tmp_path, monkeypatch):
     clientset = MagicMock()

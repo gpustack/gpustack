@@ -181,6 +181,32 @@ async def test_serving_logs_are_streamed_not_buffered(follow):
     assert response.media_type == "application/octet-stream"
 
 
+@pytest.mark.asyncio
+async def test_legacy_log_view_and_download_use_the_server_round_for_every_worker():
+    instance = _instance()
+    instance.restart_count = 8
+    _, _, fetched = await _serve_logs(instance, follow=False, chunks=[b'current\n'])
+    assert fetched[0]['current_restart_count'] == 8
+    calls = []
+    response, body = await _download(
+        instance,
+        [_target(1, 'main'), _target(2, 'follower')],
+        options={'main': ['default'], 'follower': ['default']},
+        logs={
+            ('main', 'default'): (200, [b'main round 8\n']),
+            ('follower', 'default'): (200, [b'follower round 8\n']),
+        },
+        calls=calls,
+    )
+    assert response.transfer_error is None
+    assert len(calls) == 2
+    assert all(call['params']['current_restart_count'] == 8 for call in calls)
+    with zipfile.ZipFile(io.BytesIO(body)) as archive:
+        content = b''.join(archive.read(name) for name in archive.namelist())
+    assert b'main round 8' in content
+    assert b'follower round 8' in content
+
+
 async def _send_asgi(response) -> Tuple[int, bytes]:
     """Drive the response through ASGI and return its status and body.
 

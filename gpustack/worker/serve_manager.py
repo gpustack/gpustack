@@ -72,6 +72,8 @@ from gpustack.worker.log_sources import (
     container_log_path,
     find_instance_log_dir,
     flat_instance_logs,
+    instance_log_files,
+    select_log_files,
     instance_log_dir,
     legacy_main_log_path,
     main_log_path,
@@ -120,6 +122,8 @@ from gpustack.utils.model_instance_workers import (
     model_instance_legacy_stop,
     has_model_instance_stop_barrier,
     managed_instance_update,
+    legacy_group_recovery,
+    legacy_instance_update,
     worker_workload_report,
     ModelInstanceTarget,
     ModelInstanceEndpoint,
@@ -451,7 +455,8 @@ class ServeManager(ContainerLogPersister):
 
         self._provisioning_processes = {}
         self._log_persistence = {}
-        self._legacy_stop_names = {}
+        # None records local cleanup completed before an automatic stop ACK.
+        self._legacy_stop_names: Dict[Tuple[int, str], Optional[Set[str]]] = {}
         self._log_persistence_lock = threading.Lock()
         self._error_model_instances = {}
         self._pending_model_instance_errors: Dict[int, dict] = {}
@@ -1832,59 +1837,101 @@ class ServeManager(ContainerLogPersister):
         return ambiguous <= known
 
     def _stop_legacy_guarded_model_instance(self, mi, delete_logs):
-        """Keep legacy identity and reservations until runtime absence is acknowledged."""
+        """Prove old runtime absence before acknowledging the Server's stop token."""
         guard = model_instance_legacy_stop(mi)
-        key = (mi.id, mi.restart_count or 0)
         if guard is None or self._worker_id not in guard.worker_ids:
             return False
-        with self._model_instance_start_lock:
-            self._managed_stopping[key] = delete_logs
-        self._assigned_ports.setdefault(mi.id, set()).update(
-            model_instance_ports(mi, self._worker_id)
-        )
-        names = self._legacy_stop_names.setdefault((mi.id, str(guard.token)), set())
-        for known in (mi, self._model_instance_by_instance_id.get(mi.id)):
-            metadata = known.get_deployment_metadata(self._worker_id) if known else None
-            if metadata is not None:
-                names.add(metadata.name)
-        persistence = self._log_persistence.get(mi.id)
-        if getattr(persistence, "workload_name", None):
-            names.add(persistence.workload_name)
-        with self._model_instance_start_lock:
-            self._model_instance_by_instance_id[mi.id] = mi
-        if mi.id in self._starting_model_instances:
-            return False
-        missing_allowed = False
+        key = (mi.id, mi.restart_count or 0)
         try:
-            if not self._legacy_stop_runtime_absent(mi, names):
-                return False
-            missing_allowed = True
             current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
-            missing_allowed = False
+        except NotFoundException:
+            current = None
+        if current is not None:
             latest = model_instance_legacy_stop(current)
+            if (current.restart_count or 0) > guard.restart_count:
+                return self._finish_legacy_stop(mi, delete_logs)
             if (
                 latest is None
                 or latest.token != guard.token
-                or current.restart_count != mi.restart_count
+                or (current.restart_count or 0) != guard.restart_count
             ):
                 return False
-            worker = self._clientset.workers.get(self._worker_id, use_cache=False)
-            if worker.state not in (
-                WorkerStateEnum.READY,
-                WorkerStateEnum.MAINTENANCE,
-            ) or getattr(worker, "unreachable", False):
+        with self._model_instance_start_lock:
+            local = self._model_instance_by_instance_id.get(mi.id)
+            if local is not None and (local.restart_count or 0) > guard.restart_count:
                 return False
-            if self._worker_id not in latest.confirmed_worker_ids:
+            self._managed_stopping[key] = delete_logs
+            self._model_instance_by_instance_id[mi.id] = mi
+        names = self._legacy_stop_names.setdefault((mi.id, str(guard.token)), set())
+        if (
+            current is not None
+            and current.state == ModelInstanceStateEnum.ERROR
+            and current.draining_since is None
+            and self._worker_id in latest.confirmed_worker_ids
+        ):
+            # A persisted ACK also proves local cleanup after a Worker restart.
+            names = self._legacy_stop_names[(mi.id, str(guard.token))] = None
+        if names is not None:
+            self._assigned_ports.setdefault(mi.id, set()).update(
+                model_instance_ports(mi, self._worker_id)
+            )
+            for known in (mi, local):
+                metadata = (
+                    known.get_deployment_metadata(self._worker_id) if known else None
+                )
+                if metadata is not None:
+                    names.add(metadata.name)
+            persistence = self._log_persistence.get(mi.id)
+            if getattr(persistence, 'workload_name', None):
+                names.add(persistence.workload_name)
+            if mi.id in self._starting_model_instances:
+                return False
+        return self._confirm_legacy_stop(mi, current, names, delete_logs)
+
+    def _confirm_legacy_stop(self, mi, current, names, delete_logs):
+        """Acknowledge local absence once and wait for the frozen member set."""
+        guard = model_instance_legacy_stop(mi)
+        latest = model_instance_legacy_stop(current) if current is not None else None
+        try:
+            confirmed = (
+                mi.state == ModelInstanceStateEnum.ERROR
+                and mi.draining_since is None
+                and current is not None
+                and self._worker_id in latest.confirmed_worker_ids
+            )
+            if not confirmed:
+                if names is not None and not self._legacy_stop_runtime_absent(
+                    mi, names
+                ):
+                    return False
+                if current is None:
+                    return self._finish_legacy_stop(mi, delete_logs)
+                worker = self._clientset.workers.get(self._worker_id, use_cache=False)
+                if worker.state not in (
+                    WorkerStateEnum.READY,
+                    WorkerStateEnum.MAINTENANCE,
+                ) or getattr(worker, 'unreachable', False):
+                    return False
+                if (
+                    names is not None
+                    and mi.draining_since is None
+                    and mi.state == ModelInstanceStateEnum.ERROR
+                ):
+                    # The Server may advance as soon as this ACK commits. Retire
+                    # local logs and port claims before a new round can reserve them.
+                    self._stop_container_log_persistence(mi.id)
+                    self._forget_stopped_model_instance(mi, retain_instance=True)
+                    self._legacy_stop_names[(mi.id, str(guard.token))] = None
                 self._clientset.model_instances.confirm_stop(
                     id=mi.id,
                     report=ModelInstanceStopReport(
                         token=guard.token, restart_count=guard.restart_count
                     ),
                 )
-                missing_allowed = True
-                current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
-                missing_allowed = False
-                latest = model_instance_legacy_stop(current)
+            current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+            latest = model_instance_legacy_stop(current)
+            if (current.restart_count or 0) > guard.restart_count:
+                return self._finish_legacy_stop(mi, delete_logs)
             if (
                 latest is None
                 or latest.token != guard.token
@@ -1893,16 +1940,36 @@ class ServeManager(ContainerLogPersister):
             ):
                 return False
         except NotFoundException:
-            if not missing_allowed:
-                return False
+            pass
         except Exception as exc:
-            logger.warning("Cannot confirm legacy stop for %s: %s", mi.id, exc)
+            logger.warning('Cannot confirm legacy stop for %s: %s', mi.id, exc)
             return False
-        self._stop_container_log_persistence(mi.id)
-        self._forget_stopped_model_instance(mi, delete_logs=delete_logs)
+        return self._finish_legacy_stop(mi, delete_logs)
+
+    def _finish_legacy_stop(self, mi, delete_logs):
+        """Retire an acknowledged round without touching a newer local owner."""
+        key = (mi.id, mi.restart_count or 0)
+        guard = model_instance_legacy_stop(mi)
+        record = (mi.id, str(guard.token))
+        cleaned = (
+            record in self._legacy_stop_names
+            and self._legacy_stop_names[record] is None
+        )
+        local = self._model_instance_by_instance_id.get(mi.id)
+        if local is None or (local.restart_count or 0) <= key[1]:
+            if not cleaned:
+                self._stop_container_log_persistence(mi.id)
+                self._forget_stopped_model_instance(
+                    mi, delete_logs=delete_logs, retain_instance=True
+                )
+            elif delete_logs:
+                self._purge_instance_logs(mi.id)
         with self._model_instance_start_lock:
+            local = self._model_instance_by_instance_id.get(mi.id)
+            if local is not None and (local.restart_count or 0) <= key[1]:
+                self._model_instance_by_instance_id.pop(mi.id, None)
             self._managed_stopping.pop(key, None)
-        self._legacy_stop_names.pop((mi.id, str(guard.token)), None)
+        self._legacy_stop_names.pop(record, None)
         return True
 
     async def watch_models(self):
@@ -2166,10 +2233,10 @@ class ServeManager(ContainerLogPersister):
                         # Surface a terminal follower failure instead of waiting
                         # for an HTTP listener that cannot finish initializing.
                         if subordinate_state["should_update"]:
-                            self._update_model_instance(
-                                model_instance.id,
-                                state=subordinate_state["state"],
-                                state_message=subordinate_state["state_message"],
+                            self._report_model_instance(
+                                model_instance,
+                                state=subordinate_state['state'],
+                                state_message=subordinate_state['state_message'],
                             )
                         continue
                 # "Still launching" is also what a crash loop looks like. A
@@ -2241,7 +2308,7 @@ class ServeManager(ContainerLogPersister):
                                 f"distributed_servers.subordinate_workers.{sw_pos}": sw,
                             }
                         # Update model instance.
-                        self._update_model_instance(model_instance.id, **patch_dict)
+                        self._report_model_instance(model_instance, **patch_dict)
                 continue
 
             # The workload is alive and this worker did not necessarily start it,
@@ -2393,7 +2460,7 @@ class ServeManager(ContainerLogPersister):
                         f"distributed_servers.subordinate_workers.{sw_pos}": sw,
                     }
                 # Update model instance.
-                self._update_model_instance(model_instance.id, **patch_dict)
+                self._report_model_instance(model_instance, **patch_dict)
                 if (
                     patch_dict.get("state") == ModelInstanceStateEnum.RUNNING
                     or not is_main_worker
@@ -2563,7 +2630,7 @@ class ServeManager(ContainerLogPersister):
                 if new_claim is not None:
                     patch_dict["computed_resource_claim"] = new_claim
                 if patch_dict:
-                    self._update_model_instance(model_instance.id, **patch_dict)
+                    self._report_model_instance(model_instance, **patch_dict)
                 return
 
             sw = target
@@ -2579,9 +2646,19 @@ class ServeManager(ContainerLogPersister):
                 sw.computed_resource_claim = new_claim
                 changed = True
             if changed:
-                self._update_model_instance(
-                    model_instance.id,
-                    **{f"distributed_servers.subordinate_workers.{sw_pos}": sw},
+                if legacy_group_recovery(model_instance) and legacy_group_recovery(
+                    model_instance, self._get_model(model_instance)
+                ):
+                    self._report_model_instance(
+                        model_instance,
+                        gpu_addresses=sw.gpu_addresses,
+                        gpu_indexes=sw.gpu_indexes,
+                        computed_resource_claim=sw.computed_resource_claim,
+                    )
+                    return
+                self._report_model_instance(
+                    model_instance,
+                    **{f'distributed_servers.subordinate_workers.{sw_pos}': sw},
                 )
 
     @staticmethod
@@ -2620,7 +2697,7 @@ class ServeManager(ContainerLogPersister):
         )
 
         Path(log_file_path).parent.mkdir(parents=True, exist_ok=True)
-        with CappedLogWriter(log_file_path) as log_file:
+        with CappedLogWriter(log_file_path, append=bool(mi.restart_count)) as log_file:
             with RedirectStdoutStderr(log_file):
                 try:
                     server_cls = _SERVER_CLASS_MAPPING.get(backend, CustomServer)
@@ -3207,7 +3284,7 @@ class ServeManager(ContainerLogPersister):
                         "state": ModelInstanceStateEnum.ERROR,
                         "state_message": _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE,
                     }
-                    self._update_model_instance(model_instance.id, **patch_dict)
+                    self._report_model_instance(model_instance, **patch_dict)
                     # Reset failure count after marking as error.
                     del self._inference_health_check_failures[model_instance.id]
                 else:
@@ -3412,6 +3489,27 @@ class ServeManager(ContainerLogPersister):
             ModelInstanceStateEnum.SCHEDULED,
             ModelInstanceStateEnum.DOWNLOADING,
         )
+        if (
+            legacy_group_recovery(mi)
+            and legacy_group_recovery(mi, self._get_model(mi))
+            and not initial_start
+        ):
+            if self._is_provisioning(mi):
+                return
+            if subordinate.state != ModelInstanceStateEnum.ERROR:
+                position = mi.distributed_servers.subordinate_workers.index(subordinate)
+                self._report_model_instance(
+                    mi,
+                    **{
+                        f'distributed_servers.subordinate_workers.{position}': subordinate.model_copy(
+                            update={
+                                'state': ModelInstanceStateEnum.ERROR,
+                                'state_message': _describe_workload_failure(workload),
+                            }
+                        )
+                    },
+                )
+            return
         # The parent can still be STARTING after this follower fails. Its
         # local state distinguishes first launch from recovery on later events.
         if not initial_start and not self._auto_restart_enabled(
@@ -3446,6 +3544,34 @@ class ServeManager(ContainerLogPersister):
         return str(
             main_log_path(Path(self._serve_log_dir), mi.name, mi.id, restart_count)
         )
+
+    def _prepare_main_log_round(self, mi: ModelInstance) -> None:
+        """Carry bounded startup context into the next round before old-log cleanup."""
+        count = mi.restart_count or 0
+        if count == 0:
+            return
+        target = Path(self._get_numbered_log_path(mi))
+        try:
+            if target.exists() and target.stat().st_size:
+                return
+            previous = select_log_files(
+                instance_log_files(Path(self._serve_log_dir), mi.id),
+                restart_count=count - 1,
+            )
+            if not previous:
+                return
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with CappedLogWriter(target) as output:
+                output.write(
+                    '[GPUStack] Startup log copied from the previous startup '
+                    f'(round {count - 1} -> round {count})\n'
+                )
+                for path in previous:
+                    with path.open(encoding='utf-8', errors='replace') as source:
+                        shutil.copyfileobj(source, output, length=64 * 1024)
+                output.write(f'\n[GPUStack] Starting round {count}\n')
+        except OSError as exc:
+            logger.warning('Cannot copy startup context for %s: %s', mi.id, exc)
 
     def _discover_sidecar_logs(
         self,
@@ -3957,6 +4083,12 @@ class ServeManager(ContainerLogPersister):
             if model_instance_legacy_stop(current) is not None:
                 self._stop_model_instance(ModelInstance.model_validate(current))
                 return
+            if (
+                legacy_group_recovery(mi)
+                and legacy_group_recovery(mi, self._get_model(mi))
+                and not self._legacy_start_allowed(mi, current)
+            ):
+                return
         except NotFoundException:
             logger.debug(
                 "Skipping start of deleted model instance %s (id=%s).", mi.name, mi.id
@@ -3975,6 +4107,28 @@ class ServeManager(ContainerLogPersister):
             self._handle_model_instance_launch_failure(mi, e)
             return
         self._launch_model_instance(mi)
+
+    def _legacy_start_allowed(self, mi, current) -> bool:
+        """Accept an initial local launch only in the authoritative active round."""
+        if (
+            (current.restart_count or 0) != (mi.restart_count or 0)
+            or current.state == ModelInstanceStateEnum.ERROR
+            or current.draining_since is not None
+            or self._worker_id not in member_worker_ids(current)
+        ):
+            return False
+        if current.worker_id == self._worker_id:
+            return current.state == ModelInstanceStateEnum.SCHEDULED
+        subordinate = next(
+            w
+            for w in current.distributed_servers.subordinate_workers
+            if w.worker_id == self._worker_id
+        )
+        return subordinate.state in (
+            ModelInstanceStateEnum.PENDING,
+            ModelInstanceStateEnum.SCHEDULED,
+            ModelInstanceStateEnum.DOWNLOADING,
+        )
 
     def _launch_model_instance(self, mi: ModelInstance):  # noqa: C901
         """
@@ -4002,6 +4156,7 @@ class ServeManager(ContainerLogPersister):
         # Follow a rename before anything writes under the new name, or the
         # instance's logs end up split across two directories.
         self._align_instance_log_dir(mi)
+        self._prepare_main_log_round(mi)
         # Clean up old log files before starting
         self._cleanup_old_logs(mi.id, mi.restart_count or 0)
 
@@ -4050,7 +4205,7 @@ class ServeManager(ContainerLogPersister):
                     fields.update(
                         port=mi.port, ports=mi.ports, named_ports=mi.named_ports
                     )
-                self._update_model_instance(mi.id, **fields)
+                self._report_model_instance(mi, **fields)
 
             logger.debug(
                 f"Starting model instance {mi.name}"
@@ -4124,11 +4279,11 @@ class ServeManager(ContainerLogPersister):
                 }
 
             if managed:
-                self._update_model_instance(
-                    mi.id, state=ModelInstanceStateEnum.INITIALIZING, pid=process.pid
+                self._report_model_instance(
+                    mi, state=ModelInstanceStateEnum.INITIALIZING, pid=process.pid
                 )
             else:
-                self._update_model_instance(mi.id, **patch_dict)
+                self._report_model_instance(mi, **patch_dict)
             self._error_model_instances.pop(mi.id, None)
             self._pending_model_instance_errors.pop(mi.id, None)
             logger.info(
@@ -4292,7 +4447,7 @@ class ServeManager(ContainerLogPersister):
         self._error_model_instances[mi.id] = mi
         self._pending_model_instance_errors[mi.id] = patch_dict
         logger.error(f"Failed to start model instance {mi.name}: {error}")
-        self._update_model_instance(mi.id, **patch_dict)
+        self._report_model_instance(mi, **patch_dict)
         self._pending_model_instance_errors.pop(mi.id, None)
 
     def _assign_ports(
@@ -4638,10 +4793,8 @@ class ServeManager(ContainerLogPersister):
             "the instance log for the first error, not the last."
         )
         with contextlib.suppress(NotFoundException):
-            self._update_model_instance(
-                mi.id,
-                state=ModelInstanceStateEnum.ERROR,
-                state_message=message,
+            self._report_model_instance(
+                mi, state=ModelInstanceStateEnum.ERROR, state_message=message
             )
         logger.warning(f"Model instance {mi.name} is crash-looping: {message}")
         return True
@@ -4718,6 +4871,17 @@ class ServeManager(ContainerLogPersister):
         if get_model_instance_workloads(mi) is not None:
             self._sync_managed_model_instance(mi)
             return
+        if legacy_group_recovery(mi) and legacy_group_recovery(mi, self._get_model(mi)):
+            current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+            if (
+                (current.restart_count or 0) == (mi.restart_count or 0)
+                and current.state == ModelInstanceStateEnum.SCHEDULED
+                and not self._is_provisioning(mi)
+                and get_workload(mi.get_deployment_metadata(self._worker_id).name)
+                is None
+            ):
+                self._start_model_instance(mi)
+            return
         self._stop_model_instance(mi, clear_restart_backoff=False)
         self._start_model_instance(mi)
 
@@ -4740,6 +4904,14 @@ class ServeManager(ContainerLogPersister):
             self._clientset.models.update(id=id, model_update=m)
         except NotFoundException:
             logger.warning(f"Model with ID {id} not found when trying to update.")
+
+    def _report_model_instance(self, mi: ModelInstance, **fields):
+        """Keep the observed round attached to local runtime state reports."""
+        if legacy_group_recovery(mi) and legacy_group_recovery(mi, self._get_model(mi)):
+            return self._clientset.model_instances.report_workloads(
+                id=mi.id, report=legacy_instance_update(mi, self._worker_id, **fields)
+            )
+        return self._update_model_instance(mi.id, **fields)
 
     def _update_model_instance(self, id: int, **kwargs):
         """
@@ -4889,8 +5061,11 @@ class ServeManager(ContainerLogPersister):
             self._sync_managed_model_instance(mi)
             return
         if patch_dict := self._pending_model_instance_errors.get(mi.id):
-            self._update_model_instance(mi.id, **patch_dict)
+            self._report_model_instance(mi, **patch_dict)
             self._pending_model_instance_errors.pop(mi.id, None)
+
+        if legacy_group_recovery(mi) and legacy_group_recovery(mi, self._get_model(mi)):
+            return
 
         if self._is_provisioning(mi):
             logger.debug(f"Model instance {mi.name} is provisioning. Skipping restart.")
@@ -4941,12 +5116,12 @@ class ServeManager(ContainerLogPersister):
 
         with contextlib.suppress(NotFoundException):
             self._restart_backoff_counts[mi.id] = backoff_count + 1
-            self._update_model_instance(
-                mi.id,
+            self._report_model_instance(
+                mi,
                 restart_count=(mi.restart_count or 0) + 1,
                 last_restart_time=current_time,
                 state=ModelInstanceStateEnum.SCHEDULED,
-                state_message="",
+                state_message='',
             )
 
         # Pop from error model instances,

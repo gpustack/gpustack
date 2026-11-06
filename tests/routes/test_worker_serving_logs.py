@@ -5,13 +5,78 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gpustack.api.exceptions import BadRequestException
+from gpustack.api.exceptions import BadRequestException, NotFoundException
 from gpustack.routes.model_instances import _exact_length_chunks
 from gpustack.routes.worker.logs import get_serve_logs
 from gpustack.worker import logs as worker_logs
 from gpustack.worker.logs import LogOptions
+from gpustack.worker.log_sources import main_log_path, container_log_path
 
 MODULE = "gpustack.routes.worker.logs"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('paged', [False, True])
+async def test_explicit_round_does_not_fall_back_to_follower_local_latest(
+    tmp_path, paged
+):
+    directory = tmp_path / 'serve'
+    main = main_log_path(directory, 'model', 7, 7)
+    main.parent.mkdir(parents=True)
+    main.write_text('old startup\n')
+    container_log_path(directory, 'model', 7, 7).write_text('old engine\n')
+    options = LogOptions(offset=0 if paged else None)
+    with pytest.raises(NotFoundException):
+        await get_serve_logs(
+            _request(tmp_path),
+            7,
+            options,
+            current_restart_count=8,
+            container_name=None,
+            model_file_id=None,
+        )
+    options.previous = True
+    response = await get_serve_logs(
+        _request(tmp_path),
+        7,
+        options,
+        current_restart_count=8,
+        container_name=None,
+        model_file_id=None,
+    )
+    body = b''.join(
+        [
+            chunk if isinstance(chunk, bytes) else chunk.encode()
+            async for chunk in response.body_iterator
+        ]
+    )
+    assert b'old startup' in body
+    assert b'old engine' in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('paged', [False, True])
+async def test_explicit_round_keeps_download_logs_before_preparation_exists(
+    tmp_path, paged
+):
+    directory = tmp_path / 'serve'
+    directory.mkdir()
+    (directory / 'model_file_9.download.log').write_text('preparing model\n')
+    response = await get_serve_logs(
+        _request(tmp_path),
+        7,
+        LogOptions(offset=0 if paged else None),
+        current_restart_count=8,
+        container_name=None,
+        model_file_id=9,
+    )
+    body = b''.join(
+        [
+            chunk if isinstance(chunk, bytes) else chunk.encode()
+            async for chunk in response.body_iterator
+        ]
+    )
+    assert b'preparing model' in body
 
 
 def _request(log_dir):
