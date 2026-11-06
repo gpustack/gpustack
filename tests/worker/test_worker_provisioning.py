@@ -76,6 +76,39 @@ def test_owned_process_stop_preserves_exit_status_and_cleans_children(mode):
             process.close()
 
 
+@pytest.mark.parametrize("error_type", [psutil.AccessDenied, psutil.Error])
+@pytest.mark.parametrize("failure_stage", ["lookup", "children", "cleanup"])
+def test_owned_process_stop_reaps_parent_after_psutil_error(error_type, failure_stage):
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    process = context.Process(target=_wait_for_shutdown, args=(ready,))
+    try:
+        process.start()
+        assert ready.wait(15)
+        with (
+            patch("gpustack.utils.process.psutil.Process") as lookup,
+            patch("gpustack.utils.process.terminate_processes") as cleanup,
+        ):
+            failure_operation = {
+                "lookup": lookup,
+                "children": lookup.return_value.children,
+                "cleanup": cleanup,
+            }[failure_stage]
+            failure_operation.side_effect = error_type()
+
+            terminate_multiprocessing_process(process)
+
+        assert not process.is_alive()
+        assert process.exitcode is not None
+        assert not psutil.pid_exists(process.pid)
+    finally:
+        if process.pid is not None:
+            process.kill()
+            process.join(timeout=5)
+        if not process.is_alive():
+            process.close()
+
+
 def test_cancelled_launch_does_not_spawn(tmp_path):
     cancelled = threading.Event()
     cancelled.set()

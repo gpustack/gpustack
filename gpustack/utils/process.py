@@ -95,7 +95,7 @@ def terminate_multiprocessing_process(process: BaseProcess) -> None:
     try:
         children = psutil.Process(process.pid).children(recursive=True)
         terminate_processes(children)
-    except psutil.NoSuchProcess:
+    except psutil.Error:
         pass
     process.terminate()
     process.join(timeout=3)
