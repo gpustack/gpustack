@@ -85,7 +85,10 @@ async def test_a_group_is_sent_to_the_pd_dashboard():
 async def test_a_plain_model_is_sent_to_the_model_dashboard():
     location = await _redirect(_benchmark(), _model())
     assert "/d/gpustack-model/gpustack-model" in location
-    assert "var-model_name=m" in location
+    assert "var-selected_model_id=1" in location
+    assert "var-selected_cluster_id=1" in location
+    assert 'var-model_name=m' in location
+    assert 'var-scope_model_id' not in location
 
 
 @pytest.mark.asyncio
