@@ -63,7 +63,7 @@ dependencies = [
     "kubernetes-asyncio>=33.1.0,<34.0.0",
     "msgpack>=1.1.2",
     "cachetools>=6.0.0",
-    "gpustack-runner==0.1.32.post4",
+    "gpustack-runner==0.1.32.post5",
     "gpustack-runtime==0.2.7.post1",
     "gpustack-higress-plugins==0.5.1.post1",
     "websockets==16.0",
