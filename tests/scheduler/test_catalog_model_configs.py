@@ -27,7 +27,7 @@ from tests.fixtures.workers.fixtures import linux_nvidia_22_H100_80gx8
 ROOT = Path(__file__).parents[2]
 FIXTURES = ROOT / "tests" / "fixtures" / "model_configs" / "catalog"
 MANIFEST = json.loads((FIXTURES / "manifest.json").read_text())
-CASES = MANIFEST["models"]
+CASES = [case for case in MANIFEST["models"] if case.get("in_catalog", True)]
 
 
 @pytest.fixture(scope="module")
@@ -79,9 +79,9 @@ def catalog_model(request, catalog_sets, tmp_path):
     return case, Model(**spec)
 
 
-def test_catalog_matrix_has_thirty_distinct_architectures(catalog_sets):
-    assert len(CASES) == 30
-    assert len({tuple(case["architectures"]) for case in CASES}) == 30
+def test_catalog_matrix_has_distinct_architectures(catalog_sets):
+    assert len(CASES) == 29
+    assert len({tuple(case["architectures"]) for case in CASES}) == len(CASES)
     dates = [case["release_date"] for case in CASES]
     assert dates == sorted(dates, reverse=True)
     for case in CASES:

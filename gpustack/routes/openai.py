@@ -6,7 +6,7 @@ from typing import AsyncGenerator, List, Optional, Tuple, Union, Dict
 import aiohttp
 import logging
 
-from fastapi import APIRouter, Query, Request, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from openai.types import Model as OAIModel
 from openai.pagination import SyncPage
 from sqlmodel import or_, select
@@ -19,6 +19,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     OpenAIAPIError,
     OpenAIAPIErrorResponse,
+    OpenAIAPIException,
     ServiceUnavailableException,
     GatewayTimeoutException,
 )
@@ -27,6 +28,10 @@ from gpustack import envs
 from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.model_common import build_category_conditions
 from gpustack.schemas.models import Model, servable_instances
+from gpustack.utils.model_instance_workers import (
+    get_model_instance_workloads,
+    model_instance_endpoints,
+)
 from gpustack.schemas.model_routes import (
     ModelRoute,
     MyModel,
@@ -265,18 +270,30 @@ async def proxy_request_by_model(
         instance = await get_running_instance(
             session, model, target.overridden_model_name
         )
-        worker: Worker = await WorkerService(session).get_by_id(instance.worker_id)
-        if not worker:
+        instance, rank_endpoint = await _select_managed_endpoint(session, instance)
+        lookup_worker_id = (
+            rank_endpoint.worker_id if rank_endpoint else instance.worker_id
+        )
+        worker: Worker = await WorkerService(session).get_by_id(lookup_worker_id)
+        if not worker or getattr(worker, "deleted_at", None) is not None:
             raise InternalServerErrorException(
-                message=f"Worker with ID {instance.worker_id} not found",
+                message=f"Worker with ID {lookup_worker_id} not found",
                 is_openai_exception=True,
             )
     extra_headers = {
-        router_header_key: f"{model_instance_prefix(instance)}.static",
+        router_header_key: (
+            f"{rank_endpoint.registry_name}.static"
+            if rank_endpoint
+            else f"{model_instance_prefix(instance)}.static"
+        ),
     }
     path = f"v1/{endpoint}"
     logger.debug(
-        f"proxying to {instance.worker_ip}:{instance.port}, instance port: {instance.port}"
+        "Proxying instance %s to Worker %s at %s:%s",
+        instance.id,
+        worker.id,
+        worker.ip,
+        rank_endpoint.port if rank_endpoint else instance.port,
     )
 
     try:
@@ -301,6 +318,11 @@ async def proxy_request_by_model(
                 media_type="text/event-stream",
             )
         else:
+            # raise_on_error=False: a non-2xx here is an answer, not a transport
+            # failure. The engine's own rejection (an unsupported parameter, a
+            # malformed body) carries the status and message the caller needs,
+            # and raising would flatten every 4xx into the 503 below. The
+            # streaming branch forwards the same statuses for the same reason.
             resp, body = await request_to_worker(
                 worker=worker,
                 method=request.method,
@@ -310,12 +332,22 @@ async def proxy_request_by_model(
                 data=data,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT),
+                raise_on_error=False,
             )
+            # The worker's headers must not be forwarded verbatim: aiohttp
+            # hands over an already-decoded body, so a Content-Encoding or
+            # Content-Length from the worker leg describes a body the caller
+            # never receives, and Transfer-Encoding/Connection are hop-by-hop.
+            # Starlette recomputes Content-Length for the body actually sent.
             return Response(
                 status_code=resp.status,
-                headers=dict(resp.headers),
+                headers=_worker_response_headers(resp.headers),
                 content=body,
             )
+    except HTTPException as exc:
+        raise OpenAIAPIException(
+            status_code=exc.status_code, reason="InvalidRequest", message=exc.detail
+        ) from exc
     except asyncio.TimeoutError as e:
         error_message = f"Request to worker {worker.id} timed out"
         if str(e):
@@ -394,6 +426,22 @@ async def parse_json_body(request: Request):
             message=f"We could not parse the JSON body of your request: {e}",
             is_openai_exception=True,
         )
+
+
+async def _select_managed_endpoint(session, instance):
+    rank_endpoint = None
+    if get_model_instance_workloads(instance) is not None:
+        from gpustack.schemas.models import ModelInstance
+
+        instance = await ModelInstance.one_by_id(session, instance.id, refresh=True)
+        endpoints = model_instance_endpoints(instance) if instance is not None else []
+        if not endpoints:
+            raise ServiceUnavailableException(
+                message="No running rank endpoints available",
+                is_openai_exception=True,
+            )
+        rank_endpoint = random.choice(endpoints)
+    return instance, rank_endpoint
 
 
 def _prepare_proxy_request(
@@ -503,6 +551,29 @@ def filter_headers(headers):
         and key.lower() != "content-type"
         and key.lower() != "transfer-encoding"
         and key.lower() != "authorization"
+    }
+
+
+# Headers that describe the worker-to-server transfer of the body. They must be
+# dropped when relaying the answer: aiohttp auto-decompresses, which strands a
+# stale Content-Encoding and Content-Length on the decoded bytes, and the
+# remaining two are hop-by-hop and belong to the server-to-worker leg only.
+_EXCLUDED_WORKER_RESPONSE_HEADERS = frozenset(
+    {
+        "content-length",
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+    }
+)
+
+
+def _worker_response_headers(headers) -> Dict[str, str]:
+    """Worker response headers that are safe to relay to the caller as-is."""
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in _EXCLUDED_WORKER_RESPONSE_HEADERS
     }
 
 

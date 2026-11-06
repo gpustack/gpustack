@@ -586,3 +586,36 @@ def test_repeated_local_conflicts_stop_after_five_claim_attempts(cluster):
         assert not manager._port_reservations.model_claims
     assert cluster.instance.port is None
     assert not cluster.managers[1]._assigned_ports
+
+
+@pytest.mark.parametrize(
+    'token,status',
+    [('worker-1', 200), ('registration-token', 200), ('user-token', 401)],
+)
+def test_scheduler_port_snapshot_is_internal_and_needs_no_placement(
+    cluster, token, status
+):
+    manager = cluster.managers[1]
+    app = FastAPI()
+    app.state.config = manager._config
+    app.state.token = 'worker-1'
+    app.state.worker_ip_getter = lambda: '127.0.0.1'
+    app.state.serve_manager = manager
+    app.include_router(worker_routes.router)
+    register_handlers(app)
+    manager._port_reservations.model_ports[7] = {40001}
+    manager._port_reservations.model_ports[8] = {40002}
+    manager._port_reservations.cache_ports[9] = (40003,)
+    with TestClient(app) as client:
+        response = client.get(
+            '/port-reservations?exclude_instance_id=7',
+            headers={'Authorization': f'Bearer {token}'},
+        )
+    assert response.status_code == status
+    if status == 200:
+        assert response.json()['worker_id'] == 1
+        assert response.json()['unavailable_ports'] == [40002, 40003]
+    manager._clientset.model_instances.get.assert_not_called()
+    manager._clientset.model_instances.list.assert_not_called()
+    manager._clientset.cache_service_instances.list.assert_not_called()
+    assert not manager._port_reservations._claim_generations

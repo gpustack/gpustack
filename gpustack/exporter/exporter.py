@@ -1,5 +1,6 @@
 import asyncio
 import re
+from time import monotonic
 from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -32,6 +33,10 @@ from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
 from gpustack.utils.grafana import counted_role
 from gpustack.utils.name import metric_name
+from gpustack.utils.model_instance_workers import (
+    model_instance_metrics_source_inventory,
+    model_instance_metrics_placements,
+)
 import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -44,23 +49,43 @@ logger = logging.getLogger(__name__)
 label_name_pattern = r'^[a-zA-Z_:][a-zA-Z0-9_:]*$'
 
 DEFAULT_METRICS_PATH = "/metrics"
+_RUNTIME_INFO_TTL_SECONDS = 30
+_RUNTIME_INFO_FAMILIES = frozenset(
+    ("gpustack:model_instance_source", "gpustack:model_instance_placement")
+)
+
+
+def _runtime_source_labels(source) -> dict:
+    labels = {"source_kind": source.kind, "source_name": source.name}
+    if source.dp_rank is not None:
+        labels["endpoint_dp_rank"] = str(source.dp_rank)
+    if source.attempt is not None:
+        labels["component_attempt"] = str(source.attempt)
+    return labels
 
 
 class MetricExporter(Collector):
 
     def __init__(self, cfg: Config):
-        self._cache_metrics = []
+        self._cache_metrics = ([], 0.0)
         self._port = cfg.metrics_port
 
     def collect(self):
-        for metric in self._cache_metrics:
+        metrics, collected_at = self._cache_metrics
+        for metric in metrics:
+            if (
+                metric.name in _RUNTIME_INFO_FAMILIES
+                and monotonic() >= collected_at + _RUNTIME_INFO_TTL_SECONDS
+            ):
+                continue
             yield metric
 
     async def generate_metrics_cache(self):
         while True:
             try:
                 async with async_session() as session:
-                    self._cache_metrics = await self._collect_metrics(session)
+                    metrics = await self._collect_metrics(session)
+                    self._cache_metrics = (metrics, monotonic())
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -124,6 +149,14 @@ class MetricExporter(Collector):
             "Model instance latest restart time as Unix timestamp seconds",
             labels=model_instance_labels,
         )
+        source_info = InfoMetricFamily(
+            metric_name("model_instance_source"),
+            "Registered exposition source and manifest readiness, not live health",
+        )
+        placement_info = InfoMetricFamily(
+            metric_name("model_instance_placement"),
+            "Allocated devices associated with a source, not per-device execution",
+        )
 
         # Which deployments attach to which shared cache service: the
         # relation joins engine-side series (labeled by model) with
@@ -183,6 +216,8 @@ class MetricExporter(Collector):
             model_instance_status,
             model_instance_restart_count,
             model_instance_latest_restart_time,
+            source_info,
+            placement_info,
             cache_service_attached_model,
             model_instance_cache_attached,
             model_role_desired,
@@ -231,6 +266,7 @@ class MetricExporter(Collector):
 
             # worker metrics
             workers = cluster.cluster_workers
+            workers_by_id = {worker.id: worker for worker in workers}
             for worker in workers:
                 worker_label_values = cluster_label_values + [
                     str(worker.id),
@@ -364,6 +400,19 @@ class MetricExporter(Collector):
                 # instance metrics
                 instances = model.instances
                 for mi in instances:
+                    self._collect_instance_runtime_info(
+                        mi,
+                        {
+                            "cluster_id": str(cluster.id),
+                            "cluster_name": cluster.name,
+                            "model_id": str(model.id),
+                            "model_name": model.name,
+                        },
+                        workers_by_id,
+                        source_info,
+                        placement_info,
+                        model=model,
+                    )
                     worker_id = str(mi.worker_id) if mi.worker_id else "unknown"
                     worker_name = mi.worker_name if mi.worker_name else "unknown"
                     mi_label_values = cluster_label_values + [
@@ -405,6 +454,62 @@ class MetricExporter(Collector):
 
         # return all metrics
         return metrics
+
+    def _collect_instance_runtime_info(
+        self, instance, model_labels, workers, source_info, placement_info, model=None
+    ):
+        if getattr(instance, "id", None) is None:
+            return
+        try:
+            sources = model_instance_metrics_source_inventory(instance)
+            placements = model_instance_metrics_placements(instance, sources, model)
+        except (AttributeError, TypeError):
+            logger.debug(
+                "Skipping incomplete runtime info for instance %s", instance.id
+            )
+            return
+        if not sources:
+            return
+        common = {
+            **model_labels,
+            "model_instance_id": str(instance.id),
+            "model_instance_name": instance.name,
+            "restart_count": str(instance.restart_count or 0),
+        }
+        if instance.role is not None:
+            common["role"] = instance.role
+        for source in sources:
+            labels = {
+                **common,
+                **_runtime_source_labels(source),
+                "worker_id": str(source.worker_id),
+                "workload_name": source.workload_name,
+            }
+            worker = workers.get(source.worker_id)
+            if worker is not None:
+                labels["worker_name"] = worker.name
+            if source.workload_state is not None:
+                labels["workload_state"] = source.workload_state
+            if source.ready is not None:
+                labels["ready"] = str(source.ready).lower()
+            if source.dp_size is not None:
+                labels["dp_size"] = str(source.dp_size)
+            source_info.add_sample(source_info.name + "_info", labels, 1)
+        for placement in placements:
+            labels = {
+                **common,
+                **_runtime_source_labels(placement.source),
+                "source_worker_id": str(placement.source.worker_id),
+                "placement_worker_id": str(placement.worker_id),
+                "workload_name": placement.workload_name,
+                "gpu_index": str(placement.gpu_index),
+            }
+            worker = workers.get(placement.worker_id)
+            if worker is not None:
+                labels["placement_worker_name"] = worker.name
+            if placement.node_rank is not None:
+                labels["node_rank"] = str(placement.node_rank)
+            placement_info.add_sample(placement_info.name + "_info", labels, 1)
 
     async def start(self):
         try:

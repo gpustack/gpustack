@@ -48,6 +48,7 @@ from gpustack.schemas.runner_source import (
     merged_backend_runners,
 )
 from gpustack.schemas.models import (
+    member_worker_ids,
     get_backend,
     role_container_resources,
     role_takes_no_accelerator,
@@ -62,9 +63,14 @@ from gpustack.schemas.models import (
     ModelInstanceDeploymentMetadata,
     role_effective_model,
 )
+from gpustack.schemas.cache_providers import CACHE_ENV_RUNTIME_VARIABLES
 from gpustack.schemas.workers import GPUDevicesStatus
 from gpustack.server.bus import Event
 from gpustack.utils.command import flatten_to_argv, is_parameter_key
+from gpustack.utils.model_instance_workers import (
+    get_model_instance_workloads,
+    managed_instance_update,
+)
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars
 from gpustack.utils.template import deployment_variables, render, render_values
@@ -336,13 +342,14 @@ class InferenceServer(ABC):
         pass
 
     def get_model(self):
+        managed = get_model_instance_workloads(self._model_instance) is not None
         model = self._clientset.models.get(
             id=self._model_instance.model_id,
-            use_cache=not bool(self._model_instance.group_id),
+            use_cache=not bool(self._model_instance.group_id or managed),
         )
         # The subprocess reads configuration independently of the manager;
         # an edit after its launch decision must not reach the container.
-        if self._model_instance.group_id and model.stale is True:
+        if self._model_instance.group_id and getattr(model, "stale", None) is True:
             raise RuntimeError(PD_CONFIGURATION_CHANGED_MESSAGE)
         # Keep the model as the server holds it, for the one path that writes
         # back: a projection must never be persisted, and a PUT built from one
@@ -375,6 +382,16 @@ class InferenceServer(ABC):
 
     def _update_model_instance(self, id: int, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)
+        if get_model_instance_workloads(mi_public) is not None:
+            current = self._clientset.model_instances.get(id=id, use_cache=False)
+            if (current.restart_count or 0) != (
+                self._model_instance.restart_count or 0
+            ):
+                raise RuntimeError("Instance generation changed during preparation")
+            return self._clientset.model_instances.report_workloads(
+                id=id,
+                report=managed_instance_update(current, **kwargs),
+            )
 
         mi = ModelInstanceUpdate(**mi_public.model_dump())
         for key, value in kwargs.items():
@@ -414,6 +431,12 @@ class InferenceServer(ABC):
         Fetches the latest model instance to get the current subordinate worker state,
         then updates only this worker's entry.
         """
+        if get_model_instance_workloads(self._model_instance) is not None:
+            return self._update_model_instance(
+                self._model_instance.id,
+                state=ModelInstanceStateEnum.ERROR,
+                state_message=error_message,
+            )
         mi_public = self._clientset.model_instances.get(id=self._model_instance.id)
         mi = ModelInstanceUpdate(**mi_public.model_dump())
         sw_pos = next(
@@ -587,7 +610,9 @@ class InferenceServer(ABC):
         variables.update(overrides)
         return variables
 
-    def _pd_injection(self) -> Optional[PDInjection]:
+    def _pd_injection(
+        self, *, dp_rank: Optional[int] = None, port: Optional[int] = None
+    ) -> Optional[PDInjection]:
         """What this instance's PD role adds to its launch, or None when the
         deployment is not disaggregated — in which case every seam below falls
         through to the path it takes today, byte for byte.
@@ -600,7 +625,7 @@ class InferenceServer(ABC):
         failure. The injector re-derives the running role's own effective
         values itself.
         """
-        if self._pd_injection_resolved:
+        if dp_rank is None and self._pd_injection_resolved:
             return self._pd_injection_cache
 
         model = self._model_spec or getattr(self, "_model", None)
@@ -618,6 +643,9 @@ class InferenceServer(ABC):
         # Marked resolved only once it is: a refused injection raises, and
         # caching "nothing to inject" for the seams that come after would turn
         # that hard failure into the silent aggregated start it exists to stop.
+        if dp_rank is not None:
+            variables.update(dp_rank=dp_rank, port=port)
+            return render_pd_injection(model, instance, variables, dp_rank=dp_rank)
         injection = render_pd_injection(model, instance, variables)
         self._pd_injection_cache = injection
         self._pd_injection_resolved = True
@@ -636,6 +664,7 @@ class InferenceServer(ABC):
             apply_managed_router,
             group_peer_addresses,
             is_managed_router,
+            static_hybrid_router_variables,
         )
 
         instance = self._model_instance
@@ -647,20 +676,28 @@ class InferenceServer(ABC):
         )
         members = getattr(siblings, "items", siblings) or []
         worker_ips = {}
-        for member in members:
-            if member.worker_id and member.worker_id not in worker_ips:
-                try:
-                    worker = self._clientset.workers.get(id=member.worker_id)
-                    if worker and worker.ip:
-                        worker_ips[member.worker_id] = worker.ip
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to resolve worker {member.worker_id} "
-                        f"while rendering the router: {e}"
-                    )
+        for worker_id in sorted(
+            {owner_id for member in members for owner_id in member_worker_ids(member)}
+        ):
+            try:
+                worker = self._clientset.workers.get(id=worker_id)
+                if worker and worker.ip:
+                    worker_ips[worker_id] = worker.ip
+            except Exception as e:
+                logger.warning(
+                    f"Failed to resolve worker {worker_id} "
+                    f"while rendering the router: {e}"
+                )
 
         peers = group_peer_addresses(members, instance.group_id, worker_ips)
         variables = self._template_variables(**self._pd_template_variables())
+        variables.update(
+            static_hybrid_router_variables(
+                getattr(self, "_model_spec", None) or model,
+                members,
+                instance.group_id,
+            )
+        )
         # A router's own named bands. The engine roles get these from the
         # injector, which builds its own context; the router does not go
         # through the injector at all, so without this its
@@ -1358,6 +1395,16 @@ class InferenceServer(ABC):
             else self._model_instance.port
         )
 
+    def _render_cache_injection_env(
+        self, env: Optional[Dict[str, str]]
+    ) -> Dict[str, str]:
+        """Resolve cache env placeholders from the current worker's attributes."""
+        variables = {
+            name: getattr(self._worker, attribute)
+            for name, attribute in CACHE_ENV_RUNTIME_VARIABLES.items()
+        }
+        return render_values(env, variables) or {}
+
     def _cache_injection_files(self) -> dict[str, str]:
         """Connector config files (container path -> contents) the serving
         script writes before the engine starts — for a connector that reads
@@ -1376,7 +1423,14 @@ class InferenceServer(ABC):
             files.update(cache_config.files or {})
 
         pd_injection = self._pd_injection()
-        if pd_injection and pd_injection.files:
+        if (
+            pd_injection
+            and pd_injection.files
+            and not (
+                self._model_instance.role in ("prefill", "decode")
+                and get_model_instance_workloads(self._model_instance) is not None
+            )
+        ):
             collisions = sorted(set(files) & set(pd_injection.files))
             if collisions:
                 logger.warning(
@@ -1743,6 +1797,7 @@ exec "$@"
             image_name, backend_version
 
         """
+        self._resolved_image_dependencies = None
         model = spec if spec is not None else self._model
         if inference_backend is _INHERIT:
             inference_backend = self.inference_backend
@@ -1764,6 +1819,11 @@ exec "$@"
         """
 
         def get_docker_image(bvr: BackendVersionedRunner) -> str:
+            selected = bvr.variants[0].services[0].versions[0].platforms[0]
+            dependencies = getattr(selected, "dependencies", None)
+            self._resolved_image_dependencies = (
+                dict(dependencies) if dependencies is not None else None
+            )
             return bvr.variants[0].services[0].versions[0].platforms[0].docker_image
 
         backend, runtime_version, arch_family = self._get_device_info()
@@ -1890,7 +1950,12 @@ exec "$@"
         """
         if not service_version:
             return
+        managed = get_model_instance_workloads(self._model_instance) is not None
         try:
+            if managed:
+                self._update_model_instance(
+                    self._model_instance.id, backend_version=service_version
+                )
             if not self._model.backend_version:
                 # Write the *unprojected* model back. `self._model` carries the
                 # role's overrides merged in, so sending it as a ModelUpdate
@@ -1904,7 +1969,7 @@ exec "$@"
                 spec.backend_version = service_version
                 self._model.backend_version = service_version
                 self._clientset.models.update(spec.id, ModelUpdate(**spec.model_dump()))
-            if not self._model_instance.backend_version:
+            if not managed and not self._model_instance.backend_version:
                 self._update_model_instance(
                     self._model_instance.id, backend_version=service_version
                 )
@@ -1912,6 +1977,8 @@ exec "$@"
             logger.error(
                 f"Failed to update model service version {service_version}: {e}"
             )
+            if managed:
+                raise
 
     def _flatten_backend_param(self) -> List[str]:
         """
@@ -1979,14 +2046,14 @@ exec "$@"
         return _normalize_param_format(tokens, parameter_format)
 
     def _transform_workload_plan(
-        self, workload: WorkloadPlan
+        self, workload: WorkloadPlan, *, accelerator_free: bool = False
     ) -> Union[DockerWorkloadPlan, WorkloadPlan]:
         """
         If the deployer is docker, transform the generic WorkloadPlan to DockerWorkloadPlan,
         and fill the pause image and restart image with registry override.
         """
         selector = getattr(self._model, "gpu_type_selector", None)
-        if selector is not None:
+        if selector is not None and not accelerator_free:
             # Hand the operator InstanceType name to the runtime; the
             # runtime's Kubernetes deployer owns queue admission from here.
             workload.instance_type = selector.type

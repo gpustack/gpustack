@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.orm.attributes import set_committed_value
+from sqlalchemy.orm import Session
 
 from gpustack.mixins.active_record import send_post_commit_events
 from gpustack.schemas.cache_services import CacheService, CacheServiceInstance
@@ -45,7 +46,13 @@ async def test_service_cascade_emits_instance_deletions_only_after_commit(monkey
     monkeypatch.setattr(event_bus, "publish", published)
     monkeypatch.setattr(CacheService, "save", AsyncMock())
     monkeypatch.setattr(CacheService, "_invalidate_cached_all", AsyncMock())
-    session = SimpleNamespace(info={}, refresh=AsyncMock(), delete=AsyncMock())
+    sync_session = Session()
+    session = SimpleNamespace(
+        info=sync_session.info,
+        sync_session=sync_session,
+        refresh=AsyncMock(),
+        delete=AsyncMock(),
+    )
     invalidate = AsyncMock()
     monkeypatch.setattr(services, "invalidate_cache_workers_ram", invalidate)
 
@@ -56,7 +63,7 @@ async def test_service_cascade_emits_instance_deletions_only_after_commit(monkey
             *instances,
             service,
         ]
-        send_post_commit_events(session)
+        send_post_commit_events(sync_session)
 
     session.commit = AsyncMock(side_effect=commit)
     await services.CacheServiceService(session).delete(service)

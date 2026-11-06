@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -16,15 +16,26 @@ async def test_batch_save_commits_once_and_invalidates_each_worker(monkeypatch):
     monkeypatch.setattr(Worker, "_publish_event_after_commit", publish)
     monkeypatch.setattr(Worker, "_invalidate_cached_all", invalidate_all)
     monkeypatch.setattr(services, "delete_cache_by_key", invalidate_worker)
-    workers = [Worker(id=1, name="w1"), Worker(id=2, name="w2")]
+    workers = [
+        Worker(id=1, name="w1", cluster_id=10),
+        Worker(id=2, name="w2", cluster_id=20),
+    ]
+    service = services.WorkerService(session)
 
-    assert await services.WorkerService(session).batch_update(workers) == 2
+    assert await service.batch_update(workers) == 2
     session.commit.assert_awaited_once()
     session.rollback.assert_not_awaited()
     assert session.add.call_count == 2
     assert publish.call_count == 2
     invalidate_all.assert_awaited_once()
-    assert invalidate_worker.await_count == 4
+    assert invalidate_worker.await_args_list == [
+        call(service.get_by_id, 1, sync_coordinator=False),
+        call(service.get_by_name, "w1", sync_coordinator=False),
+        call(service.get_by_cluster_id_name, 10, "w1", sync_coordinator=False),
+        call(service.get_by_id, 2, sync_coordinator=False),
+        call(service.get_by_name, "w2", sync_coordinator=False),
+        call(service.get_by_cluster_id_name, 20, "w2", sync_coordinator=False),
+    ]
 
 
 @pytest.mark.asyncio

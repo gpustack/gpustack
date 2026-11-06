@@ -78,7 +78,7 @@ async def _read_line(reader: asyncio.StreamReader) -> Optional[str]:
 
 async def _read_headers(reader: asyncio.StreamReader) -> Dict[str, str]:
     """Read all headers from the client"""
-    headers: Dict[str, str] = {}
+    headers = {}
     while True:
         line = await _read_line(reader)
         if not line:
@@ -87,7 +87,8 @@ async def _read_headers(reader: asyncio.StreamReader) -> Dict[str, str]:
             break
         if ":" in line:
             key, value = line.split(":", 1)
-            headers[key.strip().lower()] = value.strip()
+            name = key.strip().lower()
+            headers[name] = value.strip()
     return headers
 
 
@@ -218,10 +219,15 @@ async def _handle_http(
     connection_manager: BaseConnectionManager,
     header_router: Optional[HeaderRouter] = None,
     stall_policy: Optional[StallPolicy] = None,
+    resolved_target: Optional[Tuple[Optional[str], int]] = None,
 ) -> None:
     """Handle HTTP request with full URI"""
     parsed = urlparse(uri)
-    host, port = await header_router(headers) if header_router else (None, 0)
+    host, port = (
+        resolved_target
+        if resolved_target is not None
+        else await header_router(headers) if header_router else (None, 0)
+    )
     # Only requests the header router claimed are inference requests. The same
     # proxy port also carries internal worker APIs -- log following, for one --
     # where a multi-minute silence is normal and a tight inter-chunk budget
@@ -269,6 +275,7 @@ async def _handle_http(
                 expect_body=method != "HEAD",
             ),
         )
+
     except HTTPException as e:
         await client_connection.send_error(e.status_code, e.detail)
     finally:
@@ -476,6 +483,7 @@ async def wait_for_complete_response(  # noqa: C901
     response head is held until that byte arrives, so a stall before it becomes a
     504 rather than a 200 that never produces data. Without one, the behavior is
     unchanged.
+
     """
     if client_writer is None:
         logger.debug("[Proxy] Client writer is None")
@@ -644,14 +652,22 @@ class HTTPSProxyServer:
             await self.server.wait_closed()
 
     async def _get_target_ip(
-        self, method: str, uri: str, headers: Dict[str, str]
+        self,
+        method: str,
+        uri: str,
+        headers: Dict[str, str],
+        resolved_target: Optional[Tuple[Optional[str], int]] = None,
     ) -> Optional[str]:
         """Extract target IP/hostname from request"""
         if method == "CONNECT":
             # CONNECT target is the host:port (e.g., "example.com:443")
             return uri.split(":")[0] if ":" in uri else uri
         elif self.header_router:
-            target_ip, _ = await self.header_router(headers)
+            target_ip, _ = (
+                resolved_target
+                if resolved_target is not None
+                else await self.header_router(headers)
+            )
             if target_ip:
                 return target_ip
 
@@ -694,7 +710,19 @@ class HTTPSProxyServer:
                     await client_connection.send_error(401, "Unauthorized")
                     return
             # Extract target address from request
-            target_ip = await self._get_target_ip(method, uri, headers)
+            resolved_target = (
+                await self.header_router(headers) if self.header_router else None
+            )
+            if (
+                method == "CONNECT"
+                and resolved_target
+                and resolved_target[0] is not None
+            ):
+                await client_connection.send_error(
+                    400, "Model destinations require an HTTP request"
+                )
+                return
+            target_ip = await self._get_target_ip(method, uri, headers, resolved_target)
             if not target_ip:
                 await client_connection.send_error(
                     400, "Bad Request: No target address"
@@ -728,8 +756,11 @@ class HTTPSProxyServer:
                     connection_manager,
                     self.header_router,
                     self.stall_policy,
+                    resolved_target,
                 )
 
+        except HTTPException as exc:
+            await client_connection.send_error(exc.status_code, str(exc.detail))
         except Exception as e:
             logger.debug(f"[Proxy] Error handling {client_addr}: {e}")
         finally:

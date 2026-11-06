@@ -394,8 +394,8 @@ class Worker:
         app.state.token = read_worker_token(self._config.data_dir)
         app.state.worker_ip_getter = self.worker_ip
         app.state.serve_manager = self._serve_manager
-        app.state.get_instance_port_by_model_instance_id = (
-            self._serve_manager.get_instance_port_by_model_instance_id
+        app.state.get_instance_endpoint_by_model_instance_id = (
+            self._serve_manager.get_instance_endpoint_by_model_instance_id
         )
         app.state.record_successful_inference = (
             self._serve_manager.record_successful_inference

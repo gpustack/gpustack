@@ -3,7 +3,7 @@ from urllib.parse import urlparse
 from .generated_http_client import HTTPClient
 from typing import Optional
 {% for class_name in class_names %}
-from .generated_{{ class_name | to_snake_case }}_client import {{ class_name }}Client
+from .{{ client_modules[class_name] }} import {{ class_name }}Client
 {%- endfor %}
 
 from gpustack.ssl_context import make_ssl_context

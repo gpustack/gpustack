@@ -36,6 +36,7 @@ from gpustack.policies.utils import (
     get_model_num_attention_heads,
     get_model_vision_num_attention_heads,
     get_worker_model_instances,
+    ram_not_enough,
     should_skip_gpu_count_check,
     sort_gpu_indexes_by_allocatable_rate,
     sort_selected_workers_by_gpu_type_and_resource,
@@ -292,6 +293,7 @@ class ScheduleCandidatesSelector(ABC):
         self._model_instances = model_instances
         self._resource_view = resource_view
         self._model_params = ModelParameters()
+        self._pretrained_config: Optional[PretrainedConfig] = None
         self._num_attention_heads = 0
         self._vision_num_attention_heads = 0
         self._gpu_count = 0
@@ -365,6 +367,7 @@ class ScheduleCandidatesSelector(ABC):
                 self._model,
                 workers,
             )
+            self._pretrained_config = pretrained_config
 
             self._model_params.from_model_pretrained_config(
                 self._model, pretrained_config
@@ -408,7 +411,7 @@ class ScheduleCandidatesSelector(ABC):
                     logger.warning(
                         f"Model {model.name}: world size ({world_size}) does not match "
                         f"selected gpu count ({self._gpu_count}); skipping the check due "
-                        f"to GPUSTACK_SKIP_GPU_COUNT_CHECK. Keeping the selected gpu count."
+                        f"to GPUSTACK_MANUAL_DP or GPUSTACK_SKIP_GPU_COUNT_CHECK. Keeping the selected gpu count."
                     )
                     return
                 strategies_str = "/".join(strategies) if strategies else "parallelism"
@@ -538,6 +541,28 @@ class ScheduleCandidatesSelector(ABC):
             gpu_addresses.append(addr)
         return gpu_addresses
 
+    def _compute_ram_claim(
+        self, vram_claim: Dict[int, int], static_ram: Optional[int] = None
+    ) -> Optional[int]:
+        return get_computed_ram_claim(self._model, vram_claim, static_ram)
+
+    def _finalize_candidate_ram(
+        self, candidate: ModelInstanceScheduleCandidate
+    ) -> None:
+        """Allow backends to refine RAM claims using the complete candidate layout."""
+        pass
+
+    def _worker_ram_overcommit_message(
+        self, worker: Worker, ram: Optional[int], gpu_type: Optional[str] = None
+    ) -> str:
+        allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
+        if not ram_not_enough(ram or 0, allocatable):
+            return ""
+        return (
+            f"Worker {worker.name} requires {byte_to_gib(ram)} GiB of RAM, "
+            f"but only {byte_to_gib(allocatable.ram)} GiB is allocatable."
+        )
+
     def _generate_manual_selected_gpus_overcommit_message(  # noqa: C901
         self,
         candidate: ModelInstanceScheduleCandidate,
@@ -620,6 +645,7 @@ class ScheduleCandidatesSelector(ABC):
         used_gpus_total_allocatable_vram_for_non_llms = 0
         used_vram_claim_total = 0
         used_ram_claim_total = 0
+        ram_messages = []
 
         pairs = [
             (
@@ -647,6 +673,8 @@ class ScheduleCandidatesSelector(ABC):
                 sum(v for k, v in claim.vram.items() if claim.vram is not None) or 0
             )
             used_ram_claim_total += claim.ram or 0
+            if msg := self._worker_ram_overcommit_message(w, claim.ram, gpu_type):
+                ram_messages.append(msg)
 
             used_gpu_count += len(indexes)
             for idx in indexes:
@@ -666,6 +694,7 @@ class ScheduleCandidatesSelector(ABC):
             used_vram_claim_total < request.vram
             or (request.ram > 0 and used_ram_claim_total < request.ram)
             or used_satisfied_count < used_gpu_count
+            or bool(ram_messages)
         )
 
         if not overcommit:
@@ -728,6 +757,7 @@ class ScheduleCandidatesSelector(ABC):
                     ]
                 )
 
+        scheduling_msg.extend(ram_messages)
         return (True, str(scheduling_msg), effective_vram)
 
     def _get_non_overcommit_and_best_overcommit_candidates(
@@ -757,6 +787,7 @@ class ScheduleCandidatesSelector(ABC):
         best_overcommit_candidate = None
         overcommit_msg = None
         for c in candidates:
+            self._finalize_candidate_ram(c)
             gpu_memory_utilization_for_type = gpu_memory_utilization.get(
                 c.gpu_type,
                 gpu_memory_utilization.get("*", 0),
@@ -991,7 +1022,7 @@ class ScheduleCandidatesSelector(ABC):
                 ),
                 computed_resource_claim=ComputedResourceClaim(
                     vram=vram_claims,
-                    ram=get_computed_ram_claim(self._model, vram_claims, request.ram),
+                    ram=self._compute_ram_claim(vram_claims, request.ram),
                     vram_utilization=gpu_memory_utilization,
                 ),
             )
@@ -1073,9 +1104,7 @@ class ScheduleCandidatesSelector(ABC):
                     ),
                     computed_resource_claim=ComputedResourceClaim(
                         vram=vram_claim,
-                        ram=get_computed_ram_claim(
-                            self._model, vram_claim, request.ram
-                        ),
+                        ram=self._compute_ram_claim(vram_claim, request.ram),
                         vram_utilization=gpu_memory_utilization,
                     ),
                 )
@@ -1087,9 +1116,11 @@ class ScheduleCandidatesSelector(ABC):
             if self._gpu_count and current_gpu_count >= self._gpu_count:
                 break
 
-        if not subordinate_workers:
+        gpu_per_node = [len(main_gpu_indexes)] + [
+            len(worker.gpu_indexes) for worker in subordinate_workers
+        ]
+        if not subordinate_workers or sum(gpu_per_node) != self._gpu_count:
             return []
-
         return [
             ModelInstanceScheduleCandidate(
                 worker=main_worker,
@@ -1100,33 +1131,37 @@ class ScheduleCandidatesSelector(ABC):
                 ),
                 computed_resource_claim=ComputedResourceClaim(
                     vram=main_vram_claim,
-                    ram=get_computed_ram_claim(
-                        self._model, main_vram_claim, request.ram
-                    ),
+                    ram=self._compute_ram_claim(main_vram_claim, request.ram),
                 ),
                 subordinate_workers=subordinate_workers,
             )
         ]
 
     def _validate_distributed_limit_per_worker(self, worker: Worker) -> bool:
-        """
-        Validate that there is no more than one distributed vLLM instance per worker.
-        """
+        """Keep the legacy limit outside port-isolated managed vLLM groups."""
         instances = get_worker_model_instances(self._model_instances, worker)
         for instance in instances:
+            model = getattr(instance, "model", None)
             if (
                 instance.distributed_servers
                 and instance.distributed_servers.subordinate_workers
-                and (
-                    instance.model
-                    and instance.model.backend
-                    and instance.model.backend == self._model.backend
-                )
+                and (model and model.backend and model.backend == self._model.backend)
             ):
+                if (
+                    model.backend == BackendEnum.VLLM
+                    and getattr(instance.distributed_servers, "workloads", None)
+                    is not None
+                ):
+                    # Managed groups reserve their communication ports per
+                    # instance; device and memory claims still constrain fits.
+                    continue
+                name = getattr(instance, "name", None) or (
+                    f"planned member of {getattr(model, 'name', 'deployment')}"
+                )
                 self._messages = [
                     str(
                         ListMessageBuilder(
-                            f"Each worker can run only one distributed vLLM instance. Worker '{worker.name}' already has '{instance.name}'."
+                            f"Each worker can run only one distributed vLLM instance. Worker '{worker.name}' already has '{name}'."
                         )
                     ),
                 ]

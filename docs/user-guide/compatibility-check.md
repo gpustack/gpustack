@@ -34,3 +34,24 @@ $$
 - The 1.2x multiplier is an empirical estimate. For more details, refer to [this explanation](https://blog.eleuther.ai/transformer-math/#total-inference-memory).
 
 This formula provides a rough estimate and may not be accurate for all models. Typically, it reflects a lower-bound estimate of the required VRAM. If the estimation is insufficient, users can perform fine-grained scheduling by manually selecting workers and GPUs, or by adjusting advanced backend parameters. For instance, with vLLM, users can specify `--tensor-parallel-size` and `--pipeline-parallel-size` to control GPU allocation for the model.
+
+#### Offloaded lookup tables
+
+!!! note
+
+    Automatic lookup-table estimation currently covers only supported vLLM and SGLang architectures, formats, and offload settings. Native MindIE, custom backends, and vLLM Ascend paths that have not been adapted are not automatically covered. If automatic estimates do not meet your deployment expectations, you can adjust them through [custom resource requirements](#custom-resource-requirements).
+
+For supported models with CPU-offloaded lookup tables, such as Engram and PLE, GPUStack estimates the table sizes from model configuration and precision metadata. It subtracts the offloaded bytes from `WEIGHT_SIZE` before applying the VRAM formula above, and reserves RAM for the tables on each participating Worker in addition to any local extended KV cache RAM.
+
+The RAM estimate assumes that local data parallel replicas share table storage and accounts for independent copies required by the parallel layout, without extra headroom. Actual memory usage can be higher. If the table size or offload behavior cannot be determined, GPUStack retains the full-weight VRAM estimate.
+
+#### Custom resource requirements
+
+If automatic estimates do not match your deployment's requirements, use the model's [resource claim environment variables](../environment-variables.md#model-deployment-configuration) to declare RAM and VRAM requirements in bytes. The RAM declaration replaces the total per-Worker estimate, including table and local cache memory. These declarations guide scheduling; they do not configure the backend's actual memory usage. RAM and VRAM can be declared independently. Any undeclared resource retains its backend-specific estimate.
+
+For example, to declare 64 GiB of RAM per Worker and 32 GiB of total model VRAM, add the following model environment variables (`1 GiB = 1024^3 bytes`). The VRAM value is the model's estimated requirement across its GPUs, not a per-GPU reservation.
+
+```text
+GPUSTACK_MODEL_RAM_CLAIM=68719476736
+GPUSTACK_MODEL_VRAM_CLAIM=34359738368
+```

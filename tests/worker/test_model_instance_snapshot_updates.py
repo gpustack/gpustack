@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from gpustack.client.generated_model_instance_client import ModelInstanceClient
+from gpustack.client.model_instance_client import ModelInstanceClient
 from gpustack.schemas.models import (
     DistributedServers,
     ModelConfigSnapshot,
@@ -73,7 +73,12 @@ def test_unrelated_updates_do_not_supply_configuration_snapshot(
             "manager": ServeManager,
             "metrics": RuntimeMetricsAggregator,
         }[writer]
-        cls._update_model_instance(owner, 11, state=ModelInstanceStateEnum.RUNNING)
+        kwargs = (
+            {"expected_instance": owner._model_instance} if writer == "metrics" else {}
+        )
+        cls._update_model_instance(
+            owner, 11, state=ModelInstanceStateEnum.RUNNING, **kwargs
+        )
 
     http_client.put.assert_called_once()
     payload = json.loads(http_client.put.call_args.kwargs["content"])
@@ -94,3 +99,23 @@ def test_explicit_startup_update_includes_configuration_snapshot():
     assert (
         ModelConfigSnapshot.model_validate(payload["model_config_snapshot"]) == snapshot
     )
+
+
+def test_managed_startup_snapshot_uses_the_generation_fenced_report():
+    from gpustack.schemas.models import ModelInstanceWorkloadUpdate
+
+    owner, http_client = _client(None)
+    owner._worker.id = 1
+    owner._model_instance.distributed_servers.workloads = []
+    owner._model_instance.distributed_servers.orchestration_mode = "managed"
+    snapshot = ModelConfigSnapshot(
+        backend_parameters=['--current'], env={'MODE': 'test'}
+    )
+    InferenceServer._update_model_instance(owner, 11, model_config_snapshot=snapshot)
+    payload = json.loads(http_client.put.call_args.kwargs['content'])
+    report = ModelInstanceWorkloadUpdate.model_validate(payload)
+    assert report.restart_count == 0
+    assert report.workloads is None
+    assert report.observations is None
+    assert report.model_config_snapshot == snapshot
+    assert 'distributed_servers' not in payload

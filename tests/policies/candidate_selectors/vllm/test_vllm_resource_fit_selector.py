@@ -2208,3 +2208,174 @@ async def test_a_member_is_priced_by_what_it_reserves_not_by_its_weights(config)
     assert claim.vram > selector._vram_claim * 2
     # And it is the same number the placement itself carries.
     assert sum(candidates[0].computed_resource_claim.vram.values()) == booked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('manual', [False, True])
+@pytest.mark.parametrize('local,accepted', [(None, True), (2, True), (1, False)])
+@pytest.mark.parametrize(
+    'flag',
+    [
+        '--data-parallel-external-lb',
+        '--data-parallel-multi-port-external-lb',
+        '--data-parallel-hybrid-lb',
+    ],
+)
+async def test_managed_manual_and_auto_require_the_same_complete_group(
+    config, manual, local, accepted, flag
+):
+    workers = [linux_nvidia_22_H100_80gx8(), linux_nvidia_23_H100_80gx8()]
+    for worker in workers:
+        worker.status.gpu_devices = worker.status.gpu_devices[:4]
+    parameters = [flag, '--tp=2', '--dp=4']
+    if local is not None:
+        parameters.append(f'--dpl={local}')
+    ids = [
+        f'{worker.name}:cuda:{gpu.index}'
+        for worker in workers
+        for gpu in worker.status.gpu_devices
+    ]
+    if manual:
+        workers = [linux_nvidia_22_H100_80gx8(), linux_nvidia_23_H100_80gx8()]
+    model = make_model(
+        8,
+        ids if manual else None,
+        backend=BackendEnum.VLLM,
+        backend_parameters=parameters,
+    )
+    selector = VLLMResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    selector._set_gpu_memory_utilization()
+    with (
+        patch.object(selector, '_init_model_parameters', new=AsyncMock()),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram',
+            new=AsyncMock(return_value=1),
+        ),
+    ):
+        candidates = await selector.select_candidates(workers)
+    assert bool(candidates) == accepted
+    if accepted:
+        candidate = candidates[0]
+        assert candidate.worker.id == workers[0].id
+        assert candidate.gpu_indexes == [0, 1, 2, 3]
+        assert len(candidate.subordinate_workers) == 1
+        assert candidate.subordinate_workers[0].worker_id == workers[1].id
+        assert candidate.subordinate_workers[0].gpu_indexes == [0, 1, 2, 3]
+        assert sum(candidate.computed_resource_claim.vram.values()) == sum(
+            int(gpu.memory.total * 0.9) for gpu in workers[0].status.gpu_devices[:4]
+        )
+
+
+@pytest.mark.asyncio
+async def test_hybrid_global_group_does_not_fit_one_local_allocation(config):
+    worker = linux_nvidia_22_H100_80gx8()
+    worker.status.gpu_devices = worker.status.gpu_devices[:4]
+    model = make_model(
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--data-parallel-hybrid-lb', '--tp=2', '--dp=4', '--dpl=2'],
+    )
+    selector = VLLMResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    selector._set_gpu_memory_utilization()
+    with (
+        patch.object(selector, '_init_model_parameters', new=AsyncMock()),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram',
+            new=AsyncMock(return_value=1),
+        ),
+    ):
+        assert await selector.select_candidates([worker]) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('manual', [False, True])
+@pytest.mark.parametrize('cards_per_worker', [4, 8])
+@pytest.mark.parametrize(
+    'mode', [None, 'vllm-mooncake', 'vllm-ascend-mooncake', 'vllm-nixl']
+)
+async def test_external_pd_transport_checks_candidate_rank_locality(
+    config, manual, cards_per_worker, mode
+):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    workers = [
+        linux_nvidia_22_H100_80gx8(),
+        linux_nvidia_23_H100_80gx8(),
+        linux_nvidia_24_H100_80gx8(),
+        linux_nvidia_25_H100_80gx8(),
+    ][: 16 // cards_per_worker]
+    for worker in workers:
+        worker.status.gpu_devices = worker.status.gpu_devices[:cards_per_worker]
+    ids = [
+        f'{worker.name}:cuda:{gpu.index}'
+        for worker in workers
+        for gpu in worker.status.gpu_devices
+    ]
+    model = make_model(
+        16,
+        ids if manual else None,
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--data-parallel-external-lb', '--dp=2', '--tp=8'],
+        disaggregation=DisaggregationSpec(mode=mode) if mode else None,
+    )
+    selector = VLLMResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    selector._set_gpu_memory_utilization()
+    with (
+        patch.object(selector, '_init_model_parameters', new=AsyncMock()),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram',
+            new=AsyncMock(return_value=1),
+        ),
+    ):
+        candidates = await selector.select_candidates(workers)
+    assert bool(candidates) is (mode != 'vllm-mooncake' or cards_per_worker == 8)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_offer_capacity_reserves_every_node_of_each_global_group(config):
+    from gpustack.scheduler.offer_slot import count_offer_slots
+
+    workers = [
+        linux_nvidia_22_H100_80gx8(),
+        linux_nvidia_23_H100_80gx8(),
+        linux_nvidia_24_H100_80gx8(),
+        linux_nvidia_25_H100_80gx8(),
+    ]
+    for worker in workers:
+        worker.status.gpu_devices = worker.status.gpu_devices[:4]
+    model = make_model(
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--data-parallel-hybrid-lb', '--tp=2', '--dp=4', '--dpl=2'],
+    )
+
+    def factory(instances):
+        selector = VLLMResourceFitSelector(
+            config, model, instances, resource_view=ResourceView(instances)
+        )
+        selector._set_gpu_memory_utilization()
+        return selector
+
+    with (
+        patch.object(
+            VLLMResourceFitSelector, '_init_model_parameters', new=AsyncMock()
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram',
+            new=AsyncMock(return_value=1),
+        ),
+    ):
+        result = await count_offer_slots(factory, workers, [], limit=3)
+    assert result.unavailable is None
+    assert result.slots == 2
+    assert [candidate.worker.id for candidate in result.placements] == [22, 24]
+    assert [
+        candidate.subordinate_workers[0].worker_id for candidate in result.placements
+    ] == [23, 25]
+    assert result.claim.vram == 8 * int(
+        workers[0].status.gpu_devices[0].memory.total * 0.9
+    )

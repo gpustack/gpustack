@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import os
 import shutil
-from typing import List
+from typing import Dict, List, Optional
 from jinja2 import Environment, FileSystemLoader
 
 from .filters import to_dash_plural, to_snake_case, to_plural, to_underscore_plural
@@ -20,7 +20,8 @@ def main():
             "ModelRouteTarget",
             "CacheService",
             "CacheServiceInstance",
-        ]
+        ],
+        client_modules={"ModelInstance": "model_instance_client"},
     )
 
     env = Environment(loader=FileSystemLoader(cfg.template_dir), auto_reload=True)
@@ -43,6 +44,7 @@ class Config:
     template_dir: str = os.path.join(os.path.dirname(__file__), "templates")
     output_dir: str = "gpustack/client"
     class_names: List[str] = None
+    client_modules: Optional[Dict[str, str]] = None
 
 
 def gen_clients(env: Environment, cfg: Config):
@@ -65,6 +67,12 @@ def gen_clientset(env: Environment, cfg: Config):
 
     data = {
         "class_names": cfg.class_names,
+        "client_modules": {
+            name: (cfg.client_modules or {}).get(
+                name, f"generated_{to_snake_case(name)}_client"
+            )
+            for name in cfg.class_names
+        },
     }
     client_code = template.render(data)
 

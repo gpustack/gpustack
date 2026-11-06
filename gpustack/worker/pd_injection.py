@@ -31,7 +31,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
 
-from gpustack.schemas.models import Model, role_effective_model
+from gpustack.schemas.models import (
+    Model,
+    ModelInstance,
+    BackendEnum,
+    get_backend,
+    role_effective_model,
+)
 from gpustack.schemas.pd_modes import (
     PDKVLeaseTargetEnum,
     PDMode,
@@ -43,14 +49,18 @@ from gpustack.validation.pd.parameters import (
     selector_cards_per_replica,
     selector_spans_workers,
 )
+from gpustack.validation.pd.roles import validate_managed_pd_topology
 from gpustack.utils.command import (
     find_int_parameter,
     flatten_to_argv,
     resolve_executor_backend,
 )
 from gpustack.utils.vllm_topology import (
+    ValidatedTopology,
+    managed_lb_parallelism,
     parse_user_parallelism,
     validate_multinode_topology,
+    vllm_lb_mode,
 )
 from gpustack.utils.template import render, render_values
 from gpustack.worker.kv_transfer import KV_TRANSFER_CONFIG_FLAG
@@ -128,7 +138,23 @@ def band_specs_for(model, role: Optional[str], *, context: str = "") -> List:
     # A router's declaration lives on `mode.router`, not in `mode.roles` -- it
     # is a command line, not an engine.
     holder = mode.router if role == RoleNameEnum.ROUTER.value else mode.role(role)
-    return list(getattr(holder, "ports", None) or [])
+    specs = list(getattr(holder, "ports", None) or [])
+    if (
+        mode.name == "vllm-mooncake"
+        and role == "prefill"
+        and vllm_lb_mode(role_effective_model(model, role).backend_parameters)
+        == "external"
+    ):
+        # Each separately launched Prefill rank owns a bootstrap listener.
+        specs = [
+            (
+                spec.model_copy(update={"count": "{{data_parallel_size}}"})
+                if spec.name == "bootstrap"
+                else spec
+            )
+            for spec in specs
+        ]
+    return specs
 
 
 def band_count_key(spec) -> Optional[str]:
@@ -222,6 +248,12 @@ def member_band_width(
     """
     parameters = list(getattr(model, "backend_parameters", None) or [])
     if (
+        band_count_key(spec) == "data_parallel_size"
+        and get_backend(model) == BackendEnum.VLLM
+        and vllm_lb_mode(parameters) in ("external", "multi_port_external", "hybrid")
+    ):
+        return managed_lb_parallelism(parameters, gpu_per_node).dp
+    if (
         len(gpu_per_node) > 1
         and band_count_key(spec) == "data_parallel_size"
         and resolve_executor_backend(
@@ -290,6 +322,8 @@ def render_pd_injection(
     instance,
     variables: Dict[str, object],
     peers: Optional[Dict[str, List[Tuple[str, int]]]] = None,
+    *,
+    dp_rank: Optional[int] = None,
 ) -> Optional[PDInjection]:
     """Render this instance's role of `pd-modes.yaml` into env / args / files.
 
@@ -311,6 +345,10 @@ def render_pd_injection(
     (`custom`, and the router, whose command is assembled by the router path
     rather than merged into an engine's). The caller then takes today's path
     byte for byte.
+
+    `dp_rank` identifies one managed vLLM logical engine. Its physical node
+    fragments share the same connector identity; omitting it preserves legacy
+    and SGLang injection behavior.
 
     `peers` is only meaningful for a router. It is accepted so the signature
     is the one the router path will call, and ignored here: a router's role is
@@ -351,8 +389,22 @@ def render_pd_injection(
 
     effective = role_effective_model(model, role_name)
     user_owns_kv_config = _user_owns_kv_transfer_config(role, effective)
+    topology = _managed_parallelism(effective, instance, dp_rank=dp_rank)
 
-    context = _pd_variables(model, mode, instance, effective, variables)
+    rank_variables = dict(variables)
+    if dp_rank is not None:
+        rank_variables["dp_rank"] = dp_rank
+    context = _pd_variables(
+        model, mode, instance, effective, rank_variables, topology=topology
+    )
+    if mode.name == "vllm-mooncake" and role_name == "prefill" and dp_rank is not None:
+        band = (instance.named_ports or {}).get("bootstrap")
+        if band is None or band.count != topology.dp:
+            raise PDInjectionError(
+                "External-LB Mooncake requires a bootstrap port for every DP rank; "
+                "recreate the instance to reserve the complete band."
+            )
+        context["ports.bootstrap"] = band.base + dp_rank
     where = f"PD mode '{mode.name}' role '{role_name}'"
 
     env = dict(render_values(role.env, context) or {})
@@ -378,6 +430,18 @@ def render_pd_injection(
             KV_TRANSFER_CONFIG_FLAG,
             mode.name,
         )
+    if dp_rank is not None:
+        if (
+            mode.name == "vllm-ascend-mooncake"
+            and role_name == "decode"
+            and topology.pp > 1
+        ):
+            logger.warning(
+                "Ascend decode pipeline parallelism requires target-runtime "
+                "validation of non-layerwise KV transfer."
+            )
+        if descriptor:
+            descriptor["engine_id"] = managed_pd_engine_id(instance, dp_rank)
     if descriptor:
         # Rendered whole, as this role's own connector. If an extended KV cache
         # also contributes one, `kv_transfer.compose_kv_transfer_config` folds
@@ -432,6 +496,43 @@ def render_pd_injection(
 
 
 _ANY_PLACEHOLDER = re.compile(r"\{\{[A-Za-z_][A-Za-z0-9_.]*\}\}")
+
+
+def managed_pd_engine_id(instance: ModelInstance, dp_rank: int) -> str:
+    """Identify a logical PD engine independently of its physical node fragment."""
+    return f"gpustack-{instance.id}-r{instance.restart_count or 0}-dp{dp_rank}"
+
+
+def _managed_parallelism(
+    effective, instance, *, dp_rank: Optional[int] = None
+) -> Optional[ValidatedTopology]:
+    """Resolve the same complete allocation that managed vLLM commands consume."""
+    servers = getattr(instance, "distributed_servers", None)
+    if (
+        servers is None
+        or getattr(servers, "workloads", None) is None
+        or get_backend(effective) != BackendEnum.VLLM
+    ):
+        if dp_rank is not None:
+            raise PDInjectionError('dp_rank requires a managed vLLM PD instance')
+        return None
+    counts = [len(getattr(instance, "gpu_indexes", None) or [])] + [
+        len(worker.gpu_indexes or [])
+        for worker in getattr(servers, "subordinate_workers", None) or []
+    ]
+    try:
+        topology = managed_lb_parallelism(effective.backend_parameters or [], counts)
+        validate_managed_pd_topology(effective, topology)
+    except ValueError as exc:
+        raise PDInjectionError(
+            f"Cannot resolve managed PD rank topology: {exc}"
+        ) from exc
+    if dp_rank is not None and not 0 <= dp_rank < topology.dp:
+        raise PDInjectionError(
+            f'Managed PD rank {dp_rank} is outside the allocated DP world '
+            f'of size {topology.dp}'
+        )
+    return topology
 
 
 def _refuse_unrendered(injection: "PDInjection", where: str) -> None:
@@ -503,6 +604,8 @@ def _pd_variables(
     instance,
     effective,
     variables: Dict[str, object],
+    *,
+    topology: Optional[ValidatedTopology],
 ) -> Dict[str, object]:
     """The deployment context plus everything only the catalog's consumer can
     resolve. Flat and dotted, because that is the renderer's contract."""
@@ -510,7 +613,7 @@ def _pd_variables(
     context.update(_port_variables(instance))
     context.update(_disaggregation_variables(getattr(model, "disaggregation", None)))
     context.update(_kv_lease_variables(mode))
-    context.update(_cross_role_variables(model, instance))
+    context.update(_cross_role_variables(model, instance, topology=topology))
     if mode.connector_variants:
         variant = (getattr(model, "meta", None) or {}).get(
             "pd_connector_variant"
@@ -534,7 +637,11 @@ def _pd_variables(
     # The running role's own fields, unprefixed: a declaration referring to
     # its own parallelism writes {{tensor_parallel_size}}, and only the
     # cross-role case needs the prefix.
-    context.update(_role_fields(effective, getattr(instance, "role", None), instance))
+    context.update(
+        _role_fields(
+            effective, getattr(instance, "role", None), instance, topology=topology
+        )
+    )
     return context
 
 
@@ -617,7 +724,9 @@ def _apply_kv_lease_env(mode: PDMode, env: Dict[str, str], where: str) -> None:
     env[lease.param] = str(value)
 
 
-def _cross_role_variables(model, instance=None) -> Dict[str, object]:
+def _cross_role_variables(
+    model, instance=None, *, topology: Optional[ValidatedTopology] = None
+) -> Dict[str, object]:
     """`{{roles.<role>.<field>}}` — the coupling Mooncake needs and NIXL does
     not: prefill's connector config carries decode's parallelism and vice
     versa. Each role is resolved through its own projection, so a role that
@@ -662,7 +771,13 @@ def _cross_role_variables(model, instance=None) -> Dict[str, object]:
         # placeholder survives to `_refuse_unrendered`, and the launch refuses
         # instead of pairing badly.
         borrows_from = None if (is_peer and selector_spans_workers(role)) else instance
-        fields = _role_fields(projected, name, borrows_from, pinned_cards=cards)
+        fields = _role_fields(
+            projected,
+            name,
+            borrows_from,
+            pinned_cards=cards,
+            topology=topology if not is_peer else None,
+        )
         for field, value in fields.items():
             context[f"roles.{name}.{field}"] = value
     return context
@@ -674,11 +789,13 @@ def _role_fields(
     instance=None,
     *,
     pinned_cards: Optional[int] = None,
+    topology: Optional[ValidatedTopology] = None,
 ) -> Dict[str, object]:
     """One role's referenceable fields, read off its effective Model.
 
     `pinned_cards` overrides what the running member's own cards would say, for
     the cross-role case where the role being described is not the one starting.
+    `topology` is shared by references to the running role; peers use their spec.
     """
     fields: Dict[str, object] = {}
     role = None
@@ -702,9 +819,18 @@ def _role_fields(
         if value is not None:
             fields[field] = value
 
-    fields.update(
-        _implicit_parallelism(fields, instance, role_name, pinned_cards=pinned_cards)
-    )
+    if topology is not None:
+        fields.update(
+            tensor_parallel_size=topology.tp,
+            data_parallel_size=topology.dp,
+            pipeline_parallel_size=topology.pp,
+        )
+    else:
+        fields.update(
+            _implicit_parallelism(
+                fields, instance, role_name, pinned_cards=pinned_cards
+            )
+        )
     return fields
 
 

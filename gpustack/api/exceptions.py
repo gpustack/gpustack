@@ -53,6 +53,13 @@ def http_exception_factory(
 ):
     class_name = reason + "Exception"
 
+    def new(cls, *args, **kwargs):
+        is_openai_exception = kwargs.get(
+            "is_openai_exception", args[1] if len(args) > 1 else False
+        )
+        target = openai_exception_class if is_openai_exception else cls
+        return Exception.__new__(target, *args, **kwargs)
+
     def init(
         self,
         message=default_message,
@@ -61,17 +68,20 @@ def http_exception_factory(
         *,
         log_level=logging.ERROR,
     ):
-        if is_openai_exception:
-            self.__class__.__bases__ = (OpenAIAPIException,)
-        super(self.__class__, self).__init__(
-            status_code, reason, message, details, log_level=log_level
+        HTTPException.__init__(
+            self, status_code, reason, message, details, log_level=log_level
         )
 
-    return type(
+    exception_class = type(
         class_name,
         (HTTPException,),
-        {"__init__": init},
+        {"__new__": new, "__init__": init},
     )
+    # Keep the generated catch type while selecting the handler per exception.
+    openai_exception_class = type(
+        f"OpenAI{class_name}", (exception_class, OpenAIAPIException), {}
+    )
+    return exception_class
 
 
 AlreadyExistsException = http_exception_factory(

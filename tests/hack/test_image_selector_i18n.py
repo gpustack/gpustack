@@ -153,7 +153,7 @@ function app(docsLanguage, storedLanguage) {
     const exports = `
         globalThis.API = {
             CONFIG, state, elements, initElements, bindEvents, setLanguage,
-            updateLanguage, generateImageList, renderFrameworkVersions,
+            updateLanguage, generateImageList, getCurrentImages, renderFrameworkVersions,
             renderCardSelector, loadData
         };
     `;
@@ -269,7 +269,9 @@ Object.assign(page.state, {
     images: [
         'gpustack/runtime:pause', 'gpustack/benchmark-runner:1', 'postgres:16',
         'prom/prometheus:v3', 'grafana/grafana:12',
-        'gpustack/mirrored-higress:v1', 'gpustack/gpustack-operator:v1'
+        'gpustack/mirrored-higress-gateway:v1', 'gpustack/gpustack-operator:v1',
+        'gpustack/ssh-server:v1', 'gpustack/mirrored-kueue:v1',
+        'gpustack/llm-router:v0.3.1', 'gpustack/higress-plugins:0.5.0.post2'
     ],
     runnerImages: ['gpustack/runner:cuda12.8-vllm0.9.0'],
     optionalImages: {postgres: true, monitoring: true}
@@ -285,11 +287,44 @@ for (const component of ['all', 'server', 'worker']) {
             for (const language of ['en', 'zh', 'ja', 'ru', 'tr']) {
                 page.state.currentLang = language;
                 page.generateImageList();
+                const lines = page.nodes['image-list'].textContent.split('\n');
+                const categorized = [
+                    ['higress-plugins:0.5.0.post2', 'gateway'],
+                    ['mirrored-higress-gateway:v1', 'gateway'],
+                    ['gpustack-operator:v1', 'k8s'],
+                    ['ssh-server:v1', 'k8s'],
+                    ['mirrored-kueue:v1', 'k8s'],
+                    ['llm-router:v0.3.1', 'k8s']
+                ];
+                for (const [image, category] of categorized) {
+                    const index = lines.findIndex(line => line.startsWith('docker ') && line.endsWith(`/${image}`));
+                    if (component !== 'worker') {
+                        assert.ok(index > 0);
+                        assert.notEqual(page.CONFIG.i18n[language].comments[category], undefined);
+                        const heading = lines.slice(0, index).reverse().find(line => line.startsWith('# '));
+                        assert.equal(heading, `# ${page.CONFIG.i18n[language].comments[category]}`);
+                    } else {
+                        assert.equal(index, -1);
+                    }
+                }
+                if (component !== 'worker') {
+                    for (const category of ['gateway', 'k8s']) {
+                        assert.equal(lines.filter(line => line === `# ${page.CONFIG.i18n[language].comments[category]}`).length, 1);
+                    }
+                }
                 commands.push(
                     page.nodes['image-list'].textContent.split('\n').filter(
                         line => line.startsWith('docker ')
                     )
                 );
+            }
+            for (const image of ['llm-router:v0.3.1', 'higress-plugins:0.5.0.post2', 'ssh-server:v1', 'gpustack-operator:v1', 'mirrored-higress-gateway:v1', 'mirrored-kueue:v1']) {
+                const expected = `${page.CONFIG.registries[registry].prefix}${image}`;
+                const included = component !== 'worker';
+                assert.equal(commands[0].some(command => command.endsWith(expected)),
+                    included, `${component} pull commands include ${expected}`);
+                assert.equal(page.getCurrentImages(component).includes(expected),
+                    included, `${component} offline images include ${expected}`);
             }
             for (const translated of commands.slice(1)) {
                 assert.deepEqual(commands[0], translated);

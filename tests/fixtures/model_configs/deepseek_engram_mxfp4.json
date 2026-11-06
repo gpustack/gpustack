@@ -1,0 +1,22 @@
+{
+  "architectures": ["DeepseekV41ForCausalLM"],
+  "model_type": "deepseek_v41",
+  "dtype": "bfloat16",
+  "quantization_config": {
+    "quant_method": "fp8",
+    "weight_block_size": [32, 32],
+    "scale_fmt": "ue8m0",
+    "expert_dtype": "fp4",
+    "moe_quant_algo": "NVFP4",
+    "engram_embed_quant": "mxfp4",
+    "engram_embed_block_size": 32,
+    "engram_embed_scale_dtype": "ue8m0",
+    "engram_embed_layers": [1, 14]
+  },
+  "text_config": {
+    "model_type": "deepseek_v41_text",
+    "engram_head_dim": 256,
+    "engram_layer_ids": [1, 14],
+    "engram_num_embeddings": [384006168, 384016682]
+  }
+}

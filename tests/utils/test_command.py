@@ -7,6 +7,7 @@ from gpustack.utils.command import (
     drop_empty_flag_values,
     extract_flag_arguments,
     find_parameter,
+    find_int_parameter,
     find_bool_parameter,
     find_last_int_parameter,
     find_last_parameter,
@@ -428,6 +429,30 @@ def test_find_bool_parameter_argv_stream():
 
 
 @pytest.mark.parametrize(
+    'reader, names, expected',
+    [
+        (find_parameter, ['tp'], '2'),
+        (find_last_parameter, ['tp'], '4'),
+        (find_int_parameter, ['tp'], 2),
+        (find_last_int_parameter, ['tp'], 4),
+        (find_bool_parameter, ['data-parallel-hybrid-lb'], False),
+        (
+            find_parameter,
+            ['chat-template'],
+            "You're helpful. --data-parallel-hybrid-lb --tp=8",
+        ),
+    ],
+)
+def test_parameter_readers_preserve_tokenized_argument_values(reader, names, expected):
+    argv = [
+        "--chat-template=You're helpful. --data-parallel-hybrid-lb --tp=8",
+        '--tp=2',
+        '--tp=4',
+    ]
+    assert reader(argv, names, tokenized=True) == expected
+
+
+@pytest.mark.parametrize(
     "arguments, expected",
     [
         # Flag with empty value pair is dropped entirely.
@@ -770,3 +795,46 @@ def test_rewrite_value_bool_flags(argv, expected, expected_unrecognized):
 )
 def test_parse_bool_flag_value(value, expected):
     assert parse_bool_flag_value(value) == expected
+
+
+@pytest.mark.parametrize(
+    'parameters,expected',
+    [
+        (None, False),
+        ([], False),
+        (['--foo=false', '--foo'], True),
+        (['--foo', '--foo=false'], False),
+        (['--foo=false --bar true'], True),
+        (['--bar=true', '--foo', 'OFF'], False),
+        (['--foo', '--bar=unknown'], True),
+    ],
+)
+def test_find_bool_parameter_can_use_the_last_alias(parameters, expected):
+    assert find_bool_parameter(parameters, ['foo', 'bar'], last_wins=True) == expected
+
+
+@pytest.mark.parametrize('tokenized', [False, True])
+@pytest.mark.parametrize(
+    'parameters,expected',
+    [
+        (['--no-foo'], False),
+        (['--foo', '--no-foo'], False),
+        (['--no-foo', '--bar'], True),
+        (['--bar', '--no-foo', '--foo'], True),
+        (['--no-foo', '--bar=false'], False),
+        (['--foo', '--unrelated'], True),
+    ],
+)
+def test_find_bool_parameter_resolves_explicit_negative_aliases(
+    parameters, expected, tokenized
+):
+    assert (
+        find_bool_parameter(
+            parameters if tokenized else [' '.join(parameters)],
+            ['foo', 'bar'],
+            negative_param_names=['no-foo'],
+            last_wins=True,
+            tokenized=tokenized,
+        )
+        is expected
+    )

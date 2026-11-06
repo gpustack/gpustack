@@ -3,6 +3,18 @@
 # All metrics include full hierarchy labels
 # -----------------------------
 gpustack_metrics:
+  gpustack:smg_router_requests:
+    type: Counter
+    description: "Requests received by the ordinary SGLang gateway, including requests that may fail."
+
+  gpustack:smg_worker_selections:
+    type: Counter
+    description: "Ordinary SGLang gateway worker selection events, including retry selections."
+
+  gpustack:smg_worker_requests_active:
+    type: Gauge
+    description: "Current request load recorded by the ordinary SGLang gateway per native worker."
+
   gpustack:num_requests_running:
     type: Gauge
     description: "Number of requests currently being processed."
@@ -303,6 +315,13 @@ gpustack_metrics:
 
 
 runtime_mapping:
+  # Ordinary components have Router semantics independent of legacy PD mappings.
+  SGLangSMG:
+    "*":
+      smg_router_requests: gpustack:smg_router_requests
+      smg_worker_selection: gpustack:smg_worker_selections
+      smg_worker_requests_active: gpustack:smg_worker_requests_active
+
   vLLM:
     "*": # 0.21.0
       vllm:num_requests_running: gpustack:num_requests_running

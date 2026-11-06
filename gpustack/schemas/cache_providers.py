@@ -251,7 +251,8 @@ class CacheProviderInjection(BaseModel):
     """Connector config injected into an inference engine that attaches to a cache service."""
 
     env: Dict[str, str] = {}
-    """Env template. Values support {{placeholder}}; entries rendering empty are dropped."""
+    """Env template. Empty values are dropped. Registered cache runtime variables
+    are resolved by each worker; other placeholders are resolved on the server."""
 
     kv_transfer_config: Optional[CacheProviderKVTransferConfig] = None
     """The engine's connector slot, rendered ahead of args as
@@ -1701,6 +1702,22 @@ def resolved_field_values(
     return resolved
 
 
+CACHE_ENV_RUNTIME_VARIABLES: Dict[str, str] = {"worker_ip": "ip"}
+"""Cache env placeholders mapped to attributes of the current inference worker."""
+
+
+def _deferred_cache_env_variables() -> Dict[str, str]:
+    """Preserve runtime placeholders in the server-rendered snapshot."""
+    return {name: "{{" + name + "}}" for name in CACHE_ENV_RUNTIME_VARIABLES}
+
+
+def _strip_cache_env_variables(template: str) -> str:
+    """Exclude exact runtime env references from server-placeholder validation."""
+    for placeholder in _deferred_cache_env_variables().values():
+        template = template.replace(placeholder, "")
+    return template
+
+
 RESERVED_INJECTION_PLACEHOLDERS = frozenset(
     {
         "host",
@@ -1733,7 +1750,10 @@ def validate_injection_templates(provider: "CacheProvider") -> List[str]:
         buckets = [set(bucket) for bucket in injection.locality_params.values()]
         locality_common = set.intersection(*buckets) if buckets else set()
         templates: List[str] = []
-        templates.extend(injection.env.values())
+        # Only env values receive a second rendering pass on the worker.
+        templates.extend(
+            _strip_cache_env_variables(value) for value in injection.env.values()
+        )
         templates.extend(injection.args)
         templates.extend(injection.files.values())
         if injection.kv_transfer_config:
@@ -1926,8 +1946,10 @@ def render_injection(
     field means.
     """
     env: Dict[str, str] = {}
+    # Shared snapshots must preserve runtime values for each worker to resolve.
+    env_params = {**params, **_deferred_cache_env_variables()}
     for key, value in (integration.injection.env or {}).items():
-        rendered = render_template(value, params)
+        rendered = render_template(value, env_params)
         if rendered:
             env[key] = rendered
     args: List[str] = []

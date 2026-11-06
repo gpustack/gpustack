@@ -161,3 +161,110 @@ async def test_a_measured_download_fails_when_its_file_stops_reading(tmp_path):
             chunks.append(chunk)
 
     assert chunks == [b"one\n", b"two\n"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_rank_source_reads_the_same_filtered_window_and_length(tmp_path):
+    from tests.worker.test_logs import _rank_source_archive
+    from gpustack.routes.worker.logs import get_serve_log_options
+
+    _, _, sources = _rank_source_archive(tmp_path / 'serve')
+    request = _request(tmp_path)
+    request.app.state.serve_manager = SimpleNamespace(_worker_id=7)
+    source = next(
+        s.descriptor
+        for s in sources
+        if s.descriptor.kind == 'rank' and s.descriptor.dp_rank == 0
+    )
+    with patch(f'{MODULE}.instance_log_files') as legacy_walk:
+        options = await get_serve_log_options(request, 42, current_restart_count=3)
+    legacy_walk.assert_not_called()
+    assert all(entry.started_at is not None for entry in options.restarts)
+    assert any(s.id == source.id for entry in options.restarts for s in entry.sources)
+    response = await get_serve_logs(
+        request,
+        42,
+        LogOptions(offset=0, limit=100),
+        container_name=None,
+        model_file_id=None,
+        source=source.id,
+        current_restart_count=3,
+    )
+    data = b''.join([chunk async for chunk in response.body_iterator])
+    assert data == b'[dp0-node0] first\n[dp0-node0] last\n'
+    assert response.headers['x-log-total-bytes'] == str(len(data))
+    assert response.headers['x-log-total-lines'] == '2'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'restart,container,previous,message',
+    [
+        (None, None, False, 'source requires current_restart_count'),
+        (None, 'default', False, 'source requires current_restart_count'),
+        (3, 'default', False, 'A source cannot be combined with container or previous'),
+        (3, None, True, 'A source cannot be combined with container or previous'),
+    ],
+)
+async def test_source_selector_reports_the_invalid_parameter(
+    tmp_path, restart, container, previous, message
+):
+    with pytest.raises(BadRequestException) as raised:
+        await get_serve_logs(
+            _request(tmp_path),
+            7,
+            LogOptions(previous=previous),
+            source='opaque',
+            current_restart_count=restart,
+            container_name=container,
+            model_file_id=None,
+        )
+    assert raised.value.status_code == 400
+    assert raised.value.message == message
+
+
+@pytest.mark.asyncio
+async def test_missing_previous_source_never_reads_current(tmp_path):
+    from tests.worker.test_logs import _rank_source_archive
+    from gpustack.api.exceptions import NotFoundException
+
+    _rank_source_archive(tmp_path / 'serve')
+    request = _request(tmp_path)
+    request.app.state.serve_manager = SimpleNamespace(_worker_id=7)
+    with pytest.raises(NotFoundException):
+        await get_serve_logs(
+            request,
+            42,
+            LogOptions(previous=True),
+            source=None,
+            model_file_id=None,
+            container_name=None,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'failure',
+    [
+        FileNotFoundError('missing'),
+        OSError('Log source changed while reading'),
+        OSError('Log source was truncated while reading'),
+    ],
+)
+async def test_source_removed_during_planning_reports_expiration(tmp_path, failure):
+    from gpustack.api.exceptions import NotFoundException
+    from gpustack.routes.worker.logs import _serve_source
+
+    request = _request(tmp_path)
+    request.app.state.serve_manager = SimpleNamespace(_worker_id=7)
+    missing = tmp_path / 'main.log.1'
+    source = SimpleNamespace(paths=[missing], descriptor=SimpleNamespace(kind='rank'))
+    with (
+        patch(f'{MODULE}.resolve_log_source', return_value=source),
+        patch(f'{MODULE}.plan_source_window', side_effect=failure) as plan,
+    ):
+        with pytest.raises(NotFoundException) as error:
+            await _serve_source(request, tmp_path, 42, 'rank', 3, LogOptions(offset=0))
+    assert error.value.status_code == 404
+    assert 'expired' in error.value.message
+    assert plan.call_args.args[-1].is_set()

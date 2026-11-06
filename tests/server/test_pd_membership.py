@@ -22,7 +22,6 @@ from gpustack.server import pd_membership
 from gpustack.server.pd_membership import (
     MembershipOutcome,
     desired_members,
-    member_url,
     router_addresses,
 )
 
@@ -33,7 +32,7 @@ def _instance(role, port, state=ModelInstanceStateEnum.RUNNING, ip="10.0.0.1"):
 
 def _model():
     return SimpleNamespace(
-        id=1, name="pd", disaggregation=SimpleNamespace(mode="vllm-nixl")
+        id=1, name="pd", cluster_id=1, disaggregation=SimpleNamespace(mode="vllm-nixl")
     )
 
 
@@ -58,8 +57,77 @@ def test_a_member_is_addressed_the_way_the_router_stores_it():
     """`host:port` of the serving listener. Measured: the `worker` label on the
     router's own counters carries the whole URL it was launched with, not a
     worker name or id, and `DELETE /workers/{url}` matches on the same."""
-    assert member_url(_instance("decode", 40011)) == "http://10.0.0.1:40011"
-    assert member_url(_instance("decode", None)) is None
+    assert desired_members(_model(), [_instance("decode", 40011)]) == {
+        "http://10.0.0.1:40011": "decode"
+    }
+    assert desired_members(_model(), [_instance("decode", None)]) == {}
+
+
+def _managed_member():
+    from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+
+    instance = _instance("prefill", 40010)
+    instance.id = 7
+    instance.model_id = 1
+    instance.worker_id = 1
+    instance.restart_count = 2
+    instance.draining_since = None
+    instance.group_id = "g1"
+    instance.named_ports = {}
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[{"worker_id": 2, "worker_ip": "10.0.0.2"}],
+        workloads=[
+            ModelInstanceWorkload(
+                name=f"engine-{worker_id}",
+                worker_id=worker_id,
+                state="running",
+                dp_rank_placements=[
+                    {
+                        "dp_rank": rank,
+                        "node_rank": 0,
+                        "gpu_indexes": [0],
+                        "api_port": 41000 + rank,
+                        "ready": True,
+                    }
+                ],
+            )
+            for worker_id, rank in [(1, 0), (2, 1)]
+        ],
+    )
+    return instance
+
+
+def test_managed_pd_members_use_all_ready_main_apis():
+    from gpustack.worker.pd_router import group_peer_addresses
+
+    instance = _managed_member()
+    wanted = desired_members(_model(), [instance])
+    startup = group_peer_addresses([instance], "g1", {1: "10.0.0.1", 2: "10.0.0.2"})
+    assert wanted == {
+        "http://10.0.0.1:41000": "prefill",
+        "http://10.0.0.2:41001": "prefill",
+    }
+    assert {f"http://{p.ip}:{p.port}" for p in startup["prefill"]} == set(wanted)
+
+
+@pytest.mark.parametrize(
+    "unavailable", ["empty", "pending", "not_ready", "missing_worker"]
+)
+def test_managed_pd_members_never_fall_back_to_the_instance_port(unavailable):
+    from gpustack.worker.pd_router import group_peer_addresses
+
+    instance = _managed_member()
+    if unavailable == "empty":
+        instance.distributed_servers.workloads = []
+        instance.distributed_servers.orchestration_mode = "managed"
+    elif unavailable == "pending":
+        instance.distributed_servers.workloads[1].state = "pending"
+    elif unavailable == "not_ready":
+        instance.distributed_servers.workloads[1].dp_rank_placements[0].ready = False
+    else:
+        instance.distributed_servers.workloads.pop()
+    assert desired_members(_model(), [instance]) == {}
+    assert group_peer_addresses([instance], "g1", {1: "10.0.0.1", 2: "10.0.0.2"}) == {}
 
 
 def test_every_running_router_is_reconciled():
@@ -903,3 +971,590 @@ async def test_a_deleted_model_takes_its_membership_state_with_it(monkeypatch):
     await controller._reconcile(event)
 
     assert pd_membership.outcome_for(4245) is None
+
+
+@pytest.mark.parametrize('addresses', [{1: '10.9.0.1', 2: '10.9.0.2'}, {}])
+def test_dynamic_pd_members_use_current_worker_addresses_consistently(addresses):
+    peer = _managed_member()
+    members = pd_membership.desired_members(_model(), [peer], worker_ip_by_id=addresses)
+    ports = pd_membership.desired_member_ports([peer], worker_ip_by_id=addresses)
+    snapshot = pd_membership.desired_member_snapshot([peer], worker_ip_by_id=addresses)
+    assert set(members) == (
+        {'http://10.9.0.1:41000', 'http://10.9.0.2:41001'} if addresses else set()
+    )
+    assert {row['ip'] for row in snapshot} == set(addresses.values())
+    assert not ports
+    assert not any('10.0.0.' in url for url in members)
+
+
+def test_managed_pd_peer_resolution_keeps_headless_fragments_off_the_router():
+    from gpustack.schemas.models import DPRankPlacement
+    from gpustack.worker.pd_router import group_peer_addresses
+
+    instance = _managed_member()
+    instance.distributed_servers.workloads[1].dp_rank_placements = [
+        DPRankPlacement(dp_rank=0, node_rank=1, gpu_indexes=[0])
+    ]
+    assert desired_members(_model(), [instance]) == {"http://10.0.0.1:41000": "prefill"}
+    assert (
+        group_peer_addresses([instance], "g1", {1: "10.0.0.1"})["prefill"][0].port
+        == 41000
+    )
+
+
+@pytest.mark.asyncio
+async def test_dynamic_membership_reconcile_matches_current_address_snapshot(
+    monkeypatch,
+):
+    from unittest.mock import AsyncMock
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+
+    instances = [_managed_member()]
+    addresses = {1: '10.9.0.1', 2: '10.9.0.2'}
+    snapshot = pd_membership.desired_member_snapshot(instances, addresses)
+    registry = {
+        url: pd_membership.RegistryEntry(role)
+        for url, role in desired_members(_model(), instances, addresses).items()
+    }
+    read = AsyncMock(return_value=pd_membership.RegistryRead(entries=registry))
+    monkeypatch.setattr(pd_membership, '_read_registry', read)
+    monkeypatch.setattr(pd_membership, '_remove_stale', AsyncMock(return_value=[]))
+    monkeypatch.setattr(pd_membership, '_add_missing', AsyncMock())
+    monkeypatch.setattr(
+        pd_membership,
+        '_await_registration',
+        AsyncMock(return_value=pd_membership.RegistryRead(entries=registry)),
+    )
+    outcome = await pd_membership.reconcile(
+        _model(),
+        get_pd_mode('vllm-nixl'),
+        instances,
+        '10.0.0.1:42000',
+        client=object(),
+        peer_snapshot=snapshot,
+        worker_ip_by_id=addresses,
+    )
+    assert outcome.ok
+    assert outcome.peer_snapshot == snapshot
+    assert {peer['ip'] for peer in outcome.peer_snapshot} == set(addresses.values())
+    assert read.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_router_addresses_refresh_workers_and_exclude_deleted_rows(monkeypatch):
+    from unittest.mock import AsyncMock
+    from gpustack.schemas.workers import Worker
+    from gpustack.server.pd_router_membership import router_worker_ips
+
+    refresh = AsyncMock(
+        return_value=[
+            SimpleNamespace(id=1, ip='10.9.0.1', deleted_at=None),
+            SimpleNamespace(id=2, ip='10.9.0.2', deleted_at='deleted'),
+            SimpleNamespace(id=3, ip=None, deleted_at=None),
+        ]
+    )
+    monkeypatch.setattr(Worker, 'all_by_field', refresh)
+    session = object()
+    assert await router_worker_ips(session, 11) == {1: '10.9.0.1'}
+    refresh.assert_awaited_once_with(session, 'cluster_id', 11, refresh=True)
+
+
+@pytest.mark.asyncio
+async def test_current_worker_query_failure_does_not_change_router_membership(
+    monkeypatch,
+):
+    from unittest.mock import AsyncMock
+    from gpustack.server import controllers, pd_router_membership
+
+    model = _model()
+    model.disaggregation.mode = SimpleNamespace(value='vllm-nixl')
+    model.roles = [SimpleNamespace(name='router', run_command=None)]
+    router = _instance('router', 42000)
+    monkeypatch.setattr(
+        pd_router_membership,
+        'router_worker_ips',
+        AsyncMock(side_effect=RuntimeError('database unavailable')),
+    )
+    reconcile = AsyncMock()
+    monkeypatch.setattr(pd_membership, 'reconcile', reconcile)
+    pd_membership.forget(model.id)
+    try:
+        with pytest.raises(RuntimeError, match='database unavailable'):
+            await controllers._reconcile_router_membership(
+                object(), model, [_managed_member(), router]
+            )
+        assert pd_membership.outcome_for(model.id) is None
+        reconcile.assert_not_awaited()
+    finally:
+        pd_membership.forget(model.id)
+
+
+@pytest.mark.asyncio
+async def test_failed_managed_pd_members_are_removed_even_when_none_are_ready(
+    monkeypatch,
+):
+    from unittest.mock import AsyncMock
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+
+    instance = _managed_member()
+    instance.distributed_servers.workloads = []
+    instance.distributed_servers.orchestration_mode = "managed"
+    registry = {"http://10.0.0.1:41000": pd_membership.RegistryEntry("prefill")}
+    monkeypatch.setattr(
+        pd_membership,
+        "_read_registry",
+        AsyncMock(return_value=pd_membership.RegistryRead(entries=registry)),
+    )
+    remove = AsyncMock(return_value=[])
+    monkeypatch.setattr(pd_membership, "_remove_stale", remove)
+    monkeypatch.setattr(pd_membership, "_add_missing", AsyncMock())
+    monkeypatch.setattr(
+        pd_membership,
+        "_await_registration",
+        AsyncMock(return_value=pd_membership.RegistryRead(entries={})),
+    )
+    outcome = await pd_membership.reconcile(
+        _model(),
+        get_pd_mode("vllm-nixl"),
+        [instance],
+        "10.0.0.1:42000",
+        client=object(),
+    )
+    remove.assert_awaited_once()
+    assert remove.call_args.args[3] == {}
+    assert outcome.ok is False
+
+
+def test_managed_member_epoch_changes_the_membership_fingerprint():
+    instance = _managed_member()
+    members = desired_members(_model(), [instance])
+    first = pd_membership.membership_fingerprint(
+        "vllm-nixl", members, [], instances=[instance]
+    )
+    instance.restart_count += 1
+    assert desired_members(_model(), [instance]) == members
+    assert (
+        pd_membership.membership_fingerprint(
+            "vllm-nixl", members, [], instances=[instance]
+        )
+        != first
+    )
+    assert pd_membership.membership_fingerprint(
+        "sglang-mooncake", members, [], instances=[instance]
+    ) == pd_membership.membership_fingerprint("sglang-mooncake", members, [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("previous", ["same", "changed", "unknown"])
+async def test_managed_epoch_refresh_replaces_only_changed_members(
+    monkeypatch, previous
+):
+    from unittest.mock import AsyncMock
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+
+    instance = _managed_member()
+    instances = [instance, _instance("decode", 42001)]
+    snapshot = pd_membership.desired_member_snapshot(instances)
+    if previous == "changed":
+        for peer in snapshot:
+            peer["restart_count"] -= 1
+    elif previous == "unknown":
+        snapshot = None
+    registry = {
+        url: pd_membership.RegistryEntry(role)
+        for url, role in desired_members(_model(), instances).items()
+    }
+    healthy = {"http://10.0.0.1:42001": pd_membership.RegistryEntry("decode")}
+    read = AsyncMock(
+        side_effect=[
+            pd_membership.RegistryRead(entries=registry),
+            pd_membership.RegistryRead(entries=healthy),
+        ]
+    )
+    monkeypatch.setattr(pd_membership, "_read_registry", read)
+    remove = AsyncMock(return_value=[])
+    add = AsyncMock()
+    monkeypatch.setattr(pd_membership, "_remove_stale", remove)
+    monkeypatch.setattr(pd_membership, "_add_missing", add)
+    monkeypatch.setattr(
+        pd_membership,
+        "_await_registration",
+        AsyncMock(return_value=pd_membership.RegistryRead(entries=registry)),
+    )
+    outcome = await pd_membership.reconcile(
+        _model(),
+        get_pd_mode("vllm-nixl"),
+        instances,
+        "10.0.0.1:42000",
+        client=object(),
+        peer_snapshot=snapshot,
+    )
+    assert outcome.ok is True
+    assert outcome.peer_snapshot == pd_membership.desired_member_snapshot(instances)
+    if previous == "same":
+        assert read.await_count == 1
+        assert add.call_args.args[5] == registry
+    else:
+        assert read.await_count == 2
+        assert remove.call_args_list[0].args[3] == {"http://10.0.0.1:42001": "decode"}
+        assert add.call_args.args[5] == healthy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("readable", [True, False])
+async def test_managed_epoch_refresh_waits_for_confirmed_old_member_removal(
+    monkeypatch, readable
+):
+    from unittest.mock import AsyncMock
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+
+    instance = _managed_member()
+    registry = {
+        url: pd_membership.RegistryEntry(role)
+        for url, role in desired_members(_model(), [instance]).items()
+    }
+    monkeypatch.setattr(
+        pd_membership,
+        "_read_registry",
+        AsyncMock(
+            side_effect=[
+                pd_membership.RegistryRead(entries=registry),
+                pd_membership.RegistryRead(entries=registry if readable else None),
+            ]
+        ),
+    )
+    monkeypatch.setattr(pd_membership, "_remove_stale", AsyncMock(return_value=[]))
+    add = AsyncMock()
+    monkeypatch.setattr(pd_membership, "_add_missing", add)
+    outcome = await pd_membership.reconcile(
+        _model(),
+        get_pd_mode("vllm-nixl"),
+        [instance],
+        "10.0.0.1:42000",
+        client=object(),
+        peer_snapshot=[],
+    )
+    assert outcome.ok is False
+    assert outcome.unreadable is not readable
+    assert outcome.peer_snapshot is None
+    add.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'changed',
+    [None, 'router_epoch', 'worker', 'stop', 'peer_epoch', 'model', 'peer_address'],
+)
+async def test_membership_snapshot_write_is_fenced_after_http(monkeypatch, changed):
+    from unittest.mock import AsyncMock, MagicMock
+    from gpustack.server import controllers
+    from gpustack.schemas.models import Model, ModelInstance
+    from gpustack.schemas.workers import Worker
+
+    addresses = {1: '10.0.0.1', 2: '10.0.0.2'}
+    if changed == 'peer_address':
+        addresses[1] = '10.9.0.1'
+    monkeypatch.setattr(
+        Worker,
+        'all_by_field',
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(id=worker_id, ip=ip)
+                for worker_id, ip in addresses.items()
+            ]
+        ),
+    )
+
+    peer = _managed_member()
+    router = SimpleNamespace(
+        id=9,
+        model_id=1,
+        worker_id=1,
+        restart_count=2,
+        port=42000,
+        group_id='g1',
+        role='router',
+        state='running',
+        draining_since=None,
+        deleted_at=None,
+        router_peer_snapshot=None,
+    )
+    model = _model()
+    model.updated_at, model.deleted_at = None, None
+    model.restarting_since, model.replicas = None, 1
+    expected = (
+        router.id,
+        router.worker_id,
+        router.restart_count,
+        router.port,
+        router.group_id,
+    )
+    snapshot = pd_membership.desired_member_snapshot([peer])
+    if changed == 'router_epoch':
+        router.restart_count += 1
+    elif changed == 'worker':
+        router.worker_id = 2
+    elif changed == 'stop':
+        router.draining_since = 'now'
+    elif changed == 'peer_epoch':
+        peer.restart_count += 1
+    elif changed == 'model':
+        model.updated_at = 'new'
+    monkeypatch.setattr(Model, 'one_by_id', AsyncMock(return_value=model))
+    monkeypatch.setattr(
+        ModelInstance,
+        'all_by_field',
+        AsyncMock(return_value=[peer, router]),
+    )
+    update = AsyncMock()
+    monkeypatch.setattr(
+        controllers,
+        'ModelInstanceService',
+        lambda session: SimpleNamespace(update=update),
+    )
+    session = MagicMock()
+    session.commit, session.rollback = AsyncMock(), AsyncMock()
+    accepted = await controllers._persist_router_peer_snapshot(
+        session, (1, None), expected, snapshot
+    )
+    assert accepted is (changed is None)
+    if changed is None:
+        update.assert_awaited_once_with(router, {'router_peer_snapshot': snapshot})
+    else:
+        update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('accepted', [True, False])
+async def test_managed_controller_releases_connection_and_fences_http_result(
+    monkeypatch, accepted
+):
+    from unittest.mock import AsyncMock
+    from gpustack.server import controllers
+    from gpustack.schemas.workers import Worker
+
+    addresses = {1: '10.0.0.1', 2: '10.0.0.2'}
+    monkeypatch.setattr(
+        Worker,
+        'all_by_field',
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(id=worker_id, ip=ip)
+                for worker_id, ip in addresses.items()
+            ]
+        ),
+    )
+
+    peer = _managed_member()
+    snapshot = pd_membership.desired_member_snapshot([peer])
+    router = SimpleNamespace(
+        id=9,
+        worker_id=1,
+        worker_ip='10.0.0.1',
+        port=42000,
+        role='router',
+        group_id='g1',
+        restart_count=2,
+        state='running',
+        draining_since=None,
+        router_peer_snapshot=snapshot,
+    )
+    model = _model()
+    model.updated_at = None
+    model.roles = [SimpleNamespace(name='router', run_command=None)]
+    model.disaggregation.mode = SimpleNamespace(value='vllm-nixl')
+    session = AsyncMock()
+    monkeypatch.setattr(
+        controllers, '_router_dial', AsyncMock(return_value=('10.0.0.1', None, None))
+    )
+
+    async def reconcile(*args, **kwargs):
+        assert session.commit.await_count == 1
+        assert kwargs['peer_snapshot'] == snapshot
+        assert kwargs['worker_ip_by_id'] == addresses
+        return MembershipOutcome(ok=True, peer_snapshot=snapshot)
+
+    monkeypatch.setattr(pd_membership, 'reconcile', reconcile)
+    persist = AsyncMock(return_value=accepted)
+    monkeypatch.setattr(controllers, '_persist_router_peer_snapshot', persist)
+    pd_membership.forget(model.id)
+    try:
+        await controllers._reconcile_router_membership(session, model, [peer, router])
+        persist.assert_awaited_once_with(
+            session, (1, None), (9, 1, 2, 42000, 'g1'), snapshot
+        )
+        assert pd_membership.outcome_for(model.id).ok is accepted
+        fingerprint = pd_membership.membership_fingerprint(
+            'vllm-nixl',
+            desired_members(model, [peer]),
+            [router],
+            instances=[peer, router],
+        )
+        assert pd_membership.settled(model.id, fingerprint) is accepted
+    finally:
+        pd_membership.forget(model.id)
+
+
+def _hybrid_member(role='prefill', instance_id=7, port=41000):
+    from gpustack.schemas.models import ModelInstanceWorkload
+
+    instance = _managed_member()
+    instance.id = instance_id
+    instance.role = role
+    instance.distributed_servers.workloads = [
+        ModelInstanceWorkload(
+            name=f'{role}-node-{worker_id}',
+            worker_id=worker_id,
+            state='running',
+            component={
+                'kind': 'vllm_hybrid',
+                'api_port': port,
+                'ready': True,
+                'dp_size': 2,
+            },
+        )
+        for worker_id in (1, 2)
+    ]
+    instance.distributed_servers.orchestration_mode = "managed"
+    return instance
+
+
+@pytest.mark.parametrize('headless', [False, True])
+def test_hybrid_pd_startup_and_dynamic_members_share_only_actual_node_apis(headless):
+    from gpustack.schemas.models import ModelInstanceComponent
+    from gpustack.worker.pd_router import group_peer_addresses
+
+    instance = _hybrid_member()
+    if headless:
+        instance.distributed_servers.workloads[1].component = ModelInstanceComponent(
+            kind='vllm_hybrid'
+        )
+    addresses = {1: '10.9.0.1', 2: '10.9.0.2'}
+    startup = group_peer_addresses([instance], 'g1', addresses)
+    wanted = desired_members(_model(), [instance], addresses)
+    expected = {'http://10.9.0.1:41000'}
+    if not headless:
+        expected.add('http://10.9.0.2:41000')
+    assert set(wanted) == expected
+    assert {f'http://{peer.ip}:{peer.port}' for peer in startup['prefill']} == expected
+    assert len(pd_membership.desired_member_snapshot([instance], addresses)) == len(
+        expected
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['vllm-nixl', 'vllm-ascend-mooncake'])
+@pytest.mark.parametrize('admitted', [False, True])
+async def test_hybrid_pd_dynamic_registration_keeps_base_urls_and_waits_for_readback(
+    monkeypatch, mode, admitted
+):
+    from unittest.mock import AsyncMock
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+
+    prefill = _hybrid_member()
+    decode = _instance('decode', 42001)
+    instances = [prefill, decode]
+    wanted = desired_members(_model(), instances)
+    current = {'http://10.0.0.1:42001': pd_membership.RegistryEntry('decode')}
+    complete = {url: pd_membership.RegistryEntry(role) for url, role in wanted.items()}
+    monkeypatch.setattr(
+        pd_membership,
+        '_read_registry',
+        AsyncMock(return_value=pd_membership.RegistryRead(entries=current)),
+    )
+    monkeypatch.setattr(pd_membership, '_remove_stale', AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        pd_membership,
+        '_await_registration',
+        AsyncMock(
+            return_value=pd_membership.RegistryRead(
+                entries=complete if admitted else current
+            )
+        ),
+    )
+    bodies = []
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class Client:
+        def request(self, method, url, **kwargs):
+            assert method == 'POST'
+            assert url == 'http://10.0.0.1:43000/workers'
+            bodies.append(kwargs['json'])
+            return Response()
+
+    outcome = await pd_membership.reconcile(
+        _model(),
+        get_pd_mode(mode),
+        instances,
+        '10.0.0.1:43000',
+        client=Client(),
+        peer_snapshot=pd_membership.desired_member_snapshot(instances),
+    )
+    assert outcome.ok is admitted
+    assert bodies == [
+        {'url': url, 'model_id': 'pd', 'worker_type': 'prefill'}
+        for url in ('http://10.0.0.1:41000', 'http://10.0.0.2:41000')
+    ]
+    assert decode.state == ModelInstanceStateEnum.RUNNING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['vllm-nixl', 'vllm-ascend-mooncake'])
+async def test_hybrid_pd_epoch_refresh_replaces_changed_side_and_keeps_healthy_peer(
+    monkeypatch, mode
+):
+    from unittest.mock import AsyncMock
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+
+    prefill = _hybrid_member()
+    decode = _hybrid_member(role='decode', instance_id=8, port=42000)
+    instances = [prefill, decode]
+    snapshot = pd_membership.desired_member_snapshot(instances)
+    for peer in snapshot:
+        if peer['role'] == 'prefill':
+            peer['restart_count'] -= 1
+    wanted = desired_members(_model(), instances)
+    registry = {url: pd_membership.RegistryEntry(role) for url, role in wanted.items()}
+    healthy = {url: entry for url, entry in registry.items() if entry.role == 'decode'}
+    monkeypatch.setattr(
+        pd_membership,
+        '_read_registry',
+        AsyncMock(
+            side_effect=[
+                pd_membership.RegistryRead(entries=registry),
+                pd_membership.RegistryRead(entries=healthy),
+            ]
+        ),
+    )
+    remove = AsyncMock(return_value=[])
+    add = AsyncMock()
+    monkeypatch.setattr(pd_membership, '_remove_stale', remove)
+    monkeypatch.setattr(pd_membership, '_add_missing', add)
+    monkeypatch.setattr(
+        pd_membership,
+        '_await_registration',
+        AsyncMock(return_value=pd_membership.RegistryRead(entries=registry)),
+    )
+    outcome = await pd_membership.reconcile(
+        _model(),
+        get_pd_mode(mode),
+        instances,
+        '10.0.0.1:43000',
+        client=object(),
+        peer_snapshot=snapshot,
+    )
+    assert outcome.ok
+    assert remove.call_args_list[0].args[3] == {url: 'decode' for url in healthy}
+    assert add.call_args.args[5] == healthy
+    assert decode.restart_count == 2
+    assert all(
+        workload.state == 'running' for workload in decode.distributed_servers.workloads
+    )

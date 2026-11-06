@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gpustack.schemas.models import (
+    DistributedServers,
     ModelInstanceStateEnum,
     PortBand,
 )
@@ -219,3 +220,24 @@ def test_stopping_clears_the_verdict_only_with_the_backoff(tmp_path, clear):
     else:
         # History retained: the next observation still reports the loop.
         assert manager._mark_crash_loop(_instance(), _workload(5), True) is True
+
+
+@pytest.mark.parametrize("worker_id", [1, 2])
+@pytest.mark.parametrize(
+    "entry", ["_restart_model_instance", "_restart_error_model_instance"]
+)
+def test_managed_generation_is_never_restarted_by_a_worker(tmp_path, worker_id, entry):
+    manager = _manager(tmp_path, worker_id=worker_id)
+    mi = _instance(state=ModelInstanceStateEnum.ERROR)
+    mi.distributed_servers = DistributedServers(workloads=[])
+    manager._sync_managed_model_instance = MagicMock()
+    manager._stop_model_instance = MagicMock()
+    manager._start_model_instance = MagicMock()
+
+    getattr(manager, entry)(mi)
+
+    manager._sync_managed_model_instance.assert_called_once_with(mi)
+    manager._update_model_instance.assert_not_called()
+    manager._stop_model_instance.assert_not_called()
+    manager._start_model_instance.assert_not_called()
+    assert mi.restart_count == 0

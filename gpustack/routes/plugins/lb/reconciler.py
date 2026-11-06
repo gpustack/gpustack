@@ -172,9 +172,9 @@ async def render_route(
         if registries:
             rendered_targets.append((target, registries))
 
-    # A target's weight is its models' TOTAL share, so its instances split
+    # A target's weight is its models' TOTAL share, so its endpoints split
     # it: handing the raw target weight to every candidate would scale each
-    # model's traffic by its replica count (1 replica at 100 vs 2 replicas
+    # model's traffic by its endpoint count (1 endpoint at 100 vs 2 endpoints
     # at 100 draws 1:1:1 instead of 2:1:1). The ingress path reaches the
     # same split through hamilton_calculate_weight's LCM scaling; here the
     # scaled weight lands on candidates untouched — the plugin's dice roll
@@ -185,7 +185,7 @@ async def render_route(
         for w, _ in scale_weight([(t.weight or 0, len(r)) for t, r in rendered_targets])
     ]
 
-    for (target, registries), per_instance_weight in zip(
+    for (target, registries), per_endpoint_weight in zip(
         rendered_targets, scaled_weights
     ):
         # Provider targets have no instances and no engine metrics;
@@ -198,7 +198,7 @@ async def render_route(
                     target.id,
                     kind,
                     model_name,
-                    per_instance_weight,
+                    per_endpoint_weight,
                     target.max_running_requests,
                 )
             )

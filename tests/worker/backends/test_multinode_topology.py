@@ -12,6 +12,7 @@ Covers:
 """
 
 from unittest.mock import MagicMock
+import shlex
 
 import pytest
 
@@ -168,8 +169,8 @@ def test_world_size_decode_cp_alone_does_not_size():
     assert strategies is None
 
 
-def test_world_size_hybrid_lb_sizes_by_dpl():
-    """Hybrid-LB: --data-parallel-size is global; local world sizes by dpl."""
+def test_world_size_hybrid_lb_sizes_by_global_dp():
+    """Hybrid-LB reserves the complete global DP group."""
     params = [
         "--data-parallel-hybrid-lb",
         "--data-parallel-size",
@@ -180,27 +181,27 @@ def test_world_size_hybrid_lb_sizes_by_dpl():
     world_size, strategies = (
         VLLMResourceFitSelector.get_world_size_from_backend_parameters(_model(params))
     )
-    assert world_size == 8
-    assert strategies == ["dp"]
+    assert world_size == 16
+    assert strategies == ["dp", "dpl"]
 
 
 def test_world_size_hybrid_lb_with_tp():
-    """Hybrid-LB local world = tp * dpl, ignoring the global dp."""
+    """Hybrid-LB world size includes global DP and TP."""
     params = ["--data-parallel-hybrid-lb", "--tp", "2", "--dp", "16", "--dpl", "4"]
     world_size, _ = VLLMResourceFitSelector.get_world_size_from_backend_parameters(
         _model(params)
     )
-    assert world_size == 8
+    assert world_size == 32
 
 
 def test_world_size_hybrid_lb_without_dpl():
-    """Hybrid-LB without dpl: local world cannot be inferred, leave it unset."""
+    """Hybrid-LB can size the global group before deriving local DP."""
     params = ["--data-parallel-hybrid-lb", "--data-parallel-size", "16"]
     world_size, strategies = (
         VLLMResourceFitSelector.get_world_size_from_backend_parameters(_model(params))
     )
-    assert world_size is None
-    assert strategies is None
+    assert world_size == 16
+    assert strategies == ["dp"]
 
 
 # ---------------------------------------------------------------------------
@@ -242,8 +243,20 @@ def test_follower_gets_headless_by_default():
     assert "--headless" in _dp_only_mp_arguments([])
 
 
-def test_follower_skips_headless_under_hybrid_lb():
-    assert "--headless" not in _dp_only_mp_arguments(["--data-parallel-hybrid-lb"])
+@pytest.mark.parametrize(
+    'parameters,headless',
+    [
+        (['--data-parallel-hybrid-lb'], False),
+        (['--data-parallel-hybrid-lb', '--no-data-parallel-hybrid-lb'], True),
+        (['--no-data-parallel-hybrid-lb', '--data-parallel-hybrid-lb'], False),
+        (['-dph', '--no-data-parallel-hybrid-lb'], True),
+        (['--no-data-parallel-hybrid-lb', '-dph'], False),
+        (['--data_parallel_hybrid_lb', '--no_data_parallel_hybrid_lb'], True),
+        (['--data-parallel-start-rank=8', '--no-data-parallel-hybrid-lb'], True),
+    ],
+)
+def test_follower_headless_follows_explicit_hybrid_flag_order(parameters, headless):
+    assert ('--headless' in _dp_only_mp_arguments(parameters)) is headless
 
 
 @pytest.mark.parametrize(
@@ -774,6 +787,18 @@ def test_create_candidate_cross_node_tp_allowed():
     assert reason is None
 
 
+def test_create_candidate_returns_a_reason_for_conflicting_lb_parameters():
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+
+    candidate, reason = _create_candidate(
+        _mock_model(['--data-parallel-external-lb', '--dpm']), [_mock_worker('a', 4)]
+    )
+    assert candidate is None
+    assert reason
+
+
 def test_create_candidate_returns_candidate_when_topology_fits():
     """Homogeneous cluster with valid cross-node TP/PP → candidate created."""
     from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
@@ -878,3 +903,575 @@ def test_ray_path_still_pins_vllm_port_to_connecting_port():
     env = _distributed_env("dp_only", executor_backend="ray")
     assert env["VLLM_PORT"] == "40063"
     assert "VLLM_DP_MASTER_PORT" not in env
+
+
+@pytest.mark.parametrize(
+    'gpus,dp,tp,expected',
+    [
+        ([4, 4], 2, 4, (2, [1, 1], 1)),
+        ([2, 2], 2, 2, (2, [1, 1], 1)),
+        ([2, 2], 4, 1, (4, [2, 2], 1)),
+        ([4, 4, 4, 4], 2, 8, (2, [1, 1, 1, 1], 2)),
+        ([4, 8], 3, 4, (3, [1, 2], 1)),
+    ],
+)
+def test_external_topology_uniform_rank_slices(gpus, dp, tp, expected):
+    from gpustack.utils.vllm_topology import external_lb_parallelism
+
+    result = external_lb_parallelism(
+        [f'--data-parallel-size={dp}', f'--tensor-parallel-size={tp}'], gpus
+    )
+    assert (result.dp, result.dpl_per_node, result.nnodes_within_dp) == expected
+
+
+@pytest.mark.parametrize('local', ['1', '2', '0', '-1', 'invalid'])
+def test_external_heterogeneous_allocation_rejects_uniform_local_dp_override(local):
+    from gpustack.utils.vllm_topology import external_lb_parallelism
+
+    with pytest.raises(ValueError, match='data-parallel-size-local'):
+        external_lb_parallelism(
+            ['--dp=3', '--tp=4', f'--data-parallel-size-local={local}'], [4, 8]
+        )
+
+
+@pytest.mark.parametrize(
+    'counts,accepted', [([4], True), ([8], False), ([4, 4], False)]
+)
+def test_external_selector_validates_rank_world_for_every_executor(counts, accepted):
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+
+    model = _mock_model(
+        [
+            '--distributed-executor-backend=ray',
+            '--data-parallel-external-lb',
+            '--dp=2',
+            '--tp=2',
+        ]
+    )
+    candidate, reason = _create_candidate(
+        model, [_mock_worker(str(i), count) for i, count in enumerate(counts)]
+    )
+    assert (candidate is not None) == accepted, reason
+    assert (reason is None) == accepted
+
+
+def test_external_selector_accepts_multiple_local_rank_fragments():
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+
+    model = _mock_model(
+        [
+            '--distributed-executor-backend=mp',
+            '--data-parallel-external-lb',
+            '--dp=2',
+            '--tp=4',
+            '--dpl=2',
+        ]
+    )
+    candidate, reason = _create_candidate(
+        model, [_mock_worker('a', 4), _mock_worker('b', 4)]
+    )
+    assert candidate is not None, reason
+    assert len(candidate.gpu_indexes) == 4
+    assert len(candidate.subordinate_workers) == 1
+    assert len(candidate.subordinate_workers[0].gpu_indexes) == 4
+
+
+@pytest.mark.parametrize(
+    'counts,params,expected',
+    [
+        ([4], ['--dp=2', '--tp=2'], (2, 2, 1)),
+        ([8], ['--dp=2', '--tp=2', '--pp=2'], (2, 2, 2)),
+        ([4, 4], ['--dp=4', '--tp=2'], (4, 2, 1)),
+    ],
+)
+def test_multi_port_external_complete_local_rank_topology(counts, params, expected):
+    from gpustack.utils.vllm_topology import multi_port_external_lb_parallelism
+
+    topology = multi_port_external_lb_parallelism(['-dpm', *params], counts)
+    assert (topology.dp, topology.tp, topology.pp) == expected
+    assert topology.nnodes_within_dp == 1
+    assert min(topology.dpl_per_node) >= 2
+
+
+@pytest.mark.parametrize(
+    'counts,params',
+    [
+        ([2], ['--dp=1']),
+        ([2, 2], ['--dp=2', '--tp=2']),
+        ([4, 4], ['--dp=2', '--tp=4']),
+        ([8], ['--dp=2', '--tp=2', '--pcp=2']),
+        ([4], ['--dp=2', '--headless']),
+        ([4], ['--dp=2', '--api-server-count=0']),
+        ([4], ['--dp=2', '-dpn=0']),
+        ([4], ['--dp=2', '--grpc']),
+        ([4], ['--dp=2', '--uds=/tmp/vllm']),
+        ([4], ['--dp=2', '--uds']),
+        ([4], ['--dp=2', '--uds', '--tp=2']),
+        ([4], ['--dp=2', '--uds=false']),
+        ([4], ['--dp=2', '--distributed-executor-backend=ray']),
+        ([4], ['--dp=2', '--nnodes=2']),
+        ([4], ['--dp=2', '-dpr=-1']),
+    ],
+)
+def test_multi_port_external_rejects_unrepresentable_rank_layout(counts, params):
+    from gpustack.utils.vllm_topology import multi_port_external_lb_parallelism
+
+    with pytest.raises(ValueError):
+        multi_port_external_lb_parallelism(['-dpm', *params], counts)
+
+
+@pytest.mark.parametrize(
+    'counts, params, accepted',
+    [
+        ([4, 4], ['--dp=2', '--tp=4', '--distributed-executor-backend=mp'], False),
+        ([4, 4], ['--dp=4', '--tp=2', '--distributed-executor-backend=mp'], True),
+        ([2, 2], ['--dp=4', '--tp=1', '--distributed-executor-backend=uni'], True),
+        ([4, 4], ['--dp=4', '--tp=2', '--distributed-executor-backend=uni'], False),
+        ([4], ['--dp=2', '--tp=2', '--distributed-executor-backend=mp'], True),
+        ([4], ['--dp=2', '--tp=2', '--distributed-executor-backend=uni'], False),
+    ],
+)
+def test_multi_port_external_selector_uses_worker_topology_contract(
+    counts, params, accepted
+):
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+    from gpustack.utils.vllm_topology import managed_lb_parallelism
+
+    parameters = ['-dpm', *params]
+    model = _mock_model(parameters)
+    workers = [_mock_worker(str(i), count) for i, count in enumerate(counts)]
+    candidate, reason = _create_candidate(model, workers)
+    if accepted:
+        assert candidate is not None, reason
+        assert len(candidate.gpu_indexes) == counts[0]
+    else:
+        with pytest.raises(ValueError) as error:
+            managed_lb_parallelism(parameters, counts)
+        assert candidate is None
+        assert reason == str(error.value)
+
+
+@pytest.mark.parametrize(
+    'counts,dp,tp,local,nodes',
+    [([2, 2], 2, 2, 2, 2), ([4, 4], 2, 4, 2, 2), ([4, 4, 4, 4], 2, 8, 2, 4)],
+)
+def test_external_explicit_local_slices_preserve_cross_worker_ranks(
+    counts, dp, tp, local, nodes
+):
+    from gpustack.utils.vllm_topology import external_lb_parallelism
+
+    result = external_lb_parallelism(
+        [f'--dp={dp}', f'--tp={tp}', f'--dpl={local}'], counts
+    )
+    assert result.dpl_per_node == [local] * len(counts)
+    assert result.nnodes_within_dp == nodes
+
+
+@pytest.mark.parametrize(
+    'counts,params,local,nodes,shape,coordinates',
+    [
+        (
+            [4, 4],
+            ['--tp=2', '--dp=4'],
+            [2, 2],
+            1,
+            'dp_only',
+            [[(0, 0), (1, 0)], [(2, 0), (3, 0)]],
+        ),
+        (
+            [4, 4],
+            ['--tp=2', '--dp=4', '--dpl=2'],
+            [2, 2],
+            1,
+            'dp_only',
+            [[(0, 0), (1, 0)], [(2, 0), (3, 0)]],
+        ),
+        (
+            [4, 2],
+            ['--tp=2', '--dp=3'],
+            [2, 1],
+            1,
+            'dp_only',
+            [[(0, 0), (1, 0)], [(2, 0)]],
+        ),
+        (
+            [2, 4],
+            ['--tp=2', '--dp=3'],
+            [1, 2],
+            1,
+            'dp_only',
+            [[(0, 0)], [(1, 0), (2, 0)]],
+        ),
+        (
+            [2, 2, 2, 2],
+            ['--tp=4', '--dp=2'],
+            [1, 1, 1, 1],
+            2,
+            'nested',
+            [[(0, 0)], [(0, 1)], [(1, 0)], [(1, 1)]],
+        ),
+        (
+            [4, 4, 4, 4],
+            ['--tp=4', '--pp=2', '--dp=2', '--dpl=1'],
+            [1, 1, 1, 1],
+            2,
+            'nested',
+            [[(0, 0)], [(0, 1)], [(1, 0)], [(1, 1)]],
+        ),
+        ([2, 2], ['--tp=4', '--dp=1'], [1, 1], 2, 'mp_only', [[(0, 0)], [(0, 1)]]),
+    ],
+)
+def test_hybrid_topology_uses_complete_group_and_saved_node_order(
+    counts, params, local, nodes, shape, coordinates
+):
+    from gpustack.utils.vllm_topology import (
+        external_lb_fragments,
+        hybrid_lb_parallelism,
+        managed_lb_parallelism,
+        parse_user_parallelism,
+    )
+
+    parameters = ['--data-parallel-hybrid-lb', *params]
+    result = hybrid_lb_parallelism(parameters, counts)
+    assert result == managed_lb_parallelism(parameters, counts)
+    assert result == validate_multinode_topology(
+        counts, parse_user_parallelism(parameters)
+    )
+    assert result.dpl_per_node == local
+    assert result.nnodes_within_dp == nodes
+    assert result.shape == shape
+    assert [
+        [
+            (fragment.dp_rank, fragment.node_rank)
+            for fragment in external_lb_fragments(counts, result, index)
+        ]
+        for index in range(len(counts))
+    ] == coordinates
+
+
+@pytest.mark.parametrize(
+    'duplicate',
+    ['--tensor-parallel-size=4', '--pp=2', '--pcp=2', '--dp=4', '--dpl=2'],
+)
+def test_hybrid_topology_uses_last_parallelism_values(duplicate):
+    from gpustack.utils.vllm_topology import hybrid_lb_parallelism
+
+    parameters = ['--tp=2', '--pp=1', '--pcp=1', '--dp=8', '--dpl=4']
+    expected = hybrid_lb_parallelism(parameters, [8, 8])
+    assert hybrid_lb_parallelism([duplicate, *parameters], [8, 8]) == expected
+
+
+@pytest.mark.parametrize(
+    'counts,params',
+    [
+        ([4], ['--tp=2', '--dp=4']),
+        ([4, 4], ['--tp=2', '--dp=4', '--dpl=1']),
+        ([4, 2], ['--tp=2', '--dp=3', '--dpl=2']),
+        ([4, 4], ['--tp=4', '--dp=2', '--dpl=2']),
+    ],
+)
+def test_hybrid_selector_rejects_incomplete_or_inconsistent_group(counts, params):
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+
+    candidate, reason = _create_candidate(
+        _mock_model(['--data-parallel-hybrid-lb', *params]),
+        [_mock_worker(str(index), count) for index, count in enumerate(counts)],
+    )
+    assert candidate is None
+    assert reason
+
+
+@pytest.mark.parametrize(
+    'counts,params',
+    [
+        ([2, 2, 2, 2], ['--tp=4', '--dp=2']),
+        ([4, 4, 4, 4], ['--tp=4', '--pp=2', '--dp=2', '--dpl=1']),
+    ],
+)
+def test_hybrid_selector_preserves_cross_worker_rank_allocations(counts, params):
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+
+    candidate, reason = _create_candidate(
+        _mock_model(['--data-parallel-hybrid-lb', *params]),
+        [_mock_worker(str(index), count) for index, count in enumerate(counts)],
+    )
+    assert candidate is not None, reason
+    assert [len(candidate.gpu_indexes)] + [
+        len(worker.gpu_indexes) for worker in candidate.subordinate_workers
+    ] == counts
+
+
+@pytest.mark.parametrize('flag', ['headless', 'grpc'])
+@pytest.mark.parametrize('enabled', [False, True])
+def test_multi_port_validation_uses_effective_boolean_value(flag, enabled):
+    from gpustack.utils.vllm_topology import multi_port_external_lb_parallelism
+
+    parameters = [
+        '-dpm',
+        '--dp=2',
+        '--tp=2',
+        f'--{flag}={str(not enabled).lower()}',
+        f'--{flag}={str(enabled).lower()}',
+    ]
+    if enabled:
+        with pytest.raises(ValueError, match=flag):
+            multi_port_external_lb_parallelism(parameters, [4])
+    else:
+        assert multi_port_external_lb_parallelism(parameters, [4]).dp == 2
+
+
+@pytest.mark.parametrize(
+    'flag',
+    [
+        '--data-parallel-external-lb',
+        '--data-parallel-hybrid-lb',
+        '--data-parallel-multi-port-external-lb',
+    ],
+)
+@pytest.mark.parametrize(
+    'uds', [['--uds', '/tmp/model.sock'], ['--uds=/tmp/model.sock'], ['--uds']]
+)
+def test_managed_http_modes_reject_unix_socket_parameters(flag, uds):
+    from gpustack.utils.vllm_topology import (
+        managed_lb_parallelism,
+        validate_managed_lb_parameters,
+    )
+
+    parameters = [flag, '--dp=2', '--tp=2', *uds]
+    with pytest.raises(ValueError, match='--uds'):
+        validate_managed_lb_parameters(parameters)
+    with pytest.raises(ValueError, match='--uds'):
+        managed_lb_parallelism(parameters, [4])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'mode', ['external', 'hybrid', 'implicit_hybrid', 'multi_port_external']
+)
+@pytest.mark.parametrize('manual', [False, True])
+async def test_manual_dp_candidate_preserves_partial_global_world(
+    mode, manual, monkeypatch
+):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+    from tests.utils.model import make_model
+
+    flag = {
+        'external': '--data-parallel-external-lb',
+        'hybrid': '--data-parallel-hybrid-lb',
+        'implicit_hybrid': '--data-parallel-start-rank=1',
+        'multi_port_external': '--data-parallel-multi-port-external-lb',
+    }[mode]
+    model = make_model(
+        gpu_ids=[f'w:cuda:{i}' for i in range(8)],
+        gpus_per_replica=8,
+        backend='vLLM',
+        backend_parameters=[flag, '--tp=8', '--dp=2', '--dpl=1'],
+        env={'GPUSTACK_MANUAL_DP': '1' if manual else '0'},
+    )
+    selector = VLLMResourceFitSelector.__new__(VLLMResourceFitSelector)
+    selector._model = model
+    selector._reserved_vram = 0
+    selector._init_model_parameters = AsyncMock()
+    selector._pretrained_config = SimpleNamespace()
+    selector._gpu_memory_utilization = 0
+    selector._config = SimpleNamespace(huggingface_token=None)
+    monkeypatch.setattr(
+        'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram',
+        AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr(
+        'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_offloaded_lookup_bytes',
+        lambda *_: 0,
+    )
+    selector.should_skip_candidate_func = lambda fn: False
+    candidate = SimpleNamespace(
+        gpu_indexes=list(range(8)), subordinate_workers=[], overcommit=False
+    )
+    selector.find_manual_gpu_selection_candidates = lambda workers: [candidate]
+    selector.find_single_worker_single_gpu_full_offloading_candidates = (
+        lambda workers: []
+    )
+    selector.find_single_worker_multi_gpu_full_offloading_candidates = (
+        lambda workers: []
+    )
+    selector.find_multi_worker_multi_gpu_candidates = lambda workers: []
+    selector._event_collector = MagicMock()
+    selector._finalize_candidate_ram = MagicMock()
+    selector._set_messages = MagicMock()
+    assert await selector.select_candidates([]) == ([candidate] if manual else [])
+
+
+@pytest.mark.parametrize(
+    'parameters',
+    [
+        ['--data-parallel-external-lb', '--data-parallel-rank=1'],
+        ['--data-parallel-hybrid-lb', '--data-parallel-start-rank=1'],
+        ['--data-parallel-external-lb', '--data-parallel-start-rank=1'],
+    ],
+)
+def test_legacy_parallelism_keeps_explicit_rank_parameters(parameters):
+    from gpustack.worker.backends.vllm import get_auto_parallelism_arguments
+    from tests.utils.model import new_model_instance
+
+    parameters = [*parameters, '--tp=8', '--dp=2', '--dpl=1']
+    original = list(parameters)
+    assert (
+        get_auto_parallelism_arguments(
+            parameters, new_model_instance(1, 'manual', 1), False, legacy_launch=True
+        )
+        == []
+    )
+    assert parameters == original
+
+
+@pytest.mark.parametrize(
+    'flag',
+    [
+        '--data-parallel-external-lb',
+        '--data-parallel-hybrid-lb',
+        '--data-parallel-start-rank=1',
+    ],
+)
+@pytest.mark.parametrize('manual', [False, True])
+def test_manual_dp_local_candidate_retains_only_its_selected_gpus(flag, manual):
+    from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+        _create_candidate,
+    )
+    from tests.fixtures.workers.fixtures import linux_nvidia_22_H100_80gx8
+    from tests.utils.model import make_model
+
+    worker = linux_nvidia_22_H100_80gx8()
+    model = make_model(
+        gpus_per_replica=8,
+        backend='vLLM',
+        backend_parameters=[flag, '--tp=8', '--dp=2', '--dpl=1'],
+        env={'GPUSTACK_MANUAL_DP': '1' if manual else '0'},
+    )
+    candidate, reason = _create_candidate(model, [worker])
+    if manual:
+        assert reason is None
+        assert candidate.worker.id == worker.id
+        assert candidate.gpu_indexes == list(range(8))
+        assert candidate.subordinate_workers == []
+        assert len(candidate.computed_resource_claim.vram) == 8
+    else:
+        assert candidate is None
+        assert 'data-parallel-size' in reason
+
+
+@pytest.mark.parametrize('mode', ['external', 'hybrid', 'multi-port-external'])
+@pytest.mark.parametrize('equal', [False, True])
+def test_vllm_underscore_options_keep_native_parallelism(mode, equal):
+    from gpustack.utils.vllm_topology import managed_lb_parallelism, vllm_lb_mode
+
+    def option(key, value):
+        return [f'{key}={value}'] if equal else [key, value]
+
+    parameters = [
+        f'--data_parallel_{mode.replace("-", "_")}_lb',
+        *option('--tensor_parallel_size', '2'),
+        *option('--data_parallel_size', '2'),
+        *option('--data_parallel_size_local', '2'),
+    ]
+    assert vllm_lb_mode(parameters) == mode.replace('-', '_')
+    topology = managed_lb_parallelism(parameters, [4])
+    assert (topology.tp, topology.dp, topology.dpl_per_node) == (2, 2, [2])
+
+
+def test_vllm_mixed_parallelism_aliases_use_the_final_value():
+    from gpustack.utils.vllm_topology import external_lb_parallelism
+
+    topology = external_lb_parallelism(
+        ['--tp=1', '--tensor_parallel_size=2', '--data_parallel_size=2'], [4]
+    )
+    assert (topology.tp, topology.dp) == (2, 2)
+    model = _mock_model(
+        ['--tp=1', '--tensor_parallel_size=2', '--data_parallel_size=2']
+    )
+    world, _ = VLLMResourceFitSelector.get_world_size_from_backend_parameters(model)
+    assert world == 4
+
+
+def test_vllm_option_normalization_preserves_values_and_nested_fields():
+    from gpustack.utils.vllm_topology import normalize_vllm_parameters
+
+    parameters = [
+        '/models/name_with_underscores',
+        '--served_model_name=model_name',
+        '--hf_overrides.rope_scaling.rope_type=yarn_type',
+        '--tokenizer',
+        '/models/tokenizer with spaces',
+        '--hf_overrides={"rope_type":"custom_value"}',
+    ]
+    original = list(parameters)
+    assert normalize_vllm_parameters(parameters) == [
+        '/models/name_with_underscores',
+        '--served-model-name=model_name',
+        '--hf-overrides.rope_scaling.rope_type=yarn_type',
+        '--tokenizer',
+        '/models/tokenizer with spaces',
+        '--hf-overrides={"rope_type":"custom_value"}',
+    ]
+    assert parameters == original
+
+
+@pytest.mark.parametrize(
+    'value',
+    [
+        "You're helpful. {{ messages[0].content }}",
+        'text --data-parallel-hybrid-lb --tp=8 --uds=/tmp/model.sock',
+        ' leading and trailing spaces ',
+    ],
+)
+@pytest.mark.parametrize('form', ['equal', 'space', 'pasted'])
+@pytest.mark.parametrize(
+    'mode', ['internal', 'external', 'hybrid', 'multi_port_external']
+)
+def test_vllm_topology_preserves_opaque_parameter_values(value, form, mode):
+    from gpustack.utils.vllm_topology import (
+        managed_lb_parallelism,
+        managed_lb_port_requests,
+        parse_user_parallelism,
+        vllm_lb_mode,
+    )
+
+    parameters = ['--tp=2', '--dp=2', '--dpl=2']
+    if mode != 'internal':
+        parameters.append(f'--data-parallel-{mode.replace("_", "-")}-lb')
+    template = (
+        f'--chat-template={shlex.quote(value)}'
+        if form == 'equal'
+        else f'--chat-template {shlex.quote(value)}'
+    )
+    parameters = [template, *parameters]
+    if form == 'pasted':
+        parameters = [' '.join(parameters)]
+    assert vllm_lb_mode(parameters) == mode
+    assert parse_user_parallelism(parameters).tp == 2
+    topology = managed_lb_parallelism(parameters, [4])
+    assert (topology.tp, topology.dp, topology.dpl_per_node) == (2, 2, [2])
+    assert managed_lb_port_requests(parameters, [4])[0][0] in (
+        '_vllm_external_api',
+        '_vllm_mp_connecting',
+    )
+
+
+@pytest.mark.parametrize('option', ['ssl_keyfile', 'ssl_certfile'])
+def test_managed_http_validation_recognizes_native_tls_aliases(option):
+    from gpustack.utils.vllm_topology import validate_managed_lb_parameters
+
+    with pytest.raises(ValueError, match='TLS is unsupported'):
+        validate_managed_lb_parameters(
+            ['--data_parallel_external_lb', f'--{option}=/tmp/model_key']
+        )

@@ -28,6 +28,7 @@ from gpustack.schemas.model_routes import TargetStateEnum
 from gpustack.schemas.principals import Principal
 from gpustack.schemas.models import (
     DegradationReasonEnum,
+    DistributedServers,
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
@@ -1289,3 +1290,127 @@ async def test_membership_refresh_reason_is_visible_in_model_status():
         assert reason in model.state_message
     finally:
         pd_membership.forget(model.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replicas", [0, 1])
+async def test_pending_managed_stop_keeps_the_restart_guard(replicas):
+    model = _model(replicas=replicas)
+    since = datetime.now(timezone.utc)
+    model.restarting_since = since
+    instance = _instance(1)
+    instance.draining_since = since
+    instance.distributed_servers = DistributedServers(workloads=[])
+    await _sync(model, [instance])
+    assert model.restarting_since == since
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'missing', ['none', 'not_ready', 'headless', 'worker', 'error', 'draining']
+)
+async def test_managed_readiness_requires_whole_manifest(monkeypatch, missing):
+    from gpustack.schemas.models import (
+        ModelInstanceWorkload,
+        ModelInstanceSubordinateWorker,
+    )
+    from gpustack.schemas.workers import WorkerStateEnum
+    from gpustack.server.services import ModelInstanceService
+    from tests.utils.model import new_model_instance_workload
+
+    mi = _instance(1, state=ModelInstanceStateEnum.STARTING)
+    mi.worker_id = 1
+    mi.distributed_servers = DistributedServers(
+        workloads=[
+            ModelInstanceWorkload.model_validate(
+                new_model_instance_workload(
+                    worker_id=w,
+                    node_rank=w - 1,
+                    state='running',
+                    dp_rank_placements=[
+                        dict(
+                            dp_rank=0,
+                            node_rank=w - 1,
+                            gpu_indexes=[0],
+                            **(dict(api_port=41000, ready=True) if w == 1 else {}),
+                        )
+                    ],
+                )
+            )
+            for w in (1, 2)
+        ],
+        subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
+    )
+    if missing == 'not_ready':
+        mi.distributed_servers.workloads[0].dp_rank_placements[0].ready = False
+    elif missing == 'headless':
+        mi.distributed_servers.workloads.pop()
+    elif missing == 'error':
+        mi.state = ModelInstanceStateEnum.ERROR
+    elif missing == 'draining':
+        mi.draining_since = datetime.now(timezone.utc)
+    session = MagicMock(commit=AsyncMock())
+    monkeypatch.setattr(ModelInstance, 'one_by_id', AsyncMock(return_value=mi))
+    worker_lookup = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                id=worker_id,
+                state=(
+                    WorkerStateEnum.UNREACHABLE
+                    if missing == 'worker'
+                    else WorkerStateEnum.READY
+                ),
+                deleted_at=None,
+                unreachable=missing == 'worker',
+                heartbeat_time=datetime.now(timezone.utc),
+            )
+            for worker_id in (1, 2)
+        ]
+    )
+    monkeypatch.setattr(controllers.Worker, 'all_by_ids', worker_lookup)
+    service = ModelInstanceService(session)
+    service.update = AsyncMock()
+    await service.reconcile_managed_instance(mi.id, 0, allow_restart=False)
+    if missing == 'none':
+        assert (
+            service.update.await_args.args[1]['state'] == ModelInstanceStateEnum.RUNNING
+        )
+    else:
+        service.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('missing', ['none', 'api', 'headless', 'member', 'worker'])
+async def test_hybrid_readiness_requires_all_tasks_and_actual_apis(
+    monkeypatch, missing
+):
+    from gpustack.server.services import ModelInstanceService
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+    from tests.utils.model import new_hybrid_workload
+
+    mi = _instance(1, state=ModelInstanceStateEnum.STARTING)
+    mi.worker_id = 1
+    tasks = [new_hybrid_workload(w, headless=w == 2, state='running') for w in (1, 2)]
+    tasks[0]['component']['ready'] = missing != 'api'
+    if missing == 'headless':
+        tasks[1]['state'] = 'unknown'
+    if missing == 'member':
+        tasks.pop()
+    mi.distributed_servers = DistributedServers(
+        workloads=tasks,
+        subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
+    )
+    monkeypatch.setattr(ModelInstance, 'one_by_id', AsyncMock(return_value=mi))
+    service = ModelInstanceService(MagicMock(commit=AsyncMock()))
+    service._managed_workers_ready = AsyncMock(return_value=missing != 'worker')
+    service._managed_smg_reconcile = AsyncMock(
+        side_effect=AssertionError('Hybrid is not SGLang')
+    )
+    service.update = AsyncMock()
+    await service.reconcile_managed_instance(mi.id, 0, allow_restart=False)
+    if missing == 'none':
+        assert (
+            service.update.await_args.args[1]['state'] == ModelInstanceStateEnum.RUNNING
+        )
+    else:
+        service.update.assert_not_awaited()

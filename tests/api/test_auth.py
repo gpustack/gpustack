@@ -25,6 +25,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.extension import Plugin, PluginContext
 from gpustack.schemas.config import GatewayModeEnum
+from gpustack.schemas.principals import PrincipalType
 from gpustack.security import LEGACY_TOKEN_ACCESS_KEY
 from gpustack.schemas.users import AuthProviderEnum
 from gpustack.routes import auth as auth_route
@@ -1851,7 +1852,9 @@ async def test_saml_callback_unsigned_escape_hatch_skips_toolkit(monkeypatch, ca
     )
 
 
-def _build_client_ip_request(headers, *, gateway_mode, gateway_token="tok"):
+def _build_client_ip_request(
+    headers, *, gateway_mode, gateway_token="tok", trusted_proxy_cidrs=None
+):
     request = type("Request", (), {})()
     request.headers = headers
     request.client = type("Client", (), {"host": "10.0.0.1"})()
@@ -1863,12 +1866,16 @@ def _build_client_ip_request(headers, *, gateway_mode, gateway_token="tok"):
         {
             "gateway_mode": gateway_mode,
             "get_derived_gateway_token": lambda self: gateway_token,
+            "trusted_proxy_cidrs": trusted_proxy_cidrs,
         },
     )()
     return request
 
 
-def test_client_ip_getter_prefers_x_real_ip():
+def test_client_ip_getter_ignores_x_real_ip():
+    # X-Real-IP is client-forgeable end to end (nothing overwrites it at the
+    # edge), so it must never win over X-Forwarded-For — the entry the edge
+    # proxy appended is the only address assertion worth believing.
     request = _build_client_ip_request(
         {
             GATEWAY_AUTH_TOKEN_HEADER: "tok",
@@ -1878,21 +1885,63 @@ def test_client_ip_getter_prefers_x_real_ip():
         gateway_mode=GatewayModeEnum.embedded,
     )
 
-    assert client_ip_getter(request) == "1.2.3.4"
+    assert client_ip_getter(request) == "5.6.7.8"
 
 
-def test_client_ip_getter_falls_back_to_rightmost_xff():
-    # No X-Real-IP: use the rightmost XFF entry (what the trusted edge proxy
-    # observed), not the spoofable leftmost one.
+def test_client_ip_getter_ignores_spoofed_leftmost_xff():
+    # Without trusted proxies the rightmost entry — the address the edge
+    # proxy observed — is the answer, not the client-supplied leftmost one.
     request = _build_client_ip_request(
         {
             GATEWAY_AUTH_TOKEN_HEADER: "tok",
-            "X-Forwarded-For": "1.1.1.1, 5.6.7.8",
+            "X-Forwarded-For": "192.0.2.10, 198.51.100.7",
         },
         gateway_mode=GatewayModeEnum.embedded,
     )
 
-    assert client_ip_getter(request) == "5.6.7.8"
+    assert client_ip_getter(request) == "198.51.100.7"
+
+
+def test_client_ip_getter_walks_xff_through_trusted_proxies():
+    # A declared trusted proxy (10.0.0.5 in 10.0.0.0/8) appended the
+    # rightmost entry, so the walk continues left to the client behind it.
+    request = _build_client_ip_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: "tok",
+            "X-Forwarded-For": "192.0.2.10, 10.0.0.5",
+        },
+        gateway_mode=GatewayModeEnum.embedded,
+        trusted_proxy_cidrs=["10.0.0.0/8"],
+    )
+
+    assert client_ip_getter(request) == "192.0.2.10"
+
+
+def test_client_ip_getter_all_trusted_chain_falls_back_to_connection():
+    # Every entry is a trusted proxy: the chain never reaches the client, so
+    # the unverifiable headers are discarded in favor of the peer address.
+    request = _build_client_ip_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: "tok",
+            "X-Forwarded-For": "10.0.0.5, 10.0.0.6",
+        },
+        gateway_mode=GatewayModeEnum.embedded,
+        trusted_proxy_cidrs=["10.0.0.0/8"],
+    )
+
+    assert client_ip_getter(request) == "10.0.0.1"
+
+
+def test_client_ip_getter_unparseable_xff_falls_back_to_connection():
+    request = _build_client_ip_request(
+        {
+            GATEWAY_AUTH_TOKEN_HEADER: "tok",
+            "X-Forwarded-For": "garbage",
+        },
+        gateway_mode=GatewayModeEnum.embedded,
+    )
+
+    assert client_ip_getter(request) == "10.0.0.1"
 
 
 def test_client_ip_getter_ignores_headers_without_valid_gateway_token():
@@ -2680,11 +2729,71 @@ async def test_a_credential_failure_401_is_not_a_policy_rejection(monkeypatch):
     assert not is_policy_rejection(raised.value)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'token,allowed',
+    [('worker-token', True), ('registration-token', True), ('user-token', False)],
+)
+async def test_rank_proxy_requires_internal_credentials(monkeypatch, token, allowed):
+    from gpustack.api.auth import worker_proxy_auth
+
+    request = SimpleNamespace(
+        headers={
+            'X-GPUStack-Model-Instance': 'model-1-7-dp1.static',
+            'X-Higress-Llm-Model': 'my-model',
+        },
+        app=SimpleNamespace(
+            state=SimpleNamespace(token='worker-token', config=DummyWorkerConfig())
+        ),
+    )
+    bearer = HTTPAuthorizationCredentials(scheme='Bearer', credentials=token)
+    if allowed:
+        await worker_proxy_auth(request, bearer)
+    else:
+        with pytest.raises(UnauthorizedException):
+            await worker_proxy_auth(request, bearer)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('target', ['model-1-7.static', 'model-2-8.static'])
+@pytest.mark.parametrize('header', ['Authorization', 'X-API-Key'])
+async def test_legacy_proxy_rejects_user_credentials_for_any_target(target, header):
+    from gpustack.api.auth import worker_proxy_auth
+
+    http_client = MagicMock()
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            model_instance_endpoint=SimpleNamespace(restart_count=None)
+        ),
+        headers={
+            'X-GPUStack-Model-Instance': target,
+            'X-Higress-Llm-Model': 'model-a',
+        },
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                token='worker-token',
+                config=DummyWorkerConfig(),
+                http_client_no_proxy=http_client,
+            )
+        ),
+    )
+    bearer = (
+        HTTPAuthorizationCredentials(scheme='Bearer', credentials='user-token')
+        if header == 'Authorization'
+        else None
+    )
+    with pytest.raises(UnauthorizedException):
+        await worker_proxy_auth(
+            request, bearer, 'user-token' if header == 'X-API-Key' else None
+        )
+    http_client.get.assert_not_called()
+
+
 # --- Forward-proxy request authentication (tunnel mode) ----------------------
 #
 # The server's forward proxy authenticates every request it relays. The
 # accepted credentials are the derived gateway token (what the built-in
-# Prometheus scrape job presents) and a principal's API key (what
+# Prometheus scrape job presents) and a SYSTEM principal's API key (what
 # pd_membership hops and gateway-forwarded clients present).
 
 
@@ -2767,7 +2876,7 @@ async def test_proxy_auth_consumes_gateway_token_even_on_api_key_hop(monkeypatch
     from gpustack.api.auth import authenticate_proxy_request_headers
 
     _proxy_token_config(monkeypatch)
-    principal = SimpleNamespace(id=1)
+    principal = SimpleNamespace(id=1, kind=PrincipalType.SYSTEM)
     _proxy_api_key_lookup(monkeypatch, principal)
 
     headers = {
@@ -2779,22 +2888,23 @@ async def test_proxy_auth_consumes_gateway_token_even_on_api_key_hop(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_proxy_auth_falls_back_to_api_key_check(monkeypatch):
+@pytest.mark.parametrize("kind", list(PrincipalType))
+@pytest.mark.parametrize("header", ["Proxy-Authorization", "Authorization"])
+async def test_proxy_auth_requires_system_api_keys(monkeypatch, kind, header):
     from gpustack.api.auth import authenticate_proxy_request_headers
 
     _proxy_token_config(monkeypatch)
-    principal = SimpleNamespace(id=1)
+    principal = SimpleNamespace(id=1, kind=kind)
     _proxy_api_key_lookup(monkeypatch, principal)
 
-    assert await authenticate_proxy_request_headers(
-        {"Proxy-Authorization": "Bearer access:secret"}
-    )
     # An API key in Authorization is the target's own credential
     # (gateway-forwarded requests rely on it reaching the instance), so
     # it is not consumed by the hop check.
-    headers = {"Authorization": "Bearer access:secret"}
-    assert await authenticate_proxy_request_headers(headers)
-    assert headers == {"Authorization": "Bearer access:secret"}
+    headers = {header: "Bearer access:secret"}
+    assert (await authenticate_proxy_request_headers(headers)) is (
+        kind == PrincipalType.SYSTEM
+    )
+    assert headers == {header: "Bearer access:secret"}
 
 
 @pytest.mark.asyncio

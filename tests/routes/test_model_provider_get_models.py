@@ -8,6 +8,7 @@ from gpustack.routes import model_provider as route_module
 from gpustack.schemas.model_provider import (
     ClaudeConfig,
     CloudflareConfig,
+    DoubaoConfig,
     ModelProviderTypeEnum,
     OpenAIConfig,
     ProviderModelsInput,
@@ -277,6 +278,56 @@ class TestModelListPathCandidates:
 
         assert asked == ["/anthropic/v1/models"]
         assert "Network error" in raised.value.message
+
+
+class TestDoubaoModels:
+    """Ark's model list stamps a lifecycle ``status`` on every entry
+    ("Published", "Retiring", ...). Both of those still serve requests, so
+    every entry carrying a status key being dropped meant the Doubao
+    get-models answer was always empty."""
+
+    def _doubao(self) -> DoubaoConfig:
+        return DoubaoConfig.model_validate({"type": ModelProviderTypeEnum.DOUBAO.value})
+
+    @pytest.mark.asyncio
+    async def test_published_and_retiring_models_are_kept(self, monkeypatch):
+        def respond(_path: str) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "doubao-seed-2-1-pro-260915",
+                            "domain": "LLM",
+                            "status": "Published",
+                        },
+                        {
+                            "id": "doubao-seed-1-0-pro-250528",
+                            "domain": "LLM",
+                            "status": "Retiring",
+                        },
+                        # a compatible endpoint that carries no status at all
+                        {"id": "some-model"},
+                        # past its serving window — hidden
+                        {
+                            "id": "expired-model",
+                            "domain": "LLM",
+                            "status": "Expired",
+                        },
+                    ]
+                },
+            )
+
+        _stub_upstream(monkeypatch, respond)
+
+        result = await _get_models(self._doubao())
+
+        assert [model.id for model in result.data] == [
+            "doubao-seed-2-1-pro-260915",
+            "doubao-seed-1-0-pro-250528",
+            "some-model",
+        ]
+        assert all(model.categories == ["llm"] for model in result.data)
 
 
 class TestModelListShape:

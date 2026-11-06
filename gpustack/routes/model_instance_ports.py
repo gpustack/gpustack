@@ -27,6 +27,7 @@ from gpustack.schemas.port_reservations import (
 from gpustack.schemas.workers import Worker
 from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.server.worker_request import request_to_worker
+from gpustack.utils.model_instance_workers import get_model_instance_workloads
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -39,10 +40,10 @@ async def _members(session, ctx, instance_id: int) -> List[Worker]:
     caller = ctx.user.worker
     if caller is None or caller.id != instance.worker_id:
         raise ForbiddenException(message="Only the assigned primary may reserve ports")
-    if (
-        not instance.distributed_servers
-        or instance.distributed_servers.mode
+    if not instance.distributed_servers or (
+        instance.distributed_servers.mode
         != DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+        and get_model_instance_workloads(instance) is None
     ):
         raise BadRequestException(message="Instance has no shared worker ports")
     workers = []

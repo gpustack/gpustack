@@ -1,4 +1,4 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.32.0/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.33.0/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 # NOTE: entries are only added/renamed here, never removed, so that older vLLM
 # versions and other backends (SGLang, Ascend MindIE) keep recognizing them.
@@ -10,6 +10,7 @@ from gpustack.schemas.models import CategoryEnum
 
 _TEXT_GENERATION_MODELS = [
     # [Decoder-only]
+    "AliceAIForCausalLM",
     "ApertusForCausalLM",
     "AquilaModel",
     "AquilaForCausalLM",
@@ -26,6 +27,7 @@ _TEXT_GENERATION_MODELS = [
     "BailingMoeV2_5ForCausalLM",
     "BailingMoeV3ForCausalLM",
     "BambaForCausalLM",
+    "BeamForCausalLM",
     "BloomForCausalLM",
     "ChatGLMModel",
     "ChatGLMForConditionalGeneration",
@@ -37,6 +39,8 @@ _TEXT_GENERATION_MODELS = [
     "DeepseekV2ForCausalLM",
     "DeepseekV3ForCausalLM",
     "DeepseekV32ForCausalLM",
+    "DomynEdgeForCausalLM",
+    "DoryForCausalLM",
     "Dots1ForCausalLM",
     "Ernie4_5_ForCausalLM",
     "Ernie4_5ForCausalLM",  # Note: New class for "Ernie4_5_ForCausalLM"
@@ -50,6 +54,7 @@ _TEXT_GENERATION_MODELS = [
     "FalconMambaForCausalLM",
     "FalconH1ForCausalLM",
     "FlexOlmoForCausalLM",
+    "FlintForCausalLM",
     "GemmaForCausalLM",
     "Gemma2ForCausalLM",
     "Gemma3ForCausalLM",
@@ -147,6 +152,7 @@ _TEXT_GENERATION_MODELS = [
     "Step1ForCausalLM",
     "Step3TextForCausalLM",
     "Step3p5ForCausalLM",
+    "Step5ForCausalLM",
     "StableLMEpochForCausalLM",
     "StableLmForCausalLM",
     "Starcoder2ForCausalLM",
@@ -204,6 +210,7 @@ _EMBEDDING_MODELS = [
     "GteNewModel",
     "InternLM2ForRewardModel",
     "JambaForSequenceClassification",
+    "Lfm2BidirectionalModel",
     "LlamaBidirectionalModel",
     "LlamaModel",
     # "AquilaModel", # Registered in _TEXT_GENERATION_MODELS
@@ -234,6 +241,8 @@ _EMBEDDING_MODELS = [
     # "Qwen2VLForConditionalGeneration", # Registered in _TEXT_GENERATION_MODELS
     "CLIPModel",
     "EmbeddingGemma2Model",
+    "ColUltraVBertForRetrieval",
+    "ModernVBertModel",
     "ColModernVBertForRetrieval",
     "ColQwen3",
     "OpsColQwen3Model",
@@ -252,7 +261,9 @@ _EMBEDDING_MODELS = [
 _CROSS_ENCODER_MODELS = [
     "BertForSequenceClassification",
     "BertForTokenClassification",
+    "ClefFlashForJointSchema",
     "ClefOmniForJointSchema",
+    "D3ForSequenceClassification",
     "GteNewForSequenceClassification",
     "RobertaForSequenceClassification",
     "RobertaForTokenClassification",
@@ -274,6 +285,7 @@ _CROSS_ENCODER_MODELS = [
 
 _MULTIMODAL_MODELS = [
     # [Decoder-only]
+    "Alpamayo2Super",
     "AriaForConditionalGeneration",
     "AudioFlamingo3ForConditionalGeneration",
     "MusicFlamingoForConditionalGeneration",
@@ -320,11 +332,13 @@ _MULTIMODAL_MODELS = [
     "KananaVForConditionalGeneration",
     "KeyeForConditionalGeneration",
     "KeyeVL1_5ForConditionalGeneration",
+    "RadioMBartPrefixForCausalLM",
     "RForConditionalGeneration",
     "KimiVLForConditionalGeneration",
     "KimiK25ForConditionalGeneration",
     "KimiK3ForConditionalGeneration",
     "MuseGlimmerForConditionalGeneration",
+    "MuseSparkForConditionalGeneration",
     "LightOnOCRForConditionalGeneration",
     "Lfm2VlForConditionalGeneration",
     "Llama_Nemotron_Nano_VL",
@@ -340,6 +354,7 @@ _MULTIMODAL_MODELS = [
     "MiniMaxVL01ForConditionalGeneration",
     "MiniMaxM3SparseForConditionalGeneration",
     "MiniCPMO",
+    "MiniCPMOcrForConditionalGeneration",
     "MiniCPMV",
     "Mistral3ForConditionalGeneration",
     "MolmoForCausalLM",
@@ -372,6 +387,7 @@ _MULTIMODAL_MODELS = [
     "SkyworkR1VChatModel",
     "Step3VLForConditionalGeneration",
     "Step3p7ForConditionalGeneration",
+    "Step5ForConditionalGeneration",
     "TarsierForConditionalGeneration",
     "Tarsier2ForConditionalGeneration",
     "VoxtralStreamingGeneration",
@@ -429,6 +445,7 @@ _TEXT_TO_SPEECH_MODELS = [
 
 _TRANSFORMERS_SUPPORTED_MODELS = [
     # Text generation models
+    "Kolibri1ForCausalLM",
     "NanbeigeForCausalLM",
     "SmolLM3ForCausalLM",
     "VaultGemmaForCausalLM",

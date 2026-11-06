@@ -41,6 +41,7 @@ from gpustack.schemas.models import (
     is_gguf_model,
     is_audio_model,
     role_container_resources,
+    role_effective_model,
     role_takes_no_accelerator,
 )
 from gpustack.schemas.principals import _platform_principal_id
@@ -66,7 +67,7 @@ from gpustack.scheduler.group_solver import (
 from gpustack.topology.tree import TopologyError
 from gpustack.topology.view import build_view
 from gpustack.schemas.workers import GPUDeviceStatus, Worker, WorkerStateEnum
-from gpustack.server.worker_selector import WorkerSelector
+from gpustack.server.worker_selector import WorkerPathCheckError, WorkerSelector
 
 from gpustack.utils.gpu import (
     all_gpu_match,
@@ -664,7 +665,9 @@ async def evaluate_group(
                 role, [summarize_candidate_resource_claim(c) for c in candidates]
             )
         )
-        already.extend(stand_in(c) for c in candidates)
+        already.extend(
+            stand_in(c, role_effective_model(group_model, role)) for c in candidates
+        )
 
     claims.extend(free_claims)
     claims.sort(key=lambda claim: order.get(claim.role, len(order)))
@@ -1179,13 +1182,11 @@ async def evaluate_model_metadata(
                                 "Please ensure the model file is accessible from at least one node."
                             ]
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to check path on workers: {e}, falling back to local check"
-                    )
-                    # Fallback to original warning
-                    return False, [
-                        "Failed to get model metadata. The model file path you specified does not exist."
-                    ]
+                    logger.warning(f"Failed to check path on workers: {e}")
+                    raise WorkerPathCheckError(
+                        "The model file path could not be checked on workers. "
+                        "Please check Worker connectivity and logs."
+                    ) from e
 
         if model.source in [
             SourceEnum.HUGGING_FACE,
@@ -1210,6 +1211,10 @@ async def evaluate_model_metadata(
         if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
             logger.warning(f"Ignore model evaluation error for model {model.name}: {e}")
             return True, []
+
+        if isinstance(e, WorkerPathCheckError):
+            # Unavailable checks must not become cached compatibility results.
+            raise
 
         return False, [str(e)]
 

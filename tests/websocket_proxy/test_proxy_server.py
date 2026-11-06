@@ -3,6 +3,7 @@ Tests for proxy_server module (HTTPSProxyServer).
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 import pytest
 import uuid
 import uvicorn
@@ -760,7 +761,13 @@ class TestMetricsAuthentication:
         reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
         writer.write(request.encode())
         await writer.drain()
-        response = await asyncio.wait_for(reader.read(8192), timeout=5.0)
+        response = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5.0)
+        for line in response.split(b"\r\n"):
+            if line.lower().startswith(b"content-length:"):
+                response += await asyncio.wait_for(
+                    reader.readexactly(int(line.split(b":", 1)[1])), timeout=5.0
+                )
+                break
         writer.close()
         await writer.wait_closed()
         return response
@@ -897,3 +904,186 @@ class TestHeaderRedaction:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['rank', 'invalid', 'connect'])
+async def test_model_target_is_resolved_once_without_uri_fallback(monkeypatch, case):
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import HTTPException
+    from gpustack.websocket_proxy import proxy_server as module
+
+    reader = asyncio.StreamReader()
+    method = 'CONNECT' if case == 'connect' else 'GET'
+    reader.feed_data(
+        f'{method} http://other-worker:49999/v1/models HTTP/1.1\r\nX-GPUStack-Model-Instance: model-1-7-dp1.static\r\n\r\n'.encode()
+    )
+    reader.feed_eof()
+    connection = MagicMock(send_error=AsyncMock(), close=AsyncMock())
+    monkeypatch.setattr(module, 'AsyncIOConnection', lambda **kwargs: connection)
+    route = AsyncMock(return_value=('10.0.0.2', 41001))
+    if case == 'invalid':
+        route.side_effect = HTTPException(status_code=404, detail='Unavailable rank')
+    getter = MagicMock(return_value=object())
+    forward = AsyncMock()
+    monkeypatch.setattr(module, '_handle_http', forward)
+    proxy = HTTPSProxyServer('127.0.0.1', 0, getter, header_router=route)
+    await proxy._handle_client(reader, MagicMock())
+    route.assert_awaited_once()
+    if case == 'rank':
+        getter.assert_called_once_with('10.0.0.2')
+        assert forward.call_args.args[-1] == ('10.0.0.2', 41001)
+    else:
+        getter.assert_not_called()
+        forward.assert_not_awaited()
+        assert connection.send_error.call_args.args[0] == (
+            404 if case == 'invalid' else 400
+        )
+    connection.close.assert_awaited_once()
+
+
+@asynccontextmanager
+async def _component_tunnel_client(port):
+    import httpx
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from gpustack.websocket_proxy.connection import AsyncIOConnection
+
+    class ChunkConnection(AsyncIOConnection):
+        async def read(self, n=-1, timeout=None):
+            return await super().read(65536 if n < 0 else n, timeout)
+
+    async def connect(target):
+        assert target == f'tcp://127.0.0.1:{port}'
+        reader, writer = await asyncio.open_connection('127.0.0.1', port)
+        return ChunkConnection(reader, writer)
+
+    target = ('127.0.0.1', port)
+    route = AsyncMock(return_value=target)
+    proxy = HTTPSProxyServer(
+        '127.0.0.1', 0, lambda ip: SimpleNamespace(connect=connect), header_router=route
+    )
+    async with await asyncio.start_server(
+        proxy._handle_client, '127.0.0.1', 0
+    ) as server:
+        proxy_port = server.sockets[0].getsockname()[1]
+        async with httpx.AsyncClient(
+            proxy=f'http://127.0.0.1:{proxy_port}', timeout=5
+        ) as client:
+            yield client, route, proxy_port
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['v1/chat/completions', 'generate'])
+@pytest.mark.parametrize('chunked', [False, True])
+async def test_tunnel_preserves_native_rank_payload(path, chunked):
+    import json
+    from aiohttp import web
+    from tests.routes.test_worker_proxy import _fake_inference_server
+
+    received = []
+
+    async def handler(request):
+        raw = await request.read()
+        received.append(
+            (
+                json.loads(raw),
+                {key.lower(): value for key, value in request.headers.items()},
+                raw,
+            )
+        )
+        return web.json_response({'ok': True})
+
+    async with _fake_inference_server(handler) as port:
+        async with _component_tunnel_client(port) as (client, route, _):
+            raw = json.dumps(
+                {'prompt': '你好', 'routed_dp_rank': 9, 'data_parallel_rank': 8},
+                ensure_ascii=False,
+            ).encode()
+
+            async def chunks():
+                yield raw[:3]
+                yield raw[3:]
+
+            response = await client.post(
+                f'http://unselected-worker:49999/{path}',
+                content=chunks() if chunked else raw,
+                headers={
+                    'Content-Type': 'application/json; charset=utf-8',
+                    'X-Data-Parallel-Rank': '9',
+                    'X-SMG-Routing-Key': 'conversation-123',
+                },
+            )
+    assert response.status_code == 200
+    data, headers, sent = received[0]
+    assert headers['x-smg-routing-key'] == 'conversation-123'
+    assert data == {'prompt': '你好', 'routed_dp_rank': 9, 'data_parallel_rank': 8}
+    assert sent == raw
+    assert headers['x-data-parallel-rank'] == '9'
+    if chunked:
+        assert headers['transfer-encoding'] == 'chunked'
+    else:
+        assert int(headers['content-length']) == len(raw)
+    route.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('chunked', [False, True])
+@pytest.mark.parametrize('body', [b'not-json', b'x' * 33])
+async def test_tunnel_preserves_body_and_backend_error(chunked, body):
+    from aiohttp import web
+    from tests.routes.test_worker_proxy import _fake_inference_server
+
+    received = []
+    error = {'error': {'message': 'native backend validation error'}}
+
+    async def handler(request):
+        received.append(await request.read())
+        return web.json_response(error, status=422)
+
+    async def chunks():
+        yield body[:3]
+        yield body[3:]
+
+    async with _fake_inference_server(handler) as port:
+        async with _component_tunnel_client(port) as (client, route, _):
+            response = await client.post(
+                'http://unselected/v1/chat/completions',
+                content=chunks() if chunked else body,
+                headers={'Content-Type': 'application/octet-stream'},
+            )
+    assert received == [body]
+    assert response.status_code == 422
+    assert response.json() == error
+    route.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_component_tunnel_disconnect_releases_upstream_stream():
+    from aiohttp import web
+    from tests.routes.test_worker_proxy import _fake_inference_server
+
+    closed = asyncio.Event()
+
+    async def handler(request):
+        response = web.StreamResponse(headers={'Content-Type': 'text/event-stream'})
+        await response.prepare(request)
+        await response.write(b'data: first\n\n')
+        while request.transport is not None and not request.transport.is_closing():
+            await asyncio.sleep(0.01)
+        closed.set()
+        return response
+
+    async with _fake_inference_server(handler) as port:
+        async with _component_tunnel_client(port) as (client, route, _):
+            async with client.stream(
+                'POST',
+                'http://unselected/v1/chat/completions',
+                json={'stream': True, 'routed_dp_rank': 9},
+            ) as response:
+                assert response.status_code == 200
+                async for chunk in response.aiter_bytes():
+                    assert b'data: first' in chunk
+                    break
+            await asyncio.wait_for(closed.wait(), 2)
+    route.assert_awaited_once()

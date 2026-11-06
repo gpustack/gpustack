@@ -106,11 +106,11 @@ def test_download_children_use_spawn_context(monkeypatch):
     manager_factory = MagicMock()
     spawn = model_file_manager.get_context("spawn")
     monkeypatch.setattr(model_file_manager, "ProcessPoolExecutor", pool_factory)
-    monkeypatch.setattr(spawn, "Manager", manager_factory)
+    monkeypatch.setattr(model_file_manager, "SyncManager", manager_factory)
 
     manager._prerun()
 
-    manager_factory.assert_called_once_with()
+    manager_factory.assert_called_once_with(ctx=spawn)
     assert pool_factory.call_args.kwargs["mp_context"] is spawn
 
 
@@ -244,3 +244,34 @@ async def test_model_file_deletion_keeps_event_loop_responsive(
     else:
         assert not model_dir.exists()
     clientset.model_files.update.assert_not_called()
+
+
+@pytest.mark.parametrize('cpus, expected_workers', [(2, 2), (8, 5)])
+def test_prerun_names_manager_and_download_processes(
+    monkeypatch, config, cpus, expected_workers
+):
+    import setproctitle
+
+    sync_manager = MagicMock()
+    manager_factory = MagicMock(return_value=sync_manager)
+    pool_factory = MagicMock()
+    monkeypatch.setattr(model_file_manager, 'SyncManager', manager_factory)
+    monkeypatch.setattr(model_file_manager, 'ProcessPoolExecutor', pool_factory)
+    monkeypatch.setattr(model_file_manager, 'cpu_count', lambda: cpus)
+    manager = model_file_manager.ModelFileManager(1, MagicMock(), config)
+
+    manager._prerun()
+
+    manager_factory.assert_called_once_with(ctx=model_file_manager.get_context("spawn"))
+    assert manager._mp_manager is sync_manager
+    sync_manager.start.assert_called_once_with(
+        initializer=setproctitle.setproctitle,
+        initargs=('gpustack_model_file_manager',),
+    )
+    pool_factory.assert_called_once_with(
+        max_workers=expected_workers,
+        mp_context=model_file_manager.get_context("spawn"),
+        initializer=setproctitle.setproctitle,
+        initargs=('gpustack_model_file_download',),
+    )
+    assert manager._download_pool is pool_factory.return_value

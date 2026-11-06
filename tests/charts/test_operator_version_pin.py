@@ -10,6 +10,7 @@ drift at review time instead.
 """
 
 import pathlib
+import re
 
 import pytest
 import yaml
@@ -50,3 +51,14 @@ def test_operator_is_gated_on_worker_enabled(operator_dependency):
     # must not deploy it. Losing this condition would silently add an operator,
     # Kueue, NFD and the CSI drivers to every server-only release.
     assert operator_dependency.get("condition") == "worker.enabled"
+
+
+def test_docker_build_default_matches_operator_version():
+    dockerfile = CHART_YAML.parents[2] / "pack" / "Dockerfile"
+    match = re.search(
+        r"^ARG GPUSTACK_OPERATOR_VERSION=(\S+)$",
+        dockerfile.read_text(),
+        re.MULTILINE,
+    )
+    assert match is not None, "Dockerfile must pin the operator build stage"
+    assert match.group(1) == __operator_version__

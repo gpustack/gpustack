@@ -51,6 +51,7 @@ gpustack start [OPTIONS]
 | `--gateway-mode` value                      | `auto`                                 | 网关运行模式。可选值：embedded、in-cluster、external、disabled 或 auto（默认）。                                           |
 | `--gateway-kubeconfig` value                | (empty)                                | 网关使用的 kubeconfig 文件路径。仅对 external gateway-mode 有效。                                                       |
 | `--gateway-namespace` value                 | `higress-system`                       | 网关组件部署所在的命名空间。                                                                                |
+| `--trusted-proxy-cidrs` value               | (empty)                                | 部署在网关前面的代理的 CIDR 网段(可重复指定多个)。客户端 IP 解析会从右侧遍历 `X-Forwarded-For` 并穿过这些代理;未设置时,仅使用网关自身观测到的地址,客户端提供的转发头无法伪造源地址。仅当前置代理自身会追加 `X-Forwarded-For` 时才应配置对应网段。 |
 | `--service-discovery-name` value            | (empty)                                | DNS 中的服务发现服务名称。仅在使用服务发现部署到 Kubernetes 时有效。                     |
 | `--namespace` value                         | (empty)                                | GPUStack 部署网关路由规则和模型实例所使用的 Kubernetes 命名空间。                                                |
 

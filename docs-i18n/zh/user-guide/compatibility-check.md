@@ -38,3 +38,24 @@ $$
 - 1.2 倍系数是经验估算值。更多详情参见[此说明](https://blog.eleuther.ai/transformer-math/#total-inference-memory)。
 
 此公式仅提供粗略估算，不一定适用于所有模型。通常，它反映的是所需 VRAM 的下限估算。如果估算不足，用户可以手动选择 Worker 和 GPU，或调整高级后端参数，以进行细粒度调度。例如，使用 vLLM 时，可指定 `--tensor-parallel-size` 和 `--pipeline-parallel-size` 来控制模型的 GPU 分配。
+
+#### 卸载查找表 { #offloaded-lookup-tables }
+
+!!! note
+
+    查找表自动估算目前仅覆盖已适配的 vLLM 和 SGLang 架构、格式和卸载配置。原生 MindIE、custom 后端以及尚未适配的 vLLM Ascend 路径不在自动估算范围内。如果自动估算不符合部署预期，可以通过[自定义资源需求](#custom-resource-requirements)进行调整。
+
+对于受支持且将查找表卸载到 CPU 内存的模型（如 Engram 和 PLE），GPUStack 根据模型配置和精度元数据估算查找表大小。应用上述 VRAM 公式前，会从 `WEIGHT_SIZE` 中减去卸载的字节数，并在每个参与部署的 Worker 上预留查找表所需的 RAM，再叠加本地扩展 KV 缓存的 RAM 需求。
+
+RAM 估算假设同一 Worker 上的数据并行副本共享查找表存储，并计入并行布局所需的独立副本，不包含额外余量，实际内存用量可能更高。如果无法确定查找表大小或卸载行为，GPUStack 会保留按完整权重计算的 VRAM 估算。
+
+#### 自定义资源需求 { #custom-resource-requirements }
+
+如果自动估算与部署的实际需求不符，可以通过模型的[资源需求环境变量](../environment-variables.md#model-deployment-configuration)，以字节为单位自定义 RAM 和 VRAM 需求。RAM 声明值会替代每个 Worker 的总量估算，包括查找表和本地缓存内存。这些声明用于调度，不会配置后端的实际内存用量。RAM 和 VRAM 可以分别声明。未声明的资源继续使用对应后端的估算值。
+
+例如，声明每个 Worker 需要 64 GiB RAM、模型共需 32 GiB VRAM，可添加以下模型环境变量（`1 GiB = 1024^3 bytes`）。VRAM 值表示模型在所用 GPU 上的总估算需求，而非每张 GPU 的预留量。
+
+```text
+GPUSTACK_MODEL_RAM_CLAIM=68719476736
+GPUSTACK_MODEL_VRAM_CLAIM=34359738368
+```
