@@ -20,6 +20,8 @@ from gpustack.routes.model_instances import update_model_instance
 from gpustack.client.model_instance_client import ModelInstanceClient
 from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.schemas.models import (
+    BackendEnum,
+    DistributedServerCoordinateModeEnum,
     DistributedServers,
     ModelInstance,
     ModelInstancePublic,
@@ -650,6 +652,155 @@ async def put(api, items=None, generation=0, **fields):
         transport=httpx.ASGITransport(app=api.app), base_url="http://test"
     ) as client:
         return await client.put("/model-instances/7/workload-report", json=payload)
+
+
+def _legacy_report_instance(api):
+    api.instance.backend = BackendEnum.VLLM
+    api.instance.distributed_servers = DistributedServers(
+        mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
+    )
+    api.instance.state = ModelInstanceStateEnum.RUNNING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('worker_id', [1, 2])
+@pytest.mark.parametrize('generation', [0, 1])
+async def test_legacy_runtime_report_is_local_and_generation_fenced(
+    report_api, worker_id, generation
+):
+    api = report_api
+    _legacy_report_instance(api)
+    api.ctx.user.worker.id = worker_id
+    api.ctx.user.worker.system_principal_id = api.ctx.user.id
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put(
+            '/model-instances/7/workload-report',
+            json={
+                'kind': 'legacy',
+                'restart_count': generation,
+                'state': 'error',
+                'state_message': 'engine failed',
+            },
+        )
+    assert response.status_code == (200 if generation == 0 else 409)
+    if generation:
+        api.service.update.assert_not_awaited()
+    else:
+        member = (
+            api.instance
+            if worker_id == 1
+            else api.instance.distributed_servers.subordinate_workers[0]
+        )
+        assert member.state == ModelInstanceStateEnum.ERROR
+        assert member.state_message == 'engine failed'
+        assert api.instance.restart_count == 0
+        if worker_id == 2:
+            assert api.instance.state == ModelInstanceStateEnum.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_legacy_metadata_snapshot_cannot_clear_runtime_failure(report_api):
+    api = report_api
+    _legacy_report_instance(api)
+    old = ModelInstanceUpdate(**api.instance.model_dump())
+    old.api_detected_backend_version = '0.32.0'
+    api.instance.state = ModelInstanceStateEnum.ERROR
+    api.instance.state_message = 'engine failed'
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put(
+            '/model-instances/7', json=old.model_dump(mode='json')
+        )
+    assert response.status_code == 200
+    assert api.instance.state == ModelInstanceStateEnum.ERROR
+    assert api.instance.state_message == 'engine failed'
+    assert api.instance.api_detected_backend_version == '0.32.0'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'case,code',
+    [
+        ('foreign', 403),
+        ('rebound', 403),
+        ('stale', 409),
+        ('draining', 409),
+        ('resume_error', 409),
+        ('snapshot_follower', 403),
+        ('shared_ports_follower', 403),
+        ('extra_fields', 422),
+    ],
+)
+async def test_legacy_runtime_report_keeps_ownership_and_stop_fences(
+    report_api, case, code
+):
+    api = report_api
+    _legacy_report_instance(api)
+    payload = {'kind': 'legacy', 'restart_count': 0, 'state': 'running'}
+    if case == 'foreign':
+        api.ctx.user.worker.id = 3
+    elif case == 'rebound':
+        api.session.get.side_effect = None
+        api.session.get.return_value = SimpleNamespace(
+            system_principal_id=999,
+            deleted_at=None,
+            cluster_id=1,
+        )
+    elif case == 'stale':
+        api.instance.restart_count = 1
+    elif case == 'draining':
+        api.instance.draining_since = datetime.now(timezone.utc)
+    elif case == 'resume_error':
+        api.instance.state = ModelInstanceStateEnum.ERROR
+    elif case == 'snapshot_follower':
+        api.ctx.user.worker.id = 2
+        payload['model_config_snapshot'] = {'backend_parameters': []}
+    elif case == 'shared_ports_follower':
+        api.ctx.user.worker.id = 2
+        payload['port'] = 40000
+    else:
+        payload['workloads'] = []
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put('/model-instances/7/workload-report', json=payload)
+    assert response.status_code == code, response.text
+    api.service.update.assert_not_awaited()
+
+
+def test_legacy_client_reports_only_explicit_local_fields(report_api):
+    import json
+    from gpustack.schemas.models import ModelInstancePublic
+    from gpustack.utils.model_instance_workers import legacy_instance_update
+
+    api = report_api
+    _legacy_report_instance(api)
+    sent = []
+
+    def receive(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json=api.instance.model_dump(mode='json'))
+
+    with httpx.Client(
+        transport=httpx.MockTransport(receive), base_url='http://test'
+    ) as client:
+        wrapped = ModelInstanceClient(SimpleNamespace(get_httpx_client=lambda: client))
+        report = legacy_instance_update(
+            api.instance, 2, state=ModelInstanceStateEnum.ERROR, state_message='failed'
+        )
+        assert isinstance(wrapped.report_workloads(7, report), ModelInstancePublic)
+    assert sent == [
+        {
+            'kind': 'legacy',
+            'restart_count': 0,
+            'state': 'error',
+            'state_message': 'failed',
+        }
+    ]
 
 
 @pytest.mark.parametrize('workloads,mode', [(None, 'legacy'), ([], 'managed')])

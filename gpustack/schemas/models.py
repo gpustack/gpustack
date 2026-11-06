@@ -2041,8 +2041,33 @@ class ModelInstanceWorkloadUpdate(BaseModel):
         return self
 
 
+class ModelInstanceLegacyUpdate(ModelInstancePreparation):
+    """Explicit local state; identity and restart ownership remain on the Server."""
+
+    kind: Literal['legacy']
+    restart_count: int = PydanticField(ge=0)
+    state: Optional[
+        Literal[
+            ModelInstanceStateEnum.INITIALIZING,
+            ModelInstanceStateEnum.DOWNLOADING,
+            ModelInstanceStateEnum.STARTING,
+            ModelInstanceStateEnum.RUNNING,
+            ModelInstanceStateEnum.UNREACHABLE,
+            ModelInstanceStateEnum.ERROR,
+        ]
+    ] = None
+    state_message: Optional[str] = None
+    arguments: Optional[List[str]] = None
+    backend_version: Optional[str] = None
+    injected_backend_parameters: Optional[List[str]] = None
+    model_config_snapshot: Optional[ModelConfigSnapshot] = None
+    gpu_indexes: Optional[List[int]] = None
+    gpu_addresses: Optional[List[str]] = None
+    computed_resource_claim: Optional[ComputedResourceClaim] = None
+
+
 class ModelInstanceLegacyStop(BaseModel):
-    """Server-owned proof barrier for a legacy member in a mixed shutdown."""
+    """Server-owned proof barrier for stopping a legacy model group."""
 
     model_config = ConfigDict(extra="forbid")
     token: UUID

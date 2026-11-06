@@ -3,6 +3,8 @@ import re
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from gpustack.schemas.models import (
+    BackendEnum,
+    DistributedServerCoordinateModeEnum,
     Model,
     ModelInstance,
     ModelInstanceLegacyStop,
@@ -10,10 +12,15 @@ from gpustack.schemas.models import (
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
     ModelInstanceWorkloadUpdate,
+    ModelInstanceLegacyUpdate,
     ModelInstanceWorkloadObservation,
     ModelInstancePreparation,
     ModelInstanceStateEnum,
     member_worker_ids,
+)
+from gpustack.utils.command import (
+    find_bool_parameter,
+    find_parameter,
 )
 
 from gpustack.schemas.workers import Worker
@@ -122,6 +129,60 @@ def workload_topology(workloads: List[ModelInstanceWorkload]) -> Dict:
         )
         for item in workloads
     }
+
+
+def legacy_group_recovery(
+    instance: ModelInstanceBase, model: Optional[Model] = None
+) -> bool:
+    """Identify fixed-topology groups whose members must initialize together."""
+    servers = instance.distributed_servers
+    if (
+        get_model_instance_workloads(instance) is not None
+        or servers is None
+        or servers.mode != DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+        or not servers.subordinate_workers
+    ):
+        return False
+    config = instance.model_config_snapshot or model
+    backend = instance.backend
+    if backend not in (BackendEnum.VLLM, BackendEnum.SGLANG, BackendEnum.ASCEND_MINDIE):
+        return False
+    parameters = config.backend_parameters if config is not None else []
+    if backend == BackendEnum.VLLM:
+        if any(
+            find_bool_parameter(parameters, [flag], last_wins=True)
+            for flag in ('enable-fault-tolerance', 'enable-elastic-ep')
+        ):
+            return False
+        return find_parameter(parameters, ['distributed-executor-backend']) in (
+            None,
+            'mp',
+            'ray',
+        )
+    return not (
+        backend == BackendEnum.SGLANG
+        and find_parameter(parameters, ['elastic-ep-backend'])
+    )
+
+
+def legacy_instance_update(
+    instance: ModelInstanceBase, worker_id: int, **fields
+) -> ModelInstanceLegacyUpdate:
+    """Report explicit local runtime fields against the observed instance round."""
+    for key in list(fields):
+        if key.startswith('distributed_servers.subordinate_workers.'):
+            subordinate = fields.pop(key)
+            if subordinate.worker_id != worker_id:
+                raise ValueError('A Worker may only report its own state')
+            fields.update(
+                {
+                    name: getattr(subordinate, name)
+                    for name in ('state', 'state_message', 'pid', 'ports', 'arguments')
+                }
+            )
+    return ModelInstanceLegacyUpdate(
+        kind='legacy', restart_count=instance.restart_count or 0, **fields
+    )
 
 
 def worker_workload_report(instance, worker_id, workloads, **fields):

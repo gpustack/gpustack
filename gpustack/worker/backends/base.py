@@ -70,6 +70,9 @@ from gpustack.utils.command import flatten_to_argv, is_parameter_key
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
     managed_instance_update,
+    legacy_group_recovery,
+    legacy_instance_update,
+    model_instance_legacy_stop,
 )
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars
@@ -319,6 +322,15 @@ class InferenceServer(ABC):
             sys.exit(1)
 
     def _stop_when_starting(self, event: Event) -> bool:
+        if legacy_group_recovery(self._model_instance, self._model):
+            current = ModelInstance.model_validate(event.data)
+            if (
+                (current.restart_count or 0)
+                != (self._model_instance.restart_count or 0)
+                or model_instance_legacy_stop(current) is not None
+                or current.draining_since is not None
+            ):
+                raise ModelInstanceStateError()
         if event.data["state"] == ModelInstanceStateEnum.ERROR:
             raise ModelInstanceStateError()
         elif event.data["state"] == ModelInstanceStateEnum.STARTING:
@@ -381,6 +393,13 @@ class InferenceServer(ABC):
         )
 
     def _update_model_instance(self, id: int, **kwargs):
+        if legacy_group_recovery(self._model_instance, getattr(self, '_model', None)):
+            return self._clientset.model_instances.report_workloads(
+                id=id,
+                report=legacy_instance_update(
+                    self._model_instance, self._worker.id, **kwargs
+                ),
+            )
         mi_public = self._clientset.model_instances.get(id=id)
         if get_model_instance_workloads(mi_public) is not None:
             current = self._clientset.model_instances.get(id=id, use_cache=False)
@@ -431,7 +450,11 @@ class InferenceServer(ABC):
         Fetches the latest model instance to get the current subordinate worker state,
         then updates only this worker's entry.
         """
-        if get_model_instance_workloads(self._model_instance) is not None:
+        if get_model_instance_workloads(
+            self._model_instance
+        ) is not None or legacy_group_recovery(
+            self._model_instance, getattr(self, '_model', None)
+        ):
             return self._update_model_instance(
                 self._model_instance.id,
                 state=ModelInstanceStateEnum.ERROR,
@@ -2052,6 +2075,19 @@ exec "$@"
         If the deployer is docker, transform the generic WorkloadPlan to DockerWorkloadPlan,
         and fill the pause image and restart image with registry override.
         """
+        if legacy_group_recovery(self._model_instance, self._model):
+            current = self._clientset.model_instances.get(
+                id=self._model_instance.id, use_cache=False
+            )
+            if (
+                (current.restart_count or 0)
+                != (self._model_instance.restart_count or 0)
+                or current.state == ModelInstanceStateEnum.ERROR
+                or current.draining_since is not None
+                or model_instance_legacy_stop(current) is not None
+                or self._worker.id not in member_worker_ids(current)
+            ):
+                raise ModelInstanceStateError()
         selector = getattr(self._model, "gpu_type_selector", None)
         if selector is not None and not accelerator_free:
             # Hand the operator InstanceType name to the runtime; the

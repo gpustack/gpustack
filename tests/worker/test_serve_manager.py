@@ -95,6 +95,34 @@ def _fake_stop_event(max_waits: int = 100):
     return stop_event
 
 
+def test_new_round_copies_main_context_once_and_keeps_new_output(tmp_path):
+    manager = SimpleNamespace(_serve_log_dir=str(tmp_path))
+    instance = new_model_instance(42, 'model', 1)
+    instance.restart_count = 8
+    old = main_log_path(tmp_path, instance.name, instance.id, 7)
+    old.parent.mkdir(parents=True)
+    old.write_text('old startup\n')
+    Path(f'{old}.truncated').write_text('... omitted ...\n')
+    Path(f'{old}.1').write_text('old tail\n')
+    manager._get_numbered_log_path = lambda mi: str(
+        main_log_path(tmp_path, mi.name, mi.id, mi.restart_count)
+    )
+    ServeManager._prepare_main_log_round(manager, instance)
+    target = Path(manager._get_numbered_log_path(instance))
+    with CappedLogWriter(target, append=True) as output:
+        output.write('new startup\n')
+    ServeManager._prepare_main_log_round(manager, instance)
+    text = target.read_text()
+    assert 'copied from the previous startup (round 7 -> round 8)' in text
+    assert (
+        text.index('old startup')
+        < text.index('... omitted ...')
+        < text.index('old tail')
+        < text.index('new startup')
+    )
+    assert text.count('old startup') == 1
+
+
 def _fake_thread(alive: bool, ends_on_join: bool = True):
     """A stand-in thread. Joining one ends it, the way a real log thread back
     from the runtime does -- unless it is the kind that outlasts the wait."""
@@ -2854,7 +2882,8 @@ def test_sync_vgpu_allocation_patches_main_addresses_and_rekeys_claim():
     assert kwargs["computed_resource_claim"].vram == {1: 42949672960}
 
 
-def test_sync_vgpu_allocation_patches_subordinate_worker():
+@pytest.mark.parametrize('coordinated', [False, True])
+def test_sync_vgpu_allocation_patches_subordinate_worker(coordinated):
     manager, clientset = _build_vgpu_manager(worker_id=2, device_index=3)
 
     sw = ModelInstanceSubordinateWorker(
@@ -2872,9 +2901,15 @@ def test_sync_vgpu_allocation_patches_subordinate_worker():
         state=ModelInstanceStateEnum.RUNNING,
     )
     model_instance.distributed_servers = DistributedServers(
-        mode=DistributedServerCoordinateModeEnum.RUN_FIRST,
+        mode=(
+            DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+            if coordinated
+            else DistributedServerCoordinateModeEnum.RUN_FIRST
+        ),
         subordinate_workers=[sw],
     )
+    if coordinated:
+        model_instance.backend = BackendEnum.VLLM
     clientset.model_instances.list.return_value = SimpleNamespace(
         items=[model_instance]
     )
@@ -2892,6 +2927,12 @@ def test_sync_vgpu_allocation_patches_subordinate_worker():
     ):
         manager.sync_model_instances_state()
 
+    if coordinated:
+        report = clientset.model_instances.report_workloads.call_args.kwargs['report']
+        assert report.gpu_addresses == ['GPU-uuid-1']
+        assert report.gpu_indexes == [3]
+        assert report.computed_resource_claim.vram == {3: 42949672960}
+        return
     update_model_instance.assert_called_once()
     args, _ = update_model_instance.call_args
     assert args[0] == model_instance.id

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+import asyncio
 
 import httpx
 import pytest
@@ -13,7 +14,10 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
+    Model,
 )
+from gpustack.schemas.principals import PrincipalType
+from gpustack.server.services import ModelInstanceService
 from gpustack.schemas.workers import WorkerStateEnum
 from gpustack.server.bus import Event, EventType
 from gpustack.worker import serve_manager
@@ -100,6 +104,160 @@ def recovery(monkeypatch, config):
         serve_manager, "get_meta_from_running_instance", lambda *args: {}
     )
     return state
+
+
+@pytest.mark.parametrize('failed_worker', [1, 2])
+@pytest.mark.parametrize('starting', [False, True])
+def test_legacy_group_failure_waits_for_real_stops_then_starts_one_round(
+    recovery, monkeypatch, failed_worker, starting
+):
+    from gpustack.routes.model_instances import (
+        _legacy_runtime_fields,
+        _merge_legacy_stop_report,
+    )
+    from gpustack.schemas.workers import Worker
+    from gpustack.server.bus import Event, EventType
+
+    s = recovery
+    s.instance.backend = BackendEnum.VLLM
+    s.instance.cluster_id = 1
+    s.instance.state = (
+        ModelInstanceStateEnum.STARTING if starting else ModelInstanceStateEnum.RUNNING
+    )
+    s.instance.state_message = ''
+    s.instance.distributed_servers.subordinate_workers[0].state = (
+        ModelInstanceStateEnum.RUNNING
+    )
+    model = s.clients[0].models.get.return_value
+    model.restart_on_error = True
+    monkeypatch.setattr(Model, 'one_by_id', AsyncMock(return_value=model))
+    monkeypatch.setattr(
+        ModelInstance, 'one_by_id', AsyncMock(side_effect=lambda *a, **k: s.instance)
+    )
+    workers = {
+        id: SimpleNamespace(
+            id=id,
+            cluster_id=1,
+            system_principal_id=id * 10,
+            deleted_at=None,
+            state='ready',
+            unreachable=False,
+        )
+        for id in (1, 2)
+    }
+    monkeypatch.setattr(
+        Worker,
+        'one_by_id',
+        AsyncMock(side_effect=lambda session, id, **kw: workers[id]),
+    )
+    session = AsyncMock()
+    service = ModelInstanceService(session)
+
+    async def persist(instance, source):
+        for name, value in source.items():
+            setattr(instance, name, value)
+
+    service.update = AsyncMock(side_effect=persist)
+    names = {id: s.instance.get_deployment_metadata(id).name for id in (1, 2)}
+    runtime = {
+        name: SimpleNamespace(name=name, state=WorkloadStatusStateEnum.RUNNING)
+        for name in names.values()
+    }
+    runtime.pop(names[failed_worker])
+    active = {'worker': failed_worker, 'blocked': 3 - failed_worker}
+    deletions, creations = [], []
+
+    def delete(name):
+        deletions.append(name)
+        if active['worker'] != active['blocked']:
+            runtime.pop(name, None)
+
+    monkeypatch.setattr(serve_manager, 'get_workload', lambda name: runtime.get(name))
+    monkeypatch.setattr(serve_manager, 'delete_workload', delete)
+    monkeypatch.setattr(
+        serve_manager,
+        'list_workloads',
+        lambda: [
+            item for name, item in runtime.items() if name == names[active['worker']]
+        ],
+    )
+    monkeypatch.setattr(serve_manager.psutil, 'process_iter', lambda *a, **k: [])
+    for id, (manager, client) in enumerate(zip(s.managers, s.clients), 1):
+        ctx = SimpleNamespace(
+            user=SimpleNamespace(
+                kind=PrincipalType.SYSTEM, id=id * 10, worker=workers[id]
+            )
+        )
+
+        def report(*, id, report, ctx=ctx):
+            source = asyncio.run(
+                _legacy_runtime_fields(session, s.instance, ctx, report)
+            )
+            asyncio.run(persist(s.instance, source))
+            return s.instance.model_copy(deep=True)
+
+        def confirm(*, id, report, ctx=ctx):
+            s.instance.distributed_servers = _merge_legacy_stop_report(
+                s.instance, ctx, report, workers[ctx.user.worker.id]
+            )
+            return s.instance.model_copy(deep=True)
+
+        client.model_instances.report_workloads.side_effect = report
+        client.model_instances.confirm_stop.side_effect = confirm
+        manager._model_instance_by_instance_id[s.instance.id] = s.instance.model_copy(
+            deep=True
+        )
+        monkeypatch.setattr(manager, '_stop_container_log_persistence', MagicMock())
+        monkeypatch.setattr(manager, '_release_distributed_ports', MagicMock())
+
+        def launch(mi, manager=manager, id=id):
+            creations.append((id, mi.restart_count))
+            runtime[names[id]] = SimpleNamespace(
+                name=names[id], state=WorkloadStatusStateEnum.RUNNING
+            )
+            manager._report_model_instance(
+                mi,
+                state=(
+                    ModelInstanceStateEnum.STARTING
+                    if id == 1
+                    else ModelInstanceStateEnum.RUNNING
+                ),
+                state_message='',
+            )
+
+        monkeypatch.setattr(manager, '_launch_model_instance', launch)
+
+    s.managers[failed_worker - 1].sync_model_instances_state()
+    asyncio.run(service.reconcile_managed_instance(s.instance.id, 0))
+    assert s.instance.state == ModelInstanceStateEnum.ERROR
+    old = s.instance.model_copy(deep=True)
+    for id, manager in enumerate(s.managers, 1):
+        active['worker'] = id
+        manager._stop_model_instance(old)
+    asyncio.run(service.reconcile_managed_instance(s.instance.id, 0))
+    assert s.instance.restart_count == 0
+    assert not creations
+    active['worker'] = active['blocked']
+    active['blocked'] = None
+    s.managers[active['worker'] - 1]._stop_model_instance(old)
+    assert not runtime
+    asyncio.run(service.reconcile_managed_instance(s.instance.id, 0))
+    assert s.instance.restart_count == 1
+    assert s.instance.state == ModelInstanceStateEnum.SCHEDULED
+    for manager in s.managers:
+        manager._stop_model_instance(old)
+    before = list(deletions)
+    for id, manager in enumerate(s.managers, 1):
+        active['worker'] = id
+        manager._dispatch_model_instance_event(
+            Event(type=EventType.UPDATED, data=s.instance.model_copy(deep=True))
+        )
+    assert creations == [(1, 1), (2, 1)]
+    assert deletions == before
+    active['worker'] = 1
+    s.managers[0].sync_model_instances_state()
+    assert s.instance.state == ModelInstanceStateEnum.RUNNING
+    assert s.instance.restart_count == 1
 
 
 @pytest.mark.parametrize(

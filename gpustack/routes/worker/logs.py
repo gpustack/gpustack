@@ -311,6 +311,7 @@ async def combined_log_generator(
     options: LogOptionsDep,
     model_instance_name: str,
     container_name: Optional[str] = None,
+    restart_count: Optional[int] = None,
 ):
     """Unified log streaming from three file sources.
 
@@ -332,9 +333,10 @@ async def combined_log_generator(
     """
     log_dir = Path(log_dir)
 
-    restart_count = await resolve_restart_count(
-        log_dir, model_instance_id, options.previous
-    )
+    if restart_count is None:
+        restart_count = await resolve_restart_count(
+            log_dir, model_instance_id, options.previous
+        )
 
     # When a specific sidecar container is requested, stream only its logs.
     # "default" means the main container — fall through to the normal path.
@@ -511,11 +513,6 @@ async def get_serve_logs(
             log_options,
             model_file_id,
         )
-    if (
-        log_options.previous
-        and await resolve_restart_count(serve_log_dir, id, True) is None
-    ):
-        raise NotFoundException(message="Previous logs are unavailable")
     download_log_path = ""
     # Use model file ID for shared download logs if provided
     if model_file_id is not None:
@@ -523,9 +520,34 @@ async def get_serve_logs(
             serve_log_dir / f"model_file_{model_file_id}.download.log"
         )
 
+    selected = {}
+    if current_restart_count is not None:
+        target = current_restart_count - int(log_options.previous)
+        entries = await asyncio.to_thread(instance_log_files, serve_log_dir, id)
+        has_round = any(parsed.restart_count == target for _, parsed in entries)
+        has_download = (
+            not log_options.previous
+            and download_log_path
+            and await asyncio.to_thread(Path(download_log_path).is_file)
+        )
+        if target < 0 or not (has_round or has_download):
+            raise NotFoundException(message='Requested round logs are unavailable')
+        selected['restart_count'] = target
+    if (
+        current_restart_count is None
+        and log_options.previous
+        and await resolve_restart_count(serve_log_dir, id, True) is None
+    ):
+        raise NotFoundException(message="Previous logs are unavailable")
+
     if log_options.offset is not None:
         return await serve_log_line_range(
-            serve_log_dir, id, download_log_path, log_options, container_name
+            serve_log_dir,
+            id,
+            download_log_path,
+            log_options,
+            container_name,
+            **selected,
         )
 
     return StreamingResponse(
@@ -536,6 +558,7 @@ async def get_serve_logs(
             log_options,
             model_instance_name,
             container_name=container_name,
+            **selected,
         ),
         media_type="application/octet-stream",
     )
@@ -547,6 +570,7 @@ async def serve_log_line_range(
     download_log_path: str,
     options: LogOptions,
     container_name: Optional[str] = None,
+    restart_count: Optional[int] = None,
 ) -> StreamingResponse:
     """Serve one page of a restart's log, addressed by line number.
 
@@ -571,9 +595,10 @@ async def serve_log_line_range(
             message="offset cannot be combined with tail or follow"
         )
 
-    restart_count = await resolve_restart_count(
-        serve_log_dir, model_instance_id, options.previous
-    )
+    if restart_count is None:
+        restart_count = await resolve_restart_count(
+            serve_log_dir, model_instance_id, options.previous
+        )
     paths = await serve_log_paths(
         serve_log_dir, model_instance_id, restart_count, container_name
     )
