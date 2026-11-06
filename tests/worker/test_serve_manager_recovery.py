@@ -795,14 +795,12 @@ def test_pd_recovery_polling_uses_watch_cache(recovery, worker_index):
 @pytest.mark.parametrize("deleted", [False, True])
 def test_recovery_requires_successful_worker_read(recovery, deleted):
     client = recovery.clients[1]
+    original = recovery.instance.model_dump()
     client.workers.get.side_effect = (
         NotFoundException() if deleted else httpx.ConnectError("API unavailable")
     )
-    if deleted:
-        recovery.managers[1].sync_model_instances_state()
-    else:
-        with pytest.raises(httpx.ConnectError, match="API unavailable"):
-            recovery.managers[1].sync_model_instances_state()
+    recovery.managers[1].sync_model_instances_state()
+    assert recovery.instance.model_dump() == original
     client.model_instances.update.assert_not_called()
     client.workers.get.side_effect = lambda *args, **kwargs: recovery.worker
     recovery.managers[1].sync_model_instances_state()
@@ -831,8 +829,7 @@ def test_failed_recovery_write_does_not_mutate_watch_cache(recovery, subordinate
     )
     persist_update = client.model_instances.update.side_effect
     client.model_instances.update.side_effect = httpx.ConnectError("API unavailable")
-    with pytest.raises(httpx.ConnectError, match="API unavailable"):
-        recovery.managers[1].sync_model_instances_state()
+    recovery.managers[1].sync_model_instances_state()
     assert cached.distributed_servers.subordinate_workers[0].state == subordinate_state
     assert (
         recovery.instance.distributed_servers.subordinate_workers[0].state
