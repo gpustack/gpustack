@@ -68,7 +68,7 @@ Bu ortam değişkenleri genellikle üçüncü taraf hizmet entegrasyonları içi
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- | --------------- |
 | `GPUSTACK_PROXY_TIMEOUT_SECONDS`               | Saniye cinsinden temsili çıkarım isteğinde mutlak tavan. | `1800`  | Sunucu ve Çalışan |
 | `GPUSTACK_PROXY_TTFT_TIMEOUT_SECONDS`          | Bir akış yanıtının ilk parçası için saniyeler içinde beklemede geri durdurma. Sıralamayı ve önceden doldurmayı kapsar, böylece cömert kalır. | `300`   | Sunucu ve Çalışan |
-| `GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS`   | Bir akış yanıtı başladıktan sonra parçalar arasındaki saniye cinsinden maksimum boşluk. Gövdesi yalnızca sona ulaşan akışsız bir yanıta hiçbir zaman uygulanmaz. | `60`    | Sunucu ve Çalışan |
+| `GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS`   | Bir akış yanıtı başladıktan sonra parçalar arasındaki saniye cinsinden maksimum boşluk. Gövdesi yalnızca sona ulaşan akışsız bir yanıta hiçbir zaman uygulanmaz. Süreç yeniden başlatılmadan `PUT /v1/config` (veya `gpustack reload-config --set proxy-stream-idle-timeout=N`) ile çalışma zamanında güncellenebilir. | `60`    | Sunucu ve Çalışan |
 | `GPUSTACK_PROXY_UPSTREAM_IDLE_TIMEOUT_SECONDS` | Higress'in upstream bağlantı havuzundaki boşta kalma zaman aşımı, saniye cinsinden. İstek süresiyle ilgili değildir: boşta kalan bağlantıları kapatır, isteğin süresini sınırlamaz. | `3`     | Sunucu |
 | `GPUSTACK_TCP_CONNECTOR_LIMIT`                 | HTTP istemcisi TCP bağlayıcı sınırı. | `1000`  | Sunucu ve Çalışan |
 
