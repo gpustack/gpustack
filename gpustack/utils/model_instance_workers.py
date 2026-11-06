@@ -17,6 +17,7 @@ from gpustack.schemas.models import (
     ModelInstancePreparation,
     ModelInstanceStateEnum,
     member_worker_ids,
+    role_effective_model,
 )
 from gpustack.utils.command import (
     find_bool_parameter,
@@ -143,7 +144,9 @@ def legacy_group_recovery(
         or not servers.subordinate_workers
     ):
         return False
-    config = getattr(instance, 'model_config_snapshot', None) or model
+    config = getattr(instance, 'model_config_snapshot', None)
+    if config is None and model is not None:
+        config = role_effective_model(model, instance.role)
     backend = instance.backend
     if backend not in (BackendEnum.VLLM, BackendEnum.SGLANG, BackendEnum.ASCEND_MINDIE):
         return False

@@ -479,6 +479,58 @@ def test_legacy_group_recovery_respects_backend_recovery_boundary(
     assert legacy_group_recovery(ctx.instance, ctx.model) is expected
 
 
+@pytest.mark.parametrize(
+    'backend,base_parameters,role_parameters,expected',
+    [
+        (BackendEnum.VLLM, [], ['--enable-fault-tolerance'], False),
+        (BackendEnum.VLLM, [], ['--enable-elastic-ep'], False),
+        (
+            BackendEnum.VLLM,
+            [],
+            ['--distributed-executor-backend=custom.Executor'],
+            False,
+        ),
+        (BackendEnum.VLLM, ['--enable-fault-tolerance'], [], True),
+        (BackendEnum.SGLANG, [], ['--elastic-ep-backend=mooncake'], False),
+        (BackendEnum.SGLANG, ['--elastic-ep-backend=mooncake'], [], True),
+    ],
+)
+def test_legacy_recovery_uses_role_parameters_before_startup_snapshot(
+    legacy_recovery, backend, base_parameters, role_parameters, expected
+):
+    from gpustack.schemas.models import RoleSpec
+    from gpustack.utils.model_instance_workers import legacy_group_recovery
+
+    ctx = legacy_recovery
+    ctx.instance.backend = ctx.model.backend = backend
+    ctx.instance.role = 'engine'
+    ctx.model.backend_parameters = base_parameters
+    ctx.model.roles = [RoleSpec(name='engine', backend_parameters=role_parameters)]
+
+    assert legacy_group_recovery(ctx.instance, ctx.model) is expected
+    assert ctx.model.backend_parameters == base_parameters
+
+
+@pytest.mark.parametrize('elastic_snapshot', [False, True])
+def test_legacy_recovery_prefers_launch_snapshot_to_edited_role(
+    legacy_recovery, elastic_snapshot
+):
+    from gpustack.schemas.models import ModelConfigSnapshot, RoleSpec
+    from gpustack.utils.model_instance_workers import legacy_group_recovery
+
+    ctx = legacy_recovery
+    elastic = ['--enable-elastic-ep']
+    ctx.instance.role = 'engine'
+    ctx.instance.model_config_snapshot = ModelConfigSnapshot(
+        backend_parameters=elastic if elastic_snapshot else []
+    )
+    ctx.model.roles = [
+        RoleSpec(name='engine', backend_parameters=[] if elastic_snapshot else elastic)
+    ]
+
+    assert legacy_group_recovery(ctx.instance, ctx.model) is not elastic_snapshot
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     'blocked', ['restart_off', 'draining', 'model_restart', 'stopped', 'backoff']

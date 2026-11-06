@@ -524,9 +524,10 @@ async def get_serve_logs(
     if current_restart_count is not None:
         target = current_restart_count - int(log_options.previous)
         entries = await asyncio.to_thread(instance_log_files, serve_log_dir, id)
-        has_round = any(parsed.restart_count == target for _, parsed in entries)
+        has_round = bool(stream_log_files(entries, target, container_name))
         has_download = (
             not log_options.previous
+            and container_name in (None, 'default')
             and download_log_path
             and await asyncio.to_thread(Path(download_log_path).is_file)
         )
