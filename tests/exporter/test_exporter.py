@@ -72,15 +72,24 @@ def _cluster_with_model(model):
 
 
 @pytest.mark.asyncio
-async def test_model_instance_restart_metrics_are_collected():
+@pytest.mark.parametrize(
+    'state',
+    [
+        ModelInstanceStateEnum.RUNNING,
+        ModelInstanceStateEnum.PENDING,
+        ModelInstanceStateEnum.ERROR,
+    ],
+)
+async def test_model_instance_restart_metrics_are_collected(state):
     exporter = MetricExporter(SimpleNamespace(metrics_port=10161))
     latest_restart_time = datetime(2026, 4, 17, 8, 30, tzinfo=timezone.utc)
 
     instance = SimpleNamespace(
+        id=70,
         worker_id=2,
         worker_name="worker-2",
         name="qwen-1",
-        state=ModelInstanceStateEnum.RUNNING,
+        state=state,
         restart_count=3,
         last_restart_time=latest_restart_time,
     )
@@ -116,6 +125,11 @@ async def test_model_instance_restart_metrics_are_collected():
         metrics = await exporter._collect_metrics(session=SimpleNamespace())
 
     assert _sample_value(metrics, "gpustack:model_instance_restart_count") == 3
+    assert (
+        _sample_labels(metrics, "gpustack:model_instance_status")['model_instance_id']
+        == '70'
+    )
+    assert _sample_labels(metrics, "gpustack:model_instance_status")['state'] == state
     assert (
         _sample_value(metrics, "gpustack:model_instance_latest_restart_time")
         == latest_restart_time.timestamp()
@@ -769,6 +783,7 @@ async def test_pd_cache_metrics_follow_role_references(
         ],
         instances=[
             SimpleNamespace(
+                id=index,
                 role=role,
                 name=f"qwen-{role}",
                 worker_id=2,
@@ -778,7 +793,7 @@ async def test_pd_cache_metrics_follow_role_references(
                 last_restart_time=None,
                 cache_config=SimpleNamespace(injected=injected, endpoint_live=live),
             )
-            for role in ("prefill", "decode", "router")
+            for index, role in enumerate(("prefill", "decode", "router"), start=1)
         ],
     )
     with (

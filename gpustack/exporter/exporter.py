@@ -137,7 +137,7 @@ class MetricExporter(Collector):
         model_instance_status = GaugeMetricFamily(
             metric_name("model_instance_status"),
             "Model instance status",
-            labels=model_instance_labels + ["state"],
+            labels=model_instance_labels + ["model_instance_id", "state"],
         )
         model_instance_restart_count = GaugeMetricFamily(
             metric_name("model_instance_restart_count"),
@@ -423,7 +423,7 @@ class MetricExporter(Collector):
                         mi.name,
                     ]
                     model_instance_status.add_metric(
-                        mi_label_values + [mi.state],
+                        mi_label_values + [str(mi.id), mi.state],
                         1,
                     )
                     model_instance_restart_count.add_metric(
