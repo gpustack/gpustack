@@ -8,7 +8,7 @@ RAGFlow, yerel olarak dağıtılan LLM'lerden, görsel modellerden, gömme model
 
 !!! note
 
-    Bu kılavuz, [infiniflow/ragflow#21903](https://github.com/infiniflow/ragflow/pull/21903) ile RAGFlow'a eklenen GPUStack kurulum kartını kullanır. Bu kart RAGFlow v1.0.0-rc3 ve önceki sürümlerde yoktur; bir sürüme dahil edilene kadar RAGFlow `main` dalının 2026-11-04 veya sonrasına ait bir derlemesini kullanın. Ekran görüntüleri GPUStack v2.3.0 ile RAGFlow `main` dalının `8b8ccbf` commit'ini gösterir.
+    Bu kılavuz, GPUStack kurulum kartını ekleyen ve v1.0.0-rc3'ten sonra gelen bir RAGFlow sürümü gerektirir.
 
 ## Modelleri Dağıtma { #deploying-models }
 
@@ -64,6 +64,8 @@ RAGFlow, yerel olarak dağıtılan LLM'lerden, görsel modellerden, gömme model
 
     ![RAGFlow'da model ekleme](../assets/integrations/integration-ragflow-add-model.png)
 
+    Daha sonra GPUStack'te başka modeller dağıtırsanız, bunları bulup eklemek için örnekteki `Refresh` düğmesine tıklayın.
+
 5. `Set default models` düğmesine tıklayın ve her tür için bir model seçin. Her seçim hemen kaydedilir:
 
     ![RAGFlow'da varsayılan modeller](../assets/integrations/integration-ragflow-set-default-models.png)
@@ -87,6 +89,8 @@ Artık modelleri `Dataset` ve `Chat` içinde kullanabilirsiniz. Basit bir örnek
 4. `Chat` içinde bir sohbet oluşturup açın. Sağ üst köşedeki ayarlar simgesine tıklayın, `Datasets` altından veri kümesini seçin, `Model` altındaki sohbet modelini kontrol edin ve `Save` düğmesine tıklayın:
 
     ![RAGFlow'da sohbet ayarları](../assets/integrations/integration-ragflow-create-assistant.png)
+
+    `Retrieval testing` bölümünde seçilen yeniden sıralama modeli sohbetlere uygulanmaz. Bir sohbetin aramasını yeniden sıralamak için aynı ayarlarda `Advanced settings` > `Naive` bölümünü genişletin, `Rerank model` değerini `bge-reranker-v2-m3` olarak ayarlayın ve `Save` düğmesine tıklayın.
 
 5. Bir mesaj gönderin. Artık modelle etkileşime geçebilir ve veri kümesini sorgulayabilirsiniz:
 

@@ -4,7 +4,7 @@ RAGFlow can integrate with GPUStack to leverage locally deployed LLMs, vision mo
 
 !!! note
 
-    This guide uses the GPUStack setup card added to RAGFlow by [infiniflow/ragflow#21903](https://github.com/infiniflow/ragflow/pull/21903). The card is not in RAGFlow v1.0.0-rc3 or earlier releases, so use a build of the RAGFlow `main` branch from 2026-11-04 or later until a release includes it. The screenshots show GPUStack v2.3.0 and RAGFlow `main` at commit `8b8ccbf`.
+    This guide requires a RAGFlow version later than v1.0.0-rc3, which adds the GPUStack setup card.
 
 ## Deploying Models
 
@@ -60,6 +60,8 @@ RAGFlow can integrate with GPUStack to leverage locally deployed LLMs, vision mo
 
     ![ragflow-add-model](../assets/integrations/integration-ragflow-add-model.png)
 
+    If you deploy more models in GPUStack later, click `Refresh` on the instance to discover and add them.
+
 5. Click `Set default models` and select a model for each type. Each selection is saved immediately:
 
     ![ragflow-set-default-models](../assets/integrations/integration-ragflow-set-default-models.png)
@@ -83,6 +85,8 @@ You can now use the models in `Dataset` and `Chat`. Here is a simple case:
 4. In `Chat`, create a chat and open it. Click the settings icon in the top right corner, select the dataset under `Datasets`, check the chat model under `Model`, and click `Save`:
 
     ![ragflow-create-assistant](../assets/integrations/integration-ragflow-create-assistant.png)
+
+    The rerank model chosen in `Retrieval testing` does not apply to chats. To rerank a chat's retrieval, expand `Advanced settings` > `Naive` in the same settings, set `Rerank model` to `bge-reranker-v2-m3` and click `Save`.
 
 5. Send a message. You can now interact with the model and query the dataset:
 

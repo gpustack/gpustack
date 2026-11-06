@@ -8,7 +8,7 @@ RAGFlow 可接入 GPUStack，使用本地部署的 LLM、视觉模型、向量�
 
 !!! note
 
-    本指南使用 [infiniflow/ragflow#21903](https://github.com/infiniflow/ragflow/pull/21903) 为 RAGFlow 新增的 GPUStack 配置卡片。RAGFlow v1.0.0-rc3 及更早的版本不包含该卡片，在正式版本包含它之前，请使用 2026-11-04 或之后的 RAGFlow `main` 分支构建。截图对应 GPUStack v2.3.0 和 RAGFlow `main` 分支的 `8b8ccbf` 提交。
+    本指南需要 RAGFlow v1.0.0-rc3 之后的版本，该版本新增了 GPUStack 配置卡片。
 
 ## 部署模型 { #deploying-models }
 
@@ -64,6 +64,8 @@ RAGFlow 可接入 GPUStack，使用本地部署的 LLM、视觉模型、向量�
 
     ![在 RAGFlow 中添加模型](../assets/integrations/integration-ragflow-add-model.png)
 
+    之后如果在 GPUStack 中部署了新模型，点击实例上的 `Refresh` 即可发现并添加。
+
 5. 点击 `Set default models`，为每种类型选择模型。每项选择都会立即保存：
 
     ![在 RAGFlow 中设置默认模型](../assets/integrations/integration-ragflow-set-default-models.png)
@@ -87,6 +89,8 @@ RAGFlow 可接入 GPUStack，使用本地部署的 LLM、视觉模型、向量�
 4. 在 `Chat` 中创建并打开一个聊天。点击右上角的设置图标，在 `Datasets` 下选择数据集，确认 `Model` 中的对话模型，然后点击 `Save`：
 
     ![在 RAGFlow 中配置聊天](../assets/integrations/integration-ragflow-create-assistant.png)
+
+    `Retrieval testing` 中选择的重排序模型不会应用到聊天。如需为聊天的检索启用重排序，请在同一设置中展开 `Advanced settings` > `Naive`，将 `Rerank model` 设为 `bge-reranker-v2-m3` 并点击 `Save`。
 
 5. 发送消息，即可与模型交互并查询数据集：
 

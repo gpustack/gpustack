@@ -8,7 +8,7 @@ RAGFlow может интегрироваться с GPUStack для испол�
 
 !!! note
 
-    В этом руководстве используется карточка настройки GPUStack, добавленная в RAGFlow в [infiniflow/ragflow#21903](https://github.com/infiniflow/ragflow/pull/21903). Её нет в RAGFlow v1.0.0-rc3 и более ранних выпусках, поэтому, пока она не войдёт в выпуск, используйте сборку ветки `main` RAGFlow от 2026-11-04 или новее. На снимках экрана показаны GPUStack v2.3.0 и RAGFlow `main` на коммите `8b8ccbf`.
+    Для этого руководства нужна версия RAGFlow новее v1.0.0-rc3, в которой появилась карточка настройки GPUStack.
 
 ## Развертывание моделей { #deploying-models }
 
@@ -64,6 +64,8 @@ RAGFlow может интегрироваться с GPUStack для испол�
 
     ![Добавление моделей в RAGFlow](../assets/integrations/integration-ragflow-add-model.png)
 
+    Если позже вы развернёте в GPUStack другие модели, нажмите `Refresh` в экземпляре, чтобы обнаружить и добавить их.
+
 5. Нажмите `Set default models` и выберите модель для каждого типа. Каждый выбор сохраняется сразу:
 
     ![Модели по умолчанию в RAGFlow](../assets/integrations/integration-ragflow-set-default-models.png)
@@ -87,6 +89,8 @@ RAGFlow может интегрироваться с GPUStack для испол�
 4. В `Chat` создайте чат и откройте его. Нажмите значок настроек в правом верхнем углу, выберите набор данных в `Datasets`, проверьте модель чата в `Model` и нажмите `Save`:
 
     ![Настройка чата в RAGFlow](../assets/integrations/integration-ragflow-create-assistant.png)
+
+    Модель переранжирования, выбранная в `Retrieval testing`, к чатам не применяется. Чтобы переранжировать результаты поиска в чате, в тех же настройках разверните `Advanced settings` > `Naive`, установите для `Rerank model` значение `bge-reranker-v2-m3` и нажмите `Save`.
 
 5. Отправьте сообщение. Теперь можно взаимодействовать с моделью и выполнять запросы к набору данных:
 

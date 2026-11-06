@@ -8,7 +8,7 @@ RAGFlow を GPUStack と連携させると、ローカルにデプロイした L
 
 !!! note
 
-    このガイドでは、[infiniflow/ragflow#21903](https://github.com/infiniflow/ragflow/pull/21903) で RAGFlow に追加された GPUStack 設定カードを使用します。このカードは RAGFlow v1.0.0-rc3 以前のリリースには含まれていないため、含むリリースが公開されるまでは、2026-11-04 以降の RAGFlow `main` ブランチのビルドを使用してください。スクリーンショットは GPUStack v2.3.0 と RAGFlow `main` のコミット `8b8ccbf` のものです。
+    このガイドには、GPUStack 設定カードが追加された RAGFlow v1.0.0-rc3 より後のバージョンが必要です。
 
 ## モデルのデプロイ { #deploying-models }
 
@@ -64,6 +64,8 @@ RAGFlow を GPUStack と連携させると、ローカルにデプロイした L
 
     ![RAGFlow でモデルを追加](../assets/integrations/integration-ragflow-add-model.png)
 
+    後から GPUStack にモデルを追加でデプロイした場合は、インスタンスの `Refresh` をクリックすると検出して追加できます。
+
 5. `Set default models` をクリックし、種類ごとにモデルを選択します。選択はすぐに保存されます：
 
     ![RAGFlow で既定のモデルを設定](../assets/integrations/integration-ragflow-set-default-models.png)
@@ -87,6 +89,8 @@ RAGFlow を GPUStack と連携させると、ローカルにデプロイした L
 4. `Chat` でチャットを作成して開きます。右上の設定アイコンをクリックし、`Datasets` でデータセットを選択し、`Model` のチャットモデルを確認して `Save` をクリックします：
 
     ![RAGFlow でチャットを設定](../assets/integrations/integration-ragflow-create-assistant.png)
+
+    `Retrieval testing` で選択したリランクモデルはチャットには適用されません。チャットの検索結果をリランクするには、同じ設定で `Advanced settings` > `Naive` を展開し、`Rerank model` を `bge-reranker-v2-m3` に設定して `Save` をクリックします。
 
 5. メッセージを送信すると、モデルと対話してデータセットを照会できます：
 
