@@ -26,7 +26,10 @@ from gpustack.schemas.benchmark import (
     benchmark_load_mode,
 )
 from gpustack.schemas.models import ModelInstanceStateEnum
-from gpustack.utils.process import terminate_process_tree, add_signal_handlers
+from gpustack.utils.process import (
+    terminate_multiprocessing_process,
+    add_signal_handlers,
+)
 from gpustack.worker.benchmark import analysis, artifacts
 from gpustack.worker.benchmark.runner import BenchmarkRunner
 from gpustack.client import ClientSet
@@ -528,7 +531,9 @@ class BenchmarkManager:
         # Teardown provisioning process if still alive.
         if self._is_provisioning(benchmark):
             try:
-                terminate_process_tree(self._provisioning_processes[benchmark.id].pid)
+                terminate_multiprocessing_process(
+                    self._provisioning_processes[benchmark.id]
+                )
             except Exception as e:
                 logger.error(
                     "Failed to terminate the provisioning process of benchmark "
@@ -661,7 +666,7 @@ class BenchmarkManager:
         # and stated in the log; a stalled queue is neither.
         if process := self._provisioning_processes.pop(benchmark_id, None):
             try:
-                terminate_process_tree(process.pid)
+                terminate_multiprocessing_process(process)
             except Exception as e:
                 logger.error(
                     "Failed to terminate the provisioning process of benchmark "
