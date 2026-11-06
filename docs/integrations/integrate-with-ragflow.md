@@ -36,7 +36,7 @@ Open `Model Service > Models` to view the ready models:
 2. Complete the connection form:
 
     - **Instance name:** Enter a unique name, such as `GPUStack-Demo`. Use letters, digits, underscores, or hyphens; do not include spaces.
-    - **GPUStack server URL:** Enter the server root URL, such as `http://your-gpustack-host:port`. The example uses `http://demo.services.gpustack.ai:35090`. Do not append `/v1` in this field. Include the port if needed and ensure the URL is reachable from the RAGFlow container. Avoid `localhost` unless GPUStack runs in the same container.
+    - **GPUStack server URL:** Enter the server root URL, such as `http://your-gpustack-host:port`. The example uses `http://demo.services.gpustack.ai:35090`. Do not append `/v1` in this field. Include the port if needed and ensure the URL is reachable from the RAGFlow container. Inside the RAGFlow container, `localhost` refers to the container itself, so it typically cannot be used to connect to a GPUStack instance running outside that container. Use a hostname or IP address reachable from the container instead.
     - **API key:** Paste the GPUStack API key created above.
 
 ![Connect a GPUStack instance in RAGFlow](../assets/integrations/integration-ragflow-add-model.png)
