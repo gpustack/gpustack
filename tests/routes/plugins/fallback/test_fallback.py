@@ -80,7 +80,7 @@ async def _run(monkeypatch, targets, ctx):
 
     import gpustack.routes.plugins.fallback.plugin as plugin_mod
 
-    monkeypatch.setattr(plugin_mod, "_has_fallback_target", _has_targets(targets))
+    monkeypatch.setattr(plugin_mod, "_fallback_target_names", _has_targets(targets))
     with (
         patch(
             "gpustack.gateway.utils.ensure_model_ingress",
@@ -97,10 +97,11 @@ async def _run(monkeypatch, targets, ctx):
 
 def _has_targets(targets):
     async def inner(ctx):
-        return any(
-            t.fallback_status_codes and len(t.fallback_status_codes) > 0
+        return [
+            t.name
             for t in targets
-        )
+            if t.fallback_status_codes and len(t.fallback_status_codes) > 0
+        ]
 
     return inner
 
@@ -221,6 +222,22 @@ class TestFallbackIngressAndFilter:
 
         route, target = _route()  # no fallback codes
         ctx = _Ctx(route)
+        ingress_calls, filter_calls = await _run(monkeypatch, [target], ctx)
+
+        assert ingress_calls[0]["event_type"] == EventType.DELETED
+        assert filter_calls[0]["event_type"] == EventType.DELETED
+
+    @pytest.mark.asyncio
+    async def test_declared_fallback_without_destinations_tears_down(self, monkeypatch):
+        # A fallback target with no active destination (e.g. its model is
+        # stopped) must not install the 4xx/5xx redirect: the redirected
+        # request would have no cluster to go to and loop on
+        # cluster_not_found instead of passing the upstream response
+        # through.
+        from gpustack.server.bus import EventType
+
+        route, target = _route(fallback_codes=["5xx"])
+        ctx = _Ctx(route, fallback_destinations=[])
         ingress_calls, filter_calls = await _run(monkeypatch, [target], ctx)
 
         assert ingress_calls[0]["event_type"] == EventType.DELETED

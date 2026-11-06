@@ -467,6 +467,12 @@ class SetFallbackTargetInput(BaseModel):
                 FallbackStatusEnum.ERROR_500,
             ]:
                 raise ValueError(f"Invalid fallback status code: {status}")
+        # An empty list is the same declaration as no codes at all, and
+        # the rest of the code reads it that way (``bool(...)``). Return
+        # None so the clearing path treats it identically instead of
+        # storing a falsy-but-present value.
+        if not deduped:
+            return None
         return list(deduped)
 
 
