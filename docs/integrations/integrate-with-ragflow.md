@@ -10,7 +10,7 @@ The example below uses these deployment names. You can choose different names; R
 
 | Deployment name | Model | Purpose |
 | --- | --- | --- |
-| `team-writer` | `Qwen/Qwen3-4B` | Chat |
+| `team-writer` | `Qwen/Qwen3-8B` | Chat |
 | `kb-encoder` | `BAAI/bge-m3` | Embedding |
 | `doc-sorter` | `BAAI/bge-reranker-v2-m3` | Reranking |
 | `voice-in` | `Systran/faster-whisper-small` | Speech-to-text |
