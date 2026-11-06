@@ -2296,10 +2296,13 @@ class ServeManager(ContainerLogPersister):
                             )
                             continue
 
-                        # A recovered follower can clear its propagated failure;
-                        # independent leader failures still require recovery.
+                        # Workload failures and recovered follower failures can
+                        # proceed to readiness checks; other errors stay terminal.
                         if (
                             model_instance.state == ModelInstanceStateEnum.ERROR
+                            and not (model_instance.state_message or "").startswith(
+                                _WORKLOAD_FAILED_MESSAGE
+                            )
                             and not (
                                 model_instance.distributed_servers
                                 and model_instance.distributed_servers.mode
