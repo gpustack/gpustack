@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 import asyncio
+import multiprocessing
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from uuid import uuid4
@@ -32,6 +33,7 @@ from gpustack.server.bus import Event, EventType
 from gpustack.schemas.workers import WorkerStateEnum
 from gpustack.server.controllers import model_members_stale, model_spec_digest
 from gpustack.utils import network
+from gpustack.utils.process import terminate_multiprocessing_process
 from gpustack.worker.serve_manager import ServeManager
 from gpustack.worker.backends.base import InferenceServer
 from gpustack_runtime.deployer import Container, WorkloadPlan, WorkloadStatusStateEnum
@@ -42,6 +44,7 @@ from tests.worker.test_serve_manager_ports import (
     _pd_model,
     _wide_band_mode,
 )
+from tests.worker.test_worker_provisioning import _wait_for_shutdown
 
 
 @pytest.fixture
@@ -1023,6 +1026,61 @@ def _prepared_external_workload(state):
     second.api_port = state.instance.ports[1]
     item.dp_rank_placements.append(second)
     return item
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+def test_external_preparer_stop_releases_the_old_generation(
+    preparing_external, monkeypatch, caplog, deleted
+):
+    state = preparing_external
+    serve, mi = state.serve, state.instance
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    process = context.Process(target=_wait_for_shutdown, args=(ready,))
+    monkeypatch.setattr(
+        "gpustack.worker.serve_manager.terminate_multiprocessing_process",
+        terminate_multiprocessing_process,
+    )
+    try:
+        process.start()
+        assert ready.wait(10)
+        serve._provisioning_processes[mi.id] = process
+        if deleted:
+            state.client.model_instances.get.side_effect = NotFoundException("deleted")
+            state.client.model_instances.list.side_effect = lambda **kwargs: (
+                SimpleNamespace(items=[])
+            )
+            serve.sync_model_instances_state()
+        else:
+            mi.restart_count += 1
+            mi.state = ModelInstanceStateEnum.SCHEDULED
+            serve._sync_managed_model_instance(mi)
+        _finish_managed_tasks(state)
+
+        assert not process.is_alive()
+        assert process.exitcode is not None
+        assert mi.id not in serve._provisioning_processes
+        assert mi.id not in serve._model_instance_by_instance_id
+        assert mi.id not in serve._assigned_ports
+        assert not serve._managed_stopping
+        state.create.assert_not_called()
+
+        if deleted:
+            with caplog.at_level("INFO"):
+                serve.sync_model_instances_state()
+                _finish_managed_tasks(state)
+            assert "Reaping stale model instance" not in caplog.text
+        else:
+            prepare = MagicMock()
+            monkeypatch.setattr(serve, "_prepare_managed_model_instance", prepare)
+            serve._sync_managed_model_instance(mi)
+            prepare.assert_called_once()
+            assert prepare.call_args.args[0].restart_count == mi.restart_count
+    finally:
+        process.kill()
+        process.join(timeout=5)
+        if not process.is_alive():
+            process.close()
 
 
 def test_managed_launch_payloads_precede_local_registration(managed, monkeypatch):
@@ -2170,7 +2228,7 @@ def manager(request, tmp_path, monkeypatch):
         MagicMock(return_value=process),
     )
     monkeypatch.setattr(
-        "gpustack.worker.serve_manager.terminate_process_tree", MagicMock()
+        "gpustack.worker.serve_manager.terminate_multiprocessing_process", MagicMock()
     )
     monkeypatch.setattr(
         "gpustack.worker.serve_manager.registration.determine_default_registry",
@@ -3477,7 +3535,7 @@ def test_guarded_legacy_stop_holds_claims_until_proved_and_reported(
     process.is_alive.return_value = blocked == 'preparer'
     s.serve._provisioning_processes[mi.id] = process
     monkeypatch.setattr(
-        'gpustack.worker.serve_manager.terminate_process_tree', MagicMock()
+        'gpustack.worker.serve_manager.terminate_multiprocessing_process', MagicMock()
     )
     if blocked == 'terminating':
         s.runtime.append(SimpleNamespace(name=name))

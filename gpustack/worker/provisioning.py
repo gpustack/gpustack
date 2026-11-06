@@ -10,7 +10,10 @@ from gpustack_runtime.deployer import WorkloadPlan, create_workload
 from gpustack_runtime.logging import setup_logging as setup_runtime_logging
 
 from gpustack.logging import RedirectStdoutStderr, setup_logging
-from gpustack.utils.process import add_signal_handlers, terminate_process_tree
+from gpustack.utils.process import (
+    add_signal_handlers,
+    terminate_multiprocessing_process,
+)
 from gpustack.worker.log_sources import CappedLogWriter
 
 logger = logging.getLogger(__name__)
@@ -52,7 +55,7 @@ def run_provisioning(
     try:
         while process.is_alive():
             if cancelled.wait(0.2):
-                terminate_process_tree(process.pid)
+                terminate_multiprocessing_process(process)
                 process.join()
                 return None
             process.join(timeout=0)
@@ -60,6 +63,6 @@ def run_provisioning(
         return None if cancelled.is_set() else process.exitcode
     finally:
         if process.is_alive():
-            terminate_process_tree(process.pid)
+            terminate_multiprocessing_process(process)
             process.join()
         process.close()

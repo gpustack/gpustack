@@ -50,7 +50,7 @@ from gpustack.utils import network
 from gpustack.utils.convert import safe_int
 from gpustack.utils.attrs import set_attr
 from gpustack.utils.process import (
-    terminate_process_tree,
+    terminate_multiprocessing_process,
     terminate_process,
     add_signal_handlers,
 )
@@ -1006,7 +1006,7 @@ class ServeManager(ContainerLogPersister):
             if connection is not None:
                 connection.close()
             if self._is_provisioning(mi):
-                terminate_process_tree(self._provisioning_processes[mi.id].pid)
+                terminate_multiprocessing_process(self._provisioning_processes[mi.id])
                 if self._is_provisioning(mi):
                     return False
             # Observe the old identity even when the Server has replaced it.
@@ -1549,7 +1549,7 @@ class ServeManager(ContainerLogPersister):
         if connection is not None:
             connection.close()
         if self._is_provisioning(mi):
-            terminate_process_tree(self._provisioning_processes[mi.id].pid)
+            terminate_multiprocessing_process(self._provisioning_processes[mi.id])
             if self._is_provisioning(mi):
                 return False
         observed = self._managed_runtime_workloads(mi, allow_older_generation=True)
@@ -5032,7 +5032,7 @@ class ServeManager(ContainerLogPersister):
 
         # Teardown provisioning process if still alive.
         if self._is_provisioning(mi):
-            terminate_process_tree(self._provisioning_processes[mi.id].pid)
+            terminate_multiprocessing_process(self._provisioning_processes[mi.id])
 
         # Delete workload.
         deployment_metadata = mi.get_deployment_metadata(self._worker_id)

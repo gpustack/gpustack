@@ -903,7 +903,7 @@ class TestQueueCancelGuard:
         monkeypatch.setattr(bm, "delete_workload", lambda _name: None)
         monkeypatch.setattr(
             bm,
-            "terminate_process_tree",
+            "terminate_multiprocessing_process",
             lambda _pid: (_ for _ in ()).throw(RuntimeError()),
         )
         mgr = self._manager()
