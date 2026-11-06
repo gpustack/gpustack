@@ -11,8 +11,7 @@ from gpustack.schemas.models import (
     ModelInstanceBase,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
-    ModelInstanceWorkloadUpdate,
-    ModelInstanceLegacyUpdate,
+    ModelInstanceMemberReport,
     ModelInstanceWorkloadObservation,
     ModelInstancePreparation,
     ModelInstanceStateEnum,
@@ -170,7 +169,7 @@ def legacy_group_recovery(
 
 def legacy_instance_update(
     instance: ModelInstanceBase, worker_id: int, **fields
-) -> ModelInstanceLegacyUpdate:
+) -> ModelInstanceMemberReport:
     """Report explicit local runtime fields against the observed instance round."""
     for key in list(fields):
         if key.startswith('distributed_servers.subordinate_workers.'):
@@ -183,8 +182,15 @@ def legacy_instance_update(
                     for name in ('state', 'state_message', 'pid', 'ports', 'arguments')
                 }
             )
-    return ModelInstanceLegacyUpdate(
-        kind='legacy', restart_count=instance.restart_count or 0, **fields
+    preparation = {
+        key: fields.pop(key)
+        for key in list(fields)
+        if key in ModelInstancePreparation.model_fields
+    }
+    if preparation:
+        fields['preparation'] = ModelInstancePreparation(**preparation)
+    return ModelInstanceMemberReport(
+        restart_count=instance.restart_count or 0, **fields
     )
 
 
@@ -192,7 +198,7 @@ def worker_workload_report(instance, worker_id, workloads, **fields):
     """Send topology only for registration; retain Server intent in its snapshot."""
     local = get_model_instance_workloads(instance, worker_id) or []
     if local and workload_topology(local) == workload_topology(workloads):
-        return ModelInstanceWorkloadUpdate(
+        return ModelInstanceMemberReport(
             restart_count=instance.restart_count or 0,
             observations=[
                 ModelInstanceWorkloadObservation(
@@ -219,7 +225,7 @@ def worker_workload_report(instance, worker_id, workloads, **fields):
             for key in ('stop_requested', 'last_restart_time'):
                 value['component'].pop(key)
         payload.append(value)
-    return ModelInstanceWorkloadUpdate(
+    return ModelInstanceMemberReport(
         restart_count=instance.restart_count or 0, workloads=payload, **fields
     )
 
@@ -305,7 +311,7 @@ def model_instance_workloads_stopped(
 
 def managed_instance_update(
     instance: ModelInstance, **fields
-) -> ModelInstanceWorkloadUpdate:
+) -> ModelInstanceMemberReport:
     """Build a narrow Worker report rather than rewriting an instance snapshot."""
     preparation = None
     if fields.get("state") == ModelInstanceStateEnum.INITIALIZING:
@@ -317,7 +323,7 @@ def managed_instance_update(
                 if key in ModelInstancePreparation.model_fields
             }
         )
-    return ModelInstanceWorkloadUpdate(
+    return ModelInstanceMemberReport(
         restart_count=instance.restart_count or 0,
         preparation=preparation,
         **fields,

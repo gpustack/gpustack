@@ -2006,8 +2006,8 @@ class ModelInstanceWorkloadObservation(BaseModel):
     component_attempt: Optional[int] = PydanticField(default=None, ge=0)
 
 
-class ModelInstanceWorkloadUpdate(BaseModel):
-    """Worker-only request envelope; never persisted as instance fields."""
+class ModelInstanceMemberReport(BaseModel):
+    """Worker-local runtime facts, validated against the Server's instance mode."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -2015,11 +2015,24 @@ class ModelInstanceWorkloadUpdate(BaseModel):
     workloads: Optional[List[ModelInstanceWorkloadRegistrationItem]] = None
     observations: Optional[List[ModelInstanceWorkloadObservation]] = None
     model_config_snapshot: Optional[ModelConfigSnapshot] = None
-    state: Optional[Literal[ModelInstanceStateEnum.ERROR]] = None
+    state: Optional[
+        Literal[
+            ModelInstanceStateEnum.INITIALIZING,
+            ModelInstanceStateEnum.DOWNLOADING,
+            ModelInstanceStateEnum.STARTING,
+            ModelInstanceStateEnum.RUNNING,
+            ModelInstanceStateEnum.UNREACHABLE,
+            ModelInstanceStateEnum.ERROR,
+        ]
+    ] = None
     state_message: Optional[str] = None
     preparation: Optional[ModelInstancePreparation] = None
     backend_version: Optional[str] = None
     injected_backend_parameters: Optional[List[str]] = None
+    arguments: Optional[List[str]] = None
+    gpu_indexes: Optional[List[int]] = None
+    gpu_addresses: Optional[List[str]] = None
+    computed_resource_claim: Optional[ComputedResourceClaim] = None
 
     @field_validator("workloads")
     @classmethod
@@ -2036,34 +2049,7 @@ class ModelInstanceWorkloadUpdate(BaseModel):
             self.workloads is not None or self.observations is not None
         ):
             raise ValueError("Preparation must precede task registration")
-        if self.state is not None and not self.state_message:
-            raise ValueError("A rank health failure requires a diagnostic message")
         return self
-
-
-class ModelInstanceLegacyUpdate(ModelInstancePreparation):
-    """Explicit local state; identity and restart ownership remain on the Server."""
-
-    kind: Literal['legacy']
-    restart_count: int = PydanticField(ge=0)
-    state: Optional[
-        Literal[
-            ModelInstanceStateEnum.INITIALIZING,
-            ModelInstanceStateEnum.DOWNLOADING,
-            ModelInstanceStateEnum.STARTING,
-            ModelInstanceStateEnum.RUNNING,
-            ModelInstanceStateEnum.UNREACHABLE,
-            ModelInstanceStateEnum.ERROR,
-        ]
-    ] = None
-    state_message: Optional[str] = None
-    arguments: Optional[List[str]] = None
-    backend_version: Optional[str] = None
-    injected_backend_parameters: Optional[List[str]] = None
-    model_config_snapshot: Optional[ModelConfigSnapshot] = None
-    gpu_indexes: Optional[List[int]] = None
-    gpu_addresses: Optional[List[str]] = None
-    computed_resource_claim: Optional[ComputedResourceClaim] = None
 
 
 class ModelInstanceLegacyStop(BaseModel):

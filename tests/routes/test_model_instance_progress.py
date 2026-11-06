@@ -26,7 +26,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancePublic,
     ModelInstanceWorkload,
-    ModelInstanceWorkloadUpdate,
+    ModelInstanceMemberReport,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
     ModelInstanceUpdate,
@@ -499,7 +499,7 @@ def test_headless_report_can_arrive_before_main():
     ],
 )
 def test_flat_workload_report_accepts_each_reporting_phase(fields):
-    update = ModelInstanceWorkloadUpdate.model_validate({'restart_count': 3, **fields})
+    update = ModelInstanceMemberReport.model_validate({'restart_count': 3, **fields})
     assert update.restart_count == 3
     assert 'workload_report' not in update.model_dump()
 
@@ -514,12 +514,12 @@ def test_flat_workload_report_accepts_each_reporting_phase(fields):
 )
 def test_flat_workload_report_rejects_mixed_phases(fields):
     with pytest.raises(ValidationError):
-        ModelInstanceWorkloadUpdate.model_validate({'restart_count': 3, **fields})
+        ModelInstanceMemberReport.model_validate({'restart_count': 3, **fields})
 
 
 def test_flat_workload_report_rejects_nested_envelope():
     with pytest.raises(ValidationError):
-        ModelInstanceWorkloadUpdate.model_validate(
+        ModelInstanceMemberReport.model_validate(
             {
                 'restart_count': 3,
                 'workload_report': {'restart_count': 3, 'workloads': []},
@@ -528,7 +528,7 @@ def test_flat_workload_report_rejects_nested_envelope():
 
 
 def test_rank_update_only_requires_request_fields():
-    update = ModelInstanceWorkloadUpdate.model_validate(
+    update = ModelInstanceMemberReport.model_validate(
         {
             "restart_count": 0,
             "workloads": [new_model_instance_workload()],
@@ -541,7 +541,7 @@ def test_rank_update_only_requires_request_fields():
 @pytest.mark.parametrize("field", ["worker_id", "cluster_id", "state"])
 def test_workload_report_rejects_extra_identity_and_state(field):
     with pytest.raises(ValidationError):
-        ModelInstanceWorkloadUpdate.model_validate(
+        ModelInstanceMemberReport.model_validate(
             {"restart_count": 0, "workloads": [], field: 1}
         )
 
@@ -663,6 +663,105 @@ def _legacy_report_instance(api):
     api.instance.state = ModelInstanceStateEnum.RUNNING
 
 
+def test_member_report_endpoint_exposes_one_request_schema(report_api):
+    request = report_api.app.openapi()['paths'][
+        '/model-instances/{id}/workload-report'
+    ]['put']['requestBody']['content']['application/json']['schema']
+    assert request == {'$ref': '#/components/schemas/ModelInstanceMemberReport'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('worker_id', [1, 2])
+@pytest.mark.parametrize(
+    'preparation', [{'pid': 123, 'ports': [40000]}, {'pid': None, 'ports': []}]
+)
+async def test_member_report_uses_shared_preparation_for_each_legacy_member(
+    report_api, worker_id, preparation
+):
+    api = report_api
+    _legacy_report_instance(api)
+    api.instance.state = ModelInstanceStateEnum.SCHEDULED
+    api.ctx.user.worker.id = worker_id
+    member = (
+        api.instance
+        if worker_id == 1
+        else api.instance.distributed_servers.subordinate_workers[0]
+    )
+    member.pid = 321
+    member.ports = [40001]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put(
+            '/model-instances/7/workload-report',
+            json={
+                'restart_count': 0,
+                'state': 'starting',
+                'preparation': preparation,
+            },
+        )
+    assert response.status_code == 200, response.text
+    member = (
+        api.instance
+        if worker_id == 1
+        else api.instance.distributed_servers.subordinate_workers[0]
+    )
+    assert member.pid == preparation['pid']
+    assert member.ports == preparation['ports']
+    assert member.state == ModelInstanceStateEnum.STARTING
+    assert api.instance.restart_count == 0
+    if worker_id == 2:
+        assert api.instance.pid is None
+        assert api.instance.state == ModelInstanceStateEnum.SCHEDULED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'fields',
+    [
+        {'state': 'initializing'},
+        {'state': 'downloading'},
+        {'state': 'starting'},
+        {'state': 'running'},
+        {'state': 'unreachable'},
+        {'state': 'error'},
+        {'arguments': ['--port', '40000']},
+        {'gpu_indexes': [0]},
+        {'gpu_addresses': []},
+        {'computed_resource_claim': {'ram': 1024}},
+    ],
+)
+async def test_member_report_keeps_managed_instance_authority(report_api, fields):
+    api = report_api
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put(
+            '/model-instances/7/workload-report',
+            json={'restart_count': 0, **fields},
+        )
+    assert response.status_code == 400, response.text
+    api.service.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['workloads', 'observations'])
+async def test_member_report_cannot_register_managed_tasks_for_legacy(
+    report_api, field
+):
+    api = report_api
+    _legacy_report_instance(api)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put(
+            '/model-instances/7/workload-report',
+            json={'restart_count': 0, field: []},
+        )
+    assert response.status_code == 400, response.text
+    api.service.update.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('worker_id', [1, 2])
 @pytest.mark.parametrize('generation', [0, 1])
@@ -679,7 +778,6 @@ async def test_legacy_runtime_report_is_local_and_generation_fenced(
         response = await client.put(
             '/model-instances/7/workload-report',
             json={
-                'kind': 'legacy',
                 'restart_count': generation,
                 'state': 'error',
                 'state_message': 'engine failed',
@@ -732,7 +830,7 @@ async def test_legacy_metadata_snapshot_cannot_clear_runtime_failure(report_api)
         ('resume_error', 409),
         ('snapshot_follower', 403),
         ('shared_ports_follower', 403),
-        ('extra_fields', 422),
+        ('extra_fields', 400),
     ],
 )
 async def test_legacy_runtime_report_keeps_ownership_and_stop_fences(
@@ -740,7 +838,7 @@ async def test_legacy_runtime_report_keeps_ownership_and_stop_fences(
 ):
     api = report_api
     _legacy_report_instance(api)
-    payload = {'kind': 'legacy', 'restart_count': 0, 'state': 'running'}
+    payload = {'restart_count': 0, 'state': 'running'}
     if case == 'foreign':
         api.ctx.user.worker.id = 3
     elif case == 'rebound':
@@ -761,7 +859,7 @@ async def test_legacy_runtime_report_keeps_ownership_and_stop_fences(
         payload['model_config_snapshot'] = {'backend_parameters': []}
     elif case == 'shared_ports_follower':
         api.ctx.user.worker.id = 2
-        payload['port'] = 40000
+        payload['preparation'] = {'port': 40000}
     else:
         payload['workloads'] = []
     async with httpx.AsyncClient(
@@ -772,7 +870,8 @@ async def test_legacy_runtime_report_keeps_ownership_and_stop_fences(
     api.service.update.assert_not_awaited()
 
 
-def test_legacy_client_reports_only_explicit_local_fields(report_api):
+@pytest.mark.parametrize('preparing', [False, True])
+def test_legacy_client_reports_only_explicit_local_fields(report_api, preparing):
     import json
     from gpustack.schemas.models import ModelInstancePublic
     from gpustack.utils.model_instance_workers import legacy_instance_update
@@ -790,15 +889,19 @@ def test_legacy_client_reports_only_explicit_local_fields(report_api):
     ) as client:
         wrapped = ModelInstanceClient(SimpleNamespace(get_httpx_client=lambda: client))
         report = legacy_instance_update(
-            api.instance, 2, state=ModelInstanceStateEnum.ERROR, state_message='failed'
+            api.instance,
+            2,
+            state=ModelInstanceStateEnum.ERROR,
+            state_message='failed',
+            **({'pid': None, 'ports': []} if preparing else {}),
         )
         assert isinstance(wrapped.report_workloads(7, report), ModelInstancePublic)
     assert sent == [
         {
-            'kind': 'legacy',
             'restart_count': 0,
             'state': 'error',
             'state_message': 'failed',
+            **({'preparation': {'pid': None, 'ports': []}} if preparing else {}),
         }
     ]
 
@@ -1244,7 +1347,7 @@ def test_instance_client_preserves_manifest_and_sends_only_report(
     transport.get_httpx_client.return_value.put.return_value = response
     transport.get_httpx_client.return_value.get.return_value = response
     client = ModelInstanceClient(transport, enable_cache=False)
-    update = ModelInstanceWorkloadUpdate.model_validate(
+    update = ModelInstanceMemberReport.model_validate(
         {
             "restart_count": 0,
             "workloads": [new_model_instance_workload()],
@@ -1255,7 +1358,7 @@ def test_instance_client_preserves_manifest_and_sends_only_report(
     assert client.get(7).distributed_servers.workloads == workloads
     transport.get_httpx_client.return_value.put.assert_called_once_with(
         "/model-instances/7/workload-report",
-        content=update.model_dump_json(),
+        content=update.model_dump_json(exclude_unset=True),
         headers={"Content-Type": "application/json"},
     )
 
@@ -1301,7 +1404,7 @@ async def test_rank_health_fault_is_fenced_without_falsifying_runtime(report_api
         await put(api, items, generation=99, state='error', state_message='late')
     ).status_code == 409
     assert api.instance.state_message == 'rank 0 HTTP 503 (3/3)'
-    assert (await put(api, items, state='running')).status_code == 422
+    assert (await put(api, items, state='running')).status_code == 400
 
 
 @pytest.mark.asyncio
@@ -1803,7 +1906,7 @@ def test_first_component_report_rejects_invalid_local_contract(report_api, chang
     elif change == 'stop':
         items[1].component.stop_requested = True
         with pytest.raises(ValidationError):
-            ModelInstanceWorkloadUpdate(
+            ModelInstanceMemberReport(
                 restart_count=0, workloads=[item.model_dump() for item in items]
             )
         return
