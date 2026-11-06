@@ -183,6 +183,10 @@ GPUStack ワーカーの起動時に次の環境変数を設定し、ランナ�
      --system-default-container-registry <your_internal_registry>
 ```
 
+GPUStack クラスターで管理するワーカーでは、代わりにクラスターの [Worker Configuration YAML](../user-guide/cluster-management.md#worker-configuration-yaml) で `container_namespace` を設定できます。この設定はデフォルトのワーカー、ランナー、ランタイムイメージに適用されるため、ワーカーイメージに個別のリポジトリー上書きが必要な場合を除き、`image_repo` を別途設定する必要はありません。
+
+`container_namespace` を設定すると、ワーカーが解決する他のデフォルト `gpustack/*` イメージにも適用されます。これには `benchmark-runner` とキャッシュサービスイメージが含まれます。使用するワークロードに必要なすべてのイメージをミラーしてください。
+
 ## ドキュメント { #documentation }
 
 サーバーにはこのドキュメントが同梱され、`/help/` で配信されるため、エアギャップ環境からオンラインサイトに接続する必要はありません。

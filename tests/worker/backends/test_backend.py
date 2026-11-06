@@ -825,6 +825,64 @@ async def test_apply_registry_override(
 
 
 @pytest.mark.parametrize(
+    "image_name, container_registry, fallback_registry, expect_image_name",
+    [
+        (
+            "gpustack/runner:cuda13.0-vllm0.32.0",
+            "registry.example.com",
+            None,
+            "registry.example.com/gpustack-ai/runner:cuda13.0-vllm0.32.0",
+        ),
+        (
+            "gpustack/runtime:pause",
+            "registry.example.com",
+            None,
+            "registry.example.com/gpustack-ai/runtime:pause",
+        ),
+        (
+            "another-org/runner:cuda13.0-vllm0.32.0",
+            "registry.example.com",
+            None,
+            "registry.example.com/another-org/runner:cuda13.0-vllm0.32.0",
+        ),
+        (
+            "quay.io/gpustack/runner:cuda13.0-vllm0.32.0",
+            "registry.example.com",
+            None,
+            "quay.io/gpustack/runner:cuda13.0-vllm0.32.0",
+        ),
+        (
+            "gpustack-ai/gpustack:dev",
+            None,
+            "quay.io",
+            "gpustack-ai/gpustack:dev",
+        ),
+        (
+            "gpustack/runner:cuda13.0-vllm0.32.0",
+            None,
+            "quay.io",
+            "quay.io/gpustack-ai/runner:cuda13.0-vllm0.32.0",
+        ),
+    ],
+)
+def test_apply_container_namespace(
+    image_name,
+    container_registry,
+    fallback_registry,
+    expect_image_name,
+):
+    config = types.SimpleNamespace(
+        system_default_container_registry=container_registry,
+        container_namespace="gpustack-ai",
+    )
+
+    assert (
+        apply_registry_override_to_image(config, image_name, fallback_registry)
+        == expect_image_name
+    )
+
+
+@pytest.mark.parametrize(
     "backend_parameters, expected",
     [
         (

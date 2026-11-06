@@ -177,6 +177,10 @@ sudo docker run --rm -it --entrypoint "" \
      --system-default-container-registry <your_internal_registry>
 ```
 
+对于通过 GPUStack 集群管理的 Worker，也可以在集群的 [Worker Configuration YAML](../user-guide/cluster-management.md#worker-configuration-yaml) 中设置 `container_namespace`。该配置会同时作用于默认的 Worker、Runner 和 Runtime 镜像；除非 Worker 镜像需要单独的仓库覆盖，否则无需再配置 `image_repo`。
+
+设置 `container_namespace` 后，它也会作用于 Worker 解析的其他默认 `gpustack/*` 镜像，包括 `benchmark-runner` 和 Cache Service 镜像。请 mirror 实际工作负载所需的全部镜像。
+
 ## 文档 { #documentation }
 
 GPUStack Server 内置本套文档，并通过 `/help/` 提供访问，因此离线环境无需访问在线文档站点：

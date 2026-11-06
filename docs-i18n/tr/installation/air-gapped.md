@@ -183,6 +183,10 @@ GPUStack çalışanını çalıştırırken koşucu imajını çekmesine izin ve
      --system-default-container-registry <your_internal_registry>
 ```
 
+GPUStack kümesi tarafından yönetilen çalışanlar için bunun yerine kümenin [Worker Configuration YAML](../user-guide/cluster-management.md#worker-configuration-yaml) yapılandırmasında `container_namespace` ayarlanabilir. Bu ayar, ad alanını varsayılan çalışan, çalıştırıcı ve çalışma zamanı imajlarına uygular; çalışan imajının kendi depo geçersiz kılmasına ihtiyacı olmadığı sürece ayrıca `image_repo` ayarlamak gerekmez.
+
+`container_namespace` ayarlandığında, çalışan tarafından çözümlenen `benchmark-runner` ve önbellek hizmeti imajları da dahil olmak üzere diğer varsayılan `gpustack/*` imajlarına da uygulanır. Kullandığınız iş yüklerinin gerektirdiği tüm imajları yansılayın.
+
 ## Belgeler { #documentation }
 
 Sunucu bu belgeleri taşır ve `/help/`'de sunar, dolayısıyla ağdan yalıtılmış bir ortamın çevrimiçi siteye erişmesine gerek yoktur:

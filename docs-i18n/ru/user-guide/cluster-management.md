@@ -304,6 +304,7 @@ cache_dir: "/var/lib/gpustack/cache"
 log_dir: "/var/lib/gpustack/log"
 bin_dir: "/var/lib/gpustack/bin"
 # ========= container & image ===========
+container_namespace: "gpustack"
 image_name_override: "gpustack/gpustack:main"
 image_repo: "gpustack/gpustack"
 # ========= service & networking ===========
@@ -327,7 +328,9 @@ insecure_tls: false
 
 В приведенном выше YAML-файле перечислены все поддерживаемые в настоящее время параметры для `Worker Configuration YAML`. Значение каждой опции см. в полной документации по файлу конфигурации GPUStack [](../cli-reference/start.md#config-file). Опция `proxy_mode` управляет тем, как сервер достигает воркера — см. [Режимы подключения воркера](#worker-connection-modes).
 
-Реестр контейнеров по умолчанию больше не задается здесь ни для кластеров `Docker`, ни для `Kubernetes`; Вместо этого настройте его с помощью опции `Default Container Registry` уровня кластера в настройках `Advanced`. Для кластеров `Kubernetes` пространство имен также настраивается с помощью параметра `Namespace` (см. [Параметры кластера Kubernetes](#kubernetes-cluster-options)).
+`container_namespace` заменяет пространство имён `gpustack` для стандартных образов воркера, раннера и среды выполнения GPUStack. Например, если задать для кластера `Default Container Registry` значение `registry.example.com`, а `container_namespace: gpustack-ai`, стандартный образ воркера будет разрешён в `registry.example.com/gpustack-ai/gpustack:<version>`, а образы раннера и среды выполнения — в `registry.example.com/gpustack-ai/runner` и `registry.example.com/gpustack-ai/runtime` соответственно. Явно заданный `image_name_override` имеет приоритет над этим параметром. Явно заданный `image_repo` кластера переопределяет его только для образа воркера; образы раннера и среды выполнения продолжают использовать `container_namespace`.
+
+Реестр контейнеров по умолчанию не задаётся в этом YAML ни для кластеров `Docker`, ни для `Kubernetes`; настройте его с помощью опции `Default Container Registry` уровня кластера в настройках `Advanced`. Для кластеров `Kubernetes` параметр `Namespace` управляет пространством имён ресурсов Kubernetes, а не пространством имён образов контейнеров (см. [Параметры кластера Kubernetes](#kubernetes-cluster-options)).
 
 ## Режимы подключения рабочих { #worker-connection-modes }
 

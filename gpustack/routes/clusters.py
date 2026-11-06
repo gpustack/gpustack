@@ -100,6 +100,7 @@ from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.config.config import (
     get_global_config,
     get_cluster_image_name,
+    has_custom_container_namespace,
 )
 from gpustack.utils.certificates import read_server_ca_bundle, server_ca_checksum
 from gpustack.utils.grafana import resolve_grafana_base_url
@@ -497,18 +498,23 @@ def _shuihua_pull_decision(
     validates, mirroring get_cluster_image_name.
 
     A full image override decides the image outright — the cluster's own, or
-    the server-level one for a cluster pinning neither a registry nor a
-    repository, which a Helm install always sets. Otherwise the resolved
-    registry does, so that is what gets validated instead.
+    the server-level one for a cluster pinning neither a registry, repository
+    nor custom namespace, which a Helm install always sets. Otherwise the
+    resolved registry does, so that is what gets validated instead.
     """
     cfg = get_global_config()
     effective_config = _post_update_worker_config(input, existing)
     override = effective_config.image_name_override if effective_config else None
     cluster_repo = effective_config.image_repo if effective_config else None
+    cluster_namespace = (
+        effective_config.container_namespace if effective_config else None
+    )
     cluster_registry = _post_update_cluster_registry(input, existing)
     server_override = (
         cfg.image_name_override
-        if cluster_registry is None and cluster_repo is None
+        if cluster_registry is None
+        and cluster_repo is None
+        and not has_custom_container_namespace(cluster_namespace)
         else None
     )
 
