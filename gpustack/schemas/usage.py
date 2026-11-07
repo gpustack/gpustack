@@ -11,6 +11,7 @@ from pydantic import (
 
 from gpustack.api.exceptions import InvalidException
 from gpustack.schemas.common import Pagination
+from gpustack.schemas.model_usage import OperationEnum
 
 USAGE_METRIC_INPUT_TOKENS = "input_tokens"
 USAGE_METRIC_OUTPUT_TOKENS = "output_tokens"
@@ -21,6 +22,12 @@ USAGE_METRIC_MODELS_CALLED = "models_called"
 USAGE_METRIC_API_KEYS_USED = "api_keys_used"
 USAGE_METRIC_AVG_TOKENS_PER_REQUEST = "avg_tokens_per_request"
 USAGE_METRIC_LAST_ACTIVE = "last_active"
+# Media generation units. Image generation is billed per image (and per
+# resolution), so these are the quantities a media view reads instead of
+# tokens; ``image_pixels`` lets a consumer derive megapixels or resolution
+# tiers without the server baking one tiering scheme in.
+USAGE_METRIC_IMAGE_COUNT = "image_count"
+USAGE_METRIC_IMAGE_PIXELS = "image_pixels"
 USAGE_METRIC_DATE = "date"
 
 USAGE_GROUP_BY_DATE = "date"
@@ -78,6 +85,8 @@ USAGE_SORTABLE_FIELDS = {
     USAGE_METRIC_API_KEYS_USED,
     USAGE_METRIC_LAST_ACTIVE,
     USAGE_METRIC_DATE,
+    USAGE_METRIC_IMAGE_COUNT,
+    USAGE_METRIC_IMAGE_PIXELS,
 }
 
 
@@ -139,6 +148,10 @@ class UsageMetaResponse(BaseModel):
     granularities: List[UsageOption]
     group_bys: List[UsageOption]
     filters: UsageFilters
+    # Inference operations ``filters.operations`` accepts. Static (not
+    # derived from data) so a media view can be offered before any media
+    # usage exists.
+    operations: List[UsageOption] = Field(default_factory=list)
 
 
 class UsageFilterRequest(BaseModel):
@@ -150,6 +163,10 @@ class UsageFilterRequest(BaseModel):
     # platform-admin-only; enforced in the route handler.
     organizations: List[UsageFilterItem] = Field(default_factory=list)
     user_groups: List[UsageFilterItem] = Field(default_factory=list)
+    # Restrict to these inference operations (``OperationEnum`` values,
+    # e.g. ``image_generation`` for a media view). Empty means every
+    # operation, including pre-upgrade rows that carry no operation.
+    operations: List[OperationEnum] = Field(default_factory=list)
 
 
 class UsageBaseRequest(BaseModel):
@@ -273,6 +290,8 @@ class UsageSummary(BaseModel):
     total_tokens: int = 0
     api_requests: int = 0
     models_called: int = 0
+    image_count: int = 0
+    image_pixels: int = 0
 
 
 class UsageBreakdownDimension(BaseModel):
@@ -299,6 +318,8 @@ class UsageBreakdownItem(BaseModel):
     total_tokens: int = 0
     api_requests: int = 0
     avg_tokens_per_request: float = 0
+    image_count: int = 0
+    image_pixels: int = 0
     models_called: Optional[int] = None
     api_keys_used: Optional[int] = None
     last_active: Optional[Date] = None
