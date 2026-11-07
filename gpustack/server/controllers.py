@@ -4658,7 +4658,11 @@ async def _reconcile_router_membership(
 async def _persist_router_peer_snapshot(
     session, model_identity, router_identity, snapshot
 ):
-    """Write an HTTP observation only while its model, router and peers still match."""
+    """Write an HTTP observation only while its model, router and peers still match.
+
+    Replacement routers publish readiness before the deployment restart guard clears.
+    A stopping router is fenced by its drain marker and runtime identity.
+    """
     from gpustack.server.pd_router_membership import router_worker_ips
 
     try:
@@ -4675,7 +4679,6 @@ async def _persist_router_peer_snapshot(
             model is None
             or model.deleted_at is not None
             or model.updated_at != model_identity[1]
-            or model.restarting_since is not None
             or model.replicas == 0
             or current is None
             or current.deleted_at is not None
