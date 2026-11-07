@@ -32,6 +32,7 @@ from gpustack.schemas.models import (
     DistributedServers,
     Model,
     ModelInstance,
+    ModelInstanceCreate,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
     ModelInstanceWorkload,
@@ -397,8 +398,9 @@ def legacy_recovery(managed_recovery):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failed_worker', [1, 2])
 @pytest.mark.parametrize('group_recovery', [None, True])
+@pytest.mark.parametrize('instance_type', [ModelInstance, ModelInstanceCreate])
 async def test_legacy_failure_events_persist_stop_confirmations_and_next_round(
-    failed_worker, group_recovery, monkeypatch
+    failed_worker, group_recovery, instance_type, monkeypatch
 ):
     from gpustack.mixins import active_record
     from gpustack.schemas.workers import Worker
@@ -449,8 +451,14 @@ async def test_legacy_failure_events_persist_stop_confirmations_and_next_round(
             for table in (Model.__table__, ModelInstance.__table__):
                 await connection.run_sync(table.create)
         async with session_factory() as session:
-            session.add_all([model, instance])
+            session.add(model)
             await session.commit()
+            source = (
+                instance
+                if instance_type is ModelInstance
+                else instance_type.model_validate(instance)
+            )
+            await ModelInstanceService(session).create(source)
 
         instance_events = bus.subscribe('modelinstance', source='test')
         model_events = bus.subscribe('model', source='test')

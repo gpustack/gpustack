@@ -1374,7 +1374,7 @@ class ModelInstanceService:
         )
         # A shallow ORM copy shares attribute history with the attached row.
         # Policy calculation must not mark incoming values as already persisted.
-        values = {key: getattr(instance, key) for key in ModelInstance.model_fields}
+        values = {key: getattr(instance, key) for key in type(instance).model_fields}
         candidate = ModelInstance(**{**values, **fields})
         if calculate_group_recovery_policy(candidate, None) is None:
             return source
