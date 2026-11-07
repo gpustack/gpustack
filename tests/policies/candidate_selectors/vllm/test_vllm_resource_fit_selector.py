@@ -79,7 +79,7 @@ def expected_candidate(
         ("Qwen3ForSequenceClassification", 0.9),
         ("Qwen3VLForConditionalGeneration", 0.9),
         ("Qwen3VLForSequenceClassification", 0.9),
-        ("BertForSequenceClassification", 0),
+        ("BertForSequenceClassification", 0.9),
     ],
 )
 @pytest.mark.asyncio
@@ -117,6 +117,50 @@ async def test_reranker_candidate_vram_reservation(config, architecture, expecte
     card_vram = worker.status.gpu_devices[0].memory.total
     expected_vram = int(card_vram * expected_gmu) if expected_gmu else weight_vram
     assert candidates[0].computed_resource_claim.vram == {0: expected_vram}
+    # The decided fraction travels with the claim so the worker starts vLLM
+    # with exactly what the scheduler gated against.
+    assert candidates[0].computed_resource_claim.vram_utilization == expected_gmu
+
+
+@pytest.mark.asyncio
+async def test_gmu_user_override_wins_for_reranker(config):
+    """An explicit --gpu-memory-utilization backend parameter overrides the
+    default for non-LLM categories, so shared-GPU users can book less than
+    the whole-card fraction.
+    """
+    worker = linux_nvidia_1_4090_24gx1()
+    model = new_model(
+        1,
+        "reranker",
+        huggingface_repo_id="test/reranker",
+        backend=BackendEnum.VLLM,
+        categories=[CategoryEnum.RERANKER],
+        backend_parameters=["--gpu-memory-utilization=0.5"],
+    )
+    selector = VLLMResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    pretrained = SimpleNamespace(
+        architectures=["BertForSequenceClassification"],
+        num_attention_heads=8,
+        max_position_embeddings=32768,
+    )
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=pretrained),
+        ),
+        patch(
+            "gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_model_vram",
+            new=AsyncMock(return_value=2 * 1024**3),
+        ),
+    ):
+        candidates = await selector.select_candidates([worker])
+
+    assert len(candidates) == 1
+    card_vram = worker.status.gpu_devices[0].memory.total
+    assert candidates[0].computed_resource_claim.vram == {0: int(card_vram * 0.5)}
+    assert candidates[0].computed_resource_claim.vram_utilization == 0.5
 
 
 @pytest.mark.parametrize(
@@ -496,7 +540,9 @@ async def test_reranker_candidate_vram_reservation(config, architecture, expecte
                 categories=[CategoryEnum.EMBEDDING],
             ),
             [linux_nvidia_1_4090_24gx1()],
-            [expected_candidate(2, "host4090", [0], {0: 1588014354})],
+            # Pooling runners claim the same whole-card fraction as LLMs so
+            # vLLM's startup free-memory check matches the scheduler gate.
+            [expected_candidate(2, "host4090", [0], {0: 23413653504})],
             0,
         ),
         # Auto schedule model with extended kv cache.
