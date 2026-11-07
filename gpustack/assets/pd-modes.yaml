@@ -1116,6 +1116,92 @@ modes:
           - --enable-igw
       health_path: /health
 
+  - name: dynamo-nixl
+    transport: NIXL
+    display_name: Dynamo + NIXL
+    description: >-
+      Dynamo disaggregation over NIXL, fronted by the Dynamo frontend router.
+    backends: [Dynamo]
+    backend_versions: ">=1.3.0"
+    gpu_filters:
+      vendor: nvidia
+    preferred: true
+    kv_lease: nixl
+    roles:
+      prefill:
+        args:
+          - --disaggregation-mode
+          - prefill
+          - --block-size
+          - "64"
+        ports:
+          - { name: kv_side_channel, count: "{{data_parallel_size}}", inject_to: env }
+        connector:
+          kv_connector: NixlConnector
+          kv_role: kv_producer
+          kv_load_failure_policy: "{{kv_load_failure_policy}}"
+          kv_connector_extra_config:
+            kv_lease_duration: "{{kv_lease_duration}}"
+        env:
+          VLLM_NIXL_SIDE_CHANNEL_HOST: "{{worker_ip}}"
+          VLLM_NIXL_SIDE_CHANNEL_PORT: "{{ports.kv_side_channel}}"
+          UCX_NET_DEVICES: "{{net_device}}"
+          DYN_VLLM_DISAGGREGATION_MODE: prefill
+      decode:
+        args:
+          - --disaggregation-mode
+          - decode
+          - --block-size
+          - "64"
+        ports:
+          - { name: kv_side_channel, count: "{{data_parallel_size}}", inject_to: env }
+        connector:
+          kv_connector: NixlConnector
+          kv_role: kv_consumer
+          kv_load_failure_policy: "{{kv_load_failure_policy}}"
+        env:
+          VLLM_NIXL_SIDE_CHANNEL_HOST: "{{worker_ip}}"
+          VLLM_NIXL_SIDE_CHANNEL_PORT: "{{ports.kv_side_channel}}"
+          UCX_NET_DEVICES: "{{net_device}}"
+          DYN_VLLM_DISAGGREGATION_MODE: decode
+    router:
+      membership_update: manual
+      protocol: two_hop
+      image: "{{runner_image}}"
+      entrypoint:
+        - python3
+        - -m
+        - dynamo.frontend
+      connection_args:
+        - --http-host
+        - "{{worker_ip}}"
+        - --http-port
+        - "{{port}}"
+        - --model-name
+        - "{{model_name}}"
+        - --no-router-kv-events
+        - --trust-remote-code
+      tunable_args:
+        - flag: --router-mode
+          default: "kv"
+          options: [kv, round-robin, least-loaded, random]
+        - flag: --kv-cache-block-size
+          default: "64"
+          options: ["16", "32", "64", "128"]
+      # Dynamo Frontend dynamically discovers and routes to workers via etcd;
+      # it does not accept static worker CLI arguments (--prefill / --decode).
+      # Empty role specs with repeated_flag ensure no CLI peer flags are rendered
+      # while satisfying schema conformance.
+      peers:
+        style: repeated_flag
+        prefill: {}
+        decode: {}
+      capabilities:
+        metrics: true
+        models_endpoint: true
+        kv_expired_metric: true
+      health_path: /health
+
   - name: custom
     display_name: Custom
     description: >-

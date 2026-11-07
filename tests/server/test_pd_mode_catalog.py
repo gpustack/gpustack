@@ -35,6 +35,7 @@ _SHIPPED_BACKENDS = {
     PDModeEnum.VLLM_ASCEND_MOONCAKE.value: [BackendEnum.VLLM.value],
     PDModeEnum.SGLANG_MOONCAKE.value: [BackendEnum.SGLANG.value],
     PDModeEnum.SGLANG_NIXL.value: [BackendEnum.SGLANG.value],
+    PDModeEnum.DYNAMO_NIXL.value: [BackendEnum.DYNAMO.value],
     PDModeEnum.CUSTOM.value: [],
 }
 
@@ -1040,6 +1041,10 @@ def test_every_shipped_router_classifies_its_invocation():
         router = mode.router
         if router is None or router.protocol == PDRouterProtocolEnum.USER_PROVIDED:
             continue
+        if mode.name == "dynamo-nixl":
+            # Dynamo Frontend discovers workers dynamically via etcd
+            # and declares no CLI peer flags.
+            continue
         assert router.entrypoint, f"{mode.name}: no entrypoint"
         assert router.connection_args, f"{mode.name}: no connection_args"
         # The flags a deployment may not set, and the ones it may, must be
@@ -1340,6 +1345,7 @@ def test_nvidia_mooncake_metrics_follow_the_sender_and_keep_ascend_capabilities_
         ("sglang-mooncake", "dynamic"),
         ("sglang-nixl", "dynamic"),
         ("vllm-ascend-mooncake", "dynamic"),
+        ("dynamo-nixl", "manual"),
         ("custom", "manual"),
     ],
 )

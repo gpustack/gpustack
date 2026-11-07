@@ -104,6 +104,7 @@ class BackendEnum(str, Enum):
     ASCEND_MINDIE = "MindIE"
     SGLANG = "SGLang"
     CUSTOM = "Custom"
+    DYNAMO = "Dynamo"
 
 
 class BackendSourceEnum(str, Enum):
@@ -675,6 +676,7 @@ class PDModeEnum(str, Enum):
     SGLANG_MOONCAKE = "sglang-mooncake"
     SGLANG_NIXL = "sglang-nixl"
     VLLM_ASCEND_MOONCAKE = "vllm-ascend-mooncake"
+    DYNAMO_NIXL = "dynamo-nixl"
     CUSTOM = "custom"
     """The user supplies every connection-state parameter themselves. Also the
     only way to mix engines across roles, since a recipe injects one engine's
@@ -705,6 +707,7 @@ PD_BACKENDS: List[str] = [
     BackendEnum.SGLANG.value,
     # A user-supplied engine image, which is how a BYO engine runs PD here.
     BackendEnum.CUSTOM.value,
+    BackendEnum.DYNAMO.value,
 ]
 
 
