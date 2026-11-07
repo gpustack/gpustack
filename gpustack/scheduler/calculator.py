@@ -35,6 +35,7 @@ from gpustack.utils.hub import (
     match_model_scope_file_paths,
     get_pretrained_config,
     read_repo_file_content,
+    sum_weight_file_sizes,
 )
 from gpustack.utils.model_config import safe_pretrained_config_from_dict
 from gpustack.utils import platform
@@ -1336,19 +1337,14 @@ def calculate_llm_model_weight_size(path: str) -> int:
     if not os.path.isdir(path):
         raise NotADirectoryError(f"The specified path '{path}' is not a directory.")
 
-    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
-    total_size = 0
-
     try:
         with os.scandir(path) as it:
-            for entry in it:
-                if entry.is_file() and entry.name.endswith(weight_file_extensions):
-                    total_size += entry.stat().st_size
+            return sum_weight_file_sizes(
+                (entry.name, entry.stat().st_size) for entry in it if entry.is_file()
+            )
     except PermissionError:
         logger.error(f"Permission denied when accessing '{path}'.")
         raise
-
-    return total_size
 
 
 def calculate_diffusion_model_weight_size(path: str) -> int:

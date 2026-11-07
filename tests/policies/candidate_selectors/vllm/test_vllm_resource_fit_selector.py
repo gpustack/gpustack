@@ -496,7 +496,7 @@ async def test_reranker_candidate_vram_reservation(config, architecture, expecte
                 categories=[CategoryEnum.EMBEDDING],
             ),
             [linux_nvidia_1_4090_24gx1()],
-            [expected_candidate(2, "host4090", [0], {0: 1588014354})],
+            [expected_candidate(2, "host4090", [0], {0: 1062417526})],
             0,
         ),
         # Auto schedule model with extended kv cache.

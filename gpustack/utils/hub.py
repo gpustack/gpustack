@@ -3,7 +3,7 @@ import logging
 import gzip
 import os
 import tempfile
-from typing import Dict, List, Optional, Any
+from typing import Dict, Iterable, List, Optional, Any, Tuple
 from pathlib import Path
 import fnmatch
 from threading import Lock
@@ -372,20 +372,49 @@ def read_repo_file_content(  # noqa: C901
         return None
 
 
+def sum_weight_file_sizes(files: Iterable[Tuple[str, int]]) -> int:
+    """
+    Sum the sizes of the weight files that hold one copy of the model weights.
+
+    A repository can ship the same weights in several forms, and engines load only
+    one of them, so summing by extension alone counts the model more than once:
+    - vLLM and SGLang load *.safetensors when any exist and fall back to *.bin
+      otherwise. Example: https://huggingface.co/mistralai/Mistral-7B-v0.1
+    - consolidated.safetensors usually duplicates the other weight files, but it is
+      the only copy in Mistral-format repositories. Examples:
+      https://huggingface.co/mistralai/Voxtral-Small-24B-2507 (duplicate),
+      https://huggingface.co/mistralai/Pixtral-12B-2409 (only copy)
+
+    Args:
+        files: The (file name, size) pairs of one directory.
+    Returns:
+        int: The size of the model weights
+    """
+    sizes = {
+        name: size
+        for name, size in files
+        if name.endswith((".safetensors", ".bin", ".pt", ".pth"))
+    }
+    if len(sizes) > 1:
+        sizes.pop("consolidated.safetensors", None)
+    has_safetensors = any(name.endswith(".safetensors") for name in sizes)
+    return sum(
+        size
+        for name, size in sizes.items()
+        if not (has_safetensors and name.endswith(".bin"))
+    )
+
+
 def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     """
-    Get the size of the model weights. This is the sum of all the weight files with extensions
-    .safetensors, .bin, .pt, .pth in the root directory only.
+    Get the size of the model weights in the root directory only, see
+    sum_weight_file_sizes for which files count.
     Args:
         model: Model to get the weight size for
         token: Optional Hugging Face API token
     Returns:
         int: The size of the model weights
     """
-    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
-    # consolidated.safetensors is usually a duplicate of other weight files. Exclude by default.
-    # Example: https://huggingface.co/mistralai/Voxtral-Small-24B-2507
-    exclude_files = ["consolidated.safetensors"]
     if model.source == SourceEnum.HUGGING_FACE:
         repo_id = model.huggingface_repo_id
     elif model.source == SourceEnum.MODEL_SCOPE:
@@ -393,13 +422,8 @@ def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     else:
         raise ValueError(f"Unknown source {model.source}")
     repo_file_infos = list_repo(repo_id, model.source, token=token, root_dir_only=True)
-    return sum(
-        file.get("size", 0)
-        for file in repo_file_infos
-        if (
-            file.get("name", "").endswith(weight_file_extensions)
-            and file.get("name", "") not in exclude_files
-        )
+    return sum_weight_file_sizes(
+        (file.get("name", ""), file.get("size", 0)) for file in repo_file_infos
     )
 
 
