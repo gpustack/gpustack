@@ -648,6 +648,208 @@ async def test_whole_download_uses_each_physical_source_not_rank_views():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('measured', [False, True])
+@pytest.mark.parametrize('with_preparation', [False, True])
+async def test_download_labels_empty_engine_output(measured, with_preparation):
+    from gpustack.schemas.models import ModelInstanceLogSource
+
+    sources = [
+        ModelInstanceLogSource(
+            id='engine',
+            worker_id=1,
+            restart_count=0,
+            kind='workload',
+            label='Engine',
+            available=True,
+        )
+    ]
+    logs = {
+        ('worker', 'engine'): (
+            200,
+            [b''],
+            {'X-Log-Total-Bytes': '0'} if measured else {},
+        )
+    }
+    if with_preparation:
+        sources.insert(
+            0,
+            ModelInstanceLogSource(
+                id='preparation',
+                worker_id=1,
+                restart_count=0,
+                kind='preparation',
+                label='Preparation',
+                available=True,
+            ),
+        )
+        logs[('worker', 'preparation')] = (200, [b'Starting model instance\n'])
+    response, body = await _download(
+        _instance(),
+        [_target(1, 'worker')],
+        options={
+            'worker': ServeLogOptionsResponse(
+                restarts=[ModelInstanceLogRestartEntry(sources=sources)]
+            )
+        },
+        logs=logs,
+    )
+    if with_preparation:
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            assert (
+                archive.read('worker.Preparation.log') == b'Starting model instance\n'
+            )
+            body = archive.read('worker.Engine.log')
+    else:
+        assert response.status_code == 200
+        if measured:
+            assert int(response.headers['content-length']) == len(body)
+    assert b'No output has been captured for Engine' in body
+
+
+@pytest.mark.asyncio
+async def test_preparation_only_download_reports_missing_engine():
+    from gpustack.schemas.models import ModelInstanceLogSource
+
+    preparation = ModelInstanceLogSource(
+        id='preparation',
+        worker_id=1,
+        restart_count=0,
+        kind='preparation',
+        label='Preparation',
+        available=True,
+    )
+    _, body = await _download(
+        _instance(),
+        [_target(1, 'worker')],
+        options={
+            'worker': ServeLogOptionsResponse(
+                restarts=[ModelInstanceLogRestartEntry(sources=[preparation])]
+            )
+        },
+        logs={('worker', 'preparation'): (200, [b'GPUStack startup\n'])},
+    )
+    with zipfile.ZipFile(io.BytesIO(body)) as archive:
+        assert archive.read('worker.Preparation.log') == b'GPUStack startup\n'
+        assert b'Engine log source is unavailable' in archive.read('worker.Engine.log')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('missing_engine', [False, True])
+async def test_download_reads_each_managed_engine_archive(tmp_path, missing_engine):
+    from gpustack.routes.worker.logs import get_serve_logs
+    from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+    from gpustack.worker.log_sources import (
+        container_log_path,
+        engine_log_targets,
+        list_log_sources,
+        sidecar_container_log_path,
+        write_log_sources,
+    )
+    from tests.utils.model import new_model_instance_workload
+
+    instance = _instance()
+    instance.distributed_servers = DistributedServers(
+        workloads=[
+            ModelInstanceWorkload.model_validate(
+                new_model_instance_workload(
+                    name=f'engine-rank-{rank}',
+                    dp_rank_placements=[
+                        dict(
+                            dp_rank=rank,
+                            node_rank=0,
+                            gpu_indexes=[rank],
+                            api_port=40000 + rank,
+                        )
+                    ],
+                )
+            )
+            for rank in range(2)
+        ]
+    )
+    directory = tmp_path / 'serve'
+    write_log_sources(directory, instance, 1)
+    for name, archive_name in engine_log_targets(instance, 1):
+        path = (
+            sidecar_container_log_path(directory, instance.name, 7, archive_name, 0)
+            if archive_name
+            else container_log_path(directory, instance.name, 7, 0)
+        )
+        path.write_bytes(f'{name}: backend output\n'.encode())
+    sources = [
+        s
+        for s in list_log_sources(directory, 7, 1, 0)
+        if s.descriptor.kind == 'workload'
+    ]
+    if missing_engine:
+        sources = sources[:1]
+    request = MagicMock()
+    request.app.state.config.log_dir = str(tmp_path)
+    request.app.state.serve_manager._worker_id = 1
+    logs = {}
+    for source in sources:
+        response = await get_serve_logs(
+            request,
+            7,
+            LogOptions(offset=0, limit=sys.maxsize),
+            container_name=None,
+            model_file_id=None,
+            source=source.descriptor.id,
+            current_restart_count=0,
+        )
+        logs[('worker', source.descriptor.id)] = (
+            200,
+            [chunk async for chunk in response.body_iterator],
+            response.headers,
+        )
+    _, body = await _download(
+        instance,
+        [_target(1, 'worker')],
+        options={
+            'worker': ServeLogOptionsResponse(
+                restarts=[
+                    ModelInstanceLogRestartEntry(
+                        sources=[s.descriptor for s in sources]
+                    )
+                ]
+            )
+        },
+        logs=logs,
+    )
+    with zipfile.ZipFile(io.BytesIO(body)) as archive:
+        contents = [archive.read(name) for name in archive.namelist()]
+        assert b'engine-rank-0: backend output\n' in contents
+        assert len(contents) == 2
+        if missing_engine:
+            assert any(
+                b'Engine log source is unavailable for engine-rank-1' in content
+                for content in contents
+            )
+        else:
+            assert b'engine-rank-1: backend output\n' in contents
+
+
+def test_missing_component_logs_keep_the_smg_label():
+    from gpustack.routes.model_instances import _missing_workload_log_streams
+    from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+
+    instance = _instance()
+    instance.distributed_servers = DistributedServers(
+        workloads=[
+            ModelInstanceWorkload(
+                name='smg-attempt-1',
+                worker_id=1,
+                state='pending',
+                component=dict(kind='sglang_smg', api_port=40000, metrics_port=40001),
+            )
+        ]
+    )
+    streams = _missing_workload_log_streams(instance, 1, 'worker', [])
+    assert len(streams) == 1
+    assert streams[0]['container_display'] == 'SMG · smg-attempt-1'
+    assert streams[0]['error'] == 'SMG log source is unavailable for smg-attempt-1'
+
+
+@pytest.mark.asyncio
 async def test_source_authorization_rejects_wrong_worker_generation_and_selector():
     from gpustack.routes.model_instances import _resolve_visible_log_source
     from gpustack.schemas.models import ModelInstanceLogSource

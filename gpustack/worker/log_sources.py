@@ -1644,6 +1644,33 @@ async def monitor_container_content(
             return
 
 
+def engine_log_targets(instance, worker_id: int) -> List[Tuple[str, Optional[str]]]:
+    """Pair accepted Engine workloads with distinct local archive names.
+
+    The first Engine retains container.log; additional Engines use the sidecar
+    file namespace with a digest so workload names cannot collide or escape it.
+    """
+    from gpustack.utils.model_instance_workers import get_model_instance_workloads
+
+    tasks = get_model_instance_workloads(instance, worker_id)
+    if tasks is None:
+        metadata = instance.get_deployment_metadata(worker_id)
+        return [(metadata.name if metadata else instance.name, None)]
+    names = sorted(
+        task.name
+        for task in tasks
+        if not task.component or task.component.kind != 'sglang_smg'
+    )
+    return [
+        (name, _workload_log_name(name) if index else None)
+        for index, name in enumerate(names)
+    ]
+
+
+def _workload_log_name(name: str) -> str:
+    return 'workload-' + hashlib.sha256(name.encode()).hexdigest()
+
+
 def write_log_sources(
     log_dir: Path, instance, worker_id: int, multi_port_external: Optional[bool] = None
 ) -> None:
@@ -1670,19 +1697,27 @@ def write_log_sources(
                 workload_name=metadata.name if metadata else instance.name,
             ),
         )
+    archive_names = dict(engine_log_targets(instance, worker_id))
     for task in tasks or []:
         component = task.component
         key = 'sglang_smg' if component and component.kind == 'sglang_smg' else 'engine'
+        archive_name = archive_names.get(task.name)
+        if archive_name:
+            key = f'engine:{task.name}'
         record = dict(
             key=key,
-            physical_kind='component' if key == 'sglang_smg' else 'container',
+            physical_kind=(
+                'component'
+                if key == 'sglang_smg'
+                else 'sidecar' if archive_name else 'container'
+            ),
             component_kind=component.kind if component else None,
             workload_name=None if key == 'sglang_smg' else task.name,
             active_workload_name=task.name if key == 'sglang_smg' else None,
             active_attempt=component.attempt if key == 'sglang_smg' else None,
             main=(
                 (component.api_port is not None)
-                if component and key == 'engine'
+                if component and key != 'sglang_smg'
                 else None
             ),
             attribution=(
@@ -1699,6 +1734,8 @@ def write_log_sources(
                 for p in task.dp_rank_placements
             ],
         )
+        if archive_name:
+            record['container_name'] = archive_name
         prior = streams.get(key)
         if (
             prior
@@ -1781,7 +1818,13 @@ def read_log_sources(
 
 def _valid_log_source_record(record: dict) -> bool:
     """Damaged metadata cannot prove a rank or an active component identity."""
-    if (record.get('key'), record.get('physical_kind')) not in (
+    extra_engine = (
+        isinstance(record.get('workload_name'), str)
+        and record.get('key') == f"engine:{record['workload_name']}"
+        and record.get('physical_kind') == 'sidecar'
+        and record.get('container_name') == _workload_log_name(record['workload_name'])
+    )
+    if not extra_engine and (record.get('key'), record.get('physical_kind')) not in (
         ('preparation', 'main'),
         ('engine', 'container'),
         ('sglang_smg', 'component'),
@@ -1848,6 +1891,16 @@ class ResolvedLogSource:
         return rank == (self.descriptor.dp_rank, self.descriptor.node_rank)
 
 
+def _log_files_have_content(paths: List[Path]) -> bool:
+    for path in paths:
+        try:
+            if path.stat().st_size:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def list_log_sources(
     log_dir: Path, instance_id: int, worker_id: int, current_restart: int
 ) -> List[ResolvedLogSource]:
@@ -1877,6 +1930,7 @@ def list_log_sources(
             dict(key=f'sidecar:{name}', physical_kind='sidecar', container_name=name)
             for name in sorted(
                 {n.container_name for _, n in local if n.kind is ServeLogKind.SIDECAR}
+                - {r.get('container_name') for r in records}
             )
         ]
         for record in records:
@@ -1901,6 +1955,7 @@ def list_log_sources(
                     else record.get('container_name', 'default')
                 ),
                 available=bool(paths),
+                has_content=_log_files_have_content(paths),
                 component_kind=record.get('component_kind'),
                 workload_name=record.get('workload_name'),
                 active_workload_name=record.get('active_workload_name'),
@@ -1914,7 +1969,11 @@ def list_log_sources(
                     else 'Component archive (unattributed)'
                 )
             elif record['physical_kind'] == 'sidecar':
-                base['label'] = record['container_name']
+                base['label'] = (
+                    f"Engine · {record['workload_name']}"
+                    if record['key'].startswith('engine:')
+                    else record['container_name']
+                )
             views = [base]
             placements = record.get('placements', [])
             attribution = record.get('attribution', 'all')
@@ -1927,6 +1986,7 @@ def list_log_sources(
                         base,
                         kind='public',
                         label='Common logs',
+                        has_content=None,
                         attribution='unattributed',
                     )
                 ]
@@ -1934,6 +1994,7 @@ def list_log_sources(
                     dict(
                         base,
                         kind='rank',
+                        has_content=None,
                         dp_rank=p['dp_rank'],
                         node_rank=p['node_rank'],
                         main=p['node_rank'] == 0,

@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 import asyncio
@@ -190,6 +191,96 @@ def _running_managed(state):
     )
     state.serve._assigned_ports[state.instance.id] = {40020, 40021}
     return state.instance.model_copy(deep=True)
+
+
+def test_managed_sync_reattaches_log_collectors(managed, monkeypatch):
+    state = managed
+    state.instance.state = ModelInstanceStateEnum.RUNNING
+    for item in state.instance.distributed_servers.workloads:
+        item.state = ModelInstanceWorkloadStateEnum.RUNNING
+    _running_managed(state)
+    monkeypatch.setattr(state.serve, '_sync_managed_rank_health', MagicMock())
+
+    state.serve.sync_model_instances_state()
+
+    state.serve._start_container_log_persistence.assert_called_once()
+    args, kwargs = state.serve._start_container_log_persistence.call_args
+    assert args[0].id == state.instance.id
+    assert kwargs == {'resume': True}
+
+
+def test_managed_log_failure_does_not_fail_workload_creation(managed):
+    state = managed
+    state.serve._start_container_log_persistence.side_effect = OSError('disk full')
+    local = _local_manifest(state)
+    state.instance.distributed_servers.workloads = []
+
+    assert state.serve._start_managed_workloads(
+        state.instance.model_copy(deep=True), local, _managed_plans(local)
+    )
+    assert not state.serve._managed_stopping
+    assert state.create.call_count == len(local)
+
+
+def test_managed_collectors_use_registered_names_and_separate_archives(
+    managed, monkeypatch
+):
+    from gpustack.worker.log_sources import list_log_sources
+    from gpustack.worker.container_logs import _LogCursor
+
+    state = managed
+    threads = []
+
+    def thread(**kwargs):
+        result = MagicMock()
+        result.is_alive.return_value = True
+        threads.append((result, kwargs))
+        return result
+
+    monkeypatch.setattr('gpustack.worker.serve_manager.threading.Thread', thread)
+    ServeManager._start_container_log_persistence(
+        state.serve, state.instance, resume=True
+    )
+    collectors = [
+        kwargs
+        for _, kwargs in threads
+        if kwargs['target'] == state.serve._persist_container_logs
+    ]
+    local = _local_manifest(state)
+    assert {c['args'][0] for c in collectors} == {w.name for w in local}
+    assert len({c['args'][1] for c in collectors}) == len(local)
+    assert all(c['kwargs']['resume'] for c in collectors)
+    for collector in collectors:
+        path = Path(collector['args'][1])
+        state.serve._copy_container_log_stream(
+            iter([f"2026-11-08T00:00:00Z {collector['args'][0]}\n"]),
+            str(path),
+            _LogCursor(str(path)),
+            threading.Event(),
+        )
+    sources = list_log_sources(
+        Path(state.serve._serve_log_dir),
+        state.instance.id,
+        state.serve._worker_id,
+        state.instance.restart_count,
+    )
+    engines = [s for s in sources if s.descriptor.kind == 'workload']
+    assert {s.descriptor.workload_name for s in engines} == {w.name for w in local}
+    for source in engines:
+        assert ''.join(p.read_text() for p in source.paths) == (
+            source.descriptor.workload_name + '\n'
+        )
+    count = len(threads)
+    state.serve._ensure_container_log_persistence(state.instance)
+    assert len(threads) == count
+    extra = collectors[1]
+    next(
+        result for result, kwargs in threads if kwargs is extra
+    ).is_alive.return_value = False
+    state.serve._ensure_container_log_persistence(state.instance)
+    assert len(threads) == count + 1
+    assert threads[-1][1]['args'][:2] == extra['args'][:2]
+    assert threads[-1][1]['kwargs'] == {'resume': True}
 
 
 @pytest.mark.parametrize('hybrid', [False, True])

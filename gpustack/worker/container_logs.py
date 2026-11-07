@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import io
+from itertools import chain
 import json
 import logging
 import os
@@ -93,7 +94,8 @@ def _streamed_lines(log_stream, stop_event: threading.Event):
             else str(chunk)
         )
         epoch, content = _split_log_timestamp(text)
-        yield epoch, content, text.endswith('\n')
+        if content:
+            yield epoch, content, text.endswith('\n')
 
 
 def _log_archive_is_empty(log_path: str) -> bool:
@@ -388,9 +390,14 @@ class ContainerLogPersister:
                 # TODO: Unify retry termination for missing workloads across
                 # model and cache log persistence during workload unification.
                 retry_count += 1
-                logger.debug(
+                log = (
+                    logger.warning
+                    if retry_count == 5 or retry_count % 30 == 0
+                    else logger.debug
+                )
+                log(
                     f"Container not ready for {workload_name}, retrying "
-                    f"(attempt {retry_count}): {e}"
+                    f"(attempt {retry_count}, archive {log_path}): {e}"
                 )
                 stop_event.wait(timeout=2)
 
@@ -461,6 +468,10 @@ class ContainerLogPersister:
         """
         skipper = _ReplaySkipper(cursor)
         relocating = cursor.epoch is not None
+        lines = iter(_streamed_lines(log_stream, stop_event))
+        first = next(lines, None)
+        if first is None:
+            return
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
         with CappedLogWriter(
             log_path, append=not _log_archive_is_empty(log_path)
@@ -469,7 +480,7 @@ class ContainerLogPersister:
             # decided once, on the chunk that starts it, and holds until it ends.
             starting, replayed, line_epoch = True, False, None
             wrote, stamped = False, False
-            for epoch, text, ends_line in _streamed_lines(log_stream, stop_event):
+            for epoch, text, ends_line in chain((first,), lines):
                 stamped = stamped or epoch is not None
                 if starting:
                     line_epoch = epoch

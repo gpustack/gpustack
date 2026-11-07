@@ -541,6 +541,7 @@ async def download_serving_logs(
                 worker_label=worker.name or str(worker_id),
                 container_internal=None,
                 container_display=descriptor.label,
+                kind=descriptor.kind,
                 source=source,
                 error=None,
             ),
@@ -674,7 +675,33 @@ async def _worker_log_download(
         if declared and declared.isascii() and declared.isdigit()
         else None
     )
-    return length, _download_body(payload, upstream, label_failure=length is None)
+    note = _empty_log_note(stream)
+    if length == 0 and not payload and note:
+        with suppress(Exception):
+            await upstream.aclose()
+        return len(note), _chunks_of(note)
+    body = _download_body(payload, upstream, label_failure=length is None)
+    if note and length is None:
+        body = _label_empty_log(body, note)
+    return length, body
+
+
+def _empty_log_note(stream: dict) -> bytes:
+    if stream.get('kind') != 'workload':
+        return b''
+    return (
+        f"No output has been captured for {stream['container_display']}; "
+        "the log stream may not be available yet.\n"
+    ).encode()
+
+
+async def _label_empty_log(chunks: AsyncIterator[bytes], note: bytes):
+    wrote = False
+    async for chunk in chunks:
+        wrote = wrote or bool(chunk)
+        yield chunk
+    if not wrote:
+        yield note
 
 
 async def _download_body(
@@ -734,6 +761,9 @@ async def _worker_log_chunks(
     if worker is None:
         yield f"Failed to fetch logs: {stream['error']}\n".encode()
         return
+    if stream.get('source') and stream['error']:
+        yield f"Failed to fetch logs: {stream['error']}\n".encode()
+        return
 
     # Discovery failed but the fallback still reads the main workload. Say so,
     # or a sidecar log missing from the archive looks like it never existed.
@@ -743,6 +773,7 @@ async def _worker_log_chunks(
             "this log covers the main workload only.\n"
         ).encode()
 
+    wrote = False
     try:
         async with aclosing(
             _stream_worker_log(request, model_instance, stream)
@@ -755,9 +786,15 @@ async def _worker_log_chunks(
                         await upstream.aclose()
                     yield f"Failed to fetch logs: HTTP {status_code}: ".encode() + payload
                     return
+                wrote = wrote or bool(payload)
                 yield payload
     except Exception as e:
         yield f"\nFailed to fetch logs: {e}\n".encode()
+        return
+    if not wrote:
+        note = _empty_log_note(stream)
+        if note:
+            yield note
 
 
 def _build_serve_log_params(
@@ -941,10 +978,13 @@ async def _plan_log_streams(
                         container_internal=None,
                         container_display=s.label,
                         source=s.id,
+                        kind=s.kind,
                         error=None if s.available else "Log source is unavailable",
                     )
                     for s in sources
-                ]
+                ] + _missing_workload_log_streams(
+                    model_instance, worker_id, label, sources
+                )
             if get_model_instance_workloads(model_instance) is not None:
                 return [
                     dict(
@@ -985,6 +1025,56 @@ async def _plan_log_streams(
 
     grouped = await asyncio.gather(*[per_worker(t) for t in targets])
     return [stream for group in grouped for stream in group]
+
+
+def _missing_workload_log_streams(instance, worker_id, label, sources):
+    """Keep an expected Engine's absence visible beside preparation output."""
+    tasks = get_model_instance_workloads(instance, worker_id)
+    workloads = [s for s in sources if s.kind == 'workload']
+    if tasks is None:
+        missing = (
+            []
+            if any(
+                s.component_kind != 'sglang_smg'
+                and s.container_name in (None, 'default')
+                for s in workloads
+            )
+            else [('Engine', 'Engine log source is unavailable')]
+        )
+    else:
+        missing = []
+        for task in tasks:
+            if any(
+                s.workload_name == task.name
+                or (
+                    task.component
+                    and task.component.kind == 'sglang_smg'
+                    and s.component_kind == 'sglang_smg'
+                )
+                for s in workloads
+            ):
+                continue
+            kind = (
+                'SMG'
+                if task.component and task.component.kind == 'sglang_smg'
+                else 'Engine'
+            )
+            missing.append(
+                (
+                    f'{kind} · {task.name}',
+                    f'{kind} log source is unavailable for {task.name}',
+                )
+            )
+    return [
+        dict(
+            worker_label=label,
+            worker=None,
+            container_internal=None,
+            container_display=name,
+            error=error,
+        )
+        for name, error in missing
+    ]
 
 
 async def resolve_instance_log_worker_targets(
