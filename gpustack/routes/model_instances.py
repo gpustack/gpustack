@@ -1015,6 +1015,7 @@ async def _plan_log_streams(
                 "worker_label": label,
                 "worker": worker,
                 "container_internal": container_internal,
+                "kind": "workload",
                 "container_display": _map_container_display_name(
                     container_internal, model_instance, is_main
                 ),
