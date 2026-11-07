@@ -2475,6 +2475,7 @@ class ModelInstanceLogSource(BaseModel):
         "all", "supervisor_rank", "multi_port_external_api_rank", "unattributed"
     ] = "all"
     available: bool = False
+    has_content: Optional[bool] = None
     active_workload_name: Optional[str] = None
     active_attempt: Optional[int] = None
 

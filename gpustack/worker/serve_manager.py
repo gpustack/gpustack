@@ -70,6 +70,7 @@ from gpustack.worker.log_sources import (
     write_log_sources,
     canonical_log_path,
     container_log_path,
+    engine_log_targets,
     find_instance_log_dir,
     flat_instance_logs,
     instance_log_files,
@@ -237,6 +238,7 @@ class _LogPersistence:
         # Which restart's files the generation writes.
         self.restart_count = restart_count
         self.workload_name: Optional[str] = None
+        self.workload_writers: Dict[str, Tuple[threading.Thread, threading.Event]] = {}
         self.component_writer = None
         self.component_attempt = -1
         self._lock = threading.Lock()
@@ -788,6 +790,8 @@ class ServeManager(ContainerLogPersister):
                 mi, local, plans, observed, registered_states
             ):
                 return False
+            if key not in self._managed_stopping:
+                self._ensure_managed_log_persistence(mi)
             return key not in self._managed_stopping
         except Exception as exc:
             logger.warning("Cannot start managed model instance %s: %s", mi.id, exc)
@@ -1384,7 +1388,25 @@ class ServeManager(ContainerLogPersister):
             return
         if mi.id in self._starting_model_instances:
             return
+        self._ensure_managed_log_persistence(current)
         self._sync_registered_workloads(current, tracked)
+
+    def _ensure_managed_log_persistence(self, mi: ModelInstance) -> None:
+        """Reconcile accepted Engine logs without turning logging into launch failure."""
+        if mi.draining_since is not None or not any(
+            (not item.component or item.component.kind != 'sglang_smg')
+            and item.state
+            not in (
+                ModelInstanceWorkloadStateEnum.FAILED,
+                ModelInstanceWorkloadStateEnum.STOPPED,
+            )
+            for item in get_model_instance_workloads(mi, self._worker_id) or []
+        ):
+            return
+        try:
+            self._ensure_container_log_persistence(mi)
+        except Exception as exc:
+            logger.warning('Cannot attach Engine logs for instance %s: %s', mi.id, exc)
 
     def _schedule_managed_stop(
         self, mi: ModelInstance, *, delete_logs: bool = False
@@ -3718,10 +3740,11 @@ class ServeManager(ContainerLogPersister):
             resume: Append to log files left behind by a previous worker process
                 instead of rewriting them.
         """
-        # Use deployment metadata name for the actual workload name,
-        # which differs for subordinate workers (e.g., "model-f0").
-        deployment_metadata = mi.get_deployment_metadata(self._worker_id)
-        workload_name = deployment_metadata.name if deployment_metadata else mi.name
+        targets = engine_log_targets(mi, self._worker_id)
+        if not targets:
+            self._record_log_sources(mi)
+            return
+        workload_name = targets[0][0]
 
         restart_count = mi.restart_count or 0
         log_path = str(
@@ -3780,6 +3803,7 @@ class ServeManager(ContainerLogPersister):
             thread.start()
             persistence.start_aux_thread(discovery_thread)
         self._record_log_sources(mi, persistence)
+        self._sync_workload_log_persistence(mi, persistence)
         self._sync_component_log_persistence(mi, persistence)
         logger.debug(f"Started container log persistence thread for {mi.name}")
 
@@ -3797,6 +3821,11 @@ class ServeManager(ContainerLogPersister):
         # Only the main log thread counts: the sidecar discovery thread beside it
         # polls forever on a single-container workload.
         restart = mi.restart_count or 0
+        targets = engine_log_targets(mi, self._worker_id)
+        if not targets:
+            self._record_log_sources(mi)
+            return
+        managed = get_model_instance_workloads(mi) is not None
         with self._log_persistence_lock:
             persistence = self._log_persistence.get(mi.id)
             if persistence and persistence.restart_count > restart:
@@ -3805,6 +3834,7 @@ class ServeManager(ContainerLogPersister):
                 persistence is not None
                 and persistence.restart_count == restart
                 and persistence.main_thread.is_alive()
+                and (not managed or persistence.workload_name == targets[0][0])
             )
             if reuse and persistence.stop_event.is_set():
                 return
@@ -3815,6 +3845,7 @@ class ServeManager(ContainerLogPersister):
                 self._migrate_flat_logs(mi)
         if reuse:
             self._record_log_sources(mi, persistence)
+            self._sync_workload_log_persistence(mi, persistence)
             self._sync_component_log_persistence(mi, persistence)
             return
 
@@ -3823,6 +3854,40 @@ class ServeManager(ContainerLogPersister):
             f"{mi.name}"
         )
         self._start_container_log_persistence(mi, resume=True)
+
+    def _sync_workload_log_persistence(self, mi, persistence) -> None:
+        """Attach each additional Engine to its own archive and reconnect cursor."""
+        with self._log_persistence_lock:
+            if (
+                self._log_persistence.get(mi.id) is not persistence
+                or persistence.restart_count != (mi.restart_count or 0)
+                or persistence.stop_event.is_set()
+            ):
+                return
+            for name, archive_name in engine_log_targets(mi, self._worker_id)[1:]:
+                previous = persistence.workload_writers.get(name)
+                if previous:
+                    thread, stopped = previous
+                    if thread.is_alive():
+                        continue
+                    persistence.discard_aux_thread(thread, stopped)
+                path = sidecar_container_log_path(
+                    Path(self._serve_log_dir),
+                    mi.name,
+                    mi.id,
+                    archive_name,
+                    mi.restart_count or 0,
+                )
+                stopped = threading.Event()
+                thread = threading.Thread(
+                    target=self._persist_container_logs,
+                    args=(name, str(path), stopped),
+                    kwargs={'resume': True},
+                    daemon=True,
+                    name=f'log-persist-{name}',
+                )
+                if persistence.start_aux_thread(thread, stopped):
+                    persistence.workload_writers[name] = (thread, stopped)
 
     def _record_log_sources(self, mi: ModelInstance, persistence=None) -> None:
         """Publish accepted identities without making logging an Engine fault."""

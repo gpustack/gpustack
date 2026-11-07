@@ -2646,6 +2646,43 @@ def test_adoption_reattaches_container_log_persistence(tmp_path: Path):
     start_logs.assert_called_once_with(model_instance, resume=True)
 
 
+@pytest.mark.parametrize('chunks', [[], [b''], ['']])
+def test_empty_runtime_stream_does_not_create_an_engine_archive(tmp_path, chunks):
+    from gpustack.worker.container_logs import ContainerLogPersister, _LogCursor
+
+    path = tmp_path / 'container.log'
+    ContainerLogPersister()._copy_container_log_stream(
+        iter(chunks), str(path), _LogCursor(str(path)), threading.Event()
+    )
+    assert not path.exists()
+
+
+def test_persistent_runtime_log_errors_warn_without_stopping_retries(tmp_path, caplog):
+    from gpustack.worker.container_logs import ContainerLogPersister
+
+    stop = threading.Event()
+    attempts = []
+
+    def fail(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 7:
+            stop.set()
+        raise RuntimeError('runtime unavailable')
+
+    with (
+        patch('gpustack.worker.container_logs.logs_workload', side_effect=fail),
+        patch.object(stop, 'wait'),
+        caplog.at_level('WARNING', logger='gpustack.worker.container_logs'),
+    ):
+        ContainerLogPersister()._persist_container_logs(
+            'engine-workload', str(tmp_path / 'container.log'), stop
+        )
+    assert len(attempts) == 7
+    assert len(caplog.records) == 1
+    assert 'engine-workload' in caplog.text
+    assert 'runtime unavailable' in caplog.text
+
+
 def test_stop_container_log_persistence_tears_down_the_whole_generation():
     """The main thread is tracked apart from the sidecar ones, but stopping still
     has to signal and join every one of them."""
@@ -5202,13 +5239,19 @@ def test_new_generation_adopts_its_own_engine_and_smg_log_writers(tmp_path):
     mi.distributed_servers = DistributedServers(
         workloads=[
             ModelInstanceWorkload(
+                name='model-r4-engine',
+                worker_id=7,
+                state='running',
+                component=dict(kind='sglang_engine', api_port=8001, dp_size=1),
+            ),
+            ModelInstanceWorkload(
                 name='model-r4-smg-a0',
                 worker_id=7,
                 state='running',
                 component=dict(
                     kind='sglang_smg', api_port=8000, metrics_port=9000, attempt=0
                 ),
-            )
+            ),
         ]
     )
     with patch.object(threading.Thread, 'start') as start:

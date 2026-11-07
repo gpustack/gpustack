@@ -511,6 +511,21 @@ def test_archived_rank_views_use_trusted_generation_metadata(tmp_path):
     )
 
 
+def test_engine_source_reports_empty_archive_without_hiding_readable_source(tmp_path):
+    from gpustack.worker.log_sources import list_log_sources, resolve_log_source
+
+    _, directory, _ = _rank_source_archive(tmp_path)
+    (directory / 'container.log').write_bytes(b'')
+    engine = next(
+        s
+        for s in list_log_sources(tmp_path, 42, 7, 3)
+        if s.descriptor.kind == 'workload'
+    )
+    assert engine.descriptor.available
+    assert engine.descriptor.has_content is False
+    assert resolve_log_source(tmp_path, 42, 7, 3, engine.descriptor.id) == engine
+
+
 def test_multi_port_external_logs_only_attribute_explicit_api_prefix(tmp_path):
     _, _, sources = _rank_source_archive(tmp_path, multi_port_external=True)
     rank = next(
