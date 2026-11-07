@@ -19,6 +19,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.api.exceptions import ConflictException
 
 from gpustack.config.config import Config
@@ -36,7 +38,7 @@ from gpustack.schemas.models import (
     ModelInstanceWorkloadStateEnum,
     SourceEnum,
 )
-from gpustack.server.bus import Event, EventType
+from gpustack.server.bus import Event, EventBus, EventType
 from gpustack.server.controllers import ModelController, ModelInstanceController
 from gpustack.server.services import ModelInstanceService
 from gpustack.server.workqueue import WorkEvent, WorkEventType
@@ -390,6 +392,150 @@ def legacy_recovery(managed_recovery):
         DistributedServerCoordinateModeEnum.INITIALIZE_LATER
     )
     return ctx
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failed_worker', [1, 2])
+@pytest.mark.parametrize('group_recovery', [None, True])
+async def test_legacy_failure_events_persist_stop_confirmations_and_next_round(
+    failed_worker, group_recovery, monkeypatch
+):
+    from gpustack.mixins import active_record
+    from gpustack.schemas.workers import Worker
+    from gpustack.server import controllers
+
+    engine = create_async_engine('sqlite+aiosqlite://')
+    bus = EventBus()
+    monkeypatch.setattr(active_record, 'event_bus', bus)
+    monkeypatch.setattr(controllers, 'event_bus', bus)
+
+    def session_factory():
+        return AsyncSession(engine, expire_on_commit=False)
+
+    monkeypatch.setattr(controllers, 'async_session', session_factory)
+    model = Model(
+        id=1,
+        name='recovery',
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id='org/repo',
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--distributed-executor-backend=ray'],
+        restart_on_error=True,
+        cluster_id=1,
+    )
+    instance = ModelInstance(
+        id=1,
+        name='recovery-instance',
+        model_id=1,
+        model_name=model.name,
+        cluster_id=1,
+        worker_id=1,
+        source=model.source,
+        huggingface_repo_id=model.huggingface_repo_id,
+        backend=model.backend,
+        state=ModelInstanceStateEnum.RUNNING,
+        distributed_servers=DistributedServers(
+            mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+            group_recovery=group_recovery,
+            subordinate_workers=[
+                ModelInstanceSubordinateWorker(
+                    worker_id=2, state=ModelInstanceStateEnum.RUNNING
+                )
+            ],
+        ),
+    )
+    try:
+        async with engine.begin() as connection:
+            for table in (Model.__table__, ModelInstance.__table__):
+                await connection.run_sync(table.create)
+        async with session_factory() as session:
+            session.add_all([model, instance])
+            await session.commit()
+
+        instance_events = bus.subscribe('modelinstance', source='test')
+        model_events = bus.subscribe('model', source='test')
+        async with session_factory() as session:
+            current = await ModelInstance.one_by_id(session, instance.id)
+            if failed_worker == 1:
+                source = {'state': ModelInstanceStateEnum.ERROR}
+            else:
+                servers = current.distributed_servers.model_copy(deep=True)
+                servers.subordinate_workers[0].state = ModelInstanceStateEnum.ERROR
+                source = {'distributed_servers': servers}
+            await ModelInstanceService(session).update(current, source)
+
+        controller = _controller()
+
+        async def reconcile_next_event():
+            event = await asyncio.wait_for(instance_events.receive(), timeout=2)
+            await ModelInstanceController(controller._config)._reconcile(event)
+            model_event = await asyncio.wait_for(model_events.receive(), timeout=2)
+            await controller._reconcile(model_event)
+
+        with (
+            patch.object(
+                Worker,
+                'one_by_id',
+                AsyncMock(
+                    side_effect=lambda session, id, **kwargs: SimpleNamespace(
+                        system_principal_id=id * 10
+                    )
+                ),
+            ),
+            patch.object(controllers, 'sync_replicas', AsyncMock(return_value=None)),
+            patch.object(
+                controllers, 'sync_model_status', AsyncMock(return_value=False)
+            ),
+            patch.object(
+                controllers, 'cleanup_orphan_lora_routes', AsyncMock(return_value=False)
+            ),
+            patch.object(controller, '_sync_model_gateway', AsyncMock()),
+        ):
+            await reconcile_next_event()
+
+            async with session_factory() as session:
+                current = await ModelInstance.one_by_id(session, instance.id)
+                guard = current.distributed_servers.legacy_stop
+                assert current.state == ModelInstanceStateEnum.ERROR
+                assert current.restart_count == 0
+                assert guard is not None
+                assert guard.worker_ids == [1, 2]
+                assert guard.confirmed_worker_ids == []
+                assert guard.worker_principal_ids == {1: 10, 2: 20}
+
+            for confirmed in ([1], [1, 2]):
+                async with session_factory() as session:
+                    current = await ModelInstance.one_by_id(session, instance.id)
+                    servers = current.distributed_servers.model_copy(deep=True)
+                    servers.legacy_stop.confirmed_worker_ids = confirmed
+                    await ModelInstanceService(session).update(
+                        current, {'distributed_servers': servers}
+                    )
+                await reconcile_next_event()
+                async with session_factory() as session:
+                    current = await ModelInstance.one_by_id(session, instance.id)
+                    if confirmed == [1]:
+                        assert current.state == ModelInstanceStateEnum.ERROR
+                        assert current.restart_count == 0
+                        assert (
+                            current.distributed_servers.legacy_stop.token == guard.token
+                        )
+                        assert (
+                            current.distributed_servers.legacy_stop.confirmed_worker_ids
+                            == confirmed
+                        )
+                    else:
+                        assert current.state == ModelInstanceStateEnum.SCHEDULED
+                        assert current.restart_count == 1
+                        assert current.distributed_servers.legacy_stop is None
+                        assert current.distributed_servers.group_recovery is True
+                        assert (
+                            current.distributed_servers.subordinate_workers[0].state
+                            == ModelInstanceStateEnum.PENDING
+                        )
+    finally:
+        await bus.stop()
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
