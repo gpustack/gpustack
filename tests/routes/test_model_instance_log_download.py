@@ -649,8 +649,11 @@ async def test_whole_download_uses_each_physical_source_not_rank_views():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('measured', [False, True])
-@pytest.mark.parametrize('with_preparation', [False, True])
-async def test_download_labels_empty_engine_output(measured, with_preparation):
+@pytest.mark.parametrize('multiple_streams', [False, True])
+@pytest.mark.parametrize('source_based', [False, True])
+async def test_download_labels_empty_engine_output(
+    measured, multiple_streams, source_based
+):
     from gpustack.schemas.models import ModelInstanceLogSource
 
     sources = [
@@ -670,7 +673,7 @@ async def test_download_labels_empty_engine_output(measured, with_preparation):
             {'X-Log-Total-Bytes': '0'} if measured else {},
         )
     }
-    if with_preparation:
+    if multiple_streams:
         sources.insert(
             0,
             ModelInstanceLogSource(
@@ -683,7 +686,66 @@ async def test_download_labels_empty_engine_output(measured, with_preparation):
             ),
         )
         logs[('worker', 'preparation')] = (200, [b'Starting model instance\n'])
+    options = ServeLogOptionsResponse(
+        restarts=[ModelInstanceLogRestartEntry(sources=sources)]
+    )
+    display = 'Engine'
+    additional = 'Preparation'
+    if not source_based:
+        options = ['default', 'sidecar'] if multiple_streams else ['default']
+        logs[('worker', 'default')] = logs.pop(('worker', 'engine'))
+        if multiple_streams:
+            logs[('worker', 'sidecar')] = logs.pop(('worker', 'preparation'))
+        display, additional = 'vLLM', 'sidecar'
     response, body = await _download(
+        _instance(),
+        [_target(1, 'worker')],
+        options={'worker': options},
+        logs=logs,
+    )
+    if multiple_streams:
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            assert (
+                archive.read(f'worker.{additional}.log') == b'Starting model instance\n'
+            )
+            body = archive.read(f'worker.{display}.log')
+    else:
+        assert response.status_code == 200
+        if measured:
+            assert int(response.headers['content-length']) == len(body)
+    assert f'No output has been captured for {display}'.encode() in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('multiple_streams', [False, True])
+async def test_unavailable_source_download_does_not_fetch_worker(multiple_streams):
+    from gpustack.schemas.models import ModelInstanceLogSource
+
+    sources = [
+        ModelInstanceLogSource(
+            id='engine',
+            worker_id=1,
+            restart_count=0,
+            kind='workload',
+            label='Engine',
+            available=False,
+        )
+    ]
+    logs, calls = {}, []
+    if multiple_streams:
+        sources.insert(
+            0,
+            ModelInstanceLogSource(
+                id='preparation',
+                worker_id=1,
+                restart_count=0,
+                kind='preparation',
+                label='Preparation',
+                available=True,
+            ),
+        )
+        logs[('worker', 'preparation')] = (200, [b'preparation\n'])
+    _, body = await _download(
         _instance(),
         [_target(1, 'worker')],
         options={
@@ -692,18 +754,16 @@ async def test_download_labels_empty_engine_output(measured, with_preparation):
             )
         },
         logs=logs,
+        calls=calls,
     )
-    if with_preparation:
+    if multiple_streams:
         with zipfile.ZipFile(io.BytesIO(body)) as archive:
-            assert (
-                archive.read('worker.Preparation.log') == b'Starting model instance\n'
-            )
+            assert archive.read('worker.Preparation.log') == b'preparation\n'
             body = archive.read('worker.Engine.log')
-    else:
-        assert response.status_code == 200
-        if measured:
-            assert int(response.headers['content-length']) == len(body)
-    assert b'No output has been captured for Engine' in body
+    assert body == b'Failed to fetch logs: Log source is unavailable\n'
+    assert [call['params'].get('source') for call in calls] == (
+        ['preparation'] if multiple_streams else []
+    )
 
 
 @pytest.mark.asyncio
