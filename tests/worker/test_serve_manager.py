@@ -249,6 +249,7 @@ def test_sync_model_instances_state_marks_main_unreachable_when_subordinate_unre
         ),
         patch.object(manager, "_is_provisioning", return_value=False),
         patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_ensure_container_log_persistence"),
         patch.object(manager, "_update_model_instance") as update_model_instance,
     ):
         manager.sync_model_instances_state()
@@ -261,6 +262,7 @@ def test_sync_model_instances_state_marks_main_unreachable_when_subordinate_unre
             "10.0.0.2: Worker is unreachable from the server."
         ),
     )
+    assert manager._log_persistence == {}
 
 
 def test_restart_error_model_instance_uses_transient_backoff_count():
@@ -2830,6 +2832,8 @@ def _build_vgpu_manager(worker_id=1, device_index=1):
     cfg = SimpleNamespace(log_dir="/tmp")
     manager = ServeManager(lambda: worker_id, lambda: clientset, cfg)
     manager._inference_backend_manager = MagicMock()
+    # Allocation and failure reporting tests must not attach background log writers.
+    manager._ensure_container_log_persistence = MagicMock()
     return manager, clientset
 
 
@@ -2971,6 +2975,7 @@ def test_sync_vgpu_allocation_noop_without_annotation():
         manager.sync_model_instances_state()
 
     update_model_instance.assert_not_called()
+    assert manager._log_persistence == {}
 
 
 def test_error_state_surfaces_workload_state_message():
