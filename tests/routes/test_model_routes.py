@@ -1304,6 +1304,74 @@ async def test_update_targets_noop_does_not_write(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_set_fallback_clear_restores_weight_for_lb_split(monkeypatch):
+    # Clearing the fallback codes turns a weight-0 fallback row back into
+    # an LB candidate. With weighted siblings, keeping weight 0 would be a
+    # mix LB cannot render — the endpoint must restore the default weight
+    # rather than reject the update that turns the fallback off.
+    from gpustack.schemas.model_routes import SetFallbackTargetInput
+
+    existing = ModelRouteTarget(
+        id=1,
+        name="r1-fb",
+        route_name="r1",
+        route_id=1,
+        model_id=5,
+        weight=0,
+        fallback_status_codes=["5xx"],
+        state=TargetStateEnum.ACTIVE,
+    )
+    sibling = ModelRouteTarget(
+        id=2,
+        name="r1-main",
+        route_name="r1",
+        route_id=1,
+        model_id=6,
+        weight=80,
+        state=TargetStateEnum.ACTIVE,
+    )
+
+    async def fake_one_by_id(session, id, options=None):
+        return existing
+
+    async def fake_all_by_field(session, field, value, **kwargs):
+        return [existing, sibling]
+
+    monkeypatch.setattr(ModelRouteTarget, "one_by_id", fake_one_by_id)
+    monkeypatch.setattr(ModelRouteTarget, "all_by_field", fake_all_by_field)
+    monkeypatch.setattr(ModelRouteTarget, "update", AsyncMock())
+    monkeypatch.setattr(model_routes, "assert_resource_visible", MagicMock())
+    monkeypatch.setattr(model_routes, "_refresh_route_lb_mode", AsyncMock())
+    monkeypatch.setattr(model_routes, "_apply_target_plugin_sections", AsyncMock())
+    session = MagicMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+
+    result = await model_routes.set_fallback_target(
+        id=1,
+        session=session,
+        ctx=MagicMock(),
+        input=SetFallbackTargetInput(fallback_status_codes=None),
+    )
+
+    assert result.fallback_status_codes is None
+    assert existing.weight == 100
+
+
+@pytest.mark.asyncio
+async def test_set_fallback_clear_with_empty_list_normalizes(monkeypatch):
+    # An empty list means the same as no codes: the validator normalizes
+    # it to None, so the clearing path (weight restore included) runs
+    # rather than storing a falsy-but-present value that later trips the
+    # weight consistency check.
+    from gpustack.schemas.model_routes import SetFallbackTargetInput
+
+    assert (
+        SetFallbackTargetInput(fallback_status_codes=[]).fallback_status_codes is None
+    )
+
+
+@pytest.mark.asyncio
 async def test_update_targets_clears_nulled_optional_fields(monkeypatch):
     # An explicit null clears optional fields (e.g. removing a LoRA override or
     # a fallback config) instead of being silently dropped by exclude_none.
