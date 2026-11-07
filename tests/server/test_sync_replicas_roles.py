@@ -167,6 +167,28 @@ async def test_managed_restart_deletes_all_old_rows_before_building():
     assert result.created == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stale', [False, True])
+async def test_managed_restart_keeps_stopped_roles_until_the_whole_group_stops(stale):
+    from tests.utils.model import new_model_instance_workload
+
+    model = _model(roles=_pd_roles()[:2])
+    model.restarting_since = datetime.now(timezone.utc)
+    members = [
+        _instance(i, role, 'g', 'old-config' if stale else CURRENT)
+        for i, role in enumerate(('prefill', 'decode'), 1)
+    ]
+    for instance, state in zip(members, ('stopped', 'running')):
+        instance.draining_since = model.restarting_since
+        instance.distributed_servers = DistributedServers(
+            workloads=[new_model_instance_workload(state=state)], stop_requested=True
+        )
+    result = await _run(model, members)
+    assert not result.deleted
+    assert not result.created
+    assert 0 < result.due <= 30
+
+
 async def _run(model, instances, instance_type_snapshot=None, worker_ips=None):
     recorder = _Recorder()
     if worker_ips is None:
@@ -231,7 +253,7 @@ async def _run(model, instances, instance_type_snapshot=None, worker_ips=None):
         for stamped in instances:
             if stamped.spec_digest == CURRENT:
                 stamped.spec_digest = current
-        await sync_replicas(_pass(), model)
+        recorder.due = await sync_replicas(_pass(), model)
     return recorder
 
 

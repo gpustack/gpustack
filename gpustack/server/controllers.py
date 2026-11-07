@@ -1896,6 +1896,14 @@ async def sync_replicas(session: AsyncSession, model: Model) -> Optional[float]:
     fresh_model = await Model.one_by_id(session, model.id)
     if not fresh_model:
         return None
+    if fresh_model.replicas == 0:
+        # Serialize stop authorization with manual and scheduled starts. A
+        # start must see the stop intent, or precede it and leave no stop to run.
+        fresh_model = await Model.one_by_id(
+            session, model.id, for_update=True, refresh=True
+        )
+        if not fresh_model:
+            return None
     model = fresh_model
 
     if model.deleted_at is not None:
@@ -1936,8 +1944,10 @@ async def sync_replicas(session: AsyncSession, model: Model) -> Optional[float]:
                 deleted = await _release_and_delete(
                     session, instances, require_all_stopped=True
                 )
-                return 0 if len(deleted) == len(instances) else None
-            return _next_drain_due(managed_draining)
+                return 0 if len(deleted) == len(instances) else 5
+            # Worker reports normally wake the controller. Periodically read
+            # the barrier again so a missed event cannot strand a restart.
+            return 5
         if any(
             instance.group_id for instance in managed_draining
         ) and await model_members_stale(session, model, instances):

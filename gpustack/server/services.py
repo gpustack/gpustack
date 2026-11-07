@@ -1026,6 +1026,24 @@ class ModelService:
         *,
         auto_commit: bool = True,
     ):
+        if isinstance(source, SQLModel):
+            source = {key: getattr(source, key) for key in source.model_fields_set}
+        if model.replicas == 0 and source and (source.get('replicas') or 0) > 0:
+            instances = await ModelInstance.all_by_field(
+                self.session, 'model_id', model.id
+            )
+            if any(
+                has_model_instance_stop_barrier(instance)
+                and instance.draining_since is not None
+                for instance in instances
+            ):
+                # Physical teardown cannot be cancelled. Keep the whole old
+                # group behind the restart barrier before forming replacements.
+                source = {
+                    **source,
+                    'restarting_since': model.restarting_since
+                    or datetime.now(timezone.utc),
+                }
         result = await model.update(self.session, source, auto_commit=auto_commit)
         await delete_cache_by_key(self.get_by_id, model.id)
         await delete_cache_by_key(self.get_by_name, model.name)
