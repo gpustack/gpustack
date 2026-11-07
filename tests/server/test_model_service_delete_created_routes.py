@@ -34,6 +34,7 @@ from gpustack.schemas.model_routes import (
 from gpustack.schemas.models import (
     DistributedServers,
     Model,
+    ModelUpdate,
     ModelInstance,
     ModelInstanceStateEnum,
     ModelInstanceWorkloadStateEnum,
@@ -235,6 +236,71 @@ async def _managed_instance(session, model, state="running", group_id="pd-group"
             ),
         ),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('task_state', ['running', 'stopped'])
+@pytest.mark.parametrize('request_model', [False, True])
+@pytest.mark.parametrize('auto_commit', [False, True])
+async def test_start_during_managed_stop_rebuilds_only_after_confirmation(
+    session, task_state, request_model, auto_commit
+):
+    from gpustack.server.controllers import sync_replicas
+
+    model = await _model_with_created_route(session, 'resume-stop')
+    await model.update(
+        session,
+        {'replicas': 0, 'roles': [RoleSpec(name='prefill'), RoleSpec(name='decode')]},
+    )
+    instance = await _managed_instance(session, model, task_state)
+    await instance.update(session, {'spec_digest': 'old-config'})
+    await ModelInstanceService(session).request_stop([instance])
+    source = (
+        ModelUpdate(
+            name=model.name,
+            source=model.source,
+            huggingface_repo_id=model.huggingface_repo_id,
+            replicas=1,
+        )
+        if request_model
+        else {'replicas': 1}
+    )
+    await ModelService(session).update(model, source, auto_commit=auto_commit)
+    if not auto_commit:
+        await session.commit()
+    assert model.restarting_since is not None
+    since = model.restarting_since
+    await ModelService(session).update(model, {'replicas': 1})
+    assert model.restarting_since == since
+
+    due = await sync_replicas(session, model)
+    if task_state == 'running':
+        assert due is not None and 0 < due <= 30
+        assert await ModelInstance.all_by_field(session, 'model_id', model.id) == [
+            instance
+        ]
+        servers = instance.distributed_servers.model_copy(deep=True)
+        servers.workloads[0].state = ModelInstanceWorkloadStateEnum.STOPPED
+        await instance.update(session, {'distributed_servers': servers})
+        await sync_replicas(session, model)
+    assert await ModelInstance.all_by_field(session, 'model_id', model.id) == []
+    await sync_replicas(session, model)
+    replacements = await ModelInstance.all_by_field(session, 'model_id', model.id)
+    assert {item.role for item in replacements} == {'prefill', 'decode'}
+    assert all(item.draining_since is None for item in replacements)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('has_instance', [False, True])
+async def test_start_without_managed_stop_does_not_set_restart_guard(
+    session, has_instance
+):
+    model = await _model_with_created_route(session, 'ordinary-start')
+    await model.update(session, {'replicas': 0})
+    if has_instance:
+        await _managed_instance(session, model)
+    await ModelService(session).update(model, {'replicas': 1})
+    assert model.restarting_since is None
 
 
 @pytest.mark.asyncio
