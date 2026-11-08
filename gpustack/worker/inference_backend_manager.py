@@ -9,7 +9,6 @@ from gpustack.client import ClientSet
 from gpustack.schemas.inference_backend import InferenceBackend, VersionConfigDict
 from gpustack.server.bus import EventType, Event
 
-
 logger = logging.getLogger(__name__)
 
 # Global lock for cache operations to avoid pickle serialization issues
@@ -52,7 +51,8 @@ class InferenceBackendManager:
         # the server doesn't expose. Negative-cached so the steady-state
         # common case (a model whose Org has no override row — including
         # every Default-Org model) doesn't re-poll /inference-backends/all
-        # forever; invalidated by watch events and watch (re)connects.
+        # forever; invalidated by the first event on each watch connection
+        # and by subsequent events for the matching scope.
         self._missing_scopes: Set[Tuple[str, int]] = set()
 
         # Listener related attributes
@@ -236,7 +236,6 @@ class InferenceBackendManager:
             # and merging instead of swapping would need delete-tracking
             # — not worth it.
             self.backends_cache = cache
-            self._missing_scopes.clear()
         logger.info("Refreshed InferenceBackend cache after scope miss")
         return True
 
@@ -245,14 +244,20 @@ class InferenceBackendManager:
         while self._running:
             try:
                 logger.info("Starting to watch InferenceBackend changes")
-                # Events may have been missed while disconnected — drop
-                # the confirmed-missing scopes so the next lookup may
-                # refresh and pick up rows created during the gap.
-                with _cache_lock:
-                    self._missing_scopes.clear()
-                await self._clientset.inference_backends.awatch(
-                    callback=self._handle_event
-                )
+                first_event = True
+
+                def handle_event(event: Event) -> None:
+                    nonlocal first_event
+                    if first_event:
+                        # A replayed row confirms the watch is connected, but
+                        # its snapshot may be stale. Allow one fresh check of
+                        # missing scopes without invalidating on failed retries.
+                        with _cache_lock:
+                            self._missing_scopes.clear()
+                        first_event = False
+                    self._handle_event(event)
+
+                await self._clientset.inference_backends.awatch(callback=handle_event)
 
             except asyncio.CancelledError:
                 logger.info("InferenceBackend watch cancelled")
