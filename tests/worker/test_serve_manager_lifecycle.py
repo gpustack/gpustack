@@ -1463,6 +1463,46 @@ def test_managed_partial_create_failure_cleans_up_even_a_lost_create_response(
         state.serve._stop_container_log_persistence(state.instance.id)
 
 
+@pytest.mark.parametrize('stat_error_at', [None, 0, 1])
+def test_managed_log_flush_retries_archive_rotation(
+    managed, monkeypatch, caplog, stat_error_at
+):
+    state = managed
+    name = _local_manifest(state)[0].name
+    clock = SimpleNamespace(now=0.0)
+    stat = SimpleNamespace(st_size=10, st_mtime_ns=1)
+    samples = [stat, stat]
+    if stat_error_at is not None:
+        samples = [stat] * stat_error_at + [FileNotFoundError('rotated'), stat, stat]
+    archive = MagicMock(spec=Path)
+    archive.stat.side_effect = samples
+    source = SimpleNamespace(
+        descriptor=SimpleNamespace(previous=False, kind='workload', workload_name=name),
+        paths=[archive],
+    )
+
+    def sleep(seconds):
+        clock.now += seconds
+
+    monkeypatch.setattr(
+        'gpustack.worker.serve_manager.time',
+        SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep),
+    )
+    monkeypatch.setattr(
+        'gpustack.worker.serve_manager.list_log_sources', lambda *a: [source]
+    )
+    ServeManager._wait_for_managed_engine_logs(
+        state.serve,
+        state.instance,
+        {name: [SimpleNamespace(labels={'gpustack.ai/restart-count': '3'})]},
+    )
+    # One stat per snapshot; a failed sample cannot establish archive stability.
+    expected_samples = 2 if stat_error_at is None else stat_error_at + 3
+    assert archive.stat.call_count == expected_samples
+    assert clock.now == pytest.approx(0.1 * (expected_samples - 1))
+    assert 'retained logs may be incomplete' not in caplog.text
+
+
 def test_managed_cleanup_continues_after_flush_deadline(managed, monkeypatch, caplog):
     state = managed
     _running_managed(state)

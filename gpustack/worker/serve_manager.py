@@ -1620,21 +1620,30 @@ class ServeManager(ContainerLogPersister):
                     self._worker_id,
                     mi.restart_count or 0,
                 )
-                snapshot = {
-                    (source.descriptor.workload_name, str(path)): (
-                        path.stat().st_size,
-                        path.stat().st_mtime_ns,
-                    )
-                    for source in sources
-                    if not source.descriptor.previous
-                    and source.descriptor.kind == 'workload'
-                    and source.descriptor.workload_name in names
-                    for path in source.paths
-                }
-                captured = {name for (name, _), (size, _) in snapshot.items() if size}
-                if names <= captured and snapshot == previous:
-                    return
-                previous = snapshot
+                try:
+                    snapshot = {
+                        (source.descriptor.workload_name, str(path)): (
+                            stat.st_size,
+                            stat.st_mtime_ns,
+                        )
+                        for source in sources
+                        if not source.descriptor.previous
+                        and source.descriptor.kind == 'workload'
+                        and source.descriptor.workload_name in names
+                        for path in source.paths
+                        for stat in [path.stat()]
+                    }
+                except OSError:
+                    # Rotation can remove a shard after source discovery. Only
+                    # complete consecutive snapshots establish archive stability.
+                    previous = None
+                else:
+                    captured = {
+                        name for (name, _), (size, _) in snapshot.items() if size
+                    }
+                    if names <= captured and snapshot == previous:
+                        return
+                    previous = snapshot
             except Exception as exc:
                 logger.warning('Cannot inspect Engine archives for %s: %s', mi.id, exc)
                 break
