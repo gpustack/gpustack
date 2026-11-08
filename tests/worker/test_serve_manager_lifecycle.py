@@ -1360,25 +1360,121 @@ def test_managed_replayed_start_adopts_existing_workloads(managed):
     assert state.instance.restart_count == 3
 
 
-def test_managed_partial_create_failure_cleans_up_even_a_lost_create_response(managed):
+@pytest.mark.parametrize('response_lost', [False, True])
+def test_managed_partial_create_failure_cleans_up_even_a_lost_create_response(
+    managed, monkeypatch, response_lost
+):
+    from gpustack.worker.container_logs import _LogCursor
+    from gpustack.worker.log_sources import (
+        container_log_path,
+        engine_log_targets,
+        list_log_sources,
+        sidecar_container_log_path,
+    )
+
     state = managed
     local = _local_manifest(state)
     normal_create = state.create.side_effect
+    normal_delete = state.delete.side_effect
+    root = Path(state.serve._serve_log_dir)
+    paths = {
+        name: (
+            container_log_path(root, state.instance.name, state.instance.id, 3)
+            if archive is None
+            else sidecar_container_log_path(
+                root, state.instance.name, state.instance.id, archive, 3
+            )
+        )
+        for name, archive in engine_log_targets(state.instance, state.serve._worker_id)
+    }
+    deleted_logs = {}
+    state.serve._start_container_log_persistence.side_effect = (
+        lambda *args, **kwargs: state.events.append('logs-attached')
+    )
+    monkeypatch.setattr(
+        state.serve,
+        '_archive_container_logs',
+        ServeManager._archive_container_logs.__get__(state.serve),
+    )
+
+    def logs(*, name, follow, **kwargs):
+        assert not follow
+        assert any(item.name == name for item in state.runtime)
+        return iter(
+            f'2026-11-08T00:00:00Z {name} {message}\n'
+            for message in ('started', 'diagnostic')
+        )
+
+    monkeypatch.setattr('gpustack.worker.container_logs.logs_workload', logs)
 
     def create(plan):
+        if state.create.call_count == 2 and not response_lost:
+            raise OSError('create rejected')
         normal_create(plan)
+        if state.create.call_count == 1:
+            # Final capture must resume output already copied by a collector.
+            path = str(paths[plan.name])
+            state.serve._copy_container_log_stream(
+                iter([f'2026-11-08T00:00:00Z {plan.name} started\n']),
+                path,
+                _LogCursor(path),
+                threading.Event(),
+            )
         if state.create.call_count == 2:
             raise OSError("create response lost")
 
+    def delete(name):
+        path = paths[name]
+        deleted_logs[name] = path.read_text() if path.exists() else ''
+        normal_delete(name)
+
     state.create.side_effect = create
+    state.delete.side_effect = delete
     assert not state.serve._start_managed_workloads(
         state.instance, local, _managed_plans(local)
     )
     assert not state.runtime
+    assert deleted_logs == {
+        item.name: f'{item.name} started\n{item.name} diagnostic\n'
+        for item in local[: 2 if response_lost else 1]
+    }
+    assert state.events.index('report') < state.events.index('logs-attached')
+    assert state.events.index('logs-attached') < next(
+        i for i, event in enumerate(state.events) if event.startswith('create:')
+    )
+    sources = list_log_sources(root, state.instance.id, state.serve._worker_id, 3)
+    assert {s.descriptor.workload_name for s in sources if s.paths} == set(deleted_logs)
     assert {item.state for item in _local_manifest(state)} == {
         ModelInstanceWorkloadStateEnum.STOPPED
     }
     assert state.instance.id not in state.serve._assigned_ports
+
+
+def test_managed_cleanup_waits_for_log_writer_before_final_capture(managed):
+    state = managed
+    _running_managed(state)
+    writer = SimpleNamespace(restart_count=3, stop=MagicMock(side_effect=[False, True]))
+    state.serve._log_persistence[state.instance.id] = writer
+
+    assert not state.serve._stop_model_instance(state.instance)
+    state.delete.assert_not_called()
+    state.serve._archive_container_logs.assert_not_called()
+
+    assert state.serve._stop_model_instance(state.instance)
+    assert not state.runtime
+    assert state.serve._archive_container_logs.call_count == len(_local_manifest(state))
+
+
+def test_managed_cleanup_continues_when_log_archiving_fails(managed, caplog):
+    state = managed
+    _running_managed(state)
+    state.serve._archive_container_logs.side_effect = OSError(
+        'runtime logs unavailable'
+    )
+
+    assert state.serve._stop_model_instance(state.instance)
+    assert not state.runtime
+    assert 'runtime logs unavailable' in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -1762,6 +1858,7 @@ def test_managed_runtime_identity_mismatch_never_deletes_a_foreign_workload(
     state.runtime[0].labels[f"gpustack.ai/{label}"] = "999"
     assert not state.serve._stop_model_instance(instance)
     state.delete.assert_not_called()
+    state.serve._archive_container_logs.assert_not_called()
     assert instance.id in state.serve._assigned_ports
 
 
@@ -2308,6 +2405,7 @@ def manager(request, tmp_path, monkeypatch):
         "_purge_instance_logs",
         "_start_container_log_persistence",
         "_stop_container_log_persistence",
+        "_archive_container_logs",
         "_update_model_instance",
     ):
         monkeypatch.setattr(manager, name, MagicMock())
@@ -3924,6 +4022,7 @@ def test_owned_older_engine_cleanup_allows_the_next_generation_to_start(
     )
     state.create.assert_not_called()
     assert not state.runtime
+    state.serve._archive_container_logs.assert_not_called()
     assert (state.instance.id, state.instance.restart_count) not in (
         state.serve._managed_stopping
     )

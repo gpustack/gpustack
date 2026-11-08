@@ -522,7 +522,6 @@ def test_engine_source_reports_empty_archive_without_hiding_readable_source(tmp_
         if s.descriptor.kind == 'workload'
     )
     assert engine.descriptor.available
-    assert engine.descriptor.has_content is False
     assert resolve_log_source(tmp_path, 42, 7, 3, engine.descriptor.id) == engine
 
 

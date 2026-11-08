@@ -1891,16 +1891,6 @@ class ResolvedLogSource:
         return rank == (self.descriptor.dp_rank, self.descriptor.node_rank)
 
 
-def _log_files_have_content(paths: List[Path]) -> bool:
-    for path in paths:
-        try:
-            if path.stat().st_size:
-                return True
-        except OSError:
-            continue
-    return False
-
-
 def list_log_sources(
     log_dir: Path, instance_id: int, worker_id: int, current_restart: int
 ) -> List[ResolvedLogSource]:
@@ -1955,7 +1945,6 @@ def list_log_sources(
                     else record.get('container_name', 'default')
                 ),
                 available=bool(paths),
-                has_content=_log_files_have_content(paths),
                 component_kind=record.get('component_kind'),
                 workload_name=record.get('workload_name'),
                 active_workload_name=record.get('active_workload_name'),
@@ -1986,7 +1975,6 @@ def list_log_sources(
                         base,
                         kind='public',
                         label='Common logs',
-                        has_content=None,
                         attribution='unattributed',
                     )
                 ]
@@ -1994,7 +1982,6 @@ def list_log_sources(
                     dict(
                         base,
                         kind='rank',
-                        has_content=None,
                         dp_rank=p['dp_rank'],
                         node_rank=p['node_rank'],
                         main=p['node_rank'] == 0,

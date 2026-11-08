@@ -2657,6 +2657,54 @@ def test_empty_runtime_stream_does_not_create_an_engine_archive(tmp_path, chunks
     assert not path.exists()
 
 
+@pytest.mark.parametrize('phase', ['connecting', 'reading'])
+def test_stopping_log_persistence_closes_a_quiet_runtime_stream(tmp_path, phase):
+    from gpustack.worker.container_logs import ContainerLogPersister, LogStreamStopEvent
+
+    stop = LogStreamStopEvent()
+    entered, release, closed = [threading.Event() for _ in range(3)]
+    path = tmp_path / 'container.log'
+
+    class QuietStream:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            entered.set()
+            assert closed.wait(3)
+            raise StopIteration
+
+        def close(self):
+            closed.set()
+
+    def logs(**kwargs):
+        if phase == 'connecting':
+            entered.set()
+            assert release.wait(3)
+        return QuietStream()
+
+    thread = threading.Thread(
+        target=ContainerLogPersister()._persist_container_logs,
+        args=('engine', str(path), stop),
+        daemon=True,
+    )
+    with patch('gpustack.worker.container_logs.logs_workload', side_effect=logs):
+        thread.start()
+        try:
+            assert entered.wait(3)
+            stop.set()
+            release.set()
+            thread.join(timeout=3)
+            assert not thread.is_alive()
+            assert closed.is_set()
+            assert not path.exists()
+        finally:
+            stop.set()
+            release.set()
+            closed.set()
+            thread.join(timeout=3)
+
+
 def test_persistent_runtime_log_errors_warn_without_stopping_retries(tmp_path, caplog):
     from gpustack.worker.container_logs import ContainerLogPersister
 

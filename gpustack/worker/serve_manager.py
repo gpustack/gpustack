@@ -81,7 +81,7 @@ from gpustack.worker.log_sources import (
     restart_log_dirs,
     sidecar_container_log_path,
 )
-from gpustack.worker.container_logs import ContainerLogPersister
+from gpustack.worker.container_logs import ContainerLogPersister, LogStreamStopEvent
 from gpustack.worker.model_meta import get_meta_from_running_instance
 from gpustack.client import ClientSet
 from gpustack.client.distributed_port_client import DistributedPortClient
@@ -786,12 +786,11 @@ class ServeManager(ContainerLogPersister):
                 item.name: item.state
                 for item in get_model_instance_workloads(mi, self._worker_id)
             }
+            self._ensure_managed_log_persistence(mi)
             if not self._create_registered_plans(
                 mi, local, plans, observed, registered_states
             ):
                 return False
-            if key not in self._managed_stopping:
-                self._ensure_managed_log_persistence(mi)
             return key not in self._managed_stopping
         except Exception as exc:
             logger.warning("Cannot start managed model instance %s: %s", mi.id, exc)
@@ -1575,6 +1574,8 @@ class ServeManager(ContainerLogPersister):
             if self._is_provisioning(mi):
                 return False
         observed = self._managed_runtime_workloads(mi, allow_older_generation=True)
+        if not self._archive_managed_engine_logs(mi, observed):
+            return False
         for name, matches in observed.items():
             if matches:
                 try:
@@ -1588,6 +1589,43 @@ class ServeManager(ContainerLogPersister):
         return not any(
             self._managed_runtime_workloads(mi, allow_older_generation=True).values()
         )
+
+    def _archive_managed_engine_logs(self, mi: ModelInstance, observed) -> bool:
+        """Capture Engine output under instance lifecycle ownership before deletion."""
+        targets = [
+            (name, archive)
+            for name, archive in engine_log_targets(mi, self._worker_id)
+            if any(
+                (status.labels or {}).get('gpustack.ai/restart-count')
+                == str(mi.restart_count or 0)
+                for status in observed.get(name, [])
+            )
+        ]
+        if not targets:
+            return True
+        with self._log_persistence_lock:
+            persistence = self._log_persistence.get(mi.id)
+            if persistence and persistence.restart_count != (mi.restart_count or 0):
+                return True
+            # Retry teardown after a busy writer exits; two writers must never
+            # modify the same archive and replay cursor concurrently.
+            if not self._retire_log_persistence(mi.id):
+                return False
+        root = Path(self._serve_log_dir)
+        for name, archive in targets:
+            path = (
+                container_log_path(root, mi.name, mi.id, mi.restart_count or 0)
+                if archive is None
+                else sidecar_container_log_path(
+                    root, mi.name, mi.id, archive, mi.restart_count or 0
+                )
+            )
+            try:
+                self._archive_container_logs(name, str(path))
+            except Exception as exc:
+                logger.warning('Cannot archive Engine logs for %s: %s', name, exc)
+        self._record_log_sources(mi)
+        return True
 
     def _confirm_managed_stop(self, mi: ModelInstance) -> bool:
         worker = self._clientset.workers.get(self._worker_id, use_cache=False)
@@ -3708,7 +3746,7 @@ class ServeManager(ContainerLogPersister):
                     restart_count,
                 )
             )
-            stop_event = threading.Event()
+            stop_event = LogStreamStopEvent()
 
             thread = threading.Thread(
                 target=self._persist_container_logs,
@@ -3751,7 +3789,7 @@ class ServeManager(ContainerLogPersister):
             container_log_path(Path(self._serve_log_dir), mi.name, mi.id, restart_count)
         )
 
-        stop_event = threading.Event()
+        stop_event = LogStreamStopEvent()
 
         # Main container log thread.
         thread = threading.Thread(
@@ -3878,7 +3916,7 @@ class ServeManager(ContainerLogPersister):
                     archive_name,
                     mi.restart_count or 0,
                 )
-                stopped = threading.Event()
+                stopped = LogStreamStopEvent()
                 thread = threading.Thread(
                     target=self._persist_container_logs,
                     args=(name, str(path), stopped),
@@ -3957,7 +3995,7 @@ class ServeManager(ContainerLogPersister):
                 Path(self._serve_log_dir), mi.id
             ) or instance_log_dir(Path(self._serve_log_dir), mi.name, mi.id)
             path = root / str(mi.restart_count or 0) / 'component.sglang_smg.log'
-            stopped = threading.Event()
+            stopped = LogStreamStopEvent()
             thread = threading.Thread(
                 target=self._persist_container_logs,
                 args=(task.name, str(path), stopped),
