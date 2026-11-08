@@ -14,7 +14,8 @@ from typing import Optional, Tuple
 
 from gpustack_runtime.deployer import (
     get_workload,
-    logs_workload,
+    supported_list,
+    UnsupportedError,
     WorkloadStatusStateEnum,
 )
 
@@ -45,35 +46,11 @@ _LOG_TIMESTAMP_RE = re.compile(
 )
 
 
-class LogStreamStopEvent(threading.Event):
-    """Interrupt a quiet runtime stream when its archive writer is stopped."""
-
-    def __init__(self):
-        super().__init__()
-        self._stream_lock = threading.Lock()
-        self._stream = None
-
-    def set_stream(self, stream) -> None:
-        with self._stream_lock:
-            if not self.is_set():
-                self._stream = stream
-                return
-        self._close_stream(stream)
-
-    def set(self) -> None:
-        super().set()
-        with self._stream_lock:
-            stream, self._stream = self._stream, None
-        self._close_stream(stream)
-
-    @staticmethod
-    def _close_stream(stream) -> None:
-        close = getattr(stream, 'close', None)
-        if close is not None:
-            try:
-                close()
-            except Exception as exc:
-                logger.debug('Cannot close stopped runtime log stream: %s', exc)
+def _read_runtime_logs(**options):
+    """Keep log reads on their caller instead of nesting runtime-pool jobs."""
+    for deployer in supported_list():
+        return deployer.logs(async_mode=False, **options)
+    raise UnsupportedError('No available container runtime for logs')
 
 
 def _split_log_timestamp(text: str) -> Tuple[Optional[int], str]:
@@ -384,7 +361,7 @@ class ContainerLogPersister:
                 # fragment is an empty one.
                 _drop_partial_last_line(log_path)
                 self._locate_cursor(cursor, log_path)
-                log_stream = logs_workload(
+                log_stream = _read_runtime_logs(
                     name=workload_name,
                     token=token,
                     tail=-1,
@@ -392,8 +369,6 @@ class ContainerLogPersister:
                     since=cursor.epoch,
                     follow=True,
                 )
-                if isinstance(stop_event, LogStreamStopEvent):
-                    stop_event.set_stream(log_stream)
                 # Stopped while the runtime was connecting: the instance may be
                 # gone, and copying now would recreate its purged directory.
                 if stop_event.is_set():
@@ -442,7 +417,7 @@ class ContainerLogPersister:
         cursor.load()
         _drop_partial_last_line(log_path)
         self._locate_cursor(cursor, log_path)
-        stream = logs_workload(
+        stream = _read_runtime_logs(
             name=workload_name,
             tail=-1,
             timestamps=True,

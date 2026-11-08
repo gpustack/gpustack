@@ -80,8 +80,9 @@ from gpustack.worker.log_sources import (
     main_log_path,
     restart_log_dirs,
     sidecar_container_log_path,
+    list_log_sources,
 )
-from gpustack.worker.container_logs import ContainerLogPersister, LogStreamStopEvent
+from gpustack.worker.container_logs import ContainerLogPersister
 from gpustack.worker.model_meta import get_meta_from_running_instance
 from gpustack.client import ClientSet
 from gpustack.client.distributed_port_client import DistributedPortClient
@@ -139,6 +140,8 @@ from gpustack.server.bus import Event, EventType
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
 
 logger = logging.getLogger(__name__)
+
+_MANAGED_LOG_FLUSH_TIMEOUT = 5.0
 
 # Inference health check error message
 _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE = "Inference health check failed."
@@ -284,16 +287,18 @@ class _LogPersistence:
 
         Args:
             model_instance_id: The model instance ID, for logging.
-            timeout: Maximum time to wait for each thread (seconds).
+            timeout: Total time to wait for all threads (seconds).
 
         Returns:
             Whether every thread of the generation is now gone.
         """
         self.stop_event.set()
         with self._lock:
+            stopping = self._stopping
             self._stopping = True
             stop_events = list(self._aux_stop_events)
             threads = [self.main_thread] + list(self._aux_threads)
+        deadline = time.monotonic() + (0 if stopping else timeout)
 
         for stop_event in stop_events:
             stop_event.set()
@@ -301,13 +306,14 @@ class _LogPersistence:
         gone = True
         for thread in threads:
             if thread and thread.is_alive():
-                thread.join(timeout=timeout)
+                thread.join(timeout=max(0, deadline - time.monotonic()))
                 if thread.is_alive():
                     gone = False
-                    logger.warning(
-                        f"Log persistence thread {thread.name} for model instance "
-                        f"{model_instance_id} did not stop within {timeout}s"
-                    )
+                    if not stopping:
+                        logger.warning(
+                            f"Log persistence thread {thread.name} for model instance "
+                            f"{model_instance_id} did not stop within {timeout}s"
+                        )
         return gone
 
 
@@ -1574,8 +1580,7 @@ class ServeManager(ContainerLogPersister):
             if self._is_provisioning(mi):
                 return False
         observed = self._managed_runtime_workloads(mi, allow_older_generation=True)
-        if not self._archive_managed_engine_logs(mi, observed):
-            return False
+        self._wait_for_managed_engine_logs(mi, observed)
         for name, matches in observed.items():
             if matches:
                 try:
@@ -1590,42 +1595,54 @@ class ServeManager(ContainerLogPersister):
             self._managed_runtime_workloads(mi, allow_older_generation=True).values()
         )
 
-    def _archive_managed_engine_logs(self, mi: ModelInstance, observed) -> bool:
-        """Capture Engine output under instance lifecycle ownership before deletion."""
-        targets = [
-            (name, archive)
-            for name, archive in engine_log_targets(mi, self._worker_id)
+    def _wait_for_managed_engine_logs(self, mi: ModelInstance, observed) -> None:
+        """Give existing collectors a bounded flush window before runtime deletion."""
+        names = {
+            name
+            for name, _ in engine_log_targets(mi, self._worker_id)
             if any(
                 (status.labels or {}).get('gpustack.ai/restart-count')
                 == str(mi.restart_count or 0)
+                and getattr(status, 'loggable', None) != []
                 for status in observed.get(name, [])
             )
-        ]
-        if not targets:
-            return True
-        with self._log_persistence_lock:
-            persistence = self._log_persistence.get(mi.id)
-            if persistence and persistence.restart_count != (mi.restart_count or 0):
-                return True
-            # Retry teardown after a busy writer exits; two writers must never
-            # modify the same archive and replay cursor concurrently.
-            if not self._retire_log_persistence(mi.id):
-                return False
-        root = Path(self._serve_log_dir)
-        for name, archive in targets:
-            path = (
-                container_log_path(root, mi.name, mi.id, mi.restart_count or 0)
-                if archive is None
-                else sidecar_container_log_path(
-                    root, mi.name, mi.id, archive, mi.restart_count or 0
-                )
-            )
-            try:
-                self._archive_container_logs(name, str(path))
-            except Exception as exc:
-                logger.warning('Cannot archive Engine logs for %s: %s', name, exc)
+        }
+        if not names:
+            return
         self._record_log_sources(mi)
-        return True
+        deadline = time.monotonic() + _MANAGED_LOG_FLUSH_TIMEOUT
+        previous = None
+        while time.monotonic() < deadline:
+            try:
+                sources = list_log_sources(
+                    Path(self._serve_log_dir),
+                    mi.id,
+                    self._worker_id,
+                    mi.restart_count or 0,
+                )
+                snapshot = {
+                    (source.descriptor.workload_name, str(path)): (
+                        path.stat().st_size,
+                        path.stat().st_mtime_ns,
+                    )
+                    for source in sources
+                    if not source.descriptor.previous
+                    and source.descriptor.kind == 'workload'
+                    and source.descriptor.workload_name in names
+                    for path in source.paths
+                }
+                captured = {name for (name, _), (size, _) in snapshot.items() if size}
+                if names <= captured and snapshot == previous:
+                    return
+                previous = snapshot
+            except Exception as exc:
+                logger.warning('Cannot inspect Engine archives for %s: %s', mi.id, exc)
+                break
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+        logger.warning(
+            'Engine log flush window expired for %s; retained logs may be incomplete',
+            mi.id,
+        )
 
     def _confirm_managed_stop(self, mi: ModelInstance) -> bool:
         worker = self._clientset.workers.get(self._worker_id, use_cache=False)
@@ -3746,7 +3763,7 @@ class ServeManager(ContainerLogPersister):
                     restart_count,
                 )
             )
-            stop_event = LogStreamStopEvent()
+            stop_event = threading.Event()
 
             thread = threading.Thread(
                 target=self._persist_container_logs,
@@ -3789,7 +3806,7 @@ class ServeManager(ContainerLogPersister):
             container_log_path(Path(self._serve_log_dir), mi.name, mi.id, restart_count)
         )
 
-        stop_event = LogStreamStopEvent()
+        stop_event = threading.Event()
 
         # Main container log thread.
         thread = threading.Thread(
@@ -3916,7 +3933,7 @@ class ServeManager(ContainerLogPersister):
                     archive_name,
                     mi.restart_count or 0,
                 )
-                stopped = LogStreamStopEvent()
+                stopped = threading.Event()
                 thread = threading.Thread(
                     target=self._persist_container_logs,
                     args=(name, str(path), stopped),
@@ -3995,7 +4012,7 @@ class ServeManager(ContainerLogPersister):
                 Path(self._serve_log_dir), mi.id
             ) or instance_log_dir(Path(self._serve_log_dir), mi.name, mi.id)
             path = root / str(mi.restart_count or 0) / 'component.sglang_smg.log'
-            stopped = LogStreamStopEvent()
+            stopped = threading.Event()
             thread = threading.Thread(
                 target=self._persist_container_logs,
                 args=(task.name, str(path), stopped),
