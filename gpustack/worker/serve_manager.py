@@ -73,8 +73,6 @@ from gpustack.worker.log_sources import (
     engine_log_targets,
     find_instance_log_dir,
     flat_instance_logs,
-    instance_log_files,
-    select_log_files,
     instance_log_dir,
     legacy_main_log_path,
     main_log_path,
@@ -2807,7 +2805,7 @@ class ServeManager(ContainerLogPersister):
         )
 
         Path(log_file_path).parent.mkdir(parents=True, exist_ok=True)
-        with CappedLogWriter(log_file_path, append=bool(mi.restart_count)) as log_file:
+        with CappedLogWriter(log_file_path) as log_file:
             with RedirectStdoutStderr(log_file):
                 try:
                     server_cls = _SERVER_CLASS_MAPPING.get(backend, CustomServer)
@@ -3657,34 +3655,6 @@ class ServeManager(ContainerLogPersister):
             main_log_path(Path(self._serve_log_dir), mi.name, mi.id, restart_count)
         )
 
-    def _prepare_main_log_round(self, mi: ModelInstance) -> None:
-        """Carry bounded startup context into the next round before old-log cleanup."""
-        count = mi.restart_count or 0
-        if count == 0:
-            return
-        target = Path(self._get_numbered_log_path(mi))
-        try:
-            if target.exists() and target.stat().st_size:
-                return
-            previous = select_log_files(
-                instance_log_files(Path(self._serve_log_dir), mi.id),
-                restart_count=count - 1,
-            )
-            if not previous:
-                return
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with CappedLogWriter(target) as output:
-                output.write(
-                    '[GPUStack] Startup log copied from the previous startup '
-                    f'(round {count - 1} -> round {count})\n'
-                )
-                for path in previous:
-                    with path.open(encoding='utf-8', errors='replace') as source:
-                        shutil.copyfileobj(source, output, length=64 * 1024)
-                output.write(f'\n[GPUStack] Starting round {count}\n')
-        except OSError as exc:
-            logger.warning('Cannot copy startup context for %s: %s', mi.id, exc)
-
     def _discover_sidecar_logs(
         self,
         mi_id: int,
@@ -4309,7 +4279,6 @@ class ServeManager(ContainerLogPersister):
         # Follow a rename before anything writes under the new name, or the
         # instance's logs end up split across two directories.
         self._align_instance_log_dir(mi)
-        self._prepare_main_log_round(mi)
         # Clean up old log files before starting
         self._cleanup_old_logs(mi.id, mi.restart_count or 0)
 

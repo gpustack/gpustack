@@ -95,32 +95,60 @@ def _fake_stop_event(max_waits: int = 100):
     return stop_event
 
 
-def test_new_round_copies_main_context_once_and_keeps_new_output(tmp_path):
-    manager = SimpleNamespace(_serve_log_dir=str(tmp_path))
-    instance = new_model_instance(42, 'model', 1)
-    instance.restart_count = 8
-    old = main_log_path(tmp_path, instance.name, instance.id, 7)
-    old.parent.mkdir(parents=True)
-    old.write_text('old startup\n')
-    Path(f'{old}.truncated').write_text('... omitted ...\n')
-    Path(f'{old}.1').write_text('old tail\n')
-    manager._get_numbered_log_path = lambda mi: str(
-        main_log_path(tmp_path, mi.name, mi.id, mi.restart_count)
+@pytest.mark.parametrize('existing_log', [False, True])
+def test_new_round_keeps_main_logs_independent(tmp_path, existing_log):
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(tmp_path)
+    manager._config = MagicMock()
+    instance = new_model_instance(42, 'model', 1, worker_id=1)
+    model = new_model(1, 'model', huggingface_repo_id='test/model')
+    server = MagicMock()
+    server.start.side_effect = lambda: print(
+        f'startup round {instance.restart_count}: command args'
     )
-    ServeManager._prepare_main_log_round(manager, instance)
-    target = Path(manager._get_numbered_log_path(instance))
-    with CappedLogWriter(target, append=True) as output:
-        output.write('new startup\n')
-    ServeManager._prepare_main_log_round(manager, instance)
-    text = target.read_text()
-    assert 'copied from the previous startup (round 7 -> round 8)' in text
-    assert (
-        text.index('old startup')
-        < text.index('... omitted ...')
-        < text.index('old tail')
-        < text.index('new startup')
-    )
-    assert text.count('old startup') == 1
+
+    def start_process(*, target, args):
+        process = MagicMock()
+        process.start.side_effect = lambda: target(*args)
+        return process
+
+    with (
+        patch.object(manager, '_is_provisioning', return_value=False),
+        patch.object(manager, '_get_model', return_value=model),
+        patch.object(manager, '_assign_ports'),
+        patch.object(manager, '_start_container_log_persistence'),
+        patch.object(manager, '_report_model_instance'),
+        patch(
+            'gpustack.worker.serve_manager.get_backend', return_value=BackendEnum.CUSTOM
+        ),
+        patch('gpustack.worker.serve_manager.is_built_in_backend', return_value=False),
+        patch('gpustack.worker.serve_manager.multiprocessing.Process', start_process),
+        patch('gpustack.worker.serve_manager.setproctitle.setproctitle'),
+        patch('gpustack.worker.serve_manager.add_signal_handlers'),
+        patch('gpustack.worker.serve_manager.ClientSet'),
+        patch.dict(
+            'gpustack.worker.serve_manager._SERVER_CLASS_MAPPING',
+            {BackendEnum.CUSTOM: MagicMock(return_value=server)},
+        ),
+    ):
+        for count in range(3):
+            instance.restart_count = count
+            target = Path(manager._get_numbered_log_path(instance))
+            if existing_log:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text('stale startup\n')
+            manager._launch_model_instance(instance)
+            assert target.read_text() == f'startup round {count}: command args\n'
+            if count:
+                previous = main_log_path(
+                    tmp_path, instance.name, instance.id, count - 1
+                )
+                assert previous.read_text() == (
+                    f'startup round {count - 1}: command args\n'
+                )
+
+    assert sorted(p.name for p in target.parent.parent.iterdir()) == ['1', '2']
+    assert server.start.call_count == 3
 
 
 def _fake_thread(alive: bool, ends_on_join: bool = True):
