@@ -45,6 +45,37 @@ _LOG_TIMESTAMP_RE = re.compile(
 )
 
 
+class LogStreamStopEvent(threading.Event):
+    """Interrupt a quiet runtime stream when its archive writer is stopped."""
+
+    def __init__(self):
+        super().__init__()
+        self._stream_lock = threading.Lock()
+        self._stream = None
+
+    def set_stream(self, stream) -> None:
+        with self._stream_lock:
+            if not self.is_set():
+                self._stream = stream
+                return
+        self._close_stream(stream)
+
+    def set(self) -> None:
+        super().set()
+        with self._stream_lock:
+            stream, self._stream = self._stream, None
+        self._close_stream(stream)
+
+    @staticmethod
+    def _close_stream(stream) -> None:
+        close = getattr(stream, 'close', None)
+        if close is not None:
+            try:
+                close()
+            except Exception as exc:
+                logger.debug('Cannot close stopped runtime log stream: %s', exc)
+
+
 def _split_log_timestamp(text: str) -> Tuple[Optional[int], str]:
     """Take the runtime's timestamp prefix off one streamed chunk.
 
@@ -361,6 +392,8 @@ class ContainerLogPersister:
                     since=cursor.epoch,
                     follow=True,
                 )
+                if isinstance(stop_event, LogStreamStopEvent):
+                    stop_event.set_stream(log_stream)
                 # Stopped while the runtime was connecting: the instance may be
                 # gone, and copying now would recreate its purged directory.
                 if stop_event.is_set():
