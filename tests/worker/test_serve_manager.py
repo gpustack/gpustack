@@ -3999,6 +3999,8 @@ def rank_health(monkeypatch):
     from tests.utils.model import new_model_instance_workload
 
     manager, client = _build_serve_manager(worker_id=2)
+    # Health checks exercise adoption without opening runtime log streams.
+    manager._start_container_log_persistence = MagicMock()
     mi = new_model_instance(
         7, 'external', 1, worker_id=1, state=ModelInstanceStateEnum.STARTING
     )
