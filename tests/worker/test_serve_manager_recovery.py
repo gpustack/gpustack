@@ -1033,31 +1033,94 @@ def test_custom_recovery_without_probe_matches_initial_readiness(
     state.health.assert_not_called()
 
 
-def test_external_stop_start_round_trip(legacy_external_recovery, monkeypatch):
+@pytest.mark.parametrize(
+    "message, reason, exit_code, diagnosis, expected_message",
+    [
+        pytest.param(
+            "",
+            "",
+            0,
+            "",
+            "Inference server exited or unhealthy. (exit code 0)",
+            id="clean-exit",
+        ),
+        pytest.param(
+            "ImagePullBackOff",
+            "",
+            None,
+            "",
+            "Inference server exited or unhealthy. ImagePullBackOff",
+            id="runtime-message",
+        ),
+        pytest.param(
+            "",
+            "OOMKilled",
+            137,
+            "",
+            "Inference server exited or unhealthy. OOMKilled (exit code 137)",
+            id="exit-reason",
+        ),
+        pytest.param(
+            "Inference server exited or unhealthy. Engine stopped",
+            "",
+            1,
+            "",
+            "Inference server exited or unhealthy. Engine stopped (exit code 1)",
+            id="existing-prefix",
+        ),
+        pytest.param(
+            "CrashLoopBackOff",
+            "Error",
+            1,
+            "\nCUDA out of memory",
+            "Inference server exited or unhealthy. CrashLoopBackOff (exit code 1)"
+            "\nCUDA out of memory",
+            id="runtime-message-with-log-diagnosis",
+        ),
+    ],
+)
+def test_external_stop_start_round_trip(
+    legacy_external_recovery,
+    monkeypatch,
+    message,
+    reason,
+    exit_code,
+    diagnosis,
+    expected_message,
+):
     state = legacy_external_recovery
     manager = state.managers[0]
     state.instance.state = ModelInstanceStateEnum.RUNNING
     state.instance.state_message = ""
     state.instance.ports = [8000]
-    monkeypatch.setattr(manager, "_append_log_diagnosis", lambda mi, message: message)
+    monkeypatch.setattr(
+        manager, "_append_log_diagnosis", lambda mi, message: message + diagnosis
+    )
     state.workload = SimpleNamespace(
         state=WorkloadStatusStateEnum.INACTIVE,
-        exits=[SimpleNamespace(name="engine", exit_code=0, reason="")],
+        state_message=message,
+        exits=[SimpleNamespace(name="engine", exit_code=exit_code, reason=reason)],
     )
 
     manager.sync_model_instances_state()
     assert state.instance.state == ModelInstanceStateEnum.ERROR
-    assert state.instance.state_message.endswith("(exit code 0)")
+    assert state.instance.state_message == expected_message
+    state.health.assert_not_called()
     assert not model_instance_metrics_sources(state.instance)
 
-    state.workload.state = WorkloadStatusStateEnum.RUNNING
+    state.workload = SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING)
     state.health.return_value.status_code = 503
     manager.sync_model_instances_state()
     assert state.instance.state == ModelInstanceStateEnum.ERROR
+    assert state.instance.state_message == expected_message
+    state.health.assert_called_once()
+    assert not model_instance_metrics_sources(state.instance)
 
     state.health.return_value.status_code = 200
     manager.sync_model_instances_state()
     assert state.instance.state == ModelInstanceStateEnum.RUNNING
+    assert state.instance.state_message == ""
+    assert state.health.call_count == 2
     assert [
         (source.kind, source.metrics_port)
         for source in model_instance_metrics_sources(state.instance)
