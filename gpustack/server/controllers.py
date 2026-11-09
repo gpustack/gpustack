@@ -61,6 +61,7 @@ from gpustack.schemas.principals import (
     PrincipalType,
     platform_principal_id,
 )
+from gpustack.utils.name import bounded_instance_name
 from gpustack.schemas.models import (
     servable_instances,
     BackendEnum,
@@ -1467,13 +1468,10 @@ class CacheServiceController:
                 # parent's name (as of instance creation; a later service
                 # rename does not rename instances), the component role
                 # when there is one, and a short random suffix.
-                name_suffix = ''.join(
-                    random.choices(string.ascii_lowercase + string.digits, k=5)
-                )
                 name_role = f"-{component}" if component else ""
                 await CacheServiceInstanceService(session).create(
                     CacheServiceInstanceCreate(
-                        name=f"{service.name}{name_role}-{name_suffix}",
+                        name=bounded_instance_name(service.name, component),
                         cache_service_id=service.id,
                         worker_id=worker_id,
                         cluster_id=service.cluster_id,
@@ -2043,11 +2041,8 @@ async def _sync_replicas_legacy(session: AsyncSession, model: Model) -> Optional
         for _ in range(model.replicas - len(instances)):
             if not await _lock_replica_sync_intent(session, model, intent):
                 return 0
-            name_prefix = ''.join(
-                random.choices(string.ascii_lowercase + string.digits, k=5)
-            )
             instance = ModelInstanceCreate(
-                name=f"{model.name}-{name_prefix}",
+                name=bounded_instance_name(model.name),
                 model_id=model.id,
                 model_name=model.name,
                 source=model.source,
@@ -2473,7 +2468,6 @@ async def _build_instance_create(
     download. Those are resolved against the role-effective model here because
     there is nowhere later to do it.
     """
-    name_prefix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
     # Everything decided from a per-role override is decided from this, not
     # from `model`. Projecting only some of the overrides is what admits a
     # group that configures a draft model on decode alone: the engine argument
@@ -2490,7 +2484,7 @@ async def _build_instance_create(
             effective.backend_parameters,
         )
     return ModelInstanceCreate(
-        name=f"{model.name}-{role.name}-{name_prefix}",
+        name=bounded_instance_name(model.name, role.name),
         model_id=model.id,
         model_name=model.name,
         source=model.source,
