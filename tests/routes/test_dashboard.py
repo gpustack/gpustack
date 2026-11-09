@@ -203,6 +203,56 @@ async def test_invisible_cluster_is_rejected_before_reading_activity(dashboard_d
 
 
 @pytest.mark.asyncio
+async def test_maas_active_models_hide_removed_provider_models(monkeypatch):
+    """Only models still present in the provider's current list appear in
+    active_models: stale names are filtered out in SQL, and the limit applies
+    to the filtered result."""
+    provider = SimpleNamespace(
+        id=9,
+        name='upstream',
+        models=[SimpleNamespace(name='kept-model', category='llm')],
+    )
+    monkeypatch.setattr(
+        route.ModelProvider, 'all_by_fields', AsyncMock(return_value=[provider])
+    )
+    usages = [
+        SimpleNamespace(provider_id=9, model_name='kept-model', total_token_count=10)
+    ]
+    session = SimpleNamespace(
+        exec=AsyncMock(return_value=MagicMock(all=lambda: usages))
+    )
+
+    result = await route._get_maas_active_models(session)
+
+    assert [summary.name for summary in result] == ['kept-model']
+    assert result[0].provider_id == 9
+    assert result[0].provider_name == 'upstream'
+    assert result[0].categories == ['llm']
+    statement = session.exec.await_args.args[0]
+    sql = str(
+        statement.compile(
+            dialect=postgresql.dialect(), compile_kwargs={'literal_binds': True}
+        )
+    )
+    assert 'kept-model' in sql
+    assert 'removed-model' not in sql
+
+
+@pytest.mark.asyncio
+async def test_maas_active_models_empty_provider_models_returns_no_rows(monkeypatch):
+    """A provider with no models left on its list yields no active models and
+    does not query model usage at all."""
+    provider = SimpleNamespace(id=9, name='upstream', models=[])
+    monkeypatch.setattr(
+        route.ModelProvider, 'all_by_fields', AsyncMock(return_value=[provider])
+    )
+    session = SimpleNamespace(exec=AsyncMock())
+
+    assert await route._get_maas_active_models(session) == []
+    session.exec.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('dialect', [postgresql.dialect(), mysql.dialect()])
 @pytest.mark.parametrize('model_ids', [None, [], [99]])
 async def test_usage_filters_cannot_widen_cluster_scope(dialect, model_ids):
