@@ -22,6 +22,7 @@ from gpustack.schemas.models import DisaggregationSpec, Model, PDModeEnum
 
 def _model(**kwargs) -> Model:
     return Model(
+        id=kwargs.pop("id", 10),
         name=kwargs.pop("name", "m"),
         cluster_id=kwargs.pop("cluster_id", 1),
         **kwargs,
@@ -65,8 +66,8 @@ async def _redirect(model, cfg=None, mode=None):
 async def test_a_plain_model_goes_to_the_model_dashboard():
     location = await _redirect(_model())
     assert "/d/gpustack-model/gpustack-model" in location
-    assert "var-model_name=m" in location
-    assert "var-cluster_name=x1" in location
+    assert "var-selected_model_id=10" in location
+    assert "var-selected_cluster_id=1" in location
     # No role variable: the model dashboard has none, and a stray one would
     # ride into a saved URL that means nothing there.
     assert "counted_role" not in location
@@ -133,6 +134,18 @@ def _dashboard():
             Path(__file__).parents[2]
             / 'docker-compose/grafana/grafana_dashboards/gpustack-model.json'
         ).read_text()
+    )
+
+
+def _interpolate_dashboard_expression(expression, values):
+    return (
+        re.sub(
+            r'\$\{(\w+):(raw|regex)\}',
+            lambda m: '.*' if values[m[1]] == '$__all' else values[m[1]],
+            expression,
+        )
+        .replace('$__rate_interval', '2m')
+        .replace('$__range', '5m')
     )
 
 
@@ -241,13 +254,18 @@ def test_real_template_has_fixed_scopes_and_scopes_every_business_expression():
 
 
 @pytest.mark.asyncio
-async def test_plain_model_dashboard_url_binds_stable_ids_without_changing_pd_url():
+async def test_plain_model_dashboard_url_preselects_editable_ids_without_fixed_scope():
     from urllib.parse import parse_qs, urlsplit
 
     values = parse_qs(urlsplit(await _redirect(_model(id=10))).query)
-    assert values['var-scope_model_id'] == ['"10"']
-    assert values['var-scope_cluster_id'] == ['"1"']
+    assert values['var-selected_model_id'] == ['10']
+    assert values['var-selected_cluster_id'] == ['1']
     assert values['var-scope_bound'] == ['1']
+    assert not any(
+        k.startswith('var-scope_') and k != 'var-scope_bound' for k in values
+    )
+    assert values['var-model_name'] == ['m']
+    assert values['var-cluster_name'] == ['x1']
     pd = parse_qs(
         urlsplit(
             await _redirect(
@@ -258,6 +276,229 @@ async def test_plain_model_dashboard_url_binds_stable_ids_without_changing_pd_ur
         ).query
     )
     assert not any(k.startswith('var-scope_') for k in pd)
+
+
+def test_model_dashboard_selectors_are_visible_cascading_and_scope_aware():
+    dashboard = _dashboard()
+    variables = {v['name']: v for v in dashboard['templating']['list']}
+    for label in ('cluster', 'model', 'model_instance'):
+        variable = variables[f'selected_{label}_id']
+        assert variable['type'] == 'query'
+        assert variable.get('hide', 0) == 0
+        assert variable['datasource']['uid'] == '${DS_PROMETHEUS}'
+        query = variable['query']['query']
+        assert '${scope_' + label + '_id:raw}' in query
+        if label != 'cluster':
+            assert '${selected_cluster_id:regex}' in query
+        if label == 'model_instance':
+            assert '${selected_model_id:regex}' in query
+        assert '(?<text>' in variable['regex']
+        assert '(?<value>' in variable['regex']
+        assert variable['includeAll']
+
+    context = {32, 33, 35, 28, 34, 30, 29}
+    for panel in dashboard['panels']:
+        assert 'Model context:' not in panel['title']
+        for target in panel.get('targets', []):
+            expr = target.get('expr', '')
+            if not expr:
+                continue
+            assert 'cluster_id=~"${selected_cluster_id:regex}"' in expr
+            assert 'model_id=~"${selected_model_id:regex}"' in expr
+            if panel['id'] not in context:
+                assert (
+                    'model_instance_id=~"${selected_model_instance_id:regex}"' in expr
+                )
+
+
+def test_fixed_instance_dashboard_preselects_ids_and_keeps_source_fences():
+    from gpustack.utils.grafana import model_dashboard_scope_params
+
+    params = model_dashboard_scope_params(
+        cluster_id=1,
+        model_id=10,
+        model_instance_id=70,
+        restart_count=3,
+        source_kind='vllm_engine',
+        dp_rank=2,
+    )
+    assert params['var-selected_cluster_id'] == '1'
+    assert params['var-selected_model_id'] == '10'
+    assert params['var-selected_model_instance_id'] == '70'
+    assert params['var-scope_bound'] == '1'
+    assert params['var-scope_restart_count'] == '"3"'
+    assert params['var-scope_endpoint_dp_rank'] == '"2"'
+    assert params['var-scope_legacy_enabled'] == '0'
+
+
+@pytest.mark.parametrize(
+    'selection, fixed_scope, expected',
+    [
+        ({'cluster': 1, 'model': 10}, {}, 5),
+        ({'cluster': 1, 'model': 10, 'model_instance': 70}, {}, 2),
+        ({'cluster': 1, 'model': 11}, {}, 7),
+        ({'cluster': 2, 'model': 20}, {}, 11),
+        ({'cluster': 1, 'model': 30}, {}, 13),
+        ({'cluster': 2, 'model': 10}, {}, None),
+        (
+            {'cluster': 1, 'model': 10, 'model_instance': 70},
+            dict(
+                cluster_id=1,
+                model_id=10,
+                model_instance_id=70,
+                restart_count=3,
+                source_kind='vllm_engine',
+                dp_rank=0,
+            ),
+            2,
+        ),
+        ({'cluster': 1, 'model': 11}, dict(model_id=10), None),
+    ],
+)
+def test_model_dashboard_selection_filters_real_prometheus_queries(
+    tmp_path, selection, fixed_scope, expected
+):
+    import os
+    import shutil
+    import subprocess
+    import yaml
+    from gpustack.utils.grafana import (
+        build_model_dashboard_url,
+        model_dashboard_scope_params,
+    )
+    from urllib.parse import parse_qs, urlsplit
+
+    promtool = os.environ.get('PROMTOOL') or shutil.which('promtool')
+    if not promtool:
+        pytest.skip('Set PROMTOOL to validate dashboard queries with Prometheus')
+    dashboard = _dashboard()
+    values = {v['name']: v['current']['value'] for v in dashboard['templating']['list']}
+    values.update(
+        {f'selected_{key}_id': str(value) for key, value in selection.items()}
+    )
+    values.update(
+        {
+            k.removeprefix('var-'): v
+            for k, v in model_dashboard_scope_params(**fixed_scope).items()
+            if not k.startswith('var-selected_')
+        }
+    )
+    if not fixed_scope:
+        url = build_model_dashboard_url(_cfg(), 'http://grafana', _model(), 'x1')
+        values.update(
+            {
+                k.removeprefix('var-'): v[0]
+                for k, v in parse_qs(urlsplit(url).query).items()
+                if not k.startswith('var-selected_')
+            }
+        )
+
+    def interpolate(expr):
+        return _interpolate_dashboard_expression(expr, values)
+
+    rules = []
+    for panel in dashboard['panels']:
+        for target in panel.get('targets', []):
+            if target.get('expr'):
+                rules.append(
+                    dict(
+                        record=f"panel_{panel['id']}_{target['refId']}",
+                        expr=interpolate(target['expr']),
+                    )
+                )
+    for variable in dashboard['templating']['list']:
+        if variable['type'] == 'query':
+            rules.append(
+                dict(
+                    record=variable['name'],
+                    expr=interpolate(
+                        variable['query']['query'][len('query_result(') : -1]
+                    ),
+                )
+            )
+    rule_path = tmp_path / 'model-dashboard-rules.yml'
+    rule_path.write_text(
+        yaml.safe_dump({'groups': [dict(name='dashboard', rules=rules)]})
+    )
+    checked = subprocess.run(
+        [promtool, 'check', 'rules', str(rule_path)], capture_output=True, text=True
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+    inputs = []
+    for cluster, model, instance, value, legacy in [
+        (1, 10, 70, 2, False),
+        (1, 10, 71, 3, False),
+        (1, 11, 72, 7, False),
+        (2, 20, 80, 11, False),
+        (1, 30, 90, 13, True),
+    ]:
+        labels = dict(
+            cluster_id=str(cluster),
+            model_id=str(model),
+            model_instance_id=str(instance),
+        )
+        if not legacy:
+            labels.update(
+                restart_count='3',
+                source_kind='vllm_engine',
+                source_name='engine',
+                endpoint_dp_rank='0',
+                worker_id='1',
+            )
+
+        def series(metric, extra=None):
+            return (
+                metric
+                + '{'
+                + ','.join(
+                    k + '=' + json.dumps(v)
+                    for k, v in {**labels, **(extra or {})}.items()
+                )
+                + '}'
+            )
+
+        inputs.append(
+            dict(series=series('gpustack:num_requests_running'), values=f'{value}+0x5')
+        )
+        if not legacy:
+            for metric, extra in [
+                ('gpustack:runtime_metrics_scrape_status', {'status': 'success'}),
+                ('gpustack:model_instance_source_info', {}),
+            ]:
+                inputs.append(dict(series=series(metric, extra), values='1+0x5'))
+    expr = next(
+        t['expr'] for p in dashboard['panels'] if p['id'] == 37 for t in p['targets']
+    )
+    path = tmp_path / 'model-dashboard-test.yml'
+    path.write_text(
+        yaml.safe_dump(
+            dict(
+                evaluation_interval='1m',
+                tests=[
+                    dict(
+                        interval='1m',
+                        input_series=inputs,
+                        promql_expr_test=[
+                            dict(
+                                expr=interpolate(expr),
+                                eval_time='5m',
+                                exp_samples=(
+                                    []
+                                    if expected is None
+                                    else [dict(labels='{}', value=expected)]
+                                ),
+                            )
+                        ],
+                    )
+                ],
+            )
+        )
+    )
+    result = subprocess.run(
+        [promtool, 'test', 'rules', str(path)], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_compatibility_names_are_literal_patterns_separate_from_display_names():
@@ -435,99 +676,11 @@ def test_pure_dashboard_helper_uses_only_configured_server_without_request(
         assert params['var-gpustack_base_url'] == [expected]
 
 
-@pytest.mark.parametrize(
-    'panel_id,ref,labels,selected,expected',
-    [
-        (
-            22,
-            'A',
-            {'model_instance_name': 'instance-a', 'endpoint_dp_rank': '0'},
-            'instance-a',
-            'DP 0',
-        ),
-        (
-            22,
-            'A',
-            {'model_instance_name': 'instance-b', 'endpoint_dp_rank': '1'},
-            'instance-a',
-            '[instance-b] · DP 1',
-        ),
-        (
-            22,
-            'A',
-            {
-                'model_instance_name': 'instance-a',
-                'endpoint_dp_rank': '0',
-                'dp_rank': '0',
-            },
-            'instance-a',
-            'DP 0',
-        ),
-        (
-            22,
-            'A',
-            {'model_instance_name': 'instance-a', 'dp_rank': '1'},
-            'instance-a',
-            'logical DP 1',
-        ),
-        (41, 'D', {}, 'instance-a', 'Total'),
-        (
-            9,
-            'B',
-            {
-                'model_instance_id': '70',
-                'model_instance_name': 'instance-b',
-                'endpoint_dp_rank': '0',
-            },
-            'instance-a',
-            'P99 · [instance-b] · DP 0',
-        ),
-        (
-            9,
-            'B',
-            {
-                'model_instance_name': 'instance-a',
-                'endpoint_dp_rank': '0',
-                'dp_rank': '0',
-            },
-            'instance-a',
-            'P99 · DP 0',
-        ),
-        (
-            9,
-            'B',
-            {'model_instance_id': '70', 'endpoint_dp_rank': '0'},
-            'instance-a',
-            'P99 · [70] · DP 0',
-        ),
-        (
-            9,
-            'B',
-            {'model_instance_name': 'a.[x]', 'endpoint_dp_rank': '1'},
-            'a.[x]',
-            'P99 · DP 1',
-        ),
-        (4, 'A', {'model_instance_name': 'instance-a'}, 'instance-a', 'Engine'),
-    ],
-)
-def test_dashboard_legends_keep_only_useful_series_identity(
-    panel_id, ref, labels, selected, expected
-):
-    panel = next(p for p in _dashboard()['panels'] if p['id'] == panel_id)
-    target = next(t for t in panel['targets'] if t['refId'] == ref)
-    # Prometheus returns an empty string for an absent legend label; rename
-    # transformations do not interpolate dashboard variables.
+def _render_dashboard_legend(panel, target, labels, prefix=''):
     name = re.sub(
         r'\{\{\s*(.+?)\s*\}\}',
-        lambda m: labels.get(m[1], ''),
-        target['legendFormat'].replace(
-            '${legend_instance_prefix:raw}',
-            (
-                ''
-                if labels.get('model_instance_name') == selected
-                else '[{{model_instance_name}}] · [{{model_instance_id}}] · '
-            ),
-        ),
+        lambda m: labels.get(m[1]) or m[1],
+        target['legendFormat'].replace('${legend_instance_prefix:raw}', prefix),
     )
     for transform in panel.get('transformations', []):
         if transform['id'] != 'renameByRegex':
@@ -549,17 +702,260 @@ def test_dashboard_legends_keep_only_useful_series_identity(
             name,
             count=0 if global_ else 1,
         )
-    assert name == expected
-    assert not any(
-        token in name
-        for token in (
-            'source=',
-            'epoch=',
-            'attempt=',
-            'endpoint_dp_rank',
-            'model_instance_name',
+    return name
+
+
+@pytest.mark.parametrize(
+    'panel_id,ref,labels,expected',
+    [
+        (
+            22,
+            'A',
+            {'model_instance_name': 'instance-a', 'endpoint_dp_rank': '0'},
+            '[instance-a] · DP 0',
+        ),
+        (
+            9,
+            'B',
+            {
+                'model_instance_name': 'instance-b',
+                'endpoint_dp_rank': '1',
+                'restart_count': '2',
+            },
+            'P99 · [instance-b] · DP 1 · restart 2',
+        ),
+        (
+            9,
+            'B',
+            {
+                'model_instance_name': 'instance-a',
+                'endpoint_dp_rank': '0',
+                'dp_rank': '0',
+            },
+            'P99 · [instance-a] · DP 0',
+        ),
+        (
+            22,
+            'A',
+            {'model_instance_name': 'instance-a', 'dp_rank': '1'},
+            '[instance-a] · logical DP 1',
+        ),
+        (
+            22,
+            'A',
+            {
+                'model_instance_name': 'instance-a',
+                'endpoint_dp_rank': '0',
+                'dp_rank': '1',
+            },
+            '[instance-a] · DP 0 · logical DP 1',
+        ),
+        (41, 'D', {}, 'Total'),
+        (
+            9,
+            'B',
+            {
+                'model_instance_name': 'a.[x] · DP · restart · worker',
+                'restart_count': '0',
+            },
+            'P99 · [a.[x] · DP · restart · worker] · restart 0',
+        ),
+        (4, 'A', {'model_instance_name': 'instance-a'}, '[instance-a]'),
+        (
+            65,
+            'A',
+            {
+                'model_instance_name': 'instance-a',
+                'worker': 'worker',
+                'restart_count': '2',
+                'component_attempt': '3',
+            },
+            '[instance-a] · SMG · worker · restart 2 · attempt 3',
+        ),
+    ],
+)
+@pytest.mark.parametrize('fixed_instance', [False, True])
+def test_dashboard_legends_keep_instance_names_in_browsable_and_fixed_views(
+    panel_id, ref, labels, expected, fixed_instance
+):
+    from gpustack.utils.grafana import model_dashboard_scope_params
+
+    panel = next(p for p in _dashboard()['panels'] if p['id'] == panel_id)
+    target = next(t for t in panel['targets'] if t['refId'] == ref)
+    params = model_dashboard_scope_params(
+        model_instance_id=70 if fixed_instance else None
+    )
+    assert (
+        _render_dashboard_legend(
+            panel, target, labels, params['var-legend_instance_prefix']
+        )
+        == expected
+    )
+
+
+def test_instance_legends_distinguish_restarts_without_changing_names():
+    dashboard = _dashboard()
+    for panel in dashboard['panels']:
+        if panel['type'] != 'timeseries':
+            continue
+        for target in panel.get('targets', []):
+            if 'model_instance_name' not in target.get('legendFormat', ''):
+                assert '${legend_instance_prefix' not in target.get('legendFormat', '')
+                continue
+            labels = dict(
+                model_instance_name='engine.[0] · DP',
+                endpoint_dp_rank='0',
+                dp_rank='0',
+                endpoint='/generate',
+                streaming='false',
+                policy='cache_aware',
+                worker='worker',
+                component_attempt='0',
+            )
+            names = [
+                _render_dashboard_legend(
+                    panel, target, {**labels, 'restart_count': str(n)}
+                )
+                for n in (0, 1)
+            ]
+            assert len(set(names)) == 2, (panel['id'], target['refId'], names)
+            assert all('engine.[0] · DP' in n for n in names)
+        mappings = panel['fieldConfig']['defaults']['mappings']
+        assert any(
+            m['type'] == 'special'
+            and m['options']['match'] == 'null+nan'
+            and m['options']['result']['text'] == 'No data'
+            for m in mappings
+        )
+    for panel in dashboard['panels']:
+        if panel['type'] == 'heatmap':
+            assert all(t['legendFormat'] == '{{le}}' for t in panel['targets'])
+    mfu = next(p for p in dashboard['panels'] if p['id'] == 52)
+    assert mfu['fieldConfig']['defaults']['unit'] == 'suffix:TFLOP/s/GPU'
+
+
+@pytest.mark.parametrize(
+    'kind', ['legacy', 'vllm_engine', 'vllm_hybrid', 'sglang_engine']
+)
+def test_aggregated_dashboard_queries_return_instance_names(tmp_path, kind):
+    import os
+    import shutil
+    import subprocess
+    import yaml
+
+    promtool = os.environ.get('PROMTOOL') or shutil.which('promtool')
+    if not promtool:
+        pytest.skip('Set PROMTOOL to validate dashboard queries with Prometheus')
+    dashboard = _dashboard()
+    values = {v['name']: v['current']['value'] for v in dashboard['templating']['list']}
+    targets = [
+        t
+        for p in dashboard['panels']
+        for t in p.get('targets', [])
+        if re.search(
+            r'(?:sum|avg) by\s*\([^)]*\bmodel_instance_id\b', t.get('expr', '')
+        )
+    ]
+    assert len(targets) == 33
+    metrics = {
+        metric
+        for t in targets
+        for metric in re.findall(r'gpustack:[\w:]+', t['expr'])
+        if metric
+        not in (
+            'gpustack:runtime_metrics_scrape_status',
+            'gpustack:model_instance_source_info',
+        )
+    }
+    inputs = {}
+
+    def add(metric, labels, slope=None):
+        series = (
+            metric
+            + '{'
+            + ','.join(k + '=' + json.dumps(v) for k, v in sorted(labels.items()))
+            + '}'
+        )
+        inputs[series] = {
+            'series': series,
+            'values': '1+0x5' if slope is None else f'0+{slope}x5',
+        }
+
+    names = ('alpha.[x] · DP', 'beta')
+    for instance_id, name in zip((70, 71), names):
+        for rank in [None] if kind == 'legacy' else [0, 1]:
+            labels = dict(
+                cluster_id='1',
+                model_id='10',
+                model_instance_id=str(instance_id),
+                model_instance_name=name,
+            )
+            if kind != 'legacy':
+                labels.update(
+                    restart_count='3',
+                    source_kind=kind,
+                    worker_id='1',
+                    source_name=f'engine-{rank}' if kind == 'vllm_engine' else kind,
+                )
+                source_labels = dict(labels)
+                if kind == 'vllm_engine':
+                    labels['endpoint_dp_rank'] = source_labels['endpoint_dp_rank'] = (
+                        str(rank)
+                    )
+                else:
+                    labels['dp_rank'] = str(rank)
+                add('gpustack:model_instance_source_info', source_labels)
+                add(
+                    'gpustack:runtime_metrics_scrape_status',
+                    {**source_labels, 'status': 'success'},
+                )
+            for metric in metrics:
+                if metric.endswith('_bucket'):
+                    for bound, slope in [('1', 10), ('2', 20), ('+Inf', 20)]:
+                        add(metric, {**labels, 'le': bound}, slope)
+                else:
+                    extra = (
+                        {'finished_reason': 'stop'}
+                        if 'request_finished' in metric
+                        else {}
+                    )
+                    add(metric, {**labels, **extra}, 600)
+    expected = [
+        dict(
+            labels='{model_instance_name=' + json.dumps(n) + '}',
+            value=1 if kind == 'legacy' else 2,
+        )
+        for n in names
+    ]
+    checks = [
+        dict(
+            expr='count by (model_instance_name) ('
+            + _interpolate_dashboard_expression(t['expr'], values)
+            + ')',
+            eval_time='5m',
+            exp_samples=expected,
+        )
+        for t in targets
+    ]
+    path = tmp_path / 'instance-name-queries.yml'
+    path.write_text(
+        yaml.safe_dump(
+            dict(
+                evaluation_interval='1m',
+                tests=[
+                    dict(
+                        interval='1m',
+                        input_series=list(inputs.values()),
+                        promql_expr_test=checks,
+                    )
+                ],
+            )
         )
     )
+    result = subprocess.run(
+        [promtool, 'test', 'rules', str(path)], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(

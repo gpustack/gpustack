@@ -4,6 +4,7 @@ import logging
 import signal
 import os
 import threading
+from multiprocessing.process import BaseProcess
 
 
 from gpustack.utils import platform
@@ -81,6 +82,26 @@ def terminate_process_tree(pid: int):
         pass
     except Exception as e:
         logger.error(f"Error while terminating process tree: {e}")
+
+
+def terminate_multiprocessing_process(process: BaseProcess) -> None:
+    """Stop a child process tree while its Process object reaps the parent.
+
+    Waiting for the parent through psutil would consume the exit status needed
+    by multiprocessing to recognize that the child has stopped.
+    """
+    if not process.is_alive():
+        return
+    try:
+        children = psutil.Process(process.pid).children(recursive=True)
+        terminate_processes(children)
+    except psutil.Error:
+        pass
+    process.terminate()
+    process.join(timeout=3)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=1)
 
 
 def terminate_processes(processes):

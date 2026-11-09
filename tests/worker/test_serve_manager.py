@@ -95,6 +95,62 @@ def _fake_stop_event(max_waits: int = 100):
     return stop_event
 
 
+@pytest.mark.parametrize('existing_log', [False, True])
+def test_new_round_keeps_main_logs_independent(tmp_path, existing_log):
+    manager, _clients = _build_serve_manager()
+    manager._serve_log_dir = str(tmp_path)
+    manager._config = MagicMock()
+    instance = new_model_instance(42, 'model', 1, worker_id=1)
+    model = new_model(1, 'model', huggingface_repo_id='test/model')
+    server = MagicMock()
+    server.start.side_effect = lambda: print(
+        f'startup round {instance.restart_count}: command args'
+    )
+
+    def start_process(*, target, args):
+        process = MagicMock()
+        process.start.side_effect = lambda: target(*args)
+        return process
+
+    with (
+        patch.object(manager, '_is_provisioning', return_value=False),
+        patch.object(manager, '_get_model', return_value=model),
+        patch.object(manager, '_assign_ports'),
+        patch.object(manager, '_start_container_log_persistence'),
+        patch.object(manager, '_report_model_instance'),
+        patch(
+            'gpustack.worker.serve_manager.get_backend', return_value=BackendEnum.CUSTOM
+        ),
+        patch('gpustack.worker.serve_manager.is_built_in_backend', return_value=False),
+        patch('gpustack.worker.serve_manager.multiprocessing.Process', start_process),
+        patch('gpustack.worker.serve_manager.setproctitle.setproctitle'),
+        patch('gpustack.worker.serve_manager.add_signal_handlers'),
+        patch('gpustack.worker.serve_manager.ClientSet'),
+        patch.dict(
+            'gpustack.worker.serve_manager._SERVER_CLASS_MAPPING',
+            {BackendEnum.CUSTOM: MagicMock(return_value=server)},
+        ),
+    ):
+        for count in range(3):
+            instance.restart_count = count
+            target = Path(manager._get_numbered_log_path(instance))
+            if existing_log:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text('stale startup\n')
+            manager._launch_model_instance(instance)
+            assert target.read_text() == f'startup round {count}: command args\n'
+            if count:
+                previous = main_log_path(
+                    tmp_path, instance.name, instance.id, count - 1
+                )
+                assert previous.read_text() == (
+                    f'startup round {count - 1}: command args\n'
+                )
+
+    assert sorted(p.name for p in target.parent.parent.iterdir()) == ['1', '2']
+    assert server.start.call_count == 3
+
+
 def _fake_thread(alive: bool, ends_on_join: bool = True):
     """A stand-in thread. Joining one ends it, the way a real log thread back
     from the runtime does -- unless it is the kind that outlasts the wait."""
@@ -221,6 +277,7 @@ def test_sync_model_instances_state_marks_main_unreachable_when_subordinate_unre
         ),
         patch.object(manager, "_is_provisioning", return_value=False),
         patch.object(manager, "_get_model", return_value=model),
+        patch.object(manager, "_ensure_container_log_persistence"),
         patch.object(manager, "_update_model_instance") as update_model_instance,
     ):
         manager.sync_model_instances_state()
@@ -233,6 +290,7 @@ def test_sync_model_instances_state_marks_main_unreachable_when_subordinate_unre
             "10.0.0.2: Worker is unreachable from the server."
         ),
     )
+    assert manager._log_persistence == {}
 
 
 def test_restart_error_model_instance_uses_transient_backoff_count():
@@ -2012,7 +2070,7 @@ def test_a_reconnect_resumes_at_the_cursor_and_drops_the_replay(tmp_path: Path):
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             side_effect=fake_logs_workload,
         ),
         patch(
@@ -2050,7 +2108,7 @@ def test_a_runtime_that_stamps_nothing_does_not_pin_the_cursor(tmp_path: Path):
     with (
         patch("gpustack.worker.container_logs.time.time", lambda: now[0]),
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             side_effect=fake_logs_workload,
         ),
         patch(
@@ -2079,7 +2137,7 @@ def test_output_still_short_of_a_newline_reaches_the_archive(tmp_path: Path):
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             return_value=one_stream(),
         ),
         patch(
@@ -2117,7 +2175,7 @@ def test_one_uninterrupted_stream_neither_reconnects_nor_marks(tmp_path: Path):
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             side_effect=fake_logs_workload,
         ),
         patch("gpustack.worker.container_logs.get_workload", return_value=None),
@@ -2142,7 +2200,7 @@ def test_persist_container_logs_exits_when_workload_gone(tmp_path: Path):
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             side_effect=fake_logs_workload,
         ),
         patch("gpustack.worker.container_logs.get_workload", return_value=None),
@@ -2171,7 +2229,7 @@ def test_a_line_the_stream_cut_short_is_completed_by_the_reconnect(tmp_path: Pat
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             side_effect=lambda **kwargs: iter(streams.pop(0)),
         ),
         patch(
@@ -2212,7 +2270,7 @@ def test_an_archive_with_content_is_never_truncated(tmp_path: Path, reconnects, 
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             side_effect=lambda **kwargs: streams.pop(0),
         ),
         patch(
@@ -2256,7 +2314,7 @@ def test_a_cursor_invented_from_the_clock_always_marks_the_seam(
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             return_value=iter(
                 _stamped((-3600, "long-before\n"), (-1800, "also-before\n"))
             ),
@@ -2305,7 +2363,8 @@ def test_only_the_replay_is_skipped(tmp_path: Path, replay, kept):
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload", return_value=iter(replay())
+            "gpustack.worker.container_logs._read_runtime_logs",
+            return_value=iter(replay()),
         ),
         patch("gpustack.worker.container_logs.get_workload", return_value=None),
     ):
@@ -2330,7 +2389,7 @@ def test_a_copier_stopped_while_connecting_writes_nothing(tmp_path: Path):
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             side_effect=connect_after_the_stop,
         ),
         patch("gpustack.worker.container_logs.get_workload", return_value=None),
@@ -2394,7 +2453,7 @@ def test_a_reconnect_that_cannot_relocate_appends_behind_a_marker(tmp_path: Path
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             side_effect=lambda **kwargs: iter(streams.pop(0)),
         ),
         patch(
@@ -2426,7 +2485,7 @@ def test_a_worker_restart_resumes_from_the_cursor_on_disk(tmp_path: Path, head_b
         patch("gpustack.worker.log_sources.envs.SERVE_LOG_MAX_BYTES", 1000),
         patch("gpustack.worker.log_sources.envs.SERVE_LOG_HEAD_BYTES", head_bytes),
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             side_effect=[iter(_stamped(*history)), iter(replay)],
         ),
         patch("gpustack.worker.container_logs.get_workload", return_value=None),
@@ -2490,7 +2549,7 @@ def test_a_resumed_archive_keeps_the_runtime_line_framing(
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             return_value=iter(replay),
         ) as logs_workload,
         patch("gpustack.worker.container_logs.get_workload", return_value=None),
@@ -2517,7 +2576,8 @@ def test_an_archive_of_nothing_but_a_fragment_is_replayed_in_full(tmp_path: Path
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload", return_value=iter(replay)
+            "gpustack.worker.container_logs._read_runtime_logs",
+            return_value=iter(replay),
         ) as logs_workload,
         patch("gpustack.worker.container_logs.get_workload", return_value=None),
     ):
@@ -2554,7 +2614,7 @@ def test_a_line_split_across_chunks_reaches_the_archive_whole(tmp_path: Path):
 
     with (
         patch(
-            "gpustack.worker.container_logs.logs_workload",
+            "gpustack.worker.container_logs._read_runtime_logs",
             return_value=stream(),
         ),
         patch("gpustack.worker.container_logs.get_workload", return_value=None),
@@ -2616,6 +2676,131 @@ def test_adoption_reattaches_container_log_persistence(tmp_path: Path):
     start_logs.assert_called_once_with(model_instance, resume=True)
 
 
+@pytest.mark.parametrize('chunks', [[], [b''], ['']])
+def test_empty_runtime_stream_does_not_create_an_engine_archive(tmp_path, chunks):
+    from gpustack.worker.container_logs import ContainerLogPersister, _LogCursor
+
+    path = tmp_path / 'container.log'
+    ContainerLogPersister()._copy_container_log_stream(
+        iter(chunks), str(path), _LogCursor(str(path)), threading.Event()
+    )
+    assert not path.exists()
+
+
+@pytest.mark.parametrize('runtime', ['urllib3', 'podman'])
+@pytest.mark.parametrize('phase', ['connecting', 'reading'])
+def test_blocked_runtime_stream_does_not_block_log_stop(tmp_path, runtime, phase):
+    from gpustack.worker.container_logs import ContainerLogPersister
+
+    entered, released = threading.Event(), threading.Event()
+    stop = threading.Event()
+
+    class BlockingInput(io.RawIOBase):
+        def readable(self):
+            return True
+
+        def readinto(self, buffer):
+            entered.set()
+            assert released.wait(3)
+            return 0
+
+    raw = io.BufferedReader(BlockingInput())
+    if runtime == 'urllib3':
+        from urllib3.response import HTTPResponse
+
+        stream = HTTPResponse(body=raw, preload_content=False)
+    else:
+        from podman.api.parse_utils import stream_frames
+
+        stream = stream_frames(SimpleNamespace(raw=raw))
+    thread = threading.Thread(
+        target=ContainerLogPersister()._persist_container_logs,
+        args=('engine', str(tmp_path / 'container.log'), stop),
+        daemon=True,
+    )
+    persistence = _LogPersistence(stop, thread, 0)
+
+    def logs(**kwargs):
+        if phase == 'connecting':
+            entered.set()
+            assert released.wait(3)
+        return stream
+
+    with patch('gpustack.worker.container_logs._read_runtime_logs', side_effect=logs):
+        thread.start()
+        try:
+            assert entered.wait(3)
+            before = time.monotonic()
+            assert not persistence.stop(1, 0.05)
+            assert time.monotonic() - before < 0.5
+            assert thread.is_alive()
+            # Runtime deletion can now proceed and end the blocking input.
+            released.set()
+            thread.join(timeout=3)
+            assert not thread.is_alive()
+        finally:
+            stop.set()
+            released.set()
+            thread.join(timeout=3)
+            stream.close()
+            raw.close()
+
+
+def test_parallel_log_reads_do_not_starve_nested_runtime_lookups(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from gpustack_runtime.deployer import DockerDeployer
+    from gpustack.worker.container_logs import _read_runtime_logs
+
+    with patch.object(DockerDeployer, '_get_client', return_value=None):
+        deployer = DockerDeployer()
+    deployer._pool = ThreadPoolExecutor(max_workers=2)
+    callers = ThreadPoolExecutor(max_workers=2)
+    barrier = threading.Barrier(2)
+
+    def read(*args):
+        barrier.wait(timeout=2)
+        return deployer.get(name='engine')
+
+    monkeypatch.setattr(
+        'gpustack.worker.container_logs.supported_list', lambda: [deployer]
+    )
+    monkeypatch.setattr(deployer, '_logs', read)
+    monkeypatch.setattr(deployer, '_get', lambda *args: None)
+    try:
+        futures = [callers.submit(_read_runtime_logs, name='engine') for _ in range(2)]
+        assert [f.result(timeout=2) for f in futures] == [None, None]
+    finally:
+        deployer._pool.shutdown(wait=False, cancel_futures=True)
+        callers.shutdown(wait=True)
+        deployer.close()
+
+
+def test_persistent_runtime_log_errors_warn_without_stopping_retries(tmp_path, caplog):
+    from gpustack.worker.container_logs import ContainerLogPersister
+
+    stop = threading.Event()
+    attempts = []
+
+    def fail(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 7:
+            stop.set()
+        raise RuntimeError('runtime unavailable')
+
+    with (
+        patch('gpustack.worker.container_logs._read_runtime_logs', side_effect=fail),
+        patch.object(stop, 'wait'),
+        caplog.at_level('WARNING', logger='gpustack.worker.container_logs'),
+    ):
+        ContainerLogPersister()._persist_container_logs(
+            'engine-workload', str(tmp_path / 'container.log'), stop
+        )
+    assert len(attempts) == 7
+    assert len(caplog.records) == 1
+    assert 'engine-workload' in caplog.text
+    assert 'runtime unavailable' in caplog.text
+
+
 def test_stop_container_log_persistence_tears_down_the_whole_generation():
     """The main thread is tracked apart from the sidecar ones, but stopping still
     has to signal and join every one of them."""
@@ -2626,7 +2811,10 @@ def test_stop_container_log_persistence_tears_down_the_whole_generation():
     persistence.start_aux_thread(sidecar_thread, sidecar_stop_event)
     manager._log_persistence[1] = persistence
 
-    manager._stop_container_log_persistence(1)
+    with patch(
+        'gpustack.worker.serve_manager.time', SimpleNamespace(monotonic=lambda: 0)
+    ):
+        manager._stop_container_log_persistence(1)
 
     main_stop_event.set.assert_called_once()
     sidecar_stop_event.set.assert_called_once()
@@ -2639,6 +2827,29 @@ def test_stop_container_log_persistence_tears_down_the_whole_generation():
     late_thread = _fake_thread(False)
     assert persistence.start_aux_thread(late_thread, MagicMock()) is False
     late_thread.start.assert_not_called()
+
+
+def test_log_stop_uses_one_budget_for_all_threads():
+    clock = SimpleNamespace(now=0.0)
+    budgets = []
+
+    def join(timeout):
+        budgets.append(timeout)
+        clock.now += timeout
+
+    threads = [
+        SimpleNamespace(is_alive=lambda: True, join=join, name='reader')
+        for _ in range(3)
+    ]
+    persistence = _LogPersistence(threading.Event(), threads[0], 0)
+    persistence._aux_threads = threads[1:]
+    with patch(
+        'gpustack.worker.serve_manager.time',
+        SimpleNamespace(monotonic=lambda: clock.now),
+    ):
+        assert not persistence.stop(1, 2)
+        assert not persistence.stop(1, 2)
+    assert budgets == [2, 0, 0, 0, 0, 0]
 
 
 def test_starting_log_persistence_retires_the_previous_generation(tmp_path: Path):
@@ -2664,7 +2875,9 @@ def test_starting_log_persistence_retires_the_previous_generation(tmp_path: Path
         return retire(model_instance_id, timeout)
 
     with (
-        patch("gpustack.worker.container_logs.logs_workload", return_value=iter([])),
+        patch(
+            "gpustack.worker.container_logs._read_runtime_logs", return_value=iter([])
+        ),
         patch("gpustack.worker.container_logs.get_workload", return_value=None),
         patch("gpustack.worker.serve_manager.get_workload", return_value=None),
         patch.object(manager, "_retire_log_persistence", side_effect=probe_lock),
@@ -2802,6 +3015,8 @@ def _build_vgpu_manager(worker_id=1, device_index=1):
     cfg = SimpleNamespace(log_dir="/tmp")
     manager = ServeManager(lambda: worker_id, lambda: clientset, cfg)
     manager._inference_backend_manager = MagicMock()
+    # Allocation and failure reporting tests must not attach background log writers.
+    manager._ensure_container_log_persistence = MagicMock()
     return manager, clientset
 
 
@@ -2854,7 +3069,8 @@ def test_sync_vgpu_allocation_patches_main_addresses_and_rekeys_claim():
     assert kwargs["computed_resource_claim"].vram == {1: 42949672960}
 
 
-def test_sync_vgpu_allocation_patches_subordinate_worker():
+@pytest.mark.parametrize('coordinated', [False, True])
+def test_sync_vgpu_allocation_patches_subordinate_worker(coordinated):
     manager, clientset = _build_vgpu_manager(worker_id=2, device_index=3)
 
     sw = ModelInstanceSubordinateWorker(
@@ -2872,9 +3088,16 @@ def test_sync_vgpu_allocation_patches_subordinate_worker():
         state=ModelInstanceStateEnum.RUNNING,
     )
     model_instance.distributed_servers = DistributedServers(
-        mode=DistributedServerCoordinateModeEnum.RUN_FIRST,
+        mode=(
+            DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+            if coordinated
+            else DistributedServerCoordinateModeEnum.RUN_FIRST
+        ),
         subordinate_workers=[sw],
     )
+    if coordinated:
+        model_instance.backend = BackendEnum.VLLM
+        model_instance.distributed_servers.group_recovery = True
     clientset.model_instances.list.return_value = SimpleNamespace(
         items=[model_instance]
     )
@@ -2892,6 +3115,12 @@ def test_sync_vgpu_allocation_patches_subordinate_worker():
     ):
         manager.sync_model_instances_state()
 
+    if coordinated:
+        report = clientset.model_instances.report_workloads.call_args.kwargs['report']
+        assert report.gpu_addresses == ['GPU-uuid-1']
+        assert report.gpu_indexes == [3]
+        assert report.computed_resource_claim.vram == {3: 42949672960}
+        return
     update_model_instance.assert_called_once()
     args, _ = update_model_instance.call_args
     assert args[0] == model_instance.id
@@ -2929,6 +3158,7 @@ def test_sync_vgpu_allocation_noop_without_annotation():
         manager.sync_model_instances_state()
 
     update_model_instance.assert_not_called()
+    assert manager._log_persistence == {}
 
 
 def test_error_state_surfaces_workload_state_message():
@@ -3915,6 +4145,8 @@ def rank_health(monkeypatch):
     from tests.utils.model import new_model_instance_workload
 
     manager, client = _build_serve_manager(worker_id=2)
+    # Health checks exercise adoption without opening runtime log streams.
+    manager._start_container_log_persistence = MagicMock()
     mi = new_model_instance(
         7, 'external', 1, worker_id=1, state=ModelInstanceStateEnum.STARTING
     )
@@ -4984,7 +5216,7 @@ def test_smg_lineage_switch_appends_a_boundary_and_replays_new_runtime_from_star
             stopped.set()
 
         with patch(
-            'gpustack.worker.container_logs.logs_workload', return_value=stream()
+            'gpustack.worker.container_logs._read_runtime_logs', return_value=stream()
         ) as logs:
             manager._persist_container_logs(
                 lineage, path, stopped, resume=True, lineage=lineage
@@ -5155,13 +5387,19 @@ def test_new_generation_adopts_its_own_engine_and_smg_log_writers(tmp_path):
     mi.distributed_servers = DistributedServers(
         workloads=[
             ModelInstanceWorkload(
+                name='model-r4-engine',
+                worker_id=7,
+                state='running',
+                component=dict(kind='sglang_engine', api_port=8001, dp_size=1),
+            ),
+            ModelInstanceWorkload(
                 name='model-r4-smg-a0',
                 worker_id=7,
                 state='running',
                 component=dict(
                     kind='sglang_smg', api_port=8000, metrics_port=9000, attempt=0
                 ),
-            )
+            ),
         ]
     )
     with patch.object(threading.Thread, 'start') as start:

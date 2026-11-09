@@ -47,7 +47,7 @@ from gpustack.schemas.models import (
     ModelInstanceLogOptions,
     ModelInstanceLogWorkerOption,
     ModelInstancePublic,
-    ModelInstanceWorkloadUpdate,
+    ModelInstanceMemberReport,
     ModelInstanceStopReport,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
@@ -80,6 +80,8 @@ from gpustack.utils.model_instance_workers import (
     workload_topology,
     model_instance_legacy_stop,
     model_instance_metrics_source_inventory,
+    requires_group_recovery,
+    calculate_group_recovery_policy,
 )
 
 router = APIRouter()
@@ -208,6 +210,15 @@ async def get_model_instance(
         model_instance,
         not_found_message="Model instance not found",
     )
+    if (
+        calculate_group_recovery_policy(model_instance, None) is not None
+        and model_instance.distributed_servers.group_recovery is None
+    ):
+        model_instance = await ModelInstance.one_by_id(
+            session, id, for_update=True, refresh=True
+        )
+        assert_resource_visible(ctx, model_instance)
+        await ModelInstanceService(session).ensure_recovery_policy(model_instance)
     if check_configuration:
         model = await Model.one_by_id(session, model_instance.model_id, refresh=True)
         if model is None or await model_members_stale(session, model, [model_instance]):
@@ -530,6 +541,7 @@ async def download_serving_logs(
                 worker_label=worker.name or str(worker_id),
                 container_internal=None,
                 container_display=descriptor.label,
+                kind=descriptor.kind,
                 source=source,
                 error=None,
             ),
@@ -663,7 +675,33 @@ async def _worker_log_download(
         if declared and declared.isascii() and declared.isdigit()
         else None
     )
-    return length, _download_body(payload, upstream, label_failure=length is None)
+    note = _empty_log_note(stream)
+    if length == 0 and not payload and note:
+        with suppress(Exception):
+            await upstream.aclose()
+        return len(note), _chunks_of(note)
+    body = _download_body(payload, upstream, label_failure=length is None)
+    if note and length is None:
+        body = _label_empty_log(body, note)
+    return length, body
+
+
+def _empty_log_note(stream: dict) -> bytes:
+    if stream.get('kind') != 'workload':
+        return b''
+    return (
+        f"No output has been captured for {stream['container_display']}; "
+        "the log stream may not be available yet.\n"
+    ).encode()
+
+
+async def _label_empty_log(chunks: AsyncIterator[bytes], note: bytes):
+    wrote = False
+    async for chunk in chunks:
+        wrote = wrote or bool(chunk)
+        yield chunk
+    if not wrote:
+        yield note
 
 
 async def _download_body(
@@ -723,6 +761,9 @@ async def _worker_log_chunks(
     if worker is None:
         yield f"Failed to fetch logs: {stream['error']}\n".encode()
         return
+    if stream.get('source') and stream['error']:
+        yield f"Failed to fetch logs: {stream['error']}\n".encode()
+        return
 
     # Discovery failed but the fallback still reads the main workload. Say so,
     # or a sidecar log missing from the archive looks like it never existed.
@@ -732,6 +773,7 @@ async def _worker_log_chunks(
             "this log covers the main workload only.\n"
         ).encode()
 
+    wrote = False
     try:
         async with aclosing(
             _stream_worker_log(request, model_instance, stream)
@@ -744,9 +786,15 @@ async def _worker_log_chunks(
                         await upstream.aclose()
                     yield f"Failed to fetch logs: HTTP {status_code}: ".encode() + payload
                     return
+                wrote = wrote or bool(payload)
                 yield payload
     except Exception as e:
         yield f"\nFailed to fetch logs: {e}\n".encode()
+        return
+    if not wrote:
+        note = _empty_log_note(stream)
+        if note:
+            yield note
 
 
 def _build_serve_log_params(
@@ -765,10 +813,10 @@ def _build_serve_log_params(
         "follow": follow,
         "model_instance_name": model_instance.name,
         "previous": previous,
+        "current_restart_count": model_instance.restart_count or 0,
     }
     if source is not None:
         params["source"] = source
-        params["current_restart_count"] = model_instance.restart_count or 0
     if container_name:
         params["container_name"] = container_name
     if offset is not None:
@@ -930,10 +978,13 @@ async def _plan_log_streams(
                         container_internal=None,
                         container_display=s.label,
                         source=s.id,
+                        kind=s.kind,
                         error=None if s.available else "Log source is unavailable",
                     )
                     for s in sources
-                ]
+                ] + _missing_workload_log_streams(
+                    model_instance, worker_id, label, sources
+                )
             if get_model_instance_workloads(model_instance) is not None:
                 return [
                     dict(
@@ -964,6 +1015,7 @@ async def _plan_log_streams(
                 "worker_label": label,
                 "worker": worker,
                 "container_internal": container_internal,
+                "kind": "workload",
                 "container_display": _map_container_display_name(
                     container_internal, model_instance, is_main
                 ),
@@ -974,6 +1026,56 @@ async def _plan_log_streams(
 
     grouped = await asyncio.gather(*[per_worker(t) for t in targets])
     return [stream for group in grouped for stream in group]
+
+
+def _missing_workload_log_streams(instance, worker_id, label, sources):
+    """Keep an expected Engine's absence visible beside preparation output."""
+    tasks = get_model_instance_workloads(instance, worker_id)
+    workloads = [s for s in sources if s.kind == 'workload']
+    if tasks is None:
+        missing = (
+            []
+            if any(
+                s.component_kind != 'sglang_smg'
+                and s.container_name in (None, 'default')
+                for s in workloads
+            )
+            else [('Engine', 'Engine log source is unavailable')]
+        )
+    else:
+        missing = []
+        for task in tasks:
+            if any(
+                s.workload_name == task.name
+                or (
+                    task.component
+                    and task.component.kind == 'sglang_smg'
+                    and s.component_kind == 'sglang_smg'
+                )
+                for s in workloads
+            ):
+                continue
+            kind = (
+                'SMG'
+                if task.component and task.component.kind == 'sglang_smg'
+                else 'Engine'
+            )
+            missing.append(
+                (
+                    f'{kind} · {task.name}',
+                    f'{kind} log source is unavailable for {task.name}',
+                )
+            )
+    return [
+        dict(
+            worker_label=label,
+            worker=None,
+            container_internal=None,
+            container_display=name,
+            error=error,
+        )
+        for name, error in missing
+    ]
 
 
 async def resolve_instance_log_worker_targets(
@@ -1157,7 +1259,10 @@ async def create_model_instance(
         or model_instance_legacy_stop(model_instance_in) is not None
         or (
             model_instance_in.distributed_servers is not None
-            and model_instance_in.distributed_servers.stop_requested
+            and (
+                model_instance_in.distributed_servers.stop_requested
+                or model_instance_in.distributed_servers.group_recovery is not None
+            )
         )
     ):
         raise BadRequestException(
@@ -1331,7 +1436,7 @@ def _validate_reported_workloads(worker_id, local, incoming, registration):
 
 
 def _merge_workload_report(
-    instance: ModelInstance, ctx: TenantContext, report: ModelInstanceWorkloadUpdate
+    instance: ModelInstance, ctx: TenantContext, report: ModelInstanceMemberReport
 ) -> DistributedServers:
     """Validate and merge a local report while the caller holds the instance row lock."""
     worker = ctx.user.worker
@@ -1616,7 +1721,10 @@ def _merge_legacy_stop_report(instance, ctx, report, current_worker):
         or report.restart_count != guard.restart_count
         or (instance.restart_count or 0) != guard.restart_count
         or set(member_worker_ids(instance)) != set(guard.worker_ids)
-        or instance.draining_since is None
+        or (
+            instance.draining_since is None
+            and instance.state != ModelInstanceStateEnum.ERROR
+        )
     ):
         raise ConflictException(
             message="Stop confirmation does not match the current stop barrier"
@@ -1629,12 +1737,28 @@ def _merge_legacy_stop_report(instance, ctx, report, current_worker):
 
 
 def _preserve_managed_fields(
-    instance: ModelInstance, update: ModelInstanceUpdate
+    instance: ModelInstance, update: ModelInstanceUpdate, *, legacy: bool = False
 ) -> None:
     """Keep ordinary instance snapshots from changing managed runtime ownership."""
     stored = get_model_instance_workloads(instance)
     incoming = get_model_instance_workloads(update)
     guard = model_instance_legacy_stop(instance)
+    if (
+        update.distributed_servers is None
+        and instance.distributed_servers is not None
+        and instance.distributed_servers.group_recovery is not None
+    ):
+        update.distributed_servers = instance.distributed_servers.model_copy(deep=True)
+    if update.distributed_servers is not None:
+        policy = update.distributed_servers.group_recovery
+        stored_policy = (
+            instance.distributed_servers.group_recovery
+            if instance.distributed_servers is not None
+            else None
+        )
+        if policy is not None and policy != stored_policy:
+            raise ConflictException(message='Recovery policy is server-owned')
+        update.distributed_servers.group_recovery = stored_policy
     if (
         update.distributed_servers is not None
         and update.distributed_servers.stop_requested
@@ -1653,6 +1777,26 @@ def _preserve_managed_fields(
         raise ConflictException(
             message="Workloads can only be changed through workload_report"
         )
+    if legacy:
+        for field in (
+            'restart_count',
+            'last_restart_time',
+            'state',
+            'state_message',
+            'pid',
+            'port',
+            'ports',
+            'named_ports',
+            'draining_since',
+            'gpu_indexes',
+            'gpu_addresses',
+            'computed_resource_claim',
+        ):
+            setattr(update, field, getattr(instance, field))
+        update.distributed_servers = instance.distributed_servers
+        update.model_fields_set.discard('model_config_snapshot')
+        update.model_config_snapshot = None
+        return
     if stored is None and guard is None:
         return
     # A legacy snapshot may omit the manifest. Preserve it even if the snapshot
@@ -1709,7 +1853,9 @@ def _preserve_model_config_snapshot(instance, update, source, ctx):
     if snapshot is None:
         update.model_fields_set.discard("model_config_snapshot")
         return
-    managed = get_model_instance_workloads(instance) is not None
+    managed = get_model_instance_workloads(instance) is not None or isinstance(
+        update, ModelInstanceMemberReport
+    )
     worker_id = getattr(getattr(ctx.user, "worker", None), "id", None)
     if getattr(ctx.user, "kind", None) != PrincipalType.SYSTEM or (
         managed and worker_id != instance.worker_id
@@ -1720,6 +1866,15 @@ def _preserve_model_config_snapshot(instance, update, source, ctx):
                 if managed
                 else "Only system principals can update model configuration snapshots"
             )
+        )
+    if (
+        instance.distributed_servers is not None
+        and instance.distributed_servers.group_recovery is not None
+        and calculate_group_recovery_policy(instance, snapshot)
+        != instance.distributed_servers.group_recovery
+    ):
+        raise ConflictException(
+            message='Launch configuration differs from recovery policy'
         )
     if isinstance(source, dict):
         source["model_config_snapshot"] = snapshot
@@ -1756,7 +1911,7 @@ async def report_model_instance_workloads(
     session: SessionDep,
     ctx: TenantContextDep,
     id: int,
-    model_instance_in: ModelInstanceWorkloadUpdate,
+    model_instance_in: ModelInstanceMemberReport,
 ):
     return await _update_model_instance(session, ctx, id, model_instance_in)
 
@@ -1772,15 +1927,15 @@ async def confirm_model_instance_stop(
 
 
 async def _update_model_instance(session, ctx, id, model_instance_in):
-    workload_report = isinstance(model_instance_in, ModelInstanceWorkloadUpdate)
+    member_report = isinstance(model_instance_in, ModelInstanceMemberReport)
     stop_report = isinstance(model_instance_in, ModelInstanceStopReport)
-    worker = ctx.user.worker if workload_report or stop_report else None
+    worker = ctx.user.worker if member_report or stop_report else None
     current_worker = (
         await _locked_reporting_worker(session, ctx)
-        if workload_report or stop_report
+        if member_report or stop_report
         else None
     )
-    if workload_report or stop_report:
+    if member_report or stop_report:
         model_instance = await ModelInstance.one_by_id(
             session, id, for_update=True, refresh=True
         )
@@ -1798,7 +1953,7 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
                 model_instance, ctx, model_instance_in, current_worker
             )
         }
-    elif workload_report:
+    elif member_report:
         # Authentication can precede a concurrent Worker deletion or rebind.
         # The instance lock serializes registration with the deletion guard.
         if (
@@ -1814,55 +1969,25 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
             raise ForbiddenException(
                 message="Worker identity is no longer bound to this instance and cluster"
             )
-        source = {
-            "distributed_servers": _merge_workload_report(
-                model_instance, ctx, model_instance_in
+        if get_model_instance_workloads(model_instance) is None:
+            source = await _legacy_runtime_fields(
+                session, model_instance, ctx, model_instance_in
             )
-        }
-        await _validate_workload_layout(
-            session, model_instance, model_instance_in.workloads
-        )
-        if model_instance_in.preparation is not None:
-            source.update(
-                _managed_preparation_fields(
-                    model_instance, worker.id, model_instance_in.preparation
-                )
+        else:
+            source = await _managed_report_fields(
+                session, model_instance, ctx, model_instance_in
             )
-        if model_instance_in.backend_version is not None:
-            if model_instance.backend_version not in (
-                None,
-                model_instance_in.backend_version,
-            ):
-                raise ConflictException(
-                    message="Backend version differs within this generation"
-                )
-            source["backend_version"] = model_instance_in.backend_version
-        if (
-            model_instance_in.injected_backend_parameters is not None
-            and worker.id == model_instance.worker_id
-        ):
-            source["injected_backend_parameters"] = (
-                model_instance_in.injected_backend_parameters
-            )
-        # Diagnostics share the manifest's Worker and generation fence. A probe
-        # can report failure, but cannot recover an ERROR or request RUNNING.
-        if (
-            model_instance.state
-            in (
-                ModelInstanceStateEnum.SCHEDULED,
-                ModelInstanceStateEnum.INITIALIZING,
-                ModelInstanceStateEnum.STARTING,
-                ModelInstanceStateEnum.RUNNING,
-            )
-            and model_instance.draining_since is None
-        ):
-            if model_instance_in.state is not None:
-                source["state"] = model_instance_in.state
-            if model_instance_in.state_message is not None:
-                source["state_message"] = model_instance_in.state_message
     else:
         _preserve_download_state(model_instance, model_instance_in)
-        _preserve_managed_fields(model_instance, model_instance_in)
+        legacy = False
+        if requires_group_recovery(model_instance):
+            model = await Model.one_by_id(
+                session, model_instance.model_id, refresh=True
+            )
+            legacy = model is not None and requires_group_recovery(
+                model_instance, model
+            )
+        _preserve_managed_fields(model_instance, model_instance_in, legacy=legacy)
         source = model_instance_in
     _preserve_model_config_snapshot(model_instance, model_instance_in, source, ctx)
     try:
@@ -1874,6 +1999,169 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
             message=f"Failed to update model instance: {e}"
         )
     return model_instance
+
+
+async def _legacy_runtime_fields(session, instance, ctx, report):
+    worker = ctx.user.worker
+    if (
+        ctx.user.kind != PrincipalType.SYSTEM
+        or worker is None
+        or worker.id not in member_worker_ids(instance)
+        or worker.cluster_id != instance.cluster_id
+    ):
+        raise ForbiddenException(
+            message='Runtime reports require an assigned bound Worker'
+        )
+    model = await Model.one_by_id(session, instance.model_id, refresh=True)
+    if model is None or not requires_group_recovery(instance, model):
+        raise ConflictException(message='Instance does not use legacy group recovery')
+    if (
+        report.restart_count != (instance.restart_count or 0)
+        or instance.draining_since is not None
+        or model_instance_legacy_stop(instance) is not None
+    ):
+        raise ConflictException(
+            message='Runtime report does not match the active round'
+        )
+    if report.workloads is not None or report.observations is not None:
+        raise BadRequestException(message='Instance does not use managed workloads')
+    main = worker.id == instance.worker_id
+    source = report.model_dump(
+        exclude_unset=True,
+        exclude={
+            'restart_count',
+            'model_config_snapshot',
+            'workloads',
+            'observations',
+        },
+    )
+    source.update(source.pop('preparation', None) or {})
+    if source.get('state') is None:
+        source.pop('state', None)
+    if main and 'arguments' in source:
+        raise BadRequestException(message='Arguments belong to subordinate preparation')
+    if not main and any(
+        key in source for key in ('port', 'named_ports', 'injected_backend_parameters')
+    ):
+        raise ForbiddenException(
+            message='Only the primary may publish shared startup fields'
+        )
+    if 'backend_version' in source:
+        if instance.backend_version not in (None, source['backend_version']):
+            raise ConflictException(message='Backend version differs within this round')
+    if main:
+        member = instance
+    else:
+        servers = instance.distributed_servers.model_copy(deep=True)
+        member = next(
+            w for w in servers.subordinate_workers if w.worker_id == worker.id
+        )
+    if (
+        instance.state == ModelInstanceStateEnum.ERROR
+        or member.state == ModelInstanceStateEnum.ERROR
+    ) and report.state != ModelInstanceStateEnum.ERROR:
+        raise ConflictException(
+            message='An unhealthy round cannot be resumed by a runtime report'
+        )
+    order = {
+        state: index
+        for index, state in enumerate(
+            (
+                ModelInstanceStateEnum.PENDING,
+                ModelInstanceStateEnum.SCHEDULED,
+                ModelInstanceStateEnum.INITIALIZING,
+                ModelInstanceStateEnum.DOWNLOADING,
+                ModelInstanceStateEnum.STARTING,
+                ModelInstanceStateEnum.RUNNING,
+            )
+        )
+    }
+    if report.state in order and order[report.state] < order.get(member.state, -1):
+        source.pop('state', None)
+        source.pop('state_message', None)
+    if main:
+        return source
+    version = source.pop('backend_version', None)
+    for field, value in source.items():
+        setattr(member, field, value)
+    return {
+        'distributed_servers': servers,
+        **({'backend_version': version} if version else {}),
+    }
+
+
+async def _managed_report_fields(session, model_instance, ctx, model_instance_in):
+    if model_instance_in.state not in (None, ModelInstanceStateEnum.ERROR):
+        raise BadRequestException(
+            message='Managed instance state belongs to the Server'
+        )
+    if (
+        model_instance_in.state == ModelInstanceStateEnum.ERROR
+        and not model_instance_in.state_message
+    ):
+        raise BadRequestException(
+            message='A rank health failure requires a diagnostic message'
+        )
+    if any(
+        getattr(model_instance_in, field) is not None
+        for field in (
+            'arguments',
+            'gpu_indexes',
+            'gpu_addresses',
+            'computed_resource_claim',
+        )
+    ):
+        raise BadRequestException(
+            message='Managed members report workload observations'
+        )
+    worker = ctx.user.worker
+    source = {
+        "distributed_servers": _merge_workload_report(
+            model_instance, ctx, model_instance_in
+        )
+    }
+    await _validate_workload_layout(
+        session, model_instance, model_instance_in.workloads
+    )
+    if model_instance_in.preparation is not None:
+        source.update(
+            _managed_preparation_fields(
+                model_instance, worker.id, model_instance_in.preparation
+            )
+        )
+    if model_instance_in.backend_version is not None:
+        if model_instance.backend_version not in (
+            None,
+            model_instance_in.backend_version,
+        ):
+            raise ConflictException(
+                message="Backend version differs within this generation"
+            )
+        source["backend_version"] = model_instance_in.backend_version
+    if (
+        model_instance_in.injected_backend_parameters is not None
+        and worker.id == model_instance.worker_id
+    ):
+        source["injected_backend_parameters"] = (
+            model_instance_in.injected_backend_parameters
+        )
+    # Diagnostics share the manifest's Worker and generation fence. A probe
+    # can report failure, but cannot recover an ERROR or request RUNNING.
+    if (
+        model_instance.state
+        in (
+            ModelInstanceStateEnum.SCHEDULED,
+            ModelInstanceStateEnum.INITIALIZING,
+            ModelInstanceStateEnum.STARTING,
+            ModelInstanceStateEnum.RUNNING,
+        )
+        and model_instance.draining_since is None
+    ):
+        if model_instance_in.state is not None:
+            source["state"] = model_instance_in.state
+        if model_instance_in.state_message is not None:
+            source["state_message"] = model_instance_in.state_message
+    return source
 
 
 @router.delete(

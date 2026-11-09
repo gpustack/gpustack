@@ -4,71 +4,104 @@ translation_status: translated
 
 # Интеграция с RAGFlow { #integrate-with-ragflow }
 
-RAGFlow может интегрироваться с GPUStack для использования локально развернутых LLM, эмбеддингов, переранжирования, возможностей преобразования речи в текст и текста в речь.
+RAGFlow может интегрироваться с GPUStack для использования локально развернутых LLM, моделей зрения, эмбеддингов, переранжирования, преобразования речи в текст и текста в речь. RAGFlow сам обнаруживает модели, запущенные в GPUStack, поэтому достаточно один раз подключиться и выбрать модели для добавления.
+
+!!! note
+
+    Для этого руководства нужна версия RAGFlow новее v1.0.0-rc3, в которой появилась карточка настройки GPUStack.
 
 ## Развертывание моделей { #deploying-models }
 
-1. В пользовательском интерфейсе GPUStack перейдите на страницу `Deployments` и нажмите `Deploy Model`, чтобы развернуть нужные вам модели. Вот несколько примеров моделей:
+1. В пользовательском интерфейсе GPUStack перейдите на страницу `Deployments` и нажмите `Deploy Model`, чтобы развернуть нужные модели. Оставьте параметр `Enable Model Route` включённым, поскольку RAGFlow обнаруживает только запущенные модели с маршрутом. Примеры моделей:
 
-- qwen3-8b
-- qwen2.5-vl-3b-instruct
-- bge-m3
-- bge-reranker-v2-m3
+    | Модель | Тип в RAGFlow |
+    | --- | --- |
+    | `qwen3-4b` | Chat |
+    | `qwen2.5-vl-3b-instruct` | Chat + Vision |
+    | `bge-m3` | Embedding |
+    | `bge-reranker-v2-m3` | Rerank |
+    | `faster-whisper-small` | Speech to text |
+    | `cosyvoice2-0.5b` | Text to speech |
 
-![gpustack-models](../assets/integrations/integration-gpustack-models.png)
+2. Дождитесь готовности реплик каждой модели:
 
-2. В разделе «Операции» модели откройте `API Access Info`, чтобы узнать, как интегрироваться с этой моделью.
+    ![Список развертываний GPUStack](../assets/integrations/integration-ragflow-gpustack-deployments.png)
 
-![gpustack-api-access-info](../assets/integrations/integration-gpustack-api-access-info.png)
+## Создание API-ключа { #create-an-api-key }
 
-## Создайте ключ API. { #create-an-api-key }
+1. Перейдите на страницу `Access Control` > `API Keys` и нажмите `Add API Key`.
 
-1. Перейдите на страницу `Access Control` > `API Keys`, затем нажмите `New API Key`.
+2. Введите имя и в разделе `Access Permissions` оставьте включённым `Model Access` со значением `All models`. По умолчанию `Expiration` равно `1 month`, поэтому выберите больший срок, если RAGFlow будет использовать этот ключ постоянно. Затем нажмите `Save`.
 
-2. Введите имя, затем нажмите `Save`.
+    ![API-ключ GPUStack](../assets/integrations/integration-ragflow-gpustack-api-key.png)
 
-3. Скопируйте ключ API и сохраните его для дальнейшего использования.
+3. Скопируйте API-ключ и сохраните его. Позже на странице `API Keys` отображается только маскированное значение.
 
-## Интеграция GPUStack в RAGFlow. { #integrating-gpustack-into-ragflow }
+## Интеграция GPUStack в RAGFlow { #integrating-gpustack-into-ragflow }
 
-1. Откройте пользовательский интерфейс RAGFlow, перейдите в правый верхний угол и щелкните аватар, выберите `Model Providers > GPUStack`, затем выберите `Add the model` и заполните:
+1. Откройте интерфейс RAGFlow, нажмите на аватар в правом верхнем углу, чтобы открыть `Model providers`, затем выберите `GPUStack` в разделе `Available models`.
 
-- Тип модели: выберите тип модели в зависимости от модели.
+2. Заполните следующие поля и нажмите `Connect`:
 
-- Имя модели: имя должно соответствовать имени модели, развернутой в GPUStack.
+    - Instance name: любое имя для этого сервера GPUStack в RAGFlow, например `gpustack`.
+    - GPUStack server URL: `http://your-gpustack-url`, без пути `/v1`. Если используется нестандартный порт, укажите его. Не используйте `localhost`, так как он указывает на контейнер RAGFlow. Если GPUStack работает на одном хосте с RAGFlow, можно использовать `http://host.docker.internal:<port>`.
+    - API key: API-ключ, скопированный на предыдущих шагах.
 
-- Базовый URL-адрес: `http://your-gpustack-url/v1`, URL-адрес не должен включать путь и не использовать `localhost`, поскольку он относится к внутренней сети контейнера. Если вы используете собственный порт, обязательно включите его. Также убедитесь, что URL-адрес доступен изнутри контейнера RAGFlow (вы можете проверить это с помощью `curl`).
+3. RAGFlow показывает запущенные модели, сгруппированные по типам, с длиной контекста. Снимите флажки с моделей, которые не нужно добавлять. GPUStack не сообщает, принимает ли модель изображения, поэтому для моделей зрения, таких как `qwen2.5-vl-3b-instruct`, выберите `Chat + Vision`:
 
-- API-ключ: введите ключ API, который вы скопировали на предыдущих шагах.
+    ![Подключение GPUStack в RAGFlow](../assets/integrations/integration-ragflow-connect-gpustack.png)
 
-- Максимальное количество токенов: введите максимальное количество токенов, поддерживаемое текущей конфигурацией модели.
+    Если подключиться не удалось, RAGFlow показывает причину под формой:
 
-Нажмите `OK`, чтобы добавить модель:
+    - `GPUStack rejected this API key.`: проверьте API-ключ в разделе `Access Control` > `API Keys`.
+    - `Cannot reach this server from RAGFlow.`: проверьте URL и порт изнутри контейнера RAGFlow. Например, выполните следующую команду в каталоге `docker` RAGFlow, она должна вернуть `"ok"`:
 
-![ragflow-add-model](../assets/integrations/integration-ragflow-add-model.png)
+        ```bash
+        docker compose exec ragflow-cpu curl http://your-gpustack-url/healthz
+        ```
 
-2. При необходимости добавьте другие модели, затем выберите добавленные модели в поле `Set default models` и сохраните:
+4. Нажмите `Add 6 models` внизу списка (число зависит от выбранных моделей). Добавленные модели появятся в экземпляре:
 
-![ragflow-set-default-models](../assets/integrations/integration-ragflow-set-default-models.png)
+    ![Добавление моделей в RAGFlow](../assets/integrations/integration-ragflow-add-model.png)
 
-Теперь вы можете использовать модели `Chat` и `Knowledge Base`, вот простой случай:
+    Если позже вы развернёте в GPUStack другие модели, нажмите `Refresh` в экземпляре, чтобы обнаружить и добавить их.
 
-1. Перейдите к `Knowledge base`, чтобы создать новую базу знаний и добавить свой файл:
+5. Нажмите `Set default models` и выберите модель для каждого типа. Каждый выбор сохраняется сразу:
 
-![ragflow-создать-базу-знаний](../assets/integrations/integration-ragflow-create-knowledge-base.png)
+    ![Модели по умолчанию в RAGFlow](../assets/integrations/integration-ragflow-set-default-models.png)
 
-2. Перейдите к `Retrieval testing` и установите модель переоценки на `bge-reranker-v2-m3`:
+## Использование моделей { #using-the-models }
 
-![ragflow-set-rerank-model](../assets/integrations/integration-ragflow-set-rerank-model.png)
+Теперь модели можно использовать в `Dataset` и `Chat`. Простой пример:
 
-3. В `Chat` создайте помощника, привяжите ранее созданную базу знаний и выберите модель чата:
+1. Перейдите в `Dataset` и создайте набор данных. Модель эмбеддингов по умолчанию уже выбрана:
 
-![помощник по созданию ragflow](../assets/integrations/integration-ragflow-create-assistant.png)
+    ![Создание набора данных в RAGFlow](../assets/integrations/integration-ragflow-create-dataset.png)
 
-4. Создайте сеанс чата — теперь вы можете взаимодействовать с моделью и запрашивать базу знаний:
+2. Нажмите `Add file` > `Upload file`, включите `Parse on creation`, выберите файл и нажмите `Save`. Когда разбор завершится, у файла появится количество фрагментов:
 
-![ragflow-чат-с-моделью](../assets/integrations/integration-ragflow-chat-with-model.png)
+    ![Загрузка файла в RAGFlow](../assets/integrations/integration-ragflow-upload-file.png)
 
-5. Отредактируйте помощника и переключите модель на `qwen2.5-vl-3b-instruct`. После сохранения создайте новый чат и загрузите изображение, чтобы включить мультимодальный ввод:
+3. Перейдите в `Retrieval testing`, установите для `Rerank model` значение `bge-reranker-v2-m3`, введите вопрос и нажмите `Run`:
 
-![ragflow-чат-с-vlm](../assets/integrations/integration-ragflow-chat-with-vlm.png)
+    ![Настройка модели переранжирования в RAGFlow](../assets/integrations/integration-ragflow-set-rerank-model.png)
+
+4. В `Chat` создайте чат и откройте его. Нажмите значок настроек в правом верхнем углу, выберите набор данных в `Datasets`, проверьте модель чата в `Model` и нажмите `Save`:
+
+    ![Настройка чата в RAGFlow](../assets/integrations/integration-ragflow-create-assistant.png)
+
+    Модель переранжирования, выбранная в `Retrieval testing`, к чатам не применяется. Чтобы переранжировать результаты поиска в чате, в тех же настройках разверните `Advanced settings` > `Naive`, установите для `Rerank model` значение `bge-reranker-v2-m3` и нажмите `Save`.
+
+5. Отправьте сообщение. Теперь можно взаимодействовать с моделью и выполнять запросы к набору данных:
+
+    ![Чат с моделью в RAGFlow](../assets/integrations/integration-ragflow-chat-with-model.png)
+
+6. Чтобы ответы зачитывались вслух, включите `Text to speech` в `Advanced settings` и нажмите `Save`. Наведите указатель на ответ и нажмите значок динамика. Во время воспроизведения он сменится значком паузы:
+
+    ![Чтение ответа вслух в RAGFlow](../assets/integrations/integration-ragflow-read-aloud.png)
+
+7. Для голосового ввода нажмите значок микрофона в поле сообщения, произнесите текст и нажмите значок ещё раз, чтобы остановить запись. RAGFlow преобразует запись в текст с помощью модели Speech to text по умолчанию и отправит его как ваше сообщение.
+
+8. Чтобы обсудить изображение, в настройках чата переключите `Model` на `qwen2.5-vl-3b-instruct` и очистите `Datasets`, чтобы в ответы не попадали ссылки на посторонние документы. Нажмите `Save`, начните новый диалог, прикрепите изображение с помощью значка скрепки и отправьте вопрос:
+
+    ![Чат с моделью зрения в RAGFlow](../assets/integrations/integration-ragflow-chat-with-vlm.png)

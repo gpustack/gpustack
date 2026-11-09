@@ -50,7 +50,12 @@ from gpustack.worker.backends.vllm import (
 )
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.utils.vllm_topology import vllm_lb_mode, external_lb_parallelism
-from gpustack_runtime.deployer import Container, ContainerExecution, WorkloadPlan
+from gpustack_runtime.deployer import (
+    Container,
+    ContainerEnv,
+    ContainerExecution,
+    WorkloadPlan,
+)
 from gpustack.schemas.models import (
     DistributedServers,
     PortBand,
@@ -183,6 +188,26 @@ def _external_backend(dp=2, vendor="NVIDIA"):
         ],
     )
     return backend, plan
+
+
+def _run_device_task_environment(task, env):
+    result = subprocess.run(
+        [
+            sys.executable,
+            *task['argv'][1:6],
+            sys.executable,
+            '-c',
+            'import json, os; print(json.dumps({key: os.environ.get(key) for key in '
+            '["CUDA_VISIBLE_DEVICES", "ASCEND_RT_VISIBLE_DEVICES", '
+            '"NPU_VISIBLE_DEVICES", "VLLM_CACHE_ROOT"]}))',
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    )
+    return json.loads(result.stdout)
 
 
 @pytest.mark.parametrize('mode', ['external', 'hybrid', 'multi_port_external'])
@@ -336,37 +361,37 @@ def test_external_plan_rejects_missing_or_incompatible_devices(device_types):
         ("Huawei", "ASCEND_RT_VISIBLE_DEVICES", "1,3,5,7"),
     ],
 )
+@pytest.mark.parametrize('local_devices', [1, 2])
+@pytest.mark.parametrize('cache_root', [None, '/cache/vllm', '/custom cache/'])
 def test_external_task_masks_use_positions_in_the_container_device_pool(
-    vendor, key, pool
+    vendor, key, pool, local_devices, cache_root
 ):
-    from gpustack.worker.backends.vllm import _DEVICE_TASK_EXEC
-
     backend, plan = _external_backend(vendor=vendor)
+    backend._model.backend_parameters[-1] = f'--tensor-parallel-size={local_devices}'
+    devices = backend._get_selected_gpu_devices()
+    backend._get_selected_gpu_devices = lambda: devices[: 2 * local_devices]
+    pool = ','.join(pool.split(',')[: 2 * local_devices])
     backend._configure_external_workload(plan, ["vllm", "serve"], ["/models/moe"])
     config = json.loads(
         next(
             f.content for f in plan.containers[0].files if f.path.endswith("tasks.json")
         )
     )
+    env = {**os.environ, key: pool}
+    env.pop('VLLM_CACHE_ROOT', None)
+    if cache_root is not None:
+        env['VLLM_CACHE_ROOT'] = cache_root
     for rank, task in enumerate(config["tasks"]):
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                _DEVICE_TASK_EXEC,
-                *task["argv"][3:6],
-                sys.executable,
-                "-c",
-                f"import os; print(os.environ[{key!r}])",
-            ],
-            env={**os.environ, key: pool},
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=5,
+        actual = _run_device_task_environment(task, env)
+        assert actual[key] == ",".join(
+            pool.split(",")[rank * local_devices : (rank + 1) * local_devices]
         )
-        assert result.stdout.strip() == ",".join(
-            pool.split(",")[rank * 2 : (rank + 1) * 2]
+        if vendor == 'Huawei':
+            assert actual['NPU_VISIBLE_DEVICES'] == actual[key]
+        assert actual['VLLM_CACHE_ROOT'] == (
+            os.path.join(cache_root, 'isolated_devices', str(local_devices))
+            if cache_root
+            else None
         )
 
 
@@ -4198,6 +4223,7 @@ def test_accelerator_free_plan_conversion_skips_model_instance_type(monkeypatch)
     import gpustack.worker.backends.base as base_module
 
     backend = _StubServer.__new__(_StubServer)
+    backend._model_instance = new_model_instance(1, 'engine', 1)
     backend._model = types.SimpleNamespace(
         gpu_type_selector=types.SimpleNamespace(type='gpu-instance-type')
     )
@@ -4328,6 +4354,9 @@ def test_hybrid_native_launcher_keeps_one_shared_api_and_local_engine_pool(
     from gpustack.schemas.models import ModelInstanceSubordinateWorker
 
     backend, plan = _external_backend(vendor=vendor)
+    plan.containers[0].envs = [
+        ContainerEnv(name='VLLM_CACHE_ROOT', value='/cache/vllm')
+    ]
     mi = backend._model_instance
     mi.worker_ip = '10.0.0.7'
     mi.gpu_indexes = [1, 3, 5, 7]
@@ -4376,14 +4405,20 @@ def test_hybrid_native_launcher_keeps_one_shared_api_and_local_engine_pool(
     assert manifest.component.dp_size == 2
     assert manifest.dp_rank_placements == []
     assert not plan.containers[0].files
+    assert {item.name: item.value for item in plan.containers[0].envs}[
+        'VLLM_CACHE_ROOT'
+    ] == '/cache/vllm'
     assert plan.termination_grace_period_seconds == 75
 
 
 @pytest.mark.parametrize('worker_index', [0, 1, 2, 3])
-def test_hybrid_cross_worker_single_fragment_has_true_api_owner(worker_index):
+@pytest.mark.parametrize('vendor', ['NVIDIA', 'Huawei'])
+def test_hybrid_cross_worker_single_fragment_has_true_api_owner(worker_index, vendor):
     from gpustack.schemas.models import ModelInstanceSubordinateWorker
 
-    backend, plan = _external_backend(dp=1)
+    backend, plan = _external_backend(dp=1, vendor=vendor)
+    cache_root = '/cache/vllm'
+    plan.containers[0].envs = [ContainerEnv(name='VLLM_CACHE_ROOT', value=cache_root)]
     mi = backend._model_instance
     mi.worker_ip = '10.0.0.7'
     mi.gpu_indexes = [1, 3]
@@ -4423,6 +4458,18 @@ def test_hybrid_cross_worker_single_fragment_has_true_api_owner(worker_index):
             )
         )
         assert len(config['tasks']) == 1
+        key, pool = (
+            ('CUDA_VISIBLE_DEVICES', 'GPU-a,GPU-b')
+            if vendor == 'NVIDIA'
+            else ('ASCEND_RT_VISIBLE_DEVICES', '1,3')
+        )
+        actual = _run_device_task_environment(
+            config['tasks'][0], {**os.environ, key: pool, 'VLLM_CACHE_ROOT': cache_root}
+        )
+        assert actual[key] == pool
+        assert actual['VLLM_CACHE_ROOT'] == os.path.join(
+            cache_root, 'isolated_devices', '2'
+        )
         argv = config['tasks'][0]['argv'][6:]
         assert '--headless' in argv
         assert '--data-parallel-hybrid-lb' not in argv
@@ -4436,6 +4483,9 @@ def test_hybrid_cross_worker_single_fragment_has_true_api_owner(worker_index):
         assert '--data-parallel-hybrid-lb' in argv
         assert manifest.component.api_port == 40000
         assert manifest.component.dp_size == 1
+    assert {item.name: item.value for item in plan.containers[0].envs}[
+        'VLLM_CACHE_ROOT'
+    ] == cache_root
     assert argv[argv.index('--nnodes') + 1] == '4'
     assert argv[argv.index('--node-rank') + 1] == str(worker_index)
     assert argv[argv.index('--master-addr') + 1] == '10.0.0.7'

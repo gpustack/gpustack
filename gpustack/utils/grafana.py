@@ -149,6 +149,13 @@ def model_dashboard_scope_params(
         )
     )
     params["var-scope_legacy_enabled"] = "0" if managed_target else "1"
+    for key, value in dict(
+        cluster_id=cluster_id,
+        model_id=model_id,
+        model_instance_id=model_instance_id,
+    ).items():
+        if value is not None:
+            params[f"var-selected_{key}"] = str(value)
     # Legend formats interpolate variables; rename transformations do not.
     params["var-legend_instance_prefix"] = (
         ""
@@ -198,9 +205,6 @@ def build_model_dashboard_url(
         return None
 
     query_params: Dict[str, str] = {}
-    if cluster_name:
-        query_params["var-cluster_name"] = _re2_literal(cluster_name)
-    query_params["var-model_name"] = _re2_literal(model.name)
     server_base = resolve_server_base_url(cfg, request)
     if server_base:
         query_params["var-gpustack_base_url"] = server_base
@@ -221,14 +225,19 @@ def build_model_dashboard_url(
         # if the series is not there yet.
         query_params["var-counted_role"] = counted_role(model)
     else:
-        query_params.update(
-            model_dashboard_scope_params(
-                cluster_id=getattr(model, "cluster_id", None),
-                model_id=getattr(model, "id", None),
-                cluster_name=cluster_name,
-                model_name=model.name,
-            )
-        )
+        # Browsable model and benchmark views preselect resources without
+        # pinning the hidden fences used by instance/component drilldowns.
+        # Name parameters also support external dashboards using name selectors.
+        query_params['var-scope_bound'] = '1'
+        query_params['var-model_name'] = _re2_literal(model.name)
+        if cluster_name:
+            query_params['var-cluster_name'] = _re2_literal(cluster_name)
+        for key, value in dict(
+            cluster_id=getattr(model, "cluster_id", None),
+            model_id=getattr(model, "id", None),
+        ).items():
+            if value is not None:
+                query_params[f"var-selected_{key}"] = str(value)
     query_params.update(extra_params or {})
 
     slug = "gpustack-pd" if pd else "gpustack-model"

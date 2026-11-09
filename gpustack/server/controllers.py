@@ -75,6 +75,7 @@ from gpustack.schemas.models import (
     ModelInstanceSubordinateWorker,
     ModelInstanceWorkloadStateEnum,
     ModelSpecBase,
+    ModelBase,
     ModelStateEnum,
     RoleNameEnum,
     RoleSpec,
@@ -94,6 +95,7 @@ from gpustack.utils.model_instance_workers import (
     requires_model_instance_stop_barrier,
     model_instance_legacy_stop,
     model_instance_workloads_stopped,
+    requires_group_recovery,
 )
 from gpustack.utils.network import is_offline
 from gpustack.server.workqueue import WorkEvent, WorkEventType, WorkQueue
@@ -619,7 +621,7 @@ class ModelController:
     async def _sync_managed_model_instances(
         self, session: AsyncSession, model: Model
     ) -> Optional[float]:
-        """Reconcile failed managed instances and retain the earliest retry deadline."""
+        """Reconcile failed model groups and retain the earliest retry deadline."""
         instances = await ModelInstance.all_by_field(session, "model_id", model.id)
         service = ModelInstanceService(session)
         terminal = {
@@ -630,8 +632,15 @@ class ModelController:
         for instance in instances:
             workloads = get_model_instance_workloads(instance)
             if workloads is None:
-                continue
-            if instance.state not in (
+                if not requires_group_recovery(instance, model) or not (
+                    instance.state == ModelInstanceStateEnum.ERROR
+                    or any(
+                        w.state == ModelInstanceStateEnum.ERROR
+                        for w in instance.distributed_servers.subordinate_workers
+                    )
+                ):
+                    continue
+            elif instance.state not in (
                 ModelInstanceStateEnum.ERROR,
                 ModelInstanceStateEnum.STARTING,
                 ModelInstanceStateEnum.UNREACHABLE,
@@ -913,7 +922,10 @@ class ModelInstanceController:
                 model_deleting = model.deleted_at is not None
 
                 if event.type == EventType.DELETED or (
-                    has_model_instance_stop_barrier(model_instance)
+                    (
+                        has_model_instance_stop_barrier(model_instance)
+                        or requires_group_recovery(model_instance, model)
+                    )
                     and _model_instance_runtime_changed(event)
                 ):
                     # trigger model replica sync, but only if model is not deleted
@@ -1859,6 +1871,21 @@ class CacheServiceController:
         )
 
 
+def _replica_sync_intent(model: Model) -> dict:
+    return model.model_dump(
+        include=(set(ModelBase.model_fields) - {'ready_replicas'})
+        | {'deleted_at', 'restarting_since'}
+    )
+
+
+async def _lock_replica_sync_intent(
+    session: AsyncSession, model: Model, expected: dict
+) -> bool:
+    """Reacquire the parent lock after commits without reusing obsolete decisions."""
+    current = await Model.one_by_id(session, model.id, for_update=True, refresh=True)
+    return current is not None and _replica_sync_intent(current) == expected
+
+
 async def sync_replicas(session: AsyncSession, model: Model) -> Optional[float]:
     """
     Synchronize the replicas.
@@ -1880,12 +1907,15 @@ async def sync_replicas(session: AsyncSession, model: Model) -> Optional[float]:
       and the victims are whichever the scale-down scorer ranks lowest.
     """
 
-    # Re-fetch model from database to ensure we have latest state
-    # (event data may be from a different session or stale)
-    fresh_model = await Model.one_by_id(session, model.id)
+    # Serialize every replica decision with deployment edits, including rows
+    # already loaded in this session before a stop or restart was committed.
+    fresh_model = await Model.one_by_id(
+        session, model.id, for_update=True, refresh=True
+    )
     if not fresh_model:
         return None
     model = fresh_model
+    intent = _replica_sync_intent(model)
 
     if model.deleted_at is not None:
         await ModelService(session).delete(model)
@@ -1917,6 +1947,8 @@ async def sync_replicas(session: AsyncSession, model: Model) -> Optional[float]:
                 for instance in instances
             ):
                 await ModelService(session).stop_instances(model, instances)
+                if not await _lock_replica_sync_intent(session, model, intent):
+                    return 0
             if all(
                 model_instance_workloads_stopped(instance)
                 for instance in instances
@@ -1925,8 +1957,10 @@ async def sync_replicas(session: AsyncSession, model: Model) -> Optional[float]:
                 deleted = await _release_and_delete(
                     session, instances, require_all_stopped=True
                 )
-                return 0 if len(deleted) == len(instances) else None
-            return _next_drain_due(managed_draining)
+                return 0 if len(deleted) == len(instances) else 5
+            # Worker reports normally wake the controller. Periodically read
+            # the barrier again so a missed event cannot strand a restart.
+            return 5
         if any(
             instance.group_id for instance in managed_draining
         ) and await model_members_stale(session, model, instances):
@@ -1939,6 +1973,8 @@ async def sync_replicas(session: AsyncSession, model: Model) -> Optional[float]:
                 await ModelService(session).stop_instances(model, due)
             return _next_drain_due(managed_draining)
         if await _reap_managed_instances(session, managed_draining):
+            return 0
+        if not await _lock_replica_sync_intent(session, model, intent):
             return 0
 
     if model.roles:
@@ -1969,8 +2005,7 @@ async def sync_replicas(session: AsyncSession, model: Model) -> Optional[float]:
         await _release_and_delete(session, orphans)
         return None
 
-    await _sync_replicas_legacy(session, model)
-    return _next_drain_due(instances)
+    return await _sync_replicas_legacy(session, model)
 
 
 async def _reap_managed_instances(
@@ -1999,12 +2034,15 @@ async def _reap_managed_instances(
     return bool(await _release_and_delete(session, due))
 
 
-async def _sync_replicas_legacy(session: AsyncSession, model: Model):
+async def _sync_replicas_legacy(session: AsyncSession, model: Model) -> Optional[float]:
     """Converge ordinary replicas with event-driven task cleanup."""
 
+    intent = _replica_sync_intent(model)
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
     if len(instances) < model.replicas:
         for _ in range(model.replicas - len(instances)):
+            if not await _lock_replica_sync_intent(session, model, intent):
+                return 0
             name_prefix = ''.join(
                 random.choices(string.ascii_lowercase + string.digits, k=5)
             )
@@ -2060,6 +2098,8 @@ async def _sync_replicas_legacy(session: AsyncSession, model: Model):
             ).batch_delete(scale_down_instances)
             if scale_down_instance_names:
                 logger.debug(f"Deleted model instances: {scale_down_instance_names}")
+
+    return _next_drain_due(instances)
 
 
 # Spec fields that must NOT enter a generation's digest. Everything else on
@@ -2551,6 +2591,31 @@ async def _refresh_static_routers(session, model, generation, spec_moved):
         await _release_and_delete(session, changed)
 
 
+async def _form_model_group(
+    session: AsyncSession, model: Model, group_id: str, digest: str
+) -> None:
+    """Create the initial GPU roles together while the caller holds the parent lock."""
+    pending = []
+    for role in _gpu_roles(model):
+        for _ in range(role.replicas):
+            pending.append(
+                await _build_instance_create(session, model, role, group_id, digest)
+            )
+    if not pending:
+        return
+    await ModelInstanceService(session).batch_create(pending)
+    # INFO rather than debug: a group forming is how a group also
+    # re-forms. Nothing on the model row records that its members were
+    # torn down and rebuilt elsewhere — not `stale`, which follows the
+    # spec digest, and not a degradation, which reads current state —
+    # so when an operator asks why a running group moved machines,
+    # this line is the only first-hand evidence there is.
+    logger.info(
+        f"Formed group {group_id} for model {model.name} "
+        f"with {len(pending)} members"
+    )
+
+
 async def _sync_replicas_per_role(
     session: AsyncSession, model: Model
 ) -> Optional[float]:
@@ -2564,6 +2629,7 @@ async def _sync_replicas_per_role(
     nothing is draining. The caller uses it to book the pass that reaps them:
     see `_next_drain_due`.
     """
+    intent = _replica_sync_intent(model)
     instances = await ModelInstance.all_by_field(session, "model_id", model.id)
 
     if model.replicas == 0:
@@ -2593,6 +2659,8 @@ async def _sync_replicas_per_role(
             f"{len(orphans)} instance(s) that predate the group"
         )
         await _release_and_delete(session, orphans)
+        if not await _lock_replica_sync_intent(session, model, intent):
+            return 0
         if any(
             get_model_instance_workloads(instance) is not None for instance in orphans
         ):
@@ -2630,28 +2698,11 @@ async def _sync_replicas_per_role(
         # appear in batches is repeatedly judged incomplete; and the
         # router cannot be in this transaction at all, since it has no peers
         # to render yet (see `_role_dependencies`).
-        pending = []
-        for role in _gpu_roles(model):
-            for _ in range(role.replicas):
-                pending.append(
-                    await _build_instance_create(
-                        session, model, role, group_id, generation_digest
-                    )
-                )
-        if pending:
-            await ModelInstanceService(session).batch_create(pending)
-            # INFO rather than debug: a group forming is how a group also
-            # re-forms. Nothing on the model row records that its members were
-            # torn down and rebuilt elsewhere — not `stale`, which follows the
-            # spec digest, and not a degradation, which reads current state —
-            # so when an operator asks why a running group moved machines,
-            # this line is the only first-hand evidence there is.
-            logger.info(
-                f"Formed group {group_id} for model {model.name} "
-                f"with {len(pending)} members"
-            )
-            generation = await ModelInstance.all_by_field(session, "model_id", model.id)
-            generation = [i for i in generation if i.group_id == group_id]
+        await _form_model_group(session, model, group_id, generation_digest)
+        if not await _lock_replica_sync_intent(session, model, intent):
+            return 0
+        generation = await ModelInstance.all_by_field(session, "model_id", model.id)
+        generation = [i for i in generation if i.group_id == group_id]
         # Deliberately no early return: the router still has to be considered
         # below, and it becomes creatable the moment its dependencies report
         # ready — which may already be true on a later pass.
@@ -2691,6 +2742,8 @@ async def _sync_replicas_per_role(
     spec_moved = bool(await model_members_stale(session, model, generation))
 
     for role in model.roles:
+        if not await _lock_replica_sync_intent(session, model, intent):
+            return 0
         have = [i for i in generation if i.role == role.name]
         if len(have) < role.replicas:
             if spec_moved:
@@ -2724,6 +2777,8 @@ async def _sync_replicas_per_role(
         elif len(have) > role.replicas:
             await _scale_down_role(session, model, role, have, generation)
 
+    if not await _lock_replica_sync_intent(session, model, intent):
+        return 0
     await _refresh_static_routers(session, model, generation, spec_moved)
     return _next_drain_due(generation)
 
@@ -2812,7 +2867,10 @@ async def _scale_down_role(
         return
 
     now = datetime.now(timezone.utc)
+    intent = _replica_sync_intent(model)
     for candidate in candidates[:excess]:
+        if not await _lock_replica_sync_intent(session, model, intent):
+            return
         instance = candidate.model_instance
         instance.draining_since = now
         await instance.update(session)
@@ -4637,7 +4695,11 @@ async def _reconcile_router_membership(
 async def _persist_router_peer_snapshot(
     session, model_identity, router_identity, snapshot
 ):
-    """Write an HTTP observation only while its model, router and peers still match."""
+    """Write an HTTP observation only while its model, router and peers still match.
+
+    Replacement routers publish readiness before the deployment restart guard clears.
+    A stopping router is fenced by its drain marker and runtime identity.
+    """
     from gpustack.server.pd_router_membership import router_worker_ips
 
     try:
@@ -4654,7 +4716,6 @@ async def _persist_router_peer_snapshot(
             model is None
             or model.deleted_at is not None
             or model.updated_at != model_identity[1]
-            or model.restarting_since is not None
             or model.replicas == 0
             or current is None
             or current.deleted_at is not None

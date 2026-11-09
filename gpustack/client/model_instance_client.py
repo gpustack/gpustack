@@ -1,7 +1,7 @@
 from gpustack.api.exceptions import raise_if_response_error
 from gpustack.schemas.models import (
     ModelInstancePublic,
-    ModelInstanceWorkloadUpdate,
+    ModelInstanceMemberReport,
     ModelInstanceStopReport,
 )
 
@@ -26,11 +26,13 @@ class ModelInstanceClient(GeneratedModelInstanceClient):
         return ModelInstancePublic.model_validate(response.json())
 
     def report_workloads(
-        self, id: int, report: ModelInstanceWorkloadUpdate
+        self,
+        id: int,
+        report: ModelInstanceMemberReport,
     ) -> ModelInstancePublic:
         response = self._client.get_httpx_client().put(
             f"{self._url}/{id}/workload-report",
-            content=report.model_dump_json(),
+            content=report.model_dump_json(exclude_unset=True),
             headers={"Content-Type": "application/json"},
         )
         raise_if_response_error(response)

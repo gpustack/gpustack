@@ -80,6 +80,9 @@ from gpustack.utils.model_instance_workers import (
     assigned_managed_workload_worker_ids,
     get_model_instance_worker_match,
     model_instance_workloads_stopped,
+    model_instance_legacy_stop,
+    requires_group_recovery,
+    calculate_group_recovery_policy,
 )
 
 logger = logging.getLogger(__name__)
@@ -1023,6 +1026,24 @@ class ModelService:
         *,
         auto_commit: bool = True,
     ):
+        if isinstance(source, SQLModel):
+            source = {key: getattr(source, key) for key in source.model_fields_set}
+        if model.replicas == 0 and source and (source.get('replicas') or 0) > 0:
+            instances = await ModelInstance.all_by_field(
+                self.session, 'model_id', model.id
+            )
+            if any(
+                has_model_instance_stop_barrier(instance)
+                and instance.draining_since is not None
+                for instance in instances
+            ):
+                # Physical teardown cannot be cancelled. Keep the whole old
+                # group behind the restart barrier before forming replacements.
+                source = {
+                    **source,
+                    'restarting_since': model.restarting_since
+                    or datetime.now(timezone.utc),
+                }
         result = await model.update(self.session, source, auto_commit=auto_commit)
         await delete_cache_by_key(self.get_by_id, model.id)
         await delete_cache_by_key(self.get_by_name, model.name)
@@ -1256,6 +1277,7 @@ class ModelInstanceService:
         return results
 
     async def create(self, model_instance):
+        await self._prepare_recovery_policy(model_instance, None)
         # Denormalize the shared-cache connection info onto the instance so
         # the worker can inject engine config without a server round-trip.
         model = await Model.one_by_id(self.session, model_instance.model_id)
@@ -1297,6 +1319,7 @@ class ModelInstanceService:
         try:
             created = []
             for model_instance in model_instances:
+                await self._prepare_recovery_policy(model_instance, None)
                 model = models.get(model_instance.model_id)
                 if model is not None:
                     model_instance.cache_config = (
@@ -1346,16 +1369,76 @@ class ModelInstanceService:
     async def update(
         self, model_instance: ModelInstance, source: Union[dict, SQLModel, None] = None
     ):
+        source = await self._prepare_recovery_policy(model_instance, source)
         result = await model_instance.update(self.session, source)
         await delete_cache_by_key(self.get_running_instances, model_instance.model_id)
         await delete_cache_by_key(self.get_by_id, model_instance.id)
         await invalidate_workers_allocated([model_instance])
         return result
 
+    async def ensure_recovery_policy(self, instance: ModelInstance) -> None:
+        """Backfill a bound legacy round before exposing it to a Worker."""
+        if (
+            calculate_group_recovery_policy(instance, None) is not None
+            and instance.distributed_servers.group_recovery is None
+        ):
+            await self.update(instance, {})
+
+    async def _prepare_recovery_policy(self, instance, source):
+        fields = (
+            {key: getattr(source, key) for key in source.model_fields_set}
+            if isinstance(source, SQLModel)
+            else dict(source or {})
+        )
+        # A shallow ORM copy shares attribute history with the attached row.
+        # Policy calculation must not mark incoming values as already persisted.
+        values = {key: getattr(instance, key) for key in type(instance).model_fields}
+        candidate = ModelInstance(**{**values, **fields})
+        if calculate_group_recovery_policy(candidate, None) is None:
+            return source
+        servers = candidate.distributed_servers.model_copy(deep=True)
+        new_round = (candidate.restart_count or 0) != (instance.restart_count or 0)
+        if not new_round and instance.distributed_servers is not None:
+            servers.group_recovery = instance.distributed_servers.group_recovery
+        if new_round:
+            # An old launch snapshot must not select the next launch's policy.
+            servers.group_recovery = None
+            servers.legacy_stop = None
+            fields['model_config_snapshot'] = None
+            candidate.model_config_snapshot = None
+        candidate.distributed_servers = servers
+        if servers.group_recovery is None:
+            model = await Model.one_by_id(self.session, instance.model_id, refresh=True)
+            if model is None:
+                raise ConflictException(
+                    message='Model is unavailable for launch policy'
+                )
+            servers.group_recovery = requires_group_recovery(candidate, model)
+        if (
+            new_round
+            and instance.distributed_servers is not None
+            and instance.distributed_servers.group_recovery is False
+            and servers.group_recovery
+            and not model_instance_workloads_stopped(instance)
+        ):
+            return {
+                'state': ModelInstanceStateEnum.ERROR,
+                'state_message': 'Stopping all members before changing recovery policy',
+                'distributed_servers': await self._legacy_stop_servers(instance),
+            }
+        if not new_round and servers == instance.distributed_servers:
+            return source
+        fields['distributed_servers'] = servers
+        if source is None:
+            for key, value in fields.items():
+                setattr(instance, key, value)
+            return None
+        return fields
+
     async def reconcile_managed_instance(
         self, instance_id: int, restart_count: int, *, allow_restart: bool = True
     ) -> Optional[float]:
-        """Recover an SMG alone, or stop and advance a failed communication group.
+        """Recover an SMG alone, or stop and advance a managed or legacy model group.
 
         Returns the remaining restart backoff, if a timer is needed. This owns
         its transaction; callers must not have pending writes in the session.
@@ -1375,7 +1458,9 @@ class ModelInstanceService:
             and (instance.restart_count or 0) == restart_count
         ):
             workloads = get_model_instance_workloads(instance)
-            if workloads is not None:
+            if workloads is None:
+                source, due = await self._legacy_recovery(instance, allow_restart)
+            else:
                 # A non-SMG failure withdraws the generation before surviving
                 # tasks stop; the restart fence advances only after teardown.
                 failure = next(
@@ -1445,6 +1530,61 @@ class ModelInstanceService:
             # Release the row lock before routing or other external work runs.
             await self.session.commit()
         return due
+
+    async def _legacy_recovery(self, instance, allow_restart):
+        model = await Model.one_by_id(self.session, instance.model_id, refresh=True)
+        if model is None or not requires_group_recovery(instance, model):
+            return {}, None
+        if instance.draining_since is not None:
+            return {}, None
+        failed = next(
+            (
+                worker
+                for worker in instance.distributed_servers.subordinate_workers
+                if worker.state == ModelInstanceStateEnum.ERROR
+            ),
+            None,
+        )
+        if instance.state != ModelInstanceStateEnum.ERROR and failed is None:
+            return {}, None
+        if model_instance_legacy_stop(instance) is None:
+            return {
+                'state': ModelInstanceStateEnum.ERROR,
+                'state_message': (
+                    instance.state_message
+                    if instance.state == ModelInstanceStateEnum.ERROR
+                    else (
+                        f'Worker {failed.worker_id}: '
+                        f'{failed.state_message or "Inference server failed."}'
+                    )
+                ),
+                'distributed_servers': await self._legacy_stop_servers(instance),
+            }, None
+        if allow_restart:
+            return await self._managed_restart(instance, None)
+        return {}, None
+
+    async def _legacy_stop_servers(self, instance, bindings=None):
+        workers = sorted(member_worker_ids(instance))
+        if bindings is None:
+            bindings = {}
+            for worker_id in workers:
+                worker = await Worker.one_by_id(self.session, worker_id, refresh=True)
+                bindings[worker_id] = getattr(worker, 'system_principal_id', None)
+        servers = (
+            instance.distributed_servers.model_copy(deep=True)
+            if instance.distributed_servers
+            else DistributedServers()
+        )
+        servers.legacy_stop = ModelInstanceLegacyStop(
+            token=uuid4(),
+            restart_count=instance.restart_count or 0,
+            worker_ids=workers,
+            worker_principal_ids={
+                worker_id: bindings[worker_id] for worker_id in workers
+            },
+        )
+        return servers
 
     async def _managed_instance_ready(
         self, instance: ModelInstance, workloads: List[ModelInstanceWorkload]
@@ -1646,9 +1786,11 @@ class ModelInstanceService:
         return True
 
     async def _managed_restart(
-        self, instance: ModelInstance, workloads: List[ModelInstanceWorkload]
+        self, instance: ModelInstance, workloads: Optional[List[ModelInstanceWorkload]]
     ) -> Tuple[dict, Optional[float]]:
-        if any(
+        if workloads is None and not model_instance_workloads_stopped(instance):
+            return {}, None
+        if workloads is not None and any(
             item.state != ModelInstanceWorkloadStateEnum.STOPPED for item in workloads
         ):
             return {}, None
@@ -1683,6 +1825,15 @@ class ModelInstanceService:
             "state_message": "",
             "distributed_servers": servers,
         }
+        if workloads is None:
+            servers.workloads = None
+            servers.legacy_stop = None
+            for worker in servers.subordinate_workers:
+                worker.state = ModelInstanceStateEnum.PENDING
+                worker.state_message = None
+                worker.pid = None
+            source['pid'] = None
+            return source, None
         configuration_changed = False
         if not instance.group_id and instance.spec_digest:
             from gpustack.server.controllers import model_spec_digest
@@ -1943,20 +2094,9 @@ class ModelInstanceService:
                     raise ConflictException(
                         message="Cannot prove an unassigned legacy instance has no tasks"
                     )
-                servers = (
-                    instance.distributed_servers.model_copy(deep=True)
-                    if instance.distributed_servers
-                    else DistributedServers()
+                source["distributed_servers"] = await self._legacy_stop_servers(
+                    instance, bindings
                 )
-                servers.legacy_stop = ModelInstanceLegacyStop(
-                    token=uuid4(),
-                    restart_count=instance.restart_count or 0,
-                    worker_ids=workers,
-                    worker_principal_ids={
-                        worker_id: bindings[worker_id] for worker_id in workers
-                    },
-                )
-                source["distributed_servers"] = servers
             if (
                 get_model_instance_workloads(instance) is not None
                 and not instance.distributed_servers.stop_requested
@@ -1992,7 +2132,8 @@ class ModelInstanceService:
         ids = set()
         try:
             for m in model_instances:
-                await m.update(self.session, source, auto_commit=False)
+                prepared = await self._prepare_recovery_policy(m, source)
+                await m.update(self.session, prepared, auto_commit=False)
                 ids.add(m.model_id)
             await self.session.commit()
 

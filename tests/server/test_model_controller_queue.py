@@ -19,22 +19,27 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.api.exceptions import ConflictException
 
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.schemas.models import (
+    BackendEnum,
     ComputedResourceClaim,
+    DistributedServerCoordinateModeEnum,
     DistributedServers,
     Model,
     ModelInstance,
+    ModelInstanceCreate,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
     SourceEnum,
 )
-from gpustack.server.bus import Event, EventType
+from gpustack.server.bus import Event, EventBus, EventType
 from gpustack.server.controllers import ModelController, ModelInstanceController
 from gpustack.server.services import ModelInstanceService
 from gpustack.server.workqueue import WorkEvent, WorkEventType
@@ -375,6 +380,499 @@ def managed_recovery():
             service=ModelInstanceService(session),
             write=write,
         )
+
+
+@pytest.fixture
+def legacy_recovery(managed_recovery):
+    ctx = managed_recovery
+    ctx.model.backend = BackendEnum.VLLM
+    ctx.instance.backend = BackendEnum.VLLM
+    ctx.instance.distributed_servers.workloads = None
+    ctx.instance.distributed_servers.orchestration_mode = 'legacy'
+    ctx.instance.distributed_servers.mode = (
+        DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+    )
+    return ctx
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failed_worker', [1, 2])
+@pytest.mark.parametrize('group_recovery', [None, True])
+@pytest.mark.parametrize('instance_type', [ModelInstance, ModelInstanceCreate])
+async def test_legacy_failure_events_persist_stop_confirmations_and_next_round(
+    failed_worker, group_recovery, instance_type, monkeypatch
+):
+    from gpustack.mixins import active_record
+    from gpustack.schemas.workers import Worker
+    from gpustack.server import controllers
+
+    engine = create_async_engine('sqlite+aiosqlite://')
+    bus = EventBus()
+    monkeypatch.setattr(active_record, 'event_bus', bus)
+    monkeypatch.setattr(controllers, 'event_bus', bus)
+
+    def session_factory():
+        return AsyncSession(engine, expire_on_commit=False)
+
+    monkeypatch.setattr(controllers, 'async_session', session_factory)
+    model = Model(
+        id=1,
+        name='recovery',
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id='org/repo',
+        backend=BackendEnum.VLLM,
+        backend_parameters=['--distributed-executor-backend=ray'],
+        restart_on_error=True,
+        cluster_id=1,
+    )
+    instance = ModelInstance(
+        id=1,
+        name='recovery-instance',
+        model_id=1,
+        model_name=model.name,
+        cluster_id=1,
+        worker_id=1,
+        source=model.source,
+        huggingface_repo_id=model.huggingface_repo_id,
+        backend=model.backend,
+        state=ModelInstanceStateEnum.RUNNING,
+        distributed_servers=DistributedServers(
+            mode=DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+            group_recovery=group_recovery,
+            subordinate_workers=[
+                ModelInstanceSubordinateWorker(
+                    worker_id=2, state=ModelInstanceStateEnum.RUNNING
+                )
+            ],
+        ),
+    )
+    try:
+        async with engine.begin() as connection:
+            for table in (Model.__table__, ModelInstance.__table__):
+                await connection.run_sync(table.create)
+        async with session_factory() as session:
+            session.add(model)
+            await session.commit()
+            source = (
+                instance
+                if instance_type is ModelInstance
+                else instance_type.model_validate(instance)
+            )
+            await ModelInstanceService(session).create(source)
+
+        instance_events = bus.subscribe('modelinstance', source='test')
+        model_events = bus.subscribe('model', source='test')
+        async with session_factory() as session:
+            current = await ModelInstance.one_by_id(session, instance.id)
+            if failed_worker == 1:
+                source = {'state': ModelInstanceStateEnum.ERROR}
+            else:
+                servers = current.distributed_servers.model_copy(deep=True)
+                servers.subordinate_workers[0].state = ModelInstanceStateEnum.ERROR
+                source = {'distributed_servers': servers}
+            await ModelInstanceService(session).update(current, source)
+
+        controller = _controller()
+
+        async def reconcile_next_event():
+            event = await asyncio.wait_for(instance_events.receive(), timeout=2)
+            await ModelInstanceController(controller._config)._reconcile(event)
+            model_event = await asyncio.wait_for(model_events.receive(), timeout=2)
+            await controller._reconcile(model_event)
+
+        with (
+            patch.object(
+                Worker,
+                'one_by_id',
+                AsyncMock(
+                    side_effect=lambda session, id, **kwargs: SimpleNamespace(
+                        system_principal_id=id * 10
+                    )
+                ),
+            ),
+            patch.object(controllers, 'sync_replicas', AsyncMock(return_value=None)),
+            patch.object(
+                controllers, 'sync_model_status', AsyncMock(return_value=False)
+            ),
+            patch.object(
+                controllers, 'cleanup_orphan_lora_routes', AsyncMock(return_value=False)
+            ),
+            patch.object(controller, '_sync_model_gateway', AsyncMock()),
+        ):
+            await reconcile_next_event()
+
+            async with session_factory() as session:
+                current = await ModelInstance.one_by_id(session, instance.id)
+                guard = current.distributed_servers.legacy_stop
+                assert current.state == ModelInstanceStateEnum.ERROR
+                assert current.restart_count == 0
+                assert guard is not None
+                assert guard.worker_ids == [1, 2]
+                assert guard.confirmed_worker_ids == []
+                assert guard.worker_principal_ids == {1: 10, 2: 20}
+
+            for confirmed in ([1], [1, 2]):
+                async with session_factory() as session:
+                    current = await ModelInstance.one_by_id(session, instance.id)
+                    servers = current.distributed_servers.model_copy(deep=True)
+                    servers.legacy_stop.confirmed_worker_ids = confirmed
+                    await ModelInstanceService(session).update(
+                        current, {'distributed_servers': servers}
+                    )
+                await reconcile_next_event()
+                async with session_factory() as session:
+                    current = await ModelInstance.one_by_id(session, instance.id)
+                    if confirmed == [1]:
+                        assert current.state == ModelInstanceStateEnum.ERROR
+                        assert current.restart_count == 0
+                        assert (
+                            current.distributed_servers.legacy_stop.token == guard.token
+                        )
+                        assert (
+                            current.distributed_servers.legacy_stop.confirmed_worker_ids
+                            == confirmed
+                        )
+                    else:
+                        assert current.state == ModelInstanceStateEnum.SCHEDULED
+                        assert current.restart_count == 1
+                        assert current.distributed_servers.legacy_stop is None
+                        assert current.distributed_servers.group_recovery is True
+                        assert (
+                            current.distributed_servers.subordinate_workers[0].state
+                            == ModelInstanceStateEnum.PENDING
+                        )
+    finally:
+        await bus.stop()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failed_worker', [1, 2])
+@pytest.mark.parametrize(
+    'backend', [BackendEnum.VLLM, BackendEnum.SGLANG, BackendEnum.ASCEND_MINDIE]
+)
+async def test_legacy_failure_stops_all_members_before_advancing_once(
+    legacy_recovery, failed_worker, backend
+):
+    from gpustack.schemas.workers import Worker
+
+    ctx = legacy_recovery
+    ctx.model.backend = ctx.instance.backend = backend
+    if failed_worker == 1:
+        ctx.instance.state = ModelInstanceStateEnum.ERROR
+        ctx.instance.state_message = 'engine failed'
+    else:
+        follower = ctx.instance.distributed_servers.subordinate_workers[0]
+        follower.state = ModelInstanceStateEnum.ERROR
+        follower.state_message = 'engine failed'
+    with patch.object(
+        Worker,
+        'one_by_id',
+        AsyncMock(
+            side_effect=lambda session, id, **kw: SimpleNamespace(
+                system_principal_id=id * 10
+            )
+        ),
+    ):
+        await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+    guard = ctx.instance.distributed_servers.legacy_stop
+    assert guard is not None
+    assert guard.worker_ids == [1, 2]
+    assert guard.worker_principal_ids == {1: 10, 2: 20}
+    assert ctx.instance.state == ModelInstanceStateEnum.ERROR
+    assert 'engine failed' in ctx.instance.state_message
+    assert ctx.instance.restart_count == 0
+    assert ctx.instance.draining_since is None
+    guard.confirmed_worker_ids = [1]
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+    assert ctx.instance.restart_count == 0
+    assert ctx.instance.distributed_servers.legacy_stop.token == guard.token
+    guard.confirmed_worker_ids = [1, 2]
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 1)
+    assert ctx.instance.restart_count == 1
+    assert ctx.instance.state == ModelInstanceStateEnum.SCHEDULED
+    assert ctx.instance.distributed_servers.legacy_stop is None
+    assert ctx.instance.distributed_servers.workloads is None
+    follower = ctx.instance.distributed_servers.subordinate_workers[0]
+    assert follower.state == ModelInstanceStateEnum.PENDING
+    assert follower.pid is None
+    assert ctx.instance.ports == [40000]
+    assert ctx.write.await_count == 2
+
+
+@pytest.mark.parametrize(
+    'backend,parameters,expected',
+    [
+        (BackendEnum.VLLM, ['--distributed-executor-backend=mp'], True),
+        (BackendEnum.VLLM, ['--distributed-executor-backend=ray'], True),
+        (BackendEnum.VLLM, ['--distributed-executor-backend=custom.Executor'], False),
+        (BackendEnum.VLLM, ['--enable-fault-tolerance'], False),
+        (BackendEnum.VLLM, ['--enable-elastic-ep'], False),
+        (
+            BackendEnum.VLLM,
+            ['--enable-elastic-ep', '--enable-fault-tolerance=false'],
+            False,
+        ),
+        (BackendEnum.SGLANG, ['--elastic-ep-backend=mooncake'], False),
+        (BackendEnum.SGLANG, [], True),
+        (BackendEnum.ASCEND_MINDIE, [], True),
+        (None, [], False),
+        ('custom', [], False),
+    ],
+)
+def test_legacy_group_recovery_respects_backend_recovery_boundary(
+    legacy_recovery, backend, parameters, expected
+):
+    from gpustack.utils.model_instance_workers import requires_group_recovery
+
+    ctx = legacy_recovery
+    ctx.instance.backend = backend
+    ctx.model.backend_parameters = parameters
+    assert requires_group_recovery(ctx.instance, ctx.model) is expected
+
+
+@pytest.mark.parametrize(
+    'backend,base_parameters,role_parameters,expected',
+    [
+        (BackendEnum.VLLM, [], ['--enable-fault-tolerance'], False),
+        (BackendEnum.VLLM, [], ['--enable-elastic-ep'], False),
+        (
+            BackendEnum.VLLM,
+            [],
+            ['--distributed-executor-backend=custom.Executor'],
+            False,
+        ),
+        (BackendEnum.VLLM, ['--enable-fault-tolerance'], [], True),
+        (BackendEnum.SGLANG, [], ['--elastic-ep-backend=mooncake'], False),
+        (BackendEnum.SGLANG, ['--elastic-ep-backend=mooncake'], [], True),
+    ],
+)
+def test_legacy_recovery_uses_role_parameters_before_startup_snapshot(
+    legacy_recovery, backend, base_parameters, role_parameters, expected
+):
+    from gpustack.schemas.models import RoleSpec
+    from gpustack.utils.model_instance_workers import requires_group_recovery
+
+    ctx = legacy_recovery
+    ctx.instance.backend = ctx.model.backend = backend
+    ctx.instance.role = 'engine'
+    ctx.model.backend_parameters = base_parameters
+    ctx.model.roles = [RoleSpec(name='engine', backend_parameters=role_parameters)]
+
+    assert requires_group_recovery(ctx.instance, ctx.model) is expected
+    assert ctx.model.backend_parameters == base_parameters
+
+
+@pytest.mark.parametrize('elastic_snapshot', [False, True])
+def test_legacy_recovery_prefers_launch_snapshot_to_edited_role(
+    legacy_recovery, elastic_snapshot
+):
+    from gpustack.schemas.models import ModelConfigSnapshot, RoleSpec
+    from gpustack.utils.model_instance_workers import requires_group_recovery
+
+    ctx = legacy_recovery
+    elastic = ['--enable-elastic-ep']
+    ctx.instance.role = 'engine'
+    ctx.instance.model_config_snapshot = ModelConfigSnapshot(
+        backend_parameters=elastic if elastic_snapshot else []
+    )
+    ctx.model.roles = [
+        RoleSpec(name='engine', backend_parameters=[] if elastic_snapshot else elastic)
+    ]
+
+    assert requires_group_recovery(ctx.instance, ctx.model) is not elastic_snapshot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('new_round', [False, True])
+@pytest.mark.parametrize('group_recovery', [False, True])
+@pytest.mark.parametrize('snapshot_present', [False, True])
+async def test_server_keeps_policy_until_the_next_round(
+    legacy_recovery, new_round, group_recovery, snapshot_present
+):
+    from gpustack.schemas.models import ModelConfigSnapshot
+
+    ctx = legacy_recovery
+    ctx.instance.restart_count = 3
+    ctx.instance.distributed_servers.group_recovery = group_recovery
+    ctx.instance.model_config_snapshot = (
+        ModelConfigSnapshot(
+            backend_parameters=[] if group_recovery else ['--enable-elastic-ep']
+        )
+        if snapshot_present
+        else None
+    )
+    ctx.model.backend_parameters = ['--enable-elastic-ep'] if group_recovery else []
+    if new_round and not group_recovery:
+        from gpustack.schemas.models import ModelInstanceLegacyStop
+        from uuid import uuid4
+
+        ctx.instance.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
+            token=uuid4(),
+            restart_count=3,
+            worker_ids=[1, 2],
+            worker_principal_ids={1: 10, 2: 20},
+            confirmed_worker_ids=[1, 2],
+        )
+    source = {'restart_count': 4} if new_round else {'state_message': 'observed'}
+    prepared = await ctx.service._prepare_recovery_policy(ctx.instance, source)
+    if new_round:
+        assert prepared['distributed_servers'].group_recovery is not group_recovery
+        assert prepared['model_config_snapshot'] is None
+        assert ctx.instance.distributed_servers.group_recovery is group_recovery
+    else:
+        assert prepared == source
+        assert ctx.instance.distributed_servers.group_recovery is group_recovery
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source_kind', ['in_place', 'dict', 'snapshot'])
+@pytest.mark.parametrize('group_recovery', [False, True])
+async def test_server_initializes_policy_without_a_launch_snapshot(
+    legacy_recovery, source_kind, group_recovery
+):
+    from gpustack.schemas.models import ModelInstanceUpdate
+
+    ctx = legacy_recovery
+    ctx.model.backend_parameters = [] if group_recovery else ['--enable-elastic-ep']
+    source = {
+        'state': ModelInstanceStateEnum.SCHEDULED,
+        'distributed_servers': ctx.instance.distributed_servers.model_copy(deep=True),
+    }
+    if source_kind == 'in_place':
+        source = None
+    elif source_kind == 'snapshot':
+        source = ModelInstanceUpdate(
+            **{
+                **ctx.instance.model_dump(),
+                **source,
+                'source': SourceEnum.LOCAL_PATH,
+                'local_path': '/model',
+            }
+        )
+    prepared = await ctx.service._prepare_recovery_policy(ctx.instance, source)
+    servers = (
+        ctx.instance.distributed_servers
+        if prepared is None
+        else prepared['distributed_servers']
+    )
+    assert servers.group_recovery is group_recovery
+
+
+@pytest.mark.asyncio
+async def test_old_round_snapshot_does_not_select_recovery_policy(legacy_recovery):
+    from gpustack.schemas.models import ModelConfigSnapshot, ModelInstanceLaunchIdentity
+
+    ctx = legacy_recovery
+    ctx.instance.restart_count = 4
+    ctx.instance.model_config_snapshot = ModelConfigSnapshot(
+        backend_parameters=[],
+        launch_identity=ModelInstanceLaunchIdentity(
+            instance_id=ctx.instance.id, worker_id=1, pid=100, restart_count=3
+        ),
+    )
+    ctx.model.backend_parameters = ['--enable-elastic-ep']
+    prepared = await ctx.service._prepare_recovery_policy(ctx.instance, {})
+    assert prepared['distributed_servers'].group_recovery is False
+
+
+@pytest.mark.asyncio
+async def test_entering_group_recovery_waits_for_every_old_member(legacy_recovery):
+    from gpustack.utils.model_instance_workers import requires_group_recovery
+
+    ctx = legacy_recovery
+    ctx.instance.restart_count = 3
+    ctx.instance.distributed_servers.group_recovery = False
+    ctx.model.backend_parameters = []
+    source = await ctx.service._prepare_recovery_policy(
+        ctx.instance, {'restart_count': 4, 'state': ModelInstanceStateEnum.SCHEDULED}
+    )
+    assert 'restart_count' not in source
+    assert source['state'] == ModelInstanceStateEnum.ERROR
+    assert source['distributed_servers'].group_recovery is False
+    assert source['distributed_servers'].legacy_stop.restart_count == 3
+    ctx.instance.distributed_servers = source['distributed_servers']
+    ctx.instance.state = source['state']
+    assert requires_group_recovery(ctx.instance, ctx.model)
+    for confirmed in ([], [1], [1, 2]):
+        ctx.instance.distributed_servers.legacy_stop.confirmed_worker_ids = confirmed
+        restart, _ = await ctx.service._managed_restart(ctx.instance, None)
+        if len(confirmed) < 2:
+            assert restart == {}
+        else:
+            prepared = await ctx.service._prepare_recovery_policy(ctx.instance, restart)
+            assert prepared['restart_count'] == 4
+            assert prepared['distributed_servers'].group_recovery is True
+            assert prepared['distributed_servers'].legacy_stop is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'blocked', ['restart_off', 'draining', 'model_restart', 'stopped', 'backoff']
+)
+async def test_legacy_recovery_keeps_existing_policy_and_persisted_backoff(
+    legacy_recovery, blocked
+):
+    from uuid import uuid4
+    from gpustack.schemas.models import ModelInstanceLegacyStop
+
+    ctx = legacy_recovery
+    ctx.instance.state = ModelInstanceStateEnum.ERROR
+    ctx.instance.restart_count = 2
+    ctx.instance.last_restart_time = datetime.now(timezone.utc)
+    ctx.instance.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
+        token=uuid4(),
+        restart_count=2,
+        worker_ids=[1, 2],
+        worker_principal_ids={1: 10, 2: 20},
+        confirmed_worker_ids=[1, 2],
+    )
+    if blocked == 'restart_off':
+        ctx.model.restart_on_error = False
+    elif blocked == 'draining':
+        ctx.instance.draining_since = datetime.now(timezone.utc)
+    elif blocked == 'model_restart':
+        ctx.model.restarting_since = datetime.now(timezone.utc)
+    elif blocked == 'stopped':
+        ctx.model.replicas = 0
+    due = await ModelInstanceService(ctx.session).reconcile_managed_instance(
+        ctx.instance.id, 2
+    )
+    assert ctx.instance.restart_count == 2
+    ctx.write.assert_not_awaited()
+    if blocked == 'backoff':
+        assert due == pytest.approx(20, abs=0.2)
+        ctx.instance.last_restart_time -= timedelta(seconds=21)
+        await ModelInstanceService(ctx.session).reconcile_managed_instance(
+            ctx.instance.id, 2
+        )
+        assert ctx.instance.restart_count == 3
+        assert ctx.instance.distributed_servers.legacy_stop is None
+
+
+@pytest.mark.asyncio
+async def test_model_controller_reconciles_legacy_follower_failure(legacy_recovery):
+    ctx = legacy_recovery
+    ctx.instance.distributed_servers.subordinate_workers[0].state = (
+        ModelInstanceStateEnum.ERROR
+    )
+    with (
+        patch.object(
+            ModelInstance, 'all_by_field', AsyncMock(return_value=[ctx.instance])
+        ),
+        patch.object(
+            ModelInstanceService,
+            'reconcile_managed_instance',
+            AsyncMock(return_value=12),
+        ) as reconcile,
+    ):
+        assert (
+            await _controller()._sync_managed_model_instances(ctx.session, ctx.model)
+            == 12
+        )
+    reconcile.assert_awaited_once_with(ctx.instance.id, 0, allow_restart=True)
 
 
 @pytest.mark.asyncio

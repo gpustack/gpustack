@@ -1241,11 +1241,14 @@ async def test_managed_epoch_refresh_waits_for_confirmed_old_member_removal(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('restarting', [False, True])
 @pytest.mark.parametrize(
     'changed',
     [None, 'router_epoch', 'worker', 'stop', 'peer_epoch', 'model', 'peer_address'],
 )
-async def test_membership_snapshot_write_is_fenced_after_http(monkeypatch, changed):
+async def test_membership_snapshot_write_is_fenced_after_http(
+    monkeypatch, changed, restarting
+):
     from unittest.mock import AsyncMock, MagicMock
     from gpustack.server import controllers
     from gpustack.schemas.models import Model, ModelInstance
@@ -1281,7 +1284,7 @@ async def test_membership_snapshot_write_is_fenced_after_http(monkeypatch, chang
     )
     model = _model()
     model.updated_at, model.deleted_at = None, None
-    model.restarting_since, model.replicas = None, 1
+    model.restarting_since, model.replicas = 'now' if restarting else None, 1
     expected = (
         router.id,
         router.worker_id,

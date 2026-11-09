@@ -1,19 +1,28 @@
 from dataclasses import dataclass
 import re
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from gpustack.schemas.models import (
+    BackendEnum,
+    DistributedServerCoordinateModeEnum,
     Model,
+    ModelBase,
+    ModelConfigSnapshot,
     ModelInstance,
     ModelInstanceLegacyStop,
     ModelInstanceBase,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
-    ModelInstanceWorkloadUpdate,
+    ModelInstanceMemberReport,
     ModelInstanceWorkloadObservation,
     ModelInstancePreparation,
     ModelInstanceStateEnum,
     member_worker_ids,
+    role_effective_model,
+)
+from gpustack.utils.command import (
+    find_bool_parameter,
+    find_parameter,
 )
 
 from gpustack.schemas.workers import Worker
@@ -124,11 +133,95 @@ def workload_topology(workloads: List[ModelInstanceWorkload]) -> Dict:
     }
 
 
+def requires_group_recovery(
+    instance: ModelInstanceBase, model: Optional[Model] = None
+) -> bool:
+    """Identify fixed-topology groups whose members must initialize together."""
+    if calculate_group_recovery_policy(instance, None) is None:
+        return False
+    if model_instance_legacy_stop(instance) is not None:
+        return True
+    if instance.distributed_servers.group_recovery is not None:
+        return instance.distributed_servers.group_recovery
+    config = getattr(instance, 'model_config_snapshot', None)
+    identity = getattr(config, 'launch_identity', None)
+    if identity is not None and (
+        identity.instance_id,
+        identity.worker_id,
+        identity.restart_count,
+    ) != (instance.id, instance.worker_id, instance.restart_count or 0):
+        config = None
+    if config is None and model is not None:
+        config = role_effective_model(model, instance.role)
+    return bool(calculate_group_recovery_policy(instance, config))
+
+
+def calculate_group_recovery_policy(
+    instance: ModelInstanceBase,
+    config: Optional[Union[ModelBase, ModelConfigSnapshot]],
+) -> Optional[bool]:
+    """Calculate a launch policy without consulting a round's stored decision."""
+    servers = instance.distributed_servers
+    if (
+        get_model_instance_workloads(instance) is not None
+        or servers is None
+        or servers.mode != DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+        or not servers.subordinate_workers
+    ):
+        return None
+    backend = instance.backend
+    if backend not in (BackendEnum.VLLM, BackendEnum.SGLANG, BackendEnum.ASCEND_MINDIE):
+        return None
+    parameters = config.backend_parameters if config is not None else []
+    if backend == BackendEnum.VLLM:
+        if any(
+            find_bool_parameter(parameters, [flag], last_wins=True)
+            for flag in ('enable-fault-tolerance', 'enable-elastic-ep')
+        ):
+            return False
+        return find_parameter(parameters, ['distributed-executor-backend']) in (
+            None,
+            'mp',
+            'ray',
+        )
+    return not (
+        backend == BackendEnum.SGLANG
+        and find_parameter(parameters, ['elastic-ep-backend'])
+    )
+
+
+def build_member_state_report(
+    instance: ModelInstanceBase, worker_id: int, **fields
+) -> ModelInstanceMemberReport:
+    """Report explicit local runtime fields against the observed instance round."""
+    for key in list(fields):
+        if key.startswith('distributed_servers.subordinate_workers.'):
+            subordinate = fields.pop(key)
+            if subordinate.worker_id != worker_id:
+                raise ValueError('A Worker may only report its own state')
+            fields.update(
+                {
+                    name: getattr(subordinate, name)
+                    for name in ('state', 'state_message', 'pid', 'ports', 'arguments')
+                }
+            )
+    preparation = {
+        key: fields.pop(key)
+        for key in list(fields)
+        if key in ModelInstancePreparation.model_fields
+    }
+    if preparation:
+        fields['preparation'] = ModelInstancePreparation(**preparation)
+    return ModelInstanceMemberReport(
+        restart_count=instance.restart_count or 0, **fields
+    )
+
+
 def worker_workload_report(instance, worker_id, workloads, **fields):
     """Send topology only for registration; retain Server intent in its snapshot."""
     local = get_model_instance_workloads(instance, worker_id) or []
     if local and workload_topology(local) == workload_topology(workloads):
-        return ModelInstanceWorkloadUpdate(
+        return ModelInstanceMemberReport(
             restart_count=instance.restart_count or 0,
             observations=[
                 ModelInstanceWorkloadObservation(
@@ -155,7 +248,7 @@ def worker_workload_report(instance, worker_id, workloads, **fields):
             for key in ('stop_requested', 'last_restart_time'):
                 value['component'].pop(key)
         payload.append(value)
-    return ModelInstanceWorkloadUpdate(
+    return ModelInstanceMemberReport(
         restart_count=instance.restart_count or 0, workloads=payload, **fields
     )
 
@@ -241,7 +334,7 @@ def model_instance_workloads_stopped(
 
 def managed_instance_update(
     instance: ModelInstance, **fields
-) -> ModelInstanceWorkloadUpdate:
+) -> ModelInstanceMemberReport:
     """Build a narrow Worker report rather than rewriting an instance snapshot."""
     preparation = None
     if fields.get("state") == ModelInstanceStateEnum.INITIALIZING:
@@ -253,7 +346,7 @@ def managed_instance_update(
                 if key in ModelInstancePreparation.model_fields
             }
         )
-    return ModelInstanceWorkloadUpdate(
+    return ModelInstanceMemberReport(
         restart_count=instance.restart_count or 0,
         preparation=preparation,
         **fields,

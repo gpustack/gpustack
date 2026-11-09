@@ -4,71 +4,104 @@ translation_status: translated
 
 # RAGFlow ile entegrasyon { #integrate-with-ragflow }
 
-RAGFlow, yerel olarak dağıtılan LLM'lerden, gömme modellerinden, yeniden sıralamadan, Konuşmadan Metne ve Metinden Konuşmaya yeteneklerinden yararlanmak için GPUStack ile entegre olabilir.
+RAGFlow, yerel olarak dağıtılan LLM'lerden, görsel modellerden, gömme modellerinden, yeniden sıralamadan, Konuşmadan Metne ve Metinden Konuşmaya yeteneklerinden yararlanmak için GPUStack ile entegre olabilir. RAGFlow, GPUStack'te çalışan modelleri kendisi bulur; bir kez bağlanıp eklenecek modelleri seçmeniz yeterlidir.
+
+!!! note
+
+    Bu kılavuz, GPUStack kurulum kartını ekleyen ve v1.0.0-rc3'ten sonra gelen bir RAGFlow sürümü gerektirir.
 
 ## Modelleri Dağıtma { #deploying-models }
 
-1. GPUStack kullanıcı arayüzünde, `Deployments` sayfasına gidin ve ihtiyacınız olan modelleri dağıtmak için `Deploy Model`'e tıklayın. İşte bazı örnek modeller:
+1. GPUStack kullanıcı arayüzünde `Deployments` sayfasına gidin ve ihtiyacınız olan modelleri dağıtmak için `Deploy Model` düğmesine tıklayın. RAGFlow yalnızca çalışan ve rotası olan modelleri bulduğundan `Enable Model Route` seçeneğini açık bırakın. Örnek modeller:
 
-- qwen3-8b
-- qwen2.5-vl-3b-instruct
-- bge-m3
-- bge-reranker-v2-m3
+    | Model | RAGFlow'daki türü |
+    | --- | --- |
+    | `qwen3-4b` | Chat |
+    | `qwen2.5-vl-3b-instruct` | Chat + Vision |
+    | `bge-m3` | Embedding |
+    | `bge-reranker-v2-m3` | Rerank |
+    | `faster-whisper-small` | Speech to text |
+    | `cosyvoice2-0.5b` | Text to speech |
 
-![gpustack-modelleri](../assets/integrations/integration-gpustack-models.png)
+2. Her modelin replikaları hazır olana kadar bekleyin:
 
-2. Modelin İşlemlerinde, bu modele nasıl entegre edileceğini görmek için `API Access Info`'ı açın.
+    ![GPUStack dağıtım listesi](../assets/integrations/integration-ragflow-gpustack-deployments.png)
 
-![gpustack-api-erişim-bilgisi](../assets/integrations/integration-gpustack-api-access-info.png)
+## API Anahtarı Oluşturma { #create-an-api-key }
 
-## API Anahtarı Oluşturun { #create-an-api-key }
+1. `Access Control` > `API Keys` sayfasına gidin, ardından `Add API Key` düğmesine tıklayın.
 
-1. `Access Control` > `API Keys` sayfasına gidin ve ardından `New API Key`'ye tıklayın.
+2. Adı girin ve `Access Permissions` altında `Model Access` seçili kalacak şekilde `All models` seçeneğini koruyun. Varsayılan `Expiration` değeri `1 month` olduğundan, RAGFlow bu anahtarı kullanmaya devam edecekse daha uzun bir süre seçin. Ardından `Save` düğmesine tıklayın.
 
-2. Adı girin ve ardından `Save`'a tıklayın.
+    ![GPUStack API anahtarı](../assets/integrations/integration-ragflow-gpustack-api-key.png)
 
-3. API anahtarını kopyalayın ve daha sonra kullanmak üzere kaydedin.
+3. API anahtarını kopyalayın ve daha sonra kullanmak üzere saklayın. Bundan sonra `API Keys` sayfası yalnızca maskelenmiş değeri gösterir.
 
-## GPUStack'i RAGFlow'a entegre etme { #integrating-gpustack-into-ragflow }
+## GPUStack'i RAGFlow'a Entegre Etme { #integrating-gpustack-into-ragflow }
 
-1. RAGFlow kullanıcı arayüzüne erişin, sağ üst köşeye gidin ve avatara tıklayın, `Model Providers > GPUStack`'yi seçin, ardından `Add the model`'i seçin ve doldurun:
+1. RAGFlow arayüzünü açın, `Model providers` sayfasını açmak için sağ üst köşedeki avatara tıklayın, ardından `Available models` altından `GPUStack` seçeneğini seçin.
 
-- Model tipi: Modele göre model tipini seçin.
+2. Aşağıdaki alanları doldurun, ardından `Connect` düğmesine tıklayın:
 
-- Model adı: Ad, GPUStack'te dağıtılan model adıyla eşleşmelidir.
+    - Instance name: Bu GPUStack sunucusunu RAGFlow'da tanımlayan herhangi bir ad, örneğin `gpustack`.
+    - GPUStack server URL: `/v1` yolu olmadan `http://your-gpustack-url`. Özel bir bağlantı noktası kullanıyorsanız ekleyin. `localhost` RAGFlow kapsayıcısını gösterdiği için kullanmayın. GPUStack, RAGFlow ile aynı ana makinede çalışıyorsa `http://host.docker.internal:<port>` kullanabilirsiniz.
+    - API key: Önceki adımlarda kopyaladığınız API anahtarı.
 
-- Temel URL: `http://your-gpustack-url/v1`, URL, yolu içermemeli ve konteynerin dahili ağına atıfta bulunduğundan `localhost` kullanmamalıdır. Özel bir bağlantı noktası kullanıyorsanız onu eklediğinizden emin olun. Ayrıca URL'ye RAGFlow kapsayıcısının içinden erişilebildiğinden emin olun (bunu `curl` ile test edebilirsiniz).
+3. RAGFlow çalışan modelleri türe göre gruplandırarak bağlam uzunluklarıyla birlikte listeler. Eklemek istemediğiniz modellerin onay kutusunu temizleyin. GPUStack bir modelin görüntü kabul edip etmediğini bildirmediğinden, `qwen2.5-vl-3b-instruct` gibi görsel modelleri `Chat + Vision` olarak ayarlayın:
 
-- API-Key: Önceki adımlardan kopyaladığınız API anahtarını girin.
+    ![RAGFlow'da GPUStack bağlantısı](../assets/integrations/integration-ragflow-connect-gpustack.png)
 
-- Maksimum Belirteçler: Geçerli model yapılandırması tarafından desteklenen maksimum belirteçleri girin.
+    Bağlantı başarısız olursa RAGFlow nedeni formun altında gösterir:
 
-Modeli eklemek için `OK`'e tıklayın:
+    - `GPUStack rejected this API key.`: API anahtarını `Access Control` > `API Keys` altında kontrol edin.
+    - `Cannot reach this server from RAGFlow.`: URL ve bağlantı noktasını RAGFlow kapsayıcısının içinden kontrol edin. Örneğin, RAGFlow `docker` dizininde aşağıdaki komutu çalıştırın; `"ok"` döndürmelidir:
 
-![ragflow-ekleme modeli](../assets/integrations/integration-ragflow-add-model.png)
+        ```bash
+        docker compose exec ragflow-cpu curl http://your-gpustack-url/healthz
+        ```
 
-2. Gerektiğinde diğer modelleri ekleyin, ardından `Set default models`'da eklenen modelleri seçin ve kaydedin:
+4. Listenin altındaki `Add 6 models` düğmesine tıklayın (sayı, seçiminize göre değişir). Eklenen modeller örnekte görünür:
 
-![ragflow-set-varsayılan-modeller](../assets/integrations/integration-ragflow-set-default-models.png)
+    ![RAGFlow'da model ekleme](../assets/integrations/integration-ragflow-add-model.png)
 
-Artık `Chat` ve `Knowledge Base`'deki modelleri kullanabilirsiniz, işte basit bir durum:
+    Daha sonra GPUStack'te başka modeller dağıtırsanız, bunları bulup eklemek için örnekteki `Refresh` düğmesine tıklayın.
 
-1. Yeni bir bilgi tabanı oluşturmak ve dosyanızı eklemek için `Knowledge base`'a gidin:
+5. `Set default models` düğmesine tıklayın ve her tür için bir model seçin. Her seçim hemen kaydedilir:
 
-![ragflow-oluşturma-bilgi-tabanı](../assets/integrations/integration-ragflow-create-knowledge-base.png)
+    ![RAGFlow'da varsayılan modeller](../assets/integrations/integration-ragflow-set-default-models.png)
 
-2. `Retrieval testing`'e gidin ve yeniden sıralama modelini `bge-reranker-v2-m3` olarak ayarlayın:
+## Modelleri Kullanma { #using-the-models }
 
-![ragflow-set-yeniden sıralama modeli](../assets/integrations/integration-ragflow-set-rerank-model.png)
+Artık modelleri `Dataset` ve `Chat` içinde kullanabilirsiniz. Basit bir örnek:
 
-3. `Chat`'de bir asistan oluşturun, önceden oluşturulmuş bilgi tabanını bağlayın ve bir sohbet modeli seçin:
+1. `Dataset` bölümüne gidin ve bir veri kümesi oluşturun. Varsayılan gömme modeli zaten seçilidir:
 
-![ragflow-oluşturma asistanı](../assets/integrations/integration-ragflow-create-assistant.png)
+    ![RAGFlow'da veri kümesi oluşturma](../assets/integrations/integration-ragflow-create-dataset.png)
 
-4. Bir sohbet oturumu oluşturun — artık modelle etkileşime girebilir ve bilgi tabanını sorgulayabilirsiniz:
+2. `Add file` > `Upload file` düğmesine tıklayın, `Parse on creation` seçeneğini açın, dosyanızı seçin ve `Save` düğmesine tıklayın. Ayrıştırma bittiğinde dosya, parça sayısını gösterir:
 
-![modelle-ragflow-sohbet](../assets/integrations/integration-ragflow-chat-with-model.png)
+    ![RAGFlow'da dosya yükleme](../assets/integrations/integration-ragflow-upload-file.png)
 
-5. Asistanı düzenleyin ve modeli `qwen2.5-vl-3b-instruct` olarak değiştirin. Kaydettikten sonra yeni bir sohbet oluşturun ve çok modlu girişi etkinleştirmek için bir resim yükleyin:
+3. `Retrieval testing` bölümüne gidin, `Rerank model` değerini `bge-reranker-v2-m3` olarak ayarlayın, bir soru girin ve `Run` düğmesine tıklayın:
 
-![vlm ile ragflow-sohbet](../assets/integrations/integration-ragflow-chat-with-vlm.png)
+    ![RAGFlow'da yeniden sıralama modeli](../assets/integrations/integration-ragflow-set-rerank-model.png)
+
+4. `Chat` içinde bir sohbet oluşturup açın. Sağ üst köşedeki ayarlar simgesine tıklayın, `Datasets` altından veri kümesini seçin, `Model` altındaki sohbet modelini kontrol edin ve `Save` düğmesine tıklayın:
+
+    ![RAGFlow'da sohbet ayarları](../assets/integrations/integration-ragflow-create-assistant.png)
+
+    `Retrieval testing` bölümünde seçilen yeniden sıralama modeli sohbetlere uygulanmaz. Bir sohbetin aramasını yeniden sıralamak için aynı ayarlarda `Advanced settings` > `Naive` bölümünü genişletin, `Rerank model` değerini `bge-reranker-v2-m3` olarak ayarlayın ve `Save` düğmesine tıklayın.
+
+5. Bir mesaj gönderin. Artık modelle etkileşime geçebilir ve veri kümesini sorgulayabilirsiniz:
+
+    ![RAGFlow'da modelle sohbet](../assets/integrations/integration-ragflow-chat-with-model.png)
+
+6. Yanıtların sesli okunması için `Advanced settings` altında `Text to speech` seçeneğini açın ve `Save` düğmesine tıklayın. Bir yanıtın üzerine gelin ve hoparlör simgesine tıklayın; ses çalarken simge duraklatma simgesine dönüşür:
+
+    ![RAGFlow'da yanıtı sesli okuma](../assets/integrations/integration-ragflow-read-aloud.png)
+
+7. Sesli giriş için mesaj kutusundaki mikrofon simgesine tıklayın, konuşun ve durdurmak için simgeye yeniden tıklayın. RAGFlow kaydı varsayılan Speech to text modeliyle metne dönüştürür ve mesajınız olarak gönderir.
+
+8. Bir görüntü hakkında sohbet etmek için sohbet ayarlarında `Model` değerini `qwen2.5-vl-3b-instruct` olarak değiştirin ve yanıtlara ilgisiz belgelerden alıntılar karışmaması için `Datasets` alanını temizleyin. `Save` düğmesine tıklayın, yeni bir konuşma başlatın, ataş simgesiyle bir görüntü ekleyin ve sorunuzu gönderin:
+
+    ![RAGFlow'da görsel modelle sohbet](../assets/integrations/integration-ragflow-chat-with-vlm.png)

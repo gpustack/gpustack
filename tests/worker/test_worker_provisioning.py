@@ -1,8 +1,11 @@
 import os
+import multiprocessing
+import signal
 import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
+import psutil
 from kubernetes import client
 from gpustack_runtime import envs as runtime_envs
 from gpustack_runtime.deployer import (
@@ -14,7 +17,96 @@ from gpustack_runtime.deployer import (
 )
 
 from gpustack.utils.runtime import transform_workload_plan
+from gpustack.utils.process import (
+    add_signal_handlers,
+    terminate_multiprocessing_process,
+)
 from gpustack.worker.provisioning import _provision, run_provisioning
+
+
+def _wait_for_shutdown(ready, mode="terminate"):
+    if mode == "tree":
+        child = multiprocessing.get_context("spawn").Process(
+            target=_wait_for_shutdown, args=(ready,)
+        )
+        child.start()
+        child.join()
+        return
+    if mode == "kill":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    elif mode == "handler":
+        add_signal_handlers()
+    ready.set()
+    if mode != "exit":
+        threading.Event().wait()
+
+
+@pytest.mark.parametrize("mode", ["exit", "terminate", "kill", "handler", "tree"])
+def test_owned_process_stop_preserves_exit_status_and_cleans_children(mode):
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    process = context.Process(target=_wait_for_shutdown, args=(ready, mode))
+    children = []
+    try:
+        process.start()
+        assert ready.wait(15)
+        if mode == "exit":
+            process.join(timeout=5)
+            assert process.exitcode == 0
+        elif mode == "tree":
+            children = psutil.Process(process.pid).children(recursive=True)
+            assert children
+
+        terminate_multiprocessing_process(process)
+        assert not process.is_alive()
+        assert process.exitcode is not None
+        assert not psutil.pid_exists(process.pid)
+        assert all(not child.is_running() for child in children)
+        exitcode = process.exitcode
+        terminate_multiprocessing_process(process)
+        assert process.exitcode == exitcode
+    finally:
+        for child in children:
+            if child.is_running():
+                child.kill()
+        if process.pid is not None:
+            process.kill()
+            process.join(timeout=5)
+        if not process.is_alive():
+            process.close()
+
+
+@pytest.mark.parametrize("error_type", [psutil.AccessDenied, psutil.Error])
+@pytest.mark.parametrize("failure_stage", ["lookup", "children", "cleanup"])
+def test_owned_process_stop_reaps_parent_after_psutil_error(error_type, failure_stage):
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    process = context.Process(target=_wait_for_shutdown, args=(ready,))
+    try:
+        process.start()
+        assert ready.wait(15)
+        with (
+            patch("gpustack.utils.process.psutil.Process") as lookup,
+            patch("gpustack.utils.process.terminate_processes") as cleanup,
+        ):
+            failure_operation = {
+                "lookup": lookup,
+                "children": lookup.return_value.children,
+                "cleanup": cleanup,
+            }[failure_stage]
+            failure_operation.side_effect = error_type()
+
+            terminate_multiprocessing_process(process)
+
+        assert not process.is_alive()
+        assert process.exitcode is not None
+        assert not psutil.pid_exists(process.pid)
+    finally:
+        if process.pid is not None:
+            process.kill()
+            process.join(timeout=5)
+        if not process.is_alive():
+            process.close()
 
 
 def test_cancelled_launch_does_not_spawn(tmp_path):
@@ -29,21 +121,41 @@ def test_cancelled_launch_does_not_spawn(tmp_path):
 
 def test_cancellation_terminates_and_reaps_the_child(tmp_path):
     cancelled = threading.Event()
-    process = MagicMock()
-    process.pid = 12345
-    process.start.side_effect = cancelled.set
-    process.is_alive.side_effect = [True, False]
-    with (
-        patch("gpustack.worker.provisioning.multiprocessing.get_context") as context,
-        patch("gpustack.worker.provisioning.terminate_process_tree") as terminate,
-    ):
-        context.return_value.Process.return_value = process
-        assert (
-            run_provisioning(MagicMock(), tmp_path / "startup.log", cancelled) is None
-        )
-    terminate.assert_called_once_with(12345)
-    process.join.assert_called_once()
-    process.close.assert_called_once()
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    process = context.Process(target=_wait_for_shutdown, args=(ready,))
+    start = process.start
+
+    def start_and_cancel(self):
+        start()
+        assert ready.wait(10)
+        cancelled.set()
+
+    try:
+        with (
+            patch(
+                "gpustack.worker.provisioning.multiprocessing.get_context"
+            ) as factory,
+            patch.object(type(process), "start", start_and_cancel),
+        ):
+            factory.return_value.Process.return_value = process
+            assert (
+                run_provisioning(MagicMock(), tmp_path / "startup.log", cancelled)
+                is None
+            )
+        with pytest.raises(ValueError, match="closed"):
+            process.is_alive()
+    finally:
+        try:
+            process.is_alive()
+        except ValueError:
+            pass
+        else:
+            if process.pid is not None:
+                process.kill()
+                process.join(timeout=5)
+            if not process.is_alive():
+                process.close()
 
 
 def test_provisioning_failure_is_returned_to_the_status_writer(tmp_path):

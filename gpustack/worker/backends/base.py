@@ -70,6 +70,10 @@ from gpustack.utils.command import flatten_to_argv, is_parameter_key
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
     managed_instance_update,
+    requires_group_recovery,
+    calculate_group_recovery_policy,
+    build_member_state_report,
+    model_instance_legacy_stop,
 )
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars
@@ -319,20 +323,35 @@ class InferenceServer(ABC):
             sys.exit(1)
 
     def _stop_when_starting(self, event: Event) -> bool:
-        if event.data["state"] == ModelInstanceStateEnum.ERROR:
+        data = event.data
+        if calculate_group_recovery_policy(self._model_instance, None) is not None:
+            current = ModelInstance.model_validate(data)
+            if (
+                (current.restart_count or 0)
+                != (self._model_instance.restart_count or 0)
+                or model_instance_legacy_stop(current) is not None
+                or current.draining_since is not None
+            ):
+                raise ModelInstanceStateError()
+            policy = self._model_instance.distributed_servers.group_recovery
+            if current.distributed_servers.group_recovery not in (None, policy):
+                raise ModelInstanceStateError()
+            current.distributed_servers.group_recovery = policy
+            data = current.model_dump()
+        if data["state"] == ModelInstanceStateEnum.ERROR:
             raise ModelInstanceStateError()
-        elif event.data["state"] == ModelInstanceStateEnum.STARTING:
-            resolved_path = event.data["resolved_path"]
+        elif data["state"] == ModelInstanceStateEnum.STARTING:
+            resolved_path = data["resolved_path"]
             if not resolved_path:
                 raise ValueError(
                     "Model instance reached STARTING without a resolved model path"
                 )
             self._model_path = str(Path(resolved_path).absolute())
-            if event.data["draft_model_resolved_path"]:
+            if data["draft_model_resolved_path"]:
                 self._draft_model_path = str(
-                    Path(event.data["draft_model_resolved_path"]).absolute()
+                    Path(data["draft_model_resolved_path"]).absolute()
                 )
-            self._model_instance = ModelInstance.model_validate(event.data)
+            self._model_instance = ModelInstance.model_validate(data)
             return True
 
         return False
@@ -362,6 +381,18 @@ class InferenceServer(ABC):
         # `{data_dir}` substitution, which they would miss the other way
         # round.
         model = role_effective_model(model, self._model_instance.role)
+        policy = calculate_group_recovery_policy(self._model_instance, model)
+        if policy is not None:
+            current = self._clientset.model_instances.get(
+                id=self._model_instance.id, use_cache=False
+            )
+            if (current.restart_count or 0) != (
+                self._model_instance.restart_count or 0
+            ):
+                raise ModelInstanceStateError()
+            self._model_instance = ModelInstance.model_validate(current.model_dump())
+            if current.distributed_servers.group_recovery != policy:
+                raise RuntimeError('Launch configuration differs from recovery policy')
         # Freeze user inputs before substitutions and command builders mutate
         # the effective model. Reports must describe this launch's inputs.
         self._model_config_snapshot = ModelConfigSnapshot.model_validate(
@@ -381,6 +412,13 @@ class InferenceServer(ABC):
         )
 
     def _update_model_instance(self, id: int, **kwargs):
+        if requires_group_recovery(self._model_instance, getattr(self, '_model', None)):
+            return self._clientset.model_instances.report_workloads(
+                id=id,
+                report=build_member_state_report(
+                    self._model_instance, self._worker.id, **kwargs
+                ),
+            )
         mi_public = self._clientset.model_instances.get(id=id)
         if get_model_instance_workloads(mi_public) is not None:
             current = self._clientset.model_instances.get(id=id, use_cache=False)
@@ -431,7 +469,11 @@ class InferenceServer(ABC):
         Fetches the latest model instance to get the current subordinate worker state,
         then updates only this worker's entry.
         """
-        if get_model_instance_workloads(self._model_instance) is not None:
+        if get_model_instance_workloads(
+            self._model_instance
+        ) is not None or requires_group_recovery(
+            self._model_instance, getattr(self, '_model', None)
+        ):
             return self._update_model_instance(
                 self._model_instance.id,
                 state=ModelInstanceStateEnum.ERROR,
@@ -2052,6 +2094,21 @@ exec "$@"
         If the deployer is docker, transform the generic WorkloadPlan to DockerWorkloadPlan,
         and fill the pause image and restart image with registry override.
         """
+        if calculate_group_recovery_policy(self._model_instance, None) is not None:
+            current = self._clientset.model_instances.get(
+                id=self._model_instance.id, use_cache=False
+            )
+            if (
+                (current.restart_count or 0)
+                != (self._model_instance.restart_count or 0)
+                or current.state == ModelInstanceStateEnum.ERROR
+                or current.draining_since is not None
+                or model_instance_legacy_stop(current) is not None
+                or self._worker.id not in member_worker_ids(current)
+                or current.distributed_servers.group_recovery
+                != self._model_instance.distributed_servers.group_recovery
+            ):
+                raise ModelInstanceStateError()
         selector = getattr(self._model, "gpu_type_selector", None)
         if selector is not None and not accelerator_free:
             # Hand the operator InstanceType name to the runtime; the

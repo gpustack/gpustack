@@ -782,8 +782,9 @@ async def test_managed_maintenance_does_not_hide_a_lost_heartbeat(managed_worker
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('event_type', [EventType.UPDATED, EventType.DELETED])
+@pytest.mark.parametrize('recovering', [False, True])
 async def test_guarded_legacy_worker_loss_cannot_retire_the_stop_barrier(
-    managed_worker, event_type
+    managed_worker, event_type, recovering
 ):
     from uuid import uuid4
     from gpustack.schemas.models import ModelInstanceLegacyStop
@@ -791,6 +792,9 @@ async def test_guarded_legacy_worker_loss_cannot_retire_the_stop_barrier(
     s = managed_worker
     s.instance.distributed_servers.workloads = None
     s.instance.distributed_servers.orchestration_mode = "legacy"
+    if recovering:
+        s.instance.state = ModelInstanceStateEnum.ERROR
+        s.instance.state_message = 'engine failed'
     s.instance.distributed_servers.legacy_stop = ModelInstanceLegacyStop(
         token=uuid4(),
         restart_count=3,

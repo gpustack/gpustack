@@ -5,13 +5,153 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gpustack.api.exceptions import BadRequestException
+from gpustack.api.exceptions import BadRequestException, NotFoundException
 from gpustack.routes.model_instances import _exact_length_chunks
 from gpustack.routes.worker.logs import get_serve_logs
 from gpustack.worker import logs as worker_logs
 from gpustack.worker.logs import LogOptions
+from gpustack.worker.log_sources import (
+    main_log_path,
+    container_log_path,
+    sidecar_container_log_path,
+)
 
 MODULE = "gpustack.routes.worker.logs"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('paged', [False, True])
+async def test_explicit_round_does_not_fall_back_to_follower_local_latest(
+    tmp_path, paged
+):
+    directory = tmp_path / 'serve'
+    main = main_log_path(directory, 'model', 7, 7)
+    main.parent.mkdir(parents=True)
+    main.write_text('old startup\n')
+    container_log_path(directory, 'model', 7, 7).write_text('old engine\n')
+    options = LogOptions(offset=0 if paged else None)
+    with pytest.raises(NotFoundException):
+        await get_serve_logs(
+            _request(tmp_path),
+            7,
+            options,
+            current_restart_count=8,
+            container_name=None,
+            model_file_id=None,
+        )
+    options.previous = True
+    response = await get_serve_logs(
+        _request(tmp_path),
+        7,
+        options,
+        current_restart_count=8,
+        container_name=None,
+        model_file_id=None,
+    )
+    body = b''.join(
+        [
+            chunk if isinstance(chunk, bytes) else chunk.encode()
+            async for chunk in response.body_iterator
+        ]
+    )
+    assert b'old startup' in body
+    assert b'old engine' in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('paged', [False, True])
+@pytest.mark.parametrize('container', [None, 'default'])
+async def test_explicit_round_keeps_download_logs_before_preparation_exists(
+    tmp_path, paged, container
+):
+    directory = tmp_path / 'serve'
+    directory.mkdir()
+    (directory / 'model_file_9.download.log').write_text('preparing model\n')
+    response = await get_serve_logs(
+        _request(tmp_path),
+        7,
+        LogOptions(offset=0 if paged else None),
+        current_restart_count=8,
+        container_name=container,
+        model_file_id=9,
+    )
+    body = b''.join(
+        [
+            chunk if isinstance(chunk, bytes) else chunk.encode()
+            async for chunk in response.body_iterator
+        ]
+    )
+    assert b'preparing model' in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('paged', [False, True])
+@pytest.mark.parametrize('previous', [False, True])
+@pytest.mark.parametrize(
+    'existing,requested',
+    [
+        ('router', None),
+        ('router', 'default'),
+        ('main', 'ray-head'),
+        ('router', 'ray-head'),
+    ],
+)
+async def test_explicit_round_requires_the_requested_stream(
+    tmp_path, paged, previous, existing, requested
+):
+    directory = tmp_path / 'serve'
+    path = (
+        main_log_path(directory, 'model', 7, 8 - int(previous))
+        if existing == 'main'
+        else sidecar_container_log_path(
+            directory, 'model', 7, existing, 8 - int(previous)
+        )
+    )
+    path.parent.mkdir(parents=True)
+    path.write_text('unrelated output\n')
+    (directory / 'model_file_9.download.log').write_text('download output\n')
+
+    with pytest.raises(NotFoundException):
+        await get_serve_logs(
+            _request(tmp_path),
+            7,
+            LogOptions(offset=0 if paged else None, previous=previous),
+            current_restart_count=8,
+            container_name=requested,
+            model_file_id=9 if requested == 'ray-head' else None,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('paged', [False, True])
+@pytest.mark.parametrize('previous', [False, True])
+async def test_explicit_round_streams_only_the_requested_sidecar(
+    tmp_path, paged, previous
+):
+    directory = tmp_path / 'serve'
+    restart = 8 - int(previous)
+    main = main_log_path(directory, 'model', 7, restart)
+    main.parent.mkdir(parents=True)
+    main.write_text('startup output\n')
+    (directory / 'model_file_9.download.log').write_text('download output\n')
+    sidecar_container_log_path(directory, 'model', 7, 'ray-head', restart).write_text(
+        'ray output\n'
+    )
+    response = await get_serve_logs(
+        _request(tmp_path),
+        7,
+        LogOptions(offset=0 if paged else None, previous=previous),
+        current_restart_count=8,
+        container_name='ray-head',
+        model_file_id=9,
+    )
+    body = b''.join(
+        [
+            chunk if isinstance(chunk, bytes) else chunk.encode()
+            async for chunk in response.body_iterator
+        ]
+    )
+    assert body == b'ray output\n'
 
 
 def _request(log_dir):
