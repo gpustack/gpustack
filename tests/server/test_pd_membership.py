@@ -370,12 +370,13 @@ async def test_the_proxy_is_passed_to_every_call_not_just_the_read():
     report an empty registry it could never fill — the failure would look like
     a router refusing members rather than like a network it cannot cross."""
     seen = []
+    workers = []
 
     class _Response:
         status = 200
 
         async def json(self):
-            return {"workers": []}
+            return {"workers": workers}
 
         async def text(self):
             return ""
@@ -389,6 +390,8 @@ async def test_the_proxy_is_passed_to_every_call_not_just_the_read():
     class _Client:
         def request(self, method, url, **kwargs):
             seen.append((method, url, kwargs.get("proxy")))
+            if method == "POST":
+                workers.append(kwargs["json"])
             return _Response()
 
         async def close(self):
@@ -404,7 +407,7 @@ async def test_the_proxy_is_passed_to_every_call_not_just_the_read():
         _instance("prefill", 40055),
         _instance("decode", 40029),
     ]
-    await pd_membership.reconcile(
+    outcome = await pd_membership.reconcile(
         _model(),
         mode,
         instances,
@@ -419,6 +422,8 @@ async def test_the_proxy_is_passed_to_every_call_not_just_the_read():
     # And the reads and the writes both happened, so this is not vacuous.
     assert any(method == "GET" for method, _, _ in seen), seen
     assert any(method == "POST" for method, _, _ in seen), seen
+    assert outcome.ok is True
+    assert outcome.registered == ["http://10.0.0.1:40029", "http://10.0.0.1:40055"]
 
 
 @pytest.mark.asyncio
@@ -426,12 +431,13 @@ async def test_no_proxy_leaves_the_direct_path_unchanged():
     """`get_proxy_address()` returns None for every mode but `tunnel`, so every
     other deployment must keep dialling direct."""
     seen = []
+    workers = []
 
     class _Response:
         status = 200
 
         async def json(self):
-            return {"workers": []}
+            return {"workers": workers}
 
         async def text(self):
             return ""
@@ -445,6 +451,8 @@ async def test_no_proxy_leaves_the_direct_path_unchanged():
     class _Client:
         def request(self, method, url, **kwargs):
             seen.append(kwargs.get("proxy"))
+            if method == "POST":
+                workers.append(kwargs["json"])
             return _Response()
 
         async def close(self):
@@ -452,7 +460,7 @@ async def test_no_proxy_leaves_the_direct_path_unchanged():
 
     from gpustack.server.pd_mode_catalog import get_pd_mode
 
-    await pd_membership.reconcile(
+    outcome = await pd_membership.reconcile(
         _model(),
         get_pd_mode("vllm-nixl"),
         [
@@ -463,6 +471,8 @@ async def test_no_proxy_leaves_the_direct_path_unchanged():
         client=_Client(),
     )
     assert seen and all(proxy is None for proxy in seen), seen
+    assert outcome.ok is True
+    assert outcome.registered == ["http://10.0.0.1:40055"]
 
 
 # --- restarting only where restarting can help ------------------------------
@@ -622,6 +632,13 @@ async def test_a_member_is_removed_by_the_id_the_registry_reports():
 
     seen = []
     uuid = "cd144cb9-2026-4854-9478-7b67c10de9ca"
+    workers = [
+        {
+            "id": uuid,
+            "url": "http://10.0.0.1:40099",
+            "worker_type": "prefill",
+        }
+    ]
 
     class _Response:
         status = 200
@@ -644,17 +661,15 @@ async def test_a_member_is_removed_by_the_id_the_registry_reports():
     class _Client:
         def request(self, method, url, **kwargs):
             seen.append((method, url))
-            return _Response(
-                {
-                    "workers": [
-                        {
-                            "id": uuid,
-                            "url": "http://10.0.0.1:40099",
-                            "worker_type": "prefill",
-                        }
-                    ]
-                }
-            )
+            if method == "POST":
+                workers.append({**kwargs["json"], "id": "new-member"})
+            elif method == "DELETE":
+                workers[:] = [
+                    worker
+                    for worker in workers
+                    if not url.endswith(f"/workers/{worker['id']}")
+                ]
+            return _Response({"workers": workers})
 
         async def close(self):
             return None
@@ -672,7 +687,8 @@ async def test_a_member_is_removed_by_the_id_the_registry_reports():
     assert deletes == [f"http://10.0.0.1:40012/workers/{uuid}"], seen
     # And not the address form, which this router version answers with 400.
     assert not any("40099" in url for url in deletes), deletes
-    assert outcome is not None
+    assert outcome.ok is True
+    assert outcome.registered == ["http://10.0.0.1:40010"]
 
 
 @pytest.mark.asyncio

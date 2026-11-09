@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -19,8 +20,10 @@ from gpustack.utils.command import find_parameter
 from gpustack.utils.compat_importlib import pkg_resources
 
 
-@pytest.fixture(params=["model-catalog.yaml", "model-catalog-modelscope.yaml"])
-def packaged_catalog(request, monkeypatch):
+@pytest.fixture(
+    scope="module", params=["model-catalog.yaml", "model-catalog-modelscope.yaml"]
+)
+def catalog_entries(request):
     path = pkg_resources.files("gpustack.assets").joinpath(request.param)
     content = normalize_catalog_yaml(catalog.read_builtin_catalog_text(str(path)))
     entries = [
@@ -69,8 +72,17 @@ def packaged_catalog(request, monkeypatch):
             ),
         )
     )
-    monkeypatch.setattr(catalog, "_model_set_entries", AsyncMock(return_value=entries))
-    return request.param
+    return request.param, entries
+
+
+@pytest.fixture
+def packaged_catalog(catalog_entries, monkeypatch):
+    filename, entries = catalog_entries
+    # Evaluation may modify nested payloads; only parsing is shared across tests.
+    monkeypatch.setattr(
+        catalog, "_model_set_entries", AsyncMock(return_value=deepcopy(entries))
+    )
+    return filename
 
 
 def make_model(catalog_file, name="hardware-defaults", **kwargs):

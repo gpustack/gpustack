@@ -23,16 +23,22 @@ def _principal(kind):
     )
 
 
-@pytest.fixture
-def metrics_api(monkeypatch, config, tmp_path):
-    monkeypatch.setattr(config, "data_dir", str(tmp_path))
-    monkeypatch.setattr(metrics, "_config_cache", {})
-    monkeypatch.setattr(metrics, "_cache_locks", {})
+@pytest.fixture(scope="module")
+def management_app():
     app = FastAPI()
     register_handlers(app)
     app.include_router(management_router)
+    return app
+
+
+@pytest.fixture
+def metrics_api(management_app, monkeypatch, config, tmp_path):
+    monkeypatch.setattr(config, "data_dir", str(tmp_path))
+    monkeypatch.setattr(metrics, "_config_cache", {})
+    monkeypatch.setattr(metrics, "_cache_locks", {})
+    monkeypatch.setattr(management_app, "dependency_overrides", {})
     return SimpleNamespace(
-        app=app,
+        app=management_app,
         path=tmp_path / "custom_metrics_config.yaml",
     )
 

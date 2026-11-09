@@ -14,6 +14,8 @@ chart repository turns this suite red.
 import pathlib
 import shutil
 import subprocess
+from copy import deepcopy
+from functools import lru_cache
 
 import pytest
 import yaml
@@ -21,6 +23,7 @@ import yaml
 from gpustack import __operator_version__
 
 HELM = shutil.which("helm")
+SAFE_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 pytestmark = pytest.mark.skipif(HELM is None, reason="helm is not installed")
 
@@ -116,6 +119,18 @@ SERVER_AND_TOKEN = [
 
 
 def render(*args: str) -> list[dict]:
+    # Identical values render once, but assertions receive independent objects.
+    return deepcopy(_render(*args))
+
+
+@pytest.fixture(scope="module", autouse=True)
+def render_cache():
+    yield
+    _render.cache_clear()
+
+
+@lru_cache(maxsize=None)
+def _render(*args: str) -> list[dict]:
     result = subprocess.run(
         [HELM, "template", "gpustack", CHART, *BASE, *args],
         capture_output=True,
@@ -124,7 +139,7 @@ def render(*args: str) -> list[dict]:
     )
     if result.returncode != 0:
         pytest.fail(f"helm template failed:\n{result.stderr}")
-    return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    return [doc for doc in yaml.load_all(result.stdout, Loader=SAFE_YAML_LOADER) if doc]
 
 
 def render_error(*args: str) -> str:
