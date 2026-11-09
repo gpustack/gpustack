@@ -122,8 +122,18 @@ async def test_reranker_candidate_vram_reservation(config, architecture, expecte
     assert candidates[0].computed_resource_claim.vram_utilization == expected_gmu
 
 
+@pytest.mark.parametrize(
+    "gmu_parameter",
+    [
+        # vLLM's argparse accepts both spellings, so the override must be
+        # honored in either form.
+        ["--gpu-memory-utilization=0.5"],
+        ["--gpu_memory_utilization=0.5"],
+    ],
+    ids=["dash", "underscore"],
+)
 @pytest.mark.asyncio
-async def test_gmu_user_override_wins_for_reranker(config):
+async def test_gmu_user_override_wins_for_reranker(config, gmu_parameter):
     """An explicit --gpu-memory-utilization backend parameter overrides the
     default for non-LLM categories, so shared-GPU users can book less than
     the whole-card fraction.
@@ -135,7 +145,7 @@ async def test_gmu_user_override_wins_for_reranker(config):
         huggingface_repo_id="test/reranker",
         backend=BackendEnum.VLLM,
         categories=[CategoryEnum.RERANKER],
-        backend_parameters=["--gpu-memory-utilization=0.5"],
+        backend_parameters=gmu_parameter,
     )
     selector = VLLMResourceFitSelector(
         config, model, [], resource_view=ResourceView([])

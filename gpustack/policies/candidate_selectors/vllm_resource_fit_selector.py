@@ -187,9 +187,11 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._gpu_memory_utilization = 0.9
 
         self._gpu_memory_utilization_parameter_name = "gpu-memory-utilization"
+        # vLLM accepts both spellings (as its own argparse does), so the
+        # user override must be detected in either form.
         gmu = find_parameter(
             self._model.backend_parameters,
-            [self._gpu_memory_utilization_parameter_name],
+            ["gpu-memory-utilization", "gpu_memory_utilization"],
         )
         if gmu:
             self._gpu_memory_utilization = float(gmu)

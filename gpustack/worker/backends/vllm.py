@@ -1661,7 +1661,10 @@ class VLLMServer(InferenceServer):
         if not claim or not claim.vram_utilization:
             return []
         if (
-            find_parameter(self._model.backend_parameters, ["gpu-memory-utilization"])
+            find_parameter(
+                self._model.backend_parameters,
+                ["gpu-memory-utilization", "gpu_memory_utilization"],
+            )
             is not None
         ):
             return []

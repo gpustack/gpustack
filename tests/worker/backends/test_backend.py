@@ -1725,10 +1725,22 @@ def _make_vllm_backend_for_gmu(claim, backend_parameters):
             [],
             ["--gpu-memory-utilization", "0.9"],
         ),
-        # An explicit user parameter wins; GPUStack injects nothing.
+        # An explicit user parameter wins; GPUStack injects nothing. vLLM's
+        # argparse accepts the underscore spelling, so both forms suppress
+        # the injection.
         (
             types.SimpleNamespace(vram_utilization=0.9),
             ["--gpu-memory-utilization=0.5"],
+            None,
+        ),
+        (
+            types.SimpleNamespace(vram_utilization=0.9),
+            ["--gpu_memory_utilization=0.5"],
+            None,
+        ),
+        (
+            types.SimpleNamespace(vram_utilization=0.9),
+            ["--gpu_memory_utilization", "0.5"],
             None,
         ),
         # Legacy instances without a recorded fraction fall back to vLLM's
@@ -1736,7 +1748,14 @@ def _make_vllm_backend_for_gmu(claim, backend_parameters):
         (None, [], None),
         (types.SimpleNamespace(vram_utilization=None), [], None),
     ],
-    ids=["claim-injected", "user-override-wins", "no-claim", "no-utilization"],
+    ids=[
+        "claim-injected",
+        "user-override-wins",
+        "user-override-wins-underscore-equals",
+        "user-override-wins-underscore-space",
+        "no-claim",
+        "no-utilization",
+    ],
 )
 def test_vllm_command_args_gpu_memory_utilization(claim, backend_parameters, expected):
     backend = _make_vllm_backend_for_gmu(claim, backend_parameters)
