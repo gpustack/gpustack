@@ -392,6 +392,7 @@ async def test_gmu_user_override_wins_for_reranker(config):
                                     6: 77309411328,
                                     7: 77309411328,
                                 },
+                                vram_utilization=0.9,
                             ),
                         ),
                     ],
@@ -431,6 +432,7 @@ async def test_gmu_user_override_wins_for_reranker(config):
                             computed_resource_claim=ComputedResourceClaim(
                                 is_unified_memory=False,
                                 vram={0: 23413653504},
+                                vram_utilization=0.9,
                             ),
                         ),
                         ModelInstanceSubordinateWorker(
@@ -441,6 +443,7 @@ async def test_gmu_user_override_wins_for_reranker(config):
                             computed_resource_claim=ComputedResourceClaim(
                                 is_unified_memory=False,
                                 vram={0: 23181498777},
+                                vram_utilization=0.9,
                             ),
                         ),
                     ],
@@ -772,6 +775,7 @@ async def test_select_candidates(
                                     6: 77309411328,
                                     7: 77309411328,
                                 },
+                                vram_utilization=0.9,
                             ),
                         ),
                     ],
@@ -835,6 +839,7 @@ async def test_select_candidates(
                                     6: 77309411328,
                                     7: 77309411328,
                                 },
+                                vram_utilization=0.9,
                             ),
                         ),
                     ],
@@ -896,6 +901,7 @@ async def test_select_candidates(
                                     6: 77309411328,
                                     7: 77309411328,
                                 },
+                                vram_utilization=0.9,
                             ),
                         ),
                         ModelInstanceSubordinateWorker(
@@ -914,6 +920,7 @@ async def test_select_candidates(
                                     6: 77309411328,
                                     7: 77309411328,
                                 },
+                                vram_utilization=0.9,
                             ),
                         ),
                     ],
