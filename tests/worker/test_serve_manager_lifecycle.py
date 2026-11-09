@@ -45,7 +45,7 @@ from tests.worker.test_serve_manager_ports import (
     _pd_model,
     _wide_band_mode,
 )
-from tests.worker.test_worker_provisioning import _wait_for_shutdown
+from tests.utils.process import wait_for_shutdown
 
 
 @pytest.fixture
@@ -1127,7 +1127,7 @@ def test_external_preparer_stop_releases_the_old_generation(
     serve, mi = state.serve, state.instance
     context = multiprocessing.get_context("spawn")
     ready = context.Event()
-    process = context.Process(target=_wait_for_shutdown, args=(ready,))
+    process = context.Process(target=wait_for_shutdown, args=(ready,))
     monkeypatch.setattr(
         "gpustack.worker.serve_manager.terminate_multiprocessing_process",
         terminate_multiprocessing_process,
