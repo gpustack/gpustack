@@ -2126,6 +2126,11 @@ def test_instance_failure_does_not_starve_peers_or_prevent_retry(
     for instance in (first, second):
         instance.backend = BackendEnum.VLLM
         instance.restart_count = 3
+        # Both members were launched before this pass; the failure under test
+        # is the round/read/report error, not a not-yet-started follower.
+        instance.distributed_servers.subordinate_workers[0].state = (
+            ModelInstanceStateEnum.INITIALIZING
+        )
         instance.state = (
             ModelInstanceStateEnum.ERROR
             if operation == 'restart'
