@@ -156,6 +156,14 @@ def test_backend_detail_matches_list_visibility(backends, scope, row_id):
         assert "run-org" not in response.text
 
 
+def test_backend_detail_returns_not_found_when_missing(backends, monkeypatch):
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=None))
+    backends.app.dependency_overrides[get_tenant_context] = lambda: _context("admin")
+    with TestClient(backends.app) as client:
+        response = client.get("/v2/inference-backends/999")
+    assert response.status_code == 404
+
+
 @pytest.mark.parametrize("scope", SCOPES)
 @pytest.mark.parametrize("has_override", [False, True])
 def test_backend_name_prefers_own_override_then_global(backends, scope, has_override):

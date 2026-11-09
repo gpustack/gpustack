@@ -1121,7 +1121,7 @@ async def get_inference_backend(session: SessionDep, ctx: TenantContextDep, id: 
     """
     backend = await InferenceBackend.one_by_id(session, id)
     if not backend:
-        raise BadRequestException(message=f"Inference backend {id} not found")
+        raise NotFoundException(message=f"Inference backend {id} not found")
     _assert_backend_visible(ctx, backend)
     return backend
 
