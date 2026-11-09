@@ -268,6 +268,22 @@ def _by_role(created):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "roles", [None, [RoleSpec(name="prefill"), RoleSpec(name="decode")]]
+)
+async def test_long_model_names_produce_bounded_instance_names(roles):
+    model = _model(roles=roles)
+    model.name = "m" * 100
+    recorder = await _run(model, [])
+    assert len(recorder.created) == (2 if roles else 1)
+    for instance in recorder.created:
+        assert len(instance.name) <= 59
+        assert instance.model_name == model.name
+        if instance.role:
+            assert f"-{instance.role}-" in instance.name
+
+
+@pytest.mark.asyncio
 async def test_role_less_still_fans_out_by_model_replicas():
     recorder = await _run(_model(replicas=3), [])
 

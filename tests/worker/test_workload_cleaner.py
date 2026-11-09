@@ -6,7 +6,11 @@ import pytest
 from gpustack.schemas.benchmark import BenchmarkStateEnum
 
 from gpustack.schemas.cache_services import CacheServiceInstance
-from gpustack.schemas.models import DistributedServers, ModelInstanceWorkload
+from gpustack.schemas.models import (
+    DistributedServers,
+    ModelInstanceSubordinateWorker,
+    ModelInstanceWorkload,
+)
 from tests.utils.model import new_model_instance, new_model_instance_workload
 from gpustack.worker.workload_cleaner import WorkloadCleaner
 from gpustack_runtime.deployer import WorkloadStatusStateEnum
@@ -29,6 +33,33 @@ def _cache_workload(name: str):
         created_at="2020-01-01T00:00:00Z",
         state=WorkloadStatusStateEnum.RUNNING,
     )
+
+
+@pytest.mark.parametrize("index", [0, 9, 99, 100])
+def test_cleanup_preserves_existing_follower_at_name_length_limit(index):
+    cleaner, client = _build_cleaner(worker_id=index + 2)
+    suffix = f"-f{index}"
+    instance_name = "m" * (63 - len(suffix) - 6) + "-abc12"
+    instance = new_model_instance(7, instance_name, 1, worker_id=1)
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(worker_id=i + 2) for i in range(index + 1)
+        ]
+    )
+    client.model_instances.list.return_value = SimpleNamespace(items=[instance])
+    workload = SimpleNamespace(
+        name=instance_name + suffix,
+        labels={},
+        created_at="2020-01-01T00:00:00Z",
+    )
+    with (
+        patch(
+            "gpustack.worker.workload_cleaner.list_workloads", return_value=[workload]
+        ),
+        patch("gpustack.worker.workload_cleaner.delete_workload") as delete,
+    ):
+        cleaner.cleanup_orphan_workloads()
+    delete.assert_not_called()
 
 
 @pytest.mark.parametrize("worker_id", [1, 2])

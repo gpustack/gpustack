@@ -48,6 +48,7 @@ from gpustack.schemas.links import (
     ModelInstanceDraftModelFileLink,
     ModelInstanceModelFileLink,
 )
+from gpustack.utils.name import bounded_follower_name
 from gpustack.utils.command import find_parameter, find_bool_parameter
 from gpustack.schemas.model_routes import (
     ModelRoute,
@@ -2339,7 +2340,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
             if distributed_follower_index is not None:
                 # Mutate the name to include the follower index,
                 # so that each follower has a unique name.
-                name += f"-f{distributed_follower_index}"
+                name = bounded_follower_name(name, distributed_follower_index)
 
         if self.worker_id != worker_id and distributed_follower_index is None:
             # This model instance is not handling by the given worker.
