@@ -28,11 +28,69 @@ translation_status: translated
 4. 在两侧需求不同时，覆盖各角色设置。保持继承的字段使用部署级值，因此只需填写不同之处。
 5. 保存。
 
-Router 由平台管理：镜像、命令、对端地址和健康检查路径均来自模式方案，表单无需填写这些信息。需要填写的是方案无法预知的内容，即 router 自身的参数和环境；平台推导的连接参数也会预填到同一列表，便于查看实际生成结果。未修改的行会在保存时再次移除，由 GPUStack Server 继续生成。
+### 各角色独立配置后端 { #independent-role-backends }
+
+部署级的 Backend、Version、Image 和 Command 是三个角色的默认配置。Prefill、Decode、Router 的 Backend 下拉框默认选择“继承上层”，并显示当前上层后端和版本或镜像；此时持续跟随上层修改，只显示这一项。 上层 Command 是推理引擎的默认值；Router 命令按下述规则单独解析。
+
+选择具体 Backend 后，该角色成为独立配置，并显示对应的 Version 或 Image、Command 字段。选择与上层相同的后端会复制上层当前启动配置，选择其他后端则使用该后端的默认值。三个角色使用相同的 Backend 列表和字段；Custom 的 Image 必填；P/D 角色还需填写 Command，内置 PD 方案下的 Router 可将 Command 留空，由系统在 P/D 就绪后生成，镜像的 tag 或 digest 决定版本。支持自定义镜像的内置后端仍提供镜像覆盖及可选的启动命令。
+
+Router 选择与部署相同的后端时，会复制镜像和版本，并将命令留空，由所选后端定义或 PD 方案提供。任何 PD 模式下都不会复制部署的推理命令。重新选择已独立配置的后端时，会保留已填写的 Router 命令。
+
+独立配置不会随上层修改而变化，即使最初两者的值相同。角色选择 Auto 时，独立解析版本，不继承上层版本。重新选择“继承上层”会清除该角色的后端覆盖，恢复继承。参数、环境变量、资源和调度继续遵循各自的配置规则。
+
+API 中，非空的 `roles[].backend` 表示独立配置；此时 `backend_version` 为 null 表示 Auto，`image_name` 和 `run_command` 为 null 表示使用该后端生成的配置。将这四个字段都设为 null 可恢复继承。现有 API 中未指定 `backend` 的局部覆盖仍按字段继承。
+
+所选后端和版本提供 Router 镜像。命令优先级依次为：Router 角色填写的命令、所选后端版本的命令、后端默认命令、PD 方案命令。所有后端（包括内置后端）遵守相同顺序。仅覆盖镜像时，仍使用方案命令。没有引用对端的自定义命令采用手动成员管理；引用对端的模板在成员变化时重启 Router。`custom` PD 模式也需要操作人员自行提供连接器配置。
+
+不同镜像和版本仍需具备兼容的连接器协议和 KV 布局。内置 PD 方案校验 P/D 的引擎兼容性；Router 不应用 P/D 的引擎限制。只有命令来自 PD 方案时，才展示方案的连接参数和可调参数默认值。
 
 Router 在结构上只有一个副本，因此无需设置数量；第二个副本会拆分前缀缓存，并使组具有两个地址。
 
-如果需要自己的 router，请选择 `custom` 模式，并在**部署**而不是 router 角色上设置镜像和运行命令，角色会继承这两项。因此，一个镜像同时包含 router 和引擎，并按角色选择执行内容；工作量与在两处指定它相同，但不再需要维护第二处同步。
+### Router 运行时命令模板 { #runtime-router-command-arguments }
+
+角色或后端定义的命令拥有全部 flags；GPUStack 在 P/D 就绪后填入运行时数据，不追加方案 flags。两者都没有命令时，才使用 PD 方案的默认命令和成员更新策略。数据模板也支持 `custom` PD 模式。
+
+- `{{worker_ip}}` 是当前 Router 的 Worker IP; `{{port}}` 是分配的服务端口; `{{ports.prometheus}}` 是方案分配的命名端口.
+- `prefill` / `decode` 包含当前组内全部就绪端点，按地址稳定排序。每项提供 `ip`, `port`, `url`, `ports`. 命名端口属于各端点，例如 `{{p.ports.bootstrap}}`.
+- `prefill_urls` / `decode_urls` 是 URL 列表，支持 `join`.
+
+有两个 prefill 和两个 decode 端点时，下面两个循环各生成两组参数。可以按所用程序修改 flags 或监听地址。vLLM NIXL 示例：
+
+```text
+vllm-router --vllm-pd-disaggregation --kv-connector nixl
+  --host 0.0.0.0 --port {{port}}
+  --prometheus-host 0.0.0.0 --prometheus-port {{ports.prometheus}}
+  {% for p in prefill %}
+    --prefill {{p.url}}
+  {% endfor %}
+  {% for d in decode %}
+    --decode {{d.url}}
+  {% endfor %}
+```
+
+如果程序接受逗号分隔的端点列表：
+
+```text
+my-router --listen {{worker_ip}} --listen-port {{port}}
+  --prefill-endpoints "{{prefill_urls | join(',')}}"
+  --decode-endpoints "{{decode_urls | join(',')}}"
+```
+
+仅支持变量取值、端点或 URL 列表的单层循环，以及使用固定分隔符连接 URL 列表。未知变量和不支持的语法会在保存时拒绝；启动时缺少命名端口会报错。不支持任意函数调用、导入、条件、嵌套循环或其他过滤器。换行分隔参数；这是 argv 模板，不会隐式执行 shell。替换值包含空格或引号时仍保持为一个参数。
+
+模板也可引用已配置的环境变量，例如 `{{ROUTER_CONFIG}}`。角色提供环境变量映射时使用该映射，否则继承部署级环境变量；方案中的环境变量作为默认值合并。模板中同名的运行时变量优先。
+
+Router 继承上层配置时复用镜像和版本，但在任何 PD 模式下都不继承上层推理命令。独立选择后端时，使用其版本级 `run_command` 或 `default_run_command`，并保留后端定义中 entrypoint 与命令参数的正常组合语义。角色填写的 `run_command` 是完整启动命令，会覆盖该 entrypoint。没有任何可用命令来源（包括 `custom` PD 模式）时，提交会因缺少 Router 命令而被拒绝。
+
+命令的字面文本遵循 POSIX 引号规则。正则表达式或路径包含反斜杠时，使用单引号包裹以保留反斜杠，例如：
+
+```text
+my-router --regex '\d+\s+' --config 'C:\models\router.json' --port {{port}}
+```
+
+部署保存原始模板；实例配置快照记录展开后的命令。引用对端数据的命令会在成员或其重启代次变化时重新展开，并重建 Router。没有引用对端数据的自定义命令需要手动维护成员；GPUStack 不根据 flags 推断成员管理 API。
+
+显式指定 Router 或部署镜像时，完整命令会覆盖镜像自带的应用 ENTRYPOINT，无需镜像内提供 shell。
 
 ## 组的启动方式 { #how-a-group-starts }
 
@@ -72,7 +130,7 @@ Router 在结构上只有一个副本，因此无需设置数量；第二个副�
 | `restart` | vLLM Mooncake | 新增 GPU 成员就绪后，GPUStack 替换 router，刷新启动时的对端和 bootstrap 元数据。移除或重启成员时，只要两侧均有可用对端，就立即触发刷新。保留的 GPU 实例继续运行，但服务会短暂不可用，正在处理的请求可能失败。 |
 | `manual` | Custom | 操作人员更新 router 对端和 bootstrap 元数据，并在需要时重启 router。 |
 
-用户自定义的 router 运行命令采用手动成员管理，即使所选方案支持自动更新。部署表单和副本编辑器显示来自目录的策略。删除实例时，如果恢复需要替换 router 或由操作人员处理，也会给出警告。
+不含运行时参数占位符的静态 Router 命令采用手动成员管理；包含占位符的命令按上文规则更新。部署表单和副本编辑器显示来自目录的策略。删除实例时，如果恢复需要替换 router 或由操作人员处理，也会给出警告。
 
 静态 router 快照包含实例身份、重启代次、HTTP 地址和具名端口。因此，即使替换或重启发生在相同地址，仍会刷新 Mooncake bootstrap 元数据。没有快照的现有 router，会在对端就绪时替换一次。
 

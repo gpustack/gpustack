@@ -542,8 +542,10 @@ ROUTER_DEFAULT_MEMORY = 2 * 1024**3
 class RoleSpec(BaseModel):
     """One role of a multi-role deployment.
 
-    Every deployment field left as ``None`` inherits the ``Model``-level field
-    of the same name; giving it a value overrides it. The override surface is
+    Deployment fields left as ``None`` inherit the ``Model``-level field,
+    except when ``backend`` selects an independent launch configuration:
+    its version, image and command then belong entirely to this role, and a
+    null version means Auto. The override surface is
     deliberately the *whole* of ``backend_parameters`` and ``env`` rather than
     a PD-specific subset: on Ascend, prefill and decode differ in nearly every
     performance-related parameter, down to ``HCCL_CONNECT_TIMEOUT`` (120 vs
@@ -568,6 +570,19 @@ class RoleSpec(BaseModel):
     backend_version: Optional[str] = None
     image_name: Optional[str] = None
     run_command: Optional[str] = None
+
+    @field_validator("run_command", mode="before")
+    @classmethod
+    def normalize_run_command(cls, value):
+        """A blank role command leaves invocation generation to its backend."""
+        return "" if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("backend", mode="before")
+    @classmethod
+    def normalize_backend(cls, value):
+        """Empty backend inputs retain the deployment's launch configuration."""
+        return value.strip() or None if isinstance(value, str) else value
+
     backend_parameters: Optional[List[str]] = None
     env: Optional[Dict[str, str]] = None
     gpu_selector: Optional[GPUSelector] = None
@@ -1463,6 +1478,24 @@ _ROLE_OWN_FIELDS = frozenset({"name", "dependencies", "resources"})
 
 _ROLE_OVERRIDE_FIELDS = frozenset(RoleSpec.model_fields) - _ROLE_OWN_FIELDS
 
+ROLE_BACKEND_FIELDS = ("backend", "backend_version", "image_name", "run_command")
+
+
+def role_backend_field(
+    role: RoleSpec, field: str, default: Optional[str] = None
+) -> Optional[str]:
+    """Read a backend-group field with the role's inheritance rule.
+
+    An explicit backend owns all four fields; null version means Auto and
+    null image/command lets that backend generate its launch configuration.
+    """
+    value = getattr(role, field, None)
+    return (
+        value
+        if getattr(role, "backend", None) is not None or value is not None
+        else default
+    )
+
 
 def find_role(model, role_name: Optional[str]) -> Optional[RoleSpec]:
     """The named role of `model`, or None if it has no roles or no match."""
@@ -1616,8 +1649,9 @@ def role_container_resources(model, role_name: Optional[str]) -> RoleResources:
 def role_effective_model(model, role_name: Optional[str]):
     """Return `model` with the named role's overrides applied.
 
-    A `RoleSpec` field left as None means "inherit the Model field of the same
-    name". Nothing downstream performs that merge: the worker's start path
+    A role with an explicit backend owns its backend, version, image and
+    command as one group. Other fields left as None inherit the Model field
+    of the same name. Nothing downstream performs that merge: the worker's start path
     reads `self._model.<field>` in dozens of places and the scheduler's
     filters, selectors and scorers read a Model in dozens more, all of them
     expecting a single set of values. So the merge happens once, here, at the
@@ -1651,7 +1685,8 @@ def role_effective_model(model, role_name: Optional[str]):
     projected = RoleEffectiveModel.model_validate(model)
     for field in _ROLE_OVERRIDE_FIELDS:
         value = getattr(role, field, None)
-        if value is None:
+        independent_backend = role.backend is not None and field in ROLE_BACKEND_FIELDS
+        if value is None and not independent_backend:
             continue
         # Copy, so that mutating a projected list in place — the worker
         # substitutes `{data_dir}` into `backend_parameters` that way — cannot

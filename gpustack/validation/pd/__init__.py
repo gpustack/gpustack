@@ -18,6 +18,7 @@ async def validate_pd_config(
     *,
     cluster_id: Optional[int] = None,
     stored: Optional[Model] = None,
+    owner_principal_id: Optional[int] = None,
 ) -> None:
     """Validate the effective PD configuration before accepting a deployment.
 
@@ -35,7 +36,37 @@ async def validate_pd_config(
         validate_pd_mode_runtime,
     )
 
-    validate_roles(model_in, stored=stored)
+    from gpustack.validation.pd.common import effective_model_spec
+    from gpustack.utils.pd_router_launch import (
+        resolve_router_launch,
+        router_backend_definition,
+    )
+    from gpustack.schemas.models import find_role
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+    from gpustack.schemas.pd_modes import PDRouterProtocolEnum
+    from gpustack.api.exceptions import BadRequestException
+
+    effective = effective_model_spec(model_in, stored)
+    scope = (
+        getattr(stored, 'owner_principal_id', None) if stored else owner_principal_id
+    )
+    # Evaluation specs already carry a stamped owner; keep it when the caller
+    # supplies neither a stored model nor an explicit admission scope.
+    if scope is not None:
+        effective = effective.model_copy(update={'owner_principal_id': scope})
+    backend = await router_backend_definition(session, effective)
+    validate_roles(model_in, stored=stored, router_backend=backend)
+    if effective.disaggregation and find_role(effective, 'router'):
+        mode = get_pd_mode(effective.disaggregation.mode.value)
+        has_default = bool(
+            mode
+            and mode.router
+            and mode.router.protocol != PDRouterProtocolEnum.USER_PROVIDED
+        )
+        if not has_default and not resolve_router_launch(effective, backend).command:
+            raise BadRequestException(
+                message="Router requires a command from its role or selected backend."
+            )
     config = await resolve_pairing_model_config(model_in, stored=stored)
     validate_role_pairing(model_in, stored=stored, pretrained_config=config)
     await validate_pd_mode_runtime(

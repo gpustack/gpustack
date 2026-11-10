@@ -133,6 +133,72 @@ def test_a_role_declaring_nothing_inherits_everything():
     assert router.image_name == "model/image"
 
 
+@pytest.mark.parametrize("name", ["prefill", "decode", "router"])
+def test_an_independent_backend_owns_its_optional_launch_fields(name):
+    model = _model(
+        run_command="parent-command",
+        roles=[RoleSpec(name=name, backend="vLLM", backend_version=None)],
+    )
+    projected = role_effective_model(model, name)
+
+    assert projected.backend == "vLLM"
+    assert projected.backend_version is None
+    assert projected.image_name is None
+    assert projected.run_command is None
+    assert model.backend_version == "0.11.0"
+    assert model.image_name == "model/image"
+
+
+def test_an_independent_backend_version_does_not_use_the_parent_image():
+    model = _model(
+        roles=[RoleSpec(name="decode", backend="SGLang", backend_version="0.5.18")]
+    )
+    projected = role_effective_model(model, "decode")
+
+    assert projected.backend == "SGLang"
+    assert projected.backend_version == "0.5.18"
+    assert projected.image_name is None
+
+
+def test_an_inherited_backend_follows_parent_changes():
+    model = _model(roles=[RoleSpec(name="prefill")])
+    model.backend_version = "0.30.0"
+    model.image_name = "parent:new"
+
+    projected = role_effective_model(model, "prefill")
+    assert projected.backend_version == "0.30.0"
+    assert projected.image_name == "parent:new"
+
+
+def test_a_partial_image_override_preserves_legacy_field_inheritance():
+    model = _model(roles=[RoleSpec(name="router", image_name="router:custom")])
+    projected = role_effective_model(model, "router")
+
+    assert projected.backend == "vLLM"
+    assert projected.backend_version == "0.11.0"
+    assert projected.image_name == "router:custom"
+
+
+def test_an_explicit_empty_engine_command_does_not_inherit_parent_command():
+    model = _model(
+        run_command="parent-command",
+        roles=[RoleSpec(name="prefill", run_command="")],
+    )
+    assert role_effective_model(model, "prefill").run_command == ""
+
+
+@pytest.mark.parametrize("backend", ["", " ", "\t\n"])
+def test_empty_role_backends_use_deployment_defaults(backend):
+    role = RoleSpec(name="prefill", backend=backend)
+    assert role.backend is None
+    model = _model(roles=[role], run_command="parent-command")
+    effective = role_effective_model(model, "prefill")
+    assert effective.backend == model.backend
+    assert effective.backend_version == model.backend_version
+    assert effective.image_name == model.image_name
+    assert effective.run_command == model.run_command
+
+
 def test_replicas_is_projected_from_the_role():
     # roles[].replicas is the only scaling truth; Model.replicas is a 0/1
     # deployment switch. Inside the read paths the role's count is what

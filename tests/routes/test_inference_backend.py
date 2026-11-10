@@ -369,3 +369,48 @@ async def test_remove_version_from_yaml_preserves_fail_closed_error(monkeypatch)
     )
     assert str(exc_info.value.__cause__) == db_error
     update_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner_enabled', [None, False, True])
+async def test_backend_options_expose_the_same_command_defaults_as_worker_resolution(
+    monkeypatch,
+    owner_enabled,
+):
+    platform = _platform_community_backend()
+    platform.enabled = True
+    platform.default_run_command = 'default-router --port {{port}}'
+    platform.version_configs.root['v1'].run_command = (
+        '--workers {{decode_urls | join(",")}}'
+    )
+    owner = InferenceBackend(
+        id=11,
+        backend_name=platform.backend_name,
+        owner_principal_id=42,
+        enabled=owner_enabled,
+        default_run_command=None,
+        version_configs=VersionConfigDict(
+            root={'v2': VersionConfig(image_name='router:v2')}
+        ),
+    )
+    monkeypatch.setattr(
+        ib_route,
+        '_fetch_visible_backend_rows',
+        AsyncMock(return_value=[platform, owner]),
+    )
+    monkeypatch.setattr(Worker, 'all', AsyncMock(return_value=[]))
+    monkeypatch.setattr(RunnerOverrideEntry, 'all', AsyncMock(return_value=[]))
+    response = await ib_route.list_backend_configs(None, _org_ctx(42))
+    item = next(
+        item for item in response.items if item.backend_name == platform.backend_name
+    )
+    assert item.enabled is True
+    assert item.default_run_command == platform.default_run_command
+    assert item.default_command_version == 'v1'
+    assert (
+        next(
+            version for version in item.versions if version.version == 'v1'
+        ).run_command
+        == platform.version_configs.root['v1'].run_command
+    )
+    assert set(owner.version_configs.root) == {'v2'}

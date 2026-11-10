@@ -110,6 +110,33 @@ async def test_runtime_backend_reset_uses_default_instead_of_stored_backend(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("engine_backend", ["vLLM", "Custom"])
+async def test_runtime_mode_uses_effective_engine_roles_not_unused_parent(
+    monkeypatch, engine_backend
+):
+    from gpustack.validation.pd import runtime
+
+    monkeypatch.setattr(runtime, "cluster_vendors", AsyncMock(return_value={"nvidia"}))
+    model = ModelCreate(
+        name="pd",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/model",
+        backend="SGLang",
+        roles=[
+            RoleSpec(
+                name=name,
+                backend=engine_backend,
+                image_name="custom:image" if engine_backend == "Custom" else None,
+                run_command="serve" if engine_backend == "Custom" else None,
+            )
+            for name in ("prefill", "decode")
+        ],
+        disaggregation=DisaggregationSpec(mode=PDModeEnum.VLLM_NIXL),
+    )
+    await runtime.validate_pd_mode_runtime(None, model, cluster_id=1)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "vendors,gather,message",
     [
@@ -243,3 +270,52 @@ def test_non_vllm_pd_does_not_validate_vllm_lb_flags():
     validate_external_pd_membership(
         'custom', 'SGLang', ['--data-parallel-multi-port-external-lb']
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'vendors,vendor,eligible',
+    [
+        ({'nvidia'}, None, True),
+        ({'amd'}, None, False),
+        ({'nvidia', 'amd'}, 'nvidia', True),
+        ({'nvidia', 'amd'}, 'amd', False),
+    ],
+)
+async def test_custom_images_validate_the_recipe_without_assuming_an_engine(
+    monkeypatch, vendors, vendor, eligible
+):
+    from unittest.mock import Mock
+    from gpustack.server import pd_mode_resolver
+    from gpustack.validation.pd import runtime
+
+    mode = runtime.get_pd_mode('vllm-nixl').model_copy(deep=True)
+    mode.backends = ['vLLM', 'SGLang']
+    monkeypatch.setattr(runtime, 'get_pd_mode', lambda _: mode)
+    monkeypatch.setattr(pd_mode_resolver, 'get_pd_modes', lambda: [mode])
+    monkeypatch.setattr(runtime, 'cluster_vendors', AsyncMock(return_value=vendors))
+    resolve = Mock(wraps=pd_mode_resolver.resolve_pd_mode)
+    monkeypatch.setattr(runtime, 'resolve_pd_mode', resolve)
+    model = ModelCreate(
+        name='pd',
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id='org/model',
+        backend='SGLang',
+        roles=[
+            RoleSpec(
+                name=name,
+                backend='Custom',
+                image_name='custom:engine',
+                run_command='serve',
+            )
+            for name in ('prefill', 'decode')
+        ],
+        disaggregation=DisaggregationSpec(mode='vllm-nixl', vendor=vendor),
+    )
+    if eligible:
+        await runtime.validate_pd_mode_runtime(None, model, cluster_id=1)
+    else:
+        with pytest.raises(BadRequestException) as exc:
+            await runtime.validate_pd_mode_runtime(None, model, cluster_id=1)
+        assert 'Requires nvidia' in exc.value.message
+    resolve.assert_called_once_with(None, vendors, vendor=vendor)

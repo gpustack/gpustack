@@ -6,7 +6,7 @@ from typing import Dict, Optional, Set, Tuple
 
 
 from gpustack.client import ClientSet
-from gpustack.schemas.inference_backend import InferenceBackend, VersionConfigDict
+from gpustack.schemas.inference_backend import InferenceBackend
 from gpustack.server.bus import EventType, Event
 
 logger = logging.getLogger(__name__)
@@ -17,19 +17,6 @@ _cache_lock = threading.RLock()
 # Minimum spacing between cache-miss refreshes so repeated lookups for a
 # scope the server genuinely doesn't expose can't hammer the API.
 _REFRESH_MIN_INTERVAL_SECONDS = 30
-
-# Fields that never fall back from the owner row to the Platform row when
-# merging the two scopes: identity/scope keys, the version map (merged
-# separately), and row bookkeeping.
-_NON_FALLBACK_FIELDS = {
-    "backend_name",
-    "owner_principal_id",
-    "version_configs",
-    "id",
-    "created_at",
-    "updated_at",
-    "deleted_at",
-}
 
 
 class InferenceBackendManager:
@@ -137,47 +124,9 @@ class InferenceBackendManager:
                 if owner_principal_id is not None
                 else None
             )
-            if owner_row is None:
-                return platform_row
-            if platform_row is None:
-                return owner_row
-            merged = owner_row.model_copy()
-            # Field-level fallback for scalars: an Org row may be sparse
-            # (e.g. created directly with just one custom version and no
-            # health_check_path); unset fields inherit the Platform value
-            # instead of shadowing it with None.
-            for field_name in type(owner_row).model_fields:
-                if field_name in _NON_FALLBACK_FIELDS:
-                    continue
-                if getattr(merged, field_name) is None:
-                    platform_value = getattr(platform_row, field_name)
-                    if platform_value is not None:
-                        setattr(merged, field_name, platform_value)
-            # Booleans carry concrete defaults, so the None-fallback above
-            # never reaches them. Align with the server's collapse
-            # semantics (_collapse_by_backend_name): ``enabled`` is OR'd
-            # so an Org row can't shadow a Platform-enabled backend. The
-            # same for ``is_built_in`` — a sparse Org-created override of
-            # a built-in defaults to is_built_in=False, which would
-            # otherwise flip version resolution onto the non-built-in
-            # path (resolve_target_version auto-picks the latest).
-            merged.enabled = bool(owner_row.enabled) or bool(platform_row.enabled)
-            merged.is_built_in = owner_row.is_built_in or platform_row.is_built_in
-            merged.version_configs = VersionConfigDict(
-                root={
-                    **(
-                        platform_row.version_configs.root
-                        if platform_row.version_configs
-                        else {}
-                    ),
-                    **(
-                        owner_row.version_configs.root
-                        if owner_row.version_configs
-                        else {}
-                    ),
-                }
-            )
-            return merged
+            from gpustack.utils.inference_backend import merge_backend_definitions
+
+            return merge_backend_definitions(platform_row, owner_row)
 
     def _fetch_backends(self) -> Dict[str, Dict[Optional[int], InferenceBackend]]:
         """Load all visible backends from the server into a fresh

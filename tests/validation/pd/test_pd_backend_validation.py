@@ -112,6 +112,81 @@ def test_a_role_overriding_the_engine_is_judged_on_its_own_backend():
         )
 
 
+@pytest.mark.parametrize("backend", ["SGLang", "vox-box", "my-router"])
+def test_router_backend_selection_is_independent_of_engine_compatibility(backend):
+    validate_roles(_model_in("vLLM", role_backends={"router": backend}))
+
+
+@pytest.mark.parametrize("name", ["prefill", "decode", "router"])
+def test_a_custom_role_can_supply_its_launch_in_a_builtin_pd_mode(name):
+    model = _model_in("vLLM")
+    role = next(role for role in model.roles if role.name == name)
+    role.backend = BackendEnum.CUSTOM.value
+    role.image_name = "my/image:1"
+    role.run_command = "my-server --port {{port}}"
+    validate_roles(model)
+
+
+@pytest.mark.parametrize("missing", ["image_name", "run_command"])
+def test_an_independent_custom_role_requires_image_and_command(missing):
+    model = _model_in("vLLM", mode=PDModeEnum.CUSTOM)
+    role = model.roles[-1]
+    role.backend = BackendEnum.CUSTOM.value
+    role.image_name = "my/router:1"
+    role.run_command = "router"
+    setattr(role, missing, None)
+    with rejects("image and command"):
+        validate_roles(model)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        PDModeEnum.VLLM_NIXL,
+        PDModeEnum.VLLM_MOONCAKE,
+        PDModeEnum.VLLM_ASCEND_MOONCAKE,
+        PDModeEnum.SGLANG_NIXL,
+        PDModeEnum.SGLANG_MOONCAKE,
+    ],
+)
+def test_builtin_pd_accepts_a_custom_router_image_without_a_command(mode):
+    model = _model_in(
+        "SGLang" if mode.value.startswith("sglang-") else "vLLM", mode=mode
+    )
+    router = model.roles[-1]
+    router.backend = BackendEnum.CUSTOM
+    router.image_name = "upstream/router:compatible"
+    assert router.run_command is None
+    validate_roles(model)
+
+
+@pytest.mark.parametrize("name", ["prefill", "decode"])
+def test_custom_engine_roles_still_require_a_command(name):
+    model = _model_in("vLLM")
+    role = next(role for role in model.roles if role.name == name)
+    role.backend = BackendEnum.CUSTOM
+    role.image_name = "my/engine:1"
+    with rejects("image and command"):
+        validate_roles(model)
+
+
+def test_an_automatic_custom_router_still_requires_an_image():
+    model = _model_in("vLLM", role_backends={"router": BackendEnum.CUSTOM})
+    with rejects("requires image"):
+        validate_roles(model)
+
+
+@pytest.mark.parametrize("name", ["prefill", "decode", "router"])
+def test_roles_cannot_pin_an_engine_version_beside_a_custom_image(name):
+    model = _model_in("vLLM")
+    role = next(role for role in model.roles if role.name == name)
+    role.backend = "vLLM"
+    role.backend_version = "0.30.0"
+    role.image_name = "custom:patched"
+    with rejects("custom image and a backend version"):
+        validate_roles(model)
+
+
 @pytest.mark.parametrize(
     "backend",
     [BackendEnum.VOX_BOX.value, BackendEnum.ASCEND_MINDIE.value],

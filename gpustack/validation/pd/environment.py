@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from packaging.version import InvalidVersion, Version
 
-from gpustack.schemas.models import Model, ModelSpecBase, RoleSpec
+from gpustack.schemas.models import Model, ModelSpecBase, RoleSpec, role_backend_field
 from gpustack.validation.pd.common import model_field
 from gpustack.validation.pd.parameters import (
     AGREE,
@@ -120,14 +120,14 @@ def _enabled_override(role, model, stored, name) -> bool:
 def _version(
     role: RoleSpec, model: ModelSpecBase, stored: Optional[Model]
 ) -> Optional[Version]:
-    image = role.image_name
-    if image is None:
-        image = model_field(model, stored, "image_name")
+    image = role_backend_field(
+        role, "image_name", model_field(model, stored, "image_name")
+    )
     if image:
         return None
-    value = role.backend_version
-    if value is None:
-        value = model_field(model, stored, "backend_version")
+    value = role_backend_field(
+        role, "backend_version", model_field(model, stored, "backend_version")
+    )
     try:
         return Version(value) if value else None
     except InvalidVersion:

@@ -42,6 +42,17 @@ def model_input(prefill_env=None, decode_env=None, model_env=None, **kwargs):
     ).model_copy(update=kwargs)
 
 
+def test_an_independent_auto_role_has_no_inherited_version_or_image_for_pairing():
+    from gpustack.validation.pd.environment import _version
+
+    model = model_input(image_name='parent:custom')
+    role = RoleSpec(name='prefill', backend='vLLM', backend_version='0.30.0')
+    assert str(_version(role, model, None)) == '0.30.0'
+    role.backend_version = None
+    model.image_name = None
+    assert _version(role, model, None) is None
+
+
 def assert_rejected(model, fragment, **kwargs):
     with pytest.raises(BadRequestException) as error:
         validate_role_pairing(model, pretrained_config=_PLAIN_CONFIG, **kwargs)

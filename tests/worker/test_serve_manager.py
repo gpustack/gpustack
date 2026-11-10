@@ -4034,6 +4034,35 @@ def test_sglang_diffusion_readiness_with_unknown_or_known_version(
         get.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "version,expected_path",
+    [
+        ("0.5.5.post2", None),
+        ("0.5.5.post3", "/health"),
+        ("0.5.8", "/health"),
+    ],
+)
+def test_auto_role_readiness_uses_the_resolved_instance_version(version, expected_path):
+    model = new_model(
+        1,
+        "diffusion",
+        huggingface_repo_id="example/diffusion",
+        backend=BackendEnum.SGLANG,
+        categories=[CategoryEnum.IMAGE],
+        backend_version=None,
+    )
+    mi = new_model_instance(1, "diffusion", 1, worker_id=1)
+    mi.worker_ip, mi.port, mi.backend_version = "10.0.0.1", 8000, version
+    with patch("gpustack.worker.serve_manager.requests.get") as get:
+        get.return_value = SimpleNamespace(status_code=200)
+        assert is_ready(BackendEnum.SGLANG, mi, None, model) is True
+    if expected_path:
+        get.assert_called_once_with("http://10.0.0.1:8000/health", timeout=5)
+    else:
+        get.assert_not_called()
+    assert model.backend_version is None
+
+
 @pytest.mark.parametrize("status_code, expected_ready", [(200, True), (404, False)])
 def test_sglang_diffusion_custom_image_uses_explicit_health_path(
     status_code, expected_ready
@@ -5474,3 +5503,99 @@ def test_component_health_waits_for_main_engine_manifest(component_health, caplo
     )
     state.sync()
     assert len(state.jobs) == 2
+
+
+@pytest.mark.parametrize(
+    'kind', ['missing_mode', 'no_router', 'missing_custom_command']
+)
+def test_router_without_a_resolved_launch_keeps_the_generic_probe(monkeypatch, kind):
+    from gpustack.schemas.models import DisaggregationSpec
+    from gpustack.schemas.pd_modes import PDMode
+    from gpustack.worker.serve_manager import is_inference_ready
+
+    model = _group_model()
+    model.backend = BackendEnum.CUSTOM
+    if kind == 'missing_custom_command':
+        model.disaggregation = DisaggregationSpec(mode='custom')
+    else:
+        monkeypatch.setattr(
+            'gpustack.server.pd_mode_catalog.get_pd_mode',
+            lambda name: None if kind == 'missing_mode' else PDMode(name='custom'),
+        )
+    router = _member(3, 'router')
+    router.worker_ip, router.port = '10.0.0.3', 9000
+    with patch('gpustack.worker.serve_manager.requests.post') as post:
+        post.return_value = SimpleNamespace(status_code=200)
+        assert is_inference_ready(router, model) is True
+    post.assert_not_called()
+
+
+def test_registered_backend_router_command_is_probed_through_the_manager():
+    from gpustack.schemas.models import DisaggregationSpec
+    from gpustack.schemas.inference_backend import InferenceBackend
+    from gpustack.worker.pd_router import apply_managed_router
+
+    manager, _ = _build_serve_manager()
+    model = _group_model()
+    model.disaggregation = DisaggregationSpec(mode='custom')
+    model.roles[-1].backend = 'router-custom'
+    definition = InferenceBackend(
+        backend_name='router-custom', default_run_command='router --port {{port}}'
+    )
+    projected = apply_managed_router(model, 'router', inference_backend=definition)
+    manager._router_backend = lambda model, role: definition
+    router = _member(3, 'router')
+    router.worker_ip, router.port = '10.0.0.3', 9000
+    with patch('gpustack.worker.serve_manager.requests.post') as post:
+        post.return_value = SimpleNamespace(status_code=200)
+        assert manager._probe_running_instance(router, projected, 15) is True
+    post.assert_called_once()
+
+
+@pytest.mark.parametrize('recipe_fallback', [True, False])
+@pytest.mark.parametrize(
+    'role_env,expected',
+    [
+        (None, True),
+        ({}, True),
+        ({'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED': 'false'}, False),
+    ],
+)
+def test_router_projection_keeps_backend_health_settings_in_manager_and_refresh(
+    recipe_fallback, role_env, expected
+):
+    from gpustack.schemas.inference_backend import InferenceBackend, VersionConfigDict
+    from gpustack.worker.serve_manager import _get_inference_health_check_config
+
+    manager, clientset = _build_serve_manager()
+    model = _group_model()
+    model.env = None
+    model.roles[-1].backend = 'router-custom'
+    model.roles[-1].env = role_env
+    definition = InferenceBackend(
+        backend_name='router-custom',
+        default_version='1',
+        default_env={
+            'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_ENABLED': 'true',
+            'ADVERTISE_HOST': '{{worker_ip}}',
+        },
+        default_run_command=None if recipe_fallback else 'router --port {{port}}',
+        version_configs=VersionConfigDict(
+            root={
+                '1': {
+                    'image_name': 'router:1',
+                    'env': {'GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_INTERVAL': '42'},
+                }
+            }
+        ),
+    )
+    clientset.models.get.return_value = model
+    manager._inference_backend_manager.get_backend_by_name.return_value = definition
+    router = _member(3, 'router')
+    for projection in [manager._get_model(router), manager._refresh_model(router)]:
+        settings = _get_inference_health_check_config(projection, 'router')
+        assert settings['enabled'] is expected
+        assert settings['interval'] == 42
+        assert projection.env['ADVERTISE_HOST'] == '{{worker_ip}}'
+    assert model.roles[-1].env == role_env
+    assert model.env is None

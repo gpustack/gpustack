@@ -2443,7 +2443,9 @@ class ServeManager(ContainerLogPersister):
                     # router is the group's only entrance -- the one member whose
                     # liveness must not be assumed.
                     health_check_path = managed_router_health_path(
-                        model, model_instance.role
+                        model,
+                        model_instance.role,
+                        self._router_backend(model, model_instance.role),
                     )
                 if model.env and 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in model.env:
                     # A model-specific path can match a custom image whose health
@@ -3286,6 +3288,11 @@ class ServeManager(ContainerLogPersister):
         """
         role = getattr(mi, "role", None)
         if not role or role == RoleNameEnum.ROUTER.value:
+            backend = self._router_backend(model, role)
+            if backend is not None:
+                return is_inference_ready(
+                    mi, model, timeout=timeout, inference_backend=backend
+                )
             return is_inference_ready(mi, model, timeout=timeout)
 
         backend = get_backend(model)
@@ -4359,8 +4366,12 @@ class ServeManager(ContainerLogPersister):
                     log_file_path,
                     self._config,
                     self._worker_id,
-                    self._inference_backend_manager.get_backend_by_name(
-                        backend, model.owner_principal_id
+                    (
+                        self._router_backend(model, mi.role)
+                        if mi.role == 'router'
+                        else self._inference_backend_manager.get_backend_by_name(
+                            backend, model.owner_principal_id
+                        )
                     ),
                     fallback_registry,
                 )
@@ -5318,7 +5329,9 @@ class ServeManager(ContainerLogPersister):
         # is what picks the port band and the fallback registry. No peers are
         # passed — the command they render into is the child's business, and
         # rendering it here would only be rendering it twice.
-        model = apply_managed_router(model, mi.role)
+        model = apply_managed_router(
+            model, mi.role, inference_backend=self._router_backend(model, mi.role)
+        )
         self._model_cache_by_instance[mi.id] = model
         return model
 
@@ -5336,7 +5349,11 @@ class ServeManager(ContainerLogPersister):
         refreshed_model = role_effective_model(
             self._clientset.models.get(mi.model_id), mi.role
         )
-        refreshed_model = apply_managed_router(refreshed_model, mi.role)
+        refreshed_model = apply_managed_router(
+            refreshed_model,
+            mi.role,
+            inference_backend=self._router_backend(refreshed_model, mi.role),
+        )
         self._model_cache_by_instance[mi.id] = refreshed_model
         return refreshed_model
 
@@ -5352,6 +5369,16 @@ class ServeManager(ContainerLogPersister):
                 process.join(timeout=0)
                 return process.is_alive()
         return False
+
+    def _router_backend(self, model, role_name):
+        from gpustack.schemas.models import find_role
+
+        role = find_role(model, role_name) if role_name == 'router' else None
+        if role is None or not role.backend or role.backend == BackendEnum.CUSTOM:
+            return None
+        return self._inference_backend_manager.get_backend_by_name(
+            role.backend, model.owner_principal_id
+        )
 
     def _get_health_check_path(
         self, backend: str, owner_principal_id: Optional[int] = None
@@ -5477,14 +5504,15 @@ def is_ready(
         and CategoryEnum.IMAGE in model.categories
         and not health_check_path
     ):
+        version = mi.backend_version or model.backend_version
         if custom_image:
             # A custom image's version key does not establish which health
             # endpoints its server implements.
             health_check_path = "/health"
-        elif not model.backend_version:
+        elif not version:
             # version may be empty at initialization, consider it not ready.
             return False
-        elif compare_versions(model.backend_version, "0.5.5.post3") >= 0:
+        elif compare_versions(version, "0.5.5.post3") >= 0:
             # SGLang Diffusion supported health check path at v0.5.5.post3
             health_check_path = "/health"
         else:
@@ -5606,7 +5634,12 @@ def _get_inference_health_check_config(
 
 
 def is_inference_ready(
-    mi: ModelInstance, model: Model, timeout: int = 15, *, allow_redirects: bool = True
+    mi: ModelInstance,
+    model: Model,
+    timeout: int = 15,
+    *,
+    allow_redirects: bool = True,
+    inference_backend: Optional[InferenceBackend] = None,
 ) -> bool:
     """
     Send a minimal inference request to verify the inference capability is working.
@@ -5614,7 +5647,9 @@ def is_inference_ready(
     # Check Custom backend (no standard inference API). A managed router is the
     # exception: it is only *launched* as a custom backend, and it serves the
     # group's OpenAI API -- which is exactly what this probe is for.
-    if is_custom_backend(model.backend) and not is_managed_router(model, mi.role):
+    if is_custom_backend(model.backend) and not is_managed_router(
+        model, mi.role, inference_backend
+    ):
         return True
 
     # Check port assignment

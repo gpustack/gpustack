@@ -23,7 +23,10 @@ def create_custom_workload(monkeypatch):
         image="gpustack/runner:test",
         router_image=None,
         model_image=None,
+        router_command=None,
+        router_backend=None,
         mode="vllm-nixl",
+        definition=None,
     ):
         backend = CustomServer.__new__(CustomServer)
         backend._model_spec = SimpleNamespace(
@@ -32,14 +35,26 @@ def create_custom_workload(monkeypatch):
             roles=[
                 RoleSpec(
                     name="router",
+                    backend=router_backend,
                     image_name=router_image
                     or ("custom/router:latest" if user_provided else None),
-                    run_command="custom-router" if user_provided else None,
+                    run_command=router_command
+                    or ("custom-router" if user_provided else None),
                 )
             ],
         )
         backend._model = SimpleNamespace(**vars(backend._model_spec))
-        backend._model.image_name = router_image or model_image or image
+        backend._model.image_name = (
+            router_image or (model_image if router_backend is None else None) or image
+        )
+        backend._model.backend_version = None
+        backend.inference_backend = definition
+        if definition:
+            from gpustack.utils.pd_router_launch import resolve_router_launch
+
+            backend._router_launch = resolve_router_launch(
+                backend._model_spec, definition
+            )
         backend._model_instance = SimpleNamespace(role=role)
         backend._get_configured_image = lambda: backend._model.image_name
         backend._get_configured_resources = lambda: {}
@@ -227,8 +242,10 @@ def test_image_override_runs_directly_without_a_shell(
     )
 
     assert execution.command_script is None
-    assert execution.command == (command if explicit_entrypoint else None)
-    assert execution.args == (arguments if explicit_entrypoint else command + arguments)
+    assert execution.command == (command if explicit_entrypoint else command[:1])
+    assert execution.args == (
+        arguments if explicit_entrypoint else command[1:] + arguments
+    )
 
     result, limits = _run_router(execution, 1024, 524288)
 
@@ -332,3 +349,168 @@ def test_router_keeps_an_unlimited_soft_limit(create_custom_workload):
     assert result.returncode == 0, result.stderr
     assert result.stdout == "started"
     assert "soft=unlimited, hard=unlimited" in result.stderr
+
+
+def test_router_template_argv_is_not_rendered_a_second_time():
+    import shlex
+    from unittest.mock import MagicMock
+
+    load_pd_modes()
+    backend = CustomServer.__new__(CustomServer)
+    args = [
+        'my-router',
+        '--label',
+        'literal {{port}} with spaces;$(data)',
+        '--port',
+        '80',
+    ]
+    backend._model = SimpleNamespace(
+        run_command=shlex.join(args),
+        disaggregation=DisaggregationSpec(mode='vllm-nixl'),
+        roles=[
+            RoleSpec(
+                name='router',
+                image_name='custom:router',
+                run_command='my-router --label {{model_name}} --port {{port}}',
+            )
+        ],
+    )
+    backend._model_instance = SimpleNamespace(role='router')
+    backend.inference_backend = MagicMock()
+    backend._get_selected_gpu_devices = lambda: []
+    backend._flatten_backend_param = lambda: []
+    backend._get_injected_backend_parameters = lambda *args: []
+    assert backend._build_command_args()[0] == args
+    backend.inference_backend.replace_command_param.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["vllm-nixl", "custom"])
+def test_router_template_overrides_the_images_entrypoint(create_custom_workload, mode):
+    execution = create_custom_workload(
+        mode=mode,
+        router_image="upstream/router:latest",
+        router_command="my-router --port {{port}}",
+        arguments=["my-router", "--port", "40006"],
+    )
+    # An application ENTRYPOINT in the image must not receive its own binary
+    # name as a positional argument. The template is the full command.
+    assert execution.command == ["my-router"]
+    assert execution.args == ["--port", "40006"]
+
+
+@pytest.mark.parametrize("entrypoint", [None, ["tini", "--"]])
+def test_independent_router_startup_ignores_the_parent_image(
+    create_custom_workload, entrypoint
+):
+    baseline = create_custom_workload(router_backend="vLLM", command=entrypoint)
+    changed = create_custom_workload(
+        router_backend="vLLM", command=entrypoint, model_image="unused:parent"
+    )
+    assert changed.command == baseline.command
+    assert changed.args == baseline.args
+    assert "gpustack-pd-router" in (changed.command or changed.args)
+
+
+def test_role_router_argv_uses_the_source_template_for_command_ownership():
+    import shlex
+    from unittest.mock import MagicMock
+
+    load_pd_modes()
+    backend = CustomServer.__new__(CustomServer)
+    backend._model_spec = SimpleNamespace(
+        run_command="router --label {{model_name}} --peers {{decode_urls | join(',')}}",
+        disaggregation=DisaggregationSpec(mode='custom'),
+        roles=[
+            RoleSpec(
+                name='router',
+                run_command="router --label {{model_name}} --peers {{decode_urls | join(',')}}",
+            )
+        ],
+    )
+    argv = ['router', '--label', 'literal {{port}}', '--peers', 'http://10.0.0.1:80']
+    backend._model = SimpleNamespace(
+        **{**vars(backend._model_spec), 'run_command': shlex.join(argv)}
+    )
+    backend._model_instance = SimpleNamespace(role='router')
+    backend.inference_backend = MagicMock()
+    backend._flatten_backend_param = lambda: []
+    backend._get_injected_backend_parameters = lambda *args: []
+    assert backend._build_command_args()[0] == argv
+    backend.inference_backend.replace_command_param.assert_not_called()
+
+
+@pytest.mark.parametrize('entrypoint', [None, 'router --entrypoint-flag'])
+@pytest.mark.parametrize('mode', ['vllm-nixl', 'custom'])
+def test_backend_router_command_preserves_entrypoint_and_needs_no_shell(
+    create_custom_workload, entrypoint, mode
+):
+    from gpustack.schemas.inference_backend import InferenceBackend, VersionConfigDict
+    import shlex
+
+    definition = InferenceBackend(
+        backend_name='router-custom',
+        default_version='1',
+        version_configs=VersionConfigDict(
+            root={
+                '1': {
+                    'image_name': 'distroless:router',
+                    'run_command': '--listen {{port}}',
+                    'entrypoint': entrypoint,
+                }
+            }
+        ),
+    )
+    execution = create_custom_workload(
+        mode=mode,
+        router_backend='router-custom',
+        definition=definition,
+        command=shlex.split(entrypoint) if entrypoint else None,
+        arguments=['--listen', '9000'],
+    )
+    assert execution.command == (shlex.split(entrypoint) if entrypoint else None)
+    assert execution.args == ['--listen', '9000']
+    assert execution.command_script is None
+
+
+def test_role_full_command_overrides_selected_backend_entrypoint_without_shell(
+    create_custom_workload,
+):
+    from gpustack.schemas.inference_backend import InferenceBackend, VersionConfigDict
+
+    definition = InferenceBackend(
+        backend_name='router-custom',
+        default_version='1',
+        default_entrypoint='old-router',
+        default_run_command='--old-flags',
+        version_configs=VersionConfigDict(
+            root={'1': {'image_name': 'distroless:router'}}
+        ),
+    )
+    execution = create_custom_workload(
+        router_backend='router-custom',
+        definition=definition,
+        router_command='new-router --port {{port}}',
+        arguments=['new-router', '--port', '9000'],
+    )
+    assert execution.command == ['new-router']
+    assert execution.args == ['--port', '9000']
+
+
+@pytest.mark.parametrize('rendered_command', ['', '   ', "''"])
+@pytest.mark.parametrize('image', [None, 'upstream:router'])
+def test_router_parameters_cannot_supply_a_missing_executable(rendered_command, image):
+    from unittest.mock import MagicMock
+
+    backend = CustomServer.__new__(CustomServer)
+    backend._model_spec = SimpleNamespace(
+        disaggregation=DisaggregationSpec(mode='vllm-nixl'),
+        roles=[RoleSpec(name='router', backend='Custom', image_name=image)],
+    )
+    backend._model = SimpleNamespace(run_command=rendered_command)
+    backend._model_instance = SimpleNamespace(role='router')
+    backend.inference_backend = None
+    backend._flatten_backend_param = MagicMock(return_value=['--host', '10.0.0.3'])
+    backend._get_injected_backend_parameters = lambda *args: []
+    with pytest.raises(ValueError, match='Managed PD router requires.*command'):
+        backend._build_command_args()
+    backend._flatten_backend_param.assert_not_called()
