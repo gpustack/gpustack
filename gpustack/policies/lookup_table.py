@@ -26,45 +26,41 @@ _LOOKUP_ARCHITECTURES = {
 }
 
 
-# Offload defaults are verified against these upstream release families.
-_VERIFIED_VLLM_LOOKUP_VERSIONS = {(0, 30), (0, 31), (0, 32)}
-
-
 def _backend_version(model: Model) -> Optional[Version]:
     """Resolve the version whose lookup defaults are used for estimation.
 
-    Auto without a custom image uses the newest verified release family. This
-    is an estimation assumption, not a constraint on the worker's runner choice.
+    Auto without a custom image assumes EngramConfig's default CPU offload,
+    available from v0.31. This does not constrain the worker's runner choice.
     Explicit invalid versions and custom images without a version return None.
     """
     if not model.backend_version and not model.image_name:
-        return Version(".".join(map(str, max(_VERIFIED_VLLM_LOOKUP_VERSIONS))))
+        return Version("0.31.0")
     try:
         return Version(model.backend_version) if model.backend_version else None
     except InvalidVersion:
         return None
 
 
-def _verified_lookup_version(model: Model) -> bool:
-    """Check whether verified offload defaults apply.
+def _uses_vllm_lookup_defaults(model: Model) -> bool:
+    """Apply CPU offload defaults to stable releases and custom backends.
 
-    Custom images, prereleases, and unlisted release families are excluded
-    because their lookup table behavior may differ from the verified releases.
+    Custom images and unparseable versions are assumed to enable CPU offload.
+    Recognized versions use the default for stable releases from v0.30 onward.
     """
     version = _backend_version(model)
+    if model.image_name or version is None:
+        return True
     return bool(
-        not model.image_name
-        and version
-        and not version.is_prerelease
+        not version.is_prerelease
         and not version.is_devrelease
-        and version.release[:2] in _VERIFIED_VLLM_LOOKUP_VERSIONS
+        and version >= Version("0.30.0")
     )
 
 
 def get_offloaded_lookup_table_kind(
     model: Model, architectures: Optional[List[str]], config: Any = None
 ) -> Optional[LookupTableKind]:
-    """Resolve supported backend offload settings without guessing custom defaults."""
+    """Resolve supported backend offload settings for resource estimation."""
     backend = get_backend(model)
     if backend not in (BackendEnum.VLLM, BackendEnum.SGLANG):
         return None
@@ -186,25 +182,25 @@ def _vllm_cpu_offload_enabled(model: Model) -> bool:
     """Resolve whether the estimator should account for CPU-offloaded tables.
 
     Explicit configuration takes precedence over applicable legacy environment
-    settings, then verified version defaults. Unverified defaults return False
-    so the estimator does not deduct weights based on assumed backend behavior.
+    settings, then version defaults. Custom images and unparseable versions
+    assume CPU offload unless explicitly configured otherwise.
     """
     config = _engram_config(model)
     if "cpu_offload" in config:
         return config["cpu_offload"]
     version = _backend_version(model)
     env = model.env or {}
-    # v0.30 reads this environment variable; v0.31 and v0.32 default to True
-    # directly in EngramConfig. Explicit configuration takes precedence in both.
+    # v0.30 reads this environment variable; v0.31 and later use EngramConfig's
+    # True default. Explicit configuration takes precedence in both.
     # https://github.com/vllm-project/vllm/blob/v0.31.0/vllm/config/engram.py
     if "VLLM_PLE_CPU_OFFLOAD" in env and (
         version is None or version.release[:2] < (0, 31)
     ):
         return bool(int(env["VLLM_PLE_CPU_OFFLOAD"]))
-    if _verified_lookup_version(model):
+    if _uses_vllm_lookup_defaults(model):
         return True
     logger.debug(
-        "Lookup offload defaults are unverified for %s (version=%s, image=%s); "
+        "Lookup offload defaults do not apply to %s (version=%s, image=%s); "
         "use explicit Engram configuration or resource claims",
         model.name,
         model.backend_version,
