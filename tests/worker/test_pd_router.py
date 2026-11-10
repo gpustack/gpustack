@@ -415,8 +415,7 @@ def test_a_role_less_model_is_untouched():
 
 
 def test_a_user_supplied_router_keeps_its_own_command():
-    """ "Managed" is derived from whether the user gave it an image and a
-    command, so a hand-written router cannot be overwritten by the catalog."""
+    """A full role command is executed without the catalog's invocation."""
     from gpustack.schemas.models import RoleSpec
     from gpustack.worker.pd_router import apply_managed_router, is_managed_router
 
@@ -428,8 +427,10 @@ def test_a_user_supplied_router_keeps_its_own_command():
             run_command="my-router --serve",
         )
     )
-    assert is_managed_router(model, "router") is False
-    assert apply_managed_router(model, "router") is model
+    assert is_managed_router(model, "router") is True
+    projected = apply_managed_router(model, "router", peers=PEERS, variables=VARIABLES)
+    assert projected.run_command == "my-router --serve"
+    assert projected.image_name == "me/my-router:1"
 
 
 def test_with_peers_the_command_is_materialised():
@@ -525,6 +526,44 @@ def test_the_runner_image_is_resolved_against_the_groups_engine():
         "the row this server was handed is the router's own — which is None"
     )
     assert variables["runner_image"] == "gpustack/runner:cuda12.9-vllm0.17.1"
+
+
+@pytest.mark.parametrize("version", [None, "0.30.0"])
+def test_router_image_resolution_uses_its_independent_backend(version):
+    from types import SimpleNamespace
+
+    from gpustack.schemas.models import RoleSpec, role_effective_model
+    from gpustack.schemas.pd_modes import PDNetDevicePlaneEnum
+    from gpustack.worker.backends.base import InferenceServer
+
+    model = _pd_model(
+        RoleSpec(name="router", backend="SGLang", backend_version=version)
+    )
+    model.image_name = "parent/vllm:custom"
+    asked = {}
+
+    def resolve_image(**kwargs):
+        asked.update(kwargs)
+        return "role/runner:image", version
+
+    fake = SimpleNamespace(
+        _worker=SimpleNamespace(ifname="eno1", name="node-a"),
+        _config=SimpleNamespace(kv_transfer_ifname=None),
+        _model_spec=model,
+        _model=role_effective_model(model, "router"),
+        _model_instance=SimpleNamespace(role="router"),
+        _resolve_image=resolve_image,
+        _engine_inference_backend=lambda spec: SimpleNamespace(
+            backend_name=spec.backend
+        ),
+        _net_device_plane=lambda: PDNetDevicePlaneEnum.DATA,
+    )
+    variables = InferenceServer._pd_template_variables(fake)
+
+    assert asked["backend"] == "SGLang"
+    assert asked["spec"].backend_version == version
+    assert asked["spec"].image_name is None
+    assert variables["runner_image"] == "role/runner:image"
 
 
 # --- which plane the derived NIC rides -------------------------------------- #
@@ -673,6 +712,79 @@ def test_a_role_image_survives_the_catalogs():
     # The catalog still supplies the invocation, peers included.
     assert projected.run_command.startswith("vllm-router ")
     assert "--prefill http://10.0.0.1:40027" in projected.run_command
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "vllm-nixl",
+        "vllm-mooncake",
+        "vllm-ascend-mooncake",
+        "sglang-nixl",
+        "sglang-mooncake",
+    ],
+)
+def test_image_only_custom_router_uses_runtime_peers_and_keeps_management(mode):
+    from gpustack.schemas.models import (
+        BackendEnum,
+        DisaggregationSpec,
+        RoleSpec,
+        role_effective_model,
+    )
+    from gpustack.validation.pd.roles import validate_roles
+    from gpustack.worker.pd_router import (
+        apply_managed_router,
+        is_managed_router,
+        managed_router_health_path,
+    )
+    from gpustack.utils.pd_router_membership import membership_update_policy
+
+    router = RoleSpec(
+        name="router",
+        backend=BackendEnum.CUSTOM,
+        image_name="upstream/router:compatible",
+    )
+    model = _pd_model(router)
+    model.backend = "SGLang" if mode.startswith("sglang-") else "vLLM"
+    model.disaggregation = DisaggregationSpec(mode=mode)
+    validate_roles(model)
+    assert is_managed_router(model, "router")
+    assert (
+        apply_managed_router(
+            role_effective_model(model, "router"), "router"
+        ).run_command
+        is None
+    )
+
+    peers = {
+        "prefill": [PeerAddress("10.0.0.11", 41001, {"bootstrap": 41002})],
+        "decode": [PeerAddress("10.0.0.12", 42001)],
+    }
+    launch = apply_managed_router(
+        role_effective_model(model, "router"),
+        "router",
+        peers=peers,
+        variables=VARIABLES,
+    )
+    assert launch.image_name == router.image_name
+    assert "--prefill http://10.0.0.11:41001" in launch.run_command
+    assert "--decode http://10.0.0.12:42001" in launch.run_command
+    assert managed_router_health_path(model, "router") == "/health"
+    assert (
+        membership_update_policy(model, get_pd_mode(mode))
+        == get_pd_mode(mode).router.membership_update
+    )
+    assert router.run_command is None
+
+    peers["decode"] = [PeerAddress("10.0.0.13", 43001)]
+    replacement = apply_managed_router(
+        role_effective_model(model, "router"),
+        "router",
+        peers=peers,
+        variables=VARIABLES,
+    )
+    assert "--decode http://10.0.0.13:43001" in replacement.run_command
+    assert "10.0.0.12:42001" not in replacement.run_command
 
 
 def test_a_role_command_survives_the_catalogs():

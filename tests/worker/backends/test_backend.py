@@ -3242,7 +3242,19 @@ def test_ascend_pd_unsupported_device_still_disables_cache(caplog):
     assert "310P" in caplog.text
 
 
-def test_managed_router_records_the_same_peers_it_renders(monkeypatch):
+@pytest.mark.parametrize(
+    "command,inherited",
+    [
+        (None, False),
+        ("router {% for p in prefill %}--peer {{p.url}} {% endfor %}", False),
+        ("router --peers {{prefill_urls | join(',')}}", False),
+        ("router {% for p in prefill %}--peer {{p.url}} {% endfor %}", True),
+        ("router --peers {{prefill_urls | join(',')}}", True),
+    ],
+)
+def test_managed_router_records_the_same_peers_it_renders(
+    monkeypatch, command, inherited
+):
     from unittest.mock import MagicMock
     from gpustack.schemas.models import (
         DisaggregationSpec,
@@ -3259,8 +3271,17 @@ def test_managed_router_records_the_same_peers_it_renders(monkeypatch):
         name="m",
         source=SourceEnum.HUGGING_FACE,
         huggingface_repo_id="org/repo",
-        disaggregation=DisaggregationSpec(mode="vllm-mooncake"),
-        roles=[RoleSpec(name="router")],
+        disaggregation=DisaggregationSpec(
+            mode="custom" if inherited else "vllm-mooncake"
+        ),
+        run_command="engine --model /model",
+        roles=[
+            RoleSpec(
+                name="router",
+                backend="router-custom" if inherited else None,
+                run_command=None if inherited else command,
+            )
+        ],
     )
     peer = types.SimpleNamespace(
         id=1,
@@ -3279,6 +3300,12 @@ def test_managed_router_records_the_same_peers_it_renders(monkeypatch):
     )
     draining = types.SimpleNamespace(**{**vars(peer), "id": 2, "draining_since": "now"})
     server = _StubServer.__new__(_StubServer)
+    if inherited:
+        from gpustack.schemas.inference_backend import InferenceBackend
+
+        server.inference_backend = InferenceBackend(
+            backend_name='router-custom', default_run_command=command
+        )
     server._model_instance = ModelInstance(
         name="router",
         model_id=1,
@@ -3415,6 +3442,35 @@ def test_managed_backend_version_conflict_stops_preparation_before_model_write()
     with pytest.raises(RuntimeError, match='version conflict'):
         backend._update_model_backend_service_version('0.32.0')
     backend._clientset.models.update.assert_not_called()
+
+
+def test_independent_auto_version_only_updates_the_role_instance():
+    from unittest.mock import MagicMock
+
+    from gpustack.schemas.models import RoleSpec, role_effective_model
+
+    backend, _ = _external_backend()
+    backend._model_spec = new_model(
+        1,
+        'moe',
+        huggingface_repo_id='org/moe',
+        backend_version='0.29.0',
+        roles=[RoleSpec(name='decode', backend='vLLM')],
+    )
+    backend._model = role_effective_model(backend._model_spec, 'decode')
+    backend._model_instance.role = 'decode'
+    backend._clientset = MagicMock()
+    backend._update_model_instance = MagicMock()
+
+    backend._update_model_backend_service_version('0.32.0')
+
+    assert backend._model_spec.backend_version == '0.29.0'
+    assert backend._model_spec.roles[0].backend_version is None
+    assert backend._model.backend_version == '0.32.0'
+    backend._clientset.models.update.assert_not_called()
+    backend._update_model_instance.assert_called_with(
+        backend._model_instance.id, backend_version='0.32.0'
+    )
 
 
 @pytest.mark.parametrize(

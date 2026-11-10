@@ -709,9 +709,30 @@ class InferenceServer(ABC):
             static_hybrid_router_variables,
         )
 
+        from gpustack.utils.pd_router_command import (
+            is_router_command_template,
+            router_command_management,
+        )
+
+        source_model = getattr(self, "_model_spec", None) or model
+        from gpustack.utils.pd_router_launch import resolve_router_launch
+
+        launch = resolve_router_launch(
+            source_model, getattr(self, 'inference_backend', None)
+        )
+        declared_command = launch.command
         instance = self._model_instance
-        if not is_managed_router(model, instance.role):
+        if not is_managed_router(
+            source_model, instance.role, getattr(self, 'inference_backend', None)
+        ):
+            if instance.role == 'router' and getattr(
+                source_model, 'disaggregation', None
+            ):
+                raise ValueError(
+                    "Router requires a command from its role, selected backend or PD recipe"
+                )
             return model
+        self._router_launch = launch
 
         siblings = self._clientset.model_instances.list(
             params={"model_id": instance.model_id}
@@ -733,13 +754,14 @@ class InferenceServer(ABC):
 
         peers = group_peer_addresses(members, instance.group_id, worker_ips)
         variables = self._template_variables(**self._pd_template_variables())
-        variables.update(
-            static_hybrid_router_variables(
-                getattr(self, "_model_spec", None) or model,
-                members,
-                instance.group_id,
+        if not launch.command:
+            variables.update(
+                static_hybrid_router_variables(
+                    getattr(self, "_model_spec", None) or model,
+                    members,
+                    instance.group_id,
+                )
             )
-        )
         # A router's own named bands. The engine roles get these from the
         # injector, which builds its own context; the router does not go
         # through the injector at all, so without this its
@@ -750,14 +772,24 @@ class InferenceServer(ABC):
             variables[f"ports.{name}"] = band.base
             variables[f"ports.{name}.count"] = band.count
         rendered = apply_managed_router(
-            model, instance.role, peers=peers, variables=variables
+            model,
+            instance.role,
+            inference_backend=getattr(self, 'inference_backend', None),
+            peers=peers,
+            variables=variables,
         )
-        _refuse_unrendered_router(rendered, instance)
+        _refuse_unrendered_router(
+            rendered,
+            instance,
+            command_rendered=is_router_command_template(declared_command),
+        )
         from gpustack.utils.pd_router_membership import router_peer_snapshot
 
-        if not next(
-            (r.run_command for r in (model.roles or []) if r.name == instance.role),
-            None,
+        if (
+            router_command_management(
+                declared_command, env=getattr(rendered, "env", None)
+            )
+            != "manual"
         ):
             self._update_model_instance(
                 instance.id,
@@ -765,8 +797,8 @@ class InferenceServer(ABC):
                     members, instance.group_id, worker_ips
                 ),
             )
-        # Managed routers receive their launch configuration from the catalog,
-        # including parameters that replace inherited engine arguments.
+        # Router launch settings come from its selected backend or recipe;
+        # their parameters replace inherited engine arguments.
         self._model_config_snapshot = ModelConfigSnapshot.model_validate(
             rendered, from_attributes=True
         ).model_copy(deep=True)
@@ -839,16 +871,13 @@ class InferenceServer(ABC):
             variables["net_device"] = net_device
 
         try:
-            # Resolved against the GROUP's engine rather than this member's
-            # backend. A managed router has already been switched to the custom
-            # backend by the time this runs, and the custom backend resolves no
-            # image by definition — its image is supposed to come from the
-            # model. The router binary ships inside the engine's runner image,
-            # so that is the one to name.
-            #
-            # The raw image: no registry override and no version write-back,
-            # since this is a template value, not the image being deployed.
+            # Resolve the selected backend before the router's executor is
+            # projected to Custom. The role may select its own runner version;
+            # an inherited role continues to use the deployment's selection.
             spec = self._model_spec or self._model
+            instance = getattr(self, "_model_instance", None)
+            if getattr(instance, "role", None) == "router":
+                spec = role_effective_model(spec, "router")
             runner_image, _ = self._resolve_image(
                 backend=get_backend(spec),
                 spec=spec,
@@ -868,15 +897,11 @@ class InferenceServer(ABC):
         return variables
 
     def _engine_inference_backend(self, spec) -> Optional[InferenceBackend]:
-        """The backend row of the group's engine, for a member that is not one.
+        """Resolve the selected image backend in the deployment owner's scope.
 
-        This server was handed the row for its *own* backend, and a managed
-        router's own backend is `custom` — which has no row, so what it was
-        handed is None. That is correct for launching it and useless for
-        answering "which image do the engines run", which is the only thing
-        the router needs the row for: a custom backend version's image lives
-        nowhere else. The runner catalog cannot stand in, because a
-        user-defined version is by definition not in it.
+        An independent Router may already carry this row. An inheriting Router
+        needs the parent backend's row to resolve its image, even though its
+        executor is Custom and its command comes from the PD recipe.
         """
         name = get_backend(spec)
         if self.inference_backend and self.inference_backend.backend_name == name:
@@ -1993,24 +2018,26 @@ exec "$@"
         if not service_version:
             return
         managed = get_model_instance_workloads(self._model_instance) is not None
+        from gpustack.schemas.models import find_role
+
+        spec = self._model_spec or self._model
+        role = find_role(spec, getattr(self._model_instance, "role", None))
+        independent_backend = role is not None and role.backend is not None
         try:
             if managed:
                 self._update_model_instance(
                     self._model_instance.id, backend_version=service_version
                 )
             if not self._model.backend_version:
-                # Write the *unprojected* model back. `self._model` carries the
-                # role's overrides merged in, so sending it as a ModelUpdate
-                # would persist one role's engine parameters, env and image as
-                # the Model-level spec — silently, and for every other role to
-                # then inherit. The non-table projection class cannot prevent
-                # this one: the write goes out over HTTP, not through a
-                # session. A role that overrides `backend_version` never
-                # reaches here anyway, since the value is then already set.
-                spec = self._model_spec or self._model
-                spec.backend_version = service_version
+                # A role's Auto resolution belongs on its instance. Writing
+                # it onto the deployment would change the defaults its
+                # siblings inherit, and would freeze this role's Auto choice.
                 self._model.backend_version = service_version
-                self._clientset.models.update(spec.id, ModelUpdate(**spec.model_dump()))
+                if not independent_backend:
+                    spec.backend_version = service_version
+                    self._clientset.models.update(
+                        spec.id, ModelUpdate(**spec.model_dump())
+                    )
             if not managed and not self._model_instance.backend_version:
                 self._update_model_instance(
                     self._model_instance.id, backend_version=service_version
@@ -2254,7 +2281,7 @@ def read_lora_max_rank(paths: List[str]) -> Optional[int]:
     return max_rank
 
 
-def _refuse_unrendered_router(model, instance) -> None:
+def _refuse_unrendered_router(model, instance, *, command_rendered=False) -> None:
     """The same rule as `_refuse_unrendered`, at the second place it can break.
 
     A router does not go through the injector, so the injector's check never
@@ -2276,7 +2303,7 @@ def _refuse_unrendered_router(model, instance) -> None:
     from gpustack.worker.pd_injection import _ANY_PLACEHOLDER, PDInjectionError
 
     unrendered = []
-    for field in ("image_name", "run_command"):
+    for field in ("image_name",) if command_rendered else ("image_name", "run_command"):
         for match in _ANY_PLACEHOLDER.finditer(str(getattr(model, field, "") or "")):
             unrendered.append(f"{field}={match.group(0)}")
     for name, value in sorted((getattr(model, "env", None) or {}).items()):

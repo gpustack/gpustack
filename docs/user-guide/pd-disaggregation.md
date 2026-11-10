@@ -51,22 +51,95 @@ usually be faster without it.
    typing.
 5. Save.
 
-The router is managed for you: its image, command, peer addresses and health
-path all come from the mode's recipe, so the form does not ask for them. What
-it does ask for is what a recipe cannot know — the router's own arguments and
-environment — and the connection arguments the platform derived are seeded
-into that same list, so you can see what was rendered rather than trust it. A
-row you leave untouched is dropped again on save, and the server goes on
-rendering it.
+### Independent role backends
+
+The deployment's backend, version, image and execution command are defaults for
+all three roles. Each role's **Backend** dropdown initially selects **Inherit
+deployment**, followed by the current backend and version or image. Changes to
+the deployment continue to apply while this option is selected. The deployment command is an engine default; Router command sources are resolved separately below.
+
+Select a specific backend on Prefill, Decode or Router to configure that role
+independently. Selecting the deployment's current backend copies its current
+launch configuration; selecting a different backend starts with that backend's
+defaults. All three roles offer the same backend list and fields as the deployment:
+
+- Select a backend and version to use its configured runner image. **Auto**
+  selects a version independently of the deployment's version.
+- Select **Custom** to supply an image. P/D roles also require a command.
+  A Router in a built-in PD mode can leave it empty: GPUStack generates the
+  command after P/D is ready. The image tag or digest identifies its version.
+- Built-in backends that support custom images retain their image override
+  option and optional execution command.
+
+For a Router, selecting the deployment's backend copies its image and version but leaves the command empty for the selected backend definition or PD recipe to supply. The deployment's inference command is never copied. Reselecting an already independent backend preserves any Router command you entered.
+
+An independent role keeps its selection when the deployment defaults change,
+including when its values initially match the defaults. Select **Inherit
+deployment** again to clear the role's backend overrides and resume inheritance. Parameters,
+environment, resources and scheduling retain their own existing settings.
+
+For API clients, a non-null `roles[].backend` selects an independent group of
+`backend`, `backend_version`, `image_name` and `run_command`. Null version means
+Auto, and null image/command uses that backend's generated configuration. Set all
+four fields to null to inherit the deployment defaults. Existing API overrides
+that leave `backend` null continue to inherit unspecified fields individually.
+
+The selected backend and version supply the Router image. Command priority is: the Router role's explicit command, the selected backend version's command, the backend's default command, then the PD recipe's command. This order applies to every backend, including built-in backends. Overriding only the image retains the recipe command. Custom commands without peer references use manual membership management; peer-dependent templates refresh by restarting the Router. The `custom` PD mode also leaves connector configuration to the operator.
+
+Different images and versions must implement compatible connector protocols and
+KV layouts. Built-in PD recipes validate P/D engine compatibility. Router
+selection uses the same backend options without the P/D engine restrictions.
+
+Catalog connection arguments and tunable defaults are shown only when the command comes from the PD recipe.
 
 A router is structurally one replica, so there is no count to set: a second
 would split the prefix cache and give the group two addresses.
 
-If you need your own router, choose the `custom` mode and set the image and
-run command on the **deployment** rather than on the router role — the role
-inherits both. One image therefore carries your router beside the engine and
-dispatches on the role, which is the same work as naming it in two places
-without the second place to keep in sync.
+### Runtime Router command templates { #runtime-router-command-arguments }
+
+A role or backend command owns every flag; GPUStack fills runtime data after P/D is ready and does not append recipe flags. If neither provides a command, the PD recipe supplies its default command and membership policy. Data templates also work in the `custom` PD mode.
+
+- `{{worker_ip}}` is this Router’s Worker IP; `{{port}}` is its allocated serving port; `{{ports.prometheus}}` is a named port when the recipe allocates it.
+- `prefill` / `decode` contain all ready endpoints in the current group, in stable address order. Each entry has `ip`, `port`, `url`, `ports`. Named ports are per endpoint, for example `{{p.ports.bootstrap}}`.
+- `prefill_urls` / `decode_urls` are URL lists that support `join`.
+
+With two prefill and two decode endpoints, each loop below produces two sets of flags. Change the flags or bind address to match your binary. A vLLM NIXL example:
+
+```text
+vllm-router --vllm-pd-disaggregation --kv-connector nixl
+  --host 0.0.0.0 --port {{port}}
+  --prometheus-host 0.0.0.0 --prometheus-port {{ports.prometheus}}
+  {% for p in prefill %}
+    --prefill {{p.url}}
+  {% endfor %}
+  {% for d in decode %}
+    --decode {{d.url}}
+  {% endfor %}
+```
+
+For a binary accepting comma-separated endpoint lists:
+
+```text
+my-router --listen {{worker_ip}} --listen-port {{port}}
+  --prefill-endpoints "{{prefill_urls | join(',')}}"
+  --decode-endpoints "{{decode_urls | join(',')}}"
+```
+
+Only variable values, single-level loops over the endpoint/URL lists, and joining URL lists with a literal separator are supported. Unknown names and unsupported syntax are rejected on save; unavailable named ports fail startup. Arbitrary calls, imports, conditionals, nested loops and other filters are unavailable. Newlines separate arguments; this is an argv template, with no implicit shell execution. Substituted values remain atomic even when they contain spaces or quotes.
+
+Templates can reference explicitly configured environment values such as `{{ROUTER_CONFIG}}`. The Router uses its role-level environment when provided, otherwise the deployment environment; catalog defaults are merged underneath. Template runtime variables take precedence when names overlap.
+
+A Router inheriting the deployment configuration reuses its image/version but never its inference command, in any PD mode. An independently selected backend supplies its version-level `run_command` or `default_run_command`; its configured entrypoint and command retain their normal argument semantics. A role-level `run_command` is a complete invocation and overrides that entrypoint. If no command source is available, including in `custom` PD mode, the deployment is rejected with a missing-command error.
+
+Command literals follow POSIX quoting rules. Use single quotes around regular expressions or paths containing backslashes to preserve them, as in this example:
+
+```text
+my-router --regex '\d+\s+' --config 'C:\models\router.json' --port {{port}}
+```
+
+The original template is saved with the deployment; the rendered command is recorded in the instance configuration snapshot. Commands referencing peer data are rendered again and the Router is recreated when members or their restart generation change. Custom commands without peer references require manual membership updates; GPUStack does not infer a membership API from flags.
+
+With an explicit Router or deployment image, the complete command overrides the image's application ENTRYPOINT and does not require a shell in the image.
 
 ## How a group starts
 
@@ -135,8 +208,8 @@ provided no configuration changes are pending. Router behavior depends on
 | `restart` | vLLM Mooncake | GPUStack replaces the router after added GPU members are ready, refreshing startup peers and bootstrap metadata. Removed or restarted members trigger a refresh as soon as both sides have a usable peer. Surviving GPU instances keep running, but service is briefly unavailable and in-flight requests may fail. |
 | `manual` | Custom | The operator updates router peers and bootstrap metadata and restarts the router when necessary. |
 
-A user-supplied router run command uses manual membership management, even when
-the selected recipe supports automatic updates. The deployment form and replica
+A static user-supplied Router command uses manual membership management.
+Runtime argument templates follow the policies described above. The deployment form and replica
 editor display the policy from the catalog. Instance deletion also warns when
 recovery requires router replacement or operator action.
 

@@ -720,6 +720,34 @@ async def test_a_description_change_does_not_change_the_digest():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("backend", "SGLang"),
+        ("backend_version", "0.30.0"),
+        ("image_name", "unused:image"),
+        ("run_command", "unused-command"),
+    ],
+)
+@pytest.mark.parametrize("inherited_role", [None, "prefill", "decode", "router"])
+async def test_backend_defaults_only_change_generation_when_inherited(
+    field, value, inherited_role
+):
+    model = _model(
+        backend="vLLM",
+        backend_version="0.29.0",
+        roles=[
+            RoleSpec(name=name, backend=None if name == inherited_role else "vLLM")
+            for name in ("prefill", "decode", "router")
+        ],
+    )
+    before = await model_spec_digest(_pass(), model)
+    setattr(model, field, value)
+    after = await model_spec_digest(_pass(), model)
+    assert (before != after) is (inherited_role is not None)
+
+
+@pytest.mark.asyncio
 async def test_a_deployment_shaping_change_does_change_the_digest():
     # A pass each, because a spec change is something that happens BETWEEN
     # reconciles; within one the digest is pinned on purpose.
@@ -1179,10 +1207,19 @@ async def _static_group(mode="vllm-mooncake", prefill=1):
 @pytest.mark.parametrize(
     "change", ["identity", "restart", "address", "bootstrap", "unknown"]
 )
-async def test_static_router_is_recreated_after_peer_changes(change):
+@pytest.mark.parametrize(
+    "mode,command",
+    [
+        ("vllm-mooncake", None),
+        ("vllm-nixl", "router {% for p in prefill %}--peer {{p.url}} {% endfor %}"),
+        ("custom", "router --peers {{decode_urls | join(',')}}"),
+    ],
+)
+async def test_static_router_is_recreated_after_peer_changes(change, mode, command):
     from gpustack.schemas.models import PortBand
 
-    model, members = await _static_group()
+    model, members = await _static_group(mode)
+    model.roles[-1].run_command = command
     if change == "identity":
         members[0].id = 10
     elif change == "restart":
@@ -1205,6 +1242,34 @@ async def test_static_router_creation_records_expected_peers():
     result = await _run(model, members[:-1])
     assert len(result.created) == 1
     assert result.created[0].router_peer_snapshot == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['custom', 'vllm-nixl'])
+@pytest.mark.parametrize('uses_peers', [True, False])
+async def test_selected_backend_command_controls_router_recreation(
+    monkeypatch, mode, uses_peers
+):
+    from gpustack.schemas.inference_backend import InferenceBackend
+
+    model, members = await _static_group(mode)
+    model.roles[-1].backend = 'router-custom'
+    backend = InferenceBackend(
+        backend_name='router-custom',
+        default_run_command=(
+            "router --peers {{decode_urls | join(',')}}"
+            if uses_peers
+            else 'router --config /etc/router.json'
+        ),
+    )
+    monkeypatch.setattr(
+        InferenceBackend,
+        'cached_all',
+        AsyncMock(return_value=[backend]),
+    )
+    members[0].restart_count = 1
+    result = await _run(model, members)
+    assert [i.role for i in result.deleted] == (['router'] if uses_peers else [])
 
 
 @pytest.mark.asyncio
@@ -1481,6 +1546,25 @@ async def test_new_external_pd_registers_managed_role_with_platform_router(
 
 
 @pytest.mark.asyncio
+async def test_an_independent_auto_role_does_not_pin_its_instance_to_parent_version():
+    from gpustack.server.controllers import _build_instance_create
+
+    model = _model(
+        backend='vLLM',
+        backend_version='0.29.0',
+        roles=[RoleSpec(name='decode', backend='vLLM')],
+    )
+    with patch(
+        'gpustack.server.controllers.get_draft_model_source',
+        AsyncMock(return_value=None),
+    ):
+        row = await _build_instance_create(
+            _pass(), model, model.roles[0], 'g1', 'digest'
+        )
+    assert row.backend_version is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'parameters,categories,managed',
     [
@@ -1710,3 +1794,35 @@ async def test_static_hybrid_peer_change_refreshes_only_router_while_scale_out_w
     assert [
         peer.model_dump() for peer in members if peer.role != 'router'
     ] == healthy_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('inherited_role', [None, 'decode', 'router'])
+@pytest.mark.parametrize(
+    'field,value',
+    [
+        ('backend', 'SGLang'),
+        ('backend_version', '0.30.0'),
+        ('image_name', 'custom:new'),
+        ('run_command', 'custom-command'),
+    ],
+)
+async def test_parent_launch_fields_only_change_the_generation_when_inherited(
+    inherited_role, field, value
+):
+    model = _model(
+        backend='vLLM',
+        backend_version='0.29.0',
+        roles=[
+            RoleSpec(name=name, backend=None if name == inherited_role else 'vLLM')
+            for name in ('prefill', 'decode', 'router')
+        ],
+    )
+    with patch(
+        'gpustack.server.controllers.GPUInstanceType.all_by_fields',
+        AsyncMock(return_value=[]),
+    ):
+        before = await model_spec_digest(_pass(), model)
+        setattr(model, field, value)
+        after = await model_spec_digest(_pass(), model)
+    assert (before != after) is (inherited_role is not None)

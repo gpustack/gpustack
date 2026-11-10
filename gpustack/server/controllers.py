@@ -70,6 +70,7 @@ from gpustack.schemas.models import (
     LoraListEntry,
     ModelSource,
     Model,
+    ROLE_BACKEND_FIELDS,
     ModelInstance,
     ModelInstanceCreate,
     ModelInstanceStateEnum,
@@ -140,6 +141,7 @@ from gpustack.validation.pd.parameters import (
     violates_tensor_parallel_direction,
 )
 from gpustack.utils.command import find_last_int_parameter, find_last_parameter
+from gpustack.utils.pd_router_launch import router_backend_definition
 from gpustack.server import pd_membership
 from gpustack.server.pd_membership import outcome_for as membership_outcome_for
 from gpustack.server.cache_services import resolve_instance_cache_config_safe
@@ -589,8 +591,13 @@ class ModelController:
                 # update this may publish converges after one round.
                 if attached is not None:
                     await sync_model_status(session, attached)
+                router_backend = (
+                    await router_backend_definition(session, model, cached=True)
+                    if attached is not None
+                    else None
+                )
                 membership_due = (
-                    pd_membership.reconcile_after(model)
+                    pd_membership.reconcile_after(model, router_backend)
                     if attached is not None
                     else None
                 )
@@ -2273,8 +2280,13 @@ async def model_spec_digest(
         return cached
 
     payload: Dict[str, Any] = {}
+    independent_backends = bool(model.roles) and all(
+        role.backend for role in model.roles
+    )
     for field in ModelSpecBase.model_fields:
         if field in _DIGEST_EXCLUDED_SPEC_FIELDS:
+            continue
+        if independent_backends and field in ROLE_BACKEND_FIELDS:
             continue
         value = getattr(model, field, None)
         if field == "backend_version" and backend_version is not _UNSET:
@@ -2501,7 +2513,7 @@ async def _build_instance_create(
         # role-effective model rather than the Model — a `custom` group may
         # legitimately mix engines.
         backend=get_backend(effective),
-        backend_version=role.backend_version or model.backend_version,
+        backend_version=effective.backend_version,
         role=role.name,
         group_id=group_id,
         spec_digest=digest,
@@ -2563,7 +2575,10 @@ async def _refresh_static_routers(session, model, generation, spec_moved):
         router_refresh_ready,
     )
 
-    if spec_moved or membership_policy(model) != PDRouterMembershipUpdateEnum.RESTART:
+    if spec_moved:
+        return
+    backend = await router_backend_definition(session, model, cached=True)
+    if membership_policy(model, backend) != PDRouterMembershipUpdateEnum.RESTART:
         return
     routers = pd_membership.router_instances(generation)
     if not routers:
@@ -3979,7 +3994,7 @@ def _engine_version_below_recipe_floor(model: Model) -> bool:
     """
     from packaging.version import Version
 
-    from gpustack.schemas.models import role_takes_no_accelerator
+    from gpustack.schemas.models import role_takes_no_accelerator, role_backend_field
     from gpustack.server.pd_mode_catalog import get_pd_mode
     from gpustack.utils.version import version_in_range
 
@@ -4020,8 +4035,6 @@ def _engine_version_below_recipe_floor(model: Model) -> bool:
     disaggregation = getattr(model, "disaggregation", None)
     if disaggregation is None:
         return False
-    if getattr(model, "image_name", None):
-        return False
 
     mode_name = disaggregation.mode.value
     mode = get_pd_mode(mode_name)
@@ -4031,35 +4044,23 @@ def _engine_version_below_recipe_floor(model: Model) -> bool:
         # never "compatible".
         return False
 
-    # Per role, not per model, and the same expression `_build_instance_create`
-    # writes onto the member row -- `role.backend_version or
-    # model.backend_version` -- because that row is what actually starts. A
-    # group whose model-level pin is fine can still run one decode on a build
-    # that cannot be scaled down, and one is enough: that member is the one
-    # that keeps serving after GPUStack believes it removed it.
-    #
-    # Spelled out rather than taken from `role_effective_model`, which resolves
-    # the identical value: the projection validates a whole Model per role, and
-    # this runs on every reconcile of every PD deployment for one string.
-    #
-    # **Weight-bearing roles only, and the router is the reason that is not
-    # pedantry.** `backend_versions` describes the *engine* -- `>=0.5.7` is a
-    # statement about SGLang -- and the router is the one role whose engine is
-    # genuinely its own: the deploy form keeps an image-and-version section for
-    # it precisely because "a `vllm-router` is not the model's engine". The
-    # built-in recipes run it out of the model's own runner image, so its
-    # version is usually the engine's and comparing them is merely redundant;
-    # a hand-written router image is where it stops being redundant and starts
-    # being wrong, because that version number answers a different question and
-    # would condemn a deployment whose engine is perfectly in range.
-    pinned = {
-        getattr(role, "backend_version", None)
-        or getattr(model, "backend_version", None)
+    # Engine version ranges describe P/D only. Preserve the deployment
+    # baseline for legacy specs; independent engine roles own their version.
+    engine_roles = [
+        role
         for role in (model.roles or [])
         if not role_takes_no_accelerator(model, role.name)
-        and not getattr(role, "image_name", None)
+    ]
+    default_version = getattr(model, "backend_version", None)
+    default_image = getattr(model, "image_name", None)
+    pinned = {
+        role_backend_field(role, "backend_version", default_version)
+        for role in engine_roles
+        if not role_backend_field(role, "image_name", default_image)
     }
-    pinned.add(getattr(model, "backend_version", None))
+    if not engine_roles or any(role.backend is None for role in engine_roles):
+        if not default_image:
+            pinned.add(default_version)
 
     return any(
         version_in_range(version, mode.backend_versions) is False
@@ -4572,7 +4573,8 @@ async def _reconcile_router_membership(
         router_worker_ips,
     )
 
-    policy = membership_policy(model)
+    backend = await router_backend_definition(session, model, cached=True)
+    policy = membership_policy(model, backend)
     if policy == PDRouterMembershipUpdateEnum.RESTART:
         await _record_static_router_membership(session, model, instances)
         return

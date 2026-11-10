@@ -13,7 +13,14 @@ from typing import (
     Tuple,
 )
 
-from gpustack.schemas.pd_modes import PDMode, PDRouterMembershipUpdateEnum
+from gpustack.schemas.pd_modes import (
+    PDMode,
+    PDRouterMembershipUpdateEnum,
+)
+from gpustack.utils.pd_router_command import (
+    router_command_management,
+    router_environment,
+)
 
 if TYPE_CHECKING:
     from gpustack.schemas.models import Model
@@ -130,10 +137,21 @@ def router_peer_snapshot(
 
 
 def membership_update_policy(
-    model: "Model", mode: Optional[PDMode]
+    model: "Model", mode: Optional[PDMode], inference_backend=None
 ) -> PDRouterMembershipUpdateEnum:
-    """User-authored router commands own their membership configuration."""
+    """Resolve catalog, restart or manual ownership of the Router's peers."""
     router = next((r for r in (model.roles or []) if r.name == "router"), None)
-    if mode is None or router is None or router.run_command:
+    if mode is None or mode.router is None or router is None:
         return PDRouterMembershipUpdateEnum.MANUAL
+    from gpustack.utils.pd_router_launch import resolve_router_launch
+
+    launch = resolve_router_launch(model, inference_backend)
+    defaults = {} if launch.uses_backend_command else mode.router.env
+    policy = router_command_management(
+        launch.command, env=router_environment(model, {**defaults, **launch.env})
+    )
+    if policy == "manual":
+        return PDRouterMembershipUpdateEnum.MANUAL
+    if policy == "restart":
+        return PDRouterMembershipUpdateEnum.RESTART
     return mode.router.membership_update

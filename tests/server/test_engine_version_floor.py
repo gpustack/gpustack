@@ -246,3 +246,17 @@ def test_a_role_with_an_explicit_image_does_not_carry_a_catalog_version_warning(
         ],
     )
     assert _engine_version_below_recipe_floor(model) is False
+
+
+@pytest.mark.parametrize("version", [None, "0.6.0"])
+def test_independent_engine_roles_ignore_an_unused_parent_version(version):
+    model = _model(
+        SGLANG,
+        "0.5.5",
+        roles=[
+            RoleSpec(name="prefill", backend="SGLang", backend_version=version),
+            RoleSpec(name="decode", backend="SGLang", backend_version=version),
+            RoleSpec(name="router"),
+        ],
+    )
+    assert _engine_version_below_recipe_floor(model) is False

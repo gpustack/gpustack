@@ -34,6 +34,7 @@ from gpustack.schemas.models import (
     get_backend,
     ModelListParams,
     shared_cache_service_ids_by_role,
+    role_backend_field,
 )
 from gpustack.schemas.cache_services import (
     CacheService,
@@ -566,6 +567,7 @@ async def validate_model_in(
     *,
     cluster_id: Optional[int] = None,
     stored: Optional[Model] = None,
+    owner_principal_id: Optional[int] = None,
 ):
     from gpustack.validation.pd.common import effective_model_spec
 
@@ -574,7 +576,13 @@ async def validate_model_in(
     # send. Absent on create, where there is nothing to merge.
     effective = effective_model_spec(model_in, stored)
     manual_dp = _validate_manual_dp_config(effective)
-    await validate_pd_config(session, model_in, cluster_id=cluster_id, stored=stored)
+    await validate_pd_config(
+        session,
+        model_in,
+        cluster_id=cluster_id,
+        stored=stored,
+        owner_principal_id=owner_principal_id,
+    )
 
     # API responses use short LoRA names; compare their stored form when
     # deciding whether a request only pauses an unchanged deployment.
@@ -1091,7 +1099,7 @@ def _cache_declarations(
                 role.name,
                 ext,
                 role.backend or model_backend,
-                role.backend_version or model_version,
+                role_backend_field(role, "backend_version", model_version),
             )
         )
 
@@ -1513,7 +1521,7 @@ async def _validate_model_spec(
     model_in.scaling_schedule = _preserve_scaling_schedule_pause(
         model_in.scaling_schedule, allow_override=True
     )
-    await validate_model_in(session, model_in)
+    await validate_model_in(session, model_in, owner_principal_id=target_org_id)
     # Server-side assignment, after validation: validation must see the replica
     # count the caller submitted, not the schedule-driven one.
     apply_scaling_schedule_baseline(model_in)

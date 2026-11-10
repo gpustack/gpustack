@@ -508,30 +508,23 @@ async def list_backend_configs(  # noqa: C901
         # the filter above, ``visible_rows`` contains at most one Org row
         # per backend_name, so the merge is well-defined.
         #
-        # Stash merged values in side dicts keyed by db id rather than
-        # mutating the ORM rows themselves — no ``expunge`` dance, no
-        # risk of a stray flush persisting the read-time merge.
-        merged_versions_by_id: Dict[int, VersionConfigDict] = {}
+        # Use the worker's merge rules for command/env defaults as well as
+        # versions. Merged copies cannot persist changes to the source rows.
+        from gpustack.utils.inference_backend import merge_backend_definitions
+
         grouped: Dict[str, InferenceBackend] = {}
-        for b in visible_rows:
-            name = b.backend_name
-            existing = grouped.get(name)
+        for backend in visible_rows:
+            existing = grouped.get(backend.backend_name)
             if existing is None:
-                grouped[name] = b
-                continue
-            org_row = b if (b.owner_principal_id is not None) else existing
-            other = existing if org_row is b else b
-            merged_versions = {
-                **(other.version_configs.root if other.version_configs else {}),
-                **(org_row.version_configs.root if org_row.version_configs else {}),
-            }
-            merged_versions_by_id[org_row.id] = VersionConfigDict(root=merged_versions)
-            grouped[name] = org_row
-        inference_backends = list(grouped.values())
-        for backend in inference_backends:
-            effective_version_configs = merged_versions_by_id.get(
-                backend.id, backend.version_configs
-            )
+                grouped[backend.backend_name] = backend
+            else:
+                owner = backend if backend.owner_principal_id is not None else existing
+                platform = existing if owner is backend else backend
+                grouped[backend.backend_name] = merge_backend_definitions(
+                    platform, owner
+                )
+        for backend in grouped.values():
+            effective_version_configs = backend.version_configs
             # Get versions from version_config
             versions: List[VersionListItem] = []
             if effective_version_configs and effective_version_configs.root:
@@ -539,6 +532,7 @@ async def list_backend_configs(  # noqa: C901
                     VersionListItem(
                         version=version,
                         env=backend.get_backend_env(version),
+                        run_command=version_config.run_command,
                         source_name=version_config.source_name,
                         source_type=version_config.source_type,
                     )
@@ -581,6 +575,8 @@ async def list_backend_configs(  # noqa: C901
                     backend_name=backend.backend_name,
                     default_version=effective_default_version,
                     default_backend_param=backend.default_backend_param,
+                    default_command_version=backend.resolve_target_version(),
+                    default_run_command=backend.default_run_command,
                     versions=versions,
                     is_built_in=backend.is_built_in,
                     enabled=True,
@@ -600,6 +596,8 @@ async def list_backend_configs(  # noqa: C901
                     backend_name=backend.backend_name,
                     default_version=backend.default_version,
                     default_backend_param=backend.default_backend_param,
+                    default_command_version=backend.resolve_target_version(),
+                    default_run_command=backend.default_run_command,
                     versions=versions,
                     is_built_in=False,
                     enabled=backend.enabled,
