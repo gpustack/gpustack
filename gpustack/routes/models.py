@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import re
 import traceback
 from datetime import datetime, timezone
 from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple, Union
@@ -24,6 +25,16 @@ from gpustack.api.exceptions import (
     NotFoundException,
 )
 from gpustack.schemas.common import Pagination
+from gpustack.schemas.model_metrics import (
+    MetricRole,
+    MetricSection,
+    MetricView,
+    ModelMetrics,
+    ModelResourceMetrics,
+    TrendStatistic,
+)
+from gpustack.server.model_metrics import collect_model_metrics
+from gpustack.server.model_hardware_metrics import collect_model_resource_metrics
 from gpustack.schemas.inference_backend import is_custom_backend
 from gpustack.schemas.models import (
     CategoryEnum,
@@ -95,7 +106,7 @@ from gpustack.schemas.model_routes import (
     TargetStateEnum,
 )
 from gpustack.schemas.links import ModelRoutePrincipalLink
-from gpustack.schemas.principals import PrincipalType, platform_principal_id
+from gpustack.schemas.principals import OrgRole, PrincipalType, platform_principal_id
 from gpustack.server.services import (
     ModelRouteService,
     ModelInstanceService,
@@ -401,6 +412,110 @@ async def get_model_cache_metrics(
         attached,
         window_seconds,
         client=getattr(request.app.state, "http_client_no_proxy", None),
+    )
+
+
+def _monitoring_instance_ids(value: Optional[str]) -> Optional[Set[int]]:
+    if value is None:
+        return None
+    if not value or len(value) > 2048:
+        raise BadRequestException(message="Invalid instance_ids")
+    tokens = [token.strip() for token in value.split(',')]
+    if any(not re.fullmatch(r'[1-9][0-9]{0,18}', token) for token in tokens):
+        raise BadRequestException(message="instance_ids must contain positive integers")
+    identities = {int(token) for token in tokens}
+    if len(identities) > 32 or max(identities) > 2**63 - 1:
+        raise BadRequestException(message="instance_ids accepts at most 32 valid IDs")
+    return identities
+
+
+async def _monitoring_population(session, ctx, id, instance_ids, role, window):
+    # The router tier also enforces organization ownership. Keep direct handler
+    # calls and SYSTEM runtime credentials behind the same monitoring boundary.
+    if ctx is None or getattr(ctx.user, 'kind', None) == PrincipalType.SYSTEM:
+        raise ForbiddenException(message="Model monitoring requires a user principal")
+    ctx.assert_org_role(OrgRole.OWNER)
+    try:
+        seconds = parse_metrics_window(window)
+    except ValueError as exc:
+        raise BadRequestException(message="Invalid monitoring window") from exc
+    requested = _monitoring_instance_ids(instance_ids)
+    model = await Model.one_by_id(session, id, options=[selectinload(Model.instances)])
+    assert_resource_visible(ctx, model, not_found_message="Model not found")
+    if model.deleted_at is not None:
+        raise NotFoundException(message="Model not found")
+    visible = []
+    for instance in model.instances:
+        if instance.model_id != model.id or instance.deleted_at is not None:
+            continue
+        try:
+            assert_resource_visible(
+                ctx, instance, not_found_message="Model instance not found"
+            )
+        except NotFoundException:
+            continue
+        visible.append(instance)
+    if requested is not None and not requested.issubset({i.id for i in visible}):
+        raise NotFoundException(message="Model instance not found")
+    selected = [i for i in visible if requested is None or i.id in requested]
+    if role != 'all':
+        selected = [i for i in selected if i.role == role]
+    return model, sorted(selected, key=lambda instance: instance.id), visible, seconds
+
+
+@router.get("/{id}/metrics", response_model=ModelMetrics)
+async def get_model_metrics(
+    request: Request,
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    window: str = '1h',
+    instance_ids: Optional[str] = None,
+    role: MetricRole = 'all',
+    view: MetricView = 'aggregate',
+    statistic: TrendStatistic = 'percentiles',
+    section: MetricSection = 'all',
+) -> ModelMetrics:
+    """Engine observations for the authorized current instance population."""
+    model, instances, upstreams, seconds = await _monitoring_population(
+        session, ctx, id, instance_ids, role, window
+    )
+    return await collect_model_metrics(
+        model,
+        instances,
+        window_seconds=seconds,
+        role=role,
+        view=view,
+        statistic=statistic,
+        section=section,
+        upstream_instances=upstreams,
+        client=getattr(request.app.state, 'http_client_no_proxy', None),
+    )
+
+
+@router.get("/{id}/resource-metrics", response_model=ModelResourceMetrics)
+async def get_model_resource_metrics(
+    request: Request,
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    window: str = '1h',
+    instance_ids: Optional[str] = None,
+    role: MetricRole = 'all',
+    device_id: Optional[str] = None,
+) -> ModelResourceMetrics:
+    """History of independently visible devices associated with the deployment."""
+    model, instances, _, seconds = await _monitoring_population(
+        session, ctx, id, instance_ids, role, window
+    )
+    return await collect_model_resource_metrics(
+        model,
+        instances,
+        ctx,
+        session,
+        window_seconds=seconds,
+        device_id=device_id,
+        client=getattr(request.app.state, 'http_client_no_proxy', None),
     )
 
 

@@ -1,0 +1,348 @@
+# TYPE sglang:failed_session_recoveries_total counter
+sglang:failed_session_recoveries_total 7
+# TYPE sglang:encoder_dp_pending_requests gauge
+sglang:encoder_dp_pending_requests{model_name="fixture-model",dp_rank="0"} 8
+# TYPE sglang:http_requests_total counter
+sglang:http_requests_total{endpoint="/v1/chat/completions",method="POST"} 9
+# TYPE sglang:http_responses_total counter
+sglang:http_responses_total{endpoint="/v1/chat/completions",status_code="200",method="POST"} 10
+# TYPE sglang:http_requests_active gauge
+sglang:http_requests_active{endpoint="/v1/chat/completions",method="POST"} 11
+# TYPE sglang:routing_keys_active gauge
+sglang:routing_keys_active 12
+# TYPE sglang:startup_latency_breakdown_seconds_max gauge
+sglang:startup_latency_breakdown_seconds_max{context="fixture"} 13
+# TYPE sglang:process_cpu_seconds_total counter
+sglang:process_cpu_seconds_total{component="scheduler"} 14
+# TYPE sglang:num_grammar_queue_reqs gauge
+sglang:num_grammar_queue_reqs{model_name="fixture-model"} 15
+# TYPE sglang:gen_throughput gauge
+sglang:gen_throughput{model_name="fixture-model"} 16
+# TYPE sglang:decode_sum_seq_lens gauge
+sglang:decode_sum_seq_lens{model_name="fixture-model"} 17
+# TYPE sglang:full_token_usage gauge
+sglang:full_token_usage{model_name="fixture-model"} 0.375
+# TYPE sglang:swa_token_usage gauge
+sglang:swa_token_usage{model_name="fixture-model"} 0.375
+# TYPE sglang:mamba_usage gauge
+sglang:mamba_usage{model_name="fixture-model"} 0.375
+# TYPE sglang:num_used_tokens gauge
+sglang:num_used_tokens{model_name="fixture-model"} 21
+# TYPE sglang:kv_available_tokens gauge
+sglang:kv_available_tokens{model_name="fixture-model"} 22
+# TYPE sglang:kv_evictable_tokens gauge
+sglang:kv_evictable_tokens{model_name="fixture-model"} 23
+# TYPE sglang:kv_used_tokens gauge
+sglang:kv_used_tokens{model_name="fixture-model"} 24
+# TYPE sglang:swa_available_tokens gauge
+sglang:swa_available_tokens{model_name="fixture-model"} 25
+# TYPE sglang:swa_evictable_tokens gauge
+sglang:swa_evictable_tokens{model_name="fixture-model"} 26
+# TYPE sglang:swa_used_tokens gauge
+sglang:swa_used_tokens{model_name="fixture-model"} 27
+# TYPE sglang:mamba_available_tokens gauge
+sglang:mamba_available_tokens{model_name="fixture-model"} 28
+# TYPE sglang:mamba_evictable_tokens gauge
+sglang:mamba_evictable_tokens{model_name="fixture-model"} 29
+# TYPE sglang:mamba_used_tokens gauge
+sglang:mamba_used_tokens{model_name="fixture-model"} 30
+# TYPE sglang:weight_load_duration_seconds gauge
+sglang:weight_load_duration_seconds{model_name="fixture-model",source="disk"} 31
+# TYPE sglang:spec_cap_length gauge
+sglang:spec_cap_length{model_name="fixture-model"} 32
+# TYPE sglang:spec_block_accept_length gauge
+sglang:spec_block_accept_length{model_name="fixture-model"} 33
+# TYPE sglang:spec_num_steps gauge
+sglang:spec_num_steps{model_name="fixture-model"} 34
+# TYPE sglang:spec_num_draft_tokens gauge
+sglang:spec_num_draft_tokens{model_name="fixture-model"} 35
+# TYPE sglang:num_retracted_reqs gauge
+sglang:num_retracted_reqs{model_name="fixture-model"} 36
+# TYPE sglang:num_retracted_requests_total counter
+sglang:num_retracted_requests_total{model_name="fixture-model"} 37
+# TYPE sglang:num_retracted_input_tokens_total counter
+sglang:num_retracted_input_tokens_total{model_name="fixture-model"} 38
+# TYPE sglang:num_retracted_output_tokens_total counter
+sglang:num_retracted_output_tokens_total{model_name="fixture-model"} 39
+# TYPE sglang:num_paused_reqs gauge
+sglang:num_paused_reqs{model_name="fixture-model"} 40
+# TYPE sglang:num_decode_host_receive_queue_reqs gauge
+sglang:num_decode_host_receive_queue_reqs{model_name="fixture-model"} 41
+# TYPE sglang:num_decode_host_receive_reqs_total counter
+sglang:num_decode_host_receive_reqs_total{model_name="fixture-model"} 42
+# TYPE sglang:num_decode_deferred_kv_release_reqs gauge
+sglang:num_decode_deferred_kv_release_reqs{model_name="fixture-model"} 43
+# TYPE sglang:decode_deferred_kv_release_seconds histogram
+sglang:decode_deferred_kv_release_seconds_bucket{model_name="fixture-model",le="0.01"} 1
+sglang:decode_deferred_kv_release_seconds_bucket{model_name="fixture-model",le="0.1"} 3
+sglang:decode_deferred_kv_release_seconds_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:decode_deferred_kv_release_seconds_sum{model_name="fixture-model"} 0.25
+sglang:decode_deferred_kv_release_seconds_count{model_name="fixture-model"} 4
+# TYPE sglang:decode_deferred_kv_release_total counter
+sglang:decode_deferred_kv_release_total{model_name="fixture-model",outcome="success"} 45
+# TYPE sglang:kv_transfer_speed_gb_s histogram
+sglang:kv_transfer_speed_gb_s_bucket{model_name="fixture-model",le="1"} 1
+sglang:kv_transfer_speed_gb_s_bucket{model_name="fixture-model",le="4"} 3
+sglang:kv_transfer_speed_gb_s_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:kv_transfer_speed_gb_s_sum{model_name="fixture-model"} 12
+sglang:kv_transfer_speed_gb_s_count{model_name="fixture-model"} 4
+# TYPE sglang:prealloc_full_token_usage gauge
+sglang:prealloc_full_token_usage{model_name="fixture-model"} 0.375
+# TYPE sglang:prealloc_swa_token_usage gauge
+sglang:prealloc_swa_token_usage{model_name="fixture-model"} 0.375
+# TYPE sglang:fwd_occupancy gauge
+sglang:fwd_occupancy{model_name="fixture-model"} 37.5
+# TYPE sglang:is_cuda_graph gauge
+sglang:is_cuda_graph{model_name="fixture-model"} 1
+# TYPE sglang:cuda_graph_passes_total counter
+sglang:cuda_graph_passes_total{model_name="fixture-model",mode="decode"} 51
+# TYPE sglang:num_unique_running_routing_keys gauge
+sglang:num_unique_running_routing_keys{model_name="fixture-model"} 52
+# TYPE sglang:per_stage_req_latency_seconds histogram
+sglang:per_stage_req_latency_seconds_bucket{model_name="fixture-model",stage="prefill_forward",le="0.01"} 1
+sglang:per_stage_req_latency_seconds_bucket{model_name="fixture-model",stage="prefill_forward",le="0.1"} 3
+sglang:per_stage_req_latency_seconds_bucket{model_name="fixture-model",stage="prefill_forward",le="+Inf"} 4
+sglang:per_stage_req_latency_seconds_sum{model_name="fixture-model",stage="prefill_forward"} 0.25
+sglang:per_stage_req_latency_seconds_count{model_name="fixture-model",stage="prefill_forward"} 4
+# TYPE sglang:grammar_compilation_time_seconds histogram
+sglang:grammar_compilation_time_seconds_bucket{model_name="fixture-model",le="0.01"} 1
+sglang:grammar_compilation_time_seconds_bucket{model_name="fixture-model",le="0.1"} 3
+sglang:grammar_compilation_time_seconds_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:grammar_compilation_time_seconds_sum{model_name="fixture-model"} 0.25
+sglang:grammar_compilation_time_seconds_count{model_name="fixture-model"} 4
+# TYPE sglang:num_grammar_cache_hit_total counter
+sglang:num_grammar_cache_hit_total{model_name="fixture-model"} 55
+# TYPE sglang:num_grammar_aborted_total counter
+sglang:num_grammar_aborted_total{model_name="fixture-model"} 56
+# TYPE sglang:num_grammar_timeout_total counter
+sglang:num_grammar_timeout_total{model_name="fixture-model"} 57
+# TYPE sglang:num_grammar_total counter
+sglang:num_grammar_total{model_name="fixture-model"} 58
+# TYPE sglang:realtime_tokens_total counter
+sglang:realtime_tokens_total{model_name="fixture-model",mode="decode"} 59
+# TYPE sglang:prefill_effective_tokens_total counter
+sglang:prefill_effective_tokens_total{model_name="fixture-model",mode="decode"} 60
+# TYPE sglang:forward_execution_seconds_total counter
+sglang:forward_execution_seconds_total{model_name="fixture-model",category="decode"} 61
+# TYPE sglang:scheduler_idle_seconds_total counter
+sglang:scheduler_idle_seconds_total{model_name="fixture-model"} 62
+# TYPE sglang:scheduler_process_cpu_seconds_total counter
+sglang:scheduler_process_cpu_seconds_total{model_name="fixture-model"} 63
+# TYPE sglang:scheduler_stage_seconds_total counter
+sglang:scheduler_stage_seconds_total{model_name="fixture-model",category="decode",forward_overlap="full"} 64
+# TYPE sglang:dp_cooperation_realtime_tokens_total counter
+sglang:dp_cooperation_realtime_tokens_total{model_name="fixture-model",mode="decode",num_prefill_ranks="2"} 65
+# TYPE sglang:dp_cooperation_forward_execution_seconds_total counter
+sglang:dp_cooperation_forward_execution_seconds_total{model_name="fixture-model",category="decode",num_prefill_ranks="2"} 66
+# TYPE sglang:dp_attention_tokens_total counter
+sglang:dp_attention_tokens_total{model_name="fixture-model",kind="fixture"} 67
+# TYPE sglang:dp_attention_steps_total counter
+sglang:dp_attention_steps_total{model_name="fixture-model",rank_state="active"} 68
+# TYPE sglang:dp_attention_pairs_total counter
+sglang:dp_attention_pairs_total{model_name="fixture-model",kind="fixture"} 69
+# TYPE sglang:dp_attention_token_imbalance_ratio histogram
+sglang:dp_attention_token_imbalance_ratio_bucket{model_name="fixture-model",le="1"} 1
+sglang:dp_attention_token_imbalance_ratio_bucket{model_name="fixture-model",le="4"} 3
+sglang:dp_attention_token_imbalance_ratio_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:dp_attention_token_imbalance_ratio_sum{model_name="fixture-model"} 12
+sglang:dp_attention_token_imbalance_ratio_count{model_name="fixture-model"} 4
+# TYPE sglang:dp_attention_sync_wait_seconds histogram
+sglang:dp_attention_sync_wait_seconds_bucket{model_name="fixture-model",le="0.01"} 1
+sglang:dp_attention_sync_wait_seconds_bucket{model_name="fixture-model",le="0.1"} 3
+sglang:dp_attention_sync_wait_seconds_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:dp_attention_sync_wait_seconds_sum{model_name="fixture-model"} 0.25
+sglang:dp_attention_sync_wait_seconds_count{model_name="fixture-model"} 4
+# TYPE sglang:max_total_num_tokens gauge
+sglang:max_total_num_tokens{model_name="fixture-model"} 72
+# TYPE sglang:max_total_num_tokens_swa gauge
+sglang:max_total_num_tokens_swa{model_name="fixture-model"} 73
+# TYPE sglang:weight_memory_usage_gb gauge
+sglang:weight_memory_usage_gb{model_name="fixture-model"} 1.5
+# TYPE sglang:kv_cache_memory_usage_gb gauge
+sglang:kv_cache_memory_usage_gb{model_name="fixture-model"} 1.5
+# TYPE sglang:graph_memory_usage_gb gauge
+sglang:graph_memory_usage_gb{model_name="fixture-model",phase="load_weights"} 1.5
+# TYPE sglang:page_size gauge
+sglang:page_size{model_name="fixture-model"} 77
+# TYPE sglang:num_pages gauge
+sglang:num_pages{model_name="fixture-model"} 78
+# TYPE sglang:context_len gauge
+sglang:context_len{model_name="fixture-model"} 79
+# TYPE sglang:startup_available_gpu_memory_gb gauge
+sglang:startup_available_gpu_memory_gb{model_name="fixture-model"} 1.5
+# TYPE sglang:startup_time_seconds gauge
+sglang:startup_time_seconds{model_name="fixture-model",phase="load_weights"} 81
+# TYPE sglang:startup_cuda_graph_time_seconds gauge
+sglang:startup_cuda_graph_time_seconds{model_name="fixture-model",phase="load_weights"} 82
+# TYPE sglang:spec_verify_calls_total counter
+sglang:spec_verify_calls_total{model_name="fixture-model"} 83
+# TYPE sglang:uncached_prompt_tokens_histogram histogram
+sglang:uncached_prompt_tokens_histogram_bucket{model_name="fixture-model",le="1"} 1
+sglang:uncached_prompt_tokens_histogram_bucket{model_name="fixture-model",le="4"} 3
+sglang:uncached_prompt_tokens_histogram_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:uncached_prompt_tokens_histogram_sum{model_name="fixture-model"} 12
+sglang:uncached_prompt_tokens_histogram_count{model_name="fixture-model"} 4
+# TYPE sglang:num_requests_total counter
+sglang:num_requests_total{model_name="fixture-model",is_streaming="true"} 85
+# TYPE sglang:get_loads_duration_seconds histogram
+sglang:get_loads_duration_seconds_bucket{model_name="fixture-model",le="0.01"} 1
+sglang:get_loads_duration_seconds_bucket{model_name="fixture-model",le="0.1"} 3
+sglang:get_loads_duration_seconds_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:get_loads_duration_seconds_sum{model_name="fixture-model"} 0.25
+sglang:get_loads_duration_seconds_count{model_name="fixture-model"} 4
+# TYPE sglang:num_so_requests_total counter
+sglang:num_so_requests_total{model_name="fixture-model"} 87
+# TYPE sglang:num_aborted_requests_total counter
+sglang:num_aborted_requests_total{model_name="fixture-model"} 88
+# TYPE sglang:request_time_per_output_token_seconds histogram
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="true",le="0.01"} 1
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="true",le="0.1"} 3
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="true",le="+Inf"} 4
+sglang:request_time_per_output_token_seconds_sum{model_name="fixture-model",is_streaming="true"} 0.25
+sglang:request_time_per_output_token_seconds_count{model_name="fixture-model",is_streaming="true"} 4
+# TYPE sglang:prefetched_tokens_total counter
+sglang:prefetched_tokens_total{model_name="fixture-model"} 90
+# TYPE sglang:backuped_tokens_total counter
+sglang:backuped_tokens_total{model_name="fixture-model"} 91
+# TYPE sglang:storage_prefetch_hit_tokens_total counter
+sglang:storage_prefetch_hit_tokens_total{model_name="fixture-model"} 92
+# TYPE sglang:storage_prefetch_unfulfilled_tokens_total counter
+sglang:storage_prefetch_unfulfilled_tokens_total{model_name="fixture-model",reason="capacity"} 93
+# TYPE sglang:storage_prefetch_deferred_tokens_total counter
+sglang:storage_prefetch_deferred_tokens_total{model_name="fixture-model",reason="capacity"} 94
+# TYPE sglang:hicache_backup_dropped_tokens_total counter
+sglang:hicache_backup_dropped_tokens_total{model_name="fixture-model"} 95
+# TYPE sglang:hicache_prefetch_aux_alloc_failed_tokens_total counter
+sglang:hicache_prefetch_aux_alloc_failed_tokens_total{model_name="fixture-model"} 96
+# TYPE sglang:prefetch_pgs histogram
+sglang:prefetch_pgs_bucket{model_name="fixture-model",le="1"} 1
+sglang:prefetch_pgs_bucket{model_name="fixture-model",le="4"} 3
+sglang:prefetch_pgs_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:prefetch_pgs_sum{model_name="fixture-model"} 12
+sglang:prefetch_pgs_count{model_name="fixture-model"} 4
+# TYPE sglang:backup_pgs histogram
+sglang:backup_pgs_bucket{model_name="fixture-model",le="1"} 1
+sglang:backup_pgs_bucket{model_name="fixture-model",le="4"} 3
+sglang:backup_pgs_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:backup_pgs_sum{model_name="fixture-model"} 12
+sglang:backup_pgs_count{model_name="fixture-model"} 4
+# TYPE sglang:prefetch_bandwidth histogram
+sglang:prefetch_bandwidth_bucket{model_name="fixture-model",le="1"} 1
+sglang:prefetch_bandwidth_bucket{model_name="fixture-model",le="4"} 3
+sglang:prefetch_bandwidth_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:prefetch_bandwidth_sum{model_name="fixture-model"} 12
+sglang:prefetch_bandwidth_count{model_name="fixture-model"} 4
+# TYPE sglang:backup_bandwidth histogram
+sglang:backup_bandwidth_bucket{model_name="fixture-model",le="1"} 1
+sglang:backup_bandwidth_bucket{model_name="fixture-model",le="4"} 3
+sglang:backup_bandwidth_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:backup_bandwidth_sum{model_name="fixture-model"} 12
+sglang:backup_bandwidth_count{model_name="fixture-model"} 4
+# TYPE sglang:eviction_duration_seconds histogram
+sglang:eviction_duration_seconds_bucket{model_name="fixture-model",le="0.01"} 1
+sglang:eviction_duration_seconds_bucket{model_name="fixture-model",le="0.1"} 3
+sglang:eviction_duration_seconds_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:eviction_duration_seconds_sum{model_name="fixture-model"} 0.25
+sglang:eviction_duration_seconds_count{model_name="fixture-model"} 4
+# TYPE sglang:evicted_tokens_total counter
+sglang:evicted_tokens_total{model_name="fixture-model"} 102
+# TYPE sglang:load_back_duration_seconds histogram
+sglang:load_back_duration_seconds_bucket{model_name="fixture-model",le="0.01"} 1
+sglang:load_back_duration_seconds_bucket{model_name="fixture-model",le="0.1"} 3
+sglang:load_back_duration_seconds_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:load_back_duration_seconds_sum{model_name="fixture-model"} 0.25
+sglang:load_back_duration_seconds_count{model_name="fixture-model"} 4
+# TYPE sglang:load_back_tokens_total counter
+sglang:load_back_tokens_total{model_name="fixture-model",pool="kv"} 104
+# TYPE sglang:hicache_backup_duration_seconds histogram
+sglang:hicache_backup_duration_seconds_bucket{model_name="fixture-model",le="0.01"} 1
+sglang:hicache_backup_duration_seconds_bucket{model_name="fixture-model",le="0.1"} 3
+sglang:hicache_backup_duration_seconds_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:hicache_backup_duration_seconds_sum{model_name="fixture-model"} 0.25
+sglang:hicache_backup_duration_seconds_count{model_name="fixture-model"} 4
+# TYPE sglang:hicache_backup_bytes_total counter
+sglang:hicache_backup_bytes_total{model_name="fixture-model"} 106
+# TYPE sglang:load_back_bytes_total counter
+sglang:load_back_bytes_total{model_name="fixture-model"} 107
+# TYPE sglang:hicache_backup_tokens_total counter
+sglang:hicache_backup_tokens_total{model_name="fixture-model",pool="kv"} 108
+# TYPE sglang:hicache_dropped_tokens_total counter
+sglang:hicache_dropped_tokens_total{model_name="fixture-model",reason="capacity",pool="kv"} 109
+# TYPE sglang:encoder_cache_evictions_total counter
+sglang:encoder_cache_evictions_total{model_name="fixture-model",modality="image"} 110
+# TYPE sglang:encoder_cache_size_mb gauge
+sglang:encoder_cache_size_mb{model_name="fixture-model"} 111
+# TYPE sglang:encoder_cache_entries gauge
+sglang:encoder_cache_entries{model_name="fixture-model"} 112
+# TYPE sglang:encoder_cache_hit_tokens_total counter
+sglang:encoder_cache_hit_tokens_total{model_name="fixture-model",modality="image"} 113
+# TYPE sglang:encoder_cache_total_tokens_total counter
+sglang:encoder_cache_total_tokens_total{model_name="fixture-model",modality="image"} 114
+# TYPE sglang:encoder_cache_hit_files_total counter
+sglang:encoder_cache_hit_files_total{model_name="fixture-model",modality="image"} 115
+# TYPE sglang:encoder_cache_total_files_total counter
+sglang:encoder_cache_total_files_total{model_name="fixture-model",modality="image"} 116
+# TYPE sglang:encoder_requests_total counter
+sglang:encoder_requests_total{model_name="fixture-model",modality="image",status="success"} 117
+# TYPE sglang:encoder_requests_received_total counter
+sglang:encoder_requests_received_total{model_name="fixture-model",modality="image"} 118
+# TYPE sglang:encoder_mm_items_per_batch histogram
+sglang:encoder_mm_items_per_batch_bucket{model_name="fixture-model",modality="image",le="1"} 1
+sglang:encoder_mm_items_per_batch_bucket{model_name="fixture-model",modality="image",le="4"} 3
+sglang:encoder_mm_items_per_batch_bucket{model_name="fixture-model",modality="image",le="+Inf"} 4
+sglang:encoder_mm_items_per_batch_sum{model_name="fixture-model",modality="image"} 12
+sglang:encoder_mm_items_per_batch_count{model_name="fixture-model",modality="image"} 4
+# TYPE sglang:encoder_mm_items_per_request histogram
+sglang:encoder_mm_items_per_request_bucket{model_name="fixture-model",modality="image",le="1"} 1
+sglang:encoder_mm_items_per_request_bucket{model_name="fixture-model",modality="image",le="4"} 3
+sglang:encoder_mm_items_per_request_bucket{model_name="fixture-model",modality="image",le="+Inf"} 4
+sglang:encoder_mm_items_per_request_sum{model_name="fixture-model",modality="image"} 12
+sglang:encoder_mm_items_per_request_count{model_name="fixture-model",modality="image"} 4
+# TYPE sglang:encoder_request_e2e_latency_seconds histogram
+sglang:encoder_request_e2e_latency_seconds_bucket{model_name="fixture-model",modality="image",le="0.01"} 1
+sglang:encoder_request_e2e_latency_seconds_bucket{model_name="fixture-model",modality="image",le="0.1"} 3
+sglang:encoder_request_e2e_latency_seconds_bucket{model_name="fixture-model",modality="image",le="+Inf"} 4
+sglang:encoder_request_e2e_latency_seconds_sum{model_name="fixture-model",modality="image"} 0.25
+sglang:encoder_request_e2e_latency_seconds_count{model_name="fixture-model",modality="image"} 4
+# TYPE sglang:encoder_queue_wait_seconds histogram
+sglang:encoder_queue_wait_seconds_bucket{model_name="fixture-model",modality="image",le="0.01"} 1
+sglang:encoder_queue_wait_seconds_bucket{model_name="fixture-model",modality="image",le="0.1"} 3
+sglang:encoder_queue_wait_seconds_bucket{model_name="fixture-model",modality="image",le="+Inf"} 4
+sglang:encoder_queue_wait_seconds_sum{model_name="fixture-model",modality="image"} 0.25
+sglang:encoder_queue_wait_seconds_count{model_name="fixture-model",modality="image"} 4
+# TYPE sglang:encoder_preprocess_seconds histogram
+sglang:encoder_preprocess_seconds_bucket{model_name="fixture-model",modality="image",le="0.01"} 1
+sglang:encoder_preprocess_seconds_bucket{model_name="fixture-model",modality="image",le="0.1"} 3
+sglang:encoder_preprocess_seconds_bucket{model_name="fixture-model",modality="image",le="+Inf"} 4
+sglang:encoder_preprocess_seconds_sum{model_name="fixture-model",modality="image"} 0.25
+sglang:encoder_preprocess_seconds_count{model_name="fixture-model",modality="image"} 4
+# TYPE sglang:encoder_model_forward_seconds histogram
+sglang:encoder_model_forward_seconds_bucket{model_name="fixture-model",modality="image",le="0.01"} 1
+sglang:encoder_model_forward_seconds_bucket{model_name="fixture-model",modality="image",le="0.1"} 3
+sglang:encoder_model_forward_seconds_bucket{model_name="fixture-model",modality="image",le="+Inf"} 4
+sglang:encoder_model_forward_seconds_sum{model_name="fixture-model",modality="image"} 0.25
+sglang:encoder_model_forward_seconds_count{model_name="fixture-model",modality="image"} 4
+# TYPE sglang:encoder_transfer_seconds histogram
+sglang:encoder_transfer_seconds_bucket{model_name="fixture-model",backend="fixture",le="0.01"} 1
+sglang:encoder_transfer_seconds_bucket{model_name="fixture-model",backend="fixture",le="0.1"} 3
+sglang:encoder_transfer_seconds_bucket{model_name="fixture-model",backend="fixture",le="+Inf"} 4
+sglang:encoder_transfer_seconds_sum{model_name="fixture-model",backend="fixture"} 0.25
+sglang:encoder_transfer_seconds_count{model_name="fixture-model",backend="fixture"} 4
+# TYPE sglang:lora_pool_slots_used gauge
+sglang:lora_pool_slots_used{model_name="fixture-model"} 126
+# TYPE sglang:lora_pool_slots_total gauge
+sglang:lora_pool_slots_total{model_name="fixture-model"} 127
+# TYPE sglang:lora_pool_utilization gauge
+sglang:lora_pool_utilization{model_name="fixture-model"} 0.375
+# TYPE sglang:hicache_host_used_tokens gauge
+sglang:hicache_host_used_tokens{model_name="fixture-model"} 129
+# TYPE sglang:hicache_host_total_tokens gauge
+sglang:hicache_host_total_tokens{model_name="fixture-model"} 130
+# TYPE sglang:hicache_host_mamba_used_states gauge
+sglang:hicache_host_mamba_used_states{model_name="fixture-model"} 131
+# TYPE sglang:hicache_host_mamba_total_states gauge
+sglang:hicache_host_mamba_total_states{model_name="fixture-model"} 132
+# TYPE sglang:num_streaming_sessions gauge
+sglang:num_streaming_sessions{model_name="fixture-model"} 133
+# TYPE sglang:streaming_session_held_tokens gauge
+sglang:streaming_session_held_tokens{model_name="fixture-model"} 134
