@@ -46,7 +46,7 @@ def bounded_follower_name(instance_name: str, index: int) -> str:
     # truncating the readable prefix does not discard the distinguishing part.
     digest = hashlib.sha256(instance_name.encode()).hexdigest()[:16]
     budget = WORKLOAD_NAME_MAX_LENGTH - len(suffix) - len(digest) - 1
-    return f"{instance_name[:budget]}-{digest}{suffix}"
+    return f"{instance_name[:max(0, budget)]}-{digest}{suffix}"
 
 
 def metric_name(name: str) -> str:

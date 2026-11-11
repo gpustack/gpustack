@@ -1,3 +1,4 @@
+import hashlib
 from unittest.mock import patch
 
 import pytest
@@ -34,6 +35,15 @@ def test_follower_name_is_bounded_and_stable(index):
     assert name == bounded_follower_name(instance, index)
     if index < 100:
         assert name == f"{instance}-f{index}"
+
+
+@pytest.mark.parametrize("index", [10**43, 10**44])
+def test_exhausted_follower_prefix_budget_keeps_digest_and_suffix(index):
+    instance = "m" * 53 + "-abc12"
+    digest = hashlib.sha256(instance.encode()).hexdigest()[:16]
+    name = bounded_follower_name(instance, index)
+    assert name == f"-{digest}-f{index}"
+    assert name == bounded_follower_name(instance, index)
 
 
 def test_overflow_keeps_instance_and_follower_identities_distinct():
