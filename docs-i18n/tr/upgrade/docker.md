@@ -48,6 +48,10 @@ docker run -d --name gpustack \
 
 Sunucu yeni sürümle çalışır hale geldikten sonra her kümedeki işçileri yükseltin. Docker, Kubernetes ve bulut kümesi prosedürleri için [Küme Dağıtımını Yükseltme](cluster.md) konusuna bakın.
 
+DP Attention kullanan SGLang dağıtımlarında önceki bir sürümden kalan eksik port rezervasyonları bulunabilir. Katılan tüm worker'ları yükselttikten sonra dağıtım üzerinde **Restart Model** işlemini kullanın veya modeli yeniden dağıtarak eksiksiz port rezervasyonlarına sahip yeni örnekler oluşturun. Yalnızca motor sürecini veya worker'ı yeniden başlatmak, mevcut örneğin portlarını korur.
+
+Özel `run_command` şablonlarında DP Attention seçeneklerini modelin veya rolün `backend_parameters` alanında belirtin; böylece port planlaması başlatmadan önce gereken aralığı ayırabilir. Worker, şablon parametreleri yerine konmuş komutu denetler ve yayımlanmış portları değiştirmeden yetersiz rezervasyonları bildirir.
+
 ## Docker Compose aracılığıyla yükseltme { #upgrade-via-docker-compose }
 
 GPUStack klonlanmış bir depodan Docker Compose ile dağıtıldıysa yeni sürüm etiketine geçin ve konteynerleri güncellenmiş imajla yeniden oluşturun:

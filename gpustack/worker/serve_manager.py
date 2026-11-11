@@ -47,6 +47,10 @@ from gpustack.schemas.inference_backend import (
     is_custom_backend,
 )
 from gpustack.utils import network
+from gpustack.utils.sglang_port_layout import (
+    SGLANG_CONNECTING_BAND,
+    sglang_port_layout,
+)
 from gpustack.utils.convert import safe_int
 from gpustack.utils.attrs import set_attr
 from gpustack.utils.process import (
@@ -4804,20 +4808,19 @@ class ServeManager(ContainerLogPersister):
 
     @staticmethod
     def _select_sglang_ports(mi, model, unavailable, port_range) -> None:
-        from gpustack.utils.model_instance_workers import sglang_smg_mode
-
-        if mi.role is not None or not sglang_smg_mode(model):
-            raise ValueError(
-                "Managed components require ordinary multi-rank SGLang DP/DPA"
-            )
         counts = [len(mi.gpu_indexes or [])] + [
             len(worker.gpu_indexes or [])
             for worker in mi.distributed_servers.subordinate_workers or []
         ]
+        layout = sglang_port_layout(model, mi.role, counts)
+        if not layout.components:
+            raise ValueError(
+                "Managed components require ordinary multi-rank SGLang DP/DPA"
+            )
         bands = ServeManager._allocate_port_plan(
             mi, model_port_requests(model, mi.role, counts), unavailable, port_range
         )
-        mi.port = bands["_sglang_engine_api"].base
+        mi.port = bands[layout.api_band].base
         mi.ports = [band.base for band in bands.values()]
         mi.named_ports = bands
 
@@ -4853,6 +4856,9 @@ class ServeManager(ContainerLogPersister):
         connector_names = [spec.name for spec in band_specs_for(model, mi.role)]
         named = dict(mi.named_ports or {})
         named.update({name: bands[name] for name in connector_names if name in bands})
+        sglang_connecting = bands.get(SGLANG_CONNECTING_BAND)
+        if sglang_connecting is not None:
+            named[SGLANG_CONNECTING_BAND] = sglang_connecting
         api = bands["_api"].base
         ports = [api]
         ports.extend(
@@ -4864,12 +4870,12 @@ class ServeManager(ContainerLogPersister):
             if name in bands
             for port in range(bands[name].base, bands[name].base + bands[name].count)
         )
-        connecting = bands.get("_connecting")
+        connecting = sglang_connecting or bands.get("_connecting")
         if connecting is not None:
             # Backends consume the connecting base as ports[-1]; derived
             # protection ports belong only in the named reservation metadata.
             ports.append(connecting.base)
-            if connecting.count > 1:
+            if sglang_connecting is None and connecting.count > 1:
                 named[_VLLM_MP_CONNECTING_BAND_NAME] = connecting
         mi.port, mi.ports = api, ports
         if named:
