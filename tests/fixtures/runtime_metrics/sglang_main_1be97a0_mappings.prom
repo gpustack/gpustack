@@ -1,0 +1,26 @@
+# TYPE sglang:window_token_usage gauge
+sglang:window_token_usage{window="window_4096"} 0.5
+# TYPE sglang:window_available_tokens gauge
+sglang:window_available_tokens{window="window_4096"} 200
+# TYPE sglang:window_evictable_tokens gauge
+sglang:window_evictable_tokens{window="window_4096"} 100
+# TYPE sglang:window_used_tokens gauge
+sglang:window_used_tokens{window="window_4096"} 500
+# TYPE sglang:scheduler_iterations_total counter
+sglang:scheduler_iterations_total{model_name="fixture-model"} 0.375
+# TYPE sglang:prealloc_window_token_usage gauge
+sglang:prealloc_window_token_usage{window="window_4096"} 0.25
+# TYPE sglang:max_total_num_tokens_window gauge
+sglang:max_total_num_tokens_window{window="window_4096"} 1000
+# TYPE sglang:swa_token_usage gauge
+sglang:swa_token_usage{model_name="fixture-model"} 0.5
+# TYPE sglang:swa_available_tokens gauge
+sglang:swa_available_tokens{model_name="fixture-model"} 200
+# TYPE sglang:swa_evictable_tokens gauge
+sglang:swa_evictable_tokens{model_name="fixture-model"} 100
+# TYPE sglang:swa_used_tokens gauge
+sglang:swa_used_tokens{model_name="fixture-model"} 500
+# TYPE sglang:max_total_num_tokens_swa gauge
+sglang:max_total_num_tokens_swa{model_name="fixture-model"} 1000
+# TYPE sglang:prealloc_swa_token_usage gauge
+sglang:prealloc_swa_token_usage{model_name="fixture-model"} 0.25
