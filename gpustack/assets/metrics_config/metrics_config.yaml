@@ -1,5 +1,5 @@
 # -----------------------------
-# GPUSStack Full Metrics Definition
+# GPUStack Runtime Metrics Definition
 # All metrics include full hierarchy labels
 # -----------------------------
 gpustack_metrics:
@@ -26,6 +26,16 @@ gpustack_metrics:
   gpustack:num_requests_swapped:
     type: Gauge
     description: "Number of requests swapped out to CPU."
+
+  gpustack:num_requests_retracted:
+    type: Gauge
+    unit: requests
+    description: "Requests retracted in the scheduler's reporting interval. This value can decrease and is not a cumulative preemption counter."
+
+  gpustack:retracted_requests_total_snapshot:
+    type: Gauge
+    unit: requests
+    description: "Cumulative retractions exposed as a scheduler gauge snapshot."
 
   gpustack:prefix_cache_hit_rate:
     type: Gauge
@@ -77,7 +87,12 @@ gpustack_metrics:
 
   gpustack:time_per_output_token_seconds:
     type: Histogram
-    description: "Average time spent to produce each output token."
+    description: "Per-request decode time divided by the number of output tokens after the first token."
+
+  gpustack:e2e_time_per_output_token_seconds:
+    type: Histogram
+    unit: seconds
+    description: "Per-request end-to-end latency divided by all generated tokens, including time to first token. This is distinct from decode-only TPOT."
 
   gpustack:e2e_request_latency_seconds:
     type: Histogram
@@ -113,7 +128,7 @@ gpustack_metrics:
 
   gpustack:request_success:
     type: Counter
-    description: "Total number of successful requests."
+    description: "Finished requests recorded by the engine. Native outcome labels must be checked before treating them as successful requests."
 
   gpustack:request_preemptions:
     type: Counter
@@ -126,6 +141,16 @@ gpustack_metrics:
   gpustack:spec_decode_accept_rate:
     type: Gauge
     description: "Average speculative decoding acceptance rate."
+
+  gpustack:spec_decode_configured_steps:
+    type: Gauge
+    unit: steps
+    description: "Currently active configured number of speculative drafting steps."
+
+  gpustack:spec_decode_configured_draft_tokens:
+    type: Gauge
+    unit: tokens
+    description: "Currently active configured number of speculative draft tokens, not a cumulative count of proposed tokens."
 
   gpustack:spec_decode_accepted_tokens:
     type: Counter
@@ -314,6 +339,1038 @@ gpustack_metrics:
     description: "Queue depth split by WHY each request is waiting, on the `reason` label (`capacity` -- no KV-cache or batch room; `deferred` -- held back by the scheduler's own policy). The plain queue depth says a role is behind; this says whether adding replicas would help."
 
 
+  # Serving, scheduler, cache and connector measurements.
+  gpustack:cache_pool_used_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Current cache pool used tokens."
+
+  gpustack:component_process_cpu_seconds:
+    type: Counter
+    unit: "seconds"
+    description: "CPU time consumed by the reporting runtime component, distinct from Worker host CPU usage."
+
+  gpustack:corrupted_requests:
+    type: Counter
+    unit: "requests"
+    description: "Requests whose logits contain NaN values when the engine enables this check."
+
+  gpustack:cuda_graph_passes:
+    type: Counter
+    unit: "passes"
+    description: "Cumulative cuda graph passes."
+
+  gpustack:cuda_graph_used:
+    type: Gauge
+    unit: "boolean"
+    description: "Whether the latest model forward pass used a CUDA graph."
+
+  gpustack:decode_sequence_length_sum:
+    type: Gauge
+    unit: "tokens"
+    description: "Current decode sequence length sum."
+
+  gpustack:device_graph_memory_bytes:
+    type: Gauge
+    unit: "bytes"
+    description: "Current device graph memory bytes."
+
+  gpustack:diffusion_canvas_positions:
+    type: Counter
+    unit: "canvas_positions"
+    description: "Cumulative diffusion canvas positions."
+
+  gpustack:diffusion_committed_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative diffusion committed tokens."
+
+  gpustack:diffusion_denoising_steps:
+    type: Counter
+    unit: "steps"
+    description: "Cumulative diffusion denoising steps."
+
+  gpustack:dp_attention_pairs:
+    type: Counter
+    unit: "pairs"
+    description: "Cumulative dp attention pairs."
+
+  gpustack:dp_attention_steps:
+    type: Counter
+    unit: "steps"
+    description: "Cumulative dp attention steps."
+
+  gpustack:dp_attention_sync_wait_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of dp attention sync wait seconds."
+
+  gpustack:dp_attention_token_imbalance_ratio:
+    type: Histogram
+    unit: "ratio"
+    description: "Distribution of dp attention token imbalance ratio."
+
+  gpustack:dp_attention_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative dp attention tokens."
+
+  gpustack:dp_cooperation_forward_execution_seconds:
+    type: Counter
+    unit: "seconds"
+    description: "Cumulative dp cooperation forward execution seconds."
+
+  gpustack:dp_cooperation_processed_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative dp cooperation processed tokens."
+
+  gpustack:encoder_cache_entries:
+    type: Gauge
+    unit: "count"
+    description: "Current encoder cache entries."
+
+  gpustack:encoder_cache_evictions:
+    type: Counter
+    unit: "count"
+    description: "Cumulative encoder cache evictions."
+
+  gpustack:encoder_cache_hit_files:
+    type: Counter
+    unit: "files"
+    description: "Cumulative encoder cache hit files."
+
+  gpustack:encoder_cache_hit_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative encoder cache hit tokens."
+
+  gpustack:encoder_cache_size_bytes:
+    type: Gauge
+    unit: "bytes"
+    description: "Current encoder cache size bytes."
+
+  gpustack:encoder_cache_total_files:
+    type: Counter
+    unit: "files"
+    description: "Cumulative encoder cache total files."
+
+  gpustack:encoder_cache_total_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative encoder cache total tokens."
+
+  gpustack:encoder_dp_pending_requests:
+    type: Gauge
+    unit: "requests"
+    description: "Current encoder dp pending requests."
+
+  gpustack:encoder_mm_items_per_batch:
+    type: Histogram
+    unit: "items"
+    description: "Distribution of encoder mm items per batch."
+
+  gpustack:encoder_mm_items_per_request:
+    type: Histogram
+    unit: "items"
+    description: "Distribution of encoder mm items per request."
+
+  gpustack:encoder_model_forward_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of encoder model forward seconds."
+
+  gpustack:encoder_preprocess_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of encoder preprocess seconds."
+
+  gpustack:encoder_queue_wait_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of encoder queue wait seconds."
+
+  gpustack:encoder_request_e2e_latency_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of encoder request e2e latency seconds."
+
+  gpustack:encoder_requests:
+    type: Counter
+    unit: "requests"
+    description: "Cumulative encoder requests."
+
+  gpustack:encoder_requests_received:
+    type: Counter
+    unit: "requests"
+    description: "Cumulative encoder requests received."
+
+  gpustack:encoder_transfer_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of encoder transfer seconds."
+
+  gpustack:engine_http_requests:
+    type: Counter
+    unit: "requests"
+    description: "Engine HTTP requests by endpoint and method, including non-generation endpoints when reported."
+
+  gpustack:engine_http_requests_active:
+    type: Gauge
+    unit: "requests"
+    description: "HTTP requests currently active in the runtime API process."
+
+  gpustack:engine_http_responses:
+    type: Counter
+    unit: "responses"
+    description: "Engine HTTP responses by endpoint and status, distinct from generation completions."
+
+  gpustack:engine_http_routing_keys_active:
+    type: Gauge
+    unit: "keys"
+    description: "Current engine http routing keys active."
+
+  gpustack:engine_sleep_state:
+    type: Gauge
+    unit: "one_hot_state"
+    description: "One-hot engine sleep state selected by the native state label."
+
+  gpustack:forward_execution_seconds:
+    type: Counter
+    unit: "seconds"
+    description: "Cumulative forward execution seconds."
+
+  gpustack:forward_occupancy_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Forward-pass occupancy estimate converted to a ratio, not device SM utilization."
+
+  gpustack:full_kv_cache_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Current full kv cache usage ratio."
+
+  gpustack:generation_throughput_tokens_per_second:
+    type: Gauge
+    unit: "tokens/second"
+    description: "Generation throughput over the scheduler reporting interval."
+
+  gpustack:grammar_aborted:
+    type: Counter
+    unit: "requests"
+    description: "Cumulative grammar aborted."
+
+  gpustack:grammar_cache_hits:
+    type: Counter
+    unit: "requests"
+    description: "Cumulative grammar cache hits."
+
+  gpustack:grammar_compilation_time_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of grammar compilation time seconds."
+
+  gpustack:grammar_requests:
+    type: Counter
+    unit: "requests"
+    description: "Cumulative grammar requests."
+
+  gpustack:grammar_timeouts:
+    type: Counter
+    unit: "requests"
+    description: "Cumulative grammar timeouts."
+
+  gpustack:hf3fs_load_duration_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of hf3fs load duration seconds."
+
+  gpustack:hf3fs_num_failed_load:
+    type: Counter
+    unit: "load_operations"
+    description: "Cumulative hf3fs num failed load."
+
+  gpustack:hf3fs_num_failed_save:
+    type: Counter
+    unit: "save_operations"
+    description: "Cumulative hf3fs num failed save."
+
+  gpustack:hf3fs_save_duration_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of hf3fs save duration seconds."
+
+  gpustack:hicache_backup_dropped_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative hicache backup dropped tokens."
+
+  gpustack:hicache_prefetch_aux_alloc_failed_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative hicache prefetch aux alloc failed tokens."
+
+  gpustack:hisparse_cache_hits:
+    type: Counter
+    unit: "hot_buffer_lookups"
+    description: "Cumulative hisparse cache hits."
+
+  gpustack:hisparse_cache_misses:
+    type: Counter
+    unit: "hot_buffer_lookups"
+    description: "Cumulative hisparse cache misses."
+
+  gpustack:hisparse_host_block_idle_before_evict_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of hisparse host block idle before evict seconds."
+
+  gpustack:hisparse_host_block_lifetime_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of hisparse host block lifetime seconds."
+
+  gpustack:hisparse_host_block_reuse_gap_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of hisparse host block reuse gap seconds."
+
+  gpustack:hisparse_host_cache_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Current hisparse host cache usage ratio."
+
+  gpustack:hisparse_host_to_device_bytes:
+    type: Counter
+    unit: "bytes"
+    description: "Cumulative hisparse host to device bytes."
+
+  gpustack:hisparse_pending_page_transfers:
+    type: Gauge
+    unit: "page_transfers"
+    description: "Current hisparse pending page transfers."
+
+  gpustack:host_cache_backup_bytes:
+    type: Counter
+    unit: "bytes"
+    description: "Cumulative host cache backup bytes."
+
+  gpustack:host_cache_backup_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of host cache backup seconds."
+
+  gpustack:host_cache_backup_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Logical tokens backed up to the host cache. TP ranks can report the same logical tokens; do not sum them across TP ranks."
+
+  gpustack:host_cache_capacity_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Token capacity of the host KV cache pool."
+
+  gpustack:host_cache_loadback_bytes:
+    type: Counter
+    unit: "bytes"
+    description: "Cumulative host cache loadback bytes."
+
+  gpustack:host_cache_loadback_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of host cache loadback seconds."
+
+  gpustack:host_cache_loadback_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Logical tokens loaded from the host cache. TP ranks can report the same logical tokens; do not sum them across TP ranks."
+
+  gpustack:host_cache_used_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Tokens currently resident in the host KV cache pool."
+
+  gpustack:host_mamba_cache_capacity_states:
+    type: Gauge
+    unit: "states"
+    description: "Current host mamba cache capacity states."
+
+  gpustack:host_mamba_cache_used_states:
+    type: Gauge
+    unit: "states"
+    description: "Current host mamba cache used states."
+
+  gpustack:iteration_tokens:
+    type: Histogram
+    unit: "tokens"
+    description: "Tokens processed during one model execution iteration."
+
+  gpustack:kv_block_idle_before_evict_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of kv block idle before evict seconds."
+
+  gpustack:kv_block_lifetime_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of kv block lifetime seconds."
+
+  gpustack:kv_block_reuse_gap_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of kv block reuse gap seconds."
+
+  gpustack:kv_cache_allocated_memory_bytes:
+    type: Gauge
+    unit: "bytes"
+    description: "Memory allocated to KV cache pools, distinct from used cache tokens."
+
+  gpustack:kv_cache_available_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Current kv cache available tokens."
+
+  gpustack:kv_cache_capacity_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Current kv cache capacity tokens."
+
+  gpustack:kv_cache_dropped_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative kv cache dropped tokens."
+
+  gpustack:kv_cache_evictable_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Current kv cache evictable tokens."
+
+  gpustack:kv_cache_evicted_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative kv cache evicted tokens."
+
+  gpustack:kv_cache_eviction_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of kv cache eviction seconds."
+
+  gpustack:kv_cache_page_size_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Current kv cache page size tokens."
+
+  gpustack:kv_cache_pages:
+    type: Gauge
+    unit: "pages"
+    description: "Current kv cache pages."
+
+  gpustack:kv_cache_used_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Current kv cache used tokens."
+
+  gpustack:kv_offload_allocation_failure:
+    type: Counter
+    unit: "store_allocation_attempts"
+    description: "Cumulative kv offload allocation failure."
+
+  gpustack:kv_offload_cpu_allocation_chunks:
+    type: Histogram
+    unit: "chunks"
+    description: "CPU-offload allocation sizes measured in chunks, not bytes."
+
+  gpustack:kv_offload_cpu_cache_read_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Current kv offload cpu cache read usage ratio."
+
+  gpustack:kv_offload_cpu_cache_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Current kv offload cpu cache usage ratio."
+
+  gpustack:kv_offload_cpu_cache_write_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Current kv offload cpu cache write usage ratio."
+
+  gpustack:kv_offload_load_bytes:
+    type: Counter
+    unit: "bytes"
+    description: "Cumulative kv offload load bytes."
+
+  gpustack:kv_offload_load_bytes_per_operation:
+    type: Histogram
+    unit: "bytes"
+    description: "Distribution of kv offload load bytes per operation."
+
+  gpustack:kv_offload_load_seconds:
+    type: Counter
+    unit: "seconds"
+    description: "Cumulative kv offload load seconds."
+
+  gpustack:kv_offload_lookup_async_delay_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of kv offload lookup async delay seconds."
+
+  gpustack:kv_offload_lookup_sync_delay_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of kv offload lookup sync delay seconds."
+
+  gpustack:kv_offload_store_bytes:
+    type: Counter
+    unit: "bytes"
+    description: "Cumulative kv offload store bytes."
+
+  gpustack:kv_offload_store_bytes_per_operation:
+    type: Histogram
+    unit: "bytes"
+    description: "Distribution of kv offload store bytes per operation."
+
+  gpustack:kv_offload_store_seconds:
+    type: Counter
+    unit: "seconds"
+    description: "Cumulative kv offload store seconds."
+
+  gpustack:kv_offload_stores_skipped:
+    type: Counter
+    unit: "store_operations"
+    description: "Cumulative kv offload stores skipped."
+
+  gpustack:kv_offload_tiering_active_cascade_jobs:
+    type: Gauge
+    unit: "jobs"
+    description: "Current kv offload tiering active cascade jobs."
+
+  gpustack:kv_offload_tiering_active_promotion_jobs:
+    type: Gauge
+    unit: "jobs"
+    description: "Current kv offload tiering active promotion jobs."
+
+  gpustack:kv_offload_tiering_backpressure_blocks_dropped:
+    type: Counter
+    unit: "blocks"
+    description: "Cumulative kv offload tiering backpressure blocks dropped."
+
+  gpustack:kv_offload_tiering_backpressure_store_seconds_per_mib_ema:
+    type: Gauge
+    unit: "seconds_per_mebibyte"
+    description: "EMA of store latency per mebibyte used for tiering backpressure, not a transfer duration."
+
+  gpustack:kv_offload_tiering_backpressure_stores_dropped:
+    type: Counter
+    unit: "store_operations"
+    description: "Cumulative kv offload tiering backpressure stores dropped."
+
+  gpustack:kv_offload_tiering_cascade_job_failures:
+    type: Counter
+    unit: "jobs"
+    description: "Cumulative kv offload tiering cascade job failures."
+
+  gpustack:kv_offload_tiering_chunk_hits:
+    type: Counter
+    unit: "chunk_lookups"
+    description: "Cumulative kv offload tiering chunk hits."
+
+  gpustack:kv_offload_tiering_chunk_queries:
+    type: Counter
+    unit: "chunk_lookups"
+    description: "Cumulative kv offload tiering chunk queries."
+
+  gpustack:kv_offload_tiering_lookup_async_delay_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of kv offload tiering lookup async delay seconds."
+
+  gpustack:kv_offload_tiering_lookup_sync_delay_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of kv offload tiering lookup sync delay seconds."
+
+  gpustack:kv_offload_tiering_primary_read_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Current kv offload tiering primary read usage ratio."
+
+  gpustack:kv_offload_tiering_primary_write_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Current kv offload tiering primary write usage ratio."
+
+  gpustack:kv_offload_tiering_promotion_allocation_failures:
+    type: Counter
+    unit: "promotion_attempts"
+    description: "Cumulative kv offload tiering promotion allocation failures."
+
+  gpustack:kv_offload_tiering_promotion_job_failures:
+    type: Counter
+    unit: "jobs"
+    description: "Cumulative kv offload tiering promotion job failures."
+
+  gpustack:kv_offload_tiering_promotion_latency_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of kv offload tiering promotion latency seconds."
+
+  gpustack:kv_offload_tiering_read_bytes:
+    type: Counter
+    unit: "bytes"
+    description: "Cumulative kv offload tiering read bytes."
+
+  gpustack:kv_offload_tiering_read_seconds:
+    type: Counter
+    unit: "seconds"
+    description: "Cumulative kv offload tiering read seconds."
+
+  gpustack:kv_offload_tiering_write_bytes:
+    type: Counter
+    unit: "bytes"
+    description: "Cumulative kv offload tiering write bytes."
+
+  gpustack:kv_offload_tiering_write_seconds:
+    type: Counter
+    unit: "seconds"
+    description: "Cumulative kv offload tiering write seconds."
+
+  gpustack:load_query_duration_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of load query duration seconds."
+
+  gpustack:lora_pool_slots_total:
+    type: Gauge
+    unit: "slots"
+    description: "Current lora pool slots total."
+
+  gpustack:lora_pool_slots_used:
+    type: Gauge
+    unit: "slots"
+    description: "Current lora pool slots used."
+
+  gpustack:lora_pool_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Current lora pool usage ratio."
+
+  gpustack:mamba_cache_available_states:
+    type: Gauge
+    unit: "states"
+    description: "Current mamba cache available states."
+
+  gpustack:mamba_cache_evictable_states:
+    type: Gauge
+    unit: "states"
+    description: "Current mamba cache evictable states."
+
+  gpustack:mamba_cache_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Current mamba cache usage ratio."
+
+  gpustack:mamba_cache_used_states:
+    type: Gauge
+    unit: "states"
+    description: "Current mamba cache used states."
+
+  gpustack:mm_cache_hits:
+    type: Counter
+    unit: "multimodal_items"
+    description: "Multimodal input items served from cache, not prefix-cache tokens."
+
+  gpustack:mm_cache_queries:
+    type: Counter
+    unit: "multimodal_items"
+    description: "Multimodal input items queried in the cache, not prefix-cache tokens."
+
+  gpustack:model_context_length_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Current model context length tokens."
+
+  gpustack:model_weights_memory_bytes:
+    type: Gauge
+    unit: "bytes"
+    description: "Current model weights memory bytes."
+
+  gpustack:mooncake_store_operation_bytes:
+    type: Counter
+    unit: "bytes"
+    description: "Cumulative mooncake store operation bytes."
+
+  gpustack:mooncake_store_operation_failed_keys:
+    type: Counter
+    unit: "keys"
+    description: "Cumulative mooncake store operation failed keys."
+
+  gpustack:mooncake_store_operation_keys:
+    type: Counter
+    unit: "keys"
+    description: "Cumulative mooncake store operation keys."
+
+  gpustack:mooncake_store_operation_time_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of mooncake store operation time seconds."
+
+  gpustack:mooncake_store_operations:
+    type: Counter
+    unit: "operations"
+    description: "Cumulative mooncake store operations."
+
+  gpustack:num_requests_grammar_waiting:
+    type: Gauge
+    unit: "requests"
+    description: "Current num requests grammar waiting."
+
+  gpustack:num_requests_kv_fetch_by_stage:
+    type: Gauge
+    unit: "requests"
+    description: "Current num requests kv fetch by stage."
+
+  gpustack:num_requests_paused:
+    type: Gauge
+    unit: "requests"
+    description: "Current num requests paused."
+
+  gpustack:pd_decode_deferred_kv_release_requests:
+    type: Gauge
+    unit: "requests"
+    description: "Current pd decode deferred kv release requests."
+
+  gpustack:pd_decode_deferred_kv_release_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Distribution of pd decode deferred kv release seconds."
+
+  gpustack:pd_decode_deferred_kv_releases:
+    type: Counter
+    unit: "releases"
+    description: "Cumulative pd decode deferred kv releases."
+
+  gpustack:pd_decode_host_receive_queue_requests:
+    type: Gauge
+    unit: "requests"
+    description: "Current pd decode host receive queue requests."
+
+  gpustack:pd_decode_host_received_requests:
+    type: Counter
+    unit: "requests"
+    description: "Cumulative pd decode host received requests."
+
+  gpustack:pd_decode_prealloc_full_cache_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Current pd decode prealloc full cache usage ratio."
+
+  gpustack:pd_decode_prealloc_swa_cache_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Target sliding-window pd decode prealloc swa cache usage ratio. On multi-window engines this is a compatibility projection, not additional capacity."
+
+  gpustack:pd_decode_prealloc_window_cache_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Per-window pd decode prealloc window cache usage ratio, keyed by the native window label. Do not add target-window SWA projections to these values."
+
+  gpustack:pd_kv_notifications_after_expiry:
+    type: Counter
+    unit: "notifications"
+    description: "Cumulative pd kv notifications after expiry."
+
+  gpustack:pd_kv_transfer_bandwidth_bytes_per_second:
+    type: Histogram
+    unit: "bytes/second"
+    description: "Distribution of connector-reported KV transfer bandwidth, in bytes per second."
+
+  gpustack:pd_session_recoveries:
+    type: Counter
+    unit: "recoveries"
+    description: "Previously blacklisted Mooncake sessions restored by a successful probe."
+
+  gpustack:prefill_effective_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative prefill effective tokens."
+
+  gpustack:prompt_tokens_cached_by_source:
+    type: Counter
+    unit: "tokens"
+    description: "Cached prompt tokens partitioned by cache source, distinct from the aggregate cached-token counter."
+
+  gpustack:request_max_generation_tokens:
+    type: Histogram
+    unit: "tokens"
+    description: "Distribution of request max generation tokens."
+
+  gpustack:request_num_preemptions:
+    type: Histogram
+    unit: "preemptions_per_finished_request"
+    description: "Preemption count for each finished request, distinct from the cumulative preemption counter."
+
+  gpustack:request_stage_latency_seconds:
+    type: Histogram
+    unit: "seconds"
+    description: "Request latency observations partitioned by the native processing stage label."
+
+  gpustack:request_uncached_prompt_tokens:
+    type: Histogram
+    unit: "tokens"
+    description: "Per-request prompt tokens minus local prefix-cache hits. This is not PD KV recomputation."
+
+  gpustack:requests_aborted:
+    type: Counter
+    unit: "requests"
+    description: "Requests reported as aborted by the serving engine."
+
+  gpustack:requests_processed:
+    type: Counter
+    unit: "requests"
+    description: "Requests counted by the engine completion observer, including aborted requests. Not an ingress request counter."
+
+  gpustack:retracted_input_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative retracted input tokens."
+
+  gpustack:retracted_output_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative retracted output tokens."
+
+  gpustack:running_routing_keys:
+    type: Gauge
+    unit: "keys"
+    description: "Current running routing keys."
+
+  gpustack:scheduler_idle_seconds:
+    type: Counter
+    unit: "seconds"
+    description: "Cumulative scheduler idle seconds."
+
+  gpustack:scheduler_iterations:
+    type: Counter
+    unit: "iterations"
+    description: "Scheduler loop iterations, not a request or token count."
+
+  gpustack:scheduler_process_cpu_seconds:
+    type: Counter
+    unit: "seconds"
+    description: "Cumulative scheduler process cpu seconds."
+
+  gpustack:scheduler_processed_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative scheduler processed tokens."
+
+  gpustack:scheduler_stage_seconds:
+    type: Counter
+    unit: "seconds"
+    description: "Cumulative scheduler stage seconds."
+
+  gpustack:simple_kv_offload_load_blocks:
+    type: Counter
+    unit: "blocks"
+    description: "Cumulative simple kv offload load blocks."
+
+  gpustack:simple_kv_offload_pending_store_blocks:
+    type: Gauge
+    unit: "blocks"
+    description: "Current simple kv offload pending store blocks."
+
+  gpustack:simple_kv_offload_save_outcomes:
+    type: Counter
+    unit: "store_admission_decisions"
+    description: "Cumulative simple kv offload save outcomes."
+
+  gpustack:simple_kv_offload_used_blocks:
+    type: Gauge
+    unit: "blocks"
+    description: "Current simple kv offload used blocks."
+
+  gpustack:spec_decode_accepted_tokens_per_position:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative spec decode accepted tokens per position."
+
+  gpustack:spec_decode_block_accept_length:
+    type: Gauge
+    unit: "tokens"
+    description: "Current spec decode block accept length."
+
+  gpustack:spec_decode_cap_length:
+    type: Gauge
+    unit: "tokens"
+    description: "Current spec decode cap length."
+
+  gpustack:spec_decode_verify_calls:
+    type: Counter
+    unit: "calls"
+    description: "Cumulative spec decode verify calls."
+
+  gpustack:startup_available_gpu_memory_bytes:
+    type: Gauge
+    unit: "bytes"
+    description: "Current startup available gpu memory bytes."
+
+  gpustack:startup_device_graph_duration_seconds:
+    type: Gauge
+    unit: "seconds"
+    description: "Current startup device graph duration seconds."
+
+  gpustack:startup_duration_seconds:
+    type: Gauge
+    unit: "seconds"
+    description: "Current startup duration seconds."
+
+  gpustack:startup_latency_max_seconds:
+    type: Gauge
+    unit: "seconds"
+    description: "Current startup latency max seconds."
+
+  gpustack:storage_backup_bandwidth_bytes_per_second:
+    type: Histogram
+    unit: "bytes/second"
+    description: "Per-operation storage backup bandwidth, excluding pages already present in storage."
+
+  gpustack:storage_backup_pages:
+    type: Histogram
+    unit: "pages"
+    description: "Distribution of storage backup pages."
+
+  gpustack:storage_backup_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative storage backup tokens."
+
+  gpustack:storage_prefetch_bandwidth_bytes_per_second:
+    type: Histogram
+    unit: "bytes/second"
+    description: "Per-operation storage prefetch bandwidth, including compressed byte sizes when reported."
+
+  gpustack:storage_prefetch_deferred_tokens:
+    type: Counter
+    unit: "token-attempts"
+    description: "Deferred prefetch token attempts; retries can count the same token again."
+
+  gpustack:storage_prefetch_hit_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative storage prefetch hit tokens."
+
+  gpustack:storage_prefetch_pages:
+    type: Histogram
+    unit: "pages"
+    description: "Distribution of storage prefetch pages."
+
+  gpustack:storage_prefetch_unfulfilled_tokens:
+    type: Counter
+    unit: "token-attempts"
+    description: "Unfulfilled prefetch token attempts; retries can count the same token again."
+
+  gpustack:storage_prefetched_tokens:
+    type: Counter
+    unit: "tokens"
+    description: "Cumulative storage prefetched tokens."
+
+  gpustack:streaming_session_held_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Current streaming session held tokens."
+
+  gpustack:streaming_sessions:
+    type: Gauge
+    unit: "sessions"
+    description: "Current streaming sessions."
+
+  gpustack:structured_output_requests:
+    type: Counter
+    unit: "requests"
+    description: "Cumulative structured output requests."
+
+  gpustack:swa_cache_available_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Target sliding-window swa cache available tokens. On multi-window engines this is a compatibility projection, not additional capacity."
+
+  gpustack:swa_cache_capacity_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Target sliding-window swa cache capacity tokens. On multi-window engines this is a compatibility projection, not additional capacity."
+
+  gpustack:swa_cache_evictable_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Target sliding-window swa cache evictable tokens. On multi-window engines this is a compatibility projection, not additional capacity."
+
+  gpustack:swa_cache_used_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Target sliding-window swa cache used tokens. On multi-window engines this is a compatibility projection, not additional capacity."
+
+  gpustack:swa_kv_cache_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Target sliding-window swa kv cache usage ratio. On multi-window engines this is a compatibility projection, not additional capacity."
+
+  gpustack:umbp_transfer_bytes:
+    type: Counter
+    unit: "bytes"
+    description: "Cumulative umbp transfer bytes."
+
+  gpustack:umbp_transfer_completed:
+    type: Counter
+    unit: "objects"
+    description: "Cumulative umbp transfer completed."
+
+  gpustack:umbp_transfer_failed:
+    type: Counter
+    unit: "objects"
+    description: "Cumulative umbp transfer failed."
+
+  gpustack:umbp_transfer_submitted:
+    type: Counter
+    unit: "objects"
+    description: "Cumulative umbp transfer submitted."
+
+  gpustack:watermark_requests:
+    type: Counter
+    unit: "requests"
+    description: "Cumulative watermark requests."
+
+  gpustack:weight_load_duration_seconds:
+    type: Gauge
+    unit: "seconds"
+    description: "Current weight load duration seconds."
+
+  gpustack:window_kv_cache_available_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Per-window window kv cache available tokens, keyed by the native window label. Do not add target-window SWA projections to these values."
+
+  gpustack:window_kv_cache_capacity_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Per-window window kv cache capacity tokens, keyed by the native window label. Do not add target-window SWA projections to these values."
+
+  gpustack:window_kv_cache_evictable_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Per-window window kv cache evictable tokens, keyed by the native window label. Do not add target-window SWA projections to these values."
+
+  gpustack:window_kv_cache_usage_ratio:
+    type: Gauge
+    unit: "ratio"
+    description: "Per-window window kv cache usage ratio, keyed by the native window label. Do not add target-window SWA projections to these values."
+
+  gpustack:window_kv_cache_used_tokens:
+    type: Gauge
+    unit: "tokens"
+    description: "Per-window window kv cache used tokens, keyed by the native window label. Do not add target-window SWA projections to these values."
+
+
 runtime_mapping:
   # Ordinary components have Router semantics independent of legacy PD mappings.
   SGLangSMG:
@@ -323,7 +1380,7 @@ runtime_mapping:
       smg_worker_requests_active: gpustack:smg_worker_requests_active
 
   vLLM:
-    "*": # 0.21.0
+    "*": # Reference exporter: v0.33.0rc3
       vllm:num_requests_running: gpustack:num_requests_running
       vllm:num_requests_waiting: gpustack:num_requests_waiting
       vllm:prefix_cache_hits: gpustack:prefix_cache_hits
@@ -406,17 +1463,97 @@ runtime_mapping:
       vllm:estimated_flops_per_gpu: gpustack:estimated_flops_per_gpu
       vllm:estimated_read_bytes_per_gpu: gpustack:estimated_read_bytes_per_gpu
       vllm:estimated_write_bytes_per_gpu: gpustack:estimated_write_bytes_per_gpu
+      # Additional engine-scoped service, cache and scheduler metrics.
+      vllm:corrupted_requests: gpustack:corrupted_requests
+      vllm:diffusion_num_canvas_positions: gpustack:diffusion_canvas_positions
+      vllm:diffusion_num_committed_tokens: gpustack:diffusion_committed_tokens
+      vllm:diffusion_num_denoising_steps: gpustack:diffusion_denoising_steps
+      vllm:engine_sleep_state: gpustack:engine_sleep_state
+      vllm:hf3fs_load_duration_seconds: gpustack:hf3fs_load_duration_seconds
+      vllm:hf3fs_num_failed_load: gpustack:hf3fs_num_failed_load
+      vllm:hf3fs_num_failed_save: gpustack:hf3fs_num_failed_save
+      vllm:hf3fs_save_duration_seconds: gpustack:hf3fs_save_duration_seconds
+      vllm:hisparse_cache_hits: gpustack:hisparse_cache_hits
+      vllm:hisparse_cache_misses: gpustack:hisparse_cache_misses
+      vllm:hisparse_host_block_idle_before_evict_seconds: gpustack:hisparse_host_block_idle_before_evict_seconds
+      vllm:hisparse_host_block_lifetime_seconds: gpustack:hisparse_host_block_lifetime_seconds
+      vllm:hisparse_host_block_reuse_gap_seconds: gpustack:hisparse_host_block_reuse_gap_seconds
+      vllm:hisparse_host_cache_usage_perc: gpustack:hisparse_host_cache_usage_ratio
+      vllm:hisparse_host_to_device_bytes: gpustack:hisparse_host_to_device_bytes
+      vllm:hisparse_pending_page_transfers: gpustack:hisparse_pending_page_transfers
+      vllm:iteration_tokens_total: gpustack:iteration_tokens
+      vllm:kv_block_idle_before_evict_seconds: gpustack:kv_block_idle_before_evict_seconds
+      vllm:kv_block_lifetime_seconds: gpustack:kv_block_lifetime_seconds
+      vllm:kv_block_reuse_gap_seconds: gpustack:kv_block_reuse_gap_seconds
+      vllm:kv_offload_allocation_failure: gpustack:kv_offload_allocation_failure
+      vllm:kv_offload_cpu_allocation_size: gpustack:kv_offload_cpu_allocation_chunks
+      vllm:kv_offload_cpu_cache_read_usage_perc: gpustack:kv_offload_cpu_cache_read_usage_ratio
+      vllm:kv_offload_cpu_cache_usage_perc: gpustack:kv_offload_cpu_cache_usage_ratio
+      vllm:kv_offload_cpu_cache_write_usage_perc: gpustack:kv_offload_cpu_cache_write_usage_ratio
+      vllm:kv_offload_load_bytes: gpustack:kv_offload_load_bytes
+      vllm:kv_offload_load_size: gpustack:kv_offload_load_bytes_per_operation
+      vllm:kv_offload_load_time: gpustack:kv_offload_load_seconds
+      vllm:kv_offload_lookup_async_delay_seconds: gpustack:kv_offload_lookup_async_delay_seconds
+      vllm:kv_offload_lookup_sync_delay_seconds: gpustack:kv_offload_lookup_sync_delay_seconds
+      vllm:kv_offload_store_bytes: gpustack:kv_offload_store_bytes
+      vllm:kv_offload_store_size: gpustack:kv_offload_store_bytes_per_operation
+      vllm:kv_offload_store_time: gpustack:kv_offload_store_seconds
+      vllm:kv_offload_stores_skipped: gpustack:kv_offload_stores_skipped
+      vllm:kv_offload_tiering_active_cascade_jobs: gpustack:kv_offload_tiering_active_cascade_jobs
+      vllm:kv_offload_tiering_active_promotion_jobs: gpustack:kv_offload_tiering_active_promotion_jobs
+      vllm:kv_offload_tiering_backpressure_blocks_dropped: gpustack:kv_offload_tiering_backpressure_blocks_dropped
+      vllm:kv_offload_tiering_backpressure_store_latency_ema: gpustack:kv_offload_tiering_backpressure_store_seconds_per_mib_ema
+      vllm:kv_offload_tiering_backpressure_stores_dropped: gpustack:kv_offload_tiering_backpressure_stores_dropped
+      vllm:kv_offload_tiering_cascade_job_failures: gpustack:kv_offload_tiering_cascade_job_failures
+      vllm:kv_offload_tiering_chunk_hits: gpustack:kv_offload_tiering_chunk_hits
+      vllm:kv_offload_tiering_chunk_queries: gpustack:kv_offload_tiering_chunk_queries
+      vllm:kv_offload_tiering_lookup_async_delay_seconds: gpustack:kv_offload_tiering_lookup_async_delay_seconds
+      vllm:kv_offload_tiering_lookup_sync_delay_seconds: gpustack:kv_offload_tiering_lookup_sync_delay_seconds
+      vllm:kv_offload_tiering_primary_read_usage_perc: gpustack:kv_offload_tiering_primary_read_usage_ratio
+      vllm:kv_offload_tiering_primary_write_usage_perc: gpustack:kv_offload_tiering_primary_write_usage_ratio
+      vllm:kv_offload_tiering_promotion_allocation_failures: gpustack:kv_offload_tiering_promotion_allocation_failures
+      vllm:kv_offload_tiering_promotion_job_failures: gpustack:kv_offload_tiering_promotion_job_failures
+      vllm:kv_offload_tiering_promotion_latency_seconds: gpustack:kv_offload_tiering_promotion_latency_seconds
+      vllm:kv_offload_tiering_read_bytes: gpustack:kv_offload_tiering_read_bytes
+      vllm:kv_offload_tiering_read_time: gpustack:kv_offload_tiering_read_seconds
+      vllm:kv_offload_tiering_write_bytes: gpustack:kv_offload_tiering_write_bytes
+      vllm:kv_offload_tiering_write_time: gpustack:kv_offload_tiering_write_seconds
+      vllm:mm_cache_hits: gpustack:mm_cache_hits
+      vllm:mm_cache_queries: gpustack:mm_cache_queries
+      vllm:mooncake_store_operation: gpustack:mooncake_store_operations
+      vllm:mooncake_store_operation_bytes: gpustack:mooncake_store_operation_bytes
+      vllm:mooncake_store_operation_failed_keys: gpustack:mooncake_store_operation_failed_keys
+      vllm:mooncake_store_operation_keys: gpustack:mooncake_store_operation_keys
+      vllm:mooncake_store_operation_time_seconds: gpustack:mooncake_store_operation_time_seconds
+      vllm:nixl_num_notifications_after_expiry: gpustack:pd_kv_notifications_after_expiry
+      vllm:num_requests_kv_fetch_by_stage: gpustack:num_requests_kv_fetch_by_stage
+      vllm:prompt_tokens_cached_by_source: gpustack:prompt_tokens_cached_by_source
+      vllm:request_max_num_generation_tokens: gpustack:request_max_generation_tokens
+      vllm:request_num_preemptions: gpustack:request_num_preemptions
+      vllm:simple_kv_offload_load_blocks: gpustack:simple_kv_offload_load_blocks
+      vllm:simple_kv_offload_pending_store_blocks: gpustack:simple_kv_offload_pending_store_blocks
+      vllm:simple_kv_offload_save_outcomes: gpustack:simple_kv_offload_save_outcomes
+      vllm:simple_kv_offload_used_blocks: gpustack:simple_kv_offload_used_blocks
+      vllm:spec_decode_num_accepted_tokens_per_pos: gpustack:spec_decode_accepted_tokens_per_position
+      vllm:umbp_transfer_bytes: gpustack:umbp_transfer_bytes
+      vllm:umbp_transfer_completed: gpustack:umbp_transfer_completed
+      vllm:umbp_transfer_failed: gpustack:umbp_transfer_failed
+      vllm:umbp_transfer_submitted: gpustack:umbp_transfer_submitted
+      vllm:watermark_requests: gpustack:watermark_requests
     "<0.11.1":
       vllm:num_requests_swapped: gpustack:num_requests_swapped
-    "<0.11.0":
-      vllm:time_per_output_token_seconds: gpustack:time_per_output_token_seconds
+    "<0.10.2":
+      vllm:time_per_output_token_seconds: gpustack:inter_token_latency_seconds
     "<0.9.2":
        vllm:gpu_prefix_cache_hits: gpustack:prefix_cache_hits
        vllm:gpu_prefix_cache_queries: gpustack:prefix_cache_queries
        vllm:gpu_cache_usage_perc: gpustack:kv_cache_usage_ratio
 
   SGLang:
-    "*": # 0.5.15.post1
+    "*": # Reference exporter: v0.5.23
+      # Per-window cache and scheduler-iteration families are also verified
+      # against main 1be97a0a6312ef5bf1e613bb50beb0081ec8ea31.
+      # SWA values project the target window; do not add them to per-window values.
       # PD: NOT in base units. SGLang reports duration in MILLISECONDS and
       # volume in MEGABYTES where vLLM reports seconds and bytes, so `scale` is
       # not optional -- two units under one name is worse than two names,
@@ -509,12 +1646,14 @@ runtime_mapping:
       # degradation band would fire on every correct deployment.
       sglang:num_running_reqs: gpustack:num_requests_running
       sglang:num_queue_reqs: gpustack:num_requests_waiting
-      sglang:num_retracted_reqs: gpustack:request_preemptions
+      sglang:num_retracted_reqs: gpustack:num_requests_retracted
+      sglang:num_retracted_requests: gpustack:request_preemptions
       sglang:cache_hit_rate: gpustack:prefix_cache_hit_rate
       sglang:token_usage: gpustack:kv_cache_usage_ratio
       sglang:prompt_tokens: gpustack:prompt_tokens
       sglang:generation_tokens: gpustack:generation_tokens
       sglang:time_to_first_token_seconds: gpustack:time_to_first_token_seconds
+      sglang:request_time_per_output_token_seconds: gpustack:time_per_output_token_seconds
       sglang:e2e_request_latency_seconds: gpustack:e2e_request_latency_seconds
       sglang:queue_time_seconds: gpustack:request_queue_time_seconds
       sglang:inter_token_latency_seconds: gpustack:inter_token_latency_seconds
@@ -534,17 +1673,167 @@ runtime_mapping:
       # instead of only on vLLM.
       sglang:prompt_tokens_histogram: gpustack:request_prompt_tokens
       sglang:generation_tokens_histogram: gpustack:request_generation_tokens
-      sglang:spec_num_draft_tokens: gpustack:spec_decode_draft_tokens
+      sglang:spec_num_steps: gpustack:spec_decode_configured_steps
+      sglang:spec_num_draft_tokens: gpustack:spec_decode_configured_draft_tokens
       # Identical spelling to vLLM's, down to the suffix, and behind the same
       # `--enable-mfu-metrics` flag. SGLang leaves them unregistered when the
       # flag is off, so here absence is the honest signal rather than a zero.
       sglang:estimated_flops_per_gpu: gpustack:estimated_flops_per_gpu
       sglang:estimated_read_bytes_per_gpu: gpustack:estimated_read_bytes_per_gpu
       sglang:estimated_write_bytes_per_gpu: gpustack:estimated_write_bytes_per_gpu
-    "<0.5.13":
-      sglang:num_retracted_requests: gpustack:request_preemptions
-    "<=0.4.4":
-      sglang:time_per_output_token_seconds: gpustack:time_per_output_token_seconds
+      # Runtime request, cache, scheduler and component measurements.
+      sglang:backup_bandwidth:
+        name: gpustack:storage_backup_bandwidth_bytes_per_second
+        scale: 1073741824
+      sglang:backup_pgs: gpustack:storage_backup_pages
+      sglang:backuped_tokens: gpustack:storage_backup_tokens
+      sglang:context_len: gpustack:model_context_length_tokens
+      sglang:cuda_graph_passes: gpustack:cuda_graph_passes
+      sglang:decode_deferred_kv_release: gpustack:pd_decode_deferred_kv_releases
+      sglang:decode_deferred_kv_release_seconds: gpustack:pd_decode_deferred_kv_release_seconds
+      sglang:decode_sum_seq_lens: gpustack:decode_sequence_length_sum
+      sglang:dp_attention_pairs: gpustack:dp_attention_pairs
+      sglang:dp_attention_steps: gpustack:dp_attention_steps
+      sglang:dp_attention_sync_wait_seconds: gpustack:dp_attention_sync_wait_seconds
+      sglang:dp_attention_token_imbalance_ratio: gpustack:dp_attention_token_imbalance_ratio
+      sglang:dp_attention_tokens: gpustack:dp_attention_tokens
+      sglang:dp_cooperation_forward_execution_seconds: gpustack:dp_cooperation_forward_execution_seconds
+      sglang:dp_cooperation_realtime_tokens: gpustack:dp_cooperation_processed_tokens
+      sglang:encoder_cache_entries: gpustack:encoder_cache_entries
+      sglang:encoder_cache_evictions: gpustack:encoder_cache_evictions
+      sglang:encoder_cache_hit_files: gpustack:encoder_cache_hit_files
+      sglang:encoder_cache_hit_tokens: gpustack:encoder_cache_hit_tokens
+      sglang:encoder_cache_size_mb:
+        name: gpustack:encoder_cache_size_bytes
+        scale: 1048576
+      sglang:encoder_cache_total_files: gpustack:encoder_cache_total_files
+      sglang:encoder_cache_total_tokens: gpustack:encoder_cache_total_tokens
+      sglang:encoder_dp_pending_requests: gpustack:encoder_dp_pending_requests
+      sglang:encoder_mm_items_per_batch: gpustack:encoder_mm_items_per_batch
+      sglang:encoder_mm_items_per_request: gpustack:encoder_mm_items_per_request
+      sglang:encoder_model_forward_seconds: gpustack:encoder_model_forward_seconds
+      sglang:encoder_preprocess_seconds: gpustack:encoder_preprocess_seconds
+      sglang:encoder_queue_wait_seconds: gpustack:encoder_queue_wait_seconds
+      sglang:encoder_request_e2e_latency_seconds: gpustack:encoder_request_e2e_latency_seconds
+      sglang:encoder_requests: gpustack:encoder_requests
+      sglang:encoder_requests_received: gpustack:encoder_requests_received
+      sglang:encoder_transfer_seconds: gpustack:encoder_transfer_seconds
+      sglang:evicted_tokens: gpustack:kv_cache_evicted_tokens
+      sglang:eviction_duration_seconds: gpustack:kv_cache_eviction_seconds
+      sglang:failed_session_recoveries: gpustack:pd_session_recoveries
+      sglang:forward_execution_seconds: gpustack:forward_execution_seconds
+      sglang:full_token_usage: gpustack:full_kv_cache_usage_ratio
+      sglang:fwd_occupancy:
+        name: gpustack:forward_occupancy_ratio
+        scale: 0.01
+      sglang:gen_throughput: gpustack:generation_throughput_tokens_per_second
+      sglang:get_loads_duration_seconds: gpustack:load_query_duration_seconds
+      sglang:grammar_compilation_time_seconds: gpustack:grammar_compilation_time_seconds
+      sglang:graph_memory_usage_gb:
+        name: gpustack:device_graph_memory_bytes
+        scale: 1073741824
+      sglang:hicache_backup_bytes: gpustack:host_cache_backup_bytes
+      sglang:hicache_backup_dropped_tokens: gpustack:hicache_backup_dropped_tokens
+      sglang:hicache_backup_duration_seconds: gpustack:host_cache_backup_seconds
+      sglang:hicache_backup_tokens: gpustack:host_cache_backup_tokens
+      sglang:hicache_dropped_tokens: gpustack:kv_cache_dropped_tokens
+      sglang:hicache_host_mamba_total_states: gpustack:host_mamba_cache_capacity_states
+      sglang:hicache_host_mamba_used_states: gpustack:host_mamba_cache_used_states
+      sglang:hicache_host_total_tokens: gpustack:host_cache_capacity_tokens
+      sglang:hicache_host_used_tokens: gpustack:host_cache_used_tokens
+      sglang:hicache_prefetch_aux_alloc_failed_tokens: gpustack:hicache_prefetch_aux_alloc_failed_tokens
+      sglang:http_requests: gpustack:engine_http_requests
+      sglang:http_requests_active: gpustack:engine_http_requests_active
+      sglang:http_responses: gpustack:engine_http_responses
+      sglang:is_cuda_graph: gpustack:cuda_graph_used
+      sglang:kv_available_tokens: gpustack:kv_cache_available_tokens
+      sglang:kv_cache_memory_usage_gb:
+        name: gpustack:kv_cache_allocated_memory_bytes
+        scale: 1073741824
+      sglang:kv_evictable_tokens: gpustack:kv_cache_evictable_tokens
+      sglang:kv_transfer_speed_gb_s:
+        name: gpustack:pd_kv_transfer_bandwidth_bytes_per_second
+        scale: 1073741824
+      sglang:kv_used_tokens: gpustack:kv_cache_used_tokens
+      sglang:load_back_bytes: gpustack:host_cache_loadback_bytes
+      sglang:load_back_duration_seconds: gpustack:host_cache_loadback_seconds
+      sglang:load_back_tokens: gpustack:host_cache_loadback_tokens
+      sglang:lora_pool_slots_total: gpustack:lora_pool_slots_total
+      sglang:lora_pool_slots_used: gpustack:lora_pool_slots_used
+      sglang:lora_pool_utilization: gpustack:lora_pool_usage_ratio
+      sglang:mamba_available_tokens: gpustack:mamba_cache_available_states
+      sglang:mamba_evictable_tokens: gpustack:mamba_cache_evictable_states
+      sglang:mamba_usage: gpustack:mamba_cache_usage_ratio
+      sglang:mamba_used_tokens: gpustack:mamba_cache_used_states
+      sglang:max_total_num_tokens: gpustack:kv_cache_capacity_tokens
+      sglang:max_total_num_tokens_swa: gpustack:swa_cache_capacity_tokens
+      sglang:max_total_num_tokens_window: gpustack:window_kv_cache_capacity_tokens
+      sglang:num_aborted_requests: gpustack:requests_aborted
+      sglang:num_decode_deferred_kv_release_reqs: gpustack:pd_decode_deferred_kv_release_requests
+      sglang:num_decode_host_receive_queue_reqs: gpustack:pd_decode_host_receive_queue_requests
+      sglang:num_decode_host_receive_reqs: gpustack:pd_decode_host_received_requests
+      sglang:num_grammar: gpustack:grammar_requests
+      sglang:num_grammar_aborted: gpustack:grammar_aborted
+      sglang:num_grammar_cache_hit: gpustack:grammar_cache_hits
+      sglang:num_grammar_queue_reqs: gpustack:num_requests_grammar_waiting
+      sglang:num_grammar_timeout: gpustack:grammar_timeouts
+      sglang:num_pages: gpustack:kv_cache_pages
+      sglang:num_paused_reqs: gpustack:num_requests_paused
+      sglang:num_requests: gpustack:requests_processed
+      sglang:num_retracted_input_tokens: gpustack:retracted_input_tokens
+      sglang:num_retracted_output_tokens: gpustack:retracted_output_tokens
+      sglang:num_so_requests: gpustack:structured_output_requests
+      sglang:num_streaming_sessions: gpustack:streaming_sessions
+      sglang:num_unique_running_routing_keys: gpustack:running_routing_keys
+      sglang:num_used_tokens: gpustack:cache_pool_used_tokens
+      sglang:page_size: gpustack:kv_cache_page_size_tokens
+      sglang:per_stage_req_latency_seconds: gpustack:request_stage_latency_seconds
+      sglang:prealloc_full_token_usage: gpustack:pd_decode_prealloc_full_cache_usage_ratio
+      sglang:prealloc_swa_token_usage: gpustack:pd_decode_prealloc_swa_cache_usage_ratio
+      sglang:prealloc_window_token_usage: gpustack:pd_decode_prealloc_window_cache_usage_ratio
+      sglang:prefetch_bandwidth:
+        name: gpustack:storage_prefetch_bandwidth_bytes_per_second
+        scale: 1073741824
+      sglang:prefetch_pgs: gpustack:storage_prefetch_pages
+      sglang:prefetched_tokens: gpustack:storage_prefetched_tokens
+      sglang:prefill_effective_tokens: gpustack:prefill_effective_tokens
+      sglang:process_cpu_seconds: gpustack:component_process_cpu_seconds
+      sglang:realtime_tokens: gpustack:scheduler_processed_tokens
+      sglang:routing_keys_active: gpustack:engine_http_routing_keys_active
+      sglang:scheduler_idle_seconds: gpustack:scheduler_idle_seconds
+      sglang:scheduler_iterations: gpustack:scheduler_iterations
+      sglang:scheduler_process_cpu_seconds: gpustack:scheduler_process_cpu_seconds
+      sglang:scheduler_stage_seconds: gpustack:scheduler_stage_seconds
+      sglang:spec_block_accept_length: gpustack:spec_decode_block_accept_length
+      sglang:spec_cap_length: gpustack:spec_decode_cap_length
+      sglang:spec_verify_calls: gpustack:spec_decode_verify_calls
+      sglang:startup_available_gpu_memory_gb:
+        name: gpustack:startup_available_gpu_memory_bytes
+        scale: 1073741824
+      sglang:startup_cuda_graph_time_seconds: gpustack:startup_device_graph_duration_seconds
+      sglang:startup_latency_breakdown_seconds_max: gpustack:startup_latency_max_seconds
+      sglang:startup_time_seconds: gpustack:startup_duration_seconds
+      sglang:storage_prefetch_deferred_tokens: gpustack:storage_prefetch_deferred_tokens
+      sglang:storage_prefetch_hit_tokens: gpustack:storage_prefetch_hit_tokens
+      sglang:storage_prefetch_unfulfilled_tokens: gpustack:storage_prefetch_unfulfilled_tokens
+      sglang:streaming_session_held_tokens: gpustack:streaming_session_held_tokens
+      sglang:swa_available_tokens: gpustack:swa_cache_available_tokens
+      sglang:swa_evictable_tokens: gpustack:swa_cache_evictable_tokens
+      sglang:swa_token_usage: gpustack:swa_kv_cache_usage_ratio
+      sglang:swa_used_tokens: gpustack:swa_cache_used_tokens
+      sglang:uncached_prompt_tokens_histogram: gpustack:request_uncached_prompt_tokens
+      sglang:weight_load_duration_seconds: gpustack:weight_load_duration_seconds
+      sglang:weight_memory_usage_gb:
+        name: gpustack:model_weights_memory_bytes
+        scale: 1073741824
+      sglang:window_available_tokens: gpustack:window_kv_cache_available_tokens
+      sglang:window_evictable_tokens: gpustack:window_kv_cache_evictable_tokens
+      sglang:window_token_usage: gpustack:window_kv_cache_usage_ratio
+      sglang:window_used_tokens: gpustack:window_kv_cache_used_tokens
+    "<0.5.3":
+      sglang:total_retracted_reqs: gpustack:retracted_requests_total_snapshot
+    "<0.4.4.post4":
+      sglang:time_per_output_token_seconds: gpustack:e2e_time_per_output_token_seconds
       
   MindIE:
     "*": # 2.3.0

@@ -156,10 +156,9 @@ def test_sglang_kv_transfer_histograms_stay_in_separate_unified_families():
     wire time and the volume. All of them are registered on every version from
     0.5.12 through current builds — none replaced any other.
 
-    `kv_transfer_speed_gb_s` is deliberately left unmapped: it is the volume
-    divided by the wire time, both of which are mapped, and it is present only
-    on the connectors that report a size, which is exactly when the two
-    operands are present too.
+    `kv_transfer_speed_gb_s` is a per-transfer speed distribution. It keeps a
+    separate histogram from byte volume and duration: its quantiles are not
+    equivalent to dividing aggregate bytes by aggregate transfer time.
 
     Two of them mapped onto one unified name is not a cosmetic duplication:
     the aggregator appends samples to whichever family the name resolves to,
@@ -172,6 +171,7 @@ def test_sglang_kv_transfer_histograms_stay_in_separate_unified_families():
         "sglang:kv_transfer_alloc_ms",
         "sglang:kv_transfer_latency_ms",
         "sglang:kv_transfer_total_mb",
+        "sglang:kv_transfer_speed_gb_s",
     )
     for engine_version in ("0.5.12.post1", "0.5.15.post1"):
         unified = [
@@ -239,24 +239,24 @@ def test_both_sglang_router_wheels_reach_the_same_unified_names():
         assert got == (unified, 1.0), raw
 
 
-def test_the_current_preemption_gauge_is_the_one_read_on_current_engines():
-    """SGLang carries both `num_retracted_reqs` and `num_retracted_requests`
-    on current builds. Only the first is mapped at `"*"`; the second stays
-    behind a version floor, so the two never merge into one family.
-    """
+def test_sglang_current_retractions_and_cumulative_preemptions_have_separate_types():
+    """Current retracted requests may decrease, unlike cumulative preemptions."""
     config = get_builtin_metrics_config()
     assert get_unified_metric_family_name(
         config, "sglang:num_retracted_reqs", "SGLang", "0.5.15.post1"
+    ) == ("gpustack:num_requests_retracted", 1.0)
+    assert get_unified_metric_family_name(
+        config, "sglang:num_retracted_requests", "SGLang", "0.5.15.post1"
     ) == ("gpustack:request_preemptions", 1.0)
     assert (
-        get_unified_metric_family_name(
-            config, "sglang:num_retracted_requests", "SGLang", "0.5.15.post1"
-        )
-        is None
+        config['gpustack_metrics']['gpustack:num_requests_retracted']['type'] == 'Gauge'
+    )
+    assert (
+        config['gpustack_metrics']['gpustack:request_preemptions']['type'] == 'Counter'
     )
 
 
-def test_sglang_uncached_prompt_tokens_is_not_folded_into_the_vllm_counter():
+def test_sglang_uncached_prompt_tokens_keeps_a_separate_canonical_histogram():
     """`sglang:uncached_prompt_tokens_histogram` is prompt tokens minus this
     engine's own prefix-cache hits. The vLLM family it would join,
     `request_prefill_kv_computed_tokens`, is read on the receiving role, where
@@ -266,12 +266,49 @@ def test_sglang_uncached_prompt_tokens_is_not_folded_into_the_vllm_counter():
     correct deployment.
     """
     config = get_builtin_metrics_config()
-    assert (
-        get_unified_metric_family_name(
-            config,
-            "sglang:uncached_prompt_tokens_histogram",
-            "SGLang",
-            "0.5.15.post1",
-        )
-        is None
+    target = get_unified_metric_family_name(
+        config,
+        "sglang:uncached_prompt_tokens_histogram",
+        "SGLang",
+        "0.5.23",
     )
+    assert target == ('gpustack:request_uncached_prompt_tokens', 1.0)
+    assert target[0] != 'gpustack:request_prefill_kv_computed_tokens'
+
+
+def test_sglang_transfer_speed_histogram_scales_bounds_and_sum_not_counts():
+    text = """\
+# TYPE sglang:kv_transfer_speed_gb_s histogram
+sglang:kv_transfer_speed_gb_s_bucket{le="0.5"} 1
+sglang:kv_transfer_speed_gb_s_bucket{le="1.0"} 3
+sglang:kv_transfer_speed_gb_s_bucket{le="+Inf"} 4
+sglang:kv_transfer_speed_gb_s_sum 3
+sglang:kv_transfer_speed_gb_s_count 4
+"""
+    config = get_builtin_metrics_config()
+    source_name = 'sglang:kv_transfer_speed_gb_s'
+    target, scale = get_unified_metric_family_name(
+        config, source_name, 'SGLang', '0.5.23'
+    )
+    assert target == 'gpustack:pd_kv_transfer_bandwidth_bytes_per_second'
+    assert scale == 1073741824
+    assert config['gpustack_metrics'][target]['type'] == 'Histogram'
+
+    samples = {}
+    for family in text_string_to_metric_families(text):
+        for sample in family.samples:
+            value, labels = scale_sample(
+                sample.name,
+                family.name,
+                family.type,
+                dict(sample.labels),
+                sample.value,
+                scale,
+            )
+            samples[(sample.name, labels.get('le'))] = value
+
+    assert samples[(source_name + '_bucket', '536870912.0')] == 1
+    assert samples[(source_name + '_bucket', '1073741824.0')] == 3
+    assert samples[(source_name + '_bucket', '+Inf')] == 4
+    assert samples[(source_name + '_sum', None)] == 3 * 1073741824
+    assert samples[(source_name + '_count', None)] == 4

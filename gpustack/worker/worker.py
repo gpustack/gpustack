@@ -147,6 +147,7 @@ class Worker:
             worker_name_getter=self.worker_name,
             clientset_getter=self.clientset,
             cache=self._runtime_metrics_cache,
+            worker_uuid_getter=self.worker_uuid,
         )
 
         port_reservations = WorkerPortReservations()

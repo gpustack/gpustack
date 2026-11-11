@@ -1,0 +1,252 @@
+# TYPE vllm:corrupted_requests_total counter
+vllm:corrupted_requests_total{model_name="fixture-model",engine="0"} 7
+# TYPE vllm:diffusion_num_canvas_positions_total counter
+vllm:diffusion_num_canvas_positions_total{model_name="fixture-model",engine="0"} 8
+# TYPE vllm:diffusion_num_committed_tokens_total counter
+vllm:diffusion_num_committed_tokens_total{model_name="fixture-model",engine="0"} 9
+# TYPE vllm:diffusion_num_denoising_steps_total counter
+vllm:diffusion_num_denoising_steps_total{model_name="fixture-model",engine="0"} 10
+# TYPE vllm:engine_sleep_state gauge
+vllm:engine_sleep_state{model_name="fixture-model",engine="0",sleep_state="awake"} 1
+# TYPE vllm:hf3fs_load_duration_seconds histogram
+vllm:hf3fs_load_duration_seconds_bucket{model_name="fixture-model",engine="0",le="0.01"} 1
+vllm:hf3fs_load_duration_seconds_bucket{model_name="fixture-model",engine="0",le="0.1"} 3
+vllm:hf3fs_load_duration_seconds_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:hf3fs_load_duration_seconds_sum{model_name="fixture-model",engine="0"} 0.25
+vllm:hf3fs_load_duration_seconds_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:hf3fs_num_failed_load_total counter
+vllm:hf3fs_num_failed_load_total{model_name="fixture-model",engine="0"} 0.375
+# TYPE vllm:hf3fs_num_failed_save_total counter
+vllm:hf3fs_num_failed_save_total{model_name="fixture-model",engine="0"} 0.375
+# TYPE vllm:hf3fs_save_duration_seconds histogram
+vllm:hf3fs_save_duration_seconds_bucket{model_name="fixture-model",engine="0",le="0.01"} 1
+vllm:hf3fs_save_duration_seconds_bucket{model_name="fixture-model",engine="0",le="0.1"} 3
+vllm:hf3fs_save_duration_seconds_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:hf3fs_save_duration_seconds_sum{model_name="fixture-model",engine="0"} 0.25
+vllm:hf3fs_save_duration_seconds_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:hisparse_cache_hits_total counter
+vllm:hisparse_cache_hits_total{model_name="fixture-model",engine="0"} 16
+# TYPE vllm:hisparse_cache_misses_total counter
+vllm:hisparse_cache_misses_total{model_name="fixture-model",engine="0"} 17
+# TYPE vllm:hisparse_host_block_idle_before_evict_seconds histogram
+vllm:hisparse_host_block_idle_before_evict_seconds_bucket{model_name="fixture-model",engine="0",le="0.01"} 1
+vllm:hisparse_host_block_idle_before_evict_seconds_bucket{model_name="fixture-model",engine="0",le="0.1"} 3
+vllm:hisparse_host_block_idle_before_evict_seconds_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:hisparse_host_block_idle_before_evict_seconds_sum{model_name="fixture-model",engine="0"} 0.25
+vllm:hisparse_host_block_idle_before_evict_seconds_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:hisparse_host_block_lifetime_seconds histogram
+vllm:hisparse_host_block_lifetime_seconds_bucket{model_name="fixture-model",engine="0",le="0.01"} 1
+vllm:hisparse_host_block_lifetime_seconds_bucket{model_name="fixture-model",engine="0",le="0.1"} 3
+vllm:hisparse_host_block_lifetime_seconds_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:hisparse_host_block_lifetime_seconds_sum{model_name="fixture-model",engine="0"} 0.25
+vllm:hisparse_host_block_lifetime_seconds_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:hisparse_host_block_reuse_gap_seconds histogram
+vllm:hisparse_host_block_reuse_gap_seconds_bucket{model_name="fixture-model",engine="0",le="0.01"} 1
+vllm:hisparse_host_block_reuse_gap_seconds_bucket{model_name="fixture-model",engine="0",le="0.1"} 3
+vllm:hisparse_host_block_reuse_gap_seconds_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:hisparse_host_block_reuse_gap_seconds_sum{model_name="fixture-model",engine="0"} 0.25
+vllm:hisparse_host_block_reuse_gap_seconds_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:hisparse_host_cache_usage_perc gauge
+vllm:hisparse_host_cache_usage_perc{model_name="fixture-model",engine="0"} 0.375
+# TYPE vllm:hisparse_host_to_device_bytes_total counter
+vllm:hisparse_host_to_device_bytes_total{model_name="fixture-model",engine="0"} 22
+# TYPE vllm:hisparse_pending_page_transfers gauge
+vllm:hisparse_pending_page_transfers{model_name="fixture-model",engine="0"} 23
+# TYPE vllm:iteration_tokens_total histogram
+vllm:iteration_tokens_total_bucket{model_name="fixture-model",engine="0",le="1"} 1
+vllm:iteration_tokens_total_bucket{model_name="fixture-model",engine="0",le="4"} 3
+vllm:iteration_tokens_total_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:iteration_tokens_total_sum{model_name="fixture-model",engine="0"} 12
+vllm:iteration_tokens_total_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:kv_block_idle_before_evict_seconds histogram
+vllm:kv_block_idle_before_evict_seconds_bucket{model_name="fixture-model",engine="0",le="0.01"} 1
+vllm:kv_block_idle_before_evict_seconds_bucket{model_name="fixture-model",engine="0",le="0.1"} 3
+vllm:kv_block_idle_before_evict_seconds_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:kv_block_idle_before_evict_seconds_sum{model_name="fixture-model",engine="0"} 0.25
+vllm:kv_block_idle_before_evict_seconds_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:kv_block_lifetime_seconds histogram
+vllm:kv_block_lifetime_seconds_bucket{model_name="fixture-model",engine="0",le="0.01"} 1
+vllm:kv_block_lifetime_seconds_bucket{model_name="fixture-model",engine="0",le="0.1"} 3
+vllm:kv_block_lifetime_seconds_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:kv_block_lifetime_seconds_sum{model_name="fixture-model",engine="0"} 0.25
+vllm:kv_block_lifetime_seconds_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:kv_block_reuse_gap_seconds histogram
+vllm:kv_block_reuse_gap_seconds_bucket{model_name="fixture-model",engine="0",le="0.01"} 1
+vllm:kv_block_reuse_gap_seconds_bucket{model_name="fixture-model",engine="0",le="0.1"} 3
+vllm:kv_block_reuse_gap_seconds_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:kv_block_reuse_gap_seconds_sum{model_name="fixture-model",engine="0"} 0.25
+vllm:kv_block_reuse_gap_seconds_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:kv_offload_allocation_failure_total counter
+vllm:kv_offload_allocation_failure_total{model_name="fixture-model",engine="0"} 28
+# TYPE vllm:kv_offload_cpu_allocation_size histogram
+vllm:kv_offload_cpu_allocation_size_bucket{model_name="fixture-model",engine="0",le="1"} 1
+vllm:kv_offload_cpu_allocation_size_bucket{model_name="fixture-model",engine="0",le="4"} 3
+vllm:kv_offload_cpu_allocation_size_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:kv_offload_cpu_allocation_size_sum{model_name="fixture-model",engine="0"} 12
+vllm:kv_offload_cpu_allocation_size_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:kv_offload_cpu_cache_read_usage_perc gauge
+vllm:kv_offload_cpu_cache_read_usage_perc{model_name="fixture-model",engine="0"} 0.375
+# TYPE vllm:kv_offload_cpu_cache_usage_perc gauge
+vllm:kv_offload_cpu_cache_usage_perc{model_name="fixture-model",engine="0"} 0.375
+# TYPE vllm:kv_offload_cpu_cache_write_usage_perc gauge
+vllm:kv_offload_cpu_cache_write_usage_perc{model_name="fixture-model",engine="0"} 0.375
+# TYPE vllm:kv_offload_load_bytes_total counter
+vllm:kv_offload_load_bytes_total{model_name="fixture-model",engine="0"} 33
+# TYPE vllm:kv_offload_load_size histogram
+vllm:kv_offload_load_size_bucket{model_name="fixture-model",engine="0",le="1024"} 1
+vllm:kv_offload_load_size_bucket{model_name="fixture-model",engine="0",le="4096"} 3
+vllm:kv_offload_load_size_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:kv_offload_load_size_sum{model_name="fixture-model",engine="0"} 10240
+vllm:kv_offload_load_size_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:kv_offload_load_time_total counter
+vllm:kv_offload_load_time_total{model_name="fixture-model",engine="0"} 35
+# TYPE vllm:kv_offload_lookup_async_delay_seconds histogram
+vllm:kv_offload_lookup_async_delay_seconds_bucket{model_name="fixture-model",engine="0",le="0.01"} 1
+vllm:kv_offload_lookup_async_delay_seconds_bucket{model_name="fixture-model",engine="0",le="0.1"} 3
+vllm:kv_offload_lookup_async_delay_seconds_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:kv_offload_lookup_async_delay_seconds_sum{model_name="fixture-model",engine="0"} 0.25
+vllm:kv_offload_lookup_async_delay_seconds_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:kv_offload_lookup_sync_delay_seconds histogram
+vllm:kv_offload_lookup_sync_delay_seconds_bucket{model_name="fixture-model",engine="0",le="0.01"} 1
+vllm:kv_offload_lookup_sync_delay_seconds_bucket{model_name="fixture-model",engine="0",le="0.1"} 3
+vllm:kv_offload_lookup_sync_delay_seconds_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:kv_offload_lookup_sync_delay_seconds_sum{model_name="fixture-model",engine="0"} 0.25
+vllm:kv_offload_lookup_sync_delay_seconds_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:kv_offload_store_bytes_total counter
+vllm:kv_offload_store_bytes_total{model_name="fixture-model",engine="0"} 38
+# TYPE vllm:kv_offload_store_size histogram
+vllm:kv_offload_store_size_bucket{model_name="fixture-model",engine="0",le="1024"} 1
+vllm:kv_offload_store_size_bucket{model_name="fixture-model",engine="0",le="4096"} 3
+vllm:kv_offload_store_size_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:kv_offload_store_size_sum{model_name="fixture-model",engine="0"} 10240
+vllm:kv_offload_store_size_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:kv_offload_store_time_total counter
+vllm:kv_offload_store_time_total{model_name="fixture-model",engine="0"} 40
+# TYPE vllm:kv_offload_stores_skipped_total counter
+vllm:kv_offload_stores_skipped_total{model_name="fixture-model",engine="0"} 0.375
+# TYPE vllm:kv_offload_tiering_active_cascade_jobs gauge
+vllm:kv_offload_tiering_active_cascade_jobs{model_name="fixture-model",engine="0",tier="cpu"} 42
+# TYPE vllm:kv_offload_tiering_active_promotion_jobs gauge
+vllm:kv_offload_tiering_active_promotion_jobs{model_name="fixture-model",engine="0",tier="cpu"} 43
+# TYPE vllm:kv_offload_tiering_backpressure_blocks_dropped_total counter
+vllm:kv_offload_tiering_backpressure_blocks_dropped_total{model_name="fixture-model",engine="0",tier="cpu"} 44
+# TYPE vllm:kv_offload_tiering_backpressure_store_latency_ema gauge
+vllm:kv_offload_tiering_backpressure_store_latency_ema{model_name="fixture-model",engine="0",tier="cpu"} 45
+# TYPE vllm:kv_offload_tiering_backpressure_stores_dropped_total counter
+vllm:kv_offload_tiering_backpressure_stores_dropped_total{model_name="fixture-model",engine="0",tier="cpu"} 0.375
+# TYPE vllm:kv_offload_tiering_cascade_job_failures_total counter
+vllm:kv_offload_tiering_cascade_job_failures_total{model_name="fixture-model",engine="0",tier="cpu"} 47
+# TYPE vllm:kv_offload_tiering_chunk_hits_total counter
+vllm:kv_offload_tiering_chunk_hits_total{model_name="fixture-model",engine="0",tier="cpu"} 48
+# TYPE vllm:kv_offload_tiering_chunk_queries_total counter
+vllm:kv_offload_tiering_chunk_queries_total{model_name="fixture-model",engine="0",tier="cpu"} 49
+# TYPE vllm:kv_offload_tiering_lookup_async_delay_seconds histogram
+vllm:kv_offload_tiering_lookup_async_delay_seconds_bucket{model_name="fixture-model",engine="0",tier="cpu",le="0.01"} 1
+vllm:kv_offload_tiering_lookup_async_delay_seconds_bucket{model_name="fixture-model",engine="0",tier="cpu",le="0.1"} 3
+vllm:kv_offload_tiering_lookup_async_delay_seconds_bucket{model_name="fixture-model",engine="0",tier="cpu",le="+Inf"} 4
+vllm:kv_offload_tiering_lookup_async_delay_seconds_sum{model_name="fixture-model",engine="0",tier="cpu"} 0.25
+vllm:kv_offload_tiering_lookup_async_delay_seconds_count{model_name="fixture-model",engine="0",tier="cpu"} 4
+# TYPE vllm:kv_offload_tiering_lookup_sync_delay_seconds histogram
+vllm:kv_offload_tiering_lookup_sync_delay_seconds_bucket{model_name="fixture-model",engine="0",tier="cpu",le="0.01"} 1
+vllm:kv_offload_tiering_lookup_sync_delay_seconds_bucket{model_name="fixture-model",engine="0",tier="cpu",le="0.1"} 3
+vllm:kv_offload_tiering_lookup_sync_delay_seconds_bucket{model_name="fixture-model",engine="0",tier="cpu",le="+Inf"} 4
+vllm:kv_offload_tiering_lookup_sync_delay_seconds_sum{model_name="fixture-model",engine="0",tier="cpu"} 0.25
+vllm:kv_offload_tiering_lookup_sync_delay_seconds_count{model_name="fixture-model",engine="0",tier="cpu"} 4
+# TYPE vllm:kv_offload_tiering_primary_read_usage_perc gauge
+vllm:kv_offload_tiering_primary_read_usage_perc{model_name="fixture-model",engine="0",tier="cpu"} 0.375
+# TYPE vllm:kv_offload_tiering_primary_write_usage_perc gauge
+vllm:kv_offload_tiering_primary_write_usage_perc{model_name="fixture-model",engine="0",tier="cpu"} 0.375
+# TYPE vllm:kv_offload_tiering_promotion_allocation_failures_total counter
+vllm:kv_offload_tiering_promotion_allocation_failures_total{model_name="fixture-model",engine="0"} 54
+# TYPE vllm:kv_offload_tiering_promotion_job_failures_total counter
+vllm:kv_offload_tiering_promotion_job_failures_total{model_name="fixture-model",engine="0",tier="cpu"} 55
+# TYPE vllm:kv_offload_tiering_promotion_latency_seconds histogram
+vllm:kv_offload_tiering_promotion_latency_seconds_bucket{model_name="fixture-model",engine="0",tier="cpu",result="fixture",le="0.01"} 1
+vllm:kv_offload_tiering_promotion_latency_seconds_bucket{model_name="fixture-model",engine="0",tier="cpu",result="fixture",le="0.1"} 3
+vllm:kv_offload_tiering_promotion_latency_seconds_bucket{model_name="fixture-model",engine="0",tier="cpu",result="fixture",le="+Inf"} 4
+vllm:kv_offload_tiering_promotion_latency_seconds_sum{model_name="fixture-model",engine="0",tier="cpu",result="fixture"} 0.25
+vllm:kv_offload_tiering_promotion_latency_seconds_count{model_name="fixture-model",engine="0",tier="cpu",result="fixture"} 4
+# TYPE vllm:kv_offload_tiering_read_bytes_total counter
+vllm:kv_offload_tiering_read_bytes_total{model_name="fixture-model",engine="0",tier="cpu"} 57
+# TYPE vllm:kv_offload_tiering_read_time_total counter
+vllm:kv_offload_tiering_read_time_total{model_name="fixture-model",engine="0",tier="cpu"} 58
+# TYPE vllm:kv_offload_tiering_write_bytes_total counter
+vllm:kv_offload_tiering_write_bytes_total{model_name="fixture-model",engine="0",tier="cpu"} 59
+# TYPE vllm:kv_offload_tiering_write_time_total counter
+vllm:kv_offload_tiering_write_time_total{model_name="fixture-model",engine="0",tier="cpu"} 60
+# TYPE vllm:mm_cache_hits_total counter
+vllm:mm_cache_hits_total{model_name="fixture-model",engine="0"} 61
+# TYPE vllm:mm_cache_queries_total counter
+vllm:mm_cache_queries_total{model_name="fixture-model",engine="0"} 62
+# TYPE vllm:mooncake_store_operation_total counter
+vllm:mooncake_store_operation_total{model_name="fixture-model",engine="0",operation="fixture",status="success"} 0.375
+# TYPE vllm:mooncake_store_operation_bytes_total counter
+vllm:mooncake_store_operation_bytes_total{model_name="fixture-model",engine="0",operation="fixture",status="success"} 64
+# TYPE vllm:mooncake_store_operation_failed_keys_total counter
+vllm:mooncake_store_operation_failed_keys_total{model_name="fixture-model",engine="0",operation="fixture",status="success"} 65
+# TYPE vllm:mooncake_store_operation_keys_total counter
+vllm:mooncake_store_operation_keys_total{model_name="fixture-model",engine="0",operation="fixture",status="success"} 66
+# TYPE vllm:mooncake_store_operation_time_seconds histogram
+vllm:mooncake_store_operation_time_seconds_bucket{model_name="fixture-model",engine="0",operation="fixture",status="success",le="0.01"} 1
+vllm:mooncake_store_operation_time_seconds_bucket{model_name="fixture-model",engine="0",operation="fixture",status="success",le="0.1"} 3
+vllm:mooncake_store_operation_time_seconds_bucket{model_name="fixture-model",engine="0",operation="fixture",status="success",le="+Inf"} 4
+vllm:mooncake_store_operation_time_seconds_sum{model_name="fixture-model",engine="0",operation="fixture",status="success"} 0.25
+vllm:mooncake_store_operation_time_seconds_count{model_name="fixture-model",engine="0",operation="fixture",status="success"} 4
+# TYPE vllm:nixl_num_notifications_after_expiry_total counter
+vllm:nixl_num_notifications_after_expiry_total{model_name="fixture-model",engine="0"} 68
+# TYPE vllm:num_requests_kv_fetch_by_stage gauge
+vllm:num_requests_kv_fetch_by_stage{model_name="fixture-model",engine="0",stage="decode"} 69
+# TYPE vllm:prompt_tokens_cached_by_source_total counter
+vllm:prompt_tokens_cached_by_source_total{model_name="fixture-model",engine="0",source="host"} 70
+# TYPE vllm:request_max_num_generation_tokens histogram
+vllm:request_max_num_generation_tokens_bucket{model_name="fixture-model",engine="0",le="1"} 1
+vllm:request_max_num_generation_tokens_bucket{model_name="fixture-model",engine="0",le="4"} 3
+vllm:request_max_num_generation_tokens_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:request_max_num_generation_tokens_sum{model_name="fixture-model",engine="0"} 12
+vllm:request_max_num_generation_tokens_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:request_num_preemptions histogram
+vllm:request_num_preemptions_bucket{model_name="fixture-model",engine="0",le="1"} 1
+vllm:request_num_preemptions_bucket{model_name="fixture-model",engine="0",le="4"} 3
+vllm:request_num_preemptions_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:request_num_preemptions_sum{model_name="fixture-model",engine="0"} 12
+vllm:request_num_preemptions_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:simple_kv_offload_load_blocks_total counter
+vllm:simple_kv_offload_load_blocks_total{model_name="fixture-model",engine="0"} 73
+# TYPE vllm:simple_kv_offload_pending_store_blocks gauge
+vllm:simple_kv_offload_pending_store_blocks{model_name="fixture-model",engine="0"} 74
+# TYPE vllm:simple_kv_offload_save_outcomes_total counter
+vllm:simple_kv_offload_save_outcomes_total{model_name="fixture-model",engine="0",outcome="success"} 75
+# TYPE vllm:simple_kv_offload_used_blocks gauge
+vllm:simple_kv_offload_used_blocks{model_name="fixture-model",engine="0"} 76
+# TYPE vllm:spec_decode_num_accepted_tokens_per_pos_total counter
+vllm:spec_decode_num_accepted_tokens_per_pos_total{model_name="fixture-model",engine="0",position="0"} 77
+# TYPE vllm:umbp_transfer_bytes_total counter
+vllm:umbp_transfer_bytes_total{model_name="fixture-model",engine="0",operation="fixture"} 78
+# TYPE vllm:umbp_transfer_completed_total counter
+vllm:umbp_transfer_completed_total{model_name="fixture-model",engine="0",operation="fixture"} 79
+# TYPE vllm:umbp_transfer_failed_total counter
+vllm:umbp_transfer_failed_total{model_name="fixture-model",engine="0",operation="fixture"} 80
+# TYPE vllm:umbp_transfer_submitted_total counter
+vllm:umbp_transfer_submitted_total{model_name="fixture-model",engine="0",operation="fixture"} 81
+# TYPE vllm:watermark_requests_total counter
+vllm:watermark_requests_total{model_name="fixture-model",engine="0",status="success"} 82
+# TYPE vllm:prompt_tokens_cached_total counter
+vllm:prompt_tokens_cached_total{model_name="fixture-model",engine="0"} 83
+# TYPE vllm:num_preemptions_total counter
+vllm:num_preemptions_total{model_name="fixture-model",engine="0"} 84
+# TYPE vllm:request_time_per_output_token_seconds histogram
+vllm:request_time_per_output_token_seconds_bucket{model_name="fixture-model",engine="0",le="0.01"} 1
+vllm:request_time_per_output_token_seconds_bucket{model_name="fixture-model",engine="0",le="0.1"} 3
+vllm:request_time_per_output_token_seconds_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:request_time_per_output_token_seconds_sum{model_name="fixture-model",engine="0"} 0.25
+vllm:request_time_per_output_token_seconds_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:inter_token_latency_seconds histogram
+vllm:inter_token_latency_seconds_bucket{model_name="fixture-model",engine="0",le="0.01"} 1
+vllm:inter_token_latency_seconds_bucket{model_name="fixture-model",engine="0",le="0.1"} 3
+vllm:inter_token_latency_seconds_bucket{model_name="fixture-model",engine="0",le="+Inf"} 4
+vllm:inter_token_latency_seconds_sum{model_name="fixture-model",engine="0"} 0.25
+vllm:inter_token_latency_seconds_count{model_name="fixture-model",engine="0"} 4
+# TYPE vllm:prompt_tokens_by_source_total counter
+vllm:prompt_tokens_by_source_total{model_name="fixture-model",engine="0",source="local_compute"} 87
+# TYPE vllm:request_success_total counter
+vllm:request_success_total{model_name="fixture-model",engine="0",finished_reason="stop"} 88

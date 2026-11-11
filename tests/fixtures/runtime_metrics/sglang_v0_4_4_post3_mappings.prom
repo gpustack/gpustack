@@ -1,0 +1,6 @@
+# TYPE sglang:time_per_output_token_seconds histogram
+sglang:time_per_output_token_seconds_bucket{model_name="fixture-model",le="0.01"} 1
+sglang:time_per_output_token_seconds_bucket{model_name="fixture-model",le="0.1"} 3
+sglang:time_per_output_token_seconds_bucket{model_name="fixture-model",le="+Inf"} 4
+sglang:time_per_output_token_seconds_sum{model_name="fixture-model"} 0.25
+sglang:time_per_output_token_seconds_count{model_name="fixture-model"} 4
