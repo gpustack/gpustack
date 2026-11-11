@@ -140,6 +140,33 @@ def _allocate(cluster):
     return model_instance_ports(cluster.instance, primary_id)
 
 
+@pytest.mark.parametrize('cluster', [1, 2], indirect=True)
+@pytest.mark.parametrize('role', ['prefill', 'decode'])
+def test_sglang_pd_dpa_claims_complete_internal_band_on_both_workers(cluster, role):
+    from gpustack.schemas.models import DisaggregationSpec
+
+    cluster.model.backend = BackendEnum.SGLANG
+    cluster.model.disaggregation = DisaggregationSpec(mode='sglang-mooncake')
+    cluster.model.backend_parameters = ['--tp=2', '--dp=2', '--enable-dp-attention']
+    cluster.instance.role = role
+    primary_id = cluster.instance.worker_id
+    follower = cluster.managers[3 - primary_id]
+    follower._port_reservations.cache_ports[99] = (40013,)
+
+    cluster.managers[primary_id]._assign_ports(
+        cluster.instance, cluster.model, BackendEnum.SGLANG
+    )
+
+    band = cluster.instance.named_ports['_sglang_connecting']
+    internal = set(range(band.base, band.base + 14))
+    assert band.count == 14 and 40013 not in internal
+    assert cluster.instance.port not in internal
+    for worker_id, manager in cluster.managers.items():
+        reserved = model_instance_ports(cluster.instance, worker_id)
+        assert internal <= reserved
+        assert manager._port_reservations.model_claims[7][1] == reserved
+
+
 def _reserve_tentative_ports(cluster):
     coordinator = cluster.managers[cluster.instance.worker_id]._port_coordinator()
     snapshots = coordinator.availability(7)

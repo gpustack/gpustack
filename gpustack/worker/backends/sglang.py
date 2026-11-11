@@ -25,7 +25,6 @@ from gpustack.schemas.models import (
     BackendEnum,
     LoraListEntry,
     ModelInstance,
-    Model,
     ModelInstanceComponent,
     ModelInstanceWorkload,
     ModelInstanceWorkloadStateEnum,
@@ -38,11 +37,14 @@ from gpustack.schemas.models import (
 from gpustack.utils.command import (
     find_bool_parameter,
     find_parameter,
-    find_last_parameter,
     extend_args_no_exist,
     format_backend_parameters,
 )
 from gpustack.utils.envs import sanitize_env
+from gpustack.utils.sglang_port_layout import (
+    SGLangPortBindings,
+    sglang_port_layout_for_instance,
+)
 from gpustack.worker.backends.base import (
     InferenceServer,
     cal_distributed_parallelism_arguments,
@@ -57,21 +59,7 @@ from gpustack.utils.model_instance_workers import (
     sglang_smg_mode,
     sglang_parallelism,
     validate_sglang_dpa_version,
-    sglang_component_port_requests,
 )
-
-
-def sglang_component_connecting_port_count(
-    model: Model, instance: ModelInstance
-) -> int:
-    """Reserve the Python single-node DP-attention TCP listeners together."""
-    if get_model_instance_workloads(instance) is None:
-        return 1
-    allocation = [len(instance.gpu_indexes or [])] + [
-        len(worker.gpu_indexes or [])
-        for worker in instance.distributed_servers.subordinate_workers or []
-    ]
-    return dict(sglang_component_port_requests(model, allocation))["_sglang_connecting"]
 
 
 def split_sglang_smg_parameters(
@@ -412,7 +400,8 @@ class SGLangServer(InferenceServer):
         self, engine_plan: WorkloadPlan, image: str
     ) -> None:
         """Return the complete local task set without creating runtime objects."""
-        if not sglang_smg_mode(self._model):
+        layout = sglang_port_layout_for_instance(self._model, self._model_instance)
+        if not layout.components:
             raise ValueError(
                 "Managed components require ordinary multi-rank SGLang DP/DPA"
             )
@@ -426,12 +415,7 @@ class SGLangServer(InferenceServer):
         primary = mi.worker_id == worker.id
         dp_size, _, _ = sglang_parallelism(self._model.backend_parameters)
         bands = mi.named_ports or {}
-        required = (
-            "_sglang_engine_api",
-            "_sglang_connecting",
-            "_sglang_smg_api",
-            "_sglang_smg_metrics",
-        )
+        required = tuple(name for name, _, _ in layout.port_requests())
         if any(name not in bands for name in required):
             raise ValueError("SGLang component ports have not been reserved")
         container = engine_plan.containers[0]
@@ -443,8 +427,7 @@ class SGLangServer(InferenceServer):
             )
         container.ports = [
             ContainerPort(internal=port)
-            for name in (required[:2] if primary else required[1:2])
-            for port in range(bands[name].base, bands[name].base + bands[name].count)
+            for port in self._port_bindings(primary).declared_ports
         ]
         manifests = [
             ModelInstanceWorkload(
@@ -646,16 +629,8 @@ class SGLangServer(InferenceServer):
         speculative_config_arguments = self._get_speculative_arguments()
         arguments.extend(speculative_config_arguments)
 
-        # Add multi-node deployment parameters if needed
-        if (
-            is_distributed
-            or sglang_component_connecting_port_count(self._model, self._model_instance)
-            > 1
-        ):
-            multinode_arguments = self._get_multinode_arguments(
-                is_distributed_leader=is_distributed_leader
-            )
-            arguments.extend(multinode_arguments)
+        port_bindings = self._port_bindings(is_distributed_leader, port)
+        arguments.extend(port_bindings.arguments)
 
         # Add hierarchical cache arguments if needed
         hicache_arguments = self._get_hicache_arguments()
@@ -707,9 +682,6 @@ class SGLangServer(InferenceServer):
             user_backend_parameters, _ = split_sglang_smg_parameters(
                 user_backend_parameters, self._smg_image_dependencies, tokenized=True
             )
-            self._validate_managed_engine_parameters(
-                user_backend_parameters, is_distributed, is_distributed_leader, port
-            )
         arguments.extend(user_backend_parameters)
 
         # Match the served model name to the deployment name used in API requests.
@@ -720,33 +692,17 @@ class SGLangServer(InferenceServer):
             ("--served-model-name", self._model_instance.model_name),
         )
 
+        sglang_port_layout_for_instance(
+            self._model, self._model_instance
+        ).validate_runtime_port_demand(self._model_instance, arguments)
+        if port_bindings.enforce_parameters:
+            port_bindings.validate_parameters(arguments)
+
         injected = self._get_injected_backend_parameters(
             arguments, user_backend_parameters, entrypoint
         )
 
         return arguments, injected
-
-    def _validate_managed_engine_parameters(
-        self, parameters, distributed, leader, port
-    ):
-        """User flags cannot redirect the Engine away from its reserved addresses."""
-        expected = {"host": self._worker.ip, "port": str(port)}
-        if (
-            distributed
-            or sglang_component_connecting_port_count(self._model, self._model_instance)
-            > 1
-        ):
-            native = self._get_multinode_arguments(leader)
-            for key in ("nnodes", "node-rank", "dist-init-addr", "nccl-port"):
-                value = find_last_parameter(native, [key], tokenized=True)
-                if value is not None:
-                    expected[key] = value
-        for key, value in expected.items():
-            supplied = find_last_parameter(parameters, [key], tokenized=True)
-            if supplied is not None and supplied != value:
-                raise ValueError(
-                    f"Managed SGLang --{key} conflicts with its reserved allocation"
-                )
 
     def _build_command_args_for_diffusion(
         self, port: int, entrypoint: Optional[List[str]] = None
@@ -858,68 +814,28 @@ class SGLangServer(InferenceServer):
 
         return arguments
 
-    def _get_multinode_arguments(self, is_distributed_leader: bool) -> List[str]:
-        """
-        Get multi-node deployment arguments for SGLang.
-        """
-        arguments = []
+    def _get_configured_ports(self) -> List[ContainerPort]:
+        """Declare every reserved internal listener on each participating worker."""
+        return [
+            ContainerPort(internal=port)
+            for port in self._port_bindings().declared_ports
+        ]
 
-        count = sglang_component_connecting_port_count(
-            self._model, self._model_instance
+    def _port_bindings(
+        self, leader: Optional[bool] = None, port: Optional[int] = None
+    ) -> SGLangPortBindings:
+        """Resolve the shared contract against this worker's published allocation."""
+        if leader is None:
+            worker_id = getattr(self._worker, 'id', None)
+            leader = (
+                self._model_instance.worker_id == worker_id
+                if worker_id is not None
+                else self._worker.ip
+                == getattr(self._model_instance, 'worker_ip', self._worker.ip)
+            )
+        return sglang_port_layout_for_instance(self._model, self._model_instance).bind(
+            self._model_instance, self._worker.ip, is_leader=leader, api_port=port
         )
-        if count > 1:
-            band = (self._model_instance.named_ports or {}).get("_sglang_connecting")
-            if band is None or band.count < count:
-                raise ValueError(
-                    "Managed SGLang DPA requires a reserved internal port band; "
-                    "recreate the instance to allocate it"
-                )
-            return [
-                "--dist-init-addr",
-                f"127.0.0.1:{band.base}",
-                "--nccl-port",
-                str(band.base + 7),
-            ]
-
-        # Check if this is a multi-node deployment
-        if not (
-            self._model_instance.distributed_servers
-            and self._model_instance.distributed_servers.subordinate_workers
-        ):
-            return []
-
-        subordinate_workers = (
-            self._model_instance.distributed_servers.subordinate_workers
-        )
-        total_nodes = len(subordinate_workers) + 1  # +1 for the current node
-
-        # Find the current node's rank
-        current_worker_ip = self._worker.ip
-        node_rank = 0  # Default to 0 (master node)
-
-        # Determine node rank based on worker IP
-        if not is_distributed_leader:
-            for idx, worker in enumerate(subordinate_workers):
-                if worker.worker_ip == current_worker_ip:
-                    node_rank = idx + 1  # Subordinate workers start from rank 1
-                    break
-
-        # Add multi-node parameters
-        arguments.extend(
-            [
-                "--nnodes",
-                str(total_nodes),
-                "--node-rank",
-                str(node_rank),
-                "--dist-init-addr",
-                # During distributed setup,
-                # we must get more than one port here,
-                # so we use ports[1] for distributed initialization.
-                f"{self._model_instance.worker_ip}:{self._model_instance.ports[1]}",
-            ]
-        )
-
-        return arguments
 
     def _get_speculative_arguments(self) -> List[str]:
         """

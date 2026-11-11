@@ -3158,3 +3158,45 @@ async def test_hybrid_first_registration_rejects_workload_report_format(
     assert response.status_code == 400, response.text
     assert api.instance.distributed_servers.workloads == []
     api.service.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('restart_count', [0, 1])
+async def test_sglang_elastic_snapshot_accepts_old_worker_payload(
+    report_api, monkeypatch, restart_count
+):
+    from gpustack.server import services
+    from gpustack.server.services import ModelInstanceService
+
+    api = report_api
+    _legacy_report_instance(api)
+    api.instance.backend = BackendEnum.SGLANG
+    api.instance.restart_count = 0
+    api.instance.port, api.instance.ports = 40000, [40000, 40001]
+    api.instance.distributed_servers.group_recovery = False
+    model = new_model(
+        1,
+        'sg',
+        huggingface_repo_id='org/model',
+        cluster_id=1,
+        backend=BackendEnum.SGLANG,
+        backend_parameters=['--elastic-ep-backend=mooncake'],
+    )
+    monkeypatch.setattr(routes.Model, 'one_by_id', AsyncMock(return_value=model))
+    monkeypatch.setattr(ModelInstance, 'save', AsyncMock())
+    monkeypatch.setattr(ModelInstance, '_publish_event_after_commit', MagicMock())
+    monkeypatch.setattr(services, 'delete_cache_by_key', AsyncMock())
+    monkeypatch.setattr(services, 'invalidate_workers_allocated', AsyncMock())
+    actual = ModelInstanceService(api.session)
+    monkeypatch.setattr(routes, 'ModelInstanceService', MagicMock(return_value=actual))
+    payload = api.instance.model_dump(mode='json')
+    payload.update(restart_count=restart_count, state='scheduled')
+    assert 'expected_restart_count' not in payload
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put('/model-instances/7', json=payload)
+    assert response.status_code == 200, response.text
+    assert api.instance.restart_count == restart_count
+    assert api.instance.port == 40000 and api.instance.ports == [40000, 40001]
+    assert api.instance.distributed_servers.legacy_stop is None

@@ -1,4 +1,106 @@
-"""Ordered model port plans shared by candidate admission and Worker allocation."""
+"""Ordered model port plans shared by admission and Worker allocation.
+
+Port inventory
+==============
+This inventory covers GPUStack's built-in SGLang/vLLM, PD, SMG and Ray paths.
+Keys are conditional on the deployment mode; a custom PD catalog can add keys.
+D denotes the global DP/routing rank count; G is the instance's GPU count across
+all participating Workers. A reservation is a band, not proof of a live listener.
+
+Executable rules belong to:
+* sglang_port_layout.py: native SGLang requests, offsets and resolved bindings.
+* vllm_topology.py: managed vLLM native requests and parallelism.
+* assets/pd-modes.yaml plus worker/pd_injection.py: PD declarations and widths.
+* worker/backends/vllm.py::_build_ray_configuration: the separate Ray range.
+Native requests and catalog requests are combined here before allocation.
+
+Persisted native named_ports keys
+--------------------------------
+Key                                  | Width  | Purpose
+_sglang_engine_api                   | 1      | Managed Engine HTTP API.
+_sglang_connecting                   | varies | Internal communication band.
+_sglang_smg_api                      | 1      | SMG HTTP API.
+_sglang_smg_metrics                  | 1      | SMG Prometheus endpoint.
+_vllm_external_api                   | D / 1  | Rank APIs / shared Hybrid API.
+_vllm_external_rpc                   | 1      | DP coordinator RPC.
+_vllm_mp_connecting                  | 10     | MP/DP protection window.
+_vllm_external_store                 | D      | Cross-node DP-group TCPStores.
+_vllm_multi_port_external_supervisor | 1      | Multi-port external supervisor.
+
+The SGLang internal band is normally one port without DPA, 14 for Python DPA,
+and max(14, D+8) for the explicit Rust DPA contract. The vLLM MP band and store
+bands are requested only by the applicable topology/LB paths. Both protection
+windows can include unused ports. Engine metrics exposed on an Engine HTTP API
+do not require a second API reservation.
+
+Persisted PD/catalog named_ports keys
+------------------------------------
+Key             | Modes / roles                 | Width
+kv_side_channel | vLLM NIXL, P and D            | D
+bootstrap       | vLLM Mooncake, P              | 1; D for External-LB
+bootstrap       | SGLang Mooncake/NIXL, P       | 1
+kv_port         | vLLM-Ascend Mooncake, P and D | G
+prometheus      | Built-in PD Router            | 1
+
+PD Router HTTP APIs use the generic API slot below. The Engine's DP/LB control
+ports and the PD connector's KV/bootstrap ports are distinct reservations.
+
+SGLang internal offsets (I = _sglang_connecting.base)
+----------------------------------------------------
+Purpose               | Position     | Native path
+Rendezvous/base       | I            | Distributed initialization
+Tokenizer             | I+1          | DPA
+Detokenizer           | I+2          | DPA
+RPC                   | I+3          | DPA
+Internal metrics      | I+4          | DPA
+Controller input      | I+5          | DPA
+Load collector        | I+6          | Applicable DPA paths
+NCCL argument         | I+7          | Python DPA
+Controller handshake  | I+13         | Python multi-node DPA
+Rank scheduler inputs | I+7 .. I+6+D | Rust DPA
+NCCL argument         | I+7+D        | Rust DPA
+
+These offsets are covered by the parent band, not separate named_ports keys.
+Preparation rejects overlapping named bands, so child aliases must not be
+persisted alongside their parent as independent reservations. An external
+distributed-init override can replace the actual TCPStore; the native base
+still controls DPA-derived addresses. See SGLangPortLayout.internal_offsets.
+
+Planning keys not persisted as named_ports in legacy/generic allocation
+---------------------------------------------------------------------
+Plan key    | Storage        | Purpose
+_api        | port, ports[0] | Generic Engine or PD Router HTTP API.
+_cross_0    | ports[1]       | Legacy vLLM DP RPC.
+_cross_1    | ports[2]       | Legacy vLLM MP master/TCPStore.
+_cross_2    | ports[3]       | Legacy vLLM VLLM_PORT compatibility slot.
+_connecting | ports[-1]      | Legacy connecting base.
+
+Only applicable paths allocate these slots; some allocated slots are unused.
+A wide legacy vLLM _connecting band is persisted as _vllm_mp_connecting.
+
+Ray configuration (R = ray_port_range start; not instance named_ports)
+-------------------------------------------------------------------
+Position    | Purpose
+R           | GCS, primary only.
+R+1         | Ray client compatibility slot; not enabled.
+R+2         | Dashboard, primary only.
+R+3         | Dashboard gRPC compatibility slot.
+R+4         | Dashboard agent gRPC.
+R+5         | Dashboard agent listen.
+R+6         | Metrics export.
+R+7         | Node manager.
+R+8         | Object manager.
+R+9         | Runtime-env agent.
+R+10 .. end | Ray worker port range; Ray chooses concrete worker ports.
+
+Runtime-selected ports outside static named_ports reservations
+-------------------------------------------------------------
+SGLang's layout describes native_nccl, Python dp_scheduler_input, pd_kv_rank,
+legacy native_dpa_tcp and external rendezvous ownership. These are not fixed
+bands allocated here. vLLM and UCX/Mooncake can also create runtime sockets
+outside their static plans. Separate cache-service ports belong to the cache
+instance's own lifecycle and reservation ledger, not this model's named_ports.
+"""
 
 import logging
 from typing import List, Optional, Tuple
@@ -10,10 +112,7 @@ from gpustack.utils.command import (
     find_last_parameter,
     resolve_executor_backend,
 )
-from gpustack.utils.model_instance_workers import (
-    sglang_component_port_requests,
-    sglang_smg_mode,
-)
+from gpustack.utils.sglang_port_layout import sglang_port_layout
 from gpustack.utils.vllm_topology import (
     VLLM_MP_CONNECTING_PORT_COUNT,
     managed_lb_port_requests,
@@ -96,16 +195,22 @@ def model_port_requests(
             backend == BackendEnum.VLLM
             and manual_dp_enabled(getattr(model, 'env', None))
         )
-    if managed and role is None and sglang_smg_mode(model):
-        return [
-            (name, count, None)
-            for name, count in sglang_component_port_requests(model, allocation)
-        ]
     connector = connector_port_requests(model, role, allocation)
     bands = [
         (name, count, None)
         for name, count in sorted(connector, key=lambda item: item[1], reverse=True)
     ]
+    if backend == BackendEnum.SGLANG:
+        requests = sglang_port_layout(
+            model, role, allocation, managed=managed
+        ).port_requests()
+        # Generic APIs follow connector bands; component layouts publish their
+        # native order and place connector bands afterwards.
+        api_index = next(
+            (index for index, (name, _, _) in enumerate(requests) if name == '_api'),
+            len(requests),
+        )
+        return requests[:api_index] + bands + requests[api_index:]
     mode = (
         vllm_lb_mode(parameters, tokenized=True)
         if managed and backend == BackendEnum.VLLM
