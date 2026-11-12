@@ -59,6 +59,7 @@ def _model_in(backend, mode=PDModeEnum.VLLM_NIXL, role_backends=None, roles=True
     [
         (BackendEnum.VLLM.value, PDModeEnum.VLLM_NIXL),
         (BackendEnum.SGLANG.value, PDModeEnum.SGLANG_MOONCAKE),
+        (BackendEnum.DYNAMO.value, PDModeEnum.DYNAMO_NIXL),
         # A user-supplied engine image, which is how a BYO engine runs PD here
         # -- and it can only run it through `custom`, since no recipe targets
         # an engine the platform has never seen.
