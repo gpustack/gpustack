@@ -85,6 +85,8 @@ def test_packaged_catalog_model_release_dates(catalog_file):
     model_sets = _packaged_model_sets(str(catalog_path))
     # Dates identify the open-weight releases of these specific checkpoints.
     release_dates = {
+        "Kimi-K3.1-Pro": "2026-11-04",
+        "Mistral-Large-4-1T-A52B": "2026-10-29",
         "Kimi-K3": "2026-07-27",
         "DeepSeek-V4.1-Flash-1017": "2026-10-17",
         "GLM-5.3": "2026-08-28",
@@ -334,6 +336,46 @@ def test_packaged_kimi_k3_hardware_spec(catalog_file, compute_capability):
         assert "--enable-auto-tool-choice" in spec.backend_parameters
     else:
         assert "--moe-backend=marlin" not in spec.backend_parameters
+
+
+@pytest.mark.parametrize(
+    "catalog_file", ["model-catalog.yaml", "model-catalog-modelscope.yaml"]
+)
+@pytest.mark.parametrize(
+    "name,image,quantization,minimum_cc",
+    [
+        ("Kimi-K3.1-Pro", "vllm/vllm-openai:kimi-k31", "MXFP4", 10),
+        ("Mistral-Large-4-1T-A52B", "vllm/vllm-openai:mistral-large-4", "FP8", 9),
+    ],
+)
+@pytest.mark.parametrize("cc", ["8.0", "9.0", "10.0", "10.3", "12.0"])
+def test_official_image_catalog_recipes(
+    catalog_file, name, image, quantization, minimum_cc, cc
+):
+    catalog_path = pkg_resources.files("gpustack.assets").joinpath(catalog_file)
+    model_set = _packaged_model_sets(str(catalog_path))[name]
+    specs = filter_specs_by_gpu(
+        [GPUDevice(vendor="nvidia", compute_capability=cc)], model_set.specs
+    )
+    if not minimum_cc <= float(cc) < 11:
+        assert not specs
+        return
+    assert len(specs) == 1
+    spec = specs[0]
+    model = ModelCreate(name=name, **spec.model_dump(exclude={"name"}))
+    assert model.image_name == image
+    assert model.backend_version is None
+    assert spec.quantization == quantization
+    assert not spec.huggingface_filename and not spec.model_scope_file_path
+    assert (
+        resolve_executor_backend(
+            model.backend_parameters, model.backend_version, model.image_name
+        )
+        == "mp"
+    )
+    assert not filter_specs_by_gpu(
+        [GPUDevice(vendor="ascend", arch_family="Ascend910B3")], model_set.specs
+    )
 
 
 @pytest.mark.parametrize("arch_family", [None, "Ascend910B3"])
