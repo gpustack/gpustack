@@ -73,7 +73,10 @@ _server_managed_elsewhere = {"/rerank"}
 
 def get_api_router() -> APIRouter:
     """Full OpenAI-compatible endpoint set, mounted at /v1."""
+    from gpustack.routes.videos import router as videos_router
+
     router = APIRouter()
+    router.include_router(videos_router)
     router.add_api_route("/models", list_models, methods=["GET"])
     for rp in openai_model_prefixes:
         for endpoint in rp.prefixes:
@@ -288,6 +291,17 @@ async def proxy_request_by_model(
             else f"{model_instance_prefix(instance)}.static"
         ),
     }
+    if endpoint == "videos":
+        request.state.video_target = {
+            "model": model_name,
+            "model_id": model.id,
+            "route_id": request.state.model_route_id,
+            "instance_id": instance.id,
+            "worker_id": worker.id,
+            "registry": extra_headers[router_header_key],
+            "port": rank_endpoint.port if rank_endpoint else instance.port,
+            "restart_count": instance.restart_count or 0,
+        }
     path = f"v1/{endpoint}"
     logger.debug(
         "Proxying instance %s to Worker %s at %s:%s",
@@ -387,6 +401,12 @@ async def parse_request_body(request: Request):
             is_openai_exception=True,
         )
 
+    if request.url.path.endswith("/videos") and stream:
+        raise BadRequestException(
+            message="Video jobs do not support streaming; poll the returned job ID",
+            is_openai_exception=True,
+        )
+
     return model_name, stream, body_json, form_data
 
 
@@ -396,7 +416,9 @@ async def parse_form_data(request: Request) -> Tuple[aiohttp.FormData, str, bool
         model_name = form.get("model")
         stream = to_bool(form.get("stream"))
 
-        form_data = aiohttp.FormData()
+        # Keep text-only multipart requests multipart: some inference engines
+        # do not parse application/x-www-form-urlencoded request bodies.
+        form_data = aiohttp.FormData(default_to_multipart=True)
         for key, value in form.items():
             if isinstance(value, UploadFile):
                 form_data.add_field(

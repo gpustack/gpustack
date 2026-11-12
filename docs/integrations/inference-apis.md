@@ -45,6 +45,29 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   }'
 ```
 
+### Video generation
+
+Video generation uses asynchronous jobs on inference engines that implement the
+OpenAI video protocol, such as SGLang Diffusion and vLLM-Omni:
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| POST | `/v1/videos` | Create a video job using multipart form fields such as `model`, `prompt`, `seconds`, `size`, and an optional reference image. |
+| GET | `/v1/videos/{id}` | Retrieve status and the engine's progress, when available. |
+| GET | `/v1/videos/{id}/content` | Download the generated video after the job is completed. |
+
+Create the job, poll its status until `completed` or `failed`, then download its
+content. Progress is provided by the inference engine and may update only at coarse
+intervals. Treat the returned job ID as an opaque string: GPUStack binds it to the
+creating user, organization context, and inference instance. Continue using the
+same identity and organization context for polling and downloading.
+
+Job handles are valid for 24 hours; the engine may expire its output sooner.
+Requests cannot fail over to another replica because job state and generated files
+belong to the creating engine process. Restarting that instance can make its jobs
+unavailable. The optional `/v1/videos/sync` extension remains available for engines
+that implement it.
+
 ## Anthropic-Compatible APIs
 
 GPUStack provides the Anthropic-compatible [`/v1/messages` API](https://platform.claude.com/docs/en/api/messages/create).
