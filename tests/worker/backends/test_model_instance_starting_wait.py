@@ -10,7 +10,9 @@ from gpustack.worker.backends.vllm import VLLMServer
 
 def _server(worker_id):
     server = VLLMServer.__new__(VLLMServer)
-    server._model_instance = SimpleNamespace(name="instance", worker_id=1)
+    server._model_instance = SimpleNamespace(
+        name="instance", worker_id=1, distributed_servers=None
+    )
     server._worker = SimpleNamespace(id=worker_id)
     return server
 
