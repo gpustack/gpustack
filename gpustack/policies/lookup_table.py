@@ -215,6 +215,11 @@ def estimate_offloaded_lookup_bytes(model: Model, config: Any) -> int:
     Unsupported formats or incomplete dimensions retain the full-weight VRAM
     estimate. No weight files or additional model metadata are requested.
 
+    Model configuration overrides are not applied to this estimate; lookup
+    table dimensions and storage precision come from checkpoint metadata.
+    Deployments whose overrides change these properties should set
+    GPUSTACK_MODEL_VRAM_CLAIM and GPUSTACK_MODEL_RAM_CLAIM explicitly.
+
     For vLLM, the estimate assumes the common CUDA/ROCm behavior in v0.32.0;
     it does not model older platform-specific storage paths. For example,
     v0.30 ROCm can keep PLE tables on the GPU, so this deduction may understate
@@ -247,7 +252,7 @@ def estimate_offloaded_lookup_bytes(model: Model, config: Any) -> int:
             quantization = _get(config, "quantization_config") or {}
         if not isinstance(quantization, dict):
             raise ValueError("Unsupported quantization metadata")
-        _validate_overrides(model, quantization)
+        _validate_runtime_quantization(model, quantization)
         _validate_custom_table_format(model, config, text_config, quantization)
         if kind == "engram":
             if (
@@ -289,22 +294,12 @@ def _layer_ids(config: Any, key: str) -> List[int]:
     return list(ids)
 
 
-def _validate_overrides(model: Model, quantization: Dict) -> None:
+def _validate_runtime_quantization(model: Model, quantization: Dict) -> None:
     quant = find_last_parameter(model.backend_parameters, ["quantization", "q"])
+    if quant is not None and get_backend(model) == BackendEnum.VLLM:
+        quant = quant.lower()
     if quant is not None and quant != quantization.get("quant_method"):
         raise ValueError("Runtime quantization differs from checkpoint metadata")
-    # Normalize option names only; underscores inside JSON values are metadata.
-    names = (
-        arg.split("=", 1)[0].replace("_", "-")
-        for arg in flatten_to_argv(model.backend_parameters)
-        if arg.startswith("--")
-    )
-    if any(
-        name in ("--hf-overrides", "--json-model-override-args")
-        or name.startswith("--hf-overrides.")
-        for name in names
-    ):
-        raise ValueError("Architecture overrides require an explicit resource claim")
 
 
 def _estimate_engram(config: Any, quantization: Dict) -> int:
