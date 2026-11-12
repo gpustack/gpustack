@@ -24,6 +24,7 @@ async def test_pd_model_routes_validate_the_owning_org_backend(
 ):
     payload = {
         'name': 'pd',
+        'cluster_id': 1,
         'source': 'local_path',
         'local_path': '/model',
         'backend': 'Custom',
