@@ -14,6 +14,7 @@ import json
 import logging
 import re
 from typing import List, Optional
+from urllib.parse import urlencode
 
 import aiohttp
 
@@ -27,6 +28,7 @@ MIN_WINDOW_SECONDS = 5 * 60
 MAX_WINDOW_SECONDS = 7 * 86400
 
 QUERY_TIMEOUT_SECONDS = 10.0
+MAX_GET_QUERY_BYTES = 4096
 
 
 def api_base(base_url: str) -> str:
@@ -98,17 +100,16 @@ async def query_range(
     step: int,
 ) -> List[dict]:
     url = f"{api_base(base_url)}/query_range"
-    async with client.get(
+    return await _query(
+        client,
         url,
-        params={
+        {
             "query": query,
             "start": start,
             "end": end,
             "step": step,
         },
-        timeout=aiohttp.ClientTimeout(total=QUERY_TIMEOUT_SECONDS),
-    ) as response:
-        return await read_result(response)
+    )
 
 
 async def query_instant(
@@ -118,10 +119,18 @@ async def query_instant(
     at: float,
 ) -> List[dict]:
     url = f"{api_base(base_url)}/query"
-    async with client.get(
-        url,
-        params={"query": query, "time": at},
-        timeout=aiohttp.ClientTimeout(total=QUERY_TIMEOUT_SECONDS),
+    return await _query(client, url, {"query": query, "time": at})
+
+
+async def _query(client, url, params):
+    # Form POST keeps large exact-identity selectors out of proxy URI limits.
+    method, kwargs = (
+        (client.post, {"data": params})
+        if len(urlencode(params).encode()) > MAX_GET_QUERY_BYTES
+        else (client.get, {"params": params})
+    )
+    async with method(
+        url, **kwargs, timeout=aiohttp.ClientTimeout(total=QUERY_TIMEOUT_SECONDS)
     ) as response:
         return await read_result(response)
 

@@ -6,6 +6,18 @@ This document describes how to monitor GPUStack Server/Worker/LLM serving runtim
 
 GPUStack provides a comprehensive set of metrics for model serving and GPU resource management. By integrating Prometheus and Grafana, users can collect, store, and visualize these metrics in real time, enabling efficient monitoring and troubleshooting.
 
+## Native Model Monitoring
+
+Open a deployment name under **Model Service → Deployments** to view Overview, Monitoring, Instances, GPU Resources, and Configuration. Monitoring groups can be expanded independently and share the selected time, instance, and PD role filters.
+
+- Runtime charts use the inference engines' metrics. Gateway measurements do not replace missing engine samples. PD latency is labeled by the producing role and represents a local request, not automatically the complete client request.
+- Latency statistics are Avg, P50, P95, and P99 where supported. The statistic row covers the selected interval; trend points use the shorter rate window shown on the page. Missing observations remain gaps rather than zero. Unsupported, inapplicable, failed, and stale measurements are distinguished.
+- GPU and host trends use owner-qualified stable identities. Upgrade Workers to collect the new stable history series; older Workers can still provide their latest reported device values. Unverifiable legacy device history is not reconstructed from GPU indexes. Physical measurements include other workloads sharing the device or host.
+- Runtime history covers current instances and their observed source epochs. Hardware history covers the currently associated devices under their recorded owner; neither is a complete historical placement audit.
+- Viewing the page follows deployment visibility. Physical resources are checked separately; inability to view an associated Worker does not grant access through the Model page. Existing Grafana and Prometheus proxy permissions remain unchanged.
+
+The semantic endpoints are `GET /v2/models/{id}/metrics` and `GET /v2/models/{id}/resource-metrics`. They accept controlled filters; clients do not submit PromQL. Charts, tables, and CSV exports use the same authorized results.
+
 ## Built-in Observability (Default)
 
 By default, GPUStack starts with an embedded Prometheus and Grafana. You can access them via:

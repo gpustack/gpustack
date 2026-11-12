@@ -1,6 +1,7 @@
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Union
 from urllib.parse import urlencode
 import json
+import math
 import re
 
 from fastapi import Request
@@ -178,7 +179,7 @@ def build_model_dashboard_url(
     grafana_base: str,
     model,
     cluster_name: Optional[str] = None,
-    extra_params: Optional[Dict[str, str]] = None,
+    extra_params: Optional[Dict[str, Union[str, List[str]]]] = None,
     request: Optional[Request] = None,
 ) -> Optional[str]:
     """The monitoring link for one deployment, PD-aware.
@@ -204,7 +205,7 @@ def build_model_dashboard_url(
     if not cfg.get_grafana_url() or not uid:
         return None
 
-    query_params: Dict[str, str] = {}
+    query_params: Dict[str, Union[str, List[str]]] = {}
     server_base = resolve_server_base_url(cfg, request)
     if server_base:
         query_params["var-gpustack_base_url"] = server_base
@@ -243,5 +244,66 @@ def build_model_dashboard_url(
     slug = "gpustack-pd" if pd else "gpustack-model"
     dashboard_url = f"{grafana_base}/d/{uid}/{slug}"
     if query_params:
-        dashboard_url = f"{dashboard_url}?{urlencode(query_params)}"
+        dashboard_url = f"{dashboard_url}?{urlencode(query_params, doseq=True)}"
     return dashboard_url
+
+
+def model_monitoring_dashboard_params(
+    model,
+    instances,
+    *,
+    window_seconds: int,
+    role: str,
+    restrict_instances: bool,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
+) -> Dict[str, Union[str, List[str]]]:
+    """Bind a native monitoring selection after the route authorizes its population.
+
+    The PD dashboard supports role variables, but has no instance selector.
+    Its per-role panels therefore retain the roles represented by a selected
+    instance set; they do not claim to isolate those instances.
+    """
+    params: Dict[str, Union[str, List[str]]] = {
+        'from': f'now-{window_seconds}s',
+        'to': 'now',
+    }
+    if start is not None or end is not None:
+        if (
+            type(start) not in (int, float)
+            or type(end) not in (int, float)
+            or not math.isfinite(start)
+            or not math.isfinite(end)
+            or start != int(start)
+            or end != int(end)
+            or start < 0
+            or end <= start
+        ):
+            raise ValueError('Invalid dashboard time range')
+        params.update({'from': str(int(start) * 1000), 'to': str(int(end) * 1000)})
+    if getattr(model, 'disaggregation', None):
+        roles = ['prefill', 'decode', 'router']
+        if restrict_instances:
+            selected_roles = {instance.role for instance in instances}
+            params['var-role'] = [value for value in roles if value in selected_roles]
+        else:
+            params['var-role'] = [role] if role != 'all' else ['$__all']
+        return params
+
+    params.update(
+        model_dashboard_scope_params(
+            cluster_id=model.cluster_id,
+            model_id=model.id,
+            model_name=model.name,
+        )
+    )
+    if restrict_instances:
+        identities = sorted(instance.id for instance in instances)
+        params['var-scope_model_instance_id'] = json.dumps(
+            '^(' + '|'.join(str(identity) for identity in identities) + ')$'
+        )
+        params['var-selected_model_instance_id'] = '$__all'
+        params['var-display_model_instance_name'] = ', '.join(
+            instance.name for instance in instances
+        )
+    return params
