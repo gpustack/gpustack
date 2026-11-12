@@ -1,3 +1,7 @@
+---
+translation_status: translated
+---
+
 # 組み込みの推論バックエンド { #built-in-inference-backends }
 
 GPUStack は次の推論バックエンドをサポートしています。
@@ -56,7 +60,7 @@ vLLM は、次のような最新のオープンソースモデルの多くをサ
 - **動画タスク**: 動画の生成と編集（例: `Wan2.2`）
 - **音声タスク**: 音声合成、音声クローンなど（例: `Qwen3-TTS`）
 
-GPUStack は vLLM-Omni と連携し、オムニモーダルモデルのデプロイと管理を円滑に行えるようにします。vLLM バックエンドでモデルをデプロイすると、GPUStack はメタデータからオムニモーダルモデルかどうかを自動検出し、vLLM-Omni に必要なパラメーターを設定します。
+GPUStack は vLLM-Omni と連携し、オムニモーダルモデルのデプロイと管理を円滑に行えるようにします。vLLM バックエンドでモデルをデプロイすると、GPUStack はメタデータからオムニモーダルモデルかどうかを自動検出し、vLLM-Omni に必要なパラメーターを設定します。 `video` カテゴリーのデプロイには `--omni` が自動的に追加されます。選択した runner イメージには互換性のある vLLM-Omni が含まれている必要があります。
 
 #### ワーカー間の分散推論（実験的機能） { #distributed-inference-across-workers-experimental }
 
@@ -118,7 +122,7 @@ vLLM がサポートするパラメーターの全一覧は[こちら](https://d
 
 サポート対象モデルについては、SGLang の[ドキュメント](https://docs.sglang.ai/supported_models/generative_models.html)を参照してください。
 
-SGLang は画像モデルもサポートしています。検証済みのモデルには Qwen-Image、Flux 1 Dev があります。詳細は [SGLang Diffusion のドキュメント](https://lmsys.org/blog/2025-11-07-sglang-diffusion/)を参照してください。
+SGLang Diffusion は画像生成と動画生成にも対応しています。検証済みの画像モデルには Qwen-Image、Flux 1 Dev があります。動画生成のデプロイには `video` カテゴリーを使用し、動画理解モデルには引き続き `llm` カテゴリーを使用します。非同期タスクの流れは[動画生成](../integrations/inference-apis.md#video-generation)を参照してください。参照画像と参照動画への対応は、選択したモデルとエンジンのバージョンによって異なります。
 
 ### サポート対象機能 { #supported-features_1 }
 

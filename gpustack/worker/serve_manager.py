@@ -116,6 +116,7 @@ from gpustack.schemas.models import (
     DistributedServerCoordinateModeEnum,
     ModelInstanceSubordinateWorker,
     CategoryEnum,
+    is_image_or_video_model,
     PortBand,
     member_worker_ids,
     RoleNameEnum,
@@ -5562,7 +5563,7 @@ def is_ready(
     elif (
         backend == BackendEnum.SGLANG
         and model
-        and CategoryEnum.IMAGE in model.categories
+        and is_image_or_video_model(model)
         and not health_check_path
     ):
         version = mi.backend_version or model.backend_version
@@ -5622,6 +5623,7 @@ def _get_inference_endpoint_and_payload(model: Model) -> tuple[str, dict] | None
     """
     skip_categories = {
         CategoryEnum.IMAGE,
+        CategoryEnum.VIDEO,
         CategoryEnum.SPEECH_TO_TEXT,
         CategoryEnum.TEXT_TO_SPEECH,
         CategoryEnum.UNKNOWN,

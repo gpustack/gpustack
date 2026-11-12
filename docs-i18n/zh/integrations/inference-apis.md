@@ -49,6 +49,28 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   }'
 ```
 
+### 视频生成 { #video-generation }
+
+视频生成使用异步任务，适用于实现 OpenAI 视频协议的推理引擎，例如 SGLang Diffusion 和 vLLM-Omni：
+
+| 方法 | 端点 | 用途 |
+| --- | --- | --- |
+| POST | `/v1/videos` | 使用 multipart 表单创建视频任务，可包含 `model`、`prompt`、`seconds`、`size` 和可选参考图片。 |
+| GET | `/v1/videos/{id}` | 查询任务状态，以及推理引擎提供的进度。 |
+| GET | `/v1/videos/{id}/content` | 下载生成完成的视频。 |
+
+视频生成部署使用 `video` 模型类别，可通过 `GET /v1/models?categories=video` 列出可用的视频路由。视频理解模型仍属于 `llm` 类别，使用 Chat Completions API。
+
+使用新类别前，应同步升级 Server 和 Worker。已知 Diffusers 视频管线通过 `model_index.json` 自动识别，不依赖部署名称。后台协调任务也会检查已有的 `image` 类别 SGLang/vLLM 本地部署，并更新已确认的视频模型。自动创建的路由会通过正常同步更新类别，手动配置的路由保持不变。类别更新不会触发实例重启；暂时无法读取的元数据会重试，未知管线保持原类别。自定义管线可在部署的模型类别设置中显式选择 `Video`。
+
+类别本身不代表模型支持参考图片或视频，这些输入仍取决于所选模型。本次类别变更不包含外部模型提供商的视频任务处理。
+
+创建任务后，轮询直到状态为 `completed` 或 `failed`，再下载内容。进度由推理引擎提供，可能只在少数阶段更新。返回的任务 ID 应作为不透明字符串使用：GPUStack 将其绑定到创建用户、组织上下文和推理实例。查询和下载时应使用相同身份及组织上下文。
+
+中断 HTTP 请求或停止客户端轮询不会取消已接受的生成任务。GPUStack 当前未暴露用于转发引擎取消请求的 `DELETE /v1/videos/{id}`。
+
+任务句柄有效期为 24 小时，推理引擎可能更早清理输出。由于任务状态和生成文件属于创建任务的引擎进程，请求无法切换到其他副本。重启该实例可能导致任务不可用。实现了 `/v1/videos/sync` 的引擎仍可使用这一可选扩展。
+
 ## Anthropic 兼容 API { #anthropic-compatible-apis }
 
 GPUStack 提供 Anthropic 兼容的 [`/v1/messages` API](https://platform.claude.com/docs/en/api/messages/create)。

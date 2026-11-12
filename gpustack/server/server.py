@@ -79,6 +79,7 @@ from gpustack.schemas.catalog_source import normalize_catalog_yaml
 from gpustack.server.catalog import read_builtin_catalog_text
 from gpustack.server.db import async_session
 from gpustack.server.gateway_auth_reconciler import GatewayAuthReconciler
+from gpustack.server.video_model_categories import VideoCategoryReconciler
 from gpustack.server.lora_model_routes import (
     cleanup_orphan_lora_routes,
     create_lora_model_routes,
@@ -537,6 +538,8 @@ class Server:
 
         cache_service_controller = CacheServiceController(self._config)
         tasks.append(asyncio.create_task(cache_service_controller.start()))
+
+        tasks.append(asyncio.create_task(VideoCategoryReconciler().start()))
 
         logger.debug("Controllers started.")
         return tasks

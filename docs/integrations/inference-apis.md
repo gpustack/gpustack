@@ -56,11 +56,33 @@ OpenAI video protocol, such as SGLang Diffusion and vLLM-Omni:
 | GET | `/v1/videos/{id}` | Retrieve status and the engine's progress, when available. |
 | GET | `/v1/videos/{id}/content` | Download the generated video after the job is completed. |
 
+Video-generation deployments use the `video` model category. Use
+`GET /v1/models?categories=video` to list available video routes. Video understanding
+models remain in the `llm` category and use the Chat Completions API.
+
+Upgrade the Server and Workers together before using the new category. Known
+Diffusers video pipelines are classified from `model_index.json`, independently of
+the deployment name. A background reconciliation pass also checks existing local
+SGLang/vLLM deployments categorized as `image` and updates confirmed video models.
+Their automatically created routes receive the same category through normal model
+synchronization; manually configured routes are preserved. This category update
+does not request an instance restart. Unavailable metadata is retried, while unknown
+pipelines retain their category. For custom pipelines, select `Video` explicitly in
+the deployment's model category setting.
+
+The category does not declare support for reference images or videos; those inputs
+still depend on the selected model. External-provider video job handling is not
+implemented by this category change.
+
 Create the job, poll its status until `completed` or `failed`, then download its
 content. Progress is provided by the inference engine and may update only at coarse
 intervals. Treat the returned job ID as an opaque string: GPUStack binds it to the
 creating user, organization context, and inference instance. Continue using the
 same identity and organization context for polling and downloading.
+
+Aborting an HTTP request or stopping client-side polling does not cancel an accepted
+generation job. GPUStack does not currently expose `DELETE /v1/videos/{id}` to
+forward an engine cancellation request.
 
 Job handles are valid for 24 hours; the engine may expire its output sooner.
 Requests cannot fail over to another replica because job state and generated files

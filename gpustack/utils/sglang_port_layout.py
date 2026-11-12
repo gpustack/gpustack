@@ -10,7 +10,12 @@ from dataclasses import dataclass
 from ipaddress import ip_address
 from typing import List, Optional, Tuple
 
-from gpustack.schemas.models import CategoryEnum, Model, ModelInstance, PortBand
+from gpustack.schemas.models import (
+    Model,
+    ModelInstance,
+    PortBand,
+    is_image_or_video_model,
+)
 from gpustack.utils.command import (
     find_bool_parameter,
     find_last_int_parameter,
@@ -313,9 +318,7 @@ def sglang_port_layout(
     model: Model, role: Optional[str], gpu_per_node: List[int], *, managed: bool = True
 ) -> SGLangPortLayout:
     """Describe native ports; PD connector ports are supplied by the catalog."""
-    engine = role in (None, 'prefill', 'decode') and CategoryEnum.IMAGE not in (
-        model.categories or []
-    )
+    engine = role in (None, 'prefill', 'decode') and not is_image_or_video_model(model)
     ranks, _, attention = (
         sglang_parallelism(model.backend_parameters) if engine else (1, 1, False)
     )

@@ -60,7 +60,7 @@ Desteklenen modeller için lütfen vLLM [belgelerine](https://docs.vllm.ai/en/st
 - **Video Görevleri**: Video oluşturma ve düzenleme (ör. `Wan2.2`)
 - **Ses Görevleri**: Konuşma sentezi, ses klonlama ve daha fazlası (ör. `Qwen3-TTS`)
 
-GPUStack, çok modlu modellerin dağıtımı ve yönetimi için kusursuz bir deneyim sunmak üzere vLLM-Omni ile entegre olur. Bir model vLLM arka ucu aracılığıyla dağıtıldığında GPUStack, meta verilerine dayalı olarak modelin omni-modal olup olmadığını otomatik olarak algılar ve vLLM-Omni için gerekli parametreleri ayarlar.
+GPUStack, çok modlu modellerin dağıtımı ve yönetimi için kusursuz bir deneyim sunmak üzere vLLM-Omni ile entegre olur. Bir model vLLM arka ucu aracılığıyla dağıtıldığında GPUStack, meta verilerine dayalı olarak modelin omni-modal olup olmadığını otomatik olarak algılar ve vLLM-Omni için gerekli parametreleri ayarlar. `video` kategorisindeki dağıtımlara otomatik olarak `--omni` eklenir; seçilen runner imajı uyumlu bir vLLM-Omni kurulumu içermelidir.
 
 #### Çalışanlar Arasında Dağıtılmış Çıkarım (Deneysel) { #distributed-inference-across-workers-experimental }
 
@@ -123,7 +123,7 @@ Daha fazla ayrıntı için lütfen [SGLang belgelerine](https://docs.sglang.ai/i
 
 Desteklenen modeller için lütfen SGLang [belgelerine](https://docs.sglang.ai/supported_models/generative_models.html) bakın.
 
-SGLang ayrıca görüntü modellerini de destekler. Doğruladıklarımız arasında şunlar yer alıyor: Qwen-Image, Flux 1 Dev. Daha fazla bilgi için lütfen [SGLang Difüzyon belgelerine](https://lmsys.org/blog/2025-11-07-sglang-diffusion/) bakın.
+SGLang Diffusion ayrıca görüntü ve video üretimini destekler. Doğrulanmış görüntü modelleri arasında Qwen-Image ve Flux 1 Dev bulunur. Video üretim dağıtımları `video` kategorisini kullanır; video anlama modelleri `llm` kategorisinde kalır. Asenkron görev akışı için [Video üretimi](../integrations/inference-apis.md#video-generation) bölümüne bakın. Referans görseli ve video desteği seçilen modele ve motor sürümüne bağlıdır.
 
 ### Desteklenen Özellikler { #supported-features_1 }
 

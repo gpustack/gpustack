@@ -2282,3 +2282,30 @@ def test_sglang_scheduler_uses_the_last_dp_alias():
         1,
         ['dp'],
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("category", [CategoryEnum.IMAGE, CategoryEnum.VIDEO])
+async def test_media_category_uses_component_weights_and_single_worker(
+    config, category
+):
+    model = new_model(
+        1,
+        "media",
+        huggingface_repo_id="Qwen/Qwen-Image",
+        backend=BackendEnum.SGLANG,
+        categories=[category],
+    )
+    selector = SGLangResourceFitSelector(
+        config, model, [], resource_view=ResourceView([])
+    )
+    candidates = await selector.select_candidates([linux_nvidia_5_a100_80gx2()])
+    assert len(candidates) == 2
+    assert all(
+        sum(candidate.computed_resource_claim.vram.values()) == 57699249390
+        for candidate in candidates
+    )
+    assert all(not candidate.subordinate_workers for candidate in candidates)
+    assert selector.should_skip_candidate_func(
+        selector.find_multi_worker_multi_gpu_candidates
+    )

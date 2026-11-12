@@ -31,7 +31,7 @@ from gpustack.schemas.models import (
     ROUTER_DEFAULT_CPU,
     ROUTER_DEFAULT_MEMORY,
     SpeculativeAlgorithmEnum,
-    CategoryEnum,
+    is_image_or_video_model,
     ModelInstanceDeploymentMetadata,
 )
 from gpustack.utils.command import (
@@ -194,7 +194,7 @@ class SGLangServer(InferenceServer):
 
     def start(self):
         try:
-            if CategoryEnum.IMAGE in self._model.categories:
+            if is_image_or_video_model(self._model):
                 self.is_diffusion = True
             self._start()
         except Exception as e:

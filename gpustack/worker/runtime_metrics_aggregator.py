@@ -35,7 +35,7 @@ from gpustack.schemas.models import (
     ModelInstanceUpdate,
     get_backend,
     is_audio_model,
-    is_image_model,
+    is_image_or_video_model,
 )
 import logging
 import uuid
@@ -613,8 +613,8 @@ class RuntimeMetricsAggregator:
         if not model:
             return True
 
-        # skip image and audio models
-        if is_image_model(model) or is_audio_model(model):
+        # Skip image, video, and audio generation models.
+        if is_image_or_video_model(model) or is_audio_model(model):
             return True
 
         runtime = model.backend

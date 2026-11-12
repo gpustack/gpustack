@@ -5,7 +5,7 @@ from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
     Model,
-    CategoryEnum,
+    is_image_or_video_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -18,8 +18,8 @@ def get_meta_from_running_instance(
     Get the meta information from the running instance (synchronous version).
     """
 
-    if backend == BackendEnum.SGLANG and CategoryEnum.IMAGE in model.categories:
-        # SGLang Diffusion does not provide metadata endpoints at the moment.
+    if backend == BackendEnum.SGLANG and is_image_or_video_model(model):
+        # Diffusion metadata is not parsed as language-model metadata.
         return {}
 
     meta_path = "/v1/models"

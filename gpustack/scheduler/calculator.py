@@ -34,11 +34,13 @@ from gpustack.utils.hub import (
     match_hugging_face_files,
     match_model_scope_file_paths,
     get_pretrained_config,
+    get_diffusers_model_index,
     read_repo_file_content,
     sum_weight_file_sizes,
 )
 from gpustack.utils.model_config import safe_pretrained_config_from_dict
 from gpustack.utils import platform
+from gpustack.utils.diffusion import normalize_diffusers_model_index
 
 logger = logging.getLogger(__name__)
 fetch_file_timeout_in_seconds = 15
@@ -783,7 +785,7 @@ async def get_pretrained_config_with_workers(
 
         if model.categories and any(
             cat in model.categories
-            for cat in [CategoryEnum.IMAGE, CategoryEnum.UNKNOWN]
+            for cat in [CategoryEnum.IMAGE, CategoryEnum.VIDEO, CategoryEnum.UNKNOWN]
         ):
             return pretrained_config
 
@@ -833,47 +835,54 @@ def should_fallback_load_config_json(e: Exception, model: Model) -> bool:
     )
 
 
+async def get_diffusers_model_index_with_workers(
+    model: Model, workers: Optional[List[Worker]] = None
+) -> Optional[Dict[str, Any]]:
+    """Read pipeline metadata from a hub, local disk, or matching workers."""
+    if model.source not in (
+        SourceEnum.HUGGING_FACE,
+        SourceEnum.MODEL_SCOPE,
+        SourceEnum.LOCAL_PATH,
+    ):
+        return None
+    data = await asyncio.wait_for(
+        asyncio.to_thread(
+            get_diffusers_model_index,
+            model,
+            token=get_global_config().huggingface_token,
+        ),
+        timeout=10,
+    )
+    if data is None and model.source == SourceEnum.LOCAL_PATH and workers:
+        cluster_id = getattr(model, "cluster_id", None)
+        workers = [
+            worker
+            for worker in workers
+            if cluster_id is None or worker.cluster_id == cluster_id
+        ]
+        if not workers:
+            return None
+        data = await asyncio.wait_for(
+            read_local_path_file_from_workers(model, "model_index.json", workers),
+            timeout=10,
+        )
+    return normalize_diffusers_model_index(data)
+
+
 async def check_diffusers_model_index_from_workers(
-    model: Model,
-    workers: List[Worker],
+    model: Model, workers: List[Worker]
 ) -> bool:
-    """
-    Check if a LOCAL_PATH model is a diffusers model by querying workers.
-
-    This function is specifically for LOCAL_PATH models that are not available
-    locally on the server. It uses the optimized worker query strategy.
-
-    Args:
-        model: Model with source LOCAL_PATH
-        workers: List of workers to query
-
-    Returns:
-        True if model_index.json contains _diffusers_version, False otherwise
-    """
+    """Check remote local-path artifacts without loading model code."""
     if not workers:
         return False
-
-    # Read model_index.json from workers
     try:
         data = await read_local_path_file_from_workers(
             model, "model_index.json", workers
         )
+        return normalize_diffusers_model_index(data) is not None
     except Exception as e:
         logger.info(f"Failed to read model_index.json from workers: {e}")
         return False
-
-    if data is None:
-        return False
-
-    # Check for _diffusers_version key
-    if isinstance(data, dict) and "_diffusers_version" in data:
-        return True
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict) and "_diffusers_version" in item:
-                return True
-
-    return False
 
 
 async def read_local_path_file_from_workers(  # noqa: C901
