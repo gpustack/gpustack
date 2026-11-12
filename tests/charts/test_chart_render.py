@@ -188,6 +188,51 @@ class TestServerOnly:
         assert "registration-token" not in names(render(), "Secret")
 
 
+class TestHigressPlugins:
+    """The plugin-server Deployment rides the server image by default.
+
+    The server publishes WasmPlugin URLs from its own bundled
+    gpustack-higress-plugins manifest, so a plugin-server on a stale dedicated
+    image 404s them and wedges the gateway listener. Sharing the server
+    image.tag makes the two move together under `helm upgrade --set
+    image.tag=...` without pulling a new chart.
+    """
+
+    def _deployment(self, docs: list[dict]) -> dict:
+        for doc in docs:
+            if doc["kind"] == "Deployment" and doc["metadata"]["name"].endswith(
+                "higress-plugins"
+            ):
+                return doc
+        pytest.fail("higress-plugins Deployment not rendered")
+
+    def test_defaults_to_the_server_image(self):
+        pod_spec = self._deployment(render())["spec"]["template"]["spec"]
+        container = pod_spec["containers"][0]
+        assert container["image"] == "docker.io/gpustack/gpustack:test"
+        # The server image's ENTRYPOINT funnels everything into
+        # `gpustack start`; the plugin server must bypass it explicitly, with
+        # the command the dedicated image's Dockerfile CMD already carries.
+        assert container["command"] == [
+            "gpustack-plugins",
+            "start",
+            "--port",
+            "8080",
+            "--host",
+            "0.0.0.0",
+        ]
+
+    def test_pinned_dedicated_image_still_renders(self):
+        docs = render(
+            "--set",
+            "higressPlugins.image.repository=gpustack/higress-plugins",
+            "--set",
+            "higressPlugins.image.tag=0.5.0.post2",
+        )
+        container = self._deployment(docs)["spec"]["template"]["spec"]["containers"][0]
+        assert container["image"] == "docker.io/gpustack/higress-plugins:0.5.0.post2"
+
+
 class TestServerAndWorker:
     def test_deploys_both_and_the_operator(self):
         docs = render("--set", "worker.enabled=true")

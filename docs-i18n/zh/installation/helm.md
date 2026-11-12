@@ -23,7 +23,7 @@
 
 - GPUStack Server 部署为 `StatefulSet`，目前**不支持**多副本。
 - 默认使用内置的内嵌 `PostgreSQL` 数据库。生产环境建议通过 `server.externalDatabaseURL` 指定外部数据库。
-- Higress 插件由与 GPUStack 一同安装的专用 `gpustack/higress-plugins` Deployment 提供。Higress 网关重启时会从此服务下载插件；如果该服务不可用，网关会等待插件可访问后才能启动。
+- Higress 插件由与 GPUStack 一同安装的专用 Deployment 提供，默认运行在 GPUStack server 镜像上，使插件模块与 server 版本保持一致。Higress 网关重启时会从此服务下载插件；如果该服务不可用，网关会等待插件可访问后才能启动。
 - 内置 `higress-core` 子 Chart 会将 Higress 部署为集群的 Ingress Controller。如果已有其他 Ingress Controller，请设置 `higress-core.enabled=false`，并将 `gateway.ingressClassname` 指向已有 Higress 实例。
 
 ## 安装 k3s（可选） { #install-k3s-optional }

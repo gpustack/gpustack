@@ -284,10 +284,18 @@ higressPlugins:
   # Number of higress-plugins deployment replicas.
   replicas: 1
   image:
-    # Image repository including namespace (no registry); final reference is `{global.hub}/{repository}:{tag}`.
-    repository: gpustack/higress-plugins
+    # Leave empty to run the plugin server on the gpustack server image
+    # (`{global.hub}/{image.repository}:{image.tag}`), which bundles
+    # `gpustack-higress-plugins` and its `gpustack-plugins` entry point. That
+    # default keeps the plugin modules version-locked to the server, since the
+    # server publishes WasmPlugin URLs from its own bundled manifest.
+    #
+    # Set both repository (including namespace, no registry) and tag to pin a
+    # dedicated image instead, e.g. the historical `gpustack/higress-plugins`;
+    # the final reference is then `{global.hub}/{repository}:{tag}`.
+    repository: ""
+    tag: ""
     pullPolicy: IfNotPresent
-    tag: "0.2.3.post5"
 worker:
   enabled: false
   # Address of the GPUStack server the workers register with, e.g.
