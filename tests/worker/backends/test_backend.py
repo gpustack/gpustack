@@ -1709,6 +1709,92 @@ def test_vllm_command_args_include_late_system_flags_as_injected():
     ]
 
 
+def _make_vllm_backend_for_gmu(claim, backend_parameters):
+    backend = VLLMServer.__new__(VLLMServer)
+    backend.inference_backend = None
+    backend._model_path = "/models/reranker"
+    backend._worker = types.SimpleNamespace(ip="192.168.50.10")
+    backend._model_instance = types.SimpleNamespace(
+        model_name="reranker",
+        distributed_servers=None,
+        gpu_indexes=[],
+        ports=[4000],
+        computed_resource_claim=claim,
+        mounted_loras=None,
+    )
+    backend._model = types.SimpleNamespace(
+        name="reranker",
+        backend=BackendEnum.VLLM,
+        backend_parameters=backend_parameters,
+        backend_version=None,
+        image_name=None,
+        categories=[],
+        extended_kv_cache=None,
+        speculative_config=None,
+    )
+    backend._derive_max_model_len = lambda: None
+    backend._get_speculative_arguments = lambda: []
+    backend._get_selected_gpu_devices = lambda: [
+        types.SimpleNamespace(vendor="NVIDIA", arch_family=None)
+    ]
+    return backend
+
+
+@pytest.mark.parametrize(
+    "claim,backend_parameters,expected",
+    [
+        # The scheduler's decided fraction is passed to vLLM so its startup
+        # free-memory check matches the scheduling gate.
+        (
+            types.SimpleNamespace(vram_utilization=0.9),
+            [],
+            ["--gpu-memory-utilization", "0.9"],
+        ),
+        # An explicit user parameter wins; GPUStack injects nothing. vLLM's
+        # argparse accepts the underscore spelling, so both forms suppress
+        # the injection.
+        (
+            types.SimpleNamespace(vram_utilization=0.9),
+            ["--gpu-memory-utilization=0.5"],
+            None,
+        ),
+        (
+            types.SimpleNamespace(vram_utilization=0.9),
+            ["--gpu_memory_utilization=0.5"],
+            None,
+        ),
+        (
+            types.SimpleNamespace(vram_utilization=0.9),
+            ["--gpu_memory_utilization", "0.5"],
+            None,
+        ),
+        # Legacy instances without a recorded fraction fall back to vLLM's
+        # own default.
+        (None, [], None),
+        (types.SimpleNamespace(vram_utilization=None), [], None),
+    ],
+    ids=[
+        "claim-injected",
+        "user-override-wins",
+        "user-override-wins-underscore-equals",
+        "user-override-wins-underscore-space",
+        "no-claim",
+        "no-utilization",
+    ],
+)
+def test_vllm_command_args_gpu_memory_utilization(claim, backend_parameters, expected):
+    backend = _make_vllm_backend_for_gmu(claim, backend_parameters)
+
+    arguments, injected = backend._build_command_args(port=4000, is_distributed=False)
+
+    if expected is None:
+        assert "--gpu-memory-utilization" not in arguments
+        assert "--gpu-memory-utilization" not in injected
+    else:
+        assert expected == arguments[arguments.index("--gpu-memory-utilization") :][:2]
+        assert expected == injected[injected.index("--gpu-memory-utilization") :][:2]
+
+
 def test_vllm_command_args_exclude_user_backend_parameters_from_injected():
     backend = VLLMServer.__new__(VLLMServer)
     backend.inference_backend = None

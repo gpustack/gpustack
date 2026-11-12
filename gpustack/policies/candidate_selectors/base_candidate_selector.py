@@ -1132,6 +1132,7 @@ class ScheduleCandidatesSelector(ABC):
                 computed_resource_claim=ComputedResourceClaim(
                     vram=main_vram_claim,
                     ram=self._compute_ram_claim(main_vram_claim, request.ram),
+                    vram_utilization=gpu_memory_utilization,
                 ),
                 subordinate_workers=subordinate_workers,
             )

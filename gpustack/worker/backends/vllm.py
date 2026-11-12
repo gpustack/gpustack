@@ -1534,6 +1534,7 @@ class VLLMServer(InferenceServer):
 
         arguments.extend(self._build_omni_arguments(ctx))
         arguments.extend(self._build_max_model_len_arguments(ctx))
+        arguments.extend(self._build_gpu_memory_utilization_arguments())
         arguments.extend(
             get_auto_parallelism_arguments(
                 self._model.backend_parameters,
@@ -1654,6 +1655,26 @@ class VLLMServer(InferenceServer):
         if derived_max_model_len and derived_max_model_len > 8192:
             return ["--max-model-len", "8192"]
         return []
+
+    def _build_gpu_memory_utilization_arguments(self) -> List[str]:
+        """Start vLLM with the utilization fraction the scheduler gated and
+        claimed against. vLLM otherwise applies its own default in the startup
+        free-memory check, which can reject GPUs the scheduler just accepted
+        (pooling runners such as embedding and reranker only need their
+        footprint but still pass the fraction check).
+        """
+        claim = self._model_instance.computed_resource_claim
+        if not claim or not claim.vram_utilization:
+            return []
+        if (
+            find_parameter(
+                self._model.backend_parameters,
+                ["gpu-memory-utilization", "gpu_memory_utilization"],
+            )
+            is not None
+        ):
+            return []
+        return ["--gpu-memory-utilization", str(claim.vram_utilization)]
 
     def _build_ray_distributed_arguments(self, ctx: _VLLMArgsContext) -> List[str]:
         """

@@ -32,7 +32,6 @@ from gpustack.policies.utils import (
 )
 from gpustack.schemas.models import (
     ModelInstance,
-    CategoryEnum,
     ComputedResourceClaim,
     Model,
     ModelInstanceSubordinateWorker,
@@ -178,47 +177,24 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         return None, None
 
     def _set_gpu_memory_utilization(self):
+        # vLLM applies --gpu-memory-utilization (its own default when the
+        # user omits it) to every category, including pooling runners such
+        # as embedding and reranker: its startup free-memory check rejects
+        # GPUs below the fraction even though the model only needs its
+        # footprint. Schedule every category against the same default and
+        # pass the decided value through the claim so the worker starts
+        # vLLM with exactly what was scheduled.
         self._gpu_memory_utilization = 0.9
-        model = self._model
-        if self._disable_gpu_memory_utilization():
-            # gpu memory utilization is not used for non-LLM models
-            self._gpu_memory_utilization = 0
 
         self._gpu_memory_utilization_parameter_name = "gpu-memory-utilization"
+        # vLLM accepts both spellings (as its own argparse does), so the
+        # user override must be detected in either form.
         gmu = find_parameter(
-            model.backend_parameters, [self._gpu_memory_utilization_parameter_name]
+            self._model.backend_parameters,
+            ["gpu-memory-utilization", "gpu_memory_utilization"],
         )
         if gmu:
             self._gpu_memory_utilization = float(gmu)
-
-    def _disable_gpu_memory_utilization(self) -> bool:
-        """
-        Determine whether GPU memory utilization should be disabled. vLLM does not use --gpu-memory-utilization for non-LLM models
-        like embedding and reranker, except for some specific models like Qwen3-Embedding and Qwen3-Reranker.
-
-        Rules:
-        1. For non-LLM models, GPU memory utilization is DISABLED (return True) unless they are in the exception list.
-        2. Otherwise, GPU memory utilization is ENABLED (return False).
-        """
-        if not self._model.categories:
-            return False
-
-        architectures = self._model_params.architectures or []
-
-        # Non-LLM models that vLLM still uses GPU memory utilization
-        NON_LLM_GMU_EXCEPTIONS = {
-            "Qwen3ForCausalLM",
-            "Qwen3ForSequenceClassification",  # Qwen3-Embedding & Qwen3-Reranker
-            "Qwen3VLForConditionalGeneration",  # Qwen3-VL-Embedding & Qwen3-VL-Reranker
-            "Qwen3VLForSequenceClassification",
-        }
-
-        use_gmu_categories = [CategoryEnum.LLM, CategoryEnum.SPEECH_TO_TEXT]
-        if any(cat in self._model.categories for cat in use_gmu_categories):
-            return False
-
-        # Disable for non-LLM models unless they are in the exception list
-        return not any(arch in NON_LLM_GMU_EXCEPTIONS for arch in architectures)
 
     def _set_model_parameters(self):
         super()._set_model_parameters()
@@ -644,6 +620,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     computed_resource_claim=ComputedResourceClaim(
                         vram=vram_claim,
                         ram=self._compute_ram_claim(vram_claim),
+                        vram_utilization=self._gpu_memory_utilization,
                     ),
                 )
             )
@@ -896,6 +873,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     computed_resource_claim=ComputedResourceClaim(
                         vram=vram_claim,
                         ram=self._compute_ram_claim(vram_claim),
+                        vram_utilization=self._gpu_memory_utilization,
                     ),
                 )
             ]
@@ -1209,6 +1187,7 @@ def _create_candidate(
         computed_resource_claim=ComputedResourceClaim(
             vram=vram_claim_main,
             ram=get_computed_ram_claim(model, vram_claim_main),
+            vram_utilization=gpu_memory_utilization,
         ),
     )
     candidate.subordinate_workers = []
@@ -1229,6 +1208,7 @@ def _create_candidate(
                 computed_resource_claim=ComputedResourceClaim(
                     vram=vram_claim_subworker,
                     ram=get_computed_ram_claim(model, vram_claim_subworker),
+                    vram_utilization=gpu_memory_utilization,
                 ),
             )
         )
