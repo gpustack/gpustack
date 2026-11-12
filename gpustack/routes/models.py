@@ -1684,6 +1684,13 @@ async def _create_model_route(
 async def create_model(
     session: SessionDep, ctx: TenantContextDep, model_in: ModelCreate
 ):
+    if model_in.cluster_id is None:
+        # The column is NOT NULL, so an omitted cluster_id would only surface
+        # after the insert fails, as a bare 500. The requirement lives on this
+        # route rather than the schema because import entries share
+        # ModelCreate and resolve their cluster by name during import
+        # planning, which can legitimately parse without one.
+        raise BadRequestException(message="cluster_id is required to create a model")
     target_org_id, cluster = await _resolve_target_org(
         ctx, session, model_in.cluster_id
     )
