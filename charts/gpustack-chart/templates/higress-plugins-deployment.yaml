@@ -20,10 +20,31 @@ spec:
       {{- with (include "image_pull_secrets" . | trim) }}
       {{- nindent 6 . }}
       {{- end }}
+      # Preferred, never required: colocation puts the plugin-server on nodes
+      # that already cached the server image, while a required term would let
+      # a server-pod restart block the plugin-server's rescheduling --
+      # reintroducing, at scheduling time, the availability coupling the
+      # separate deployment exists to remove.
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: {{ .Release.Name }}-server
+                topologyKey: kubernetes.io/hostname
       containers:
         - name: higress-plugins
           image: {{ include "higressPlugins.image" . }}
           imagePullPolicy: {{ .Values.higressPlugins.image.pullPolicy }}
+          # The image defaults to the gpustack server image, whose ENTRYPOINT
+          # is s6-overlay's `/init gpustack start` and would swallow plain args
+          # as `gpustack start` arguments. Run the bundled plugin server
+          # directly instead. The command matches the dedicated
+          # gpustack/higress-plugins image's Dockerfile CMD, so it also works
+          # when higressPlugins.image pins that image.
+          command: ["gpustack-plugins", "start", "--port", "8080", "--host", "0.0.0.0"]
           ports:
             - name: http
               containerPort: 8080

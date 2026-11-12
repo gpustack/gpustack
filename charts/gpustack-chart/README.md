@@ -19,7 +19,7 @@ Please note the following limitations when deploying GPUStack on Kubernetes:
 - GPUStack Server is deployed as a StatefulSet and currently does not support more than one replica.
 - By default, the built-in `Postgres` database is used at startup. It is recommended to specify an external database using the `server.externalDatabaseURL` parameter.
 - By default, the StatefulSet uses `volumeClaimTemplates` (10Gi PVC), which requires a default `StorageClass` to be configured in your cluster (in k3s, the default is `local-path`). Alternatively, set `server.dataVolume.hostPath` to use a host path volume instead of a PVC.
-- Higress plugins are served by a dedicated `gpustack/higress-plugins` Deployment installed alongside GPUStack. When the Higress gateway restarts, it will attempt to download the plugins from this service. If the service is unavailable, the gateway's startup will be blocked until the plugins are accessible.
+- Higress plugins are served by a dedicated Deployment installed alongside GPUStack. It runs on the gpustack server image by default, so its plugin modules stay version-locked to the server. When the Higress gateway restarts, it will attempt to download the plugins from this service. If the service is unavailable, the gateway's startup will be blocked until the plugins are accessible.
 - The bundled `higress-core` sub-chart deploys Higress as the cluster's ingress controller. If another ingress controller is already running in the cluster, set `higress-core.enabled=false` and configure `gateway.ingressClassname` to use the existing Higress instance instead.
 
 ## Install k3s
@@ -132,8 +132,8 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | higress-core.pilot.hub                   | null                              | Image hub override for the pilot component                                |
 | higress-core.pilot.image                 | gpustack/mirrored-higress-pilot   | Pilot image name (with namespace)                                         |
 | higressPlugins.replicas                  | 1                                 | Number of higress-plugins deployment replicas                             |
-| higressPlugins.image.repository          | gpustack/higress-plugins          | Image repo with namespace; see note below                                 |
-| higressPlugins.image.tag                 | "0.2.3.post5"                     | Higress plugins image tag; CI overrides from uv.lock at package time      |
+| higressPlugins.image.repository          | "" (server image)                 | Image repo with namespace; empty runs the gpustack server image           |
+| higressPlugins.image.tag                 | "" (follows image.tag)            | Required together with repository when pinning a dedicated image          |
 | higressPlugins.image.pullPolicy          | IfNotPresent                      | Higress plugins image pull policy                                         |
 | worker.gpuVendors                        | [nvidia]                          | List of GPU vendors; `[]` renders the CPU worker DaemonSet only           |
 | worker.cpuEnabled                        | true                              | Render the CPU worker DaemonSet; `false` requires a GPU vendor            |
@@ -147,7 +147,7 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 
 To customize parameters, use `--set key=value` or `-f your-values.yaml` during installation.
 
-> **Note:** `higressPlugins.image.repository` is resolved as `{global.hub}/{higressPlugins.image.repository}:{higressPlugins.image.tag}`. The same pattern applies to `image.repository` (`{global.hub}/{image.repository}:{image.tag}`).
+> **Note:** `image.repository` is resolved as `{global.hub}/{image.repository}:{image.tag}`. `higressPlugins.image.repository` follows the same pattern **when set**; left empty (the default) the plugin-server Deployment runs on the gpustack server image resolved above, ignoring `higressPlugins.image.tag`.
 
 ### Multi-vendor Worker Deployment
 
@@ -183,7 +183,7 @@ worker:
 
 ### Pulling Images From a Private Registry
 
-To pull all images (gpustack server/worker, higress-plugins, the bundled higress-core gateway/controller/pilot, and the gpustack-operator with the Kueue / NFD / CSI charts under it) from a mirrored private registry, override `global.hub`:
+To pull all images (gpustack server/worker and higress-plugins, the bundled higress-core gateway/controller/pilot, and the gpustack-operator with the Kueue / NFD / CSI charts under it) from a mirrored private registry, override `global.hub`:
 
 ```bash
 helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \

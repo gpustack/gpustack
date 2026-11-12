@@ -27,7 +27,7 @@ v2.2.0 以降、公式 Helm チャートを使用し、クラスター内の [Hi
 
 - GPUStack サーバーは `StatefulSet` としてデプロイされ、現在は複数のレプリカに**対応していません**。
 - デフォルトでは、同梱の組み込み `PostgreSQL` データベースを使用します。本番環境では、`server.externalDatabaseURL` で外部データベースを指定することを推奨します。
-- Higress プラグインは、GPUStack とともにインストールされる専用の `gpustack/higress-plugins` Deployment から配信されます。Higress ゲートウェイは再起動時にこのサービスからプラグインを取得します。サービスを利用できない場合は、取得できるまでゲートウェイの起動がブロックされます。
+- Higress プラグインは、GPUStack とともにインストールされる専用 Deployment から配信されます。デフォルトでは GPUStack サーバーイメージ上で動作し、プラグインモジュールのバージョンはサーバーと一致します。Higress ゲートウェイは再起動時にこのサービスからプラグインを取得します。サービスを利用できない場合は、取得できるまでゲートウェイの起動がブロックされます。
 - 同梱の `higress-core` サブチャートは、Higress をクラスターの Ingress コントローラーとしてデプロイします。別の Ingress コントローラーが稼働している場合は、`higress-core.enabled=false` とし、`gateway.ingressClassname` に既存の Higress インスタンスを指定します。
 
 ## k3s のインストール（任意） { #install-k3s-optional }
