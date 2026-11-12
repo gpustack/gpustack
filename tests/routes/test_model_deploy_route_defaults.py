@@ -32,6 +32,7 @@ def _model_in(
         replicas=replicas,
         source=SourceEnum.HUGGING_FACE,
         huggingface_repo_id="repo/qwen",
+        cluster_id=1,
         enable_model_route=enable_model_route,
     )
 
