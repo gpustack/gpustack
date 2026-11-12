@@ -2373,6 +2373,12 @@ class ServeManager(ContainerLogPersister):
                         failure_message = self._append_log_diagnosis(
                             model_instance, failure_message
                         )
+                        # Keep workload failures identifiable after the runtime
+                        # clears its diagnosis, without losing the details.
+                        if not failure_message.startswith(_WORKLOAD_FAILED_MESSAGE):
+                            failure_message = (
+                                f"{_WORKLOAD_FAILED_MESSAGE} {failure_message}"
+                            )
                         with contextlib.suppress(NotFoundException):
                             # Get patch dict for main worker.
                             if is_main_worker:
@@ -2395,14 +2401,6 @@ class ServeManager(ContainerLogPersister):
                                     sw_pos
                                 ]
                                 sw.state = ModelInstanceStateEnum.ERROR
-                                # Keep workload failures identifiable after the runtime
-                                # clears its diagnosis, without losing the details.
-                                if not failure_message.startswith(
-                                    _WORKLOAD_FAILED_MESSAGE
-                                ):
-                                    failure_message = (
-                                        f"{_WORKLOAD_FAILED_MESSAGE} {failure_message}"
-                                    )
                                 sw.state_message = failure_message
                                 patch_dict = {
                                     f"distributed_servers.subordinate_workers.{sw_pos}": sw,
@@ -2469,10 +2467,13 @@ class ServeManager(ContainerLogPersister):
                                 )
                                 continue
 
-                            # A recovered follower can clear its propagated failure;
-                            # independent leader failures still require recovery.
+                            # Workload failures and recovered follower failures can
+                            # proceed to readiness checks; other errors stay terminal.
                             if (
                                 model_instance.state == ModelInstanceStateEnum.ERROR
+                                and not (model_instance.state_message or "").startswith(
+                                    _WORKLOAD_FAILED_MESSAGE
+                                )
                                 and not (
                                     model_instance.distributed_servers
                                     and model_instance.distributed_servers.mode

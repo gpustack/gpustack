@@ -12,6 +12,7 @@ from gpustack.schemas.models import (
     DistributedServerCoordinateModeEnum,
     DistributedServers,
     ModelInstance,
+    ModelInstanceLegacyStop,
     ModelInstancePublic,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
@@ -21,9 +22,14 @@ from gpustack.schemas.principals import PrincipalType
 from gpustack.server.services import ModelInstanceService
 from gpustack.schemas.workers import WorkerStateEnum
 from gpustack.server.bus import Event, EventType
+from gpustack.utils.model_instance_workers import model_instance_metrics_sources
 from gpustack.worker import serve_manager
 from gpustack_runtime.deployer import WorkloadStatusStateEnum
-from tests.utils.model import new_model, new_model_instance
+from tests.utils.model import (
+    new_model,
+    new_model_instance,
+    new_model_instance_workload,
+)
 
 
 @pytest.fixture
@@ -867,3 +873,499 @@ def test_failed_recovery_write_does_not_mutate_watch_cache(recovery, subordinate
         recovery.instance.distributed_servers.subordinate_workers[0].state
         == ModelInstanceStateEnum.RUNNING
     )
+
+
+@pytest.fixture
+def legacy_external_recovery(recovery, monkeypatch):
+    """An externally restarted workload using legacy instance reconciliation."""
+    recovery.instance.distributed_servers = None
+    recovery.instance.state = ModelInstanceStateEnum.ERROR
+    recovery.instance.state_message = (
+        "Inference server exited or unhealthy. (exit code 0)"
+    )
+    recovery.clients[0].models.get.return_value.restart_on_error = False
+    manager = recovery.managers[0]
+    monkeypatch.setattr(manager, "_start_model_instance", MagicMock())
+    monkeypatch.setattr(manager, "_stop_model_instance", MagicMock())
+    yield recovery
+    manager._start_model_instance.assert_not_called()
+    manager._stop_model_instance.assert_not_called()
+
+
+@pytest.mark.parametrize("registered", [False, True], ids=["empty", "registered"])
+def test_managed_workload_error_bypasses_legacy_recovery(
+    recovery, monkeypatch, registered
+):
+    state = recovery
+    state.instance.state = ModelInstanceStateEnum.ERROR
+    state.instance.state_message = "Inference server exited or unhealthy. (exit code 0)"
+    state.instance.distributed_servers = DistributedServers(
+        workloads=[new_model_instance_workload(state="running")] if registered else []
+    )
+    state.clients[0].models.get.return_value.restart_on_error = False
+    before = state.instance.model_copy(deep=True)
+    manager = state.managers[0]
+    managed_sync = MagicMock()
+    monkeypatch.setattr(manager, "_sync_managed_model_instance", managed_sync)
+
+    manager.sync_model_instances_state()
+
+    managed_sync.assert_called_once_with(
+        ModelInstancePublic.model_validate(before.model_dump())
+    )
+    state.get_workload.assert_not_called()
+    state.health.assert_not_called()
+    state.clients[0].model_instances.update.assert_not_called()
+    assert state.instance == before
+
+
+def test_legacy_stop_barrier_takes_priority_over_error_recovery(recovery, monkeypatch):
+    state = recovery
+    state.instance.state = ModelInstanceStateEnum.ERROR
+    state.instance.state_message = "Inference server exited or unhealthy. (exit code 0)"
+    state.instance.draining_since = datetime.now(timezone.utc)
+    state.instance.distributed_servers = DistributedServers(
+        legacy_stop=ModelInstanceLegacyStop(
+            token="11111111-1111-1111-1111-111111111111",
+            restart_count=state.instance.restart_count or 0,
+            worker_ids=[1],
+            worker_principal_ids={1: None},
+        )
+    )
+    before = state.instance.model_copy(deep=True)
+    manager = state.managers[0]
+    stop = MagicMock()
+    monkeypatch.setattr(manager, "_stop_model_instance", stop)
+
+    manager.sync_model_instances_state()
+
+    stop.assert_called_once_with(
+        ModelInstancePublic.model_validate(before.model_dump())
+    )
+    state.get_workload.assert_not_called()
+    state.health.assert_not_called()
+    state.clients[0].model_instances.update.assert_not_called()
+    assert state.instance == before
+
+
+@pytest.mark.parametrize("backend", list(BackendEnum) + ["community-engine"])
+@pytest.mark.parametrize("restart_on_error", [False, True])
+def test_legacy_external_start_uses_backend_readiness(
+    legacy_external_recovery, backend, restart_on_error
+):
+    state = legacy_external_recovery
+    manager = state.managers[0]
+    model = state.clients[0].models.get.return_value
+    model.backend = backend
+    model.restart_on_error = restart_on_error
+    queued = state.instance.model_copy(deep=True)
+    manager._error_model_instances[queued.id] = queued
+    manager._restart_backoff_counts[queued.id] = 2
+
+    manager.sync_model_instances_state()
+
+    assert state.instance.state == ModelInstanceStateEnum.RUNNING
+    assert state.instance.state_message == ""
+    assert state.instance.restart_count == queued.restart_count
+    assert queued.id not in manager._error_model_instances
+    assert queued.id not in manager._restart_backoff_counts
+    state.health.assert_called_once()
+
+    # A queued restart must observe that recovery has already completed.
+    state.clients[0].model_instances.update.reset_mock()
+    manager._restart_error_model_instance(queued)
+    state.clients[0].model_instances.update.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [503, None])
+def test_external_start_waits_for_readiness(legacy_external_recovery, status):
+    state = legacy_external_recovery
+    if status is None:
+        state.health.side_effect = httpx.ConnectError("not ready")
+    else:
+        state.health.return_value.status_code = status
+    state.managers[0].sync_model_instances_state()
+    state.health.assert_called_once()
+    assert state.instance.state == ModelInstanceStateEnum.ERROR
+    state.clients[0].model_instances.update.assert_not_called()
+
+    state.health.side_effect = None
+    state.health.return_value.status_code = 200
+    state.managers[0].sync_model_instances_state()
+    assert state.instance.state == ModelInstanceStateEnum.RUNNING
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Inference health check failed.",
+        "Invalid configuration",
+        "OOMKilled",
+        "",
+        None,
+    ],
+)
+def test_external_start_preserves_unclassified_errors(
+    legacy_external_recovery, message
+):
+    state = legacy_external_recovery
+    state.instance.state_message = message
+    state.managers[0].sync_model_instances_state()
+    state.health.assert_not_called()
+    state.clients[0].model_instances.update.assert_not_called()
+
+
+@pytest.mark.parametrize("status", list(WorkloadStatusStateEnum) + [None])
+def test_external_recovery_requires_running_workload(legacy_external_recovery, status):
+    state = legacy_external_recovery
+    state.workload = SimpleNamespace(state=status) if status else None
+    state.managers[0].sync_model_instances_state()
+    assert (state.instance.state == ModelInstanceStateEnum.RUNNING) == (
+        status == WorkloadStatusStateEnum.RUNNING
+    )
+    if status != WorkloadStatusStateEnum.RUNNING:
+        state.health.assert_not_called()
+        state.clients[0].model_instances.update.assert_not_called()
+
+
+def test_external_recovery_retries_after_failed_write(legacy_external_recovery):
+    state = legacy_external_recovery
+    manager = state.managers[0]
+    client = state.clients[0]
+    queued = state.instance.model_copy(deep=True)
+    manager._error_model_instances[queued.id] = queued
+    persist = client.model_instances.update.side_effect
+    client.model_instances.update.side_effect = httpx.ConnectError("write unavailable")
+
+    manager.sync_model_instances_state()
+    assert state.instance.state == ModelInstanceStateEnum.ERROR
+    assert manager._error_model_instances[queued.id] is queued
+
+    client.model_instances.update.side_effect = persist
+    manager.sync_model_instances_state()
+    assert state.instance.state == ModelInstanceStateEnum.RUNNING
+    assert queued.id not in manager._error_model_instances
+
+
+def test_custom_recovery_without_probe_matches_initial_readiness(
+    legacy_external_recovery,
+):
+    state = legacy_external_recovery
+    state.clients[0].models.get.return_value.backend = BackendEnum.CUSTOM
+    state.managers[0]._inference_backend_manager.get_backend_by_name.return_value = None
+    state.managers[0].sync_model_instances_state()
+    assert state.instance.state == ModelInstanceStateEnum.RUNNING
+    state.health.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "message, reason, exit_code, diagnosis, expected_message",
+    [
+        pytest.param(
+            "",
+            "",
+            0,
+            "",
+            "Inference server exited or unhealthy. (exit code 0)",
+            id="clean-exit",
+        ),
+        pytest.param(
+            "ImagePullBackOff",
+            "",
+            None,
+            "",
+            "Inference server exited or unhealthy. ImagePullBackOff",
+            id="runtime-message",
+        ),
+        pytest.param(
+            "",
+            "OOMKilled",
+            137,
+            "",
+            "Inference server exited or unhealthy. OOMKilled (exit code 137)",
+            id="exit-reason",
+        ),
+        pytest.param(
+            "Inference server exited or unhealthy. Engine stopped",
+            "",
+            1,
+            "",
+            "Inference server exited or unhealthy. Engine stopped (exit code 1)",
+            id="existing-prefix",
+        ),
+        pytest.param(
+            "CrashLoopBackOff",
+            "Error",
+            1,
+            "\nCUDA out of memory",
+            "Inference server exited or unhealthy. CrashLoopBackOff (exit code 1)"
+            "\nCUDA out of memory",
+            id="runtime-message-with-log-diagnosis",
+        ),
+    ],
+)
+def test_external_stop_start_round_trip(
+    legacy_external_recovery,
+    monkeypatch,
+    message,
+    reason,
+    exit_code,
+    diagnosis,
+    expected_message,
+):
+    state = legacy_external_recovery
+    manager = state.managers[0]
+    state.instance.state = ModelInstanceStateEnum.RUNNING
+    state.instance.state_message = ""
+    state.instance.ports = [8000]
+    monkeypatch.setattr(
+        manager, "_append_log_diagnosis", lambda mi, message: message + diagnosis
+    )
+    state.workload = SimpleNamespace(
+        state=WorkloadStatusStateEnum.INACTIVE,
+        state_message=message,
+        exits=[SimpleNamespace(name="engine", exit_code=exit_code, reason=reason)],
+    )
+
+    manager.sync_model_instances_state()
+    assert state.instance.state == ModelInstanceStateEnum.ERROR
+    assert state.instance.state_message == expected_message
+    state.health.assert_not_called()
+    assert not model_instance_metrics_sources(state.instance)
+
+    state.workload = SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING)
+    state.health.return_value.status_code = 503
+    manager.sync_model_instances_state()
+    assert state.instance.state == ModelInstanceStateEnum.ERROR
+    assert state.instance.state_message == expected_message
+    state.health.assert_called_once()
+    assert not model_instance_metrics_sources(state.instance)
+
+    state.health.return_value.status_code = 200
+    manager.sync_model_instances_state()
+    assert state.instance.state == ModelInstanceStateEnum.RUNNING
+    assert state.instance.state_message == ""
+    assert state.health.call_count == 2
+    assert [
+        (source.kind, source.metrics_port)
+        for source in model_instance_metrics_sources(state.instance)
+    ] == [("legacy", 8000)]
+
+
+def test_role_recovery_uses_effective_probe(legacy_external_recovery):
+    from gpustack.schemas.models import RoleSpec
+
+    state = legacy_external_recovery
+    model = state.clients[0].models.get.return_value
+    state.instance.role = "prefill"
+    model.roles = [
+        RoleSpec(
+            name="prefill",
+            backend=BackendEnum.SGLANG,
+            replicas=2,
+            env={"GPUSTACK_MODEL_HEALTH_CHECK_PATH": "/prefill-ready"},
+        )
+    ]
+    state.managers[0].sync_model_instances_state()
+    assert state.health.call_args.args[0].endswith("/prefill-ready")
+    assert state.instance.state == ModelInstanceStateEnum.RUNNING
+
+
+def test_managed_router_recovery_keeps_router_probe(legacy_external_recovery):
+    from tests.worker.test_serve_manager import _group_model
+
+    state = legacy_external_recovery
+    state.instance.role = "router"
+    state.clients[0].models.get.return_value = _group_model()
+    manager = state.managers[0]
+    manager._inference_backend_manager.get_backend_by_name.return_value = None
+    state.health.return_value.status_code = 503
+    manager.sync_model_instances_state()
+    state.health.assert_called_once()
+    assert state.instance.state == ModelInstanceStateEnum.ERROR
+    state.health.return_value.status_code = 200
+    manager.sync_model_instances_state()
+    assert state.instance.state == ModelInstanceStateEnum.RUNNING
+
+
+@pytest.fixture(
+    params=[
+        DistributedServerCoordinateModeEnum.INITIALIZE_LATER,
+        DistributedServerCoordinateModeEnum.RUN_FIRST,
+    ],
+    ids=lambda mode: mode.value,
+)
+def legacy_distributed_external_recovery(recovery, request, monkeypatch):
+    """Legacy distributed coordination without a managed workload manifest."""
+    state = recovery
+    state.instance.distributed_servers.mode = request.param
+    state.instance.state = ModelInstanceStateEnum.ERROR
+    state.instance.state_message = "Inference server exited or unhealthy. (exit code 0)"
+    state.clients[0].models.get.return_value.restart_on_error = False
+    for manager in state.managers:
+        monkeypatch.setattr(manager, "_start_model_instance", MagicMock())
+        monkeypatch.setattr(manager, "_stop_model_instance", MagicMock())
+    yield state
+    for manager in state.managers:
+        manager._start_model_instance.assert_not_called()
+        manager._stop_model_instance.assert_not_called()
+
+
+def test_propagated_error_recovery_respects_coordinate_mode(
+    legacy_distributed_external_recovery,
+):
+    state = legacy_distributed_external_recovery
+    state.instance.state_message = (
+        "Distributed serving error in subordinate worker 10.0.0.2: "
+        "Inference server exited or unhealthy."
+    )
+    sw = state.instance.distributed_servers.subordinate_workers[0]
+    sw.state = ModelInstanceStateEnum.RUNNING
+    sw.state_message = ""
+    before = state.instance.model_copy(deep=True)
+
+    state.managers[0].sync_model_instances_state()
+
+    if (
+        before.distributed_servers.mode
+        == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+    ):
+        state.health.assert_called_once()
+        state.clients[0].model_instances.update.assert_called_once()
+        assert state.instance.state == ModelInstanceStateEnum.RUNNING
+        assert state.instance.state_message == ""
+        assert state.instance.distributed_servers == before.distributed_servers
+    else:
+        state.health.assert_not_called()
+        state.clients[0].model_instances.update.assert_not_called()
+        assert state.instance == before
+
+
+@pytest.mark.parametrize(
+    "subordinate_state",
+    [
+        ModelInstanceStateEnum.ERROR,
+        ModelInstanceStateEnum.UNREACHABLE,
+        ModelInstanceStateEnum.PENDING,
+        ModelInstanceStateEnum.STARTING,
+    ],
+)
+def test_external_recovery_waits_for_distributed_dependencies(
+    legacy_distributed_external_recovery, subordinate_state
+):
+    state = legacy_distributed_external_recovery
+    sw = state.instance.distributed_servers.subordinate_workers[0]
+    sw.state = subordinate_state
+    sw.state_message = "subordinate unavailable"
+    before = state.instance.model_copy(deep=True)
+
+    state.managers[0].sync_model_instances_state()
+
+    state.health.assert_not_called()
+    assert state.instance.distributed_servers == before.distributed_servers
+    if subordinate_state == ModelInstanceStateEnum.UNREACHABLE:
+        # Connectivity failure still propagates through the distributed path.
+        assert state.instance.state == ModelInstanceStateEnum.UNREACHABLE
+        assert state.instance.state_message == (
+            "Distributed serving unreachable in subordinate worker "
+            "10.0.0.2: subordinate unavailable."
+        )
+        state.clients[0].model_instances.update.assert_called_once()
+    else:
+        assert state.instance == before
+        state.clients[0].model_instances.update.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [503, None])
+def test_external_error_after_subordinate_recovery_requires_main_readiness(
+    legacy_distributed_external_recovery, status
+):
+    state = legacy_distributed_external_recovery
+    main, subordinate = state.managers
+    error_message = state.instance.state_message
+    restart_count = state.instance.restart_count
+    queued = state.instance.model_copy(deep=True)
+    main._error_model_instances[queued.id] = queued
+
+    # Recover the subordinate before the main sync propagates its old state.
+    subordinate.sync_model_instances_state()
+    assert state.instance.distributed_servers.subordinate_workers[0].state == (
+        ModelInstanceStateEnum.RUNNING
+    )
+    assert state.instance.state == ModelInstanceStateEnum.ERROR
+    assert state.instance.state_message == error_message
+    state.health.assert_not_called()
+    recovered_peers = state.instance.distributed_servers.model_copy(deep=True)
+
+    if status is None:
+        state.health.side_effect = httpx.ConnectError("engine not ready")
+    else:
+        state.health.return_value.status_code = status
+    main.sync_model_instances_state()
+    state.health.assert_called_once()
+    state.clients[0].model_instances.update.assert_not_called()
+    assert state.instance.state == ModelInstanceStateEnum.ERROR
+    assert main._error_model_instances[queued.id] is queued
+
+    state.health.side_effect = None
+    state.health.return_value.status_code = 200
+    main.sync_model_instances_state()
+    assert state.health.call_count == 2
+    state.clients[0].model_instances.update.assert_called_once()
+    assert state.instance.state == ModelInstanceStateEnum.RUNNING
+    assert state.instance.state_message == ""
+    assert state.instance.restart_count == restart_count
+    assert state.instance.distributed_servers == recovered_peers
+    assert queued.id not in main._error_model_instances
+
+
+@pytest.mark.parametrize(
+    "message", ["Inference health check failed.", "Invalid configuration"]
+)
+def test_external_subordinate_recovery_preserves_unrelated_main_error(
+    legacy_distributed_external_recovery, message
+):
+    state = legacy_distributed_external_recovery
+    state.instance.state_message = message
+
+    state.managers[1].sync_model_instances_state()
+    assert state.instance.distributed_servers.subordinate_workers[0].state == (
+        ModelInstanceStateEnum.RUNNING
+    )
+    state.managers[0].sync_model_instances_state()
+
+    assert state.instance.state == ModelInstanceStateEnum.ERROR
+    assert state.instance.state_message == message
+    state.health.assert_not_called()
+    state.clients[0].model_instances.update.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "initial_state", [ModelInstanceStateEnum.UNREACHABLE, ModelInstanceStateEnum.ERROR]
+)
+def test_external_recovery_leaves_unreachable_recovery_on_existing_path(
+    legacy_distributed_external_recovery, initial_state
+):
+    state = legacy_distributed_external_recovery
+    state.instance.state = initial_state
+    main, subordinate = state.managers
+
+    # Main-first ordering propagates UNREACHABLE before the follower recovers.
+    main.sync_model_instances_state()
+    assert state.instance.state == ModelInstanceStateEnum.UNREACHABLE
+    state.health.assert_not_called()
+    subordinate.sync_model_instances_state()
+    assert state.instance.distributed_servers.subordinate_workers[0].state == (
+        ModelInstanceStateEnum.RUNNING
+    )
+    assert state.instance.state == ModelInstanceStateEnum.UNREACHABLE
+
+    state.health.return_value.status_code = 503
+    main.sync_model_instances_state()
+    state.health.assert_called_once()
+    assert state.instance.state == ModelInstanceStateEnum.UNREACHABLE
+    state.health.return_value.status_code = 200
+    main.sync_model_instances_state()
+    assert state.health.call_count == 2
+    assert state.instance.state == ModelInstanceStateEnum.RUNNING
+    assert state.instance.state_message == ""
