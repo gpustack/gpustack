@@ -150,6 +150,15 @@ _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE = "Inference health check failed."
 
 # Last-resort message for a workload that stopped serving without saying why.
 _WORKLOAD_FAILED_MESSAGE = "Inference server exited or unhealthy."
+
+# A member in one of these states has not been launched by this worker yet.
+# INITIALIZE_LATER followers are started one at a time, so a missing workload
+# here is the expected absence before the first launch, not a failure.
+_UNLAUNCHED_SUBORDINATE_STATES = (
+    ModelInstanceStateEnum.PENDING,
+    ModelInstanceStateEnum.SCHEDULED,
+    ModelInstanceStateEnum.DOWNLOADING,
+)
 _SUBORDINATE_ERROR_PREFIX = "Distributed serving error in subordinate worker "
 
 _RANK_HEALTH_CONCURRENCY = 4
@@ -2272,10 +2281,15 @@ class ServeManager(ContainerLogPersister):
                     # Server authority so that cleanup can recover that ownership.
                     self._sync_managed_model_instance(model_instance)
                     continue
-                # Skip if the provision process has not exited yet.
-                if self._is_provisioning(model_instance):
+                # Skip while this worker is still preparing the launch, or while
+                # the provision process is running. Neither can have a workload
+                # yet, and the start path owns the member until it records an
+                # attempt. The reaper already treats the start set the same way.
+                if self._is_provisioning(model_instance) or (
+                    model_instance.id in self._starting_model_instances
+                ):
                     logger.trace(
-                        f"Model instance {model_instance.name} is provisioning. Skipping sync."
+                        f"Model instance {model_instance.name} is starting. Skipping sync."
                     )
                     continue
 
@@ -2348,6 +2362,18 @@ class ServeManager(ContainerLogPersister):
                         continue
                     logger.trace(
                         f"Model instance {model_instance.name} workload is still launching. Skipping sync."
+                    )
+                    continue
+
+                # A subordinate this worker has not launched yet has no workload by
+                # design: INITIALIZE_LATER followers are started one at a time and
+                # the main worker can already be STARTING. The event handler reads
+                # the same state as an initial launch (_start_or_restart_subordinate);
+                # the reconciler must not read that absence as a crashed engine.
+                if not workload and self._is_unlaunched_subordinate(model_instance):
+                    logger.trace(
+                        f"Model instance {model_instance.name} has no workload on this "
+                        "worker before its first launch. Skipping sync."
                     )
                     continue
 
@@ -3572,6 +3598,18 @@ class ServeManager(ContainerLogPersister):
         if event.type == EventType.CREATED:
             # Only handle CREATED if this is the assigned worker
             if not is_main_worker:
+                # Keep the same ERROR handling as UPDATED: a replay must not
+                # bypass the backoff/restart path or start a follower for an
+                # instance that has already failed.
+                if mi.state == ModelInstanceStateEnum.ERROR:
+                    self._error_model_instances[mi.id] = mi
+                    return
+                # A watch reconnect replays every existing instance as CREATED.
+                # A follower that missed its UPDATED start would otherwise stay
+                # PENDING forever, so send it down the same start path; that
+                # path is idempotent for a member that already has a workload.
+                if self._is_unlaunched_subordinate(mi):
+                    self._start_or_restart_subordinate(mi)
                 return
             if mi.state == ModelInstanceStateEnum.RUNNING:
                 logger.warning(
@@ -3580,6 +3618,40 @@ class ServeManager(ContainerLogPersister):
                 return
             self._start_model_instance(mi)
             logger.trace(f"CREATED event: started created model instance {mi.name}.")
+
+    def _local_subordinate(
+        self, mi: ModelInstance
+    ) -> Optional[ModelInstanceSubordinateWorker]:
+        """This worker's entry in a distributed instance, or None."""
+        if not mi.distributed_servers or not mi.distributed_servers.subordinate_workers:
+            return None
+        return next(
+            (
+                sw
+                for sw in mi.distributed_servers.subordinate_workers
+                if sw.worker_id == self._worker_id
+            ),
+            None,
+        )
+
+    def _is_unlaunched_subordinate(self, mi: ModelInstance) -> bool:
+        """Is this worker's member still waiting for its first launch?
+
+        Only INITIALIZE_LATER starts followers one at a time after the main
+        worker, so only there is a missing workload expected before the first
+        launch. RUN_FIRST launches followers first; absence there is a failure.
+
+        Only the recorded state can answer that. A member this worker launched
+        holds a pid and a state past these, so for it a missing workload means
+        the container is gone rather than not created yet.
+        """
+        subordinate = self._local_subordinate(mi)
+        return (
+            subordinate is not None
+            and mi.distributed_servers.mode
+            == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+            and subordinate.state in _UNLAUNCHED_SUBORDINATE_STATES
+        )
 
     def _start_or_restart_subordinate(self, mi: ModelInstance) -> None:
         """Start a follower, respecting the deployment's recovery policy."""
@@ -3602,10 +3674,8 @@ class ServeManager(ContainerLogPersister):
             for worker in mi.distributed_servers.subordinate_workers
             if worker.worker_id == self._worker_id
         )
-        initial_start = not workload and subordinate.state in (
-            ModelInstanceStateEnum.PENDING,
-            ModelInstanceStateEnum.SCHEDULED,
-            ModelInstanceStateEnum.DOWNLOADING,
+        initial_start = (
+            not workload and subordinate.state in _UNLAUNCHED_SUBORDINATE_STATES
         )
         if self._uses_group_recovery(mi) and not initial_start:
             if self._is_provisioning(mi):
