@@ -448,3 +448,65 @@ class TestRouteOwnership:
 
         assert attacker_id not in handler.client_registry
         assert handler._cidr_registry.find_exact("10.0.0.5/32") == victim_id
+
+
+class TestClientRelease:
+    """A released registration must stop reserving its routes."""
+
+    @pytest.mark.asyncio
+    async def test_release_frees_claims_for_a_re_registered_worker(self):
+        # The reported failure: a deleted worker's half-open tunnel keeps its
+        # CIDR reserved, and the next worker that claims the same address is
+        # rejected as a foreign claim until the server restarts.
+        handler = _handler()
+
+        stale_id = uuid.uuid4()
+        stale_ws = _websocket({})
+        stale_ws.receive = AsyncMock(side_effect=asyncio.Event().wait)
+        stale_task = asyncio.create_task(
+            handler.handle_client_connection(
+                stale_ws,
+                RegisteredClientInfo(
+                    client_id=stale_id,
+                    cidrs=["192.168.132.151/32"],
+                    unix_sockets=[],
+                ),
+            )
+        )
+        await _wait_for_registration(handler, stale_id)
+        assert handler._cidr_registry.find_exact("192.168.132.151/32") == stale_id
+
+        released = await handler.release_client(stale_id)
+
+        assert released is True
+        assert handler._cidr_registry.find_exact("192.168.132.151/32") is None
+        assert stale_id not in handler.client_registry
+        stale_ws.close.assert_awaited()
+
+        # A different client id claiming the same address (the re-registered
+        # worker) must be accepted now that the stale claim is gone.
+        new_id = uuid.uuid4()
+        new_ws = _websocket({})
+        new_ws.receive = AsyncMock(side_effect=[{"type": "websocket.disconnect"}])
+        await handler.handle_client_connection(
+            new_ws,
+            RegisteredClientInfo(
+                client_id=new_id,
+                cidrs=["192.168.132.151/32"],
+                unix_sockets=[],
+            ),
+        )
+
+        new_ws.accept.assert_awaited_once()
+        new_ws.close.assert_not_awaited()
+
+        stale_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await stale_task
+
+    @pytest.mark.asyncio
+    async def test_release_of_unknown_client_is_a_no_op(self):
+        handler = _handler()
+
+        assert await handler.release_client(uuid.uuid4()) is False
+        assert handler.client_registry == {}
