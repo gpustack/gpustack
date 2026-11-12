@@ -41,6 +41,11 @@ WEIGHT_FILE_CASES = [
         id="consolidated-is-the-only-copy",
     ),
     pytest.param(
+        {"consolidated.safetensors": 100, "training_args.bin": 7},
+        100,
+        id="consolidated-beside-a-non-weight-bin",
+    ),
+    pytest.param(
         {"flow.pt": 30, "llm.pt": 40, "config.json": 1},
         70,
         id="pt-only",

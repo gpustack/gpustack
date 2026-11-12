@@ -390,8 +390,8 @@ def sum_weight_file_sizes(files: Iterable[Tuple[str, int]]) -> int:
     one of them, so summing by extension alone counts the model more than once:
     - vLLM and SGLang load *.safetensors when any exist and fall back to *.bin
       otherwise. Example: https://huggingface.co/mistralai/Mistral-7B-v0.1
-    - consolidated.safetensors usually duplicates the other weight files, but it is
-      the only copy in Mistral-format repositories. Examples:
+    - consolidated.safetensors duplicates the other *.safetensors files when there
+      are any, and is the only copy in Mistral-format repositories. Examples:
       https://huggingface.co/mistralai/Voxtral-Small-24B-2507 (duplicate),
       https://huggingface.co/mistralai/Pixtral-12B-2409 (only copy)
 
@@ -405,7 +405,11 @@ def sum_weight_file_sizes(files: Iterable[Tuple[str, int]]) -> int:
         for name, size in files
         if name.endswith((".safetensors", ".bin", ".pt", ".pth"))
     }
-    if len(sizes) > 1:
+    has_other_safetensors = any(
+        name.endswith(".safetensors") and name != "consolidated.safetensors"
+        for name in sizes
+    )
+    if has_other_safetensors:
         sizes.pop("consolidated.safetensors", None)
     has_safetensors = any(name.endswith(".safetensors") for name in sizes)
     return sum(
