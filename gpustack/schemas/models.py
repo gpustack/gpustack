@@ -2713,6 +2713,13 @@ def get_backend(model: Model) -> str:
     return BackendEnum.VLLM
 
 
+# Canonical glob identifying multimodal projector GGUF files by llama.cpp
+# naming convention. Shared by mmproj matching (get_mmproj_filename) and by
+# main-model selection, which must treat these files as never-loadable as the
+# main model (they are CLIP weights for --mmproj only).
+MMPROJ_GGUF_PATTERN = "*mmproj*.gguf"
+
+
 def get_mmproj_filename(model: Union[Model, ModelSource]) -> Optional[str]:
     """
     Get the mmproj filename for the model. If the mmproj is not provided in the model's
@@ -2726,4 +2733,4 @@ def get_mmproj_filename(model: Union[Model, ModelSource]) -> Optional[str]:
         if mmproj and Path(mmproj).name == mmproj:
             return mmproj
 
-    return "*mmproj*.gguf"
+    return MMPROJ_GGUF_PATTERN
