@@ -40,6 +40,7 @@ from gpustack.server.prometheus_query import (
     query_instant as _query_instant,
     query_range as _query_range,
 )
+from gpustack.server.model_monitoring_time import monitoring_interval
 from gpustack.utils.model_instance_workers import (
     model_instance_metrics_source_inventory,
 )
@@ -563,6 +564,7 @@ class _Collection:
         groups = self.histogram_groups(sums, counts, buckets)
         if not groups:
             return
+        metric.reason = None
         incompatible = self.histogram_summaries(metric, groups)
         trend_scopes = self.histogram_trend_scopes(scope, sums, counts, buckets)
         if incompatible:
@@ -700,6 +702,8 @@ class _Collection:
         ]
 
     def trend_statistics(self):
+        if self.statistic == 'all':
+            return list(HISTOGRAM_STATISTICS)
         if self.statistic != 'percentiles':
             return [self.statistic]
         return ['p95'] if self.view == 'instances' else ['p50', 'p95', 'p99']
@@ -811,6 +815,8 @@ async def collect_model_metrics(
     instances: List[ModelInstance],
     *,
     window_seconds: int,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
     role: str = 'all',
     view: str = 'aggregate',
     statistic: str = 'percentiles',
@@ -823,16 +829,19 @@ async def collect_model_metrics(
     Args:
         model: Deployment whose ownership has been checked by the route.
         instances: Current visible instances after the user's filters.
+        start: Optional fixed beginning in whole Unix seconds.
+        end: Fixed end, supplied together with start; independent of refresh time.
         upstream_instances: Full visible population for resolving Router peer IDs.
 
     Returns:
         Typed, bounded observations with local missing states for each metric.
     """
-    end = time.time()
-    step = max(window_seconds // 120, 15)
+    interval = monitoring_interval(window_seconds, start, end, now=time.time())
+    start, end, window_seconds = interval.start, interval.end, interval.seconds
+    step = max(math.ceil(window_seconds / 120), 15)
     result = ModelMetrics(
         model_id=model.id,
-        start=end - window_seconds,
+        start=start,
         end=end,
         step=step,
         rate_window_seconds=max(step + 60, 60),

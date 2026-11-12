@@ -158,12 +158,131 @@ async def test_histogram_summaries_always_cover_four_full_window_statistics(
     )
     metric = result.metrics['ttft']
     assert metric.status == 'available'
+    assert metric.reason is None
     assert {s.statistic for s in metric.summaries} == {'avg', 'p50', 'p95', 'p99'}
     assert next(s for s in metric.summaries if s.statistic == 'avg').value == 0.1
     assert all(s.sample_count == 10 for s in metric.summaries)
     assert any('[3600s]' in q and 'increase(' in q for _, q in requests)
     assert any('[90s]' in q for kind, q in requests if kind == 'range')
     assert result.history_scope.startswith('current_instances')
+
+
+@pytest.mark.asyncio
+async def test_custom_interval_freezes_every_query_and_summary_window(monkeypatch):
+    module = _collector()
+    _prometheus(monkeypatch, module, _histogram_data)
+    instant_calls, range_calls = [], []
+
+    async def instant(client, url, query, at):
+        instant_calls.append((query, at))
+        return _histogram_data(query)
+
+    async def ranged(client, url, query, start, end, step):
+        range_calls.append((start, end, step))
+        if 'time_to_first_token_seconds_' not in query:
+            return []
+        return [
+            {'metric': _entry(1)['metric'], 'values': [[start, '0.1'], [end, '0.2']]}
+        ]
+
+    monkeypatch.setattr(module, '_query_instant', instant)
+    monkeypatch.setattr(module, '_query_range', ranged)
+    result = await module.collect_model_metrics(
+        _model(),
+        [_instance()],
+        window_seconds=3600,
+        start=1000,
+        end=2000,
+        statistic='all',
+        client=object(),
+    )
+    assert (result.start, result.end) == (1000, 2000)
+    assert all(at == 2000 for _, at in instant_calls)
+    assert all((start, end) == (1000, 2000) for start, end, _ in range_calls)
+    assert any(
+        'increase(' in query and '[1000s]' in query for query, _ in instant_calls
+    )
+    assert not any('[3600s]' in query for query, _ in instant_calls)
+    assert [series.statistic for series in result.metrics['ttft'].series] == [
+        'avg',
+        'p50',
+        'p95',
+        'p99',
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('view', ['aggregate', 'instances'])
+async def test_all_latency_trends_share_a_window_and_retain_four_statistics(
+    monkeypatch, view
+):
+    module = _collector()
+
+    def ranges(query):
+        if 'gpustack:time_to_first_token_seconds_' not in query:
+            return []
+        return [
+            {
+                'metric': _entry(1)['metric'],
+                'values': [[4910, '0.1'], [5000, '0.2']],
+            }
+        ]
+
+    requests = _prometheus(monkeypatch, module, _histogram_data, ranges)
+    result = await module.collect_model_metrics(
+        _model(),
+        [_instance()],
+        window_seconds=3600,
+        statistic='all',
+        view=view,
+        client=object(),
+    )
+    metric = result.metrics['ttft']
+    assert [series.statistic for series in metric.series] == [
+        'avg',
+        'p50',
+        'p95',
+        'p99',
+    ]
+    assert all(series.points == [(4910, 0.1), (5000, 0.2)] for series in metric.series)
+    assert all(summary.sample_count == 10 for summary in metric.summaries)
+    queries = [
+        query
+        for kind, query in requests
+        if kind == 'range' and 'time_to_first_token_seconds_' in query
+    ]
+    assert len(queries) == 4
+    assert all('[90s]' in query for query in queries)
+    for quantile in ('0.5', '0.95', '0.99'):
+        assert any(f'histogram_quantile({quantile},' in query for query in queries)
+
+
+@pytest.mark.asyncio
+async def test_valid_histogram_history_with_idle_points_does_not_keep_no_samples_reason(
+    monkeypatch,
+):
+    module = _collector()
+
+    def ranges(query):
+        if 'time_to_first_token_seconds' not in query:
+            return []
+        return [
+            {
+                'metric': _entry(1)['metric'],
+                'values': [[3500, '0.15'], [5000, 'NaN']],
+            }
+        ]
+
+    _prometheus(monkeypatch, module, _histogram_data, ranges)
+    result = await module.collect_model_metrics(
+        _model(), [_instance()], window_seconds=3600, client=object()
+    )
+    metric = result.metrics['ttft']
+    assert metric.status == 'available'
+    assert metric.reason is None
+    assert metric.summaries[0].sample_count == 10
+    assert any(value is not None for line in metric.series for _, value in line.points)
+    assert all(line.points[-1][1] is None for line in metric.series)
 
 
 @pytest.mark.asyncio

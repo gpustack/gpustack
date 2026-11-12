@@ -12,7 +12,11 @@ from gpustack.api.exceptions import register_handlers
 from gpustack.api.tenant import TenantContext, get_tenant_context
 from gpustack.routes import models as route
 from gpustack.routes.routes import SYSTEM_ROUTES, management_router
-from gpustack.schemas.model_metrics import ModelMetrics, ModelResourceMetrics
+from gpustack.schemas.model_metrics import (
+    ModelMetrics,
+    ModelResourceMetrics,
+    ModelMonitoringCapabilities,
+)
 from gpustack.schemas.principals import OrgRole, PrincipalType
 from gpustack.server.db import get_session
 
@@ -107,6 +111,90 @@ def test_owner_gets_runtime_contract_and_server_validated_options(monitoring_api
     assert [i.id for i in api.runtime.await_args.args[1]] == [12]
 
 
+@pytest.mark.parametrize('suffix', ['metrics', 'resource-metrics'])
+def test_custom_range_delegates_exact_authorized_bounds(monitoring_api, suffix):
+    api = monitoring_api
+    with TestClient(api.app) as client:
+        response = client.get(
+            f'/v2/models/9/{suffix}?start=1000&end=2000&instance_ids=12'
+        )
+    assert response.status_code == 200
+    collector = api.runtime if suffix == 'metrics' else api.hardware
+    assert collector.await_args.kwargs['start'] == 1000
+    assert collector.await_args.kwargs['end'] == 2000
+    assert collector.await_args.kwargs['window_seconds'] == 1000
+    assert [i.id for i in collector.await_args.args[1]] == [12]
+
+
+@pytest.mark.parametrize('suffix', ['metrics', 'resource-metrics'])
+@pytest.mark.parametrize(
+    'query',
+    [
+        'start=1000',
+        'end=2000',
+        'start=1000&end=1299',
+        'start=2000&end=1000',
+        'start=nan&end=2000',
+        'start=1000&end=inf',
+        'start=1000.5&end=2000',
+        'start=0&end=604801',
+        'start=999999999900&end=999999999999',
+    ],
+)
+def test_invalid_custom_bounds_never_reach_collectors(monitoring_api, suffix, query):
+    api = monitoring_api
+    with TestClient(api.app) as client:
+        response = client.get(f'/v2/models/9/{suffix}?{query}')
+    assert response.status_code in (400, 422)
+    api.runtime.assert_not_awaited()
+    api.hardware.assert_not_awaited()
+
+
+def test_capabilities_are_guarded_and_never_expose_global_storage_contents(
+    monitoring_api, monkeypatch
+):
+    api = monitoring_api
+    capabilities = AsyncMock(
+        return_value=ModelMonitoringCapabilities(
+            model_id=9,
+            retention_seconds=1296000,
+            retention_known=True,
+            retention_source='prometheus_runtimeinfo',
+        )
+    )
+    monkeypatch.setattr(route, 'collect_monitoring_capabilities', capabilities)
+    with TestClient(api.app) as client:
+        response = client.get('/v2/models/9/monitoring-capabilities')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['model_id'] == 9 and body['supports_custom_range']
+    assert body['max_query_seconds'] == 604800
+    assert body['retention_seconds'] == 1296000
+    assert not any(key in body for key in ('hostname', 'minTime', 'flags', 'metrics'))
+    capabilities.reset_mock()
+    api.model.owner_principal_id = 43
+    with TestClient(api.app) as client:
+        response = client.get('/v2/models/9/monitoring-capabilities')
+    assert response.status_code == 404
+    capabilities.assert_not_awaited()
+
+
+@pytest.mark.parametrize('view', ['aggregate', 'instances'])
+def test_all_statistics_keeps_authorized_population_and_overrides_single_statistic(
+    monitoring_api, view
+):
+    api = monitoring_api
+    with TestClient(api.app) as client:
+        response = client.get(
+            f'/v2/models/9/metrics?instance_ids=12&all_statistics=true'
+            f'&statistic=p95&view={view}'
+        )
+    assert response.status_code == 200
+    assert api.runtime.await_args.kwargs['statistic'] == 'all'
+    assert api.runtime.await_args.kwargs['view'] == view
+    assert [i.id for i in api.runtime.await_args.args[1]] == [12]
+
+
 def test_resource_endpoint_delegates_the_authorized_population(monitoring_api):
     api = monitoring_api
     with TestClient(api.app) as client:
@@ -120,7 +208,23 @@ def test_resource_endpoint_delegates_the_authorized_population(monitoring_api):
     assert api.hardware.await_args.args[2] is api.ctx
 
 
-@pytest.mark.parametrize('suffix', ['metrics', 'resource-metrics'])
+def test_resource_endpoint_delegates_all_devices_flag_with_authorized_population(
+    monitoring_api,
+):
+    api = monitoring_api
+    with TestClient(api.app) as client:
+        response = client.get(
+            '/v2/models/9/resource-metrics?all_devices=true&instance_ids=12'
+        )
+    assert response.status_code == 200
+    assert api.hardware.await_args.kwargs['all_devices'] is True
+    assert api.hardware.await_args.kwargs['device_id'] is None
+    assert [instance.id for instance in api.hardware.await_args.args[1]] == [12]
+
+
+@pytest.mark.parametrize(
+    'suffix', ['metrics', 'resource-metrics', 'monitoring-capabilities']
+)
 @pytest.mark.parametrize('identity', ['member', 'personal', 'system'])
 def test_monitoring_does_not_grant_member_personal_or_system_access(
     monitoring_api,
@@ -203,3 +307,4 @@ def test_monitoring_endpoints_are_not_worker_runtime_allowlist_entries(monitorin
     assert response.status_code == 200
     assert ('GET', route.get_model_metrics) not in SYSTEM_ROUTES
     assert ('GET', route.get_model_resource_metrics) not in SYSTEM_ROUTES
+    assert ('GET', route.get_model_monitoring_capabilities) not in SYSTEM_ROUTES

@@ -149,9 +149,40 @@ async def test_sparse_placement_uses_stable_owner_qualified_identity(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_model_access_and_cluster_grant_do_not_grant_worker_metrics(monkeypatch):
+@pytest.mark.parametrize('all_devices', [False, True])
+async def test_custom_hardware_interval_keeps_every_device_on_the_same_bounds(
+    monkeypatch, all_devices
+):
+    bounds = []
+
+    def query(expr, start, end):
+        bounds.append((start, end))
+        labels = {
+            key: json.loads(value)
+            for key, value in re.findall(r'(\w+)=("(?:[^"\\]|\\.)*")', expr)
+        }
+        if 'identity_info' in expr:
+            labels.update(gpu_uuid='GPU-private', gpu_chip_index='2', gpu_index='8')
+        return [{'metric': labels, 'values': [[start, '1'], [end, '1']]}]
+
+    hardware, session, _ = _environment(monkeypatch, [_worker()], query=query)
+    monkeypatch.setattr(hardware.time, 'time', lambda: 5000)
+    result = await _collect(
+        hardware, session, start=1000, end=2000, all_devices=all_devices
+    )
+    assert (result.start, result.end) == (1000, 2000)
+    assert all(pair in ((1000, 2000), (2000, 2000)) for pair in bounds)
+    assert any(pair == (1000, 2000) for pair in bounds)
+    assert result.metrics['gpu_utilization'].series[0].points == [(1000, 1), (2000, 1)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('all_devices', [False, True])
+async def test_model_access_and_cluster_grant_do_not_grant_worker_metrics(
+    monkeypatch, all_devices
+):
     hardware, session, calls = _environment(monkeypatch, [_worker(owner=99)])
-    result = await _collect(hardware, session)
+    result = await _collect(hardware, session, all_devices=all_devices)
     assert result.allocated_gpu_count == 1
     assert result.devices == []
     assert result.reason == 'resource_not_visible'
@@ -507,3 +538,275 @@ async def test_scheduled_allocation_is_visible_before_ports_exist(monkeypatch, m
     assert result.devices[0].current['gpu_memory_used'] == 400
     assert result.available
     assert all('worker_id="9"' not in expr for expr in calls)
+
+
+def _batch_query(workers):
+    def query(expr, start, end):
+        gpu = 'worker_gpu_' in expr
+        identity = 'identity_info' in expr
+        rows = []
+        for worker in workers:
+            base = {
+                'worker_id': str(worker.id),
+                'worker_uuid': worker.worker_uuid,
+                'owner_principal_id': str(worker.owner_principal_id or ''),
+            }
+            for device in worker.status.gpu_devices if gpu else [None]:
+                labels = dict(base)
+                if device is not None:
+                    labels.update(
+                        gpu_uuid=device.uuid,
+                        gpu_chip_index=str(device.device_chip_index),
+                    )
+                if identity:
+                    labels['gpu_index'] = str(device.index)
+                value = (
+                    1
+                    if identity
+                    else (0 if device and device.index == 9 else worker.id)
+                )
+                rows.append(
+                    {
+                        'metric': labels,
+                        'values': [[start, str(value)], [end, str(value)]],
+                    }
+                )
+                rows.append(
+                    {
+                        'metric': {**labels, 'owner_principal_id': 'foreign'},
+                        'values': [[end, '99']],
+                    }
+                )
+        return rows
+
+    return query
+
+
+@pytest.mark.asyncio
+async def test_all_devices_query_all_authorized_gpus_and_unique_workers_in_fixed_batches(
+    monkeypatch,
+):
+    first = _worker(
+        devices=[_device(chip=0), _device(index=9, uuid='GPU-second', chip=0)]
+    )
+    other = _worker(devices=[_device(uuid='GPU-third', chip=0)])
+    other.id, other.name, other.worker_uuid = 8, 'second-worker', 'second-uuid'
+    router = _worker(devices=[])
+    router.id, router.name, router.worker_uuid = 9, 'router-worker', 'router-uuid'
+    workers = [first, other, router]
+    second_instance = _instance(13)
+    second_instance.worker_id = 8
+    router_instance = _instance(14, gpu_indexes=[])
+    router_instance.worker_id = 9
+    hardware, session, calls = _environment(
+        monkeypatch, workers, query=_batch_query(workers)
+    )
+    result = await _collect(
+        hardware,
+        session,
+        [
+            _instance(gpu_indexes=[8, 9]),
+            _instance(12),
+            second_instance,
+            router_instance,
+        ],
+        all_devices=True,
+    )
+    assert result.all_devices and result.selected_device_id is None
+    assert result.allocated_gpu_count == result.allocated_worker_count == 3
+    assert [(worker.id, worker.name) for worker in result.workers] == [
+        (7, 'visible-worker'),
+        (8, 'second-worker'),
+        (9, 'router-worker'),
+    ]
+    assert len(calls) == 17
+    assert sum('identity_info' in expr for expr in calls) == 1
+    for key, metric in result.metrics.items():
+        assert metric.status == 'available' and metric.reason is None
+        assert len(metric.series) == 3
+        assert len(metric.summaries) == 3
+        if key.startswith('gpu_'):
+            assert {line.dimensions.device_id for line in metric.series} == {
+                device.id for device in result.devices
+            }
+        else:
+            assert [line.dimensions.worker_id for line in metric.series] == [7, 8, 9]
+    assert [s.value for s in result.metrics['gpu_utilization'].summaries] == [7, 0, 8]
+    assert all(
+        device.history_available and device.reason is None for device in result.devices
+    )
+    assert 'GPU-private' not in result.model_dump_json()
+    assert all('owner_principal_id="17"' in expr for expr in calls)
+
+
+@pytest.mark.asyncio
+async def test_all_devices_keeps_missing_and_partition_members_without_claiming_zero(
+    monkeypatch,
+):
+    worker = _worker(
+        devices=[
+            _device(chip=0),
+            _device(index=9, uuid='', chip=0),
+            _device(index=10, uuid='MIG-partition', chip=0),
+        ]
+    )
+    hardware, session, calls = _environment(
+        monkeypatch, [worker], query=_batch_query([worker])
+    )
+    result = await _collect(
+        hardware, session, [_instance(gpu_indexes=[8, 9, 10])], all_devices=True
+    )
+    metric = result.metrics['gpu_utilization']
+    assert metric.status == 'available' and metric.reason == 'partial_metric_data'
+    assert [summary.value for summary in metric.summaries] == [7, None, None]
+    assert metric.series[1].points == metric.series[2].points == []
+    assert result.devices[1].reason == 'device_identity_unresolved'
+    assert not result.devices[1].history_available
+    assert result.devices[0].history_available and result.devices[2].history_available
+    sensors = [expr for expr in calls if 'worker_gpu_utilization_percent' in expr]
+    assert all(
+        'MIG-partition' not in expr and 'gpu_uuid=""' not in expr for expr in sensors
+    )
+    assert result.metrics['gpu_memory_used'].summaries[2].value == 7
+
+
+@pytest.mark.asyncio
+async def test_all_devices_preserves_worker_visibility_and_cpu_only_history(
+    monkeypatch,
+):
+    denied = _worker(owner=99)
+    denied.id, denied.name = 8, 'denied-worker'
+    cpu = _worker(devices=[])
+    cpu.id, cpu.name, cpu.worker_uuid = 9, 'cpu-worker', 'cpu-uuid'
+    denied_instance = _instance(12)
+    denied_instance.worker_id = 8
+    cpu_instance = _instance(13, gpu_indexes=[])
+    cpu_instance.worker_id = 9
+    workers = [_worker(), denied, cpu]
+    hardware, session, calls = _environment(
+        monkeypatch, workers, query=_batch_query(workers)
+    )
+    result = await _collect(
+        hardware,
+        session,
+        [_instance(), denied_instance, cpu_instance],
+        all_devices=True,
+    )
+    assert [worker.id for worker in result.workers] == [7, 9]
+    assert [
+        summary.dimensions.worker_id for summary in result.metrics['host_cpu'].summaries
+    ] == [7, 9]
+    assert len(result.devices) == 1
+    assert all(
+        'worker_id="8"' not in expr and 'owner_principal_id="99"' not in expr
+        for expr in calls
+    )
+    assert 'denied-worker' not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_all_devices_rejects_conflicting_selection_and_excess_targets_before_queries(
+    monkeypatch,
+):
+    hardware, session, calls = _environment(monkeypatch, [_worker()])
+    with pytest.raises(InvalidException):
+        await _collect(hardware, session, all_devices=True, device_id='opaque')
+    monkeypatch.setattr(hardware, 'MAX_RESOURCE_TARGETS', 0)
+    with pytest.raises(InvalidException):
+        await _collect(hardware, session, all_devices=True)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_all_devices_failure_keeps_other_families_and_cancels_peer_query(
+    monkeypatch,
+):
+    hardware, session, _ = _environment(monkeypatch, [_worker()])
+    original = hardware.prometheus_query.query_range
+    original_instant = hardware.prometheus_query.query_instant
+    cancelled = asyncio.Event()
+
+    async def ranged(client, url, expr, start, end, step):
+        if 'worker_gpu_power_watts' in expr:
+            await asyncio.sleep(0)
+            raise ValueError('private http://internal/')
+        return await original(client, url, expr, start, end, step)
+
+    async def instant(client, url, expr, at):
+        if 'worker_gpu_power_watts' in expr:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        return await original_instant(client, url, expr, at)
+
+    monkeypatch.setattr(hardware.prometheus_query, 'query_range', ranged)
+    monkeypatch.setattr(hardware.prometheus_query, 'query_instant', instant)
+    result = await _collect(hardware, session, all_devices=True)
+    assert cancelled.is_set()
+    assert result.metrics['gpu_power'].status == 'query_error'
+    assert result.metrics['gpu_power'].series[0].points == []
+    assert result.metrics['gpu_power'].summaries[0].value is None
+    assert result.metrics['gpu_memory_used'].status == 'available'
+    assert result.devices[0].history_available
+    assert 'internal' not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_all_devices_deadline_keeps_inventory_and_empty_authorized_series(
+    monkeypatch,
+):
+    hardware, session, _ = _environment(monkeypatch, [_worker()])
+
+    async def never_finishes(*args):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(hardware, 'COLLECTION_TIMEOUT_SECONDS', 0.01)
+    monkeypatch.setattr(hardware.prometheus_query, 'query_instant', never_finishes)
+    result = await _collect(hardware, session, all_devices=True)
+    assert not result.available
+    assert not result.devices[0].history_available
+    assert result.devices[0].current['gpu_memory_used'] == 400
+    metric = result.metrics['gpu_memory_used']
+    assert len(metric.series) == 1 and metric.series[0].points == []
+    assert metric.series[0].dimensions.device_id == result.devices[0].id
+    assert metric.status == 'query_error'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('count', [1, 32, 128])
+async def test_all_device_query_count_does_not_grow_with_device_count(
+    monkeypatch, count
+):
+    worker = _worker(
+        devices=[
+            _device(index=index, uuid=f'GPU-{index}', chip=0) for index in range(count)
+        ]
+    )
+    hardware, session, calls = _environment(
+        monkeypatch, [worker], query=_batch_query([worker])
+    )
+    result = await _collect(
+        hardware, session, [_instance(gpu_indexes=list(range(count)))], all_devices=True
+    )
+    assert len(calls) == 17
+    assert len(result.metrics['gpu_memory_used'].series) == count
+    assert len(result.metrics['host_cpu'].series) == 1
+    assert all(device.history_available for device in result.devices)
+
+
+@pytest.mark.asyncio
+async def test_all_devices_without_prometheus_keeps_named_gaps_and_real_snapshots(
+    monkeypatch,
+):
+    hardware, session, calls = _environment(monkeypatch, [_worker()])
+    monkeypatch.setattr(hardware.prometheus_query, 'prometheus_url', lambda: None)
+    result = await _collect(hardware, session, all_devices=True)
+    assert result.reason == 'prometheus_unavailable'
+    assert result.devices[0].current['gpu_memory_used'] == 400
+    metric = result.metrics['gpu_memory_used']
+    assert metric.reason == 'prometheus_unavailable' and metric.status == 'query_error'
+    assert len(metric.series) == 1 and metric.series[0].points == []
+    assert metric.series[0].dimensions.device_id == result.devices[0].id
+    assert metric.summaries[0].value is None
+    assert calls == []

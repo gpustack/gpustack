@@ -30,11 +30,16 @@ from gpustack.schemas.model_metrics import (
     MetricSection,
     MetricView,
     ModelMetrics,
+    ModelMonitoringCapabilities,
     ModelResourceMetrics,
     TrendStatistic,
 )
 from gpustack.server.model_metrics import collect_model_metrics
 from gpustack.server.model_hardware_metrics import collect_model_resource_metrics
+from gpustack.server.model_monitoring_time import (
+    collect_monitoring_capabilities,
+    monitoring_interval,
+)
 from gpustack.schemas.inference_backend import is_custom_backend
 from gpustack.schemas.models import (
     CategoryEnum,
@@ -145,7 +150,11 @@ from gpustack.routes.model_common import (
     model_state_stream_filter,
 )
 from gpustack.config.config import get_global_config
-from gpustack.utils.grafana import build_model_dashboard_url, resolve_grafana_base_url
+from gpustack.utils.grafana import (
+    build_model_dashboard_url,
+    model_monitoring_dashboard_params,
+    resolve_grafana_base_url,
+)
 from gpustack.utils.lora_model_source import lora_route_name_for
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
@@ -294,8 +303,40 @@ async def get_model_dashboard(
     ctx: TenantContextDep,
     id: int,
     request: Request,
+    window: Optional[str] = None,
+    instance_ids: Optional[str] = None,
+    role: Optional[MetricRole] = None,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
 ):
-    model = await _get_model(session=session, ctx=ctx, id=id)
+    extra_params = None
+    if any(value is not None for value in (window, instance_ids, role, start, end)):
+        model, selected, _, seconds = await _monitoring_population(
+            session, ctx, id, instance_ids, role or 'all', window or '1h', start, end
+        )
+        if not model.disaggregation and role not in (None, 'all'):
+            raise BadRequestException(message="The model dashboard has no role filter")
+        if instance_ids is not None and not selected:
+            raise BadRequestException(message="No instances match the selected role")
+        if (
+            model.disaggregation
+            and instance_ids is not None
+            and not any(i.role in ('prefill', 'decode', 'router') for i in selected)
+        ):
+            raise BadRequestException(
+                message="No supported PD roles match the selection"
+            )
+        extra_params = model_monitoring_dashboard_params(
+            model,
+            selected,
+            window_seconds=seconds,
+            role=role or 'all',
+            restrict_instances=instance_ids is not None,
+            start=start,
+            end=end,
+        )
+    else:
+        model = await _get_model(session=session, ctx=ctx, id=id)
 
     cfg = get_global_config()
 
@@ -312,6 +353,7 @@ async def get_model_dashboard(
         resolve_grafana_base_url(cfg, request),
         model,
         cluster_name=cluster.name if cluster is not None else None,
+        extra_params=extra_params,
         request=request,
     )
     if dashboard_url is None:
@@ -429,14 +471,20 @@ def _monitoring_instance_ids(value: Optional[str]) -> Optional[Set[int]]:
     return identities
 
 
-async def _monitoring_population(session, ctx, id, instance_ids, role, window):
+async def _monitoring_population(
+    session, ctx, id, instance_ids, role, window, start=None, end=None
+):
     # The router tier also enforces organization ownership. Keep direct handler
     # calls and SYSTEM runtime credentials behind the same monitoring boundary.
     if ctx is None or getattr(ctx.user, 'kind', None) == PrincipalType.SYSTEM:
         raise ForbiddenException(message="Model monitoring requires a user principal")
     ctx.assert_org_role(OrgRole.OWNER)
     try:
-        seconds = parse_metrics_window(window)
+        seconds = (
+            monitoring_interval(parse_metrics_window(window)).seconds
+            if start is None and end is None
+            else monitoring_interval(0, start, end).seconds
+        )
     except ValueError as exc:
         raise BadRequestException(message="Invalid monitoring window") from exc
     requested = _monitoring_instance_ids(instance_ids)
@@ -474,11 +522,14 @@ async def get_model_metrics(
     role: MetricRole = 'all',
     view: MetricView = 'aggregate',
     statistic: TrendStatistic = 'percentiles',
+    all_statistics: bool = False,
     section: MetricSection = 'all',
+    start: Optional[float] = None,
+    end: Optional[float] = None,
 ) -> ModelMetrics:
     """Engine observations for the authorized current instance population."""
     model, instances, upstreams, seconds = await _monitoring_population(
-        session, ctx, id, instance_ids, role, window
+        session, ctx, id, instance_ids, role, window, start, end
     )
     return await collect_model_metrics(
         model,
@@ -486,10 +537,11 @@ async def get_model_metrics(
         window_seconds=seconds,
         role=role,
         view=view,
-        statistic=statistic,
+        statistic='all' if all_statistics else statistic,
         section=section,
         upstream_instances=upstreams,
         client=getattr(request.app.state, 'http_client_no_proxy', None),
+        **({'start': start, 'end': end} if start is not None else {}),
     )
 
 
@@ -503,10 +555,13 @@ async def get_model_resource_metrics(
     instance_ids: Optional[str] = None,
     role: MetricRole = 'all',
     device_id: Optional[str] = None,
+    all_devices: bool = False,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
 ) -> ModelResourceMetrics:
     """History of independently visible devices associated with the deployment."""
     model, instances, _, seconds = await _monitoring_population(
-        session, ctx, id, instance_ids, role, window
+        session, ctx, id, instance_ids, role, window, start, end
     )
     return await collect_model_resource_metrics(
         model,
@@ -515,7 +570,23 @@ async def get_model_resource_metrics(
         session,
         window_seconds=seconds,
         device_id=device_id,
+        all_devices=all_devices,
         client=getattr(request.app.state, 'http_client_no_proxy', None),
+        **({'start': start, 'end': end} if start is not None else {}),
+    )
+
+
+@router.get("/{id}/monitoring-capabilities", response_model=ModelMonitoringCapabilities)
+async def get_model_monitoring_capabilities(
+    request: Request,
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+) -> ModelMonitoringCapabilities:
+    """Sanitized storage-policy hints behind the same Model visibility guard."""
+    model, _, _, _ = await _monitoring_population(session, ctx, id, None, 'all', '1h')
+    return await collect_monitoring_capabilities(
+        model.id, client=getattr(request.app.state, 'http_client_no_proxy', None)
     )
 
 

@@ -21,6 +21,19 @@ MetricSection = Literal['all', 'llm', 'pd']
 TrendStatistic = Literal['avg', 'p50', 'p95', 'p99', 'percentiles']
 
 
+class ModelMonitoringCapabilities(BaseModel):
+    model_id: int
+    min_query_seconds: int = 300
+    max_query_seconds: int = 604800
+    supports_custom_range: bool = True
+    retention_seconds: Optional[int] = None
+    retention_size_based: bool = False
+    retention_known: bool = False
+    retention_source: Literal[
+        'prometheus_runtimeinfo', 'prometheus_flags', 'unknown'
+    ] = 'unknown'
+
+
 class MetricDimensions(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
@@ -102,6 +115,11 @@ class ResourceDevice(BaseModel):
     last_reported_at: Optional[FiniteFloat] = None
 
 
+class ResourceWorker(BaseModel):
+    id: int
+    name: str
+
+
 class ModelResourceMetrics(BaseModel):
     model_id: int
     source: Literal['hardware'] = 'hardware'
@@ -115,5 +133,7 @@ class ModelResourceMetrics(BaseModel):
     allocated_gpu_count: int = 0
     allocated_worker_count: int = 0
     devices: List[ResourceDevice] = Field(default_factory=list)
+    workers: List[ResourceWorker] = Field(default_factory=list)
+    all_devices: bool = False
     selected_device_id: Optional[str] = None
     metrics: Dict[str, ModelMetric] = Field(default_factory=dict)
