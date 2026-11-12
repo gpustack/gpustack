@@ -28,6 +28,7 @@ from gpustack.schemas.models import (
     SourceEnum,
     get_mmproj_filename,
 )
+from gpustack.schemas.models import MMPROJ_GGUF_PATTERN
 from gpustack.utils.cache import is_cached, load_cache, save_cache
 from gpustack.utils import model_config
 
@@ -567,6 +568,27 @@ quantization_list = [
 ]
 
 
+def is_mmproj_file(file_path: str) -> bool:
+    """Multimodal projector files are CLIP weights that can only be loaded
+    via --mmproj, never as the main model. Matched case-insensitively
+    (fnmatch is case-sensitive on Linux) against the file name only, so this
+    is safe for absolute local paths where a cache directory (e.g.
+    ".../mmproj-cache/org/model/model-Q8_0.gguf") must not disqualify the
+    main weights."""
+    return fnmatch.fnmatch(Path(file_path).name.lower(), MMPROJ_GGUF_PATTERN.lower())
+
+
+def is_mmproj_repo_path(repo_path: str) -> bool:
+    """Same projector detection for repository-relative paths, where the
+    full path is significant: a projector may live in an "mmproj/" subfolder
+    with an otherwise plain file name, and the extra-file matcher identifies
+    it by the full repo path. Repository paths carry no cache prefix, so
+    matching the whole string cannot produce false positives."""
+    return is_mmproj_file(repo_path) or fnmatch.fnmatch(
+        Path(repo_path).as_posix().lower(), MMPROJ_GGUF_PATTERN.lower()
+    )
+
+
 def get_hugging_face_model_min_gguf_path(
     model_id: str,
     token: Optional[str] = None,
@@ -574,7 +596,9 @@ def get_hugging_face_model_min_gguf_path(
     api = HfApi(token=token)
     files = api.list_repo_files(model_id)
 
-    gguf_files = sorted([f for f in files if f.endswith(".gguf")])
+    gguf_files = sorted(
+        [f for f in files if f.endswith(".gguf") and not is_mmproj_repo_path(f)]
+    )
     if not gguf_files:
         return None
 
@@ -619,7 +643,9 @@ def get_model_scope_model_min_gguf_path(
     files = api.get_model_files(model_id, recursive=True)
     file_paths: List[str] = [file["Path"] for file in files]
 
-    gguf_files = sorted([f for f in file_paths if f.endswith(".gguf")])
+    gguf_files = sorted(
+        [f for f in file_paths if f.endswith(".gguf") and not is_mmproj_repo_path(f)]
+    )
     if not gguf_files:
         return None
 

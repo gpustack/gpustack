@@ -24,7 +24,9 @@ from gpustack.schemas.models import (
     SourceEnum,
 )
 from gpustack.server.controllers import (
+    _first_resolved_path,
     _refresh_instance_download_progress,
+    _sync_main_worker_ready,
     _sync_subordinate_worker,
     sync_distributed_model_file_state,
     sync_main_worker_model_file_state,
@@ -378,3 +380,78 @@ async def test_file_sync_rechecks_generation_after_each_commit(monkeypatch):
     await controllers.sync_instance_files_state(MagicMock(), instance, files)
     primary.assert_awaited_once()
     subordinate.assert_not_awaited()
+
+
+def test_first_resolved_path_skips_mmproj():
+    # The primary resolved path feeds `-m`; projector files must never be
+    # picked even when they lead the list (stale or reordered records).
+    file = _model_file(
+        10,
+        MAIN_WORKER_ID,
+        ModelFileStateEnum.READY,
+        [
+            "/cache/model_scope/ggml-org/vllm-d3-mini-GGUF/mmproj-vllm-d3-mini-Q8_0.gguf",
+            "/cache/model_scope/ggml-org/vllm-d3-mini-GGUF/vllm-d3-mini-BF16.gguf",
+        ],
+    )
+
+    assert (
+        _first_resolved_path([file])
+        == "/cache/model_scope/ggml-org/vllm-d3-mini-GGUF/vllm-d3-mini-BF16.gguf"
+    )
+
+
+@pytest.mark.asyncio
+async def test_main_worker_ready_picks_main_over_mmproj(monkeypatch):
+    from gpustack.server import controllers
+
+    instance = _distributed_instance(sub_download_progress=100)
+    instance.state = ModelInstanceStateEnum.DOWNLOADING
+    file = _model_file(
+        10,
+        MAIN_WORKER_ID,
+        ModelFileStateEnum.READY,
+        [
+            "/cache/mmproj-vllm-d3-mini-Q8_0.gguf",
+            "/cache/vllm-d3-mini-BF16.gguf",
+        ],
+    )
+
+    async def no_promote(session, instance):
+        return False
+
+    monkeypatch.setattr(controllers, '_promote_to_starting_if_complete', no_promote)
+
+    await _sync_main_worker_ready(MagicMock(), instance, file, False)
+
+    assert instance.resolved_path == "/cache/vllm-d3-mini-BF16.gguf"
+
+
+@pytest.mark.asyncio
+async def test_main_worker_ready_skips_update_when_only_mmproj_resolved(monkeypatch):
+    from gpustack.server import controllers
+
+    # A projector-only file list leaves resolved_path unset; the handler
+    # must not flag need_update, which would re-run the instance update on
+    # every subsequent READY sync.
+    instance = _distributed_instance(sub_download_progress=100)
+    instance.state = ModelInstanceStateEnum.DOWNLOADING
+    file = _model_file(
+        10,
+        MAIN_WORKER_ID,
+        ModelFileStateEnum.READY,
+        ["/cache/mmproj-vllm-d3-mini-Q8_0.gguf"],
+    )
+
+    async def no_promote(session, instance):
+        return False
+
+    monkeypatch.setattr(controllers, '_promote_to_starting_if_complete', no_promote)
+    monkeypatch.setattr(
+        controllers, '_refresh_instance_download_progress', lambda *a, **k: False
+    )
+
+    need_update = await _sync_main_worker_ready(MagicMock(), instance, file, False)
+
+    assert instance.resolved_path is None
+    assert need_update is False

@@ -142,6 +142,7 @@ from gpustack.validation.pd.parameters import (
 )
 from gpustack.utils.command import find_last_int_parameter, find_last_parameter
 from gpustack.utils.pd_router_launch import router_backend_definition
+from gpustack.utils.hub import is_mmproj_file
 from gpustack.server import pd_membership
 from gpustack.server.pd_membership import outcome_for as membership_outcome_for
 from gpustack.server.cache_services import resolve_instance_cache_config_safe
@@ -6346,12 +6347,15 @@ def _first_resolved_path(
     files: Optional[List[ModelFile]], *, exclude_lora: bool = False
 ) -> Optional[str]:
     """Return the first resolved path among `files`, skipping LoRA files when
-    `exclude_lora` is set. None if no file carries a resolved path."""
+    `exclude_lora` is set. mmproj paths are skipped so a stale or reordered
+    resolved_paths list can never hand the projector to `-m`. None if no file
+    carries a non-mmproj resolved path."""
     for file in files or []:
         if exclude_lora and file.is_lora:
             continue
-        if file.resolved_paths:
-            return file.resolved_paths[0]
+        for path in file.resolved_paths or []:
+            if not is_mmproj_file(path):
+                return path
     return None
 
 
@@ -6439,9 +6443,15 @@ async def _sync_main_worker_ready(
             _is_primary_instance_model_file(file, instance, is_draft_model)
             and not instance.resolved_path
         ):
-            if file.resolved_paths:
-                instance.resolved_path = file.resolved_paths[0]
-            need_update = True
+            # _first_resolved_path skips projector files so a file list that
+            # arrives with the mmproj first cannot seed `-m` with CLIP weights.
+            # Guard on a non-None result: a projector-only file leaves
+            # resolved_path unset, and an unconditional need_update would
+            # re-run the DB update on every subsequent READY sync.
+            resolved = _first_resolved_path([file])
+            if resolved:
+                instance.resolved_path = resolved
+                need_update = True
         if _refresh_instance_download_progress(instance, file, file_ready=True):
             need_update = True
 
