@@ -2,7 +2,7 @@ import asyncio
 import json
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from filelock import Timeout
@@ -177,6 +177,60 @@ def test_download_task_teardown_tolerates_missing_clientsets():
     task = _bare_download_task()
 
     task._close_clientsets()
+
+
+@pytest.mark.asyncio
+async def test_local_path_cleanup_leaves_the_operator_files_alone(
+    monkeypatch, tmp_path
+):
+    """A local-path row points at the operator's own files, so cleanup must not
+    remove them -- while the download log, which is ours, is still cleaned."""
+    manager = model_file_manager.ModelFileManager(1, MagicMock(), MagicMock())
+    manager._config.log_dir = str(tmp_path)
+    model_dir = tmp_path / "models" / "DeepSeek-R1-0528"
+    model_dir.mkdir(parents=True)
+    (model_dir / "weights.bin").write_text("x")
+    local_file = ModelFile(
+        id=1,
+        worker_id=1,
+        source=SourceEnum.LOCAL_PATH,
+        local_path=str(model_dir),
+        cleanup_on_delete=True,
+        resolved_paths=[str(model_dir)],
+    )
+    cleanup_log = MagicMock()
+    monkeypatch.setattr(model_file_manager, "_cleanup_download_log", cleanup_log)
+    monkeypatch.setattr(
+        manager, "_get_incomplete_model_files", AsyncMock(return_value=set())
+    )
+
+    await manager._handle_deletion(local_file)
+
+    assert (model_dir / "weights.bin").read_text() == "x"
+    cleanup_log.assert_called_once_with(str(tmp_path), 1)
+
+
+@pytest.mark.asyncio
+async def test_remote_cleanup_still_deletes_resolved_paths(monkeypatch, tmp_path):
+    manager = model_file_manager.ModelFileManager(1, MagicMock(), MagicMock())
+    manager._config.log_dir = str(tmp_path)
+    remote_file = ModelFile(
+        id=2,
+        worker_id=1,
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/model",
+        cleanup_on_delete=True,
+        resolved_paths=[str(tmp_path / "model")],
+    )
+    (tmp_path / "model").mkdir()
+    (tmp_path / "model" / "weights.bin").write_text("x")
+    monkeypatch.setattr(
+        manager, "_get_incomplete_model_files", AsyncMock(return_value=set())
+    )
+
+    await manager._handle_deletion(remote_file)
+
+    assert not (tmp_path / "model").exists()
 
 
 @pytest.mark.asyncio
