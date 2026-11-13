@@ -267,3 +267,87 @@ def test_rendered_dpa_preserves_native_single_node_port_selection(role):
     sglang_port_layout_for_instance(model, mi).validate_runtime_port_demand(
         mi, ['--dp=2', '--enable-dp-attention']
     )
+
+
+@pytest.mark.parametrize('count', [None, 1, 13, 14])
+@pytest.mark.parametrize(
+    'cp_options',
+    [
+        ['--attn-cp-size=4', '--enable-nsa-prefill-context-parallel'],
+        [
+            '--dp-size=2',
+            '--enable-dsa-prefill-context-parallel',
+            '--dsa-prefill-cp-mode=in-seq-split',
+        ],
+        ['--dp-size=2', '--enable-prefill-context-parallel'],
+        ['--dp-size=2', '--enable-prefill-cp', '--cp-strategy=zigzag'],
+    ],
+)
+def test_cp_runtime_requires_complete_internal_reservation(count, cp_options):
+    model, mi = _model(), _instance()
+    model.backend_parameters = ['--tp-size=4'] + cp_options
+    mi.named_ports = (
+        {'_sglang_connecting': PortBand(base=40010, count=count)}
+        if count is not None
+        else None
+    )
+    layout = sglang_port_layout_for_instance(model, mi)
+    before = mi.model_dump()
+    if count == 14:
+        layout.validate_runtime_port_demand(mi, model.backend_parameters)
+    else:
+        with pytest.raises(ValueError, match='14 ports.*restart the model deployment'):
+            layout.validate_runtime_port_demand(mi, model.backend_parameters)
+    assert mi.model_dump() == before
+
+
+def test_attention_cp_size_alone_keeps_native_port_selection():
+    model, mi = _model(), _instance()
+    model.backend_parameters = ['--tp-size=4', '--attn-cp-size=4']
+    mi.named_ports = None
+    layout = sglang_port_layout_for_instance(model, mi)
+    assert not layout.attention and layout.internal_count == 0
+    assert layout.bind(mi, mi.worker_ip).arguments == ()
+
+
+@pytest.mark.parametrize(
+    'flag',
+    [
+        '--enable-dsa-prefill-context-parallel',
+        '--enable-prefill-context-parallel',
+        '--enable-prefill-cp',
+    ],
+)
+@pytest.mark.parametrize(
+    'dp', [None, '--dp-size=1', '--dp=1', '--data-parallel-size=1']
+)
+def test_generic_cp_without_attention_dp_keeps_native_ports(flag, dp):
+    model, mi = _model(attention=False, pd=True), _instance(role='prefill')
+    model.backend_parameters = ['--tp-size=4', flag] + ([dp] if dp else [])
+    mi.named_ports = None
+    layout = sglang_port_layout_for_instance(model, mi)
+    assert not layout.attention and layout.internal_count == 0
+    layout.validate_runtime_port_demand(mi, model.backend_parameters)
+
+
+@pytest.mark.parametrize(
+    'flag',
+    [
+        '--enable-dsa-prefill-context-parallel',
+        '--enable-prefill-context-parallel',
+        '--enable-prefill-cp',
+    ],
+)
+@pytest.mark.parametrize('is_mla', [False, True, None])
+def test_generic_cp_launch_checks_model_metadata(flag, is_mla):
+    model, mi = _model(attention=False, pd=True), _instance(role='prefill')
+    model.backend_parameters = ['--tp-size=4', '--dp-size=2', flag]
+    mi.named_ports = None
+    # Admission has no model config and budgets for possible implicit DPA.
+    assert sglang_port_layout_for_instance(model, mi).internal_count == 14
+    layout = sglang_port_layout_for_instance(model, mi, is_mla=is_mla)
+    if is_mla is False:
+        layout.validate_runtime_port_demand(mi, model.backend_parameters)
+    else:
+        with pytest.raises(ValueError, match='14 ports.*restart the model deployment'):
+            layout.validate_runtime_port_demand(mi, model.backend_parameters)
