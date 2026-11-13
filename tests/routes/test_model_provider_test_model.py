@@ -146,3 +146,32 @@ class TestThinkingRestrictedRetry:
 
         assert result.accessible is True
         assert asked[0]["json"].get("enable_thinking") is None
+
+
+class TestProviderChatCompletionPaths:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("provider_type", "expected_path"),
+        [
+            (ModelProviderTypeEnum.GEMINI, "/v1beta/openai/chat/completions"),
+            (ModelProviderTypeEnum.GITHUB, "/chat/completions"),
+            (ModelProviderTypeEnum.GROQ, "/openai/v1/chat/completions"),
+            (ModelProviderTypeEnum.OPENROUTER, "/api/v1/chat/completions"),
+        ],
+    )
+    async def test_test_model_dials_provider_chat_uri(
+        self, monkeypatch, provider_type, expected_path
+    ):
+        from pydantic import TypeAdapter
+        from gpustack.schemas.model_provider import ProviderConfigType
+
+        asked = _stub_upstream(monkeypatch, lambda _request: _ok())
+        config = TypeAdapter(ProviderConfigType).validate_python(
+            {"type": provider_type.value}
+        )
+
+        result = await _test_model(config, model_name="test-model")
+
+        assert result.accessible is True
+        assert [call["path"] for call in asked] == [expected_path]
+        assert asked[0]["json"]["model"] == "test-model"
