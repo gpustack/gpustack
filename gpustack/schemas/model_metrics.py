@@ -18,7 +18,7 @@ MetricStatus = Literal[
 MetricView = Literal['aggregate', 'instances']
 MetricRole = Literal['all', 'prefill', 'decode', 'router']
 MetricSection = Literal['all', 'llm', 'pd']
-TrendStatistic = Literal['avg', 'p50', 'p95', 'p99', 'percentiles']
+TrendStatistic = Literal['avg', 'p50', 'p95', 'p99']
 
 
 class MonitoringCapabilities(BaseModel):

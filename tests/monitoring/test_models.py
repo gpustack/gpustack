@@ -152,7 +152,7 @@ async def test_histogram_summaries_always_cover_four_full_window_statistics(
         _model(),
         [_instance()],
         window_seconds=3600,
-        statistic='avg',
+        statistics=('avg',),
         section='llm',
         client=object(),
     )
@@ -193,7 +193,6 @@ async def test_custom_interval_freezes_every_query_and_summary_window(monkeypatc
         window_seconds=3600,
         start=1000,
         end=2000,
-        statistic='all',
         client=object(),
     )
     assert (result.start, result.end) == (1000, 2000)
@@ -213,8 +212,12 @@ async def test_custom_interval_freezes_every_query_and_summary_window(monkeypatc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('view', ['aggregate', 'instances'])
-async def test_all_latency_trends_share_a_window_and_retain_four_statistics(
-    monkeypatch, view
+@pytest.mark.parametrize(
+    'statistics',
+    [('avg', 'p50', 'p95', 'p99'), ('avg',), ('p50', 'p99')],
+)
+async def test_selected_latency_trends_share_a_window_and_keep_full_summaries(
+    monkeypatch, view, statistics
 ):
     module = _collector()
 
@@ -233,28 +236,31 @@ async def test_all_latency_trends_share_a_window_and_retain_four_statistics(
         _model(),
         [_instance()],
         window_seconds=3600,
-        statistic='all',
+        statistics=statistics,
         view=view,
         client=object(),
     )
     metric = result.metrics['ttft']
-    assert [series.statistic for series in metric.series] == [
+    assert [series.statistic for series in metric.series] == list(statistics)
+    assert all(series.points == [(4910, 0.1), (5000, 0.2)] for series in metric.series)
+    assert all(summary.sample_count == 10 for summary in metric.summaries)
+    assert [summary.statistic for summary in metric.summaries] == [
         'avg',
         'p50',
         'p95',
         'p99',
     ]
-    assert all(series.points == [(4910, 0.1), (5000, 0.2)] for series in metric.series)
-    assert all(summary.sample_count == 10 for summary in metric.summaries)
     queries = [
         query
         for kind, query in requests
         if kind == 'range' and 'time_to_first_token_seconds_' in query
     ]
-    assert len(queries) == 4
+    assert len(queries) == len(statistics)
     assert all('[90s]' in query for query in queries)
-    for quantile in ('0.5', '0.95', '0.99'):
-        assert any(f'histogram_quantile({quantile},' in query for query in queries)
+    for statistic, quantile in (('p50', '0.5'), ('p95', '0.95'), ('p99', '0.99')):
+        assert any(f'histogram_quantile({quantile},' in query for query in queries) == (
+            statistic in statistics
+        )
 
 
 @pytest.mark.asyncio

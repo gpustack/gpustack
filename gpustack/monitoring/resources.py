@@ -1,7 +1,6 @@
 """Current authorized resource associations and owner-qualified hardware history."""
 
 from collections import Counter
-import math
 import time
 from typing import List, Optional, Set
 
@@ -27,6 +26,7 @@ from gpustack.schemas.workers import Worker
 from gpustack.utils.model_instance_workers import get_model_instance_worker_match
 
 from . import hardware
+from . import config as query_config
 
 
 def instance_gpu_indexes(instance: ModelInstance, worker_id: int) -> Set[int]:
@@ -202,7 +202,9 @@ async def collect_resource_metrics(
         selected_device_id=device_id,
         start=interval.start,
         end=interval.end,
-        step=max(15, math.ceil(interval.seconds / 240)),
+        step=query_config.get_query_config().time_windows.hardware.step(
+            interval.seconds
+        ),
         last_refreshed_at=interval.end,
         devices=[device.public for device in scoped],
     )

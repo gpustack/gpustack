@@ -39,12 +39,16 @@ from gpustack.utils.model_instance_workers import (
 )
 
 from . import prometheus as prometheus_query
-from .catalog import HARDWARE_DEFINITIONS as _DEFINITIONS, HARDWARE_KEYS
+from .catalog import (
+    HARDWARE_DEFINITIONS as _DEFINITIONS,
+    HARDWARE_KEYS,
+    HARDWARE_QUERY_PROFILES,
+)
+from . import config as query_config
 from .time_range import monitoring_interval
 
 HISTORY_SCOPE = 'owner_qualified_current_associated_resources'
 COLLECTION_TIMEOUT_SECONDS = 12
-FRESHNESS_SECONDS = 120
 MAX_RESOURCE_TARGETS = 512
 
 
@@ -99,8 +103,16 @@ def _selector(family, labels):
     return f'gpustack:{family}{{{matchers}}}'
 
 
-def _fresh(selector):
-    return f'({selector}) and (time() - timestamp({selector}) <= {FRESHNESS_SECONDS})'
+def _fresh(selector, profile='hardware_gauge'):
+    config = query_config.get_query_config()
+    return config.query(
+        profile,
+        'gauge',
+        'sample',
+        scope='hardware',
+        selector=selector,
+        freshness_seconds=config.time_windows.hardware.freshness_seconds,
+    )
 
 
 def _matches(row, labels):
@@ -303,7 +315,7 @@ async def _query_metric(
     empty_reason='no_samples',
 ):
     definition = _DEFINITIONS[key]
-    expression = _fresh(_selector(definition[0], labels))
+    expression = _fresh(_selector(definition[0], labels), HARDWARE_QUERY_PROFILES[key])
 
     async def query(kind):
         async with semaphore:
@@ -532,7 +544,9 @@ def _all_metric(key, targets, history=(), current=(), *, query_failed=False):
 
 async def _query_all_metric(key, targets, response, client, url, semaphore):
     selectors = {
-        _fresh(_selector(_DEFINITIONS[key][0], target.labels))
+        _fresh(
+            _selector(_DEFINITIONS[key][0], target.labels), HARDWARE_QUERY_PROFILES[key]
+        )
         for target in targets
         if target.labels is not None
     }
@@ -705,7 +719,7 @@ async def collect_model_resource_metrics(
         model_id=model.id,
         start=start,
         end=end,
-        step=max(15, math.ceil(window_seconds / 240)),
+        step=query_config.get_query_config().time_windows.hardware.step(window_seconds),
         last_refreshed_at=end,
         history_scope=HISTORY_SCOPE,
         allocated_gpu_count=len(associations),

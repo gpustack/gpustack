@@ -9,8 +9,10 @@ Server process component. It starts no background jobs and imports no HTTP route
 
 | Module | Responsibility |
 | --- | --- |
-| `catalog.py` | Chart keys, normalized metric families, units, aggregation kinds and sensor bounds |
-| `queries.py` | Model/source selectors, reset-aware counters, histogram queries and compatible-bucket statistics |
+| `../assets/monitoring-queries.yaml` | Chart-to-metric map, metric families/profiles, actual PromQL expressions and default time policies |
+| `config.py` | Strict YAML loading, reference/variable validation and non-executable template binding |
+| `catalog.py` | Effective metric declarations and backend semantic overrides resolved from YAML |
+| `queries.py` | Authorized Model/source bindings, mandatory guard application and compatible-bucket statistics |
 | `prometheus.py` | Shared Prometheus HTTP transport, response validation and query-window parsing |
 | `time_range.py` | Fixed/relative interval validation and observed Prometheus retention configuration |
 | `models.py` | Model observations, PD role selection, coverage and summary/series assembly |
@@ -53,6 +55,63 @@ average of instance percentiles. Missing observations remain missing, including
 when an engine does not export a metric. Current inventory and allocation
 metadata come from resource records and do not replay historical ownership.
 
+## Find or change a query
+
+[monitoring-queries.yaml](../assets/monitoring-queries.yaml) is the Server's single
+query declaration file for native Model/Worker/GPU charts. Start at `charts`,
+follow each API metric key into `metrics` or `hardware_metrics`, then follow
+`query_profile` into `profiles`. The actual PromQL bodies are visible there:
+`rate`, `increase`, Avg, P50/P95/P99 and hardware freshness are declarations,
+not Python string literals. `expressions` contains the shared source guard,
+aggregation and population-matching templates. Collectors always apply them.
+
+For example, `model.ttft` references `ttft`, whose family is
+`gpustack:time_to_first_token_seconds` and profile is `histogram`. That profile
+declares `p95: histogram_quantile(0.95, ${buckets})`. `${buckets}` is assembled
+from the same profile's rate expression, the mandatory source guard and the
+declared grouping. A metric can select a specialized profile without changing
+other metrics. Backend overrides preserve existing differences such as a
+reported cache-hit Gauge versus a ratio of cumulative Counters.
+
+Every hardware metric explicitly declares `kind: gauge`, matching the current
+sensor query support. The loader requires the field and checks its kind and
+hardware scope against the selected query profile.
+
+Variables such as `${selector}`, `${grouping}` and `${window_seconds}` are bound
+by the Server from authorized resources and validated request parameters. This
+uses `string.Template`, not `eval` or executable expressions. The packaged file
+is trusted application configuration, not a tenant upload or a new public API.
+Unknown fields, missing variables, duplicate YAML keys, mismatched profile types
+and invalid chart references fail validation. A query profile cannot opt out of
+the collector's source guard or identity checks.
+
+`time_windows` holds the existing defaults: LLM step targets 120 intervals with
+a 15-second floor and a 60-second rate-window margin; hardware targets 240
+intervals with the same floor and a 120-second freshness limit. Interval
+validation, full-range summaries, histogram compatibility and response DTOs
+remain code responsibilities. Chart metadata is for auditing and reference
+validation; its English `description` fields are developer documentation, not
+API display text or translation keys. The UI owns localized chart titles and
+React page layout. Client-derived
+Token totals and memory percentages are marked `derived_in_ui`, never evaluated
+from the description string.
+
+The file is cached per Server process. Restart the Server after changing it.
+Validate before starting with:
+
+```sh
+uv run --no-sync python -c 'from gpustack.monitoring.config import get_query_config; get_query_config()'
+```
+
+Query declarations do not define API paths, filter parameters or response keys. Raw exporter
+version mappings still belong to the Worker's `metrics_config.yaml`; Cache
+provider declarations stay in `cache-providers.yaml`.
+
+The runtime API selects latency curves with one comma-separated `statistic`
+parameter: `avg`, `p50,p99`, or `avg,p50,p95,p99`. Omitting it requests all four,
+in either aggregate or instance view. Full-window summaries retain all four
+statistics independently of the selected curves.
+
 ## Compatibility and expression maintenance
 
 There are three related compatibility boundaries:
@@ -76,8 +135,10 @@ There are three related compatibility boundaries:
    basis. The declaration chooses forms such as gauge, rate, counter ratio,
    gauge ratio and histogram average, and `cache.py` builds the actual PromQL.
 3. **Chart semantics and PromQL.**
-   `catalog.py`, `queries.py` and the collectors operate on those normalized
-   families. They are maintained and released with GPUStack's Git version.
+   `monitoring-queries.yaml` declares the queries over normalized families;
+   `schema_version: 1` versions its file format, not engine releases or historical
+   samples. YAML and its compiler/collectors are maintained and released with
+   GPUStack's Git version.
    There is no independent PromQL revision table. Selecting a provider-version
    declaration is distinct from versioning the query builders themselves. Native
    detail queries do not read expressions from Grafana dashboards.
@@ -103,8 +164,10 @@ When maintaining this boundary:
   than adding a copy of every chart expression for each backend version.
 - Preserve a normalized family's meaning and unit. A semantic change needs a
   distinct family instead of combining incompatible historical samples.
-- Add chart definitions and query behavior here when a new semantic chart is
-  needed; changing only a Grafana panel does not change native detail charts.
+- Add metric definitions, profiles and chart references to
+  `monitoring-queries.yaml` when a new semantic query is needed. A new UI chart
+  also needs the corresponding frontend component; changing only a Grafana panel
+  does not change native detail charts.
 - Verify compatibility against the fixed payloads and audited expectations under
   `tests/fixtures/runtime_metrics/`, not expected data generated from the same YAML.
 

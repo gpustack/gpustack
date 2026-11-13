@@ -6,6 +6,8 @@ import math
 import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from . import config as query_config
+
 SOURCE_LABELS = (
     'cluster_id',
     'model_id',
@@ -119,25 +121,40 @@ class MetricQueryScope:
         return '{' + ','.join(exact) + '}'
 
     def guard(self, expression: str, history_seconds: Optional[int] = None) -> str:
-        success = 'gpustack:runtime_metrics_scrape_status' + self.selector(
-            {'status': 'success'}
+        config = query_config.get_query_config()
+        success = config.common(
+            'engine_success', selector=self.selector({'status': 'success'})
         )
-        inventory = 'gpustack:model_instance_source_info' + self.selector()
+        inventory = config.common('engine_inventory', selector=self.selector())
         if history_seconds is not None:
-            success = f'max_over_time({success}[{history_seconds}s])'
-            inventory = f'max_over_time({inventory}[{history_seconds}s])'
-        keys = ', '.join(SOURCE_LABELS)
-        guarded = (
-            f'({expression}) and on ({keys}) '
-            f'(max by ({keys}) ({success} == 1)) and on ({keys}) '
-            f'(max by ({keys}) ({inventory} == 1))'
+            success = config.common(
+                'history_presence', expression=success, window_seconds=history_seconds
+            )
+            inventory = config.common(
+                'history_presence', expression=inventory, window_seconds=history_seconds
+            )
+        return config.common(
+            'engine_guard',
+            expression=expression,
+            source_labels=', '.join(SOURCE_LABELS),
+            plumbing_labels=', '.join(PLUMBING_LABELS),
+            success=success,
+            inventory=inventory,
         )
-        return f'max without ({", ".join(PLUMBING_LABELS)}) ({guarded})'
 
 
 def _reduce(expression, scope, grouping=None, operation='sum') -> str:
     labels = scope.grouping if grouping is None else grouping
-    return f'{operation} by ({", ".join(labels)}) ({expression})'
+    if operation not in ('sum', 'avg', 'max', 'count') or any(
+        not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', label) for label in labels
+    ):
+        raise ValueError('Invalid aggregation')
+    return query_config.get_query_config().common(
+        'aggregate',
+        operation=operation,
+        grouping=', '.join(labels),
+        expression=expression,
+    )
 
 
 def build_gauge_query(
@@ -146,11 +163,23 @@ def build_gauge_query(
     *,
     aggregate: str = 'sum',
     group_by: Optional[Sequence[str]] = None,
+    profile: str = 'gauge',
 ) -> str:
     if aggregate not in ('sum', 'avg', 'max'):
         raise ValueError('Invalid gauge aggregation')
     return _reduce(
-        scope.guard(_metric_name(name) + scope.selector()), scope, group_by, aggregate
+        scope.guard(
+            query_config.get_query_config().query(
+                profile,
+                'gauge',
+                'sample',
+                family=_metric_name(name),
+                selector=scope.selector(),
+            )
+        ),
+        scope,
+        group_by,
+        aggregate,
     )
 
 
@@ -161,30 +190,65 @@ def build_counter_query(
     *,
     summary: bool = False,
     group_by: Optional[Sequence[str]] = None,
+    profile: str = 'counter',
 ) -> str:
-    observations = build_counter_observations(name, scope, seconds, summary=summary)
+    observations = build_counter_observations(
+        name, scope, seconds, summary=summary, profile=profile
+    )
     expression = _reduce(observations, scope, group_by)
-    return f'({expression}) / {seconds}' if summary else expression
+    return (
+        query_config.get_query_config().query(
+            profile,
+            'counter',
+            'window_rate',
+            expression=expression,
+            window_seconds=seconds,
+        )
+        if summary
+        else expression
+    )
 
 
 def build_counter_observations(
-    name: str, scope: MetricQueryScope, seconds: int, *, summary: bool = False
+    name: str,
+    scope: MetricQueryScope,
+    seconds: int,
+    *,
+    summary: bool = False,
+    profile: str = 'counter',
 ) -> str:
     """Retain source and native cohorts until numerator/denominator pairing."""
     operation = 'increase' if summary else 'rate'
-    raw = f'{operation}({_metric_name(name)}{scope.selector()}[{seconds}s])'
+    raw = query_config.get_query_config().query(
+        profile,
+        'counter',
+        operation,
+        family=_metric_name(name),
+        selector=scope.selector(),
+        window_seconds=seconds,
+    )
     return scope.guard(raw, seconds if summary else None)
 
 
 def build_ratio_query(
-    numerator: str, denominator: str, scope: MetricQueryScope, seconds: int
+    numerator: str,
+    denominator: str,
+    scope: MetricQueryScope,
+    seconds: int,
+    *,
+    profile: str = 'counter',
 ) -> str:
-    numerator = build_counter_observations(numerator, scope, seconds)
-    denominator = build_counter_observations(denominator, scope, seconds)
-    paired_numerator = f'({numerator}) and ({denominator})'
-    paired_denominator = f'({denominator}) and ({numerator})'
-    ratio = (
-        f'({_reduce(paired_numerator, scope)}) / ({_reduce(paired_denominator, scope)})'
+    config = query_config.get_query_config()
+    numerator = build_counter_observations(numerator, scope, seconds, profile=profile)
+    denominator = build_counter_observations(
+        denominator, scope, seconds, profile=profile
+    )
+    paired_numerator = config.common('pair', left=numerator, right=denominator)
+    paired_denominator = config.common('pair', left=denominator, right=numerator)
+    ratio = config.common(
+        'divide',
+        numerator=_reduce(paired_numerator, scope),
+        denominator=_reduce(paired_denominator, scope),
     )
     # Either unmatched population creates gaps instead of a biased ratio.
     grouping = ', '.join(scope.grouping)
@@ -192,11 +256,14 @@ def build_ratio_query(
         (paired_numerator, numerator),
         (paired_denominator, denominator),
     ):
-        complete = (
-            f'({_reduce(paired, scope, operation="count")}) == '
-            f'({_reduce(population, scope, operation="count")})'
+        complete = config.common(
+            'compare_population',
+            paired=_reduce(paired, scope, operation='count'),
+            population=_reduce(population, scope, operation='count'),
         )
-        ratio = f'({ratio}) and on ({grouping}) ({complete})'
+        ratio = config.common(
+            'match_group', expression=ratio, grouping=grouping, condition=complete
+        )
     return ratio
 
 
@@ -208,6 +275,7 @@ def build_histogram_query(
     *,
     summary: bool = False,
     group_by: Optional[Sequence[str]] = None,
+    profile: str = 'histogram',
 ) -> str:
     name = _metric_name(name)
     if statistic not in HISTOGRAM_STATISTICS:
@@ -216,23 +284,49 @@ def build_histogram_query(
     operation = 'increase' if summary else 'rate'
 
     def part(suffix, grouping):
-        raw = f'{operation}({name}_{suffix}{scope.selector()}[{seconds}s])'
+        raw = query_config.get_query_config().query(
+            profile,
+            'histogram',
+            operation,
+            family=name,
+            part=suffix,
+            selector=scope.selector(),
+            window_seconds=seconds,
+        )
         return _reduce(scope.guard(raw, seconds if summary else None), scope, grouping)
 
     if statistic == 'avg':
-        return f'({part("sum", labels)}) / ({part("count", labels)})'
-    quantile = {'p50': '0.5', 'p95': '0.95', 'p99': '0.99'}[statistic]
-    return f'histogram_quantile({quantile}, {part("bucket", labels + ("le",))})'
+        return query_config.get_query_config().query(
+            profile,
+            'histogram',
+            'avg',
+            sum=part('sum', labels),
+            count=part('count', labels),
+        )
+    return query_config.get_query_config().query(
+        profile,
+        'histogram',
+        statistic,
+        buckets=part('bucket', labels + ('le',)),
+    )
 
 
 def build_histogram_components(
-    name: str, scope: MetricQueryScope, seconds: int
+    name: str, scope: MetricQueryScope, seconds: int, *, profile: str = 'histogram'
 ) -> Dict[str, str]:
     """Keep source and native rank identity until bucket compatibility is known."""
     name = _metric_name(name)
     queries = {}
     for key, suffix in (('buckets', 'bucket'), ('sum', 'sum'), ('count', 'count')):
-        raw = f'increase({name}_{suffix}{scope.selector()}[{seconds}s])'
+        raw = query_config.get_query_config().query(
+            profile,
+            'histogram',
+            'increase',
+            family=name,
+            part=suffix,
+            selector=scope.selector(),
+            window_seconds=seconds,
+        )
         queries[key] = scope.guard(raw, seconds)
     return queries
 

@@ -107,7 +107,7 @@ def test_owner_gets_runtime_contract_and_server_validated_options(monitoring_api
     assert response.json()['source'] == 'engine'
     assert api.runtime.await_args.kwargs['window_seconds'] == 1800
     assert api.runtime.await_args.kwargs['view'] == 'instances'
-    assert api.runtime.await_args.kwargs['statistic'] == 'avg'
+    assert api.runtime.await_args.kwargs['statistics'] == ('avg',)
     assert [i.id for i in api.runtime.await_args.args[1]] == [12]
 
 
@@ -180,19 +180,38 @@ def test_capabilities_are_guarded_and_never_expose_global_storage_contents(
 
 
 @pytest.mark.parametrize('view', ['aggregate', 'instances'])
-def test_all_statistics_keeps_authorized_population_and_overrides_single_statistic(
-    monitoring_api, view
+@pytest.mark.parametrize(
+    'query,expected',
+    [
+        ('', ('avg', 'p50', 'p95', 'p99')),
+        ('&statistic=avg,p50,p95,p99', ('avg', 'p50', 'p95', 'p99')),
+        ('&statistic=p50,p99', ('p50', 'p99')),
+        ('&statistic=avg,avg,p99', ('avg', 'p99')),
+    ],
+)
+def test_statistics_selection_keeps_authorized_population_in_both_views(
+    monitoring_api, view, query, expected
 ):
     api = monitoring_api
     with TestClient(api.app) as client:
         response = client.get(
-            f'/v2/models/9/metrics?instance_ids=12&all_statistics=true'
-            f'&statistic=p95&view={view}'
+            f'/v2/models/9/metrics?instance_ids=12&view={view}{query}'
         )
     assert response.status_code == 200
-    assert api.runtime.await_args.kwargs['statistic'] == 'all'
+    assert api.runtime.await_args.kwargs['statistics'] == expected
     assert api.runtime.await_args.kwargs['view'] == view
     assert [i.id for i in api.runtime.await_args.args[1]] == [12]
+
+
+def test_openapi_has_one_statistics_parameter_with_an_explicit_csv_default(
+    monitoring_api,
+):
+    operation = monitoring_api.app.openapi()['paths']['/v2/models/{id}/metrics']['get']
+    parameters = {p['name']: p for p in operation['parameters']}
+    assert 'all_statistics' not in parameters
+    assert parameters['statistic']['schema']['type'] == 'string'
+    assert parameters['statistic']['schema']['default'] == 'avg,p50,p95,p99'
+    assert 'pattern' in parameters['statistic']['schema']
 
 
 def test_resource_endpoint_delegates_the_authorized_population(monitoring_api):
@@ -276,6 +295,13 @@ def test_foreign_model_and_foreign_instance_filters_reject_entire_request(
         'view=everything',
         'role=admin',
         'statistic=max',
+        'statistic=',
+        'statistic=all',
+        'statistic=percentiles',
+        'statistic=avg,',
+        'statistic=avg,,p99',
+        'statistic=avg,max',
+        'statistic=avg,p50,p95,p99,avg',
         'section=raw',
     ],
 )
