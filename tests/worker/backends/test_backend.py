@@ -4369,6 +4369,9 @@ def _sglang_command_contract_backend(
     backend._flatten_backend_param = lambda: flatten_to_argv(
         backend._model.backend_parameters
     )
+    backend._get_pretrained_config = lambda: types.SimpleNamespace(
+        architectures=['DeepseekV3ForCausalLM'], kv_lora_rank=512
+    )
     backend._get_injected_backend_parameters = lambda *args: []
     return backend
 
@@ -4406,6 +4409,9 @@ def test_sglang_final_argv_accepts_wildcard_and_last_user_override(version_templ
         '--dp=2 --enable-dp-attention',
         '--attn-dp-size=2',
         '--attention-data-parallel-size=2',
+        '--dp-size=2 --enable-dsa-prefill-context-parallel --dsa-prefill-cp-mode=in-seq-split',
+        '--dp-size=2 --enable-prefill-context-parallel',
+        '--dp-size=2 --enable-prefill-cp --cp-strategy=zigzag',
     ],
 )
 def test_sglang_rendered_dpa_rejects_insufficient_port_band(version_template, options):
@@ -4416,6 +4422,168 @@ def test_sglang_rendered_dpa_rejects_insufficient_port_band(version_template, op
     backend._model_instance.named_ports['_sglang_connecting'].count = 1
     with pytest.raises(ValueError, match='14 ports.*backend_parameters.*restart'):
         backend._build_command_args(40000, True, True)
+
+
+@pytest.mark.parametrize(
+    'cp_options',
+    [
+        '--enable-dsa-prefill-context-parallel --dsa-prefill-cp-mode=in-seq-split',
+        '--enable-prefill-context-parallel',
+        '--enable-prefill-cp --cp-strategy=zigzag',
+    ],
+)
+def test_sglang_pd_prefill_cp_command_uses_reserved_internal_addresses(cp_options):
+    from gpustack.utils.command import find_last_parameter
+
+    backend = _sglang_command_contract_backend('--model-path "{{model_path}}"')
+    backend._model.backend_parameters = ['--tp-size=4', '--dp-size=2', cp_options]
+    backend._model_instance.gpu_indexes = [0, 1]
+    backend._model_instance.distributed_servers.subordinate_workers[0].gpu_indexes = [
+        0,
+        1,
+    ]
+    parameters = list(backend._model.backend_parameters)
+    argv, _ = backend._build_command_args(40000, True, True)
+    assert find_last_parameter(argv, ['nccl-port'], tokenized=True) == '40008'
+    assert (
+        find_last_parameter(argv, ['dist-init-addr'], tokenized=True)
+        == f'{backend._model_instance.worker_ip}:40001'
+    )
+    assert '--enable-dp-attention' not in argv
+    assert find_last_parameter(argv, ['dp-size'], tokenized=True) == '2'
+    assert backend._model.backend_parameters == parameters
+
+
+@pytest.mark.parametrize(
+    'flag', ['--enable-prefill-context-parallel', '--enable-prefill-cp']
+)
+@pytest.mark.parametrize('nested', [False, True])
+@pytest.mark.parametrize('dp,mla', [(1, True), (2, False), (2, True)])
+def test_sglang_cp_launch_does_not_require_dpa_ports_for_non_dpa_models(
+    flag, nested, dp, mla
+):
+    backend = _sglang_command_contract_backend('--model-path "{{model_path}}"')
+    backend._model.backend_parameters = [f'--dp-size={dp}', '--tp-size=4', flag]
+    backend._model_instance.named_ports['_sglang_connecting'].count = 1
+    text_config = types.SimpleNamespace(kv_lora_rank=512 if mla else None)
+    config = types.SimpleNamespace(
+        architectures=['DeepseekV3ForCausalLM'] if mla else ['Qwen3ForCausalLM'],
+        **({'text_config': text_config} if nested else vars(text_config)),
+    )
+    backend._get_pretrained_config = lambda: config
+    if dp > 1 and mla:
+        with pytest.raises(
+            ValueError, match='complete reserved internal port band.*restart'
+        ):
+            backend._build_command_args(40000, True, True)
+    else:
+        argv, _ = backend._build_command_args(40000, True, True)
+        assert '--enable-dp-attention' not in argv
+
+
+def test_sglang_cp_config_override_keeps_unknown_model_port_guard():
+    backend = _sglang_command_contract_backend('--model-path "{{model_path}}"')
+    backend._model.backend_parameters = [
+        '--dp-size=2',
+        '--enable-prefill-context-parallel',
+        '--json-model-override-args={"kv_lora_rank":512}',
+    ]
+    backend._model_instance.named_ports['_sglang_connecting'].count = 1
+    backend._get_pretrained_config = lambda: types.SimpleNamespace(
+        architectures=['Qwen3ForCausalLM']
+    )
+    with pytest.raises(
+        ValueError, match='complete reserved internal port band.*restart'
+    ):
+        backend._build_command_args(40000, True, True)
+
+
+@pytest.mark.parametrize('mla', [False, True])
+def test_sglang_complete_cp_allocation_binds_only_actual_dpa(mla):
+    from gpustack.utils.command import find_last_parameter
+    from gpustack.utils.sglang_port_layout import sglang_port_layout_for_instance
+
+    backend = _sglang_command_contract_backend(
+        '--model-path "{{model_path}}"',
+    )
+    backend._model.backend_version = '0.5.22'
+    backend._model.disaggregation = None
+    backend._model.backend_parameters = [
+        '--tp-size=4',
+        '--dp-size=2',
+        '--attn-cp-size=2',
+        '--enable-prefill-cp',
+        '--cp-strategy=zigzag',
+    ]
+    mi = backend._model_instance
+    mi.role = None
+    mi.gpu_indexes = list(range(4 if mla else 8))
+    mi.distributed_servers = DistributedServers(workloads=[])
+    mi.named_ports.update(
+        {
+            '_sglang_engine_api': PortBand(base=40000),
+            '_sglang_smg_api': PortBand(base=40020),
+            '_sglang_smg_metrics': PortBand(base=40021),
+        }
+    )
+    mi.ports = [band.base for band in mi.named_ports.values()]
+    backend._get_pretrained_config = lambda: types.SimpleNamespace(
+        architectures=['DeepseekV3ForCausalLM'] if mla else ['Qwen3MoeForCausalLM'],
+        kv_lora_rank=512 if mla else None,
+    )
+    assert sglang_port_layout_for_instance(backend._model, mi).internal_count == 14
+    before = mi.model_dump()
+    argv, _ = backend._build_command_args(40000, False, True)
+    assert find_last_parameter(argv, ['nccl-port'], tokenized=True) == (
+        '40008' if mla else None
+    )
+    assert find_last_parameter(argv, ['dist-init-addr'], tokenized=True) == (
+        '127.0.0.1:40001' if mla else None
+    )
+    assert mi.model_dump() == before
+    internal = mi.named_ports['_sglang_connecting']
+    declared = {port.internal for port in SGLangServer._get_configured_ports(backend)}
+    assert set(range(internal.base, internal.base + internal.count)) <= declared
+
+
+def test_sglang_nsa_cp_command_uses_reserved_internal_addresses():
+    from gpustack.utils.command import find_last_parameter
+
+    backend = _sglang_command_contract_backend('--model-path "{{model_path}}"')
+    parameters = [
+        '--tp-size=4',
+        '--attn-cp-size=4',
+        '--enable-nsa-prefill-context-parallel',
+    ]
+    backend._model.backend_parameters = list(parameters)
+    backend._model.disaggregation = None
+    mi = backend._model_instance
+    mi.role, mi.distributed_servers, mi.gpu_indexes = None, None, [0, 1, 2, 3]
+    mi.ports = [40000, 40001]
+    argv, _ = backend._build_command_args(40000, False, True)
+    assert (
+        find_last_parameter(argv, ['dist-init-addr'], tokenized=True)
+        == '127.0.0.1:40001'
+    )
+    assert find_last_parameter(argv, ['nccl-port'], tokenized=True) == '40008'
+    assert find_last_parameter(argv, ['tp-size'], tokenized=True) == '4'
+    assert find_last_parameter(argv, ['dp', 'dp-size'], tokenized=True) is None
+    assert backend._model.backend_parameters == parameters
+
+
+@pytest.mark.parametrize('version_template', [False, True])
+def test_sglang_single_node_template_cp_requires_reserved_ports(version_template):
+    backend = _sglang_command_contract_backend(
+        '--model-path "{{model_path}}" --attn-cp-size=4 --enable-nsa-prefill-context-parallel',
+        version_template=version_template,
+    )
+    backend._model.backend_parameters = ['--tp-size=4']
+    backend._model.disaggregation = None
+    mi = backend._model_instance
+    mi.role, mi.distributed_servers, mi.gpu_indexes = None, None, [0, 1, 2, 3]
+    mi.named_ports, mi.ports = None, [40000]
+    with pytest.raises(ValueError, match='14 ports.*backend_parameters.*restart'):
+        backend._build_command_args(40000, False, True)
 
 
 def test_sglang_run_command_accepts_rendered_tp_template():

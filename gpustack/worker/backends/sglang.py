@@ -43,8 +43,11 @@ from gpustack.utils.command import (
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.sglang_port_layout import (
     SGLangPortBindings,
+    SGLangPortLayout,
+    cp_uses_attention_tcp,
     sglang_port_layout_for_instance,
 )
+from gpustack.utils.model_config import get_hf_text_config
 from gpustack.worker.backends.base import (
     InferenceServer,
     cal_distributed_parallelism_arguments,
@@ -400,7 +403,7 @@ class SGLangServer(InferenceServer):
         self, engine_plan: WorkloadPlan, image: str
     ) -> None:
         """Return the complete local task set without creating runtime objects."""
-        layout = sglang_port_layout_for_instance(self._model, self._model_instance)
+        layout = self._port_layout()
         if not layout.components:
             raise ValueError(
                 "Managed components require ordinary multi-rank SGLang DP/DPA"
@@ -692,9 +695,9 @@ class SGLangServer(InferenceServer):
             ("--served-model-name", self._model_instance.model_name),
         )
 
-        sglang_port_layout_for_instance(
-            self._model, self._model_instance
-        ).validate_runtime_port_demand(self._model_instance, arguments)
+        self._port_layout(arguments).validate_runtime_port_demand(
+            self._model_instance, arguments
+        )
         if port_bindings.enforce_parameters:
             port_bindings.validate_parameters(arguments)
 
@@ -821,6 +824,40 @@ class SGLangServer(InferenceServer):
             for port in self._port_bindings().declared_ports
         ]
 
+    def _port_layout(self, parameters: Optional[List[str]] = None) -> SGLangPortLayout:
+        """Refine possible CP port demand using the launch's cached model config."""
+        layout = sglang_port_layout_for_instance(self._model, self._model_instance)
+        tokenized = parameters is not None
+        parameters = (
+            self._model.backend_parameters if parameters is None else parameters
+        )
+        is_mla = None
+        if (
+            cp_uses_attention_tcp(parameters, tokenized=tokenized)
+            and not find_bool_parameter(
+                parameters, ['enable-nsa-prefill-context-parallel'], tokenized=tokenized
+            )
+            and find_parameter(
+                parameters, ['json-model-override-args'], tokenized=tokenized
+            )
+            is None
+        ):
+            try:
+                config = self._get_pretrained_config()
+                if config is not None and getattr(config, 'architectures', None):
+                    text_config = get_hf_text_config(config)
+                    if text_config is not None:
+                        is_mla = getattr(text_config, 'kv_lora_rank', None) is not None
+            except Exception:
+                logger.debug(
+                    'Model metadata unavailable; preserving conservative CP port demand'
+                )
+        if is_mla is None:
+            return layout
+        return sglang_port_layout_for_instance(
+            self._model, self._model_instance, is_mla=is_mla
+        )
+
     def _port_bindings(
         self, leader: Optional[bool] = None, port: Optional[int] = None
     ) -> SGLangPortBindings:
@@ -833,7 +870,7 @@ class SGLangServer(InferenceServer):
                 else self._worker.ip
                 == getattr(self._model_instance, 'worker_ip', self._worker.ip)
             )
-        return sglang_port_layout_for_instance(self._model, self._model_instance).bind(
+        return self._port_layout().bind(
             self._model_instance, self._worker.ip, is_leader=leader, api_port=port
         )
 

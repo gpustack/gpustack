@@ -28,6 +28,34 @@ SGLANG_SMG_API_BAND = '_sglang_smg_api'
 SGLANG_SMG_METRICS_BAND = '_sglang_smg_metrics'
 
 
+def cp_uses_attention_tcp(
+    parameters: Optional[List[str]],
+    *,
+    tokenized: bool = False,
+    is_mla: Optional[bool] = None,
+) -> bool:
+    """Budget possible CP TCP listeners; launch can exclude known non-MLA models."""
+    if find_bool_parameter(
+        parameters, ['enable-nsa-prefill-context-parallel'], tokenized=tokenized
+    ):
+        # The NSA compatibility contract also covers single-DP TCP runtimes.
+        return True
+    dp = find_last_int_parameter(
+        parameters, ['dp', 'dp-size', 'data-parallel-size'], tokenized=tokenized
+    )
+    if is_mla is False or dp is None or dp <= 1:
+        return False
+    return find_bool_parameter(
+        parameters,
+        [
+            'enable-dsa-prefill-context-parallel',
+            'enable-prefill-context-parallel',
+            'enable-prefill-cp',
+        ],
+        tokenized=tokenized,
+    )
+
+
 @dataclass(frozen=True)
 class SGLangRuntimePort:
     """A runtime-selected listener, outside the platform's fixed reservation."""
@@ -78,6 +106,7 @@ class SGLangPortLayout:
     engine: bool
     engine_version: Optional[str]
     rendezvous_override: Optional[str]
+    cp_model_is_mla: Optional[bool] = None
 
     @property
     def api_band(self) -> str:
@@ -165,10 +194,14 @@ class SGLangPortLayout:
     ) -> None:
         """Check rendered DPA port demand without changing parallelism or ports."""
         band = (instance.named_ports or {}).get(SGLANG_CONNECTING_BAND)
+        implicit_dpa = cp_uses_attention_tcp(
+            parameters, tokenized=True, is_mla=self.cp_model_is_mla
+        )
         if not self.engine or (
             self.nnodes == 1
             and not self.components
             and (band is None or band.count <= 1)
+            and not implicit_dpa
         ):
             return
         dp = (
@@ -186,7 +219,8 @@ class SGLangPortLayout:
             or 1
         )
         if not (
-            attention_dp > 1
+            implicit_dpa
+            or attention_dp > 1
             or (
                 dp > 1
                 and find_bool_parameter(
@@ -310,7 +344,12 @@ class SGLangPortLayout:
 
 
 def sglang_port_layout(
-    model: Model, role: Optional[str], gpu_per_node: List[int], *, managed: bool = True
+    model: Model,
+    role: Optional[str],
+    gpu_per_node: List[int],
+    *,
+    managed: bool = True,
+    is_mla: Optional[bool] = None,
 ) -> SGLangPortLayout:
     """Describe native ports; PD connector ports are supplied by the catalog."""
     engine = role in (None, 'prefill', 'decode') and CategoryEnum.IMAGE not in (
@@ -324,7 +363,8 @@ def sglang_port_layout(
         role=role,
         nnodes=max(1, len(gpu_per_node)),
         ranks=ranks,
-        attention=attention,
+        attention=attention
+        or (engine and cp_uses_attention_tcp(model.backend_parameters, is_mla=is_mla)),
         rust=str(env.get('SGLANG_RUST_SERVER', '')).lower()
         in ('1', 'true', 'yes', 'y'),
         managed=managed,
@@ -332,11 +372,12 @@ def sglang_port_layout(
         engine=engine,
         engine_version=model.backend_version,
         rendezvous_override=env.get('SGLANG_DISTRIBUTED_INIT_METHOD_OVERRIDE'),
+        cp_model_is_mla=is_mla,
     )
 
 
 def sglang_port_layout_for_instance(
-    model: Model, instance: ModelInstance
+    model: Model, instance: ModelInstance, *, is_mla: Optional[bool] = None
 ) -> SGLangPortLayout:
     """Build the same contract from a persisted instance allocation."""
     servers = instance.distributed_servers
@@ -351,4 +392,5 @@ def sglang_port_layout_for_instance(
         getattr(instance, 'role', None),
         allocation,
         managed=get_model_instance_workloads(instance) is not None,
+        is_mla=is_mla,
     )
