@@ -3,6 +3,7 @@ from unittest.mock import Mock
 from datetime import datetime, timezone
 
 import pytest
+import httpx
 
 from gpustack.schemas.workers import (
     GPUDeviceStatus,
@@ -11,6 +12,7 @@ from gpustack.schemas.workers import (
     WorkerPublic,
 )
 from gpustack.worker.exporter import MetricExporter
+from gpustack.worker import exporter as exporter_module
 
 
 def _gpu(index, uuid, chip=0):
@@ -76,9 +78,145 @@ def _collect(
         worker_uuid_getter=lambda: registered_uuid,
         clientset_getter=lambda: client,
     )
+    exporter.refresh_worker_identity()
     metrics = list(exporter.collect_worker_metrics())
     samples = {m.name: m.samples for m in metrics}
     return samples, client
+
+
+def _identity_exporter():
+    response = Mock()
+    response.json.return_value = {'id': 7, 'me': True, 'owner_principal_id': 17}
+    http = Mock()
+    http.get.return_value = response
+    client = SimpleNamespace(http_client=SimpleNamespace(get_httpx_client=lambda: http))
+    exporter = MetricExporter(
+        cfg=SimpleNamespace(worker_metrics_port=10151),
+        collector=None,
+        worker_name_getter=lambda: 'worker',
+        worker_ip_getter=lambda: '192.0.2.7',
+        worker_id_getter=lambda: 7,
+        worker_uuid_getter=lambda: 'registered-uuid',
+        clientset_getter=lambda: client,
+    )
+    status = SimpleNamespace(
+        cpu=SimpleNamespace(utilization_rate=20),
+        memory=MemoryInfo(total=10000, used=2000),
+        gpu_devices=[_gpu(0, 'GPU-a')],
+        filesystem=[],
+    )
+    return exporter, http, status
+
+
+def test_stable_collection_only_reads_a_background_refreshed_snapshot():
+    exporter, http, status = _identity_exporter()
+    assert list(exporter._collect_stable_hardware(status)) == []
+    http.get.assert_not_called()
+    exporter.refresh_worker_identity()
+    http.get.assert_called_once_with('/workers/7', timeout=2.0)
+    http.get.side_effect = AssertionError('Network I/O inside collection')
+    for _ in range(3):
+        assert list(exporter._collect_stable_hardware(status))
+    assert http.get.call_count == 1
+
+
+def test_expired_or_changed_registration_does_not_publish_cached_owner(
+    monkeypatch, caplog
+):
+    exporter, http, status = _identity_exporter()
+    now = [100.0]
+    monkeypatch.setattr(exporter_module.time, 'monotonic', lambda: now[0])
+    exporter.refresh_worker_identity()
+    now[0] += exporter_module.HARDWARE_IDENTITY_TTL_SECONDS
+    assert list(exporter._collect_stable_hardware(status)) == []
+    assert 'identity became unavailable' in caplog.text
+    exporter.refresh_worker_identity()
+    exporter._worker_uuid_getter = lambda: 'another-registration'
+    assert list(exporter._collect_stable_hardware(status)) == []
+    assert http.get.call_count == 2
+
+
+@pytest.mark.parametrize(
+    'failure',
+    [TimeoutError(), httpx.ReadTimeout('Timed out'), httpx.ReadError('Reset'), 503],
+)
+def test_transient_failure_keeps_identity_only_until_its_original_expiry(
+    failure, monkeypatch, caplog
+):
+    exporter, http, status = _identity_exporter()
+    now = [100.0]
+    monkeypatch.setattr(
+        exporter_module, 'time', SimpleNamespace(monotonic=lambda: now[0])
+    )
+    exporter.refresh_worker_identity()
+    if isinstance(failure, int):
+        http.get.return_value = httpx.Response(
+            failure, request=httpx.Request('GET', 'http://server/workers/7')
+        )
+    else:
+        http.get.side_effect = failure
+    now[0] += 15
+    exporter.refresh_worker_identity()
+    samples = [s for m in exporter._collect_stable_hardware(status) for s in m.samples]
+    assert samples and all(s.labels['owner_principal_id'] == '17' for s in samples)
+    assert 'identity became unavailable' not in caplog.text
+
+    now[0] = 100 + exporter_module.HARDWARE_IDENTITY_TTL_SECONDS
+    exporter.refresh_worker_identity()
+    assert list(exporter._collect_stable_hardware(status)) == []
+    assert 'identity became unavailable' in caplog.text
+
+
+@pytest.mark.parametrize(
+    'failure',
+    [
+        401,
+        403,
+        404,
+        {'id': 8, 'me': True, 'owner_principal_id': 17},
+        {'id': 7, 'me': False, 'owner_principal_id': 17},
+        {'id': 7, 'me': True, 'owner_principal_id': 0},
+        {'id': 7, 'me': True},
+    ],
+)
+def test_definitive_failure_revokes_snapshot_and_logs_one_transition(failure, caplog):
+    exporter, http, status = _identity_exporter()
+    exporter.refresh_worker_identity()
+    response = http.get.return_value
+    if isinstance(failure, int):
+        http.get.return_value = httpx.Response(
+            failure, request=httpx.Request('GET', 'http://server/workers/7')
+        )
+    else:
+        response.json.return_value = failure.copy()
+    exporter.refresh_worker_identity()
+    assert list(exporter._collect_stable_hardware(status)) == []
+    exporter.refresh_worker_identity()
+    warnings = [r for r in caplog.records if r.levelname == 'WARNING']
+    assert len(warnings) == 1
+    response.json.return_value = {'id': 7, 'me': True, 'owner_principal_id': 99}
+    http.get.return_value = response
+    exporter.refresh_worker_identity()
+    samples = [s for m in exporter._collect_stable_hardware(status) for s in m.samples]
+    assert samples and all(s.labels['owner_principal_id'] == '99' for s in samples)
+
+
+@pytest.mark.parametrize(
+    'getter, changed', [('_worker_id_getter', 8), ('_worker_uuid_getter', 'other-uuid')]
+)
+def test_registration_change_during_refresh_rejects_the_response(getter, changed):
+    exporter, http, status = _identity_exporter()
+    exporter.refresh_worker_identity()
+    registered = getattr(exporter, getter)
+
+    def fetch(*args, **kwargs):
+        setattr(exporter, getter, lambda: changed)
+        return http.get.return_value
+
+    http.get.side_effect = fetch
+    exporter.refresh_worker_identity()
+    setattr(exporter, getter, registered)
+    assert list(exporter._collect_stable_hardware(status)) == []
 
 
 def test_stable_gpu_identity_uses_server_owner_and_real_chip():

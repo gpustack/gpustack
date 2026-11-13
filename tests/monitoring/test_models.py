@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic import ValidationError
@@ -63,6 +64,36 @@ def _collector():
     name = 'gpustack.monitoring.models'
     assert importlib.util.find_spec(name) is not None, 'Model collector is missing'
     return importlib.import_module(name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owned', [True, False])
+async def test_session_lifetime_covers_query_preparation_errors(monkeypatch, owned):
+    module = _collector()
+    monkeypatch.setattr(module, '_prometheus_url', lambda: 'http://metrics.invalid')
+    client = SimpleNamespace(close=AsyncMock())
+    factory = Mock(return_value=client)
+    monkeypatch.setattr(module.aiohttp, 'ClientSession', factory)
+    roles = module._roles
+    prepared = []
+
+    def prepare(definition, *args):
+        prepared.append(definition.key)
+        if len(prepared) == 2:
+            raise ValueError('Invalid query preparation')
+        return roles(definition, *args)
+
+    monkeypatch.setattr(module, '_roles', prepare)
+    with pytest.raises(ValueError, match='Invalid query preparation'):
+        await module.collect_model_metrics(
+            _model(),
+            [_instance()],
+            window_seconds=3600,
+            **({} if owned else {'client': client}),
+        )
+    assert len(prepared) == 2
+    assert client.close.await_count == int(owned)
+    assert factory.call_count == int(owned)
 
 
 def _model(backend='vLLM', pd=False):

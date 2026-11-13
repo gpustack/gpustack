@@ -54,7 +54,9 @@ def deduplicate_instant(entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any
         labels = entry.get('metric') or {}
         identity = cohort_identity(labels)
         previous = distinct.get(identity)
-        if previous is None or value > float(previous['value'][1]):
+        if previous is not None and value != float(previous['value'][1]):
+            raise ValueError('Conflicting duplicate metric samples')
+        if previous is None:
             distinct[identity] = {
                 **entry,
                 'metric': {
@@ -79,6 +81,9 @@ class MetricQueryScope:
     instance_ids: Tuple[int, ...]
     roles: Tuple[str, ...]
     view: str = 'aggregate'
+    launches: Tuple[Tuple[int, int, int], ...] = ()
+    source_identities: Tuple[Mapping[str, str], ...] = ()
+    sample_start: Optional[float] = None
 
     def __post_init__(self):
         ids = (self.cluster_id, self.model_id) + tuple(self.instance_ids)
@@ -125,14 +130,39 @@ class MetricQueryScope:
         success = config.common(
             'engine_success', selector=self.selector({'status': 'success'})
         )
-        inventory = config.common('engine_inventory', selector=self.selector())
+        selectors = [self.selector()]
+        if self.launches:
+            selectors = [
+                self.selector(
+                    {
+                        'model_instance_id': str(instance_id),
+                        'worker_id': str(worker_id),
+                        'restart_count': str(restart),
+                    }
+                )
+                for instance_id, worker_id, restart in self.launches
+                if instance_id in self.instance_ids
+            ]
+        if self.source_identities:
+            selectors = [
+                self.selector(identity)
+                for identity in self.source_identities
+                if int(identity['model_instance_id']) in self.instance_ids
+            ]
+        inventory = [config.common('engine_inventory', selector=s) for s in selectors]
         if history_seconds is not None:
             success = config.common(
                 'history_presence', expression=success, window_seconds=history_seconds
             )
-            inventory = config.common(
-                'history_presence', expression=inventory, window_seconds=history_seconds
-            )
+            inventory = [
+                config.common(
+                    'history_presence', expression=item, window_seconds=history_seconds
+                )
+                for item in inventory
+            ]
+        inventory = (
+            inventory[0] if len(inventory) == 1 else '(' + ' or '.join(inventory) + ')'
+        )
         return config.common(
             'engine_guard',
             expression=expression,
@@ -167,16 +197,20 @@ def build_gauge_query(
 ) -> str:
     if aggregate not in ('sum', 'avg', 'max'):
         raise ValueError('Invalid gauge aggregation')
+    config = query_config.get_query_config()
+    name = _metric_name(name)
+    raw = config.query(
+        profile, 'gauge', 'sample', family=name, selector=scope.selector()
+    )
+    if scope.sample_start is not None:
+        raw = config.common(
+            'sample_since',
+            expression=raw,
+            selector=name + scope.selector(),
+            start=scope.sample_start,
+        )
     return _reduce(
-        scope.guard(
-            query_config.get_query_config().query(
-                profile,
-                'gauge',
-                'sample',
-                family=_metric_name(name),
-                selector=scope.selector(),
-            )
-        ),
+        scope.guard(raw),
         scope,
         group_by,
         aggregate,

@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import logging
 import math
 import time
 from typing import Dict, List, Optional
@@ -50,6 +51,7 @@ from .time_range import monitoring_interval
 HISTORY_SCOPE = 'owner_qualified_current_associated_resources'
 COLLECTION_TIMEOUT_SECONDS = 12
 MAX_RESOURCE_TARGETS = 512
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -103,15 +105,22 @@ def _selector(family, labels):
     return f'gpustack:{family}{{{matchers}}}'
 
 
-def _fresh(selector, profile='hardware_gauge'):
+def _fresh(selector, profile='hardware_gauge', *, not_before=None):
     config = query_config.get_query_config()
-    return config.query(
+    expression = config.query(
         profile,
         'gauge',
         'sample',
         scope='hardware',
         selector=selector,
         freshness_seconds=config.time_windows.hardware.freshness_seconds,
+    )
+    return (
+        config.common(
+            'sample_since', expression=expression, selector=selector, start=not_before
+        )
+        if not_before is not None
+        else expression
     )
 
 
@@ -358,7 +367,8 @@ async def _query_metric(
             MetricSummary(statistic='current', dimensions=dimensions, value=value)
         ]
         response.metrics[key] = metric
-    except Exception:
+    except Exception as exc:
+        logger.warning('Hardware metric %s query failed (%s)', key, type(exc).__name__)
         response.metrics[key] = _empty(key, 'query_error', 'query_failed', scope)
 
 
@@ -542,10 +552,14 @@ def _all_metric(key, targets, history=(), current=(), *, query_failed=False):
     return metric
 
 
-async def _query_all_metric(key, targets, response, client, url, semaphore):
+async def _query_all_metric(
+    key, targets, response, client, url, semaphore, not_before=None
+):
     selectors = {
         _fresh(
-            _selector(_DEFINITIONS[key][0], target.labels), HARDWARE_QUERY_PROFILES[key]
+            _selector(_DEFINITIONS[key][0], target.labels),
+            HARDWARE_QUERY_PROFILES[key],
+            not_before=not_before,
         )
         for target in targets
         if target.labels is not None
@@ -569,7 +583,8 @@ async def _query_all_metric(key, targets, response, client, url, semaphore):
     try:
         history, current = await asyncio.gather(*tasks)
         response.metrics[key] = _all_metric(key, targets, history, current)
-    except Exception:
+    except Exception as exc:
+        logger.warning('Hardware metric %s query failed (%s)', key, type(exc).__name__)
         response.metrics[key] = _all_metric(key, targets, query_failed=True)
     finally:
         for task in tasks:
@@ -579,7 +594,13 @@ async def _query_all_metric(key, targets, response, client, url, semaphore):
 
 
 async def _collect_all_history(
-    devices, workers, response, client, url, extra_targets=None
+    devices,
+    workers,
+    response,
+    client,
+    url,
+    extra_targets=None,
+    not_before=None,
 ):
     semaphore = asyncio.Semaphore(4)
     deadline = asyncio.get_running_loop().time() + COLLECTION_TIMEOUT_SECONDS
@@ -608,7 +629,9 @@ async def _collect_all_history(
         await asyncio.wait_for(
             asyncio.gather(
                 *(
-                    _query_all_metric(key, targets, response, client, url, semaphore)
+                    _query_all_metric(
+                        key, targets, response, client, url, semaphore, not_before
+                    )
                     for key, targets in jobs
                 )
             ),
@@ -722,8 +745,8 @@ async def collect_model_resource_metrics(
         step=query_config.get_query_config().time_windows.hardware.step(window_seconds),
         last_refreshed_at=end,
         history_scope=HISTORY_SCOPE,
-        allocated_gpu_count=len(associations),
-        allocated_worker_count=len(allocated_workers),
+        allocated_gpu_count=sum(worker_id in workers for worker_id, _ in associations),
+        allocated_worker_count=len(workers),
         devices=[d.public for d in devices],
         workers=[
             ResourceWorker(id=worker.id, name=worker.name)
@@ -801,6 +824,14 @@ async def collect_model_resource_metrics(
                 if any(m.status == 'query_error' for m in gpu_metrics)
                 else 'no_samples'
             )
-    response.reason = None if response.available else 'no_samples'
+    response.reason = (
+        None
+        if response.available
+        else (
+            'query_failed'
+            if any(m.status == 'query_error' for m in response.metrics.values())
+            else 'no_samples'
+        )
+    )
     response.last_refreshed_at = time.time()
     return response

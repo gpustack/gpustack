@@ -21,6 +21,7 @@ from gpustack.schemas.models import (
 )
 
 from gpustack.schemas.workers import GPUDeviceInfo, OperatingSystemInfo
+from gpustack.schemas.benchmark_monitoring import BenchmarkRunSnapshot
 
 DATASET_RANDOM = "Random"
 DATASET_SHAREGPT = "ShareGPT"
@@ -519,7 +520,7 @@ WorkerSnapshots = Dict[str, WorkerSnapshot]
 GPUSnapshots = Dict[str, GPUSnapshot]
 
 
-class BenchmarkSnapshot(BaseModel):
+class BenchmarkSnapshotPublic(BaseModel):
     instances: Optional[ModelInstanceSnapshots] = None
     workers: Optional[WorkerSnapshots] = None
     gpus: Optional[GPUSnapshots] = None
@@ -536,6 +537,11 @@ class BenchmarkSnapshot(BaseModel):
     # Higress entrance resolved from the cluster override, server external URL,
     # or creation request. Keeping it here fixes the target for this run.
     gateway_url: Optional[str] = None
+
+
+class BenchmarkSnapshot(BenchmarkSnapshotPublic):
+    monitoring: Optional[BenchmarkRunSnapshot] = None
+    """Run-start association; absent on reports without recorded provenance."""
 
 
 class BenchmarkMetricsLite(SQLModel):
@@ -903,6 +909,7 @@ class BenchmarkFullPublic(
     BenchmarkMetrics,
 ):
     id: int
+    snapshot: Optional[BenchmarkSnapshotPublic] = None
     # The owning Org. Server-derived from the cluster on create and
     # therefore kept out of BenchmarkBase / Create — declared on the
     # Public schemas so readers can render the owning Org.
@@ -923,6 +930,7 @@ class BenchmarkPublic(
     BenchmarkMetricsLite,
 ):
     id: int
+    snapshot: Optional[BenchmarkSnapshotPublic] = None
     owner_principal_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime

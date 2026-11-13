@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import math
-import re
 import traceback
 from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, NamedTuple, Optional, Set, Tuple, Union
@@ -33,7 +32,10 @@ from gpustack.schemas.model_metrics import (
     ModelMonitoringCapabilities,
     ModelResourceMetrics,
 )
-from gpustack.monitoring.models import collect_model_metrics
+from gpustack.monitoring.models import (
+    collect_model_metrics,
+    parse_instance_ids as _monitoring_instance_ids,
+)
 from gpustack.monitoring.hardware import collect_model_resource_metrics
 from gpustack.monitoring.time_range import (
     collect_monitoring_capabilities,
@@ -454,20 +456,6 @@ async def get_model_cache_metrics(
         window_seconds,
         client=getattr(request.app.state, "http_client_no_proxy", None),
     )
-
-
-def _monitoring_instance_ids(value: Optional[str]) -> Optional[Set[int]]:
-    if value is None:
-        return None
-    if not value or len(value) > 2048:
-        raise BadRequestException(message="Invalid instance_ids")
-    tokens = [token.strip() for token in value.split(',')]
-    if any(not re.fullmatch(r'[1-9][0-9]{0,18}', token) for token in tokens):
-        raise BadRequestException(message="instance_ids must contain positive integers")
-    identities = {int(token) for token in tokens}
-    if len(identities) > 32 or max(identities) > 2**63 - 1:
-        raise BadRequestException(message="instance_ids accepts at most 32 valid IDs")
-    return identities
 
 
 async def _monitoring_population(

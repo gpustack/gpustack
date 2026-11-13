@@ -14,7 +14,10 @@ Open a deployment name under **Model Service → Deployments** to view Overview,
 - Latency statistics are Avg, P50, P95, and P99 where supported. The statistic row covers the selected interval; trend points use the shorter rate window shown on the page. Missing observations remain gaps rather than zero. Unsupported, inapplicable, failed, and stale measurements are distinguished.
 - GPU and host trends use owner-qualified stable identities. Upgrade Workers to collect the new stable history series; older Workers can still provide their latest reported device values. Unverifiable legacy device history is not reconstructed from GPU indexes. Physical measurements include other workloads sharing the device or host.
 - Runtime history covers current instances and their observed source epochs. Hardware history covers the currently associated devices under their recorded owner; neither is a complete historical placement audit.
-- Viewing the page follows deployment visibility. Physical resources are checked separately; inability to view an associated Worker does not grant access through the Model page. Existing Grafana and Prometheus proxy permissions remain unchanged.
+
+Model monitoring, Model dashboard redirects, and benchmark monitoring require the organization Owner role or platform administrator access. GPUStack also checks visibility of the requested deployment or benchmark and the associated resources.
+
+Worker and GPU monitoring and their dashboard redirects follow resource visibility. Organization members can use these endpoints for resources they can view. Grafana and Prometheus proxy endpoints apply their own permissions.
 
 The semantic endpoints are `GET /v2/models/{id}/metrics` and `GET /v2/models/{id}/resource-metrics`. They accept controlled filters; clients do not submit PromQL. Charts, tables, and CSV exports use the same authorized results.
 

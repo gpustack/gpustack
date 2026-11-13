@@ -18,7 +18,10 @@ GPUStack, model sunumu ve GPU kaynak yönetimi için kapsamlı bir ölçüm seti
 - Desteklenen gecikme istatistikleri Avg, P50, P95 ve P99'dur. İstatistik satırı seçilen aralığın tamamını, grafik noktaları sayfada belirtilen daha kısa hız aralığını kapsar. Eksik gözlemler sıfır yapılmaz; desteklenmeyen, uygulanamayan, başarısız ve eski veriler ayrılır.
 - GPU ve sunucu geçmişi sahip bilgisi içeren kararlı kimlikleri kullanır. Yeni geçmiş serileri için Worker'ları güncelleyin. Eski Worker'ların son bildirdiği değerler gösterilebilir; doğrulanamayan geçmiş GPU indekslerinden tahmin edilmez. Fiziksel değerler paylaşılan cihazdaki veya sunucudaki diğer iş yüklerini de içerir.
 - Motor geçmişi mevcut örnekleri ve gözlemlenen kaynak nesillerini; donanım geçmişi şu anda ilişkili cihazları ve kaydedilen sahipliği kapsar. Tam bir geçmiş yerleşim denetimi değildir.
-- Sayfa erişimi dağıtım görüntüleme yetkisini kullanır. Worker/GPU görünürlüğü ayrıca doğrulanır; Grafana ve Prometheus proxy yetkileri değişmez.
+
+Model izleme, model panosuna yönlendirme ve kıyaslama izleme için kuruluşun Owner rolü veya platform yöneticisi erişimi gerekir. GPUStack ayrıca istenen dağıtımın veya kıyaslamanın ve ilişkili kaynakların görünürlüğünü denetler.
+
+Worker ve GPU izleme ve panolarına yönlendirme, kaynak görünürlüğüne göre yetkilendirilir. Kuruluş üyeleri bu uçları görüntüleyebildikleri kaynaklar için kullanabilir. Grafana ve Prometheus proxy uçları kendi erişim izinlerini uygular.
 
 API uçları `GET /v2/models/{id}/metrics` ve `GET /v2/models/{id}/resource-metrics`'tir. Yalnızca kontrollü filtreleri kabul ederler; istemci PromQL'i kabul edilmez. Grafikler, tablolar ve CSV aynı yetkilendirilmiş sonuçları kullanır.
 

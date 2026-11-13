@@ -25,7 +25,7 @@ def _document():
 
 
 @pytest.mark.parametrize('view', ['aggregate', 'instances'])
-def test_packaged_expressions_preserve_all_migration_queries(view):
+def test_packaged_expressions_match_reviewed_query_fixtures(view):
     fixture = (
         Path(__file__).parents[1] / 'fixtures/monitoring_queries/query_parity.json'
     )
