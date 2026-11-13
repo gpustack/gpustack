@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
-from gpustack.server import model_monitoring_time as monitoring
+from gpustack.monitoring import time_range as monitoring
 
 
 @pytest.mark.parametrize('seconds', [300, 3600, 604800])

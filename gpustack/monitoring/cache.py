@@ -21,16 +21,6 @@ from typing import List, Optional
 
 import aiohttp
 
-from gpustack.server.prometheus_query import (  # noqa: F401
-    MAX_WINDOW_SECONDS,
-    MIN_WINDOW_SECONDS,
-    instant_value as _instant_value,
-    parse_window,
-    prometheus_url as _prometheus_url,
-    promql_regex_literal as _promql_regex_literal,
-    query_instant as _query_instant,
-    query_range as _query_range,
-)
 from gpustack.schemas.cache_providers import (
     CacheProviderMetrics,
     CacheProviderMetricValue,
@@ -41,6 +31,13 @@ from gpustack.schemas.cache_services import (
     CacheServiceMetricSeries,
     CacheServiceMetricsPublic,
     ModelCacheMetricsPublic,
+)
+from .prometheus import (
+    instant_value as _instant_value,
+    prometheus_url as _prometheus_url,
+    promql_regex_literal as _promql_regex_literal,
+    query_instant as _query_instant,
+    query_range as _query_range,
 )
 
 logger = logging.getLogger(__name__)

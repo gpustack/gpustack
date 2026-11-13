@@ -31,14 +31,14 @@ from gpustack.schemas.cache_providers import (
 from gpustack.schemas.cache_services import CacheServiceAttachedMetrics
 from gpustack.schemas.models import ExtendedKVCacheConfig, RoleSpec
 from gpustack.schemas.principals import OrgRole, PrincipalType
-from gpustack.server import cache_service_metrics as metrics_module
-from gpustack.server import prometheus_query
-from gpustack.server.cache_service_metrics import (
+from gpustack.monitoring import cache as metrics_module
+from gpustack.monitoring import prometheus as prometheus_query
+from gpustack.monitoring.prometheus import parse_window
+from gpustack.monitoring.cache import (
     build_aggregate_query,
     build_metric_query,
     collect_cache_service_metrics,
     collect_model_cache_metrics,
-    parse_window,
 )
 
 ORG_PRINCIPAL = 42

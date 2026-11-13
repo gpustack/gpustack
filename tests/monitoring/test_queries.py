@@ -8,7 +8,7 @@ import pytest
 
 
 def _queries():
-    name = 'gpustack.server.model_metrics_query'
+    name = 'gpustack.monitoring.queries'
     assert importlib.util.find_spec(name) is not None, 'Semantic query builders missing'
     return importlib.import_module(name)
 

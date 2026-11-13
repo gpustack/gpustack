@@ -71,7 +71,7 @@ def _context(admin=False):
 
 
 def _environment(monkeypatch, workers, *, query=None):
-    from gpustack.server import model_hardware_metrics as hardware
+    from gpustack.monitoring import hardware
 
     session = SimpleNamespace(
         exec=AsyncMock(return_value=SimpleNamespace(all=lambda: workers))

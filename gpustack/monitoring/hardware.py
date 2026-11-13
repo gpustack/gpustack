@@ -29,8 +29,6 @@ from gpustack.schemas.model_metrics import (
     ResourceWorker,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.server import prometheus_query
-from gpustack.server.model_monitoring_time import monitoring_interval
 from gpustack.utils.hardware_metrics import (
     gpu_identity,
     is_gpu_partition,
@@ -40,20 +38,14 @@ from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
 )
 
+from . import prometheus as prometheus_query
+from .catalog import HARDWARE_DEFINITIONS as _DEFINITIONS, HARDWARE_KEYS
+from .time_range import monitoring_interval
+
 HISTORY_SCOPE = 'owner_qualified_current_associated_resources'
 COLLECTION_TIMEOUT_SECONDS = 12
 FRESHNESS_SECONDS = 120
 MAX_RESOURCE_TARGETS = 512
-_DEFINITIONS = {
-    'gpu_utilization': ('worker_gpu_utilization_percent', 'percent', 0, 100),
-    'gpu_memory_used': ('worker_gpu_memory_used_bytes', 'bytes', 0, None),
-    'gpu_memory_total': ('worker_gpu_memory_total_bytes', 'bytes', 0, None),
-    'gpu_power': ('worker_gpu_power_watts', 'watts', 0, None),
-    'gpu_temperature': ('worker_gpu_temperature_celsius', 'celsius', None, None),
-    'host_cpu': ('worker_host_cpu_utilization_percent', 'percent', 0, 100),
-    'host_memory_used': ('worker_host_memory_used_bytes', 'bytes', 0, None),
-    'host_memory_total': ('worker_host_memory_total_bytes', 'bytes', 0, None),
-}
 
 
 @dataclass
@@ -371,7 +363,7 @@ async def _collect_history(devices, selected, worker, response, client, url):
             if device.identity is not None:
                 device.public.reason = 'query_failed'
     jobs = []
-    for key in _DEFINITIONS:
+    for key in HARDWARE_KEYS:
         gpu = key.startswith('gpu_')
         scope = selected.public.scope if gpu and selected else 'worker'
         if gpu and (selected is None or selected.identity is None):
@@ -572,7 +564,9 @@ async def _query_all_metric(key, targets, response, client, url, semaphore):
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _collect_all_history(devices, workers, response, client, url):
+async def _collect_all_history(
+    devices, workers, response, client, url, extra_targets=None
+):
     semaphore = asyncio.Semaphore(4)
     deadline = asyncio.get_running_loop().time() + COLLECTION_TIMEOUT_SECONDS
     try:
@@ -585,9 +579,12 @@ async def _collect_all_history(devices, workers, response, client, url):
             if device.identity is not None:
                 device.public.reason = 'query_failed'
     jobs = []
-    for key in _DEFINITIONS:
+    for key in HARDWARE_KEYS:
         targets = _resource_targets(key, devices, workers)
         # An empty series keeps an authorized missing device identifiable in the legend.
+        response.metrics[key] = _all_metric(key, targets, query_failed=True)
+        jobs.append((key, targets))
+    for key, targets in (extra_targets or {}).items():
         response.metrics[key] = _all_metric(key, targets, query_failed=True)
         jobs.append((key, targets))
     remaining = deadline - asyncio.get_running_loop().time()
@@ -730,7 +727,7 @@ async def collect_model_resource_metrics(
                 response.reason,
                 'worker' if key.startswith('host_') else 'physical_gpu',
             )
-            for key in _DEFINITIONS
+            for key in HARDWARE_KEYS
         }
         response.last_refreshed_at = time.time()
         return response
@@ -751,14 +748,14 @@ async def collect_model_resource_metrics(
                     else selected.public.scope if selected else 'physical_gpu'
                 ),
             )
-            for key in _DEFINITIONS
+            for key in HARDWARE_KEYS
         }
         if all_devices:
             response.metrics = {
                 key: _all_metric(
                     key, _resource_targets(key, devices, workers), query_failed=True
                 ).model_copy(update={'reason': response.reason})
-                for key in _DEFINITIONS
+                for key in HARDWARE_KEYS
             }
         response.last_refreshed_at = time.time()
         return response

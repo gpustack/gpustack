@@ -66,9 +66,9 @@ from gpustack.server.cache_service_resources import load_resource_view
 from gpustack.server.services import CacheServiceInstanceService, CacheServiceService
 from gpustack.server.db import async_session
 from gpustack.schemas.principals import OrgRole
-from gpustack.server.cache_service_metrics import (
+from gpustack.monitoring.prometheus import parse_window as parse_metrics_window
+from gpustack.monitoring.cache import (
     collect_cache_service_metrics,
-    parse_window as parse_metrics_window,
 )
 from gpustack.server.deps import ListParamsDep, SessionDep, TenantContextDep
 from gpustack.server.worker_request import stream_to_worker

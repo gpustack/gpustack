@@ -10,7 +10,7 @@ from typing import Optional
 import aiohttp
 
 from gpustack.schemas.model_metrics import ModelMonitoringCapabilities
-from gpustack.server import prometheus_query
+from . import prometheus as prometheus_query
 
 MIN_QUERY_SECONDS = 300
 MAX_QUERY_SECONDS = 604800
@@ -184,3 +184,14 @@ async def collect_monitoring_capabilities(
     else:
         policy = await _storage_policy(client, url)
     return result.model_copy(update=policy)
+
+
+async def collect_storage_policy(client=None) -> dict:
+    """Return only sanitized policy fields for directly authorized resources."""
+    url = prometheus_query.prometheus_url()
+    if not url:
+        return {}
+    if client is None:
+        async with aiohttp.ClientSession() as owned:
+            return await _storage_policy(owned, url)
+    return await _storage_policy(client, url)

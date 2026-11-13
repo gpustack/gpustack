@@ -2,7 +2,6 @@
 
 import asyncio
 from collections import defaultdict
-from dataclasses import dataclass
 import logging
 import math
 import re
@@ -21,7 +20,12 @@ from gpustack.schemas.model_metrics import (
     ModelMetrics,
 )
 from gpustack.schemas.models import Model, ModelInstance
-from gpustack.server.model_metrics_query import (
+
+from gpustack.utils.model_instance_workers import (
+    model_instance_metrics_source_inventory,
+)
+from .catalog import model_metric_definitions
+from .queries import (
     HISTOGRAM_STATISTICS,
     PROFILE_LABELS,
     MetricQueryScope,
@@ -35,137 +39,17 @@ from gpustack.server.model_metrics_query import (
     deduplicate_instant,
     histogram_statistics,
 )
-from gpustack.server.prometheus_query import (
+from .prometheus import (
     prometheus_url as _prometheus_url,
     query_instant as _query_instant,
     query_range as _query_range,
 )
-from gpustack.server.model_monitoring_time import monitoring_interval
-from gpustack.utils.model_instance_workers import (
-    model_instance_metrics_source_inventory,
-)
+from .time_range import monitoring_interval
 
 logger = logging.getLogger(__name__)
 _QUERY_ERRORS = (ValueError, aiohttp.ClientError, OSError, asyncio.TimeoutError)
 _COLLECT_DEADLINE_SECONDS = 15.0
 _HISTORY_SCOPE = 'current_instances_with_observed_source_history'
-
-
-@dataclass(frozen=True)
-class _Definition:
-    key: str
-    family: str
-    kind: str
-    unit: str
-    measurement_scope: str
-    denominator: Optional[str] = None
-    scale: float = 1.0
-    per_source: bool = False
-
-
-def _definitions(backend: str) -> List[_Definition]:
-    latencies = {
-        'ttft': 'time_to_first_token_seconds',
-        'tpot': 'time_per_output_token_seconds',
-        'itl': 'inter_token_latency_seconds',
-        'e2e': 'e2e_request_latency_seconds',
-        'queue': 'request_queue_time_seconds',
-        'prefill': 'request_prefill_time_seconds',
-        'decode': 'request_decode_time_seconds',
-    }
-    definitions = [
-        _Definition(k, f'gpustack:{v}', 'histogram', 'seconds', 'engine_local')
-        for k, v in latencies.items()
-    ]
-    for key, family in (
-        ('input_tokens', 'prompt_tokens_total'),
-        ('output_tokens', 'generation_tokens_total'),
-    ):
-        definitions.append(
-            _Definition(
-                key,
-                f'gpustack:{family}',
-                'counter',
-                'tokens_per_second',
-                'engine_processed_tokens',
-            )
-        )
-    for key, family in (
-        ('running_requests', 'num_requests_running'),
-        ('waiting_requests', 'num_requests_waiting'),
-    ):
-        definitions.append(
-            _Definition(
-                key, f'gpustack:{family}', 'gauge', 'requests', 'engine_local_requests'
-            )
-        )
-    definitions.append(
-        _Definition(
-            'kv_usage',
-            'gpustack:kv_cache_usage_ratio',
-            'gauge',
-            'percent',
-            'engine_kv_pool',
-            scale=100,
-            per_source=True,
-        )
-    )
-    if backend in ('sglang', 'mindie'):
-        definitions.append(
-            _Definition(
-                'prefix_cache_hit_rate',
-                'gpustack:prefix_cache_hit_rate',
-                'gauge',
-                'percent',
-                'reported_source_cache_ratio',
-                scale=100,
-                per_source=True,
-            )
-        )
-    else:
-        definitions.append(
-            _Definition(
-                'prefix_cache_hit_rate',
-                'gpustack:prefix_cache_hits_total',
-                'counter',
-                'percent',
-                'engine_cache_lookup_ratio',
-                denominator='gpustack:prefix_cache_queries_total',
-                scale=100,
-            )
-        )
-    definitions.extend(
-        [
-            _Definition(
-                'external_cache_hit_rate',
-                'gpustack:external_prefix_cache_hits_total',
-                'counter',
-                'percent',
-                'engine_external_cache_lookup_ratio',
-                denominator='gpustack:external_prefix_cache_queries_total',
-                scale=100,
-            ),
-            _Definition(
-                'pd_kv_transfer',
-                'gpustack:pd_kv_transfer_seconds',
-                'histogram',
-                'seconds',
-                (
-                    'bootstrap_handshake'
-                    if backend == 'sglang'
-                    else 'kv_transfer_duration'
-                ),
-            ),
-            _Definition(
-                'router_health',
-                'gpustack:pd_router_worker_health',
-                'gauge',
-                'state',
-                'router_upstream_health',
-            ),
-        ]
-    )
-    return definitions
 
 
 def _finite(value) -> Optional[float]:
@@ -852,7 +736,7 @@ async def collect_model_metrics(
     url, owned = _prometheus_url(), client is None
     definitions = [
         definition
-        for definition in _definitions(backend)
+        for definition in model_metric_definitions(backend)
         if section == 'all'
         or (definition.key in ('pd_kv_transfer', 'router_health')) == (section == 'pd')
     ]

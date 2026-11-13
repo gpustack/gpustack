@@ -74,6 +74,40 @@ def _stable_gauge(name, description, labels, values, value, bounds=(None, None))
     return family
 
 
+def _stable_filesystems(mounts, labels, values):
+    unique = {mount.mount_point for mount in mounts}
+    for name in ('used_bytes', 'total_bytes', 'utilization_percent'):
+        family = None
+        for mountpoint in sorted(unique):
+            rows = [m for m in mounts if m.mount_point == mountpoint]
+            if len(rows) != 1 or not mountpoint:
+                continue
+            mount = rows[0]
+            if name == 'utilization_percent':
+                value = (
+                    100 * mount.used / mount.total
+                    if mount.used is not None and mount.total and mount.total > 0
+                    else None
+                )
+            else:
+                value = mount.used if name == 'used_bytes' else mount.total
+            metric = _stable_gauge(
+                'worker_filesystem_' + name,
+                'Owner-qualified filesystem ' + name,
+                labels + ['mountpoint'],
+                values + [mountpoint],
+                value,
+                (0, 100 if name == 'utilization_percent' else None),
+            )
+            if metric is not None:
+                if family is None:
+                    family = metric
+                else:
+                    family.samples.extend(metric.samples)
+        if family is not None:
+            yield family
+
+
 class MetricExporter(Collector):
     _worker_ip_getter: Callable[[], str]
     _worker_name_getter: Callable[[], str]
@@ -450,6 +484,8 @@ class MetricExporter(Collector):
             )
             if metric is not None:
                 yield metric
+
+        yield from _stable_filesystems(status.filesystem or [], labels, values)
 
         gpu_labels = labels + ['gpu_uuid', 'gpu_chip_index']
         identity_info = InfoMetricFamily(

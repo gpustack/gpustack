@@ -60,7 +60,7 @@ def test_histogram_contract_has_four_summary_statistics_and_no_minmax():
 
 
 def _collector():
-    name = 'gpustack.server.model_metrics'
+    name = 'gpustack.monitoring.models'
     assert importlib.util.find_spec(name) is not None, 'Model collector is missing'
     return importlib.import_module(name)
 
