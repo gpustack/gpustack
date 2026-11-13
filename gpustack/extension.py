@@ -5,13 +5,14 @@ Third-party plugins can implement this interface
 and register via the ``gpustack.plugins`` entry-point group.
 
 A plugin is *static*: the entry point resolves to a ``Plugin``
-subclass that is never instantiated. Every hook is a classmethod and
-receives the plugin's own :class:`PluginContext`, which carries the
+subclass that is never instantiated. Runtime hooks are classmethods;
+server hooks receive the plugin's own :class:`PluginContext`, which carries the
 app, the config, core-owned services, and a private per-plugin store
 (see :class:`PluginContext` for the visibility contract). ``migrate``
 and ``setup`` run during ``create_app``; ``build_coordinator`` /
 ``async_tasks`` / ``leader_async_tasks`` are collected at server
-startup. :class:`Plugin` and :class:`PluginContext` below document the
+startup. ``before_worker_registration`` runs in each worker process with
+only its configuration. :class:`Plugin` and :class:`PluginContext` document the
 full contract.
 
 The older instance-based shape — a subclass overriding
@@ -170,9 +171,26 @@ def plugin_needs_instantiation(plugin_cls: type) -> bool:
     instantiated; core then talks to it exactly as before (instance
     task methods, ``coordinator`` attribute). A subclass that leaves
     ``__init__`` alone is static: core calls its classmethod hooks
-    with a :class:`PluginContext` and never constructs it.
+    without constructing it; server hooks receive a :class:`PluginContext`,
+    while worker hooks receive only configuration.
     """
     return plugin_cls.__init__ is not Plugin.__init__
+
+
+async def before_worker_registration(cfg: Config) -> None:
+    """Await static plugin prerequisites in the registering worker process.
+
+    Discover classes here rather than relying on server app state: embedded
+    workers use spawn, and standalone workers never build a FastAPI app.
+    Exceptions propagate so a failed prerequisite cannot admit registration.
+    """
+    for _name, plugin_cls in iter_plugin_classes():
+        if (
+            isinstance(plugin_cls, type)
+            and issubclass(plugin_cls, Plugin)
+            and not plugin_needs_instantiation(plugin_cls)
+        ):
+            await plugin_cls.before_worker_registration(cfg)
 
 
 class Plugin:
@@ -182,7 +200,8 @@ class Plugin:
     classmethod hooks instead — ``migrate`` / ``setup`` run during app
     assembly, ``build_coordinator`` / ``async_tasks`` /
     ``leader_async_tasks`` are collected at server startup — each
-    receiving the plugin's own :class:`PluginContext`.
+    receiving the plugin's own :class:`PluginContext`. Worker prerequisites use
+    ``before_worker_registration(cfg)`` without an app or context.
 
     Legacy shape: override ``__init__(app, cfg)`` and do the full
     registration from the constructor; expose tasks via the
@@ -219,7 +238,20 @@ class Plugin:
 
     # ---- preferred (static) shape ----
     # The hooks below are collected only for subclasses that do NOT
-    # override __init__; they receive the plugin's PluginContext.
+    # override __init__. Server hooks receive the plugin's PluginContext;
+    # worker hooks receive only configuration.
+
+    @classmethod
+    async def before_worker_registration(cls, cfg: Config) -> None:
+        """Wait for prerequisites before each worker registration attempt.
+
+        Runs in both embedded and standalone worker processes, without an app
+        or PluginContext. Only Config is available. Returning permits the
+        registration attempt; raising fails that attempt. Awaiting a prerequisite
+        does not consume registration retries. Cancellation must propagate so
+        shutdown can interrupt the wait. Default: register immediately.
+        """
+        return None
 
     @classmethod
     def migrate(cls, ctx: "PluginContext") -> None:
