@@ -24,7 +24,7 @@ from gpustack.routes import openai
 from gpustack.schemas.models import ModelInstance
 from gpustack.server.db import async_session
 from gpustack.server.deps import CurrentUserDep, TenantContextDep
-from gpustack.server.services import UserService, WorkerService
+from gpustack.server.services import WorkerService
 from gpustack.server.worker_request import request_to_worker, stream_to_worker
 from gpustack.utils.model_instance_workers import model_instance_endpoints
 
@@ -60,6 +60,7 @@ async def create_video(
     request: Request, user: CurrentUserDep, ctx: TenantContextDep
 ) -> Response:
     """Create a job and return an authenticated, instance-bound public ID."""
+    request.state.tenant_context = ctx
     response = await openai.proxy_request_by_model(request, user)
     if not 200 <= response.status_code < 300:
         return response
@@ -93,14 +94,16 @@ async def create_video(
     return JSONResponse(job, status_code=response.status_code, headers=headers)
 
 
-async def _resolve_job(request: Request, payload: Dict, user):
+async def _resolve_job(request: Request, payload: Dict, user, ctx):
     async with async_session() as session:
-        if not await UserService(session).model_allowed_for_user(
-            model_name=payload["model"],
-            user_id=user.id,
-            api_key=getattr(request.state, "api_key", None),
-        ):
-            raise _not_found()
+        await openai._assert_video_route_access(
+            session,
+            payload["model"],
+            payload["route_id"],
+            user,
+            ctx,
+            getattr(request.state, "api_key", None),
+        )
         instance = await ModelInstance.one_by_id(
             session, payload["instance_id"], refresh=True
         )
@@ -109,7 +112,7 @@ async def _resolve_job(request: Request, payload: Dict, user):
         endpoints = model_instance_endpoints(instance)
         available = any(
             endpoint.worker_id == payload["worker_id"]
-            and endpoint.registry_name + ".static" == payload["registry"]
+            and f"{endpoint.registry_name}.static" == payload["registry"]
             and endpoint.port == payload["port"]
             for endpoint in endpoints
         )
@@ -135,7 +138,7 @@ async def retrieve_video(
 ) -> Response:
     """Retrieve the creating instance's job status and progress."""
     payload = _job_payload(request, video_id, user, ctx)
-    worker = await _resolve_job(request, payload, user)
+    worker = await _resolve_job(request, payload, user, ctx)
     try:
         response, body = await request_to_worker(
             worker=worker,
@@ -169,13 +172,34 @@ async def retrieve_video(
     return JSONResponse(job, status_code=response.status, headers=headers)
 
 
+def _video_content_error(
+    error: Exception, _timeout: aiohttp.ClientTimeout
+) -> tuple[str, int]:
+    """Return public transfer errors; worker_request logs the private exception."""
+    timed_out = isinstance(error, asyncio.TimeoutError)
+    status = 504 if timed_out else 503
+    message = (
+        "Video content request timed out"
+        if timed_out
+        else "Video content is unavailable"
+    )
+    body = {
+        "error": {
+            "message": message,
+            "type": "GatewayTimeout" if timed_out else "ServiceUnavailable",
+            "code": status,
+        }
+    }
+    return json.dumps(body), status
+
+
 @router.get("/videos/{video_id}/content")
 async def download_video(
     video_id: str, request: Request, user: CurrentUserDep, ctx: TenantContextDep
 ) -> Response:
     """Stream completed video bytes without buffering the complete MP4 in the API."""
     payload = _job_payload(request, video_id, user, ctx)
-    worker = await _resolve_job(request, payload, user)
+    worker = await _resolve_job(request, payload, user, ctx)
 
     async def content():
         async for chunk, headers, status in stream_to_worker(
@@ -187,8 +211,12 @@ async def download_video(
             proxy_client=request.app.state.http_client,
             no_proxy_client=request.app.state.http_client_no_proxy,
             timeout=aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT),
+            on_exception=_video_content_error,
             raw=True,
         ):
-            yield chunk, openai._worker_response_headers(headers), status
+            headers = openai._worker_response_headers(headers)
+            if status >= 400:
+                headers.setdefault("Content-Type", "application/json")
+            yield chunk, headers, status
 
     return StreamingResponseWithStatusCode(content(), media_type="video/mp4")

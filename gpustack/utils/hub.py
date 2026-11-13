@@ -667,10 +667,9 @@ def get_diffusers_model_index(
             read_repo_file_content(model, "model_index.json", token=token)
         )
     except Exception:
-        logger.debug("Could not read Diffusers index for %s", model.readable_source)
+        logger.debug(
+            "Could not read Diffusers index for %s",
+            model.readable_source,
+            exc_info=True,
+        )
         return None
-
-
-def has_diffusers_model_index(model: Model, token: Optional[str] = None) -> bool:
-    """Check whether the model source contains Diffusers metadata."""
-    return get_diffusers_model_index(model, token) is not None

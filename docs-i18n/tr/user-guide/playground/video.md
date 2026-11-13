@@ -14,7 +14,7 @@ Bir istem girin veya rastgele istem düğmesini kullanın, ardından video üret
 
 ### Üretim İlerlemesi { #generation-progress }
 
-Görev çalışırken video alanının üzerinde bir yükleme animasyonu ve üretimin sürdüğünü belirten bir mesaj görünür. Sayfa görev durumunu her 5 saniyede bir kontrol eder. Yüzde yalnızca çıkarım motoru sıfırdan büyük bir ilerleme bildirdiğinde gösterilir; bazı motorlar ara ilerleme bildirmez.
+Görev çalışırken video alanının üzerinde bir yükleme animasyonu ve üretimin sürdüğünü belirten bir mesaj (`Generating…`) görünür. Sayfa görev durumunu her 5 saniyede bir kontrol eder. Yüzde yalnızca çıkarım motoru sıfırdan büyük bir ilerleme bildirdiğinde gösterilir; bazı motorlar ara ilerleme bildirmez.
 
 Üretim ve indirme tamamlandığında video oynatılabilir. Üretim sırasında oynatma desteklenmez.
 
@@ -39,7 +39,7 @@ Uyumlu bir SGLang Diffusion veya vLLM-Omni dağıtımı kullanın. Video anlama 
 | Parametre | Varsayılan | Açıklama |
 | --- | --- | --- |
 | `Duration` | `4` saniye | İstenen video süresi. Sayfa `4`, `8` ve `12` saniye seçeneklerini sunar; kabul edilen değerler modele ve motora bağlıdır. |
-| `Resolution` | `720x1280` | `genişlikxyükseklik` biçimindeki çıktı boyutu. Kullanılabilir seçenekler ve başlangıç değeri model meta verilerine göre değişebilir. |
+| `Resolution` | `720x1280` | `widthxheight` biçimindeki çıktı boyutu. Kullanılabilir seçenekler ve başlangıç değeri model meta verilerine göre değişebilir. |
 | `Reference Image` | (boş) | Gelişmiş ayarlardaki isteğe bağlı referans görseli. PNG/JPEG yükleyin veya bir HTTP(S) görsel URL'si girin. |
 
 Referans görselini veya URL'yi kaldırmak için temizleme düğmesini kullanın. Referans görseli desteği seçilen modele bağlıdır; `video` kategorisini seçmek, yalnızca metinden video üreten bir modele görsel girdisi desteği kazandırmaz.

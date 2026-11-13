@@ -869,22 +869,6 @@ async def get_diffusers_model_index_with_workers(
     return normalize_diffusers_model_index(data)
 
 
-async def check_diffusers_model_index_from_workers(
-    model: Model, workers: List[Worker]
-) -> bool:
-    """Check remote local-path artifacts without loading model code."""
-    if not workers:
-        return False
-    try:
-        data = await read_local_path_file_from_workers(
-            model, "model_index.json", workers
-        )
-        return normalize_diffusers_model_index(data) is not None
-    except Exception as e:
-        logger.info(f"Failed to read model_index.json from workers: {e}")
-        return False
-
-
 async def read_local_path_file_from_workers(  # noqa: C901
     model: Model,
     file_path: str,

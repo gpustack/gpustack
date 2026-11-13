@@ -97,3 +97,32 @@ async def test_video_form_stays_multipart_and_preserves_prompt_and_parameters(
         assert uploaded.filename == "reference.png"
         assert uploaded.content_type == "image/png"
         assert await uploaded.read() == image
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/videos", "/v1/videos/"])
+@pytest.mark.parametrize(
+    "stream", ["false", "0", "no", "off", "FALSE", "true", "1", "yes", "on"]
+)
+async def test_video_multipart_stream_flag_is_parsed_as_a_boolean(path, stream):
+    from gpustack.api.exceptions import BadRequestException
+
+    boundary = "stream-flag-boundary"
+    body = (
+        "".join(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'
+            for key, value in {"model": "wan", "stream": stream}.items()
+        )
+        + f"--{boundary}--\r\n"
+    )
+    request = _request(body.encode(), f"multipart/form-data; boundary={boundary}")
+    request.scope["path"] = path
+    if stream.lower() in ("true", "1", "yes", "on"):
+        with pytest.raises(BadRequestException) as error:
+            await openai.parse_request_body(request)
+        assert error.value.status_code == 400
+        assert "do not support streaming" in error.value.message
+    else:
+        _, parsed_stream, _, form = await openai.parse_request_body(request)
+        assert parsed_stream is False
+        assert form is not None

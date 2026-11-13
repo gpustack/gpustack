@@ -1,13 +1,14 @@
 import json
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.responses import JSONResponse, Response
 from starlette.requests import Request
 
 from gpustack.api.exceptions import NotFoundException, ServiceUnavailableException
+from gpustack.api.tenant import TenantContext
 from gpustack.routes import openai, videos
 from gpustack.security import JWTManager
 from gpustack.utils.model_instance_workers import ModelInstanceEndpoint
@@ -48,9 +49,13 @@ def video_api(monkeypatch):
     job = {"id": "native-task", "status": "queued", "progress": 0}
     create = AsyncMock(return_value=JSONResponse(job))
     monkeypatch.setattr(openai, "proxy_request_by_model", create)
-    monkeypatch.setattr(videos, "async_session", lambda: mock_async_session())
-    allowed = AsyncMock(return_value=True)
-    monkeypatch.setattr(videos.UserService, "model_allowed_for_user", allowed)
+    session_context = mock_async_session()
+    session = session_context.__aenter__.return_value
+    access_result = MagicMock()
+    access_result.first.return_value = 9
+    session.exec.return_value = access_result
+    monkeypatch.setattr(videos, "async_session", lambda: session_context)
+    monkeypatch.setattr(openai, "async_session", lambda: session_context)
     instance = SimpleNamespace(id=4, model_id=2, deleted_at=None, restart_count=0)
     lookup = AsyncMock(return_value=instance)
     monkeypatch.setattr(videos.ModelInstance, "one_by_id", lookup)
@@ -70,13 +75,18 @@ def video_api(monkeypatch):
         )
     )
     monkeypatch.setattr(videos, "request_to_worker", forward)
+    user = SimpleNamespace(id=11, is_admin=False)
+    ctx = TenantContext(
+        user=user, is_platform_admin=False, current_principal_id=7, org_role=None
+    )
     return SimpleNamespace(
         request=request,
-        user=SimpleNamespace(id=11),
-        ctx=SimpleNamespace(current_principal_id=7),
+        user=user,
+        ctx=ctx,
         job=job,
         create=create,
-        allowed=allowed,
+        access=session.exec,
+        access_result=access_result,
         instance=instance,
         lookup=lookup,
         worker=worker,
@@ -119,9 +129,7 @@ async def test_create_and_poll_preserve_public_id_and_pin_original_instance(vide
         videos.router_header_key: "model-2-4.static"
     }
     api.lookup.assert_awaited_once_with(api.lookup.call_args.args[0], 4, refresh=True)
-    api.allowed.assert_awaited_once_with(
-        model_name="published-wan", user_id=11, api_key=None
-    )
+    api.access.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -142,7 +150,7 @@ async def test_video_id_cannot_cross_user_tenant_or_be_forged(video_api, access)
         video_id = "native-task"
     with pytest.raises(NotFoundException):
         await videos.retrieve_video(video_id, api.request, api.user, api.ctx)
-    api.allowed.assert_not_awaited()
+    api.access.assert_not_awaited()
     api.forward.assert_not_awaited()
 
 
@@ -150,7 +158,7 @@ async def test_video_id_cannot_cross_user_tenant_or_be_forged(video_api, access)
 async def test_revoked_model_access_blocks_status_and_download(video_api):
     api = video_api
     job = await _create(api)
-    api.allowed.return_value = False
+    api.access_result.first.return_value = None
     for handler in (videos.retrieve_video, videos.download_video):
         with pytest.raises(NotFoundException):
             await handler(job["id"], api.request, api.user, api.ctx)
@@ -245,3 +253,77 @@ async def test_async_create_rejects_streaming_requests(video_api, monkeypatch):
     with pytest.raises(BadRequestException) as error:
         await original_proxy(video_api.request, video_api.user)
     assert error.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_video_creation_checks_context_before_dispatch(video_api, monkeypatch):
+    api = video_api
+    api.access_result.first.return_value = None
+    monkeypatch.setattr(openai, "proxy_request_by_model", original_proxy)
+    monkeypatch.setattr(
+        openai,
+        "parse_request_body",
+        AsyncMock(
+            return_value=("published-wan", False, {"model": "published-wan"}, None)
+        ),
+    )
+    monkeypatch.setattr(
+        openai.UserService, "model_allowed_for_user", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(
+        openai.ModelRouteService,
+        "resolve_route_targets",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(model_id=2, weight=1, overridden_model_name=None)
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        openai.ModelRouteService,
+        "get_by_name",
+        AsyncMock(return_value=SimpleNamespace(id=9)),
+    )
+    monkeypatch.setattr(
+        openai.ModelService, "get_by_id", AsyncMock(return_value=SimpleNamespace(id=2))
+    )
+    choose_instance = AsyncMock()
+    monkeypatch.setattr(openai, "get_running_instance", choose_instance)
+    with pytest.raises(NotFoundException):
+        await videos.create_video(api.request, api.user, api.ctx)
+    choose_instance.assert_not_awaited()
+    api.forward.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout", [False, True])
+async def test_video_transfer_errors_do_not_expose_exception_details(
+    video_api, monkeypatch, timeout, caplog
+):
+    from gpustack.server import worker_request
+
+    api = video_api
+    job = await _create(api)
+    secret = "private-worker-host: traceback with sensitive details"
+    error = TimeoutError(secret) if timeout else RuntimeError(secret)
+
+    connection = MagicMock()
+    connection.__aenter__ = AsyncMock(side_effect=error)
+    connection.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        worker_request, "_request_to_worker", lambda **kwargs: connection
+    )
+    response = await videos.download_video(job["id"], api.request, api.user, api.ctx)
+    messages = []
+
+    async def send(message):
+        messages.append(message)
+
+    await response.stream_response(send)
+    assert messages[0]["status"] == (504 if timeout else 503)
+    body = b"".join(message.get("body", b"") for message in messages)
+    assert secret.encode() not in body
+    assert secret in caplog.text
+    assert json.loads(body)["error"]["message"] == (
+        "Video content request timed out" if timeout else "Video content is unavailable"
+    )
