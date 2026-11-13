@@ -859,7 +859,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             allocatable_vram = allocatable.vram.get(gpu.index, 0)
             total_allocatable_vram += allocatable_vram
 
-            if allocatable_vram / gpu.memory.total > self._gpu_memory_utilization:
+            if allocatable_vram / gpu.memory.total >= self._gpu_memory_utilization:
                 satisfied_gpu_count += 1
                 gpu_list.append(gpu)
 

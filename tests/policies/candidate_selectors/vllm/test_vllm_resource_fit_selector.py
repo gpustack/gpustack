@@ -27,8 +27,10 @@ from gpustack.schemas.models import (
     ModelInstanceSubordinateWorker,
     BackendEnum,
     SourceEnum,
+    ModelInstance,
 )
 from tests.fixtures.workers.fixtures import (
+    linux_nvidia_19_4090_24gx2,
     linux_mix_1_nvidia_4080_16gx1_rocm_7800_16gx1,
     linux_nvidia_0_4090_24gx1,
     linux_nvidia_1_4090_24gx1,
@@ -2379,3 +2381,64 @@ async def test_hybrid_offer_capacity_reserves_every_node_of_each_global_group(co
     assert result.claim.vram == 8 * int(
         workers[0].status.gpu_devices[0].memory.total * 0.9
     )
+
+
+@pytest.mark.parametrize(
+    "utilization, claimed_share",
+    [
+        # A free card offers exactly the whole of it.
+        (1.0, 0),
+        # A card holding another instance's half offers exactly the other half.
+        (0.5, 0.5),
+    ],
+)
+@pytest.mark.asyncio
+async def test_multi_gpu_placement_accepts_cards_exactly_at_the_utilization(
+    config, utilization, claimed_share
+):
+    worker = linux_nvidia_19_4090_24gx2()
+    claimed = {
+        gpu.index: int(gpu.memory.total * claimed_share)
+        for gpu in worker.status.gpu_devices
+    }
+    mis = [
+        ModelInstance(
+            id=9,
+            name="other-0",
+            model_id=2,
+            model_name="other",
+            worker_id=worker.id,
+            worker_name=worker.name,
+            gpu_type="cuda",
+            gpu_indexes=list(claimed),
+            computed_resource_claim=ComputedResourceClaim(vram=claimed, ram=0),
+        )
+    ]
+    model = new_model(
+        1,
+        "exact-utilization",
+        huggingface_repo_id="test/exact-utilization",
+        backend=BackendEnum.VLLM.value,
+        cpu_offloading=False,
+        backend_parameters=[
+            "--tensor-parallel-size=2",
+            f"--gpu-memory-utilization={utilization}",
+        ],
+    )
+    selector = VLLMResourceFitSelector(
+        config, model, mis, resource_view=ResourceView(mis)
+    )
+    pretrained = PretrainedConfig(
+        num_hidden_layers=2, num_attention_heads=8, hidden_size=64
+    )
+
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=pretrained),
+        ),
+        patch("gpustack.policies.utils.get_model_weight_size", return_value=1024**3),
+    ):
+        candidates = await selector.select_candidates([worker])
+
+    assert [sorted(c.gpu_indexes) for c in candidates] == [[0, 1]]
