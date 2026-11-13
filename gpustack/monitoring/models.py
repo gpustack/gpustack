@@ -6,7 +6,7 @@ import logging
 import math
 import re
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -18,6 +18,7 @@ from gpustack.schemas.model_metrics import (
     MetricSummary,
     ModelMetric,
     ModelMetrics,
+    TrendStatistic,
 )
 from gpustack.schemas.models import Model, ModelInstance
 
@@ -25,6 +26,7 @@ from gpustack.utils.model_instance_workers import (
     model_instance_metrics_source_inventory,
 )
 from .catalog import model_metric_definitions
+from . import config as query_config
 from .queries import (
     HISTOGRAM_STATISTICS,
     PROFILE_LABELS,
@@ -166,7 +168,7 @@ class _Collection:
         step,
         rate_window,
         view,
-        statistic,
+        statistics,
         upstream_instances=None,
     ):
         self.model = model
@@ -181,7 +183,8 @@ class _Collection:
         self.start, self.end, self.step = start, end, step
         self.window = int(end - start)
         self.rate_window = rate_window
-        self.view, self.statistic = view, statistic
+        self.view = view
+        self.statistics = [s for s in HISTOGRAM_STATISTICS if s in statistics]
         self.slots = asyncio.Semaphore(8)
         self.completed = set()
 
@@ -302,17 +305,33 @@ class _Collection:
             PROFILE_LABELS if definition.per_source else ('role', 'model_instance_id')
         )
         if gauge:
-            summary = build_gauge_query(definition.family, scope, group_by=grouping)
+            summary = build_gauge_query(
+                definition.family,
+                scope,
+                group_by=grouping,
+                profile=definition.query_profile,
+            )
             trend = build_gauge_query(
                 definition.family,
                 scope,
                 group_by=grouping if definition.per_source else None,
+                profile=definition.query_profile,
             )
         else:
             summary = build_counter_query(
-                definition.family, scope, self.window, summary=True, group_by=grouping
+                definition.family,
+                scope,
+                self.window,
+                summary=True,
+                group_by=grouping,
+                profile=definition.query_profile,
             )
-            trend = build_counter_query(definition.family, scope, self.rate_window)
+            trend = build_counter_query(
+                definition.family,
+                scope,
+                self.rate_window,
+                profile=definition.query_profile,
+            )
         rows, ranges = await asyncio.gather(
             self.read(summary), self.read(trend, ranged=True)
         )
@@ -388,7 +407,13 @@ class _Collection:
 
     async def ratio(self, definition, metric, scope):
         queries = [
-            build_counter_observations(family, scope, self.window, summary=True)
+            build_counter_observations(
+                family,
+                scope,
+                self.window,
+                summary=True,
+                profile=definition.query_profile,
+            )
             for family in (definition.family, definition.denominator)
         ]
         numerator, denominator = await asyncio.gather(*(self.read(q) for q in queries))
@@ -419,7 +444,11 @@ class _Collection:
             )
         ranges = await self.read(
             build_ratio_query(
-                definition.family, definition.denominator, scope, self.rate_window
+                definition.family,
+                definition.denominator,
+                scope,
+                self.rate_window,
+                profile=definition.query_profile,
             ),
             ranged=True,
         )
@@ -435,7 +464,9 @@ class _Collection:
             metric.status, metric.reason = 'no_observations', 'zero_observations'
 
     async def histogram(self, definition, metric, scope):
-        queries = build_histogram_components(definition.family, scope, self.window)
+        queries = build_histogram_components(
+            definition.family, scope, self.window, profile=definition.query_profile
+        )
         sums, counts = await asyncio.gather(
             self.read(queries['sum']), self.read(queries['count'])
         )
@@ -467,8 +498,7 @@ class _Collection:
         )
         if metric.status == 'no_observations':
             metric.reason = 'zero_observations'
-        statistics = self.trend_statistics()
-        statistics = [s for s in statistics if s in metric.supported_statistics]
+        statistics = [s for s in self.statistics if s in metric.supported_statistics]
         requests = [
             (stat, candidate)
             for stat in statistics
@@ -478,7 +508,11 @@ class _Collection:
             *(
                 self.read(
                     build_histogram_query(
-                        definition.family, candidate, stat, self.rate_window
+                        definition.family,
+                        candidate,
+                        stat,
+                        self.rate_window,
+                        profile=definition.query_profile,
                     ),
                     ranged=True,
                 )
@@ -585,13 +619,6 @@ class _Collection:
             for role, ids in sorted(roles.items())
         ]
 
-    def trend_statistics(self):
-        if self.statistic == 'all':
-            return list(HISTOGRAM_STATISTICS)
-        if self.statistic != 'percentiles':
-            return [self.statistic]
-        return ['p95'] if self.view == 'instances' else ['p50', 'p95', 'p99']
-
     def upstream_instance(self, worker):
         normalized = _upstream_address(worker)
         if normalized is None:
@@ -631,7 +658,11 @@ class _Collection:
     async def health(self, definition, metric, scope):
         grouping = ('role', 'model_instance_id', 'worker')
         query = build_gauge_query(
-            definition.family, scope, aggregate='max', group_by=grouping
+            definition.family,
+            scope,
+            aggregate='max',
+            group_by=grouping,
+            profile=definition.query_profile,
         )
         rows, ranges = await asyncio.gather(
             self.read(query), self.read(query, ranged=True)
@@ -703,7 +734,7 @@ async def collect_model_metrics(
     end: Optional[float] = None,
     role: str = 'all',
     view: str = 'aggregate',
-    statistic: str = 'percentiles',
+    statistics: Tuple[TrendStatistic, ...] = HISTOGRAM_STATISTICS,
     section: str = 'all',
     client: Optional[aiohttp.ClientSession] = None,
     upstream_instances: Optional[List[ModelInstance]] = None,
@@ -715,6 +746,7 @@ async def collect_model_metrics(
         instances: Current visible instances after the user's filters.
         start: Optional fixed beginning in whole Unix seconds.
         end: Fixed end, supplied together with start; independent of refresh time.
+        statistics: Latency trend statistics; interval summaries retain all four.
         upstream_instances: Full visible population for resolving Router peer IDs.
 
     Returns:
@@ -722,13 +754,14 @@ async def collect_model_metrics(
     """
     interval = monitoring_interval(window_seconds, start, end, now=time.time())
     start, end, window_seconds = interval.start, interval.end, interval.seconds
-    step = max(math.ceil(window_seconds / 120), 15)
+    time_policy = query_config.get_query_config().time_windows.llm
+    step = time_policy.step(window_seconds)
     result = ModelMetrics(
         model_id=model.id,
         start=start,
         end=end,
         step=step,
-        rate_window_seconds=max(step + 60, 60),
+        rate_window_seconds=time_policy.rate_window(step),
         last_refreshed_at=end,
         history_scope=_HISTORY_SCOPE,
     )
@@ -737,8 +770,7 @@ async def collect_model_metrics(
     definitions = [
         definition
         for definition in model_metric_definitions(backend)
-        if section == 'all'
-        or (definition.key in ('pd_kv_transfer', 'router_health')) == (section == 'pd')
+        if section == 'all' or definition.section == section
     ]
     fills, scheduled = [], set()
     if owned and url:
@@ -753,7 +785,7 @@ async def collect_model_metrics(
         step,
         result.rate_window_seconds,
         view,
-        statistic,
+        statistics,
         upstream_instances,
     )
     for definition in definitions:
