@@ -69,6 +69,15 @@ class ModelUsageDetails(SQLModel, BaseModelMixin, table=True):
     prompt_cached_token_count: int = Field(
         default=0, sa_column=Column(BigInteger, nullable=False, default=0)
     )
+    # Media generation units, same meaning as on ``ModelUsage``.
+    image_count: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, default=0, server_default='0'),
+    )
+    image_pixel_count: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, default=0, server_default='0'),
+    )
     # True iff the canonical usage chunk was observed before the stream
     # ended (token counts above are authoritative). False means the request
     # was interrupted and the token counts are server-side estimates (see
@@ -171,6 +180,15 @@ class ModelUsageDetailsArchive(SQLModel, BaseModelMixin, table=True):
     )
     prompt_cached_token_count: int = Field(
         default=0, sa_column=Column(BigInteger, nullable=False, default=0)
+    )
+    # Media generation units, same meaning as on ``ModelUsage``.
+    image_count: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, default=0, server_default='0'),
+    )
+    image_pixel_count: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, default=0, server_default='0'),
     )
     # True iff the canonical usage chunk was observed before the stream
     # ended (token counts above are authoritative). False means the request

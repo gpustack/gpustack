@@ -13,7 +13,11 @@ from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.model_provider import ModelProvider
 from gpustack.schemas.model_routes import ModelRoute
-from gpustack.schemas.model_usage import ModelUsage, OperationEnum
+from gpustack.schemas.model_usage import (
+    USAGE_QUANTITY_MAX,
+    ModelUsage,
+    OperationEnum,
+)
 from gpustack.schemas.model_usage_details import ModelUsageDetails
 from gpustack.schemas.models import Model, is_embedding_model, is_reranker_model
 from gpustack.schemas.principals import (
@@ -64,6 +68,13 @@ class ModelUsageMetrics(BaseModel):
     total_token: int = 0
     input_cached_token: int = 0
     request_count: int = 1
+    # Media generation units (image_generation only; 0 otherwise). Additive
+    # like the token fields, so they roll up by ``+=``. A reporter that does
+    # not send them (older gateway plugins) yields 0 — no image units are
+    # invented server-side because, unlike tokens, there is nothing in the
+    # report to estimate them from.
+    image_count: int = 0
+    image_pixel_count: int = 0
     # ``completed`` is True iff the canonical usage chunk was observed before
     # the stream ended. When False, token fields may be 0 (OpenAI/vLLM) or
     # partial (Anthropic message_start carries input_token early), so the
@@ -282,6 +293,23 @@ def _resolve_usage_tokens(
     return prompt_tokens, completion_tokens
 
 
+def _saturating_add(a: int, b: int) -> int:
+    """Sum two usage quantities without leaving the BIGINT column range."""
+    return min(a + b, USAGE_QUANTITY_MAX)
+
+
+def _sanitize_image_units(metric: ModelUsageMetrics) -> None:
+    """Bound reporter-supplied image units to ``[0, USAGE_QUANTITY_MAX]`` in place.
+
+    Runs before the metric reaches either buffer, so a malformed report can
+    neither cancel valid usage it is rolled up with (a negative value) nor
+    fail the flush batch (a value the BIGINT columns cannot hold), and the
+    rollup and detail rows always carry the same bounded numbers.
+    """
+    metric.image_count = min(max(metric.image_count, 0), USAGE_QUANTITY_MAX)
+    metric.image_pixel_count = min(max(metric.image_pixel_count, 0), USAGE_QUANTITY_MAX)
+
+
 async def accumulate_gateway_metrics(metrics: List[ModelUsageMetrics]):
     async with gateway_buffers_lock:
         # Product invariant: every inference request resolves to a route
@@ -305,6 +333,7 @@ async def accumulate_gateway_metrics(metrics: List[ModelUsageMetrics]):
             # One copy at the top + one for details keeps both buffers, the
             # caller, and the audit trail isolated from one another.
             metric = incoming.model_copy()
+            _sanitize_image_units(metric)
             # Backfill estimated tokens before either buffer sees the metric:
             # the rollup buffer aggregates by += and would otherwise lose the
             # per-row byte/chunk context needed for estimation later on.
@@ -320,6 +349,12 @@ async def accumulate_gateway_metrics(metrics: List[ModelUsageMetrics]):
                 existing.total_token += metric.total_token
                 existing.input_cached_token += metric.input_cached_token
                 existing.request_count += metric.request_count
+                existing.image_count = _saturating_add(
+                    existing.image_count, metric.image_count
+                )
+                existing.image_pixel_count = _saturating_add(
+                    existing.image_pixel_count, metric.image_pixel_count
+                )
         _trim_details_buffer_locked()
         _maybe_warn_missing_route_id(missing_route_id_count, missing_route_id_sample)
 
@@ -446,6 +481,12 @@ async def create_or_update_model_usage(
         current_usage.completion_token_count += metric.completion_token_count
         current_usage.prompt_cached_token_count += metric.prompt_cached_token_count
         current_usage.request_count += metric.request_count
+        current_usage.image_count = _saturating_add(
+            current_usage.image_count, metric.image_count
+        )
+        current_usage.image_pixel_count = _saturating_add(
+            current_usage.image_pixel_count, metric.image_pixel_count
+        )
         # Refresh route name snapshot to the latest non-NULL value so that
         # a mid-day rename converges to one consistent label per (route_id,
         # date) cell. A NULL incoming name means the route was deleted
@@ -832,6 +873,8 @@ async def store_usage_metrics(
                     completion_token_count=completion_tokens,
                     prompt_cached_token_count=metric.input_cached_token,
                     request_count=metric.request_count,
+                    image_count=metric.image_count,
+                    image_pixel_count=metric.image_pixel_count,
                     operation=metric.operation,
                     consumer_name=consumer_info[0] if consumer_info else None,
                     consumer_principal_kind=(
@@ -886,6 +929,8 @@ async def store_usage_metrics(
                         prompt_token_count=prompt_tokens,
                         completion_token_count=completion_tokens,
                         prompt_cached_token_count=metric.input_cached_token,
+                        image_count=metric.image_count,
+                        image_pixel_count=metric.image_pixel_count,
                         # Persist the completion flag so downstream billing
                         # can tell authoritative token counts from estimated
                         # ones, and gate per-request charges (image/tts/stt)

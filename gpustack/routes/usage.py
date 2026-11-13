@@ -15,7 +15,7 @@ from gpustack import envs
 from gpustack.api.exceptions import ForbiddenException, InvalidException
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.model_routes import ModelRoute
-from gpustack.schemas.model_usage import ModelUsage
+from gpustack.schemas.model_usage import ModelUsage, OperationEnum
 from gpustack.schemas.users import User
 from gpustack.schemas.principals import (
     OrgRole,
@@ -41,6 +41,8 @@ from gpustack.schemas.usage import (
     USAGE_METRIC_AVG_TOKENS_PER_REQUEST,
     USAGE_METRIC_INPUT_CACHED_TOKENS,
     USAGE_METRIC_DATE,
+    USAGE_METRIC_IMAGE_COUNT,
+    USAGE_METRIC_IMAGE_PIXELS,
     USAGE_METRIC_INPUT_TOKENS,
     USAGE_METRIC_LAST_ACTIVE,
     USAGE_METRIC_MODELS_CALLED,
@@ -111,6 +113,20 @@ METRIC_OPTIONS = [
     UsageOption(key=USAGE_METRIC_INPUT_CACHED_TOKENS, label="Input Cached Tokens"),
     UsageOption(key=USAGE_METRIC_TOTAL_TOKENS, label="Total Tokens"),
     UsageOption(key=USAGE_METRIC_API_REQUESTS, label="API Requests"),
+    UsageOption(key=USAGE_METRIC_IMAGE_COUNT, label="Images Generated"),
+    UsageOption(key=USAGE_METRIC_IMAGE_PIXELS, label="Image Pixels"),
+]
+
+# Operations a caller can scope usage to. Labels follow the operation, not
+# the endpoint: ``image_generation`` covers both generations and edits.
+OPERATION_OPTIONS = [
+    UsageOption(key=OperationEnum.CHAT_COMPLETION.value, label="Chat Completion"),
+    UsageOption(key=OperationEnum.COMPLETION.value, label="Completion"),
+    UsageOption(key=OperationEnum.EMBEDDING.value, label="Embedding"),
+    UsageOption(key=OperationEnum.RERANK.value, label="Rerank"),
+    UsageOption(key=OperationEnum.IMAGE_GENERATION.value, label="Image Generation"),
+    UsageOption(key=OperationEnum.AUDIO_SPEECH.value, label="Text to Speech"),
+    UsageOption(key=OperationEnum.AUDIO_TRANSCRIPTION.value, label="Speech to Text"),
 ]
 GRANULARITY_OPTIONS = [
     UsageOption(key=USAGE_GRANULARITY_DAY, label="Day"),
@@ -152,6 +168,10 @@ def _metric_columns() -> Dict[str, Any]:
             0,
         ),
         USAGE_METRIC_API_REQUESTS: func.coalesce(func.sum(ModelUsage.request_count), 0),
+        USAGE_METRIC_IMAGE_COUNT: func.coalesce(func.sum(ModelUsage.image_count), 0),
+        USAGE_METRIC_IMAGE_PIXELS: func.coalesce(
+            func.sum(ModelUsage.image_pixel_count), 0
+        ),
         # "Models called" counts distinct logical model endpoints — i.e.
         # distinct routes the caller hit. Untracked usage (NULL
         # ``model_route_id``) is dropped by COUNT(DISTINCT ...) and shows
@@ -690,6 +710,11 @@ def _apply_usage_scope_and_filters(
     # nothing rather than silently ignoring the filter.
     if group_member_user_ids is not None:
         statement = statement.where(ModelUsage.user_id.in_(group_member_user_ids))
+    # Operation narrows *what* was consumed, never *whose* usage is visible,
+    # so it is open to every scope.
+    operations = getattr(filters, "operations", None)
+    if operations:
+        statement = statement.where(ModelUsage.operation.in_(operations))
     return statement
 
 
@@ -733,6 +758,8 @@ def _summary_from_row(row: Any) -> UsageSummary:
         total_tokens=int(getattr(row, USAGE_METRIC_TOTAL_TOKENS, 0) or 0),
         api_requests=int(getattr(row, USAGE_METRIC_API_REQUESTS, 0) or 0),
         models_called=int(getattr(row, USAGE_METRIC_MODELS_CALLED, 0) or 0),
+        image_count=int(getattr(row, USAGE_METRIC_IMAGE_COUNT, 0) or 0),
+        image_pixels=int(getattr(row, USAGE_METRIC_IMAGE_PIXELS, 0) or 0),
     )
 
 
@@ -932,6 +959,7 @@ async def get_usage_meta(  # noqa: C901
         metrics=METRIC_OPTIONS,
         granularities=GRANULARITY_OPTIONS,
         group_bys=group_by_options,
+        operations=OPERATION_OPTIONS,
         filters=UsageFilters(
             users=user_options,
             api_keys=api_key_options,
@@ -1055,6 +1083,8 @@ def _build_breakdown_item(
         total_tokens=total_tokens,
         api_requests=api_requests,
         avg_tokens_per_request=total_tokens / api_requests if api_requests else 0,
+        image_count=int(getattr(row, USAGE_METRIC_IMAGE_COUNT, 0) or 0),
+        image_pixels=int(getattr(row, USAGE_METRIC_IMAGE_PIXELS, 0) or 0),
         last_active=getattr(row, USAGE_METRIC_LAST_ACTIVE, None),
     )
     if USAGE_GROUP_BY_DATE in group_bys:
@@ -1203,6 +1233,8 @@ async def _build_breakdown_statement(
         ),
         metric_columns[USAGE_METRIC_TOTAL_TOKENS].label(USAGE_METRIC_TOTAL_TOKENS),
         metric_columns[USAGE_METRIC_API_REQUESTS].label(USAGE_METRIC_API_REQUESTS),
+        metric_columns[USAGE_METRIC_IMAGE_COUNT].label(USAGE_METRIC_IMAGE_COUNT),
+        metric_columns[USAGE_METRIC_IMAGE_PIXELS].label(USAGE_METRIC_IMAGE_PIXELS),
         metric_columns[USAGE_METRIC_MODELS_CALLED].label(USAGE_METRIC_MODELS_CALLED),
         func.count(func.distinct(ModelUsage.access_key)).label(
             USAGE_METRIC_API_KEYS_USED
