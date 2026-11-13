@@ -244,7 +244,7 @@ GPUStack поддерживает различные переменные сре
 ```yaml
 env:
   GPUSTACK_NON_MODEL_WORKLOAD: "true"
-  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Необязательно: 4 GiB
+  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Optional: 4 GiB
 ```
 
 Этот режим пропускает оценку архитектуры и ресурсов на основе весов модели,

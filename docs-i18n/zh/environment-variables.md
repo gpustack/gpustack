@@ -247,7 +247,7 @@ TLS 协议版本配置会写入 `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` 指定的
 ```yaml
 env:
   GPUSTACK_NON_MODEL_WORKLOAD: "true"
-  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # 可选：4 GiB
+  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Optional: 4 GiB
 ```
 
 此模式跳过模型架构和基于权重的资源评估，仅选择 CPU 候选，并为容器仅声明

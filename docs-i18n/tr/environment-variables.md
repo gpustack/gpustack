@@ -244,7 +244,7 @@ dağıtımın ortam değişkenlerinde `GPUSTACK_NON_MODEL_WORKLOAD=true` ayarlay
 ```yaml
 env:
   GPUSTACK_NON_MODEL_WORKLOAD: "true"
-  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # İsteğe bağlı: 4 GiB
+  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Optional: 4 GiB
 ```
 
 Bu mod, model mimarisi ve ağırlıklara dayalı kaynak değerlendirmesini atlar,
