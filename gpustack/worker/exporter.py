@@ -1,4 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
+from math import isfinite
+from threading import Lock
+import time
 from typing import Callable
 from prometheus_client.registry import Collector
 from prometheus_client import (
@@ -15,6 +18,11 @@ from gpustack.config.config import Config
 from gpustack.logging import setup_logging
 from gpustack.policies.resource_view import compute_worker_allocated
 from gpustack.utils.name import metric_name
+from gpustack.utils.hardware_metrics import (
+    gpu_identity,
+    is_gpu_partition,
+    verified_gpu_devices,
+)
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.worker.runtime_metrics_aggregator import runtime_metrics_values
 import uvicorn
@@ -22,6 +30,7 @@ import logging
 from fastapi import FastAPI, Response
 
 logger = logging.getLogger(__name__)
+HARDWARE_IDENTITY_TTL_SECONDS = 30.0
 
 unified_registry = CollectorRegistry()
 raw_registry = CollectorRegistry()
@@ -55,6 +64,53 @@ def _drain(future, kind: str):
         return []
 
 
+def _stable_gauge(name, description, labels, values, value, bounds=(None, None)):
+    if value is None or not isfinite(value):
+        return None
+    minimum, maximum = bounds
+    if minimum is not None and value < minimum:
+        return None
+    if maximum is not None and value > maximum:
+        return None
+    family = GaugeMetricFamily(metric_name(name), description, labels=labels)
+    family.add_metric(values, value)
+    return family
+
+
+def _stable_filesystems(mounts, labels, values):
+    unique = {mount.mount_point for mount in mounts}
+    for name in ('used_bytes', 'total_bytes', 'utilization_percent'):
+        family = None
+        for mountpoint in sorted(unique):
+            rows = [m for m in mounts if m.mount_point == mountpoint]
+            if len(rows) != 1 or not mountpoint:
+                continue
+            mount = rows[0]
+            if name == 'utilization_percent':
+                value = (
+                    100 * mount.used / mount.total
+                    if mount.used is not None and mount.total and mount.total > 0
+                    else None
+                )
+            else:
+                value = mount.used if name == 'used_bytes' else mount.total
+            metric = _stable_gauge(
+                'worker_filesystem_' + name,
+                'Owner-qualified filesystem ' + name,
+                labels + ['mountpoint'],
+                values + [mountpoint],
+                value,
+                (0, 100 if name == 'utilization_percent' else None),
+            )
+            if metric is not None:
+                if family is None:
+                    family = metric
+                else:
+                    family.samples.extend(metric.samples)
+        if family is not None:
+            yield family
+
+
 class MetricExporter(Collector):
     _worker_ip_getter: Callable[[], str]
     _worker_name_getter: Callable[[], str]
@@ -70,6 +126,7 @@ class MetricExporter(Collector):
         worker_id_getter: Callable[[], int],
         clientset_getter: Callable[[], ClientSet] = None,
         cache: dict = None,
+        worker_uuid_getter: Callable[[], str] = None,
     ):
         self._config = cfg
         self._collector = collector
@@ -79,6 +136,9 @@ class MetricExporter(Collector):
         self._port = cfg.worker_metrics_port
         self._cache = cache
         self._clientset_getter = clientset_getter
+        self._worker_uuid_getter = worker_uuid_getter
+        self._hardware_identity = None
+        self._hardware_identity_lock = Lock()
 
     def collect(self):
         with ThreadPoolExecutor() as executor:
@@ -283,7 +343,8 @@ class MetricExporter(Collector):
 
         if status.gpu_devices is not None:
             for i, d in enumerate(status.gpu_devices):
-                gpu_chip_index = "0"  # TODO(michelia): Placeholder, replace with actual chip index if available
+                # Node metrics retain their inventory-slot and single-chip labels.
+                gpu_chip_index = "0"
                 gpu_label_values = worker_label_values + [
                     str(i),
                     _safe_label(d.name),
@@ -333,6 +394,8 @@ class MetricExporter(Collector):
                             _rate(d.memory.used, d.memory.total),
                         )
 
+        yield from self._collect_stable_hardware(status)
+
         # filesystem
         if status.filesystem is not None:
             for _, d in enumerate(status.filesystem):
@@ -377,6 +440,143 @@ class MetricExporter(Collector):
         yield filesystem_total
         yield filesystem_used
         yield filesystem_utilization_rate
+
+    def _load_worker_identity(self):
+        if self._worker_uuid_getter is None or self._clientset_getter is None:
+            return None
+        worker_id = self._worker_id_getter()
+        worker_uuid = self._worker_uuid_getter()
+        if (
+            type(worker_id) is not int
+            or worker_id <= 0
+            or not isinstance(worker_uuid, str)
+            or not worker_uuid.strip()
+        ):
+            return None
+        clientset = self._clientset_getter()
+        if clientset is None:
+            return None
+        response = clientset.http_client.get_httpx_client().get(
+            f'/workers/{worker_id}', timeout=2.0
+        )
+        response.raise_for_status()
+        worker = response.json()
+        if (
+            worker.get('id') != worker_id
+            or worker.get('me') is not True
+            or 'owner_principal_id' not in worker
+        ):
+            return None
+        owner = worker['owner_principal_id']
+        if owner is not None and (type(owner) is not int or owner <= 0):
+            return None
+        return worker_id, worker_uuid, owner
+
+    def refresh_worker_identity(self) -> None:
+        """Refresh the server-verified owner outside the Prometheus scrape path."""
+        snapshot = None
+        try:
+            identity = self._load_worker_identity()
+            if identity is not None:
+                snapshot = (*identity, time.monotonic() + HARDWARE_IDENTITY_TTL_SECONDS)
+        except Exception as exc:
+            logger.debug(
+                'Stable hardware identity refresh failed (%s)', type(exc).__name__
+            )
+        with self._hardware_identity_lock:
+            lost_identity = self._hardware_identity is not None and snapshot is None
+            self._hardware_identity = snapshot
+        if lost_identity:
+            logger.warning('Stable hardware identity became unavailable')
+
+    def _cached_worker_identity(self):
+        current = None
+        try:
+            current = (self._worker_id_getter(), self._worker_uuid_getter())
+        except Exception:
+            pass
+        with self._hardware_identity_lock:
+            snapshot = self._hardware_identity
+            if snapshot is None:
+                return None
+            if snapshot[:2] == current and snapshot[3] > time.monotonic():
+                return snapshot[:3]
+            self._hardware_identity = None
+        logger.warning('Stable hardware identity became unavailable')
+        return None
+
+    def _collect_stable_hardware(self, status):
+        """Qualify samples only with an unexpired server ownership snapshot."""
+        identity = self._cached_worker_identity()
+        if identity is None:
+            return
+        worker_id, worker_uuid, owner = identity
+
+        labels = ['worker_id', 'worker_uuid', 'owner_principal_id']
+        values = [str(worker_id), worker_uuid, str(owner or '')]
+        host = (
+            ('cpu_utilization_percent', status.cpu, 'utilization_rate', (0, 100)),
+            ('memory_used_bytes', status.memory, 'used', (0, None)),
+            ('memory_total_bytes', status.memory, 'total', (0, None)),
+        )
+        for name, obj, attribute, bounds in host:
+            metric = _stable_gauge(
+                'worker_host_' + name,
+                'Owner-qualified whole worker ' + name,
+                labels,
+                values,
+                getattr(obj, attribute, None),
+                bounds,
+            )
+            if metric is not None:
+                yield metric
+
+        yield from _stable_filesystems(status.filesystem or [], labels, values)
+
+        gpu_labels = labels + ['gpu_uuid', 'gpu_chip_index']
+        identity_info = InfoMetricFamily(
+            metric_name('worker_gpu_identity'),
+            'Owner-qualified UUID/chip to reported device index mapping',
+            labels=gpu_labels,
+        )
+        families = {}
+        for device in verified_gpu_devices(status.gpu_devices or []):
+            uuid, chip = gpu_identity(device)
+            gpu_values = values + [uuid, str(chip)]
+            identity_info.add_metric(gpu_values, {'gpu_index': str(device.index)})
+            observations = [
+                ('memory_used_bytes', device.memory, 'used', (0, None)),
+                ('memory_total_bytes', device.memory, 'total', (0, None)),
+            ]
+            if not is_gpu_partition(device):
+                observations.extend(
+                    [
+                        (
+                            'utilization_percent',
+                            device.core,
+                            'utilization_rate',
+                            (0, 100),
+                        ),
+                        ('power_watts', device, 'power_used', (0, None)),
+                        ('temperature_celsius', device, 'temperature', (None, None)),
+                    ]
+                )
+            for name, obj, attribute, bounds in observations:
+                metric = _stable_gauge(
+                    'worker_gpu_' + name,
+                    'Owner-qualified device ' + name,
+                    gpu_labels,
+                    gpu_values,
+                    getattr(obj, attribute, None),
+                    bounds,
+                )
+                if metric is not None:
+                    if name not in families:
+                        families[name] = metric
+                    else:
+                        families[name].samples.extend(metric.samples)
+        yield identity_info
+        yield from families.values()
 
     def collect_runtime_metrics(self):
         yield from runtime_metrics_values(self._cache, "unified")

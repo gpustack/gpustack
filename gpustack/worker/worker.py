@@ -147,6 +147,7 @@ class Worker:
             worker_name_getter=self.worker_name,
             clientset_getter=self.clientset,
             cache=self._runtime_metrics_cache,
+            worker_uuid_getter=self.worker_uuid,
         )
 
         port_reservations = WorkerPortReservations()
@@ -276,6 +277,7 @@ class Worker:
                 clientset=self._clientset,
             )
             run_periodically_in_thread(_runtime_metrics_aggregator.aggregate, 3, 30)
+            run_periodically_in_thread(self._exporter.refresh_worker_identity, 15)
 
             # Start the metric exporter with retry.
             run_periodically_in_thread(self._exporter.start, 15)

@@ -1,0 +1,25 @@
+# HELP sglang:request_time_per_output_token_seconds Per-request TPOT in seconds: (finished_time - first_token_time) / (completion_tokens - 1).
+# TYPE sglang:request_time_per_output_token_seconds histogram
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="true",le="0.005"} 1
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="true",le="0.01"} 2
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="true",le="0.025"} 3
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="true",le="0.05"} 3
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="true",le="+Inf"} 3
+sglang:request_time_per_output_token_seconds_sum{model_name="fixture-model",is_streaming="true"} 0.027
+sglang:request_time_per_output_token_seconds_count{model_name="fixture-model",is_streaming="true"} 3
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="false",le="0.005"} 0
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="false",le="0.01"} 0
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="false",le="0.025"} 1
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="false",le="0.05"} 2
+sglang:request_time_per_output_token_seconds_bucket{model_name="fixture-model",is_streaming="false",le="+Inf"} 2
+sglang:request_time_per_output_token_seconds_sum{model_name="fixture-model",is_streaming="false"} 0.06
+sglang:request_time_per_output_token_seconds_count{model_name="fixture-model",is_streaming="false"} 2
+# HELP sglang:inter_token_latency_seconds Histogram of inter-token latency in seconds.
+# TYPE sglang:inter_token_latency_seconds histogram
+sglang:inter_token_latency_seconds_bucket{model_name="fixture-model",le="0.005"} 4
+sglang:inter_token_latency_seconds_bucket{model_name="fixture-model",le="0.01"} 12
+sglang:inter_token_latency_seconds_bucket{model_name="fixture-model",le="0.025"} 20
+sglang:inter_token_latency_seconds_bucket{model_name="fixture-model",le="0.05"} 22
+sglang:inter_token_latency_seconds_bucket{model_name="fixture-model",le="+Inf"} 22
+sglang:inter_token_latency_seconds_sum{model_name="fixture-model"} 0.242
+sglang:inter_token_latency_seconds_count{model_name="fixture-model"} 22

@@ -10,6 +10,18 @@ Bu belge, Prometheus ve Grafana kullanılarak GPUStack Sunucusu/Çalışan/LLM s
 
 GPUStack, model sunumu ve GPU kaynak yönetimi için kapsamlı bir ölçüm seti sağlar. Kullanıcılar, Prometheus ve Grafana'yı entegre ederek bu ölçümleri gerçek zamanlı olarak toplayabilir, saklayabilir ve görselleştirebilir, böylece etkili izleme ve sorun giderme işlemleri yapılabilir.
 
+## Yerel model izleme { #native-model-monitoring }
+
+**Model Service → Deployments** altında dağıtım adını açın. Overview, Monitoring, Instances, GPU Resources ve Configuration sekmeleri bulunur. İzleme grupları ayrı ayrı açılabilir; zaman, örnek ve PD rolü filtrelerini paylaşır.
+
+- Grafikler çıkarım motoru metriklerini kullanır. Eksik motor örnekleri ağ geçidi değerleriyle doldurulmaz. PD gecikmesi kaynak rolüyle gösterilir ve yerel alt isteği ölçer; otomatik olarak tüm istemci isteğini temsil etmez.
+- Desteklenen gecikme istatistikleri Avg, P50, P95 ve P99'dur. İstatistik satırı seçilen aralığın tamamını, grafik noktaları sayfada belirtilen daha kısa hız aralığını kapsar. Eksik gözlemler sıfır yapılmaz; desteklenmeyen, uygulanamayan, başarısız ve eski veriler ayrılır.
+- GPU ve sunucu geçmişi sahip bilgisi içeren kararlı kimlikleri kullanır. Yeni geçmiş serileri için Worker'ları güncelleyin. Eski Worker'ların son bildirdiği değerler gösterilebilir; doğrulanamayan geçmiş GPU indekslerinden tahmin edilmez. Fiziksel değerler paylaşılan cihazdaki veya sunucudaki diğer iş yüklerini de içerir.
+- Motor geçmişi mevcut örnekleri ve gözlemlenen kaynak nesillerini; donanım geçmişi şu anda ilişkili cihazları ve kaydedilen sahipliği kapsar. Tam bir geçmiş yerleşim denetimi değildir.
+- Sayfa erişimi dağıtım görüntüleme yetkisini kullanır. Worker/GPU görünürlüğü ayrıca doğrulanır; Grafana ve Prometheus proxy yetkileri değişmez.
+
+API uçları `GET /v2/models/{id}/metrics` ve `GET /v2/models/{id}/resource-metrics`'tir. Yalnızca kontrollü filtreleri kabul ederler; istemci PromQL'i kabul edilmez. Grafikler, tablolar ve CSV aynı yetkilendirilmiş sonuçları kullanır.
+
 ## Dahili Gözlemlenebilirlik (Varsayılan) { #built-in-observability-default }
 
 Varsayılan olarak GPUStack gömülü Prometheus ve Grafana ile başlar. Bunlara şu yollarla erişebilirsiniz:

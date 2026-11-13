@@ -1,0 +1,386 @@
+# Native detail monitoring queries. This file is read by the Server.
+# Engine-version normalization remains in metrics_config/metrics_config.yaml.
+# Read charts -> metrics/hardware_metrics -> query_profile -> expressions.
+# ${selector}, grouping and source labels come from authorized server scope.
+# sum/count/buckets below are guarded and aggregated before final statistics.
+# Frontend layout/localized titles stay in the UI; derived_in_ui is descriptive,
+# never evaluated as code. API metric keys and response fields remain unchanged.
+# Chart descriptions are English developer metadata, not localized UI titles.
+schema_version: 1
+
+time_windows:
+  llm:
+    target_points: 120
+    min_step_seconds: 15
+    rate_window_extra_seconds: 60
+  hardware:
+    target_points: 240
+    min_step_seconds: 15
+    freshness_seconds: 120
+
+# Common scaffolding always applies; metric declarations cannot disable guards.
+expressions:
+  # Benchmark phases only admit normalized gauge samples stored in their interval.
+  sample_since: (${expression}) and (timestamp(${selector}) >= ${start})
+  engine_success: gpustack:runtime_metrics_scrape_status${selector}
+  engine_inventory: gpustack:model_instance_source_info${selector}
+  history_presence: max_over_time(${expression}[${window_seconds}s])
+  engine_guard: >-
+    (max without (${plumbing_labels}) (${expression})
+    == min without (${plumbing_labels}) (${expression})) and on (${source_labels})
+    (max by (${source_labels}) (${success} == 1)) and on (${source_labels})
+    (max by (${source_labels}) (${inventory} == 1))
+  aggregate: ${operation} by (${grouping}) (${expression})
+  divide: (${numerator}) / (${denominator})
+  pair: (${left}) and (${right})
+  compare_population: (${paired}) == (${population})
+  match_group: (${expression}) and on (${grouping}) (${condition})
+
+# The actual PromQL lives here. Profiles can be shared or specialized per metric.
+# Trend uses the short rate window; increase uses the full selected range.
+profiles:
+  gauge:
+    kind: gauge
+    expressions:
+      sample: ${family}${selector}
+  counter:
+    kind: counter
+    expressions:
+      rate: rate(${family}${selector}[${window_seconds}s])
+      increase: increase(${family}${selector}[${window_seconds}s])
+      window_rate: (${expression}) / ${window_seconds}
+  histogram:
+    kind: histogram
+    expressions:
+      rate: rate(${family}_${part}${selector}[${window_seconds}s])
+      increase: increase(${family}_${part}${selector}[${window_seconds}s])
+      avg: (${sum}) / (${count})
+      p50: histogram_quantile(0.5, ${buckets})
+      p95: histogram_quantile(0.95, ${buckets})
+      p99: histogram_quantile(0.99, ${buckets})
+  hardware_gauge:
+    kind: gauge
+    scope: hardware
+    expressions:
+      sample: >-
+        (${selector}) and (time() - timestamp(${selector}) <= ${freshness_seconds})
+
+# Keys are existing API metric keys. Backend overrides select semantic kind,
+# not native exporter-version names (those belong to Worker normalization).
+metrics:
+  ttft:
+    family: gpustack:time_to_first_token_seconds
+    kind: histogram
+    unit: seconds
+    measurement_scope: engine_local
+    query_profile: histogram
+    section: llm
+  tpot:
+    family: gpustack:time_per_output_token_seconds
+    kind: histogram
+    unit: seconds
+    measurement_scope: engine_local
+    query_profile: histogram
+    section: llm
+  itl:
+    family: gpustack:inter_token_latency_seconds
+    kind: histogram
+    unit: seconds
+    measurement_scope: engine_local
+    query_profile: histogram
+    section: llm
+  e2e:
+    family: gpustack:e2e_request_latency_seconds
+    kind: histogram
+    unit: seconds
+    measurement_scope: engine_local
+    query_profile: histogram
+    section: llm
+  queue:
+    family: gpustack:request_queue_time_seconds
+    kind: histogram
+    unit: seconds
+    measurement_scope: engine_local
+    query_profile: histogram
+    section: llm
+  prefill:
+    family: gpustack:request_prefill_time_seconds
+    kind: histogram
+    unit: seconds
+    measurement_scope: engine_local
+    query_profile: histogram
+    section: llm
+  decode:
+    family: gpustack:request_decode_time_seconds
+    kind: histogram
+    unit: seconds
+    measurement_scope: engine_local
+    query_profile: histogram
+    section: llm
+  input_tokens:
+    family: gpustack:prompt_tokens_total
+    kind: counter
+    unit: tokens_per_second
+    measurement_scope: engine_processed_tokens
+    query_profile: counter
+    section: llm
+  output_tokens:
+    family: gpustack:generation_tokens_total
+    kind: counter
+    unit: tokens_per_second
+    measurement_scope: engine_processed_tokens
+    query_profile: counter
+    section: llm
+  running_requests:
+    family: gpustack:num_requests_running
+    kind: gauge
+    unit: requests
+    measurement_scope: engine_local_requests
+    query_profile: gauge
+    section: llm
+  waiting_requests:
+    family: gpustack:num_requests_waiting
+    kind: gauge
+    unit: requests
+    measurement_scope: engine_local_requests
+    query_profile: gauge
+    section: llm
+  kv_usage:
+    family: gpustack:kv_cache_usage_ratio
+    kind: gauge
+    unit: percent
+    measurement_scope: engine_kv_pool
+    scale: 100
+    per_source: true
+    query_profile: gauge
+    section: llm
+  prefix_cache_hit_rate:
+    family: gpustack:prefix_cache_hits_total
+    kind: counter
+    unit: percent
+    measurement_scope: engine_cache_lookup_ratio
+    denominator: gpustack:prefix_cache_queries_total
+    scale: 100
+    query_profile: counter
+    section: llm
+    backend_overrides:
+      sglang:
+        family: gpustack:prefix_cache_hit_rate
+        kind: gauge
+        measurement_scope: reported_source_cache_ratio
+        denominator: null
+        per_source: true
+        query_profile: gauge
+      mindie:
+        family: gpustack:prefix_cache_hit_rate
+        kind: gauge
+        measurement_scope: reported_source_cache_ratio
+        denominator: null
+        per_source: true
+        query_profile: gauge
+  external_cache_hit_rate:
+    family: gpustack:external_prefix_cache_hits_total
+    kind: counter
+    unit: percent
+    measurement_scope: engine_external_cache_lookup_ratio
+    denominator: gpustack:external_prefix_cache_queries_total
+    scale: 100
+    query_profile: counter
+    section: llm
+  pd_kv_transfer:
+    family: gpustack:pd_kv_transfer_seconds
+    kind: histogram
+    unit: seconds
+    measurement_scope: kv_transfer_duration
+    query_profile: histogram
+    section: pd
+    backend_overrides:
+      sglang:
+        measurement_scope: bootstrap_handshake
+  router_health:
+    family: gpustack:pd_router_worker_health
+    kind: gauge
+    unit: state
+    measurement_scope: router_upstream_health
+    query_profile: gauge
+    section: pd
+hardware_metrics:
+  gpu_utilization:
+    family: worker_gpu_utilization_percent
+    kind: gauge
+    unit: percent
+    query_profile: hardware_gauge
+    minimum: 0
+    maximum: 100
+  gpu_memory_used:
+    family: worker_gpu_memory_used_bytes
+    kind: gauge
+    unit: bytes
+    query_profile: hardware_gauge
+    minimum: 0
+    maximum: null
+  gpu_memory_total:
+    family: worker_gpu_memory_total_bytes
+    kind: gauge
+    unit: bytes
+    query_profile: hardware_gauge
+    minimum: 0
+    maximum: null
+  gpu_power:
+    family: worker_gpu_power_watts
+    kind: gauge
+    unit: watts
+    query_profile: hardware_gauge
+    minimum: 0
+    maximum: null
+  gpu_temperature:
+    family: worker_gpu_temperature_celsius
+    kind: gauge
+    unit: celsius
+    query_profile: hardware_gauge
+    minimum: null
+    maximum: null
+  host_cpu:
+    family: worker_host_cpu_utilization_percent
+    kind: gauge
+    unit: percent
+    query_profile: hardware_gauge
+    minimum: 0
+    maximum: 100
+  host_memory_used:
+    family: worker_host_memory_used_bytes
+    kind: gauge
+    unit: bytes
+    query_profile: hardware_gauge
+    minimum: 0
+    maximum: null
+  host_memory_total:
+    family: worker_host_memory_total_bytes
+    kind: gauge
+    unit: bytes
+    query_profile: hardware_gauge
+    minimum: 0
+    maximum: null
+  filesystem_usage:
+    family: worker_filesystem_utilization_percent
+    kind: gauge
+    unit: percent
+    query_profile: hardware_gauge
+    minimum: 0
+    maximum: 100
+    model_resource: false
+charts:
+  model.ttft:
+    description: Time to first token (TTFT)
+    metrics:
+    - ttft
+    apis:
+    - model_runtime
+  model.generation:
+    description: Time per output token (TPOT) and inter-token latency (ITL)
+    metrics:
+    - tpot
+    - itl
+    apis:
+    - model_runtime
+  model.tokens:
+    description: Token throughput
+    metrics:
+    - input_tokens
+    - output_tokens
+    apis:
+    - model_runtime
+    derived_in_ui: Total = input + output; missing data stays null. PD input uses Prefill and output uses Decode;
+      instance view compares output.
+  model.requests:
+    description: Running and waiting requests
+    metrics:
+    - running_requests
+    - waiting_requests
+    apis:
+    - model_runtime
+  model.request_latency:
+    description: Request and phase latency
+    metrics:
+    - e2e
+    - queue
+    - prefill
+    - decode
+    apis:
+    - model_runtime
+  model.engine_cache:
+    description: Engine cache
+    metrics:
+    - kv_usage
+    - prefix_cache_hit_rate
+    - external_cache_hit_rate
+    apis:
+    - model_runtime
+  model.pd_transfer:
+    description: Prefill-decode KV transfer
+    metrics:
+    - pd_kv_transfer
+    apis:
+    - model_runtime
+  model.router_health:
+    description: Prefill-decode router health
+    metrics:
+    - router_health
+    apis:
+    - model_runtime
+  gpu.utilization:
+    description: GPU utilization
+    metrics:
+    - gpu_utilization
+    apis:
+    - model_resource
+    - worker_resource
+    - gpu_resource
+  gpu.memory:
+    description: GPU memory usage and utilization
+    metrics:
+    - gpu_memory_used
+    - gpu_memory_total
+    apis:
+    - model_resource
+    - worker_resource
+    - gpu_resource
+    derived_in_ui: Usage percent = used / total * 100, paired by device and timestamp. Device pages retain separate
+      Used/Total series.
+  gpu.power:
+    description: GPU power
+    metrics:
+    - gpu_power
+    apis:
+    - model_resource
+    - worker_resource
+    - gpu_resource
+  gpu.temperature:
+    description: GPU temperature
+    metrics:
+    - gpu_temperature
+    apis:
+    - model_resource
+    - worker_resource
+    - gpu_resource
+  worker.cpu:
+    description: Host CPU utilization
+    metrics:
+    - host_cpu
+    apis:
+    - model_resource
+    - worker_resource
+  worker.memory:
+    description: Host memory
+    metrics:
+    - host_memory_used
+    - host_memory_total
+    apis:
+    - model_resource
+    - worker_resource
+  worker.filesystem:
+    description: Filesystem capacity utilization
+    metrics:
+    - filesystem_usage
+    apis:
+    - worker_resource

@@ -1,0 +1,2 @@
+# TYPE sglang:total_retracted_reqs gauge
+sglang:total_retracted_reqs{model_name="fixture-model"} 7
