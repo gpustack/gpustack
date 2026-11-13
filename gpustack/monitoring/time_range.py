@@ -165,7 +165,6 @@ async def _storage_policy(client, url):
         if policy is not None:
             break
     policy = policy or {}
-    _POLICY_CACHE.clear()
     _POLICY_CACHE[url] = (time.monotonic() + _CACHE_SECONDS, policy)
     return policy
 

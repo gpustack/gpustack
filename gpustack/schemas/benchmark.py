@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, ClassVar, Dict, List, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, model_serializer
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, ForeignKey, Integer, SQLModel, Text
 from sqlmodel.sql.sqltypes import AutoString
@@ -21,6 +21,7 @@ from gpustack.schemas.models import (
 )
 
 from gpustack.schemas.workers import GPUDeviceInfo, OperatingSystemInfo
+from gpustack.schemas.benchmark_monitoring import BenchmarkRunSnapshot
 
 DATASET_RANDOM = "Random"
 DATASET_SHAREGPT = "ShareGPT"
@@ -536,6 +537,8 @@ class BenchmarkSnapshot(BaseModel):
     # Higress entrance resolved from the cluster override, server external URL,
     # or creation request. Keeping it here fixes the target for this run.
     gateway_url: Optional[str] = None
+    monitoring: Optional[BenchmarkRunSnapshot] = None
+    """Run-start association; absent on reports without recorded provenance."""
 
 
 class BenchmarkMetricsLite(SQLModel):
@@ -917,6 +920,13 @@ class BenchmarkFullPublic(
         default=None, sa_column=Column(Text, nullable=True)
     )
 
+    @model_serializer(mode='wrap')
+    def serialize_public(self, handler):
+        data = handler(self)
+        if isinstance(data.get('snapshot'), dict):
+            data['snapshot'].pop('monitoring', None)
+        return data
+
 
 class BenchmarkPublic(
     BenchmarkWithSnapshots,
@@ -933,6 +943,13 @@ class BenchmarkPublic(
     gpu_vendor_summary: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
+
+    @model_serializer(mode='wrap')
+    def serialize_public(self, handler):
+        data = handler(self)
+        if isinstance(data.get('snapshot'), dict):
+            data['snapshot'].pop('monitoring', None)
+        return data
 
 
 BenchmarksPublic = PaginatedList[BenchmarkPublic]

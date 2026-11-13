@@ -210,6 +210,23 @@ async def test_only_sanitized_policy_is_cached_and_model_identity_does_not_cross
 
 
 @pytest.mark.asyncio
+async def test_refreshing_one_policy_keeps_other_prometheus_urls_cached(
+    status_environment, monkeypatch
+):
+    async def status(client, url, endpoint):
+        return {'storageRetention': '1d' if url.endswith('one') else '2d'}
+
+    reader = AsyncMock(side_effect=status)
+    monkeypatch.setattr(monitoring, '_status', reader)
+    for _ in range(2):
+        first = await monitoring._storage_policy(object(), 'http://prom-one')
+        second = await monitoring._storage_policy(object(), 'http://prom-two')
+        assert first['retention_seconds'] == 86400
+        assert second['retention_seconds'] == 172800
+    assert reader.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_unconfigured_prometheus_keeps_service_limits_without_network(
     monkeypatch,
 ):

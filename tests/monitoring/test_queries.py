@@ -126,6 +126,8 @@ def test_lhs_scrape_plumbing_is_deduplicated_before_business_sum():
         'gpustack:generation_tokens_total', _scope(), 90
     )
     assert 'max without (job, instance,' in query
+    assert 'min without (job, instance,' in query
+    assert ' == min without (' in query
     dedup_labels = query.split('max without (', 1)[1].split(')', 1)[0]
     assert 'is_streaming' not in dedup_labels
     assert 'finished_reason' not in dedup_labels
@@ -156,6 +158,23 @@ def test_duplicate_jobs_do_not_double_histogram_tokens_or_erase_native_cohorts()
     distinct = module.deduplicate_instant(rows)
     assert len(distinct) == 2
     assert sum(float(row['value'][1]) for row in distinct) == 5
+
+
+@pytest.mark.parametrize('values', [(2, 3), (3, 2), (2, 3, 2)])
+def test_conflicting_scrape_copies_are_not_resolved_by_the_largest_value(values):
+    rows = [
+        {
+            'metric': {
+                'model_instance_id': '12',
+                'source_name': 'head',
+                'job': str(index),
+            },
+            'value': [100, str(value)],
+        }
+        for index, value in enumerate(values)
+    ]
+    with pytest.raises(ValueError, match='Conflicting duplicate'):
+        _queries().deduplicate_instant(rows)
 
 
 def test_incomplete_bucket_population_cannot_supply_percentiles_for_full_count():

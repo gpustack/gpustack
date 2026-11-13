@@ -183,11 +183,51 @@ async def test_model_access_and_cluster_grant_do_not_grant_worker_metrics(
 ):
     hardware, session, calls = _environment(monkeypatch, [_worker(owner=99)])
     result = await _collect(hardware, session, all_devices=all_devices)
-    assert result.allocated_gpu_count == 1
+    assert result.allocated_gpu_count == result.allocated_worker_count == 0
     assert result.devices == []
     assert result.reason == 'resource_not_visible'
     assert result.metrics['gpu_memory_used'].status == 'restricted'
     assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('all_devices', [False, True])
+async def test_allocation_counts_exclude_hidden_and_missing_workers(
+    monkeypatch, all_devices
+):
+    visible, hidden = _worker(), _worker(owner=99)
+    hidden.id = 8
+    instance = _instance()
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(worker_id=8, gpu_indexes=[1, 2]),
+            ModelInstanceSubordinateWorker(worker_id=9, gpu_indexes=[3]),
+        ]
+    )
+    hardware, session, _ = _environment(monkeypatch, [visible, hidden])
+    result = await _collect(hardware, session, [instance], all_devices=all_devices)
+    assert result.allocated_gpu_count == result.allocated_worker_count == 1
+    assert [worker.id for worker in result.workers] == [7]
+    assert [device.worker_id for device in result.devices] == [7]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('all_devices', [False, True])
+async def test_failed_hardware_queries_keep_failure_reason_and_diagnostics(
+    monkeypatch, caplog, all_devices
+):
+    def failing(*args):
+        raise OSError('remote request failed')
+
+    hardware, session, _ = _environment(monkeypatch, [_worker()], query=failing)
+    result = await _collect(hardware, session, all_devices=all_devices)
+    assert not result.available
+    assert result.reason == 'query_failed'
+    assert all(metric.status == 'query_error' for metric in result.metrics.values())
+    assert any(
+        record.levelname == 'WARNING' and 'gpu_utilization' in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -363,7 +403,7 @@ async def test_all_cards_return_current_without_per_card_history_queries(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_subordinate_worker_placements_are_counted_and_authorized(monkeypatch):
+async def test_subordinate_worker_placements_count_only_authorized_workers(monkeypatch):
     worker = _worker()
     other = _worker(owner=99, devices=[_device(index=4, uuid='GPU-other')])
     other.id = 9
@@ -375,7 +415,7 @@ async def test_subordinate_worker_placements_are_counted_and_authorized(monkeypa
     )
     hardware, session, calls = _environment(monkeypatch, [worker, other])
     result = await _collect(hardware, session, [instance])
-    assert result.allocated_gpu_count == result.allocated_worker_count == 2
+    assert result.allocated_gpu_count == result.allocated_worker_count == 1
     assert [d.worker_id for d in result.devices] == [7]
     assert all('worker_id="9"' not in expr for expr in calls)
 
@@ -407,10 +447,15 @@ async def test_headless_workload_allocation_does_not_require_a_metrics_source(
         ],
     )
     assert model_instance_metrics_source_inventory(instance) == []
-    hardware, session, _ = _environment(monkeypatch, [_worker()])
+    peer = _worker(devices=[_device(index=4, uuid='GPU-peer')])
+    peer.id, peer.worker_uuid = 9, 'peer-uuid'
+    hardware, session, _ = _environment(monkeypatch, [_worker(), peer])
     result = await _collect(hardware, session, [instance])
     assert result.allocated_gpu_count == result.allocated_worker_count == 2
-    assert [(device.worker_id, device.index) for device in result.devices] == [(7, 8)]
+    assert [(device.worker_id, device.index) for device in result.devices] == [
+        (7, 8),
+        (9, 4),
+    ]
 
 
 @pytest.mark.asyncio
@@ -533,7 +578,7 @@ async def test_scheduled_allocation_is_visible_before_ports_exist(monkeypatch, m
     other.id = 9
     hardware, session, calls = _environment(monkeypatch, [_worker(), other])
     result = await _collect(hardware, session, [instance])
-    assert result.allocated_gpu_count == result.allocated_worker_count == 2
+    assert result.allocated_gpu_count == result.allocated_worker_count == 1
     assert [(device.worker_id, device.index) for device in result.devices] == [(7, 8)]
     assert result.devices[0].current['gpu_memory_used'] == 400
     assert result.available

@@ -20,13 +20,16 @@ time_windows:
 
 # Common scaffolding always applies; metric declarations cannot disable guards.
 expressions:
+  # Benchmark phases only admit normalized gauge samples stored in their interval.
+  sample_since: (${expression}) and (timestamp(${selector}) >= ${start})
   engine_success: gpustack:runtime_metrics_scrape_status${selector}
   engine_inventory: gpustack:model_instance_source_info${selector}
   history_presence: max_over_time(${expression}[${window_seconds}s])
   engine_guard: >-
-    max without (${plumbing_labels}) ((${expression}) and on (${source_labels})
+    (max without (${plumbing_labels}) (${expression})
+    == min without (${plumbing_labels}) (${expression})) and on (${source_labels})
     (max by (${source_labels}) (${success} == 1)) and on (${source_labels})
-    (max by (${source_labels}) (${inventory} == 1)))
+    (max by (${source_labels}) (${inventory} == 1))
   aggregate: ${operation} by (${grouping}) (${expression})
   divide: (${numerator}) / (${denominator})
   pair: (${left}) and (${right})

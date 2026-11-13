@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from math import isfinite
+from threading import Lock
+import time
 from typing import Callable
 from prometheus_client.registry import Collector
 from prometheus_client import (
@@ -28,6 +30,7 @@ import logging
 from fastapi import FastAPI, Response
 
 logger = logging.getLogger(__name__)
+HARDWARE_IDENTITY_TTL_SECONDS = 30.0
 
 unified_registry = CollectorRegistry()
 raw_registry = CollectorRegistry()
@@ -134,6 +137,8 @@ class MetricExporter(Collector):
         self._cache = cache
         self._clientset_getter = clientset_getter
         self._worker_uuid_getter = worker_uuid_getter
+        self._hardware_identity = None
+        self._hardware_identity_lock = Lock()
 
     def collect(self):
         with ThreadPoolExecutor() as executor:
@@ -436,35 +441,76 @@ class MetricExporter(Collector):
         yield filesystem_used
         yield filesystem_utilization_rate
 
-    def _collect_stable_hardware(self, status):
-        """Qualify samples with a fresh server identity and ownership snapshot."""
+    def _load_worker_identity(self):
+        if self._worker_uuid_getter is None or self._clientset_getter is None:
+            return None
         worker_id = self._worker_id_getter()
+        worker_uuid = self._worker_uuid_getter()
+        if (
+            type(worker_id) is not int
+            or worker_id <= 0
+            or not isinstance(worker_uuid, str)
+            or not worker_uuid.strip()
+        ):
+            return None
+        clientset = self._clientset_getter()
+        if clientset is None:
+            return None
+        response = clientset.http_client.get_httpx_client().get(
+            f'/workers/{worker_id}', timeout=2.0
+        )
+        response.raise_for_status()
+        worker = response.json()
+        if (
+            worker.get('id') != worker_id
+            or worker.get('me') is not True
+            or 'owner_principal_id' not in worker
+        ):
+            return None
+        owner = worker['owner_principal_id']
+        if owner is not None and (type(owner) is not int or owner <= 0):
+            return None
+        return worker_id, worker_uuid, owner
+
+    def refresh_worker_identity(self) -> None:
+        """Refresh the server-verified owner outside the Prometheus scrape path."""
+        snapshot = None
         try:
-            worker_uuid = (
-                self._worker_uuid_getter() if self._worker_uuid_getter else None
+            identity = self._load_worker_identity()
+            if identity is not None:
+                snapshot = (*identity, time.monotonic() + HARDWARE_IDENTITY_TTL_SECONDS)
+        except Exception as exc:
+            logger.debug(
+                'Stable hardware identity refresh failed (%s)', type(exc).__name__
             )
-            if not isinstance(worker_uuid, str) or not worker_uuid.strip():
-                return
-            clientset = self._clientset_getter()
-            if clientset is None or type(worker_id) is not int or worker_id <= 0:
-                return
-            response = clientset.http_client.get_httpx_client().get(
-                f'/workers/{worker_id}', timeout=2.0
-            )
-            response.raise_for_status()
-            worker = response.json()
-            if (
-                worker.get('id') != worker_id
-                or worker.get('me') is not True
-                or 'owner_principal_id' not in worker
-            ):
-                return
-            owner = worker['owner_principal_id']
-            if owner is not None and (type(owner) is not int or owner <= 0):
-                return
+        with self._hardware_identity_lock:
+            lost_identity = self._hardware_identity is not None and snapshot is None
+            self._hardware_identity = snapshot
+        if lost_identity:
+            logger.warning('Stable hardware identity became unavailable')
+
+    def _cached_worker_identity(self):
+        current = None
+        try:
+            current = (self._worker_id_getter(), self._worker_uuid_getter())
         except Exception:
-            logger.debug('Stable hardware identity unavailable', exc_info=True)
+            pass
+        with self._hardware_identity_lock:
+            snapshot = self._hardware_identity
+            if snapshot is None:
+                return None
+            if snapshot[:2] == current and snapshot[3] > time.monotonic():
+                return snapshot[:3]
+            self._hardware_identity = None
+        logger.warning('Stable hardware identity became unavailable')
+        return None
+
+    def _collect_stable_hardware(self, status):
+        """Qualify samples only with an unexpired server ownership snapshot."""
+        identity = self._cached_worker_identity()
+        if identity is None:
             return
+        worker_id, worker_uuid, owner = identity
 
         labels = ['worker_id', 'worker_uuid', 'owner_principal_id']
         values = [str(worker_id), worker_uuid, str(owner or '')]

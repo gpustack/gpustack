@@ -3,7 +3,7 @@ import math
 import re
 import yaml
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Sequence
+from typing import Annotated, Dict, List, Optional, Sequence
 from urllib.parse import urlparse
 import aiohttp
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -94,6 +94,19 @@ from gpustack.utils.snapshot import (
     create_worker_snapshot,
 )
 from gpustack.worker.logs import LogOptionsDep
+from gpustack.schemas.benchmark_monitoring import (
+    BenchmarkModelMetrics,
+    BenchmarkMonitoringContext,
+    BenchmarkResourceMetrics,
+)
+from gpustack.schemas.model_metrics import MetricRole, MetricSection, MetricView
+from gpustack.monitoring.benchmarks import (
+    capture_benchmark_run,
+    collect_benchmark_model_metrics,
+    collect_benchmark_resource_metrics,
+    load_benchmark_history,
+    verify_benchmark_run,
+)
 from sqlalchemy.orm import defer
 
 MAX_EXPORT_RECORDS = 20
@@ -353,6 +366,80 @@ async def get_benchmark(
         ctx, benchmark, not_found_message=f"Benchmark {id} not found"
     )
     return benchmark
+
+
+@router.get('/{id}/monitoring', response_model=BenchmarkMonitoringContext)
+async def get_benchmark_monitoring(
+    request: Request,
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+):
+    """Actual phase windows and independently authorized run associations."""
+    history = await load_benchmark_history(
+        session,
+        ctx,
+        id,
+        client=getattr(request.app.state, 'http_client_no_proxy', None),
+    )
+    return history.context
+
+
+@router.get('/{id}/metrics', response_model=BenchmarkModelMetrics)
+async def get_benchmark_model_metrics(
+    request: Request,
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    phase_id: Optional[str] = None,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
+    instance_ids: Optional[str] = None,
+    role: MetricRole = 'all',
+    view: MetricView = 'aggregate',
+    statistic: Annotated[
+        str,
+        Query(pattern=r'^(avg|p50|p95|p99)(,(avg|p50|p95|p99)){0,3}$'),
+    ] = 'avg,p50,p95,p99',
+    section: MetricSection = 'all',
+):
+    """Normalized engine observations for the recorded benchmark population."""
+    client = getattr(request.app.state, 'http_client_no_proxy', None)
+    history = await load_benchmark_history(session, ctx, id, client=client)
+    return await collect_benchmark_model_metrics(
+        history,
+        phase_id=phase_id,
+        start=start,
+        end=end,
+        instance_ids=instance_ids,
+        role=role,
+        view=view,
+        statistic=statistic,
+        section=section,
+        client=client,
+    )
+
+
+@router.get('/{id}/resource-metrics', response_model=BenchmarkResourceMetrics)
+async def get_benchmark_resource_metrics(
+    request: Request,
+    session: SessionDep,
+    ctx: TenantContextDep,
+    id: int,
+    phase_id: Optional[str] = None,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
+):
+    """Every visible captured GPU and Worker over the measured interval."""
+    client = getattr(request.app.state, 'http_client_no_proxy', None)
+    history = await load_benchmark_history(session, ctx, id, client=client)
+    return await collect_benchmark_resource_metrics(
+        history,
+        phase_id=phase_id,
+        start=start,
+        end=end,
+        client=client,
+    )
 
 
 # How far either side of a run the dashboard window is opened. A run's row is
@@ -1198,7 +1285,16 @@ async def update_benchmark_state(
     apply_progress_invariant(state_update, benchmark)
 
     try:
-        await benchmark.update(session, state_update)
+        source = state_update.model_dump(exclude_unset=True)
+        if state_update.state is not None:
+            snapshot = await verify_benchmark_run(
+                benchmark,
+                session,
+                confirm=state_update.state == BenchmarkStateEnum.RUNNING,
+            )
+            if snapshot is not None:
+                source['snapshot'] = snapshot
+        await benchmark.update(session, source)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update benchmark state: {e}"
@@ -1208,7 +1304,7 @@ async def update_benchmark_state(
 
 
 async def _snapshot_members(
-    session: SessionDep, mi: ModelInstance, model: Model
+    session: SessionDep, mi: ModelInstance, model: Model, route: bool = False
 ) -> List[ModelInstance]:
     """The members a run's snapshot has to account for.
 
@@ -1220,14 +1316,14 @@ async def _snapshot_members(
     which is the whole group.
     """
     group_id = getattr(mi, "group_id", None)
-    if not group_id:
+    if not group_id and not route:
         return [mi]
 
     members = await ModelInstance.all_by_field(session, "model_id", model.id)
     same_group = [
         m
         for m in members
-        if getattr(m, "group_id", None) == group_id
+        if (route or getattr(m, "group_id", None) == group_id)
         and m.state == ModelInstanceStateEnum.RUNNING
     ]
     # The endpoint is always in, even if it stopped running between resolution
@@ -1271,8 +1367,10 @@ async def get_benchmark_snapshot(
     instance_snapshots = {}
 
     cache_service_names: Dict[int, Optional[str]] = {}
+    members = await _snapshot_members(session, mi, model, route=bool(route_name))
+    workers = {}
 
-    for member in await _snapshot_members(session, mi, model):
+    for member in members:
         instance_snapshot = create_model_instance_snapshot(member, model)
         instance_snapshot.cache_service_name = await _attached_cache_service_name(
             session, instance_snapshot.extended_kv_cache, cache_service_names
@@ -1282,6 +1380,8 @@ async def get_benchmark_snapshot(
         if member.worker_id is None:
             continue
         w: Worker = await WorkerService(session).get_by_id(member.worker_id)
+        if w is not None:
+            workers[member.worker_id] = w
         w_snapshot, gpus_snapshots = create_worker_snapshot(
             w, member.gpu_type, member.gpu_indexes
         )
@@ -1296,6 +1396,8 @@ async def get_benchmark_snapshot(
         ):
             for sub in member.distributed_servers.subordinate_workers:
                 sw: Worker = await WorkerService(session).get_by_id(sub.worker_id)
+                if sw is not None:
+                    workers[sub.worker_id] = sw
                 w_snapshot, gpus_snapshots = create_worker_snapshot(
                     sw, sub.gpu_type, sub.gpu_indexes
                 )
@@ -1304,7 +1406,7 @@ async def get_benchmark_snapshot(
                 if gpus_snapshots is not None:
                     gpu_snapshots.update(gpus_snapshots)
 
-    return BenchmarkSnapshot(
+    snapshot = BenchmarkSnapshot(
         instances=instance_snapshots,
         workers=worker_snapshots,
         gpus=gpu_snapshots,
@@ -1320,6 +1422,15 @@ async def get_benchmark_snapshot(
         # send part of the load somewhere else entirely.
         route_name=route_name,
     )
+    if model.id is not None and model.cluster_id is not None:
+        snapshot = await capture_benchmark_run(
+            snapshot,
+            model,
+            members,
+            session,
+            workers=workers,
+        )
+    return snapshot
 
 
 @router.post(
@@ -1371,6 +1482,9 @@ async def update_benchmark_results(
             )
         )
     try:
+        snapshot = await verify_benchmark_run(benchmark, session)
+        if snapshot is not None:
+            await benchmark.update(session, {'snapshot': snapshot}, auto_commit=False)
         existing = await BenchmarkResult.all_by_field(session, "benchmark_id", id)
         for row in existing:
             await row.delete(session, auto_commit=False)
@@ -1563,6 +1677,8 @@ async def export_benchmarks(
     exported_benchmarks = []
     for b in benchmarks:
         eb = b.model_dump(mode="json", exclude=set(exclude_fields))
+        if isinstance(eb.get('snapshot'), dict):
+            eb['snapshot'].pop('monitoring', None)
         exported_benchmarks.append(order_benchmark_export_fields(eb))
 
     export_data = {"benchmarks": exported_benchmarks}

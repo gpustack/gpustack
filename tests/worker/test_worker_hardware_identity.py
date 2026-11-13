@@ -11,6 +11,7 @@ from gpustack.schemas.workers import (
     WorkerPublic,
 )
 from gpustack.worker.exporter import MetricExporter
+from gpustack.worker import exporter as exporter_module
 
 
 def _gpu(index, uuid, chip=0):
@@ -76,9 +77,78 @@ def _collect(
         worker_uuid_getter=lambda: registered_uuid,
         clientset_getter=lambda: client,
     )
+    exporter.refresh_worker_identity()
     metrics = list(exporter.collect_worker_metrics())
     samples = {m.name: m.samples for m in metrics}
     return samples, client
+
+
+def _identity_exporter():
+    response = Mock()
+    response.json.return_value = {'id': 7, 'me': True, 'owner_principal_id': 17}
+    http = Mock()
+    http.get.return_value = response
+    client = SimpleNamespace(http_client=SimpleNamespace(get_httpx_client=lambda: http))
+    exporter = MetricExporter(
+        cfg=SimpleNamespace(worker_metrics_port=10151),
+        collector=None,
+        worker_name_getter=lambda: 'worker',
+        worker_ip_getter=lambda: '192.0.2.7',
+        worker_id_getter=lambda: 7,
+        worker_uuid_getter=lambda: 'registered-uuid',
+        clientset_getter=lambda: client,
+    )
+    status = SimpleNamespace(
+        cpu=SimpleNamespace(utilization_rate=20),
+        memory=MemoryInfo(total=10000, used=2000),
+        gpu_devices=[_gpu(0, 'GPU-a')],
+        filesystem=[],
+    )
+    return exporter, http, status
+
+
+def test_stable_collection_only_reads_a_background_refreshed_snapshot():
+    exporter, http, status = _identity_exporter()
+    assert list(exporter._collect_stable_hardware(status)) == []
+    http.get.assert_not_called()
+    exporter.refresh_worker_identity()
+    http.get.assert_called_once_with('/workers/7', timeout=2.0)
+    http.get.side_effect = AssertionError('Network I/O inside collection')
+    for _ in range(3):
+        assert list(exporter._collect_stable_hardware(status))
+    assert http.get.call_count == 1
+
+
+def test_expired_or_changed_registration_does_not_publish_cached_owner(
+    monkeypatch, caplog
+):
+    exporter, http, status = _identity_exporter()
+    now = [100.0]
+    monkeypatch.setattr(exporter_module.time, 'monotonic', lambda: now[0])
+    exporter.refresh_worker_identity()
+    now[0] += exporter_module.HARDWARE_IDENTITY_TTL_SECONDS
+    assert list(exporter._collect_stable_hardware(status)) == []
+    assert 'identity became unavailable' in caplog.text
+    exporter.refresh_worker_identity()
+    exporter._worker_uuid_getter = lambda: 'another-registration'
+    assert list(exporter._collect_stable_hardware(status)) == []
+    assert http.get.call_count == 2
+
+
+def test_background_failure_revokes_snapshot_and_logs_one_transition(caplog):
+    exporter, http, status = _identity_exporter()
+    exporter.refresh_worker_identity()
+    http.get.side_effect = TimeoutError('unreachable')
+    exporter.refresh_worker_identity()
+    assert list(exporter._collect_stable_hardware(status)) == []
+    exporter.refresh_worker_identity()
+    warnings = [r for r in caplog.records if r.levelname == 'WARNING']
+    assert len(warnings) == 1
+    http.get.side_effect = None
+    http.get.return_value.json.return_value['owner_principal_id'] = 99
+    exporter.refresh_worker_identity()
+    samples = [s for m in exporter._collect_stable_hardware(status) for s in m.samples]
+    assert samples and all(s.labels['owner_principal_id'] == '99' for s in samples)
 
 
 def test_stable_gpu_identity_uses_server_owner_and_real_chip():
