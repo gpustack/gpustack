@@ -520,22 +520,27 @@ class ScheduleCandidatesSelector(ABC):
     ) -> List[str]:
         """
         Given a worker and gpu indexes, get the gpu addresses according to gpu_indexes.
-        Returns a list of GPU addresses.
+        Returns a list of GPU addresses in the order of gpu_indexes, because the
+        MindIE rank table pairs the two lists by position.
         """
         gpu_addresses = []
 
         if self._model.backend != BackendEnum.ASCEND_MINDIE.value:
             return gpu_addresses
 
-        for gpu in worker.status.gpu_devices:
-            if gpu.index not in gpu_indexes and (
-                gpu_type is not None and gpu.type != gpu_type
-            ):
-                continue
-
+        devices = {
+            gpu.index: gpu
+            for gpu in worker.status.gpu_devices
+            if gpu_type is None or gpu.type == gpu_type
+        }
+        for gpu_index in gpu_indexes:
+            gpu = devices.get(gpu_index)
             addr = (
                 gpu.network.inet
-                if gpu.network and gpu.network.status == 'up' and gpu.network.inet
+                if gpu
+                and gpu.network
+                and gpu.network.status == 'up'
+                and gpu.network.inet
                 else "-.-.-.-"
             )
             gpu_addresses.append(addr)
