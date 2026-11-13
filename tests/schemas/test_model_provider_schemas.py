@@ -104,6 +104,58 @@ class TestGaladriel:
         }
 
 
+class TestNonRootOpenAICompatibleProviderPaths:
+    """Providers whose OpenAI-compatible paths do not sit directly at ``/v1``.
+
+    ``get_model_url`` and ``get_chat_url`` drive server-side ``get-models`` and
+    ``test-model`` directly against the provider's hosted origin, so any
+    provider that mounts its OpenAI surface under a prefix (or at root without
+    ``/v1``) must declare those paths rather than inheriting ``BaseProviderConfig``.
+    """
+
+    @pytest.mark.parametrize(
+        ("provider_type", "expected_base", "expected_model_uri", "expected_chat_uri"),
+        [
+            (
+                "gemini",
+                "https://generativelanguage.googleapis.com",
+                "/v1beta/openai/models",
+                "/v1beta/openai/chat/completions",
+            ),
+            (
+                "github",
+                "https://models.inference.ai.azure.com",
+                None,
+                "/chat/completions",
+            ),
+            (
+                "groq",
+                "https://api.groq.com",
+                "/openai/v1/models",
+                "/openai/v1/chat/completions",
+            ),
+            (
+                "openrouter",
+                "https://openrouter.ai",
+                "/api/v1/models",
+                "/api/v1/chat/completions",
+            ),
+        ],
+    )
+    def test_provider_urls(
+        self,
+        provider_type,
+        expected_base,
+        expected_model_uri,
+        expected_chat_uri,
+    ):
+        config = _config_of(provider_type)
+
+        assert config.get_base_url() == expected_base
+        assert config.get_model_url() == (expected_base, expected_model_uri)
+        assert config.get_chat_url() == (expected_base, expected_chat_uri)
+
+
 def _claude(**kwargs) -> ClaudeConfig:
     return ClaudeConfig(type=ModelProviderTypeEnum.CLAUDE, **kwargs)
 

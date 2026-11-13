@@ -434,11 +434,16 @@ class GaladrielConfig(BaseProviderConfig):
 
 
 class GeminiConfig(BaseProviderConfig):
+    # Server-side model discovery and test-model speak OpenAI over Bearer auth
+    # against Gemini's OpenAI compatibility endpoints, while ai-proxy translates
+    # gateway traffic to /{apiVersion}/models/{model}:generateContent natively.
     type: Literal[ModelProviderTypeEnum.GEMINI]
     geminiSafetySetting: Optional[Mapping[str, str]] = None
     apiVersion: Optional[str] = None
     geminiThinkingBudget: Optional[float] = None
     _public_endpoint: str = "generativelanguage.googleapis.com"
+    _model_uri = "/v1beta/openai/models"
+    _chat_uri = "/v1beta/openai/chat/completions"
     _default_override = {"apiVersion": "v1beta"}
 
 
@@ -453,6 +458,7 @@ class GenericConfig(BaseProviderConfig):
 class GithubConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.GITHUB]
     _public_endpoint: str = "models.inference.ai.azure.com"
+    _chat_uri = "/chat/completions"
 
 
 class GrokConfig(BaseProviderConfig):
@@ -463,6 +469,8 @@ class GrokConfig(BaseProviderConfig):
 class GroqConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.GROQ]
     _public_endpoint: str = "api.groq.com"
+    _model_uri = "/openai/v1/models"
+    _chat_uri = "/openai/v1/chat/completions"
 
 
 class HunyuanConfig(BaseProviderConfig):
@@ -584,6 +592,8 @@ class OpenAIConfig(BaseProviderConfig):
 class OpenrouterConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.OPENROUTER]
     _public_endpoint: str = "openrouter.ai"
+    _model_uri = "/api/v1/models"
+    _chat_uri = "/api/v1/chat/completions"
 
 
 class QwenConfig(BaseProviderConfig):

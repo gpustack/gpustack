@@ -479,6 +479,25 @@ def get_model_name(model: Dict[str, Any]) -> Optional[str]:
     return model.get("id", model.get("name", None))
 
 
+def _normalize_provider_model_id(
+    provider_type: ModelProviderTypeEnum,
+    model_id: Optional[str],
+) -> Optional[str]:
+    """Return the bare model identifier expected by inference and test-model.
+
+    Gemini's ``/v1beta/openai/models`` endpoint prefixes each returned ``id``
+    with ``models/`` (e.g. ``models/gemini-2.5-flash``), whereas both
+    ``/v1beta/openai/chat/completions`` and ai-proxy's
+    ``/{apiVersion}/models/{model}:generateContent`` path take the unprefixed
+    model name.
+    """
+    if not isinstance(model_id, str):
+        return None
+    if provider_type == ModelProviderTypeEnum.GEMINI and model_id.startswith("models/"):
+        model_id = model_id.removeprefix("models/")
+    return model_id or None
+
+
 categories_to_infer = [
     CategoryEnum.IMAGE,
     CategoryEnum.EMBEDDING,
@@ -650,7 +669,7 @@ async def get_models_from_provider(
             if isinstance(status, str) and status:
                 if status.lower() not in ("published", "retiring"):
                     continue
-        model_id = get_model_name(item)
+        model_id = _normalize_provider_model_id(input.config.type, get_model_name(item))
         if not model_id:
             continue
         categories = determine_model_category(input.config.type, item)

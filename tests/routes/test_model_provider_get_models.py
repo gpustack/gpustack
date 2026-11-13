@@ -9,8 +9,11 @@ from gpustack.schemas.model_provider import (
     ClaudeConfig,
     CloudflareConfig,
     DoubaoConfig,
+    GeminiConfig,
+    GroqConfig,
     ModelProviderTypeEnum,
     OpenAIConfig,
+    OpenrouterConfig,
     ProviderModelsInput,
     TypesafeConfig,
     V1_MODELS_URI,
@@ -348,3 +351,84 @@ class TestModelListShape:
 
         with pytest.raises(ValueError):
             _model_list(httpx.Response(200, json=body))
+
+
+class TestGeminiModels:
+    """Gemini's ``/v1beta/openai/models`` list prefixes model IDs with
+    ``models/``, while ``/v1beta/openai/chat/completions`` and ai-proxy's
+    ``/{apiVersion}/models/{model}:generateContent`` path take bare model
+    names."""
+
+    def _gemini(self) -> GeminiConfig:
+        return GeminiConfig.model_validate({"type": ModelProviderTypeEnum.GEMINI.value})
+
+    @pytest.mark.asyncio
+    async def test_models_prefix_is_stripped_and_categories_inferred(self, monkeypatch):
+        def respond(_path: str) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [
+                        {
+                            "id": "models/gemini-2.5-flash",
+                            "object": "model",
+                            "owned_by": "google",
+                        },
+                        {
+                            "id": "models/imagen-3.0-generate-002",
+                            "object": "model",
+                            "owned_by": "google",
+                        },
+                        {
+                            "id": "models/gemini-embedding-001",
+                            "object": "model",
+                            "owned_by": "google",
+                        },
+                        # Already bare IDs remain untouched; empty prefix-only IDs are skipped.
+                        {"id": "gemini-2.5-pro", "object": "model"},
+                        {"id": "models/", "object": "model"},
+                    ],
+                },
+            )
+
+        asked = _stub_upstream(monkeypatch, respond)
+
+        result = await _get_models(self._gemini())
+
+        assert asked == ["/v1beta/openai/models"]
+        assert [(model.id, model.categories) for model in result.data] == [
+            ("gemini-2.5-flash", ["llm"]),
+            ("imagen-3.0-generate-002", ["image"]),
+            ("gemini-embedding-001", ["embedding"]),
+            ("gemini-2.5-pro", ["llm"]),
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("config", "expected_path", "upstream_id"),
+        [
+            (
+                GroqConfig(type=ModelProviderTypeEnum.GROQ),
+                "/openai/v1/models",
+                "llama-3.3-70b-versatile",
+            ),
+            (
+                OpenrouterConfig(type=ModelProviderTypeEnum.OPENROUTER),
+                "/api/v1/models",
+                "models/custom-slug",
+            ),
+        ],
+    )
+    async def test_other_prefixed_providers_keep_full_model_ids(
+        self, monkeypatch, config, expected_path, upstream_id
+    ):
+        asked = _stub_upstream(
+            monkeypatch,
+            lambda _path: httpx.Response(200, json={"data": [{"id": upstream_id}]}),
+        )
+
+        result = await _get_models(config)
+
+        assert asked == [expected_path]
+        assert [model.id for model in result.data] == [upstream_id]
