@@ -529,6 +529,17 @@ class TestSnapshot:
         assert set(snapshot.instances) == {"p", "d", "r"}
 
     @pytest.mark.asyncio
+    async def test_route_snapshot_covers_running_replicas_of_the_model(self):
+        model = _plain_model()
+        endpoint = _member("endpoint", None, id=7)
+        replica = _member("replica", None, id=8)
+        pending = _member("pending", None, id=9)
+        pending.state = ModelInstanceStateEnum.PENDING
+        with _with_members([pending, replica, endpoint]):
+            members = await route._snapshot_members(None, endpoint, model, route=True)
+        assert [member.id for member in members] == [7, 8]
+
+    @pytest.mark.asyncio
     async def test_the_generation_measured_is_recorded(self):
         # Two runs of "the same model" measure different things across a
         # config edit; without this the reports cannot be told apart later.

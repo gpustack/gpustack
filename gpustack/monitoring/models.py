@@ -6,10 +6,12 @@ import logging
 import math
 import re
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple
 from urllib.parse import urlsplit
 
 import aiohttp
+
+from gpustack.api.exceptions import BadRequestException
 
 from gpustack.schemas.model_metrics import (
     MetricCoverage,
@@ -46,12 +48,27 @@ from .prometheus import (
     query_instant as _query_instant,
     query_range as _query_range,
 )
-from .time_range import monitoring_interval
+from .time_range import MonitoringInterval, monitoring_interval
 
 logger = logging.getLogger(__name__)
 _QUERY_ERRORS = (ValueError, aiohttp.ClientError, OSError, asyncio.TimeoutError)
 _COLLECT_DEADLINE_SECONDS = 15.0
 _HISTORY_SCOPE = 'current_instances_with_observed_source_history'
+
+
+def parse_instance_ids(value: Optional[str]) -> Optional[Set[int]]:
+    """Validate a bounded CSV population shared by monitoring endpoints."""
+    if value is None:
+        return None
+    if not value or len(value) > 2048:
+        raise BadRequestException(message="Invalid instance_ids")
+    tokens = [token.strip() for token in value.split(',')]
+    if any(not re.fullmatch(r'[1-9][0-9]{0,18}', token) for token in tokens):
+        raise BadRequestException(message="instance_ids must contain positive integers")
+    identities = {int(token) for token in tokens}
+    if len(identities) > 32 or max(identities) > 2**63 - 1:
+        raise BadRequestException(message="instance_ids accepts at most 32 valid IDs")
+    return identities
 
 
 def _finite(value) -> Optional[float]:
@@ -181,7 +198,7 @@ class _Collection:
         }
         self.client, self.url = client, url
         self.start, self.end, self.step = start, end, step
-        self.window = int(end - start)
+        self.window = end - start
         self.rate_window = rate_window
         self.view = view
         self.statistics = [s for s in HISTOGRAM_STATISTICS if s in statistics]
@@ -603,6 +620,9 @@ class _Collection:
                         scope.instance_ids,
                         tuple(sorted(valid)),
                         scope.view,
+                        scope.launches,
+                        scope.source_identities,
+                        scope.sample_start,
                     )
                 ]
                 if valid
@@ -614,7 +634,14 @@ class _Collection:
             roles[role].append(instance_id)
         return [
             MetricQueryScope(
-                scope.cluster_id, scope.model_id, tuple(ids), (role,), scope.view
+                scope.cluster_id,
+                scope.model_id,
+                tuple(ids),
+                (role,),
+                scope.view,
+                scope.launches,
+                scope.source_identities,
+                scope.sample_start,
             )
             for role, ids in sorted(roles.items())
         ]
@@ -633,6 +660,9 @@ class _Collection:
 
     @staticmethod
     def instance_addresses(instance):
+        recorded = getattr(instance, 'source_addresses', None)
+        if recorded is not None:
+            return set(recorded)
         worker_id, ip = getattr(instance, 'worker_id', None), getattr(
             instance, 'worker_ip', None
         )
@@ -738,6 +768,9 @@ async def collect_model_metrics(
     section: str = 'all',
     client: Optional[aiohttp.ClientSession] = None,
     upstream_instances: Optional[List[ModelInstance]] = None,
+    interval: Optional[MonitoringInterval] = None,
+    launches: tuple = (),
+    source_identities: tuple = (),
 ) -> ModelMetrics:
     """Collect guarded runtime observations for an already authorized population.
 
@@ -752,7 +785,9 @@ async def collect_model_metrics(
     Returns:
         Typed, bounded observations with local missing states for each metric.
     """
-    interval = monitoring_interval(window_seconds, start, end, now=time.time())
+    interval = interval or monitoring_interval(
+        window_seconds, start, end, now=time.time()
+    )
     start, end, window_seconds = interval.start, interval.end, interval.seconds
     time_policy = query_config.get_query_config().time_windows.llm
     step = time_policy.step(window_seconds)
@@ -775,62 +810,75 @@ async def collect_model_metrics(
     fills, scheduled = [], set()
     if owned and url:
         client = aiohttp.ClientSession()
-    collection = _Collection(
-        model,
-        instances,
-        client,
-        url,
-        result.start,
-        end,
-        step,
-        result.rate_window_seconds,
-        view,
-        statistics,
-        upstream_instances,
-    )
-    for definition in definitions:
-        roles, status, reason = _roles(definition, model, backend, role)
-        metric = ModelMetric(
-            kind=definition.kind,
-            unit=definition.unit,
-            measurement_scope=definition.measurement_scope,
-            supported_statistics=(
-                []
-                if status in ('unsupported', 'not_applicable')
-                else _statistics(definition)
-            ),
-            status=status or 'no_data',
-            reason=reason or 'no_samples',
-        )
-        if definition.kind == 'histogram':
-            metric.summaries = [
-                MetricSummary(
-                    statistic=stat,
-                    dimensions=MetricDimensions(role=r or None),
-                    value=None,
-                )
-                for r in roles
-                for stat in HISTOGRAM_STATISTICS
-            ]
-        result.metrics[definition.key] = metric
-        selected = tuple(
-            i.id for i in instances if (getattr(i, 'role', None) or '') in roles
-        )
-        if status or not selected or model.cluster_id is None:
-            continue
-        if not url:
-            metric.reason = 'prometheus_unavailable'
-            continue
-        scope = MetricQueryScope(model.cluster_id, model.id, selected, roles, view)
-        fills.append(collection.fill(definition, metric, scope))
-        scheduled.add(definition.key)
     try:
-        if fills:
-            await asyncio.wait_for(asyncio.gather(*fills), _COLLECT_DEADLINE_SECONDS)
-    except asyncio.TimeoutError:
-        for key in scheduled - collection.completed:
-            metric = result.metrics[key]
-            metric.status, metric.reason = 'query_error', 'query_failed'
+        collection = _Collection(
+            model,
+            instances,
+            client,
+            url,
+            result.start,
+            end,
+            step,
+            result.rate_window_seconds,
+            view,
+            statistics,
+            upstream_instances,
+        )
+        for definition in definitions:
+            roles, status, reason = _roles(definition, model, backend, role)
+            metric = ModelMetric(
+                kind=definition.kind,
+                unit=definition.unit,
+                measurement_scope=definition.measurement_scope,
+                supported_statistics=(
+                    []
+                    if status in ('unsupported', 'not_applicable')
+                    else _statistics(definition)
+                ),
+                status=status or 'no_data',
+                reason=reason or 'no_samples',
+            )
+            if definition.kind == 'histogram':
+                metric.summaries = [
+                    MetricSummary(
+                        statistic=stat,
+                        dimensions=MetricDimensions(role=r or None),
+                        value=None,
+                    )
+                    for r in roles
+                    for stat in HISTOGRAM_STATISTICS
+                ]
+            result.metrics[definition.key] = metric
+            selected = tuple(
+                i.id for i in instances if (getattr(i, 'role', None) or '') in roles
+            )
+            if status or not selected or model.cluster_id is None:
+                continue
+            if not url:
+                metric.reason = 'prometheus_unavailable'
+                continue
+            scope = MetricQueryScope(
+                model.cluster_id,
+                model.id,
+                selected,
+                roles,
+                view,
+                launches,
+                source_identities,
+                interval.start if source_identities else None,
+            )
+            fills.append((definition, metric, scope))
+            scheduled.add(definition.key)
+        try:
+            if fills:
+                await asyncio.wait_for(
+                    asyncio.gather(*(collection.fill(*fill) for fill in fills)),
+                    _COLLECT_DEADLINE_SECONDS,
+                )
+        except asyncio.TimeoutError:
+            for key in scheduled - collection.completed:
+                metric = result.metrics[key]
+                metric.status, metric.reason = 'query_error', 'query_failed'
     finally:
         if owned and client is not None:
             await client.close()

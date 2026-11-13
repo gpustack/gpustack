@@ -115,6 +115,7 @@ class ChartMapping(_StrictModel):
 
 
 _COMMON_VARIABLES = {
+    'sample_since': {'expression', 'selector', 'start'},
     'engine_success': {'selector'},
     'engine_inventory': {'selector'},
     'history_presence': {'expression', 'window_seconds'},
@@ -167,6 +168,14 @@ def _validate_expression(expression, variables):
 def _render(expression: str, variables: dict) -> str:
     if set(Template(expression).get_identifiers()) != variables.keys():
         raise ValueError('Query bindings do not match the declared expression')
+    seconds = variables.get('window_seconds')
+    if isinstance(seconds, float) and seconds.is_integer():
+        variables = {**variables, 'window_seconds': int(seconds)}
+    if isinstance(seconds, float) and not seconds.is_integer():
+        # PromQL duration literals use integral units. Runner windows retain
+        # millisecond boundaries instead of extending into a neighboring phase.
+        milliseconds = max(1, math.floor(seconds * 1000))
+        expression = expression.replace('${window_seconds}s', f'{milliseconds}ms')
     return Template(expression).substitute(variables).strip()
 
 

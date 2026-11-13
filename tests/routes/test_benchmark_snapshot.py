@@ -7,6 +7,8 @@ import yaml
 import gpustack.routes.benchmarks as benchmarks_route
 from gpustack.schemas.benchmark import (
     Benchmark,
+    BenchmarkFullPublic,
+    BenchmarkPublic,
     BenchmarkSnapshot,
     ModelInstanceSnapshot,
 )
@@ -22,6 +24,16 @@ from gpustack.schemas.models import (
     SpeculativeConfig,
     role_effective_model,
 )
+
+
+@pytest.mark.parametrize('schema', [BenchmarkPublic, BenchmarkFullPublic])
+def test_public_snapshot_schema_excludes_internal_monitoring(schema):
+    definition = schema.model_json_schema()
+    snapshot = definition['properties']['snapshot']['anyOf'][0]['$ref']
+    fields = definition['$defs'][snapshot.rsplit('/', 1)[-1]]['properties']
+    assert 'instances' in fields
+    assert 'monitoring' not in fields
+
 
 _CONFIG_FIELDS = (
     "backend_parameters",

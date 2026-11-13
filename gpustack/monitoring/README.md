@@ -18,6 +18,7 @@ Server process component. It starts no background jobs and imports no HTTP route
 | `models.py` | Model observations, PD role selection, coverage and summary/series assembly |
 | `hardware.py` | GPU/Worker identities, sensor targets and shared hardware history collection |
 | `resources.py` | Worker/GPU current inventory, authorized deployment placements and direct resource collection |
+| `benchmarks.py` | Recorded run identities, measured phase bounds, independently authorized observations and exact-range gauge statistics |
 | `cache.py` | Cache-provider declarations translated into semantic cache charts |
 
 Routes call the collectors after establishing the resource and tenant context.
@@ -54,6 +55,33 @@ Counters use `rate`/`increase`; latency percentiles use histogram buckets, never
 average of instance percentiles. Missing observations remain missing, including
 when an engine does not export a metric. Current inventory and allocation
 metadata come from resource records and do not replay historical ownership.
+
+Allocation counts include only placements on currently visible Workers. Hidden
+or missing Workers do not contribute to the GPU or Worker totals.
+
+Duplicate scrape paths must agree after removing transport labels. PromQL
+excludes conflicting copies instead of selecting the largest value; defensive
+instant-result validation also rejects conflicts before summary aggregation.
+
+The Worker refreshes its server-verified ownership snapshot every 15 seconds in
+the background. Stable hardware collection reads that snapshot without HTTP
+I/O. A failed refresh, changed registration or 30-second expiry invalidates it;
+stable samples stop until identity is verified again, while legacy and runtime
+collection remain independent. Losing a verified identity emits a warning.
+
+## Benchmark history
+
+Benchmark creation freezes the selected members and source/Worker/GPU identities
+in the existing JSON snapshot. Running confirmation and result updates verify those
+identities without substituting current membership. A changed generation makes
+monitoring unavailable rather than assigning later samples to the recorded run.
+Measured phase windows come from the runner's scheduler metrics. Short ranges keep
+their real bounds: rolling samples whose lookback crosses the start are missing,
+and gauge observations cannot reuse an earlier stored sample. Gauge statistics and
+coverage describe query evaluation points in the half-open interval, not raw scrape
+counts. Old records without run identities retain their client report but cannot
+reconstruct monitoring associations. All three Benchmark monitoring endpoints
+recheck current resource authorization; internal source identities stay private.
 
 ## Find or change a query
 

@@ -167,7 +167,6 @@ async def _storage_policy(client, url):
             break
     ttl = _CACHE_SECONDS if policy is not None else _FAILURE_CACHE_SECONDS
     policy = policy or {}
-    _POLICY_CACHE.clear()
     _POLICY_CACHE[url] = (time.monotonic() + ttl, policy)
     return policy
 
