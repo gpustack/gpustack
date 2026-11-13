@@ -41,6 +41,7 @@ from gpustack.routes import (
     workers,
     usage,
     resource_usage,
+    resource_monitoring,
     cloud_credentials,
     worker_pools,
     clusters,
@@ -357,6 +358,7 @@ worker_client_router.add_api_route(
 # Tenant-aware routers: any logged-in user can hit them; the handlers
 # filter by TenantContext (owner_principal_id / cluster visibility).
 tenant_routers = model_routers + [
+    {"router": resource_monitoring.router, "tags": ["Resource Monitoring"]},
     {
         "router": model_revisions.router,
         "prefix": "/models",
