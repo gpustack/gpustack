@@ -4,7 +4,7 @@ import math
 import re
 import traceback
 from datetime import datetime, timezone
-from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple, Union
+from typing import Annotated, Any, Dict, List, NamedTuple, Optional, Set, Tuple, Union
 from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel
 from fastapi.responses import RedirectResponse, StreamingResponse
@@ -32,7 +32,6 @@ from gpustack.schemas.model_metrics import (
     ModelMetrics,
     ModelMonitoringCapabilities,
     ModelResourceMetrics,
-    TrendStatistic,
 )
 from gpustack.monitoring.models import collect_model_metrics
 from gpustack.monitoring.hardware import collect_model_resource_metrics
@@ -521,8 +520,16 @@ async def get_model_metrics(
     instance_ids: Optional[str] = None,
     role: MetricRole = 'all',
     view: MetricView = 'aggregate',
-    statistic: TrendStatistic = 'percentiles',
-    all_statistics: bool = False,
+    statistic: Annotated[
+        str,
+        Query(
+            pattern=r'^(avg|p50|p95|p99)(,(avg|p50|p95|p99)){0,3}$',
+            description=(
+                'Comma-separated latency trend statistics: avg, p50, p95, p99. '
+                'Defaults to all four. Interval summaries always include all four.'
+            ),
+        ),
+    ] = 'avg,p50,p95,p99',
     section: MetricSection = 'all',
     start: Optional[float] = None,
     end: Optional[float] = None,
@@ -537,7 +544,7 @@ async def get_model_metrics(
         window_seconds=seconds,
         role=role,
         view=view,
-        statistic='all' if all_statistics else statistic,
+        statistics=tuple(dict.fromkeys(statistic.split(','))),
         section=section,
         upstream_instances=upstreams,
         client=getattr(request.app.state, 'http_client_no_proxy', None),
