@@ -267,3 +267,35 @@ def test_rendered_dpa_preserves_native_single_node_port_selection(role):
     sglang_port_layout_for_instance(model, mi).validate_runtime_port_demand(
         mi, ['--dp=2', '--enable-dp-attention']
     )
+
+
+@pytest.mark.parametrize('count', [None, 1, 13, 14])
+def test_nsa_cp_runtime_requires_complete_internal_reservation(count):
+    model, mi = _model(), _instance()
+    model.backend_parameters = [
+        '--tp-size=4',
+        '--attn-cp-size=4',
+        '--enable-nsa-prefill-context-parallel',
+    ]
+    mi.named_ports = (
+        {'_sglang_connecting': PortBand(base=40010, count=count)}
+        if count is not None
+        else None
+    )
+    layout = sglang_port_layout_for_instance(model, mi)
+    before = mi.model_dump()
+    if count == 14:
+        layout.validate_runtime_port_demand(mi, model.backend_parameters)
+    else:
+        with pytest.raises(ValueError, match='14 ports.*restart the model deployment'):
+            layout.validate_runtime_port_demand(mi, model.backend_parameters)
+    assert mi.model_dump() == before
+
+
+def test_attention_cp_size_alone_keeps_native_port_selection():
+    model, mi = _model(), _instance()
+    model.backend_parameters = ['--tp-size=4', '--attn-cp-size=4']
+    mi.named_ports = None
+    layout = sglang_port_layout_for_instance(model, mi)
+    assert not layout.attention and layout.internal_count == 0
+    assert layout.bind(mi, mi.worker_ip).arguments == ()

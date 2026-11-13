@@ -28,6 +28,15 @@ SGLANG_SMG_API_BAND = '_sglang_smg_api'
 SGLANG_SMG_METRICS_BAND = '_sglang_smg_metrics'
 
 
+def _cp_uses_attention_tcp(
+    parameters: Optional[List[str]], *, tokenized: bool = False
+) -> bool:
+    """NSA prefill CP can enable DPA's TCP listeners with just one DP rank."""
+    return find_bool_parameter(
+        parameters, ['enable-nsa-prefill-context-parallel'], tokenized=tokenized
+    )
+
+
 @dataclass(frozen=True)
 class SGLangRuntimePort:
     """A runtime-selected listener, outside the platform's fixed reservation."""
@@ -165,10 +174,12 @@ class SGLangPortLayout:
     ) -> None:
         """Check rendered DPA port demand without changing parallelism or ports."""
         band = (instance.named_ports or {}).get(SGLANG_CONNECTING_BAND)
+        implicit_dpa = _cp_uses_attention_tcp(parameters, tokenized=True)
         if not self.engine or (
             self.nnodes == 1
             and not self.components
             and (band is None or band.count <= 1)
+            and not implicit_dpa
         ):
             return
         dp = (
@@ -186,7 +197,8 @@ class SGLangPortLayout:
             or 1
         )
         if not (
-            attention_dp > 1
+            implicit_dpa
+            or attention_dp > 1
             or (
                 dp > 1
                 and find_bool_parameter(
@@ -324,7 +336,8 @@ def sglang_port_layout(
         role=role,
         nnodes=max(1, len(gpu_per_node)),
         ranks=ranks,
-        attention=attention,
+        attention=attention
+        or (engine and _cp_uses_attention_tcp(model.backend_parameters)),
         rust=str(env.get('SGLANG_RUST_SERVER', '')).lower()
         in ('1', 'true', 'yes', 'y'),
         managed=managed,

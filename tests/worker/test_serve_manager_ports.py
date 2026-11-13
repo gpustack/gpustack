@@ -1580,6 +1580,47 @@ def test_parallel_sglang_dpa_allocations_do_not_share_internal_sockets():
         assert set(range(band.base, band.base + 14)) <= model_instance_ports(mi, 1)
 
 
+def test_four_sglang_nsa_cp_replicas_reserve_disjoint_internal_ports():
+    from gpustack.scheduler.port_budget import member_port_demand
+    from gpustack.utils.command import find_parameter
+    from gpustack.utils.model_instance_workers import (
+        sglang_parallelism,
+        sglang_smg_mode,
+    )
+    from gpustack.utils.sglang_port_layout import sglang_port_layout_for_instance
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    model = new_model(
+        1,
+        'sg-cp',
+        huggingface_repo_id='org/model',
+        backend='SGLang',
+        backend_parameters=[
+            '--tp-size=4',
+            '--attn-cp-size 4',
+            '--enable-nsa-prefill-context-parallel',
+        ],
+    )
+    assert sglang_parallelism(model.backend_parameters)[:2] == (1, 1)
+    assert not sglang_smg_mode(model)
+    manager, unavailable, reserved = _manager(), set(), set()
+    for index in range(4):
+        mi = _instance(index + 1, role=None, cards=4)
+        mi.gpu_indexes = list(range(index * 4, index * 4 + 4))
+        manager._select_ports(mi, model, BackendEnum.SGLANG, unavailable, PORT_RANGE)
+        band = (mi.named_ports or {}).get('_sglang_connecting')
+        assert band is not None and band.count == 14
+        ports = model_instance_ports(mi, 1)
+        assert len(ports) == member_port_demand(model, None, 4, [4]) == 15
+        assert not ports & reserved
+        reserved.update(ports)
+        args = (
+            sglang_port_layout_for_instance(model, mi).bind(mi, mi.worker_ip).arguments
+        )
+        assert find_parameter(args, ['dist-init-addr']) == f'127.0.0.1:{band.base}'
+        assert find_parameter(args, ['nccl-port']) == str(band.base + 7)
+
+
 def test_sglang_dpa_requires_the_complete_internal_band_before_publishing():
     manager = _manager(port_range='40000-40015')
     model = new_model(

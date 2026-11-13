@@ -4418,6 +4418,46 @@ def test_sglang_rendered_dpa_rejects_insufficient_port_band(version_template, op
         backend._build_command_args(40000, True, True)
 
 
+def test_sglang_nsa_cp_command_uses_reserved_internal_addresses():
+    from gpustack.utils.command import find_last_parameter
+
+    backend = _sglang_command_contract_backend('--model-path "{{model_path}}"')
+    parameters = [
+        '--tp-size=4',
+        '--attn-cp-size=4',
+        '--enable-nsa-prefill-context-parallel',
+    ]
+    backend._model.backend_parameters = list(parameters)
+    backend._model.disaggregation = None
+    mi = backend._model_instance
+    mi.role, mi.distributed_servers, mi.gpu_indexes = None, None, [0, 1, 2, 3]
+    mi.ports = [40000, 40001]
+    argv, _ = backend._build_command_args(40000, False, True)
+    assert (
+        find_last_parameter(argv, ['dist-init-addr'], tokenized=True)
+        == '127.0.0.1:40001'
+    )
+    assert find_last_parameter(argv, ['nccl-port'], tokenized=True) == '40008'
+    assert find_last_parameter(argv, ['tp-size'], tokenized=True) == '4'
+    assert find_last_parameter(argv, ['dp', 'dp-size'], tokenized=True) is None
+    assert backend._model.backend_parameters == parameters
+
+
+@pytest.mark.parametrize('version_template', [False, True])
+def test_sglang_single_node_template_cp_requires_reserved_ports(version_template):
+    backend = _sglang_command_contract_backend(
+        '--model-path "{{model_path}}" --attn-cp-size=4 --enable-nsa-prefill-context-parallel',
+        version_template=version_template,
+    )
+    backend._model.backend_parameters = ['--tp-size=4']
+    backend._model.disaggregation = None
+    mi = backend._model_instance
+    mi.role, mi.distributed_servers, mi.gpu_indexes = None, None, [0, 1, 2, 3]
+    mi.named_ports, mi.ports = None, [40000]
+    with pytest.raises(ValueError, match='14 ports.*backend_parameters.*restart'):
+        backend._build_command_args(40000, False, True)
+
+
 def test_sglang_run_command_accepts_rendered_tp_template():
     from gpustack.utils.command import find_last_parameter
 
