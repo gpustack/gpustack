@@ -561,6 +561,15 @@ def _validate_manual_dp_config(model_in, stored=None) -> bool:
     return enabled
 
 
+def _validate_non_model_workload(model: ModelSpecBase) -> None:
+    from gpustack.validation.non_model_workload import validate_non_model_workload
+
+    try:
+        validate_non_model_workload(model)
+    except ValueError as exc:
+        raise BadRequestException(message=str(exc)) from exc
+
+
 async def validate_model_in(
     session: SessionDep,
     model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
@@ -575,6 +584,7 @@ async def validate_model_in(
     # merged state rather than against the handful of fields it happened to
     # send. Absent on create, where there is nothing to merge.
     effective = effective_model_spec(model_in, stored)
+    _validate_non_model_workload(effective)
     manual_dp = _validate_manual_dp_config(effective)
     await validate_pd_config(
         session,

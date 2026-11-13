@@ -88,6 +88,11 @@ from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
 from gpustack.utils.version import pick_runtime_version
 from gpustack.utils.runtime import transform_workload_plan
+from gpustack.utils.model_resources import (
+    non_model_workload_enabled,
+    non_model_workload_resources,
+)
+from gpustack.validation.non_model_workload import validate_non_model_workload
 from gpustack.worker.pd_injection import PDInjection, render_pd_injection
 
 logger = logging.getLogger(__name__)
@@ -382,6 +387,7 @@ class InferenceServer(ABC):
             id=self._model_instance.model_id,
             use_cache=not bool(self._model_instance.group_id or managed),
         )
+        validate_non_model_workload(model)
         # The subprocess reads configuration independently of the manager;
         # an edit after its launch decision must not reach the container.
         if self._model_instance.group_id and getattr(model, "stale", None) is True:
@@ -1190,6 +1196,12 @@ class InferenceServer(ABC):
             If the GPUs assigned to the model instance are of different types.
         """
         resources = ContainerResources()
+        validate_non_model_workload(self._model_spec or self._model)
+        if non_model_workload_enabled(self._model):
+            declared = non_model_workload_resources(self._model)
+            resources["cpu"] = declared.cpu
+            resources["memory"] = declared.memory
+            return resources
         # Ahead of both device paths, because this role declares CPU and memory
         # *instead of* any device key and that is true on either one: with
         # `gpu_type_selector` it must not claim a slice, without one it has no
