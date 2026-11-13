@@ -1241,12 +1241,13 @@ async def find_candidate(
     managed_sglang = managed_sglang and role is None and sglang_smg_mode(model)
 
     # Filter workers.
+    framework_filter = BackendFrameworkFilter(model)
     filters = [
         ClusterFilter(model),
         GPUMatchingFilter(model),
         LabelMatchingFilter(model),
         StatusFilter(model, require_managed),
-        BackendFrameworkFilter(model),
+        framework_filter,
         LocalPathFilter(model),
         PDModeRuntimeFilter(model),
     ]
@@ -1263,6 +1264,8 @@ async def find_candidate(
     )
     if len(workers) == 0:
         return None, messages
+
+    cpu_only = cpu_only or framework_filter.cpu_only
 
     # Initialize candidate selector.
     try:

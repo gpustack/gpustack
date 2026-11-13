@@ -29,6 +29,7 @@ class BackendFrameworkFilter(WorkerFilter):
     def __init__(self, model: Model):
         self.model = model
         self.backend_name = get_backend(model)
+        self.cpu_only = False
 
     def _get_gpu_query_conditions(
         self, worker: Worker
@@ -182,6 +183,23 @@ class BackendFrameworkFilter(WorkerFilter):
         async with async_session() as session:
             inference_backends = await InferenceBackend.all(session)
             overrides = await RunnerOverrideEntry.all(session)
+
+        version_config = self._visible_version_configs(inference_backends).get(
+            self.model.backend_version
+        )
+        # CPU images can run on GPU workers, but must not claim their accelerators.
+        self.cpu_only = bool(
+            version_config and version_config.custom_framework == "cpu"
+        )
+        if (
+            self.cpu_only
+            and self.model.gpu_selector
+            and self.model.gpu_selector.gpu_ids
+        ):
+            return [], [
+                "Manual GPU selection is not supported for a CPU inference backend. "
+                "Remove the GPU selection or choose a GPU backend version."
+            ]
 
         filtered_workers = []
         filtered_messages = []
