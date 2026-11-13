@@ -10,7 +10,7 @@ from urllib.parse import quote
 import aiohttp
 import jwt
 from fastapi import APIRouter, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from gpustack import envs
 from gpustack.api.exceptions import (
@@ -18,7 +18,6 @@ from gpustack.api.exceptions import (
     NotFoundException,
     ServiceUnavailableException,
 )
-from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.gateway.utils import router_header_key
 from gpustack.routes import openai
 from gpustack.schemas.models import ModelInstance
@@ -201,22 +200,44 @@ async def download_video(
     payload = _job_payload(request, video_id, user, ctx)
     worker = await _resolve_job(request, payload, user, ctx)
 
-    async def content():
-        async for chunk, headers, status in stream_to_worker(
-            worker=worker,
-            method="GET",
-            path=f"v1/videos/{quote(payload['native_id'], safe='')}/content",
-            headers={router_header_key: payload["registry"]},
-            params=dict(request.query_params),
-            proxy_client=request.app.state.http_client,
-            no_proxy_client=request.app.state.http_client_no_proxy,
-            timeout=aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT),
-            on_exception=_video_content_error,
-            raw=True,
-        ):
-            headers = openai._worker_response_headers(headers)
-            if status >= 400:
-                headers.setdefault("Content-Type", "application/json")
-            yield chunk, headers, status
+    upstream = stream_to_worker(
+        worker=worker,
+        method="GET",
+        path=f"v1/videos/{quote(payload['native_id'], safe='')}/content",
+        headers={router_header_key: payload["registry"]},
+        params=dict(request.query_params),
+        proxy_client=request.app.state.http_client,
+        no_proxy_client=request.app.state.http_client_no_proxy,
+        timeout=aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT),
+        on_exception=_video_content_error,
+        raw=True,
+    )
+    try:
+        first_chunk, headers, status = await anext(upstream)
+    except Exception:
+        await upstream.aclose()
+        raise ServiceUnavailableException(
+            message="Video content is unavailable", is_openai_exception=True
+        ) from None
 
-    return StreamingResponseWithStatusCode(content(), media_type="video/mp4")
+    headers = openai._worker_response_headers(headers)
+    if status >= 400:
+        await upstream.aclose()
+        headers.setdefault("Content-Type", "application/json")
+        return Response(content=first_chunk, status_code=status, headers=headers)
+
+    async def content():
+        try:
+            yield first_chunk
+            async for chunk, _, chunk_status in upstream:
+                if chunk_status >= 400:
+                    # Once MP4 bytes have started, abort the HTTP stream so clients
+                    # reject a partial file instead of accepting appended JSON.
+                    raise RuntimeError("Video content transfer interrupted") from None
+                yield chunk
+        finally:
+            await upstream.aclose()
+
+    return StreamingResponse(
+        content(), status_code=status, headers=headers, media_type="video/mp4"
+    )

@@ -220,8 +220,8 @@ async def test_download_streams_binary_and_removes_worker_transfer_headers(
     monkeypatch.setattr(videos, "stream_to_worker", stream)
     response = await videos.download_video(job["id"], api.request, api.user, api.ctx)
     chunks = [item async for item in response.body_iterator]
-    assert b"".join(item[0] for item in chunks) == b"\x00\x00ftypmp42"
-    assert chunks[0][1] == {"Content-Type": "video/mp4"}
+    assert b"".join(chunks) == b"\x00\x00ftypmp42"
+    assert dict(response.headers) == {"content-type": "video/mp4"}
     assert calls[0]["path"] == "v1/videos/native-task/content"
     assert calls[0]["worker"] is api.worker
     assert calls[0]["raw"] is True
@@ -319,7 +319,7 @@ async def test_video_transfer_errors_do_not_expose_exception_details(
     async def send(message):
         messages.append(message)
 
-    await response.stream_response(send)
+    await response(api.request.scope, AsyncMock(), send)
     assert messages[0]["status"] == (504 if timeout else 503)
     body = b"".join(message.get("body", b"") for message in messages)
     assert secret.encode() not in body
@@ -327,3 +327,87 @@ async def test_video_transfer_errors_do_not_expose_exception_details(
     assert json.loads(body)["error"]["message"] == (
         "Video content request timed out" if timeout else "Video content is unavailable"
     )
+
+
+@pytest.mark.asyncio
+async def test_interrupted_video_download_aborts_without_appending_json(
+    video_api, monkeypatch
+):
+    from gpustack.server import worker_request
+
+    api = video_api
+    job = await _create(api)
+    partial = b"partial-mp4-bytes"
+    secret = "private-worker failure details"
+
+    async def chunks():
+        yield partial
+        raise RuntimeError(secret)
+
+    upstream = SimpleNamespace(
+        status=200,
+        headers={"Content-Type": "video/mp4"},
+        content=SimpleNamespace(iter_any=chunks),
+    )
+    connection = MagicMock()
+    connection.__aenter__ = AsyncMock(return_value=upstream)
+    connection.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        worker_request, "_request_to_worker", lambda **kwargs: connection
+    )
+    response = await videos.download_video(job["id"], api.request, api.user, api.ctx)
+    messages = []
+
+    async def send(message):
+        messages.append(message)
+
+    with pytest.raises(RuntimeError, match="Video content transfer interrupted"):
+        await response.stream_response(send)
+    assert [
+        message["status"]
+        for message in messages
+        if message["type"] == "http.response.start"
+    ] == [200]
+    body = b"".join(message.get("body", b"") for message in messages)
+    assert body == partial
+    assert secret.encode() not in body
+    assert not any(
+        message["type"] == "http.response.body" and not message.get("more_body", False)
+        for message in messages
+    )
+    connection.__aexit__.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [404, 429])
+async def test_video_content_preserves_engine_errors_before_streaming(
+    video_api, monkeypatch, status
+):
+    from gpustack.server import worker_request
+
+    api = video_api
+    job = await _create(api)
+    body = b'{"detail":"Video unavailable"}'
+    upstream = SimpleNamespace(
+        status=status,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": "999",
+            "Content-Encoding": "gzip",
+            "Retry-After": "5",
+        },
+        read=AsyncMock(return_value=body),
+    )
+    connection = MagicMock()
+    connection.__aenter__ = AsyncMock(return_value=upstream)
+    connection.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        worker_request, "_request_to_worker", lambda **kwargs: connection
+    )
+    response = await videos.download_video(job["id"], api.request, api.user, api.ctx)
+    assert response.status_code == status
+    assert response.body == body
+    assert response.headers["content-length"] == str(len(body))
+    assert response.headers["retry-after"] == "5"
+    assert "content-encoding" not in response.headers
+    connection.__aexit__.assert_awaited_once()
