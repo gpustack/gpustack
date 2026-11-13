@@ -239,6 +239,32 @@ TLS 协议版本配置会写入 `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` 指定的
 | `GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD` | 将实例标记为不健康前，允许的连续推理健康检查失败次数。                                                                                                                                                                                                                             | `3`     | 模型          |
 | `GPUSTACK_ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY`        | 允许较低 CUDA 次版本的设备运行较高次版本的镜像。可在 Worker 上全局设置，或针对单个模型设置；模型级设置优先。                                                                                                                                                                                             | `false` | Worker & 模型 |
 
+#### 非模型工作负载 { #non-model-workloads }
+
+对于不加载模型权重的独立服务（例如 Dynamo frontend），在部署的环境变量中设置
+`GPUSTACK_NON_MODEL_WORKLOAD=true`：
+
+```yaml
+env:
+  GPUSTACK_NON_MODEL_WORKLOAD: "true"
+  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # 可选：4 GiB
+```
+
+此模式跳过模型架构和基于权重的资源评估，仅选择 CPU 候选，并为容器仅声明
+CPU 和内存资源。GPUStack 不分配 GPU、不预留显存。默认资源为 2 CPU 和 2 GiB RAM；
+`GPUSTACK_MODEL_RAM_CLAIM` 同时覆盖
+调度预留和容器使用的 RAM 值。CPU 是容器资源请求，不参与 GPUStack 调度器的容量计算。
+文件来源检查、下载和挂载仍然生效，服务可以继续使用 tokenizer 文件。
+
+该开关默认关闭，接受 `true`、`1`、`yes` 或 `on`（不区分大小写）。请配置在部署上，
+而不是 GPUStack server 或 worker 进程上。它独立于后端版本的推理框架，不改变普通
+CPU 模型推理行为。支持自定义后端版本，以及直接指定镜像和命令的 **Custom** 后端。
+启用时拒绝手动指定 `gpu_selector.gpu_ids`、`gpu_type_selector`，以及原生多角色/PD
+部署；使用这些配置时需关闭该开关。
+
+容器权限和环境变量沿用 Custom 后端的常规处理方式。请自行配置镜像和应用以 CPU
+方式运行。容器仍可能访问 GPU 设备；Docker 镜像继承部署模式也可能继承 worker 的设备请求。
+
 #### 使用示例 { #usage-example }
 
 部署模型时，进入**高级选项 > 环境变量**并添加：
