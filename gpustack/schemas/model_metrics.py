@@ -21,8 +21,7 @@ MetricSection = Literal['all', 'llm', 'pd']
 TrendStatistic = Literal['avg', 'p50', 'p95', 'p99', 'percentiles']
 
 
-class ModelMonitoringCapabilities(BaseModel):
-    model_id: int
+class MonitoringCapabilities(BaseModel):
     min_query_seconds: int = 300
     max_query_seconds: int = 604800
     supports_custom_range: bool = True
@@ -32,6 +31,10 @@ class ModelMonitoringCapabilities(BaseModel):
     retention_source: Literal[
         'prometheus_runtimeinfo', 'prometheus_flags', 'unknown'
     ] = 'unknown'
+
+
+class ModelMonitoringCapabilities(MonitoringCapabilities):
+    model_id: int
 
 
 class MetricDimensions(BaseModel):
@@ -45,6 +48,7 @@ class MetricDimensions(BaseModel):
     dp_rank: Optional[str] = None
     worker_id: Optional[int] = None
     device_id: Optional[str] = None
+    mount_point: Optional[str] = None
     upstream_instance_id: Optional[int] = None
 
     @model_serializer(mode='wrap')

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
-from gpustack.server import model_monitoring_time as monitoring
+from gpustack.monitoring import time_range as monitoring
 
 
 @pytest.mark.parametrize('seconds', [300, 3600, 604800])
@@ -162,6 +162,33 @@ async def test_unreadable_policy_does_not_guess_default_retention(status_environ
     assert result.retention_seconds is None and not result.retention_known
     assert result.retention_source == 'unknown'
     assert result.max_query_seconds == 604800 and result.supports_custom_range
+
+
+@pytest.mark.asyncio
+async def test_storage_policy_recovers_after_a_brief_failure_cache(
+    status_environment, monkeypatch
+):
+    now = 100.0
+    monkeypatch.setattr(monitoring, 'time', SimpleNamespace(monotonic=lambda: now))
+    reader = AsyncMock(side_effect=[OSError, OSError, {'storageRetention': '3d'}])
+    monkeypatch.setattr(monitoring, '_status', reader)
+    client = status_environment({})
+
+    first = await monitoring.collect_monitoring_capabilities(7, client)
+    assert not first.retention_known
+    assert reader.await_count == 2
+
+    now += 4
+    second = await monitoring.collect_monitoring_capabilities(7, client)
+    assert not second.retention_known
+    assert reader.await_count == 2
+
+    now += 2
+    recovered = await monitoring.collect_monitoring_capabilities(7, client)
+    assert recovered.retention_seconds == 259200
+    now += 30
+    assert await monitoring.collect_monitoring_capabilities(7, client) == recovered
+    assert reader.await_count == 3
 
 
 @pytest.mark.asyncio

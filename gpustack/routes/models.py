@@ -34,9 +34,9 @@ from gpustack.schemas.model_metrics import (
     ModelResourceMetrics,
     TrendStatistic,
 )
-from gpustack.server.model_metrics import collect_model_metrics
-from gpustack.server.model_hardware_metrics import collect_model_resource_metrics
-from gpustack.server.model_monitoring_time import (
+from gpustack.monitoring.models import collect_model_metrics
+from gpustack.monitoring.hardware import collect_model_resource_metrics
+from gpustack.monitoring.time_range import (
     collect_monitoring_capabilities,
     monitoring_interval,
 )
@@ -57,9 +57,9 @@ from gpustack.schemas.cache_services import (
     CacheServiceAttachedMetrics,
     ModelCacheMetricsPublic,
 )
-from gpustack.server.cache_service_metrics import (
+from gpustack.monitoring.prometheus import parse_window as parse_metrics_window
+from gpustack.monitoring.cache import (
     collect_model_cache_metrics,
-    parse_window as parse_metrics_window,
 )
 from gpustack.schemas.deployment_document import (
     OVERWRITABLE_FIELDS,

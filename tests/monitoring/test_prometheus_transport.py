@@ -4,7 +4,7 @@ from urllib.parse import urlencode
 
 import pytest
 
-from gpustack.server import prometheus_query
+from gpustack.monitoring import prometheus as prometheus_query
 
 
 @pytest.mark.asyncio
