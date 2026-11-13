@@ -49,6 +49,28 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   }'
 ```
 
+### Video üretimi { #video-generation }
+
+Video üretimi, SGLang Diffusion ve vLLM-Omni gibi OpenAI video protokolünü uygulayan çıkarım motorlarında asenkron görevler kullanır.
+
+| Yöntem | Uç nokta | Amaç |
+| --- | --- | --- |
+| POST | `/v1/videos` | `model`, `prompt`, `seconds`, `size` ve isteğe bağlı referans görseli gibi multipart form alanlarıyla video görevi oluşturur. |
+| GET | `/v1/videos/{id}` | Görev durumunu ve motor sağlıyorsa ilerlemeyi getirir. |
+| GET | `/v1/videos/{id}/content` | Üretim tamamlandıktan sonra videoyu indirir. |
+
+Video üretim dağıtımları `video` model kategorisini kullanır. Kullanılabilir video rotalarını listelemek için `GET /v1/models?categories=video` kullanın. Video anlama modelleri `llm` kategorisinde kalır ve Chat Completions API'yi kullanır.
+
+Yeni kategoriyi kullanmadan önce Server ve Worker bileşenlerini birlikte yükseltin. Bilinen Diffusers video işlem hatları, dağıtım adından bağımsız olarak `model_index.json` üzerinden sınıflandırılır. Arka plandaki uzlaştırma işlemi, `image` kategorisindeki mevcut yerel SGLang/vLLM dağıtımlarını da kontrol eder ve video modeli olduğu doğrulananları günceller. Otomatik oluşturulan rotalar normal model eşitlemesiyle aynı kategoriyi alır; elle yapılandırılan rotalar korunur. Bu kategori güncellemesi örneğin yeniden başlatılmasını istemez. Erişilemeyen meta veriler yeniden denenir, bilinmeyen işlem hatlarının kategorisi korunur. Özel işlem hatları için dağıtımın model kategorisi ayarından açıkça `Video` seçin.
+
+Kategori, referans görseli veya video desteği belirtmez; bu girdiler seçilen modele bağlıdır. Bu kategori değişikliği, harici sağlayıcıların video görevlerini işlemeyi içermez.
+
+Görevi oluşturun, durum `completed` veya `failed` olana kadar sorgulayın ve ardından içeriği indirin. İlerleme çıkarım motoru tarafından sağlanır ve yalnızca belirli aşamalarda güncellenebilir. Döndürülen görev kimliğini opak bir dize olarak kullanın: GPUStack bu kimliği görevi oluşturan kullanıcıya, kuruluş bağlamına ve çıkarım örneğine bağlar. Sorgulama ve indirme için aynı kimliği ve kuruluş bağlamını kullanın.
+
+Bir HTTP isteğini kesmek veya istemci tarafındaki sorgulamayı durdurmak, kabul edilmiş üretim görevini iptal etmez. GPUStack şu anda motorun iptal isteğini iletmek için `DELETE /v1/videos/{id}` uç noktasını sunmaz.
+
+Görev tanıtıcıları 24 saat geçerlidir; motor çıktıyı daha erken silebilir. Görev durumu ve üretilen dosyalar görevi oluşturan motor sürecine ait olduğundan istekler başka bir kopyaya aktarılamaz. Bu örneğin yeniden başlatılması görevleri kullanılamaz hale getirebilir. İsteğe bağlı `/v1/videos/sync` uzantısı, bunu uygulayan motorlarda kullanılabilir.
+
 ## Anthropic Uyumlu API'ler { #anthropic-compatible-apis }
 
 GPUStack, Anthropic uyumlu [`/v1/messages` API](https://platform.claude.com/docs/en/api/messages/create)'yi sağlar.

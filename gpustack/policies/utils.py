@@ -15,6 +15,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     Model,
     CategoryEnum,
+    is_image_or_video_model,
     SourceEnum,
     is_llm_model,
     get_backend,
@@ -370,7 +371,7 @@ async def estimate_model_vram(
     This is the minimum requirement to help us decide how many GPUs are needed for the model.
     If users explicitly set parameters like tp & pp, this estimation is not needed.
 
-    Formula for Diffusion (Image) models:
+    Formula for diffusion image and video generation models:
 
         VRAM = WEIGHT_SIZE
 
@@ -396,7 +397,7 @@ async def estimate_model_vram(
     timeout_in_seconds = 15
 
     try:
-        if model.categories and CategoryEnum.IMAGE in model.categories:
+        if is_image_or_video_model(model):
             weight_size = await asyncio.wait_for(
                 estimate_diffusion_model_vram(model, token, workers, session),
                 timeout=timeout_in_seconds,

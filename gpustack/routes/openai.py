@@ -73,7 +73,10 @@ _server_managed_elsewhere = {"/rerank"}
 
 def get_api_router() -> APIRouter:
     """Full OpenAI-compatible endpoint set, mounted at /v1."""
+    from gpustack.routes.videos import router as videos_router
+
     router = APIRouter()
+    router.include_router(videos_router)
     router.add_api_route("/models", list_models, methods=["GET"])
     for rp in openai_model_prefixes:
         for endpoint in rp.prefixes:
@@ -190,6 +193,49 @@ async def _prefetch_owner_principals(
     return {p.id: p for p in rows}
 
 
+async def _assert_inference_model_access(
+    session: AsyncSession, request: Request, user, model_name: str
+) -> None:
+    """Authorize the model while preserving the trusted benchmark exemption."""
+    # Only the internal benchmark prefix sets this state; public /v1 requests
+    # cannot opt out of the user and API-key access check.
+    if getattr(request.state, "internal_inference", False):
+        return
+    if not await UserService(session).model_allowed_for_user(
+        model_name=model_name,
+        user_id=user.id,
+        api_key=getattr(request.state, "api_key", None),
+    ):
+        raise NotFoundException(message="Model not found", is_openai_exception=True)
+
+
+async def _assert_video_route_access(
+    session: AsyncSession, model_name: str, route_id: int, user, ctx, api_key=None
+) -> None:
+    """Recheck the creating route using the model-list tenant and key scope."""
+    if ctx is None or (
+        api_key is not None
+        and api_key.allowed_model_names
+        and model_name not in api_key.allowed_model_names
+    ):
+        raise NotFoundException(message="Video not found", is_openai_exception=True)
+
+    target_class = ModelRoute if user.is_admin else MyModel
+    statement = select(target_class.id).where(
+        target_class.id == route_id, target_class.deleted_at.is_(None)
+    )
+    if user.is_admin:
+        for condition in _model_route_grant_conditions(ctx):
+            statement = statement.where(condition)
+    else:
+        statement = statement.where(MyModel.user_id == user.id)
+        visibility = _my_model_visibility_sql(ctx)
+        if visibility is not None:
+            statement = statement.where(visibility)
+    if (await session.exec(statement.limit(1))).first() is None:
+        raise NotFoundException(message="Video not found", is_openai_exception=True)
+
+
 async def proxy_request_by_model(
     request: Request,
     user: CurrentUserDep,
@@ -202,27 +248,11 @@ async def proxy_request_by_model(
     after the initial lookups, preventing long-lived streaming inference
     responses from holding a database connection.
     """
-    endpoint = re.sub(r"^.*/(?:v1|v1-openai)/", "", request.url.path)
+    endpoint = re.sub(r"^.*/(?:v1|v1-openai)/", "", request.url.path.rstrip("/"))
     model_name, stream, body_json, form_data = await parse_request_body(request)
 
     async with async_session() as session:
-        # The per-user access list is a USER question, and one caller is not a
-        # user: the benchmark proxy is entered with a worker token, by a load
-        # generator this server told a worker to start. Its own prefix carries
-        # the exemption (see `internal_inference` in routes.py) rather than the
-        # check learning about principal kinds -- so nothing about `/v1`'s gate
-        # changes, and the exemption cannot be reached from `/v1`.
-        if not getattr(request.state, "internal_inference", False) and not (
-            await UserService(session).model_allowed_for_user(
-                model_name=model_name,
-                user_id=user.id,
-                api_key=getattr(request.state, "api_key", None),
-            )
-        ):
-            raise NotFoundException(
-                message="Model not found",
-                is_openai_exception=True,
-            )
+        await _assert_inference_model_access(session, request, user, model_name)
         model_route_service = ModelRouteService(session)
         route_targets: List[RouteTargetResolution] = (
             await model_route_service.resolve_route_targets(model_name)
@@ -265,6 +295,15 @@ async def proxy_request_by_model(
         # is @locked_cached so repeat hits within the same session are cheap.
         model_route = await model_route_service.get_by_name(model_name)
         request.state.model_route_id = model_route.id if model_route else None
+        if endpoint == "videos":
+            await _assert_video_route_access(
+                session,
+                model_name,
+                request.state.model_route_id,
+                user,
+                getattr(request.state, "tenant_context", None),
+                getattr(request.state, "api_key", None),
+            )
 
         mutate_request(request, model_name, body_json, form_data)
 
@@ -288,6 +327,17 @@ async def proxy_request_by_model(
             else f"{model_instance_prefix(instance)}.static"
         ),
     }
+    if endpoint == "videos":
+        request.state.video_target = {
+            "model": model_name,
+            "model_id": model.id,
+            "route_id": request.state.model_route_id,
+            "instance_id": instance.id,
+            "worker_id": worker.id,
+            "registry": extra_headers[router_header_key],
+            "port": rank_endpoint.port if rank_endpoint else instance.port,
+            "restart_count": instance.restart_count or 0,
+        }
     path = f"v1/{endpoint}"
     logger.debug(
         "Proxying instance %s to Worker %s at %s:%s",
@@ -387,6 +437,12 @@ async def parse_request_body(request: Request):
             is_openai_exception=True,
         )
 
+    if request.url.path.rstrip("/").endswith("/videos") and stream:
+        raise BadRequestException(
+            message="Video jobs do not support streaming; poll the returned job ID",
+            is_openai_exception=True,
+        )
+
     return model_name, stream, body_json, form_data
 
 
@@ -396,7 +452,9 @@ async def parse_form_data(request: Request) -> Tuple[aiohttp.FormData, str, bool
         model_name = form.get("model")
         stream = to_bool(form.get("stream"))
 
-        form_data = aiohttp.FormData()
+        # Keep text-only multipart requests multipart: some inference engines
+        # do not parse application/x-www-form-urlencoded request bodies.
+        form_data = aiohttp.FormData(default_to_multipart=True)
         for key, value in form.items():
             if isinstance(value, UploadFile):
                 form_data.add_field(

@@ -38,7 +38,7 @@ from gpustack.schemas.models import (
     RoleNameEnum,
     is_audio_model,
     is_embedding_model,
-    is_image_model,
+    is_image_or_video_model,
     is_reranker_model,
     servable_instances,
 )
@@ -1083,7 +1083,7 @@ async def validate_and_mutate_benchmark_in(  # noqa: C901
             mutated.dataset_seed_random = False
 
     if (
-        is_image_model(model)
+        is_image_or_video_model(model)
         or is_audio_model(model)
         or is_embedding_model(model)
         or is_reranker_model(model)

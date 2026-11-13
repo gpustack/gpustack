@@ -23,7 +23,7 @@ from requests.exceptions import HTTPError
 from gpustack.config.config import get_global_config
 from gpustack.schemas import ModelFile
 from gpustack.schemas.models import (
-    CategoryEnum,
+    is_image_or_video_model,
     Model,
     SourceEnum,
     get_mmproj_filename,
@@ -31,6 +31,7 @@ from gpustack.schemas.models import (
 from gpustack.schemas.models import MMPROJ_GGUF_PATTERN
 from gpustack.utils.cache import is_cached, load_cache, save_cache
 from gpustack.utils import model_config
+from gpustack.utils.diffusion import normalize_diffusers_model_index
 
 logger = logging.getLogger(__name__)
 
@@ -460,8 +461,8 @@ def get_diffusion_model_weight_size(model: Model, token: Optional[str] = None) -
         repo_id = model.model_scope_model_id
     else:
         raise ValueError(f"Unknown source {model.source}")
-    if not model.categories or CategoryEnum.IMAGE not in model.categories:
-        raise ValueError("Model is not an image model")
+    if not is_image_or_video_model(model):
+        raise ValueError("Model is not an image or video generation model")
 
     # In different repositories, model files may be stored in different dir.
     # However, during runtime, the diffusers loads components from corresponding dir according to the pipeline defined in model_index.json.
@@ -657,54 +658,18 @@ def get_model_scope_model_min_gguf_path(
     return gguf_files[0]
 
 
-def has_diffusers_model_index(
-    model: Model,
-    token: Optional[str] = None,
-) -> bool:
-    """Check whether the model source contains a model_index.json with
-    the key "_diffusers_version".
-
-    This function only handles direct file access (Hub sources and local files).
-    For LOCAL_PATH models that require worker queries, use
-    check_diffusers_model_index_from_workers() in calculator.py instead.
-
-    Supported sources:
-    - Hugging Face: checks via HfFileSystem
-    - ModelScope: downloads only model_index.json via snapshot_download and inspects
-    - Local Path: reads model_index.json in the local directory only
-
-    Args:
-        model: Model to check
-        token: Optional Hugging Face API token
-
-    Returns:
-        True if model_index.json contains _diffusers_version, False otherwise
-    """
+def get_diffusers_model_index(
+    model: Model, token: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Read Diffusers metadata without discarding the pipeline identity."""
     try:
-        data = read_repo_file_content(model, "model_index.json", token=token)
-        if data is None:
-            return False
-
-        # The typical structure is a dict containing _diffusers_version
-        if isinstance(data, dict) and "_diffusers_version" in data:
-            return True
-        # Some repos might have a list structure; check items for the key
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict) and "_diffusers_version" in item:
-                    return True
-
-        return False
-    except Exception as e:
-        # Best-effort detection; do not raise on error
-        try:
-            source_key = (
-                model.huggingface_repo_id
-                or model.model_scope_model_id
-                or model.local_path
-                or "<unknown>"
-            )
-            logger.error(f"Failed to check model_index.json for {source_key}: {e}")
-        except Exception:
-            pass
-        return False
+        return normalize_diffusers_model_index(
+            read_repo_file_content(model, "model_index.json", token=token)
+        )
+    except Exception:
+        logger.debug(
+            "Could not read Diffusers index for %s",
+            model.readable_source,
+            exc_info=True,
+        )
+        return None

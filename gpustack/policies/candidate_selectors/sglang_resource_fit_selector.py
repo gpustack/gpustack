@@ -36,7 +36,7 @@ from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
     ModelInstanceSubordinateWorker,
-    CategoryEnum,
+    is_image_or_video_model,
     ROUTER_DEFAULT_MEMORY,
 )
 from gpustack.schemas.workers import Worker
@@ -122,7 +122,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         # it needs this.
         self._reserved_vram: int = 0
         self._unsatisfied_gpu_messages: Dict[str, List[int]] = {}
-        self._is_diffusion = CategoryEnum.IMAGE in self._model.categories
+        self._is_diffusion = is_image_or_video_model(self._model)
 
         world_size, strategies = (
             SGLangResourceFitSelector.get_world_size_from_backend_parameters(model)
@@ -478,7 +478,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         # SGLang Diffusion unsupported multi-worker
         if (
-            CategoryEnum.IMAGE in self._model.categories
+            is_image_or_video_model(self._model)
             and candidate_func == self.find_multi_worker_multi_gpu_candidates
         ):
             return True

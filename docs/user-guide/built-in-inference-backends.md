@@ -56,7 +56,7 @@ Please refer to the vLLM [documentation](https://docs.vllm.ai/en/stable/models/s
 - **Video Tasks**: Video generation and editing (e.g., `Wan2.2`)
 - **Audio Tasks**: Speech synthesis, voice cloning, and more (e.g., `Qwen3-TTS`)
 
-GPUStack integrates with vLLM-Omni to deliver a seamless experience for deploying and managing omni-modal models. When a model is deployed via the vLLM backend, GPUStack automatically detects whether it is omni-modal based on its metadata and sets the required parameters for vLLM-Omni.
+GPUStack integrates with vLLM-Omni to deliver a seamless experience for deploying and managing omni-modal models. When a model is deployed via the vLLM backend, GPUStack automatically detects whether it is omni-modal based on its metadata and sets the required parameters for vLLM-Omni. Deployments in the `video` category automatically receive `--omni`; the selected runner image must include a compatible vLLM-Omni installation.
 
 #### Distributed Inference Across Workers (Experimental)
 
@@ -119,7 +119,7 @@ For more details, please refer to [SGLang documentation](https://docs.sglang.ai/
 
 Please refer to the SGLang [documentation](https://docs.sglang.ai/supported_models/generative_models.html) for supported models.
 
-SGLang also supports image models. The ones we have verified include: Qwen-Image, Flux 1 Dev. For more information, please refer to the [SGLang Diffusion documentation](https://lmsys.org/blog/2025-11-07-sglang-diffusion/).
+SGLang Diffusion also supports image and video generation. Verified image models include Qwen-Image and Flux 1 Dev. Video-generation deployments use the `video` category; video understanding models remain in the `llm` category. See [Video generation](../integrations/inference-apis.md#video-generation) for the asynchronous job workflow. Reference-image and reference-video support depends on the selected model and engine version.
 
 ### Supported Features
 
