@@ -1,0 +1,53 @@
+---
+title: Qwen3.6-35B-A3B-FP8
+description: "Deploy Qwen3.6-35B-A3B-FP8 with SGLang — Qwen Mixture-of-Experts (MoE) model with EAGLE speculative decoding, FA3 multi-modal attention, and 256K context, on H20."
+tag: NEW
+---
+
+# Deploying Qwen3.6-35B-A3B-FP8 with GPUStack and SGLang
+
+This tutorial guides you through setting up **Qwen3.6-35B-A3B-FP8**—a highly optimized Mixture-of-Experts (MoE) model with native FP8 precision and multi-modal capabilities—using **SGLang (v0.5.14)** in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `lmsysorg/sglang:v0.5.14`
+* **Hardware Requirements**: H20
+
+### 2. Model Weights Source
+* **Model Name**: `Qwen3.6-35B-A3B-FP8`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/Qwen/Qwen3.6-35B-A3B-FP8`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to **Models** -> **deployment**, and select the **model deploy** / **modelscope** mode.
+
+### 1. Basic Information
+* **Model Name**: `Qwen3.6-35B-A3B-FP8`
+* **Container Image**: `lmsysorg/sglang:v0.5.14`
+
+### 2. Backend Arguments (Multi-line Format for UI Input)
+Based on the UI screenshot `image_e855a9.png`, you can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+```text
+--context-length 256000
+--reasoning-parser qwen3
+--tool-call-parser qwen3_coder
+--speculative-algorithm EAGLE
+--speculative-num-steps 3
+--speculative-eagle-topk 1
+--mem-fraction-static 0.8
+--kv-cache-dtype fp8_e4m3
+--mm-attention-backend fa3
+--enable-metrics
+--enable-multimodal
+--mamba-scheduler-strategy extra_buffer
+```
+### 3. more config
+
+https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.6
+
