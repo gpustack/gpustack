@@ -1482,7 +1482,7 @@ async def get_benchmark_logs(  # noqa: C901
 
         def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
             msg = (
-                "Log stream is unavailable. Please reopen the log page."
+                str(e)
                 if not isinstance(e, TimeoutError)
                 else f"Log stream timed out ({t.total} seconds). Please reopen the log page."
             )
