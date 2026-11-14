@@ -131,7 +131,7 @@ class MetricExporter(Collector):
             "Rate of memory utilization on the worker node",
             labels=labels,
         )
-        gpu_info = InfoMetricFamily("worker_node_gpu", "GPU information")
+        gpu_info = InfoMetricFamily(metric_name("worker_node_gpu"), "GPU information")
         gpu_cores = GaugeMetricFamily(
             metric_name("worker_node_gpu_cores"),
             "Total GPUs cores of the worker node",
