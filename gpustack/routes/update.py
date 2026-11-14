@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from packaging.version import Version
 
+from gpustack.config.config import get_global_config
 from gpustack.server.update_check import UpdateResponse, get_update
 
 # Core's own version rather than resolve_version_info(): the feed this compares
@@ -13,7 +14,11 @@ router = APIRouter()
 
 @router.get("/")
 async def update():
-    update_response = await get_update()
+    cfg = get_global_config()
+    if cfg.disable_update_check:
+        return UpdateResponse(latest_version=__version__)
+
+    update_response = await get_update(cfg.update_check_url)
 
     if is_newer_version(update_response.latest_version, __version__):
         return update_response
