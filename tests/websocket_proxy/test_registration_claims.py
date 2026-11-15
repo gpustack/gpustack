@@ -510,3 +510,133 @@ class TestClientRelease:
 
         assert await handler.release_client(uuid.uuid4()) is False
         assert handler.client_registry == {}
+
+
+def _closable_websocket():
+    """A websocket whose receive loop blocks until ``disconnect`` is called."""
+    inbox = asyncio.Queue()
+    websocket = _websocket({})
+    websocket.receive = AsyncMock(side_effect=inbox.get)
+
+    def disconnect():
+        inbox.put_nowait({"type": "websocket.disconnect"})
+
+    return websocket, disconnect
+
+
+class TestReconnect:
+    """A worker that reconnects keeps its route until its current socket closes."""
+
+    async def _connect(self, handler, client_id, websocket):
+        task = asyncio.create_task(
+            handler.handle_client_connection(
+                websocket,
+                RegisteredClientInfo(
+                    client_id=client_id, cidrs=["10.0.0.5/32"], unix_sockets=[]
+                ),
+            )
+        )
+        for _ in range(100):
+            manager = handler.connection_managers.get(client_id)
+            if manager is not None and manager.websocket is websocket:
+                break
+            await asyncio.sleep(0.01)
+        return task
+
+    @pytest.mark.asyncio
+    async def test_late_close_of_replaced_socket_keeps_the_new_route(self):
+        # The worker reconnects with the same client_id before the server
+        # notices its previous socket closed. Closing the previous socket must
+        # not release the route, or tell peers to drop it, while the new
+        # socket is still open.
+        handler = _handler()
+        handler.broadcast_client_update = AsyncMock()
+        worker_id = uuid.uuid4()
+
+        old_ws, close_old = _closable_websocket()
+        old_task = await self._connect(handler, worker_id, old_ws)
+        new_ws, close_new = _closable_websocket()
+        new_task = await self._connect(handler, worker_id, new_ws)
+        handler.broadcast_client_update.reset_mock()
+
+        close_old()
+        await old_task
+
+        route = handler.get_connection_manager("10.0.0.5")
+        assert route is not None and route.websocket is new_ws
+        assert worker_id in handler.client_registry
+        handler.broadcast_client_update.assert_not_awaited()
+
+        close_new()
+        await new_task
+
+    @pytest.mark.asyncio
+    async def test_reconnect_while_old_socket_is_closing_keeps_the_new_route(self):
+        # The previous socket has already released the registration and is
+        # still telling peers when the worker reconnects. The new socket's
+        # registration must survive the rest of that cleanup.
+        handler = _handler()
+        removing = asyncio.Event()
+        resume_removal = asyncio.Event()
+
+        async def broadcast(action, *args):
+            if action == "remove":
+                removing.set()
+                await resume_removal.wait()
+
+        handler.broadcast_client_update = AsyncMock(side_effect=broadcast)
+        worker_id = uuid.uuid4()
+
+        old_ws, close_old = _closable_websocket()
+        old_task = await self._connect(handler, worker_id, old_ws)
+        close_old()
+        await removing.wait()
+
+        new_ws, close_new = _closable_websocket()
+        new_task = await self._connect(handler, worker_id, new_ws)
+        resume_removal.set()
+        await old_task
+
+        route = handler.get_connection_manager("10.0.0.5")
+        assert route is not None and route.websocket is new_ws
+        assert worker_id in handler.client_registry
+
+        close_new()
+        await new_task
+
+    @pytest.mark.asyncio
+    async def test_close_of_current_socket_releases_route_and_notifies(self):
+        # After a reconnect, closing the socket that owns the registration
+        # releases the route, tells peers, and runs the disconnect callback
+        # that clears the worker's proxy address.
+        disconnected = []
+
+        async def on_disconnect(server_info, client_info):
+            disconnected.append(client_info.client_id)
+
+        handler = MessageServerHandler(
+            listen_address="127.0.0.1",
+            listen_port=0,
+            proxy_port=0,
+            callback_on_disconnect=on_disconnect,
+        )
+        handler.broadcast_client_update = AsyncMock()
+        worker_id = uuid.uuid4()
+
+        old_ws, close_old = _closable_websocket()
+        old_task = await self._connect(handler, worker_id, old_ws)
+        new_ws, close_new = _closable_websocket()
+        new_task = await self._connect(handler, worker_id, new_ws)
+        close_old()
+        await old_task
+        assert disconnected == []
+
+        close_new()
+        await new_task
+
+        assert handler.get_connection_manager("10.0.0.5") is None
+        assert worker_id not in handler.client_registry
+        handler.broadcast_client_update.assert_awaited_with(
+            "remove", worker_id, ["10.0.0.5/32"], []
+        )
+        assert disconnected == [worker_id]
