@@ -536,6 +536,31 @@ async def test_empty_histogram_retains_four_explicit_missing_summary_slots(monke
 
 
 @pytest.mark.asyncio
+async def test_short_model_interval_does_not_enable_benchmark_trend_context(
+    monkeypatch,
+):
+    from gpustack.monitoring.time_range import MonitoringInterval
+
+    module = _collector()
+    requests = _prometheus(
+        monkeypatch,
+        module,
+        lambda query: _histogram_data(query) if '[75s]' in query else [],
+    )
+    result = await module.collect_model_metrics(
+        _model(),
+        [_instance()],
+        window_seconds=20,
+        interval=MonitoringInterval(1000.25, 1019.5954151, 20),
+        client=object(),
+    )
+
+    assert not result.metrics['ttft'].series
+    assert all(summary.value is None for summary in result.metrics['ttft'].summaries)
+    assert not any(kind == 'instant' and '[75s]' in query for kind, query in requests)
+
+
+@pytest.mark.asyncio
 async def test_router_health_resolves_trusted_dp_peer_and_never_returns_unknown_url(
     monkeypatch,
 ):
@@ -581,6 +606,34 @@ async def test_malformed_prometheus_matrix_remains_a_local_metric_error(monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('sample', [{}, {'value': [5000]}, {'value': '12'}])
+async def test_malformed_gateway_instant_remains_a_local_metric_error(
+    monkeypatch, sample
+):
+    module = _collector()
+
+    def instant(query):
+        labels = {'ai_consumer': 'consumer'}
+        if 'llm_first_token_duration' in query or 'llm_stream_duration_count' in query:
+            return [{'metric': labels, **sample}]
+        if 'llm_service_duration' in query:
+            return [{'metric': labels, 'value': [5000, '100']}]
+        if 'llm_duration_count' in query:
+            return [{'metric': labels, 'value': [5000, '2']}]
+        return []
+
+    _prometheus(monkeypatch, module, instant)
+    result = await module.collect_model_metrics(
+        _model(), [_instance()], window_seconds=3600, client=object()
+    )
+
+    assert result.metrics['ingress_ttft'].status == 'query_error'
+    assert result.metrics['ingress_ttft'].reason == 'query_failed'
+    assert result.metrics['ingress_e2e'].status == 'available'
+    assert result.metrics['ingress_e2e'].summaries[0].value == pytest.approx(0.05)
+
+
+@pytest.mark.asyncio
 async def test_deadline_marks_incomplete_metric_and_keeps_completed_results(
     monkeypatch,
 ):
@@ -592,7 +645,7 @@ async def test_deadline_marks_incomplete_metric_and_keeps_completed_results(
         return _histogram_data(query)
 
     _prometheus(monkeypatch, module, instant)
-    monkeypatch.setattr(module, '_COLLECT_DEADLINE_SECONDS', 0.01)
+    monkeypatch.setattr(module, '_COLLECT_DEADLINE_SECONDS', 0.05)
 
     async def ranges(client, url, query, start, end, step):
         if 'gpustack:time_to_first_token_seconds' in query:
@@ -859,3 +912,229 @@ async def test_instance_quantile_trends_survive_incompatible_deployment_summary(
         for kind, q in requests
         if kind == 'range'
     )
+
+
+@pytest.mark.parametrize(
+    'key,expected',
+    [
+        ('prefill', 'prefill'),
+        ('decode', 'decode'),
+        ('tpot', 'decode'),
+        ('itl', 'decode'),
+        ('input_tokens', 'prefill'),
+        ('output_tokens', 'decode'),
+        ('router_requests', 'router'),
+        ('router_request_duration', 'router'),
+    ],
+)
+def test_pd_stage_and_router_metrics_have_one_native_owner(key, expected):
+    module = _collector()
+    definition = next(
+        d for d in module.model_metric_definitions('vllm') if d.key == key
+    )
+    assert module._roles(definition, _model(pd=True), 'vllm', 'all') == (
+        (expected,),
+        None,
+        None,
+    )
+    other = 'prefill' if expected != 'prefill' else 'decode'
+    assert module._roles(definition, _model(pd=True), 'vllm', other) == (
+        (),
+        'not_applicable',
+        'role_not_applicable',
+    )
+
+
+@pytest.mark.parametrize(
+    'mode,backend,key,owner,status',
+    [
+        ('vllm-nixl', 'vllm', 'pd_kv_transfer', 'decode', None),
+        ('vllm-nixl', 'vllm', 'pd_kv_transfer_post', 'decode', None),
+        ('vllm-nixl', 'vllm', 'pd_kv_transfer_bytes', 'decode', None),
+        ('vllm-nixl', 'vllm', 'pd_kv_transfer_speed', None, 'unsupported'),
+        ('vllm-mooncake', 'vllm', 'pd_kv_transfer', 'prefill', None),
+        ('vllm-mooncake', 'vllm', 'pd_kv_transfer_bytes', 'prefill', None),
+        ('vllm-mooncake', 'vllm', 'pd_kv_transfer_post', None, 'unsupported'),
+        ('vllm-ascend-mooncake', 'vllm', 'pd_kv_transfer', None, 'unsupported'),
+        ('vllm-ascend-mooncake', 'vllm', 'pd_kv_transfer_bytes', None, 'unsupported'),
+        ('sglang-mooncake', 'sglang', 'pd_kv_transfer', 'decode', None),
+        ('sglang-mooncake', 'sglang', 'pd_kv_allocation', 'decode', None),
+        ('sglang-mooncake', 'sglang', 'pd_kv_transfer_bytes', 'prefill', None),
+        ('sglang-mooncake', 'sglang', 'pd_kv_transfer_speed', 'prefill', None),
+        ('sglang-nixl', 'sglang', 'pd_kv_transfer_post', None, 'unsupported'),
+        ('sglang-nixl', 'sglang', 'pd_prefill_bootstrap_queue', 'prefill', None),
+        ('sglang-nixl', 'sglang', 'pd_prefill_inflight_queue', 'prefill', None),
+        ('sglang-nixl', 'sglang', 'pd_decode_prealloc_queue', 'decode', None),
+        ('sglang-nixl', 'sglang', 'pd_decode_transfer_queue', 'decode', None),
+    ],
+)
+def test_pd_connector_ownership_uses_the_recorded_recipe(
+    mode, backend, key, owner, status
+):
+    module = _collector()
+    model = _model(backend, pd=True)
+    model.disaggregation.mode.value = mode
+    definition = next(
+        d for d in module.model_metric_definitions(backend) if d.key == key
+    )
+    roles, actual_status, reason = module._roles(definition, model, backend, 'all')
+    assert roles == (() if owner is None else (owner,))
+    assert actual_status == status
+    assert reason == ('metric_not_provided' if status == 'unsupported' else None)
+
+
+@pytest.mark.asyncio
+async def test_pd_missing_ingress_queries_native_gateway_without_engine_fallback(
+    monkeypatch,
+):
+    module = _collector()
+    requests = _prometheus(monkeypatch, module, lambda query: [])
+    response = await module.collect_model_metrics(
+        _model(pd=True),
+        [_instance(12, 'prefill'), _instance(13, 'decode'), _instance(14, 'router')],
+        window_seconds=3600,
+        client=object(),
+    )
+    for key in ('ingress_ttft', 'ingress_e2e'):
+        metric = response.metrics[key]
+        assert metric.status == 'no_data'
+        assert metric.reason == 'no_samples'
+        assert metric.measurement_scope == 'service_ingress'
+        assert metric.series == [] and metric.summaries[0].value is None
+        assert metric.supported_statistics == ['avg']
+    assert not any('gpustack:service_' in query for _, query in requests)
+    assert any(
+        'route_upstream_model_consumer_metric_llm_' in query for _, query in requests
+    )
+    for key, family, role, identity in (
+        ('prefill', 'request_prefill_time_seconds', 'prefill', 12),
+        ('decode', 'request_decode_time_seconds', 'decode', 13),
+        ('router_requests', 'pd_router_requests_total', 'router', 14),
+    ):
+        selected = [q for _, q in requests if 'gpustack:' + family in q]
+        assert selected, key
+        assert all(f'role=~"{role}"' in q for q in selected)
+        assert all(f'model_instance_id=~"{identity}"' in q for q in selected)
+
+
+@pytest.mark.asyncio
+async def test_sglang_optional_sender_histograms_stay_missing_without_samples(
+    monkeypatch,
+):
+    module = _collector()
+    requests = _prometheus(monkeypatch, module, lambda query: [])
+    model = _model('SGLang', pd=True)
+    model.disaggregation.mode.value = 'sglang-mooncake'
+    response = await module.collect_model_metrics(
+        model,
+        [_instance(12, 'prefill'), _instance(13, 'decode'), _instance(14, 'router')],
+        window_seconds=3600,
+        client=object(),
+        section='pd',
+    )
+    for key, family in (
+        ('pd_kv_transfer_bytes', 'pd_kv_transfer_bytes'),
+        ('pd_kv_transfer_speed', 'pd_kv_transfer_bandwidth_bytes_per_second'),
+    ):
+        metric = response.metrics[key]
+        assert metric.status == 'no_data'
+        assert all(summary.value is None for summary in metric.summaries)
+        assert not metric.series
+        queries = [q for _, q in requests if 'gpustack:' + family in q]
+        assert queries and all('role=~"prefill"' in query for query in queries)
+    from gpustack.schemas.benchmark_monitoring import BenchmarkModelMetrics
+
+    historical = BenchmarkModelMetrics.model_validate(response.model_dump())
+    assert (
+        historical.metrics['pd_kv_transfer'].measurement_scope == 'bootstrap_handshake'
+    )
+    assert historical.metrics['pd_kv_transfer_post'].status == 'unsupported'
+    assert (
+        historical.metrics['pd_kv_allocation'].measurement_scope
+        == 'receive_allocation_duration'
+    )
+
+
+@pytest.mark.parametrize('backend', ['vllm', 'sglang'])
+def test_pd_only_metrics_do_not_query_ordinary_deployments(backend):
+    module = _collector()
+    for definition in module.model_metric_definitions(backend):
+        if (
+            definition.section == 'pd'
+            and definition.measurement_scope != 'service_ingress'
+        ):
+            assert module._roles(definition, _model(backend), backend, 'all') == (
+                (),
+                'not_applicable',
+                'role_not_applicable',
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'backend,mode', [('vllm', 'vllm-nixl'), ('sglang', 'sglang-mooncake')]
+)
+async def test_complete_pd_query_fanout_remains_bounded(monkeypatch, backend, mode):
+    import re
+
+    module = _collector()
+    model = _model(backend, pd=True)
+    model.disaggregation.mode.value = mode
+    active, peak, requests = 0, 0, []
+
+    async def read(query, ranged=False):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        requests.append(query)
+        try:
+            # Yield across all metric requests to exercise the shared semaphore.
+            await asyncio.sleep(0)
+            if 'route_upstream_model_consumer_metric_llm_' in query:
+                return []
+            roles = re.search(r'role=~"([^"]*)"', query)[1].split('|')
+            identities = {'prefill': 12, 'decode': 13, 'router': 14}
+            if ranged:
+                return [
+                    {
+                        **_entry(1, identities[role], role),
+                        'values': [[4500, '1'], [5000, '1']],
+                    }
+                    for role in roles
+                ]
+            part = re.search(r'gpustack:[a-z0-9_]+_(count|sum|bucket)\{', query)
+            if part and part[1] == 'bucket':
+                return [
+                    _entry(value, identities[role], role, le=bound)
+                    for role in roles
+                    for bound, value in [('0.1', 5), ('0.2', 10), ('+Inf', 10)]
+                ]
+            return [
+                _entry(10 if part and part[1] == 'count' else 1, identities[role], role)
+                for role in roles
+            ]
+        finally:
+            active -= 1
+
+    async def instant(client, url, query, at):
+        return await read(query)
+
+    async def ranged(client, url, query, start, end, step):
+        return await read(query, ranged=True)
+
+    monkeypatch.setattr(module, '_prometheus_url', lambda: 'http://metrics.invalid')
+    monkeypatch.setattr(module, '_query_instant', instant)
+    monkeypatch.setattr(module, '_query_range', ranged)
+    response = await module.collect_model_metrics(
+        model,
+        [_instance(12, 'prefill'), _instance(13, 'decode'), _instance(14, 'router')],
+        window_seconds=3600,
+        client=object(),
+    )
+    assert 1 < peak <= 8
+    assert len(requests) <= 128
+    assert not any(
+        metric.status == 'query_error' for metric in response.metrics.values()
+    )
+    assert response.metrics['pd_kv_transfer'].status == 'available'
+    assert response.metrics['router_request_duration'].status == 'available'

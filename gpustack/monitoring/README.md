@@ -76,12 +76,28 @@ in the existing JSON snapshot. Running confirmation and result updates verify th
 identities without substituting current membership. A changed generation makes
 monitoring unavailable rather than assigning later samples to the recorded run.
 Measured phase windows come from the runner's scheduler metrics. Short ranges keep
-their real bounds: rolling samples whose lookback crosses the start are missing,
-and gauge observations cannot reuse an earlier stored sample. Gauge statistics and
-coverage describe query evaluation points in the half-open interval, not raw scrape
-counts. Old records without run identities retain their client report but cannot
+their real bounds: selected-phase rolling samples whose lookback crosses the start
+are missing, and gauge observations cannot reuse an earlier stored sample.
+Whole-run engine trends retain the normal rolling lookback as shared runtime
+context, including observations before the run or between stages. Short-run
+histogram trends validate their rolling-window buckets independently; those
+observations never supply selected-window summaries or coverage. Gauge statistics
+and coverage describe query evaluation points in the half-open interval, not raw
+scrape counts. Benchmark engine and hardware queries share a declared evaluation
+step with a one-second floor; their millisecond grid stays strictly inside the
+original runner bounds. A finer evaluation grid never shortens the engine rate
+window or creates additional scrape samples. Old records without run identities
+retain their client report but cannot
 reconstruct monitoring associations. All three Benchmark monitoring endpoints
 recheck current resource authorization; internal source identities stay private.
+
+Phase navigation exposes a stable one-based `measurement_number` per input-length
+cohort, retaining the opaque phase key and exact time bounds. Saturation probes
+have no measurement number. `search_phase_source=load_history` identifies observed
+adaptive load groups: a new highest load expands the range; a load within that
+range refines it. These groups do not reconstruct the runner's internal planner
+phase. Manual and single runs use `configuration` as their source. Sorting the
+selector by load never changes monitoring chronology or mixes input lengths.
 
 ## Find or change a query
 
@@ -139,6 +155,49 @@ The runtime API selects latency curves with one comma-separated `statistic`
 parameter: `avg`, `p50,p99`, or `avg,p50,p95,p99`. Omitting it requests all four,
 in either aggregate or instance view. Full-window summaries retain all four
 statistics independently of the selected curves.
+
+## Prefill/Decode monitoring ownership
+
+Model and Benchmark runtime responses expose the same PD metric keys. They keep
+the existing `ModelMetric` shape, with role-qualified series and summaries. The
+recorded Benchmark recipe controls historical ownership just as the deployment
+recipe controls current ownership. The API never substitutes another role to
+fill a missing metric, adds Prefill and Decode request populations together, or
+adds their percentile latencies.
+
+| Metric keys | Measurement source |
+| --- | --- |
+| `prefill`, `input_tokens` | Prefill engine only |
+| `decode`, `tpot`, `itl`, `output_tokens` | Decode engine only |
+| `ttft`, `e2e`, `queue` | Separate engine-local role populations; SGLang TTFT is Decode-only |
+| `running_requests`, `waiting_requests`, `kv_usage` | Separate role observations, never a service request total |
+| `ingress_ttft`, `ingress_e2e` | Native Higress duration/count counters; gateway Avg only, never engine-local P99 |
+| `pd_kv_transfer` | NIXL transfer on Decode, vLLM Mooncake transfer on Prefill, SGLang bootstrap handshake on Decode |
+| `pd_kv_transfer_post` | NIXL submission on Decode; it may overlap transfer duration and must not be added to it |
+| `pd_kv_allocation` | SGLang receive-buffer allocation on Decode |
+| `pd_prefill_bootstrap_queue`, `pd_prefill_inflight_queue` | SGLang Prefill scheduler queues |
+| `pd_decode_prealloc_queue`, `pd_decode_transfer_queue` | SGLang Decode scheduler queues |
+| `pd_kv_transfer_bytes` | vLLM connector owner, or SGLang Prefill when the connector reports transfer size |
+| `pd_kv_transfer_speed` | SGLang Prefill connector-reported bandwidth distribution; unsupported on vLLM |
+| `router_requests`, `router_request_duration`, `router_health` | Router received requests, router-observed request duration, and separately resolved peer health |
+
+SGLang size and speed families are optional: their absence remains `no_data`,
+not zero throughput. Their speed histogram describes connector-reported transfer
+bandwidth, not bytes divided by wall-clock query time. The Ascend Mooncake
+connector has no verified transfer counters and returns `unsupported`.
+`router_request_duration` is the forwarding request duration seen by the router,
+not just the duration of a routing decision, and does not replace service-ingress
+or Benchmark client observations. vLLM Prefill duration runs from first scheduling
+to the first locally recorded token, including interruptions within that interval;
+it is not a pure GPU compute timer. SGLang does not expose a compatible Prefill
+stage histogram, so that metric stays unsupported.
+
+SGLang queue totals use the declared `scheduler_queue_total` gauge profile. Its
+`sample_labels: {priority: ''}` selects the native total before source guarding
+and aggregation; per-priority breakdowns must not be added to that total. The
+empty matcher also accepts exporters that have no priority label. Profile sample
+labels are limited to this native priority dimension and cannot override Model,
+instance, role, Worker or other authorization/source selectors.
 
 ## Compatibility and expression maintenance
 
@@ -217,3 +276,21 @@ uv run --no-sync pytest tests/monitoring \
   tests/worker/test_metrics_unit_scaling.py \
   tests/worker/test_worker_exporter.py
 ```
+
+Service ingress uses the selected deployment's globally unique model-instance
+registry names in `ai_cluster`, including native-DP and hybrid endpoint suffixes.
+It does not select by a display name or expose consumer identities. Duplicate
+scrapes are deduplicated before summing native durations and matching request
+counts. TTFT uses the streaming request count; service latency uses all requests.
+The native cumulative durations are milliseconds; API values remain seconds.
+Only `avg` is supported: the gateway counters contain no percentile distribution.
+A supported gateway with no requests retains a compact no-observation state.
+
+Direct instance/PD Router Benchmarks return `not_applicable / gateway_bypassed`
+without querying gateway traffic from other clients. Routed runs require a
+recorded gateway URL; an unknown historical entrance remains unresolved. Routed
+charts show gateway traffic to the captured deployment/instances in the run
+interval, including other requests; they are not exclusive Benchmark telemetry.
+Role/instance-filtered deployment requests cannot relabel service-wide metrics
+as observations of a selected role. Aggregate and instance views without a
+filter both retain one service-level Avg series.

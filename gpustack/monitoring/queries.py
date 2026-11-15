@@ -199,14 +199,14 @@ def build_gauge_query(
         raise ValueError('Invalid gauge aggregation')
     config = query_config.get_query_config()
     name = _metric_name(name)
-    raw = config.query(
-        profile, 'gauge', 'sample', family=name, selector=scope.selector()
-    )
+    declaration = config.profiles.get(profile)
+    selector = scope.selector(declaration.sample_labels if declaration else None)
+    raw = config.query(profile, 'gauge', 'sample', family=name, selector=selector)
     if scope.sample_start is not None:
         raw = config.common(
             'sample_since',
             expression=raw,
-            selector=name + scope.selector(),
+            selector=name + selector,
             start=scope.sample_start,
         )
     return _reduce(

@@ -130,6 +130,39 @@ def test_phase_windows_retain_fractional_short_measurements():
     assert window.start == 998.25 and window.end == 1043.75
 
 
+def test_navigation_metadata_preserves_execution_number_and_observed_search_pattern():
+    points = [_point(i, 1000 + i * 50, 1040 + i * 50) for i in range(4)]
+    for point, rate in zip(points, [256, 512, 384, 281]):
+        point.rate = rate
+    stages, _ = _module().benchmark_windows(list(reversed(points)), mode='auto_tune')
+    assert [s.rate for s in stages] == [256, 512, 384, 281]
+    assert [s.measurement_number for s in stages] == [1, 2, 3, 4]
+    assert [s.search_phase for s in stages] == ['expand', 'expand', 'refine', 'refine']
+    assert {s.search_phase_source for s in stages} == {'load_history'}
+    assert stages[-1].id == '128:3'
+    assert stages[-1].start == 1150
+
+
+@pytest.mark.parametrize('mode,expected', [('stages', 'manual'), ('single', 'single')])
+def test_manual_and_single_navigation_never_infer_adaptive_search(mode, expected):
+    points = [_point(0), _point(1, 1050, 1090)]
+    points[0].rate, points[1].rate = 512, 256
+    stages, _ = _module().benchmark_windows(points, mode=mode)
+    assert {s.search_phase for s in stages} == {expected}
+    assert {s.search_phase_source for s in stages} == {'configuration'}
+
+
+def test_navigation_cohorts_and_saturation_probe_keep_independent_identities():
+    first, second, probe = _point(0), _point(0, 1100, 1140), _point(2, 900, 910)
+    first.rate, second.rate, probe.rate = 512, 4, None
+    second.input_tokens = 256
+    stages, _ = _module().benchmark_windows([first, second, probe], mode='auto_tune')
+    assert [s.id for s in stages] == ['128:0', '128:2', '256:0']
+    assert [s.search_phase for s in stages] == ['expand', 'probe', 'expand']
+    assert stages[1].measurement_number is None
+    assert stages[2].measurement_number == 1
+
+
 @pytest.mark.parametrize('timing', [None, {}, {'measure_start_time': float('nan')}])
 def test_missing_timing_never_infers_phase_time(timing):
     point = _point()
@@ -313,8 +346,9 @@ def test_internal_run_snapshot_is_persisted_but_not_public():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('phase_id', [None, '128:0'])
 async def test_hidden_per_source_observation_is_restricted_without_source_count(
-    monkeypatch,
+    monkeypatch, phase_id
 ):
     from gpustack.schemas.model_metrics import (
         MetricSeries,
@@ -355,7 +389,7 @@ async def test_hidden_per_source_observation_is_restricted_without_source_count(
     monkeypatch.setattr(
         module, 'collect_model_metrics', AsyncMock(return_value=response)
     )
-    result = await module.collect_benchmark_model_metrics(history, phase_id='128:0')
+    result = await module.collect_benchmark_model_metrics(history, phase_id=phase_id)
     assert result.metrics['kv_usage'].status == 'restricted'
     assert result.metrics['kv_usage'].series == []
     assert result.metrics['kv_usage'].summaries == []
@@ -605,13 +639,14 @@ def test_benchmark_gauges_reject_samples_stored_before_phase():
 
 
 @pytest.mark.asyncio
-async def test_worker_epoch_change_does_not_mix_engine_history(monkeypatch):
+@pytest.mark.parametrize('phase_id', [None, '128:0'])
+async def test_worker_epoch_change_does_not_mix_engine_history(monkeypatch, phase_id):
     module, history = _module(), _history()
     history.context.available = False
     history.context.reason = 'historical_association_changed'
     collector = AsyncMock()
     monkeypatch.setattr(module, 'collect_model_metrics', collector)
-    result = await module.collect_benchmark_model_metrics(history, phase_id='128:0')
+    result = await module.collect_benchmark_model_metrics(history, phase_id=phase_id)
     assert result.reason == 'historical_association_changed'
     collector.assert_not_awaited()
 
@@ -676,3 +711,476 @@ async def test_capture_preserves_allocations_when_inventory_identity_is_ambiguou
     )
     assert verified.monitoring.confirmed_at is not None
     assert [e.kind for e in verified.monitoring.events] == ['association_captured']
+
+
+def _short_slo_history():
+    history = _history()
+    points = [
+        _point(start=1000.25, end=1011.1880345),
+        _point(sequence=1, start=1013.1090295, end=1019.5954151),
+    ]
+    for point in points:
+        timing = point.raw_metrics['scheduler_metrics']
+        timing['request_start_time'] = timing['measure_start_time']
+        timing['request_end_time'] = timing['measure_end_time']
+    history.context.stages, history.context.run_window = _module().benchmark_windows(
+        points
+    )
+    return history
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase_id', [None, '128:0'])
+@pytest.mark.parametrize('summary_count', [None, 0])
+async def test_short_slo_run_keeps_engine_context_separate_from_window_summaries(
+    monkeypatch, phase_id, summary_count
+):
+    from gpustack.monitoring import models
+    from tests.monitoring.test_models import _entry, _histogram_data, _prometheus
+
+    module, history = _module(), _short_slo_history()
+    interval = module._selected_interval(history, phase_id, None, None)
+
+    def instant(query):
+        histogram = query.replace(
+            'gpustack:time_per_output_token_seconds',
+            'gpustack:time_to_first_token_seconds',
+        )
+        if '[75s]' in query:
+            return _histogram_data(histogram)
+        if summary_count is not None:
+            return _histogram_data(histogram, counts=summary_count)
+        return []
+
+    def ranges(query):
+        if not any(
+            family in query
+            for family in (
+                'time_to_first_token_seconds',
+                'time_per_output_token_seconds',
+                'prompt_tokens_total',
+            )
+        ):
+            return []
+        return [
+            {
+                'metric': _entry(1)['metric'],
+                'values': [
+                    [interval.start, '0'],
+                    [interval.start + 15, '0.15'],
+                    [interval.end, '99'],
+                ],
+            }
+        ]
+
+    calls = _prometheus(monkeypatch, models, instant, ranges)
+    result = await module.collect_benchmark_model_metrics(
+        history, phase_id=phase_id, client=object()
+    )
+
+    assert result.start == interval.start and result.end == interval.end
+    assert result.rate_window_seconds == 75
+    for key in ('ttft', 'tpot', 'input_tokens'):
+        metric = result.metrics[key]
+        values = [value for line in metric.series for _, value in line.points]
+        if phase_id is None:
+            assert any(value == 0 for value in values)
+            assert any(value == 0.15 for value in values)
+            assert metric.reason != 'insufficient_phase_rate_window'
+        else:
+            assert all(value is None for value in values)
+            assert metric.reason in (
+                'insufficient_phase_rate_window',
+                'no_samples',
+                'zero_observations',
+            )
+        assert all(value != 99 for value in values)
+        assert all(summary.value is None for summary in metric.summaries)
+    for key in ('ttft', 'tpot'):
+        summaries = result.metrics[key].summaries
+        assert len(summaries) == 4
+        assert all(summary.sample_count == summary_count for summary in summaries)
+    context_queries = [q for kind, q in calls if kind == 'instant' and '[75s]' in q]
+    assert bool(context_queries) is (phase_id is None)
+    for _, query in calls:
+        assert 'worker_id="3"' in query
+        assert 'restart_count="0"' in query
+        assert 'source_kind="legacy"' in query
+        assert 'source_name="legacy"' in query
+        assert 'component_attempt=""' in query
+
+
+@pytest.mark.asyncio
+async def test_short_run_context_rejects_incompatible_histogram_quantiles(monkeypatch):
+    from gpustack.monitoring import models
+    from tests.monitoring.test_models import _entry, _prometheus
+
+    history = _short_slo_history()
+
+    def instant(query):
+        if '[75s]' not in query or 'time_to_first_token_seconds' not in query:
+            return []
+        if '_bucket{' in query:
+            return [
+                _entry(value, engine=engine, le=bound)
+                for engine, middle in [('0', '0.2'), ('1', '0.3')]
+                for bound, value in [('0.1', 5), (middle, 10), ('+Inf', 10)]
+            ]
+        return [_entry(10 if '_count{' in query else 1, engine=e) for e in ('0', '1')]
+
+    def ranges(query):
+        if 'time_to_first_token_seconds' not in query:
+            return []
+        return [{'metric': _entry(1)['metric'], 'values': [[1015.25, '0']]}]
+
+    calls = _prometheus(monkeypatch, models, instant, ranges)
+    result = await _module().collect_benchmark_model_metrics(history, client=object())
+    metric = result.metrics['ttft']
+    assert metric.supported_statistics == ['avg']
+    assert metric.reason == 'incompatible_histogram_buckets'
+    assert [line.statistic for line in metric.series] == ['avg']
+    assert metric.series[0].points == [(1015.25, 0)]
+    assert all(summary.value is None for summary in metric.summaries)
+    assert not any(
+        kind == 'range'
+        and 'time_to_first_token_seconds' in query
+        and 'histogram_quantile' in query
+        for kind, query in calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_short_slo_rolling_context_does_not_invent_zero_latency(monkeypatch):
+    from gpustack.monitoring import models
+    from tests.monitoring.test_models import _histogram_data, _prometheus
+
+    calls = _prometheus(
+        monkeypatch, models, lambda query: _histogram_data(query, counts=0)
+    )
+    result = await _module().collect_benchmark_model_metrics(
+        _short_slo_history(), client=object()
+    )
+    metric = result.metrics['ttft']
+    assert metric.status == 'no_observations'
+    assert metric.reason == 'zero_observations'
+    assert all(summary.value is None for summary in metric.summaries)
+    assert all(summary.sample_count == 0 for summary in metric.summaries)
+    assert not any(
+        kind == 'range'
+        and 'time_to_first_token_seconds' in query
+        and 'histogram_quantile' in query
+        for kind, query in calls
+    )
+
+
+@pytest.mark.parametrize(
+    'start,end,expected_start,expected_end,samples',
+    [
+        (1794590261.206044, 1794590276.1269433, 1794590261.207, 1794590276.126, 15),
+        (1000.000044, 1003.000054, 1000.001, 1003.0, 3),
+        (1000.25, 1003.25, 1000.25, 1003.249, 3),
+        (1000.250001, 1000.251001, 1000.251, 1000.251, 1),
+    ],
+)
+def test_benchmark_evaluation_grid_stays_inside_exact_runner_bounds(
+    start, end, expected_start, expected_end, samples
+):
+    from gpustack.schemas.model_metrics import MetricSeries
+
+    module = _module()
+    grid = module.benchmark_query_interval(module.exact_interval(start, end))
+    assert grid.start == expected_start and grid.end == expected_end
+    assert start <= grid.start <= grid.end < end
+    stats = module.sample_statistics(
+        MetricSeries(name='GPU', statistic='current'), start, end, step=1
+    )
+    assert stats.expected_samples == samples
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('span', [14.920899391174316, 3.0])
+@pytest.mark.parametrize('raw_samples', [True, False])
+async def test_short_benchmark_queries_inner_millisecond_grid_and_preserves_missing_data(
+    monkeypatch, span, raw_samples
+):
+    import math
+    from gpustack.monitoring import models
+    from tests.monitoring.test_models import _entry, _histogram_data, _prometheus
+
+    module, history = _module(), _history()
+    start = 1794590261.206044
+    point = _point(start=start, end=start + span)
+    timing = point.raw_metrics['scheduler_metrics']
+    timing['request_start_time'], timing['request_end_time'] = start, start + span
+    history.context.stages, history.context.run_window = module.benchmark_windows(
+        [point]
+    )
+    calls = []
+
+    def instant(query):
+        return _histogram_data(query) if raw_samples and '[75s]' in query else []
+
+    _prometheus(monkeypatch, models, instant)
+    monkeypatch.setattr(models.time, 'time', lambda: start + 100)
+
+    async def ranges(client, url, query, query_start, query_end, step):
+        calls.append((query, query_start, query_end, step))
+        assert start <= query_start <= query_end < start + span
+        assert step == 1
+        if not raw_samples:
+            return []
+        if not any(
+            f in query
+            for f in (
+                'time_to_first_token_seconds',
+                'prompt_tokens_total',
+                'num_requests_running',
+            )
+        ):
+            return []
+        # Prometheus stores query evaluation timestamps at millisecond precision.
+        ticks = [
+            math.floor((query_start + n * step) * 1000) / 1000
+            for n in range(math.floor((query_end - query_start) / step) + 1)
+        ]
+        if 'num_requests_running' in query:
+            assert f'>= {start}' in query
+            ticks = [tick for tick in ticks if tick >= start + 1.5]
+        return [
+            {'metric': _entry(1)['metric'], 'values': [[tick, '0'] for tick in ticks]}
+        ]
+
+    monkeypatch.setattr(models, '_query_range', ranges)
+    result = await module.collect_benchmark_model_metrics(history, client=object())
+    assert result.start == start and result.end == start + span
+    assert result.step == 1 and result.rate_window_seconds == 75
+    assert result.available is raw_samples
+    for key in ('ttft', 'input_tokens', 'running_requests'):
+        values = [
+            value for line in result.metrics[key].series for _, value in line.points
+        ]
+        if raw_samples:
+            assert values and all(value == 0 for value in values)
+        else:
+            assert not values
+    assert calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase_id', [None, '128:0'])
+async def test_pd_additive_metrics_keep_recorded_owners_phase_bounds_and_priority_totals(
+    monkeypatch, phase_id
+):
+    import re
+
+    from prometheus_client.parser import text_string_to_metric_families
+
+    from gpustack.monitoring import models
+    from gpustack.schemas.benchmark_monitoring import BenchmarkRunMember
+
+    history, module = _history(), _module()
+    history.model.backend = 'SGLang'
+    history.model.disaggregation = SimpleNamespace(mode='sglang-mooncake')
+    history.instances = [
+        BenchmarkRunMember(
+            **{
+                **history.snapshot.instances[0].model_dump(),
+                'id': identity,
+                'name': f'{role}-{identity}',
+                'role': role,
+                'source_identities': [
+                    {
+                        **history.snapshot.instances[0].source_identities[0],
+                        'model_instance_id': str(identity),
+                    }
+                ],
+            }
+        )
+        for identity, role in [(12, 'prefill'), (13, 'decode'), (14, 'router')]
+    ]
+    # This fixed native payload contains a total plus a partition, not three
+    # independent populations. Its declared total is seven, not fourteen.
+    native = '''# TYPE sglang:num_prefill_bootstrap_queue_reqs gauge
+sglang:num_prefill_bootstrap_queue_reqs{priority=""} 7
+sglang:num_prefill_bootstrap_queue_reqs{priority="0"} 5
+sglang:num_prefill_bootstrap_queue_reqs{priority="1"} 2
+'''
+    samples = next(text_string_to_metric_families(native)).samples
+    family = 'gpustack:pd_prefill_bootstrap_queue_requests'
+    requests = []
+    labels = {
+        **history.instances[0].source_identities[0],
+        'model_id': '9',
+        'cluster_id': '1',
+        'role': 'prefill',
+    }
+
+    def total(query):
+        selector = re.search(re.escape(family) + r'\{([^}]*)\}', query)
+        assert selector is not None
+        return sum(
+            sample.value
+            for sample in samples
+            if 'priority=""' not in selector[1]
+            or sample.labels.get('priority', '') == ''
+        )
+
+    async def instant(client, url, query, at):
+        requests.append(('instant', query, at))
+        if family not in query:
+            return []
+        return [{'metric': labels, 'value': [at, str(total(query))]}]
+
+    async def ranged(client, url, query, start, end, step):
+        requests.append(('range', query, (start, end, step)))
+        if family not in query:
+            return []
+        return [
+            {
+                'metric': labels,
+                'values': [[start, str(total(query))], [end, str(total(query))]],
+            }
+        ]
+
+    monkeypatch.setattr(models, '_prometheus_url', lambda: 'http://metrics.invalid')
+    monkeypatch.setattr(models, '_query_instant', instant)
+    monkeypatch.setattr(models, '_query_range', ranged)
+    result = await module.collect_benchmark_model_metrics(
+        history, phase_id=phase_id, section='all', client=object()
+    )
+    assert {
+        'ingress_ttft',
+        'ingress_e2e',
+        'pd_kv_transfer_post',
+        'pd_kv_allocation',
+        'pd_kv_transfer_bytes',
+        'pd_kv_transfer_speed',
+        'pd_prefill_bootstrap_queue',
+        'pd_prefill_inflight_queue',
+        'pd_decode_prealloc_queue',
+        'pd_decode_transfer_queue',
+        'router_requests',
+        'router_request_duration',
+    }.issubset(result.metrics)
+    metric = result.metrics['pd_prefill_bootstrap_queue']
+    assert metric.summaries[0].value == 7
+    assert metric.summaries[0].dimensions.role == 'prefill'
+    assert result.sample_statistics['pd_prefill_bootstrap_queue'][0].peak == 7
+    assert result.metrics['ingress_ttft'].status == 'not_applicable'
+    assert result.metrics['ingress_ttft'].reason == 'gateway_bypassed'
+    assert result.metrics['pd_kv_transfer'].measurement_scope == 'bootstrap_handshake'
+    assert result.metrics['pd_kv_transfer_post'].status == 'unsupported'
+    expected = (1000.25, 1040.75) if phase_id else (998.25, 1043.75)
+    assert (result.start, result.end) == expected
+    for kind, query, bounds in requests:
+        if kind == 'range':
+            assert bounds[0] >= expected[0] and bounds[1] < expected[1]
+        if family in query:
+            assert 'role=~"prefill"' in query
+            assert 'model_instance_id=~"12"' in query
+            assert 'component_attempt=""' in query
+            assert 'worker_id="3"' in query
+    assert not any('gpustack:service_' in query for _, query, _ in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase_id', [None, '128:0'])
+@pytest.mark.parametrize('raw_samples', [True, False])
+async def test_short_resource_grid_counts_evaluations_and_never_borrows_old_gauge_samples(
+    monkeypatch, phase_id, raw_samples
+):
+    import math
+
+    module, history = _module(), _history()
+    start, end = 1000.000044, 1003.000054
+    point = _point(start=start, end=end)
+    timing = point.raw_metrics['scheduler_metrics']
+    timing['request_start_time'], timing['request_end_time'] = start, end
+    history.context.stages, history.context.run_window = module.benchmark_windows(
+        [point]
+    )
+    monkeypatch.setattr(module.prometheus, 'prometheus_url', lambda: 'http://unused')
+    monkeypatch.setattr(module.hardware, '_identity_presence', AsyncMock())
+    monkeypatch.setattr(module.prometheus, 'query_instant', AsyncMock(return_value=[]))
+    calls = []
+
+    async def ranges(client, url, query, query_start, query_end, step):
+        calls.append((query_start, query_end, step))
+        assert (query_start, query_end, step) == (1000.001, 1003.0, 1)
+        assert f'>= {start}' in query
+        if not raw_samples or 'worker_gpu_utilization' not in query:
+            return []
+        # Only an actual scrape inside the interval may supply a gauge value.
+        ticks = [
+            query_start + n * step
+            for n in range(math.floor((query_end - query_start) / step) + 1)
+        ]
+        return [
+            {
+                'metric': {
+                    'worker_id': '3',
+                    'worker_uuid': 'secret-uuid',
+                    'owner_principal_id': '4',
+                    'gpu_uuid': 'gpu-uuid',
+                    'gpu_chip_index': '0',
+                },
+                'values': [[tick, '0'] for tick in ticks if tick >= start + 1.5],
+            }
+        ]
+
+    monkeypatch.setattr(module.prometheus, 'query_range', ranges)
+    result = await module.collect_benchmark_resource_metrics(
+        history, phase_id=phase_id, client=object()
+    )
+    assert result.start == start and result.end == end and result.step == 1
+    assert result.available is raw_samples
+    metric = result.metrics['gpu_utilization']
+    assert metric.summaries[0].value == (0 if raw_samples else None)
+    stats = result.sample_statistics['gpu_utilization'][0]
+    assert stats.expected_samples == 3
+    assert stats.observed_samples == int(raw_samples)
+    assert stats.coverage == pytest.approx(1 / 3 if raw_samples else 0)
+    assert calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'mode,gateway,expected',
+    [
+        ('model_instance', None, 'not_applicable'),
+        ('route', None, 'no_data'),
+        ('route', 'http://gateway.invalid', 'available'),
+    ],
+)
+async def test_benchmark_ingress_requires_its_recorded_gateway_path(
+    monkeypatch, mode, gateway, expected
+):
+    from gpustack.monitoring import models
+
+    module = _module()
+    history = _history()
+    history.target_mode, history.gateway_url = mode, gateway
+    queries = []
+    monkeypatch.setattr(models, '_prometheus_url', lambda: 'http://metrics.invalid')
+
+    async def instant(client, url, query, at):
+        if 'route_upstream_model_consumer_metric_llm_' not in query:
+            return []
+        queries.append(query)
+        value = 2 if '_count{' in query else 100
+        return [{'metric': {'ai_consumer': 'one'}, 'value': [at, str(value)]}]
+
+    async def ranged(*args):
+        return []
+
+    monkeypatch.setattr(models, '_query_instant', instant)
+    monkeypatch.setattr(models, '_query_range', ranged)
+    result = await module.collect_benchmark_model_metrics(history, client=object())
+    metric = result.metrics['ingress_ttft']
+    assert metric.status == expected
+    if expected == 'available':
+        assert metric.summaries[0].value == pytest.approx(0.05)
+        assert metric.supported_statistics == ['avg']
+        assert queries and all('model-9-(12)' in query for query in queries)
+    else:
+        assert not queries
