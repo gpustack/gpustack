@@ -29,6 +29,8 @@ csi_livenessprobe_version = "v2.19.0"
 csi_node_driver_registrar_version = "v2.17.0"
 topograph_version = "v1.0.0"
 mooncake_version = "0.3.13.post1-cpu"
+model_transfer_version = "v0.1.0"
+modelexpress_server_version = "v0.7.0"
 llm_router_version = "v0.4.0"
 envoy_version = "distroless-v1.33.2"
 llm_d_router_disagg_sidecar_version = "v0.11.0"
@@ -43,7 +45,8 @@ append_images(
     f"gpustack/mirrored-higress-gateway:{higress_version}",
     # GPUStack Operator and its workload dependencies.
     # Includes SSH instances, Kueue, node discovery, and CSI storage.
-    # Optional workloads use Topograph, Mooncake, routers, and the Python downloader.
+    # Optional workloads use Topograph, Mooncake, model delivery, routers,
+    # and the Python downloader.
     f"gpustack/gpustack-operator:{__operator_version__}",
     f"gpustack/ssh-server:{ssh_server_version}",
     f"gpustack/mirrored-kueue:{kueue_version}",
@@ -57,6 +60,10 @@ append_images(
     f"gpustack/mirrored-csi-node-driver-registrar:{csi_node_driver_registrar_version}",
     f"gpustack/mirrored-nvidia-topograph:{topograph_version}",
     f"gpustack/mirrored-mooncake:{mooncake_version}",
+    f"gpustack/model-transfer:{model_transfer_version}-cuda12.9",
+    f"gpustack/model-transfer:{model_transfer_version}-rocm7.2",
+    f"gpustack/model-transfer:{model_transfer_version}-cann9.2-a5",
+    f"gpustack/mirrored-modelexpress-server:{modelexpress_server_version}",
     f"gpustack/llm-router:{llm_router_version}",
     f"gpustack/mirrored-envoy:{envoy_version}",
     f"gpustack/mirrored-llm-d-router-disagg-sidecar:{llm_d_router_disagg_sidecar_version}",
