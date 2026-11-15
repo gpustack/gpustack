@@ -607,6 +607,53 @@ class TestReconnect:
         await new_task
 
     @pytest.mark.asyncio
+    async def test_replaced_socket_still_announcing_skips_disconnect_callback(self):
+        # The previous socket is still announcing itself to peers when the
+        # worker reconnects, and the new socket finishes setting up first.
+        # Closing the previous socket must not run the disconnect callback,
+        # which would clear the proxy address of the live connection.
+        disconnected = []
+
+        async def on_disconnect(server_info, client_info):
+            disconnected.append(client_info.client_id)
+
+        handler = MessageServerHandler(
+            listen_address="127.0.0.1",
+            listen_port=0,
+            proxy_port=0,
+            callback_on_disconnect=on_disconnect,
+        )
+        announcing = asyncio.Event()
+        resume_announce = asyncio.Event()
+
+        async def broadcast(action, *args):
+            if action == "add" and not announcing.is_set():
+                announcing.set()
+                await resume_announce.wait()
+
+        handler.broadcast_client_update = AsyncMock(side_effect=broadcast)
+        worker_id = uuid.uuid4()
+
+        old_ws, close_old = _closable_websocket()
+        old_task = await self._connect(handler, worker_id, old_ws)
+        await announcing.wait()
+        new_ws, close_new = _closable_websocket()
+        new_task = await self._connect(handler, worker_id, new_ws)
+        resume_announce.set()
+        await asyncio.sleep(0)
+
+        close_old()
+        await old_task
+
+        route = handler.get_connection_manager("10.0.0.5")
+        assert route is not None and route.websocket is new_ws
+        assert disconnected == []
+
+        close_new()
+        await new_task
+        assert disconnected == [worker_id]
+
+    @pytest.mark.asyncio
     async def test_close_of_current_socket_releases_route_and_notifies(self):
         # After a reconnect, closing the socket that owns the registration
         # releases the route, tells peers, and runs the disconnect callback

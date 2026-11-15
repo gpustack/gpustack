@@ -625,15 +625,17 @@ class MessageServerHandler:
         for cidr in cidr_list:
             self._cidr_registry.insert(cidr, client_id)
 
+        # Get generation for this connection (used to filter stale disconnect
+        # callbacks). Taken before the next await so generations follow
+        # registration order even when a reconnect registers in between.
+        generation = await self._get_next_generation(client_id)
+
         logger.debug(
             f"[Server] Client registered via WS: {client_id}, CIDRs: {cidr_list}"
         )
 
         # Broadcast new client to peers
         await self.broadcast_client_update("add", client_id, cidr_list, socket_list)
-
-        # Get generation for this connection (used to filter stale disconnect callbacks)
-        generation = await self._get_next_generation(client_id)
 
         if self._callback_on_connect:
             await self._safe_callback(self._callback_on_connect, None, client_info)
