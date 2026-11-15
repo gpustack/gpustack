@@ -536,6 +536,9 @@ async def get_model_metrics(
         section=section,
         upstream_instances=upstreams,
         client=getattr(request.app.state, 'http_client_no_proxy', None),
+        ingress_context=(
+            'filtered' if instance_ids is not None or role != 'all' else 'deployment'
+        ),
         **({'start': start, 'end': end} if start is not None else {}),
     )
 

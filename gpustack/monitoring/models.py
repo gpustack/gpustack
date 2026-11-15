@@ -28,6 +28,7 @@ from gpustack.utils.model_instance_workers import (
     model_instance_metrics_source_inventory,
 )
 from .catalog import model_metric_definitions
+from .ingress import collect_ingress_metric
 from . import config as query_config
 from .queries import (
     HISTOGRAM_STATISTICS,
@@ -97,6 +98,10 @@ def _validate_result(entries, ranged):
                 for point in points
             ):
                 raise ValueError('Invalid metric points')
+        else:
+            point = entry.get('value')
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                raise ValueError('Invalid metric point')
     return entries
 
 
@@ -128,49 +133,119 @@ def _engine_roles(model):
     } or {''}
 
 
-def _roles(definition, model, backend, role):
-    pd = bool(getattr(model, 'disaggregation', None))
-    if definition.key in ('pd_kv_transfer', 'router_health') and not pd:
-        return (), 'not_applicable', 'role_not_applicable'
-    selected = {'prefill', 'decode'} if pd else _engine_roles(model)
-    if pd and definition.key in ('tpot', 'itl', 'output_tokens'):
-        selected = {'decode'}
-    if pd and definition.key == 'input_tokens':
-        selected = {'prefill'}
-    if pd and definition.key == 'ttft' and backend == 'sglang':
-        selected = {'decode'}
-    if definition.key == 'router_health':
-        selected = {'router'}
-    if definition.key == 'pd_kv_transfer':
-        from gpustack.server.pd_mode_catalog import get_pd_mode
+_PD_FIXED_ROLES = {
+    'tpot': 'decode',
+    'itl': 'decode',
+    'decode': 'decode',
+    'output_tokens': 'decode',
+    'prefill': 'prefill',
+    'input_tokens': 'prefill',
+    'pd_prefill_bootstrap_queue': 'prefill',
+    'pd_prefill_inflight_queue': 'prefill',
+    'pd_decode_prealloc_queue': 'decode',
+    'pd_decode_transfer_queue': 'decode',
+    'pd_kv_allocation': 'decode',
+    'router_health': 'router',
+    'router_requests': 'router',
+    'router_request_duration': 'router',
+}
+_PD_TRANSFER_KEYS = {
+    'pd_kv_transfer',
+    'pd_kv_transfer_post',
+    'pd_kv_transfer_bytes',
+    'pd_kv_transfer_speed',
+}
+_SGLANG_PD_KEYS = {
+    'pd_kv_allocation',
+    'pd_prefill_bootstrap_queue',
+    'pd_prefill_inflight_queue',
+    'pd_decode_prealloc_queue',
+    'pd_decode_transfer_queue',
+    'pd_kv_transfer_speed',
+}
 
-        mode_name = model.disaggregation.mode
-        mode = get_pd_mode(getattr(mode_name, 'value', mode_name))
-        transfer = mode.transfer_metrics if mode else None
-        if transfer is None:
-            return (), 'no_data', 'source_identity_unresolved'
-        selected = {transfer.read_from_role}
-        if getattr(mode_name, 'value', mode_name) == 'vllm-ascend-mooncake':
-            return (), 'unsupported', 'metric_not_provided'
-    if role != 'all':
-        selected &= {role}
-    if not selected:
-        return (), 'not_applicable', 'role_not_applicable'
-    unsupported = backend == 'sglang' and definition.key in (
+
+def _transfer_selection(definition, model):
+    from gpustack.server.pd_mode_catalog import get_pd_mode
+
+    mode_name = model.disaggregation.mode
+    mode = get_pd_mode(getattr(mode_name, 'value', mode_name))
+    transfer = mode.transfer_metrics if mode else None
+    if transfer is None:
+        return set(), 'no_data', 'source_identity_unresolved'
+    if transfer.connector == 'ascend-mooncake':
+        return set(), 'unsupported', 'metric_not_provided'
+    if definition.key == 'pd_kv_transfer_post' and transfer.connector != 'nixl':
+        return set(), 'unsupported', 'metric_not_provided'
+    # SGLang's receiver records bootstrap/allocation unconditionally; only its
+    # sender can report the optional transfer size and bandwidth histograms.
+    sender_measurement = definition.key in (
+        'pd_kv_transfer_bytes',
+        'pd_kv_transfer_speed',
+    ) and transfer.connector.startswith('sglang-')
+    selected = {'prefill' if sender_measurement else transfer.read_from_role}
+    return selected, None, None
+
+
+def _unsupported_pd_metric(definition, backend):
+    key = definition.key
+    if key in _SGLANG_PD_KEYS and backend != 'sglang':
+        return True
+    if key == 'router_health' and backend != 'sglang':
+        return True
+    return backend == 'sglang' and key in (
         'prefill',
         'decode',
         'external_cache_hit_rate',
     )
-    unsupported |= definition.key == 'router_health' and backend != 'sglang'
-    if unsupported:
+
+
+def _roles(definition, model, backend, role):
+    if definition.measurement_scope == 'service_ingress':
+        return (
+            ((), None, None)
+            if role == 'all'
+            else ((), 'not_applicable', 'role_not_applicable')
+        )
+    pd = bool(getattr(model, 'disaggregation', None))
+    if definition.section == 'pd' and not pd:
+        return (), 'not_applicable', 'role_not_applicable'
+    selected = {'prefill', 'decode'} if pd else _engine_roles(model)
+    if pd and definition.key in _PD_FIXED_ROLES:
+        selected = {_PD_FIXED_ROLES[definition.key]}
+    if pd and definition.key == 'ttft' and backend == 'sglang':
+        selected = {'decode'}
+    if pd and definition.key in _PD_TRANSFER_KEYS:
+        selected, status, reason = _transfer_selection(definition, model)
+        if status:
+            return (), status, reason
+    if role != 'all':
+        selected &= {role}
+    if not selected:
+        return (), 'not_applicable', 'role_not_applicable'
+    if _unsupported_pd_metric(definition, backend):
         return (), 'unsupported', 'metric_not_provided'
     return tuple(sorted(selected)), None, None
 
 
 def _statistics(definition):
+    if definition.measurement_scope == 'service_ingress':
+        return ['avg']
     if definition.kind == 'histogram':
         return list(HISTOGRAM_STATISTICS)
     return ['current' if definition.kind == 'gauge' else 'rate']
+
+
+def _observation_roles(definition, model, backend, role, ingress_context):
+    result = _roles(definition, model, backend, role)
+    if definition.measurement_scope != 'service_ingress':
+        return result
+    absent = {
+        'direct': ('not_applicable', 'gateway_bypassed'),
+        'filtered': ('not_applicable', 'role_not_applicable'),
+        'unknown': ('no_data', 'source_identity_unresolved'),
+    }.get(ingress_context)
+    return ((), *absent) if absent else result
 
 
 class _Collection:
@@ -187,6 +262,8 @@ class _Collection:
         view,
         statistics,
         upstream_instances=None,
+        allow_trend_lookback=False,
+        query_interval=None,
     ):
         self.model = model
         self.instances = {instance.id: instance for instance in instances}
@@ -202,14 +279,21 @@ class _Collection:
         self.rate_window = rate_window
         self.view = view
         self.statistics = [s for s in HISTOGRAM_STATISTICS if s in statistics]
+        self.allow_trend_lookback = allow_trend_lookback
+        self.query_interval = query_interval
         self.slots = asyncio.Semaphore(8)
         self.completed = set()
 
     async def read(self, query, *, ranged=False):
         async with self.slots:
             if ranged:
+                start, end = (
+                    (self.query_interval.start, self.query_interval.end)
+                    if self.query_interval is not None
+                    else (self.start, self.end)
+                )
                 entries = await _query_range(
-                    self.client, self.url, query, self.start, self.end, self.step
+                    self.client, self.url, query, start, end, self.step
                 )
                 return _validate_result(entries, True)
             entries = await _query_instant(self.client, self.url, query, self.end)
@@ -480,9 +564,9 @@ class _Collection:
         ):
             metric.status, metric.reason = 'no_observations', 'zero_observations'
 
-    async def histogram(self, definition, metric, scope):
+    async def histogram_components(self, definition, scope, seconds):
         queries = build_histogram_components(
-            definition.family, scope, self.window, profile=definition.query_profile
+            definition.family, scope, seconds, profile=definition.query_profile
         )
         sums, counts = await asyncio.gather(
             self.read(queries['sum']), self.read(queries['count'])
@@ -492,12 +576,65 @@ class _Collection:
             buckets = await self.read(queries['buckets'])
         except _QUERY_ERRORS:
             buckets, bucket_failed = [], True
+        return sums, counts, buckets, bucket_failed
+
+    async def histogram(self, definition, metric, scope):
+        sums, counts, buckets, bucket_failed = await self.histogram_components(
+            definition, scope, self.window
+        )
         metric.coverage = self.coverage(counts, scope)
         groups = self.histogram_groups(sums, counts, buckets)
-        if not groups:
+        incompatible = False
+        if groups:
+            metric.reason = None
+            incompatible = self.histogram_summaries(metric, groups)
+            metric.status = (
+                'available'
+                if any(group['count'] > 0 for group in groups.values())
+                else 'no_observations'
+            )
+            if metric.status == 'no_observations':
+                metric.reason = 'zero_observations'
+        context = self.allow_trend_lookback and self.window < self.rate_window
+        if context:
+            # Trend cohorts describe the rolling engine context. Their samples
+            # cannot supply the selected interval's summaries or coverage.
+            sums, counts, buckets, bucket_failed = await self.histogram_components(
+                definition, scope, self.rate_window
+            )
+            incompatible = any(
+                group['count'] > 0 and not self.histogram_group_statistics(group)[1]
+                for group in self.histogram_groups(sums, counts, buckets).values()
+            )
+        elif not groups:
             return
-        metric.reason = None
-        incompatible = self.histogram_summaries(metric, groups)
+        await self.histogram_trends(
+            definition,
+            metric,
+            scope,
+            sums,
+            counts,
+            buckets,
+            incompatible,
+            bucket_failed,
+        )
+        if context:
+            reason = metric.reason
+            self.numeric_status(metric)
+            if incompatible:
+                metric.reason = reason
+
+    async def histogram_trends(
+        self,
+        definition,
+        metric,
+        scope,
+        sums,
+        counts,
+        buckets,
+        incompatible,
+        bucket_failed,
+    ):
         trend_scopes = self.histogram_trend_scopes(scope, sums, counts, buckets)
         if incompatible:
             if not trend_scopes and not any(
@@ -508,13 +645,6 @@ class _Collection:
             metric.reason = (
                 'query_failed' if bucket_failed else 'incompatible_histogram_buckets'
             )
-        metric.status = (
-            'available'
-            if any(group['count'] > 0 for group in groups.values())
-            else 'no_observations'
-        )
-        if metric.status == 'no_observations':
-            metric.reason = 'zero_observations'
         statistics = [s for s in self.statistics if s in metric.supported_statistics]
         requests = [
             (stat, candidate)
@@ -738,7 +868,19 @@ class _Collection:
 
     async def fill(self, definition, metric, scope):
         try:
-            if definition.key == 'router_health':
+            if definition.measurement_scope == 'service_ingress':
+                observed = await collect_ingress_metric(
+                    definition,
+                    model_id=self.model.id,
+                    instance_ids=tuple(self.instances),
+                    read=self.read,
+                    window_seconds=self.window,
+                    rate_window_seconds=self.rate_window,
+                    statistics=self.statistics,
+                )
+                for field in ('status', 'reason', 'series', 'summaries'):
+                    setattr(metric, field, getattr(observed, field))
+            elif definition.key == 'router_health':
                 await self.health(definition, metric, scope)
             elif definition.kind == 'histogram':
                 await self.histogram(definition, metric, scope)
@@ -771,6 +913,10 @@ async def collect_model_metrics(
     interval: Optional[MonitoringInterval] = None,
     launches: tuple = (),
     source_identities: tuple = (),
+    allow_trend_lookback: bool = False,
+    query_step: Optional[int] = None,
+    query_interval: Optional[MonitoringInterval] = None,
+    ingress_context: str = 'deployment',
 ) -> ModelMetrics:
     """Collect guarded runtime observations for an already authorized population.
 
@@ -781,6 +927,12 @@ async def collect_model_metrics(
         end: Fixed end, supplied together with start; independent of refresh time.
         statistics: Latency trend statistics; interval summaries retain all four.
         upstream_instances: Full visible population for resolving Router peer IDs.
+        allow_trend_lookback: Resolve short-interval histogram trends independently
+            of summaries, retaining their normal rolling engine context.
+        query_step: Internal evaluation step override; rate windows remain unchanged.
+        query_interval: Internal range-query bounds; summaries retain the interval.
+        ingress_context: Gateway/deployment observations, direct instance traffic,
+            a role/instance-filtered query, or an unknown historical request path.
 
     Returns:
         Typed, bounded observations with local missing states for each metric.
@@ -788,6 +940,14 @@ async def collect_model_metrics(
     interval = interval or monitoring_interval(
         window_seconds, start, end, now=time.time()
     )
+    if ingress_context not in (
+        'deployment',
+        'gateway',
+        'direct',
+        'filtered',
+        'unknown',
+    ):
+        raise ValueError('Invalid ingress observation context')
     start, end, window_seconds = interval.start, interval.end, interval.seconds
     time_policy = query_config.get_query_config().time_windows.llm
     step = time_policy.step(window_seconds)
@@ -795,7 +955,7 @@ async def collect_model_metrics(
         model_id=model.id,
         start=start,
         end=end,
-        step=step,
+        step=query_step if query_step is not None else step,
         rate_window_seconds=time_policy.rate_window(step),
         last_refreshed_at=end,
         history_scope=_HISTORY_SCOPE,
@@ -818,14 +978,19 @@ async def collect_model_metrics(
             url,
             result.start,
             end,
-            step,
+            result.step,
             result.rate_window_seconds,
             view,
             statistics,
             upstream_instances,
+            allow_trend_lookback,
+            query_interval,
         )
         for definition in definitions:
-            roles, status, reason = _roles(definition, model, backend, role)
+            roles, status, reason = _observation_roles(
+                definition, model, backend, role, ingress_context
+            )
+            gateway = definition.measurement_scope == 'service_ingress'
             metric = ModelMetric(
                 kind=definition.kind,
                 unit=definition.unit,
@@ -838,7 +1003,7 @@ async def collect_model_metrics(
                 status=status or 'no_data',
                 reason=reason or 'no_samples',
             )
-            if definition.kind == 'histogram':
+            if definition.kind == 'histogram' and not gateway:
                 metric.summaries = [
                     MetricSummary(
                         statistic=stat,
@@ -850,12 +1015,18 @@ async def collect_model_metrics(
                 ]
             result.metrics[definition.key] = metric
             selected = tuple(
-                i.id for i in instances if (getattr(i, 'role', None) or '') in roles
+                i.id
+                for i in instances
+                if gateway or (getattr(i, 'role', None) or '') in roles
             )
             if status or not selected or model.cluster_id is None:
                 continue
             if not url:
                 metric.reason = 'prometheus_unavailable'
+                continue
+            if gateway:
+                fills.append((definition, metric, None))
+                scheduled.add(definition.key)
                 continue
             scope = MetricQueryScope(
                 model.cluster_id,

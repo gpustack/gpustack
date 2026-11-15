@@ -1,6 +1,7 @@
 """Benchmark-time observations over recorded associations and measured phases."""
 
 from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_CEILING
 from hashlib import sha256
 import json
 import math
@@ -18,7 +19,7 @@ from gpustack.api.tenant import (
     tenant_list_conditions,
     tenant_stream_filter,
 )
-from gpustack.schemas.benchmark import Benchmark, BenchmarkResult
+from gpustack.schemas.benchmark import Benchmark, BenchmarkResult, benchmark_load_mode
 from gpustack.schemas.benchmark_monitoring import (
     BenchmarkModelMetrics,
     BenchmarkMonitoringContext,
@@ -70,15 +71,40 @@ def _timestamp(value):
     return float(value) if math.isfinite(value) and value >= 0 else None
 
 
-def benchmark_windows(results):
+def benchmark_windows(results, *, mode='stages'):
     """Read actual scheduler measurement and traffic bounds, retaining missing phases."""
-    stages, windows = [], []
+    stages, windows, maximum_loads = [], [], {}
     for point in sorted(results, key=lambda p: (p.input_tokens or 0, p.sequence)):
+        cohort = point.input_tokens or 0
+        if point.rate is None:
+            search_phase = 'probe'
+        elif mode == 'auto_tune':
+            search_phase = (
+                'expand'
+                if point.rate > maximum_loads.get(cohort, -math.inf)
+                else 'refine'
+            )
+            maximum_loads[cohort] = max(
+                point.rate, maximum_loads.get(cohort, -math.inf)
+            )
+        else:
+            search_phase = 'manual' if mode == 'stages' else 'single'
         stage = BenchmarkMonitoringStage(
             id=f'{point.input_tokens or 0}:{point.sequence}',
             sequence=point.sequence,
             input_tokens=point.input_tokens,
             rate=point.rate,
+            measurement_number=(
+                point.sequence + 1
+                if point.rate is not None and point.sequence >= 0
+                else None
+            ),
+            search_phase=search_phase,
+            search_phase_source=(
+                'load_history'
+                if search_phase in ('expand', 'refine')
+                else 'configuration'
+            ),
         )
         raw = point.raw_metrics if isinstance(point.raw_metrics, dict) else {}
         timing = raw.get('scheduler_metrics')
@@ -119,17 +145,39 @@ def benchmark_windows(results):
 def exact_interval(start, end) -> MonitoringInterval:
     """Resolve a measured sub-second boundary without widening a short phase."""
     start, end = _timestamp(start), _timestamp(end)
-    if start is None or end is None or not 0.001 <= end - start <= MAX_QUERY_SECONDS:
+    if start is None or end is None:
+        raise ValueError('Benchmark range must span 1 millisecond to 7 days')
+    span = Decimal(str(end)) - Decimal(str(start))
+    if not Decimal('0.001') <= span <= MAX_QUERY_SECONDS:
         raise ValueError('Benchmark range must span 1 millisecond to 7 days')
     if end > time.time():
         raise ValueError('Benchmark range cannot end in the future')
-    return MonitoringInterval(start, end, max(1, math.ceil(end - start)))
+    return MonitoringInterval(start, end, max(1, math.ceil(span)))
+
+
+def benchmark_query_interval(interval) -> MonitoringInterval:
+    """Keep Prometheus millisecond evaluation ticks inside the exact run bounds."""
+    start = int(
+        (Decimal(str(interval.start)) * 1000).to_integral_value(rounding=ROUND_CEILING)
+    )
+    end = (
+        int(
+            (Decimal(str(interval.end)) * 1000).to_integral_value(
+                rounding=ROUND_CEILING
+            )
+        )
+        - 1
+    )
+    return MonitoringInterval(start / 1000, end / 1000, interval.seconds)
 
 
 def sample_statistics(series, start, end, *, step, threshold=None):
     """Describe valid sampled values in [start, end), never a neighboring phase."""
     values = [(t, v) for t, v in series.points if start <= t < end and v is not None]
-    expected = max(1, math.ceil((end - start) / step))
+    grid = benchmark_query_interval(MonitoringInterval(start, end, 1))
+    expected = max(
+        1, (round(grid.end * 1000) - round(grid.start * 1000)) // (step * 1000) + 1
+    )
     result = BenchmarkSampleStatistics(
         dimensions=series.dimensions,
         expected_samples=expected,
@@ -175,6 +223,8 @@ class BenchmarkHistory:
     instances: list = field(default_factory=list)
     workers: dict = field(default_factory=dict)
     devices: list = field(default_factory=list)
+    target_mode: str = 'model_instance'
+    gateway_url: Optional[str] = None
 
 
 async def _association_rows(model, session, ids, *, ctx=None):
@@ -284,7 +334,7 @@ async def load_benchmark_history(
         benchmark = await Benchmark.one_by_id(session, id)
     assert_benchmark_monitoring_visible(ctx, benchmark)
     results = await BenchmarkResult.all_by_fields(session, fields={'benchmark_id': id})
-    stages, window = benchmark_windows(results)
+    stages, window = benchmark_windows(results, mode=benchmark_load_mode(benchmark))
     capabilities = ModelMonitoringCapabilities(
         model_id=benchmark.model_id or 0, min_query_seconds=1
     )
@@ -297,6 +347,15 @@ async def load_benchmark_history(
             capabilities=capabilities,
         ),
         snapshot=benchmark.snapshot.monitoring if benchmark.snapshot else None,
+        target_mode=str(
+            getattr(
+                getattr(benchmark, 'target_mode', None),
+                'value',
+                getattr(benchmark, 'target_mode', None),
+            )
+            or 'model_instance'
+        ),
+        gateway_url=getattr(benchmark.snapshot, 'gateway_url', None),
     )
     if history.snapshot is None:
         history.context.reason = 'historical_association_unavailable'
@@ -365,14 +424,15 @@ def _statistics(response):
 
 
 def _empty_engine(history, interval, phase_id, reason):
-    policy = get_query_config().time_windows.llm
-    step = policy.step(interval.seconds if interval else 1)
+    policies = get_query_config().time_windows
+    seconds = interval.seconds if interval else 1
+    step = policies.benchmark.step(seconds)
     response = BenchmarkModelMetrics(
         model_id=history.context.model_id,
         start=interval.start if interval else None,
         end=interval.end if interval else None,
         step=step,
-        rate_window_seconds=policy.rate_window(step),
+        rate_window_seconds=policies.llm.rate_window(policies.llm.step(seconds)),
         last_refreshed_at=time.time(),
         history_scope=HISTORY_SCOPE,
         phase_id=phase_id,
@@ -445,10 +505,30 @@ async def collect_benchmark_model_metrics(
         source_identities=tuple(
             source for i in instances for source in i.source_identities
         ),
+        allow_trend_lookback=phase_id is None,
+        query_step=get_query_config().time_windows.benchmark.step(interval.seconds),
+        query_interval=benchmark_query_interval(interval),
+        ingress_context=(
+            'direct'
+            if history.target_mode != 'route'
+            else 'gateway' if history.gateway_url else 'unknown'
+        ),
     )
     response = BenchmarkModelMetrics(**response.model_dump(), phase_id=phase_id)
     response.history_scope = HISTORY_SCOPE
     _project_samples(response, history, phase_id)
+    response.available = any(
+        summary.value is not None
+        for metric in response.metrics.values()
+        for summary in metric.summaries
+    ) or any(
+        value is not None
+        for metric in response.metrics.values()
+        for line in metric.series
+        for _, value in line.points
+    )
+    if not response.available and response.reason is None:
+        response.reason = 'no_samples'
     return _statistics(response)
 
 
@@ -485,7 +565,7 @@ async def collect_benchmark_resource_metrics(
         model_id=history.context.model_id,
         start=interval.start if interval else None,
         end=interval.end if interval else None,
-        step=get_query_config().time_windows.hardware.step(
+        step=get_query_config().time_windows.benchmark.step(
             interval.seconds if interval else 1
         ),
         last_refreshed_at=time.time(),
@@ -524,6 +604,7 @@ async def collect_benchmark_resource_metrics(
                 owned,
                 url,
                 not_before=interval.start,
+                query_interval=benchmark_query_interval(interval),
             )
     else:
         await hardware._collect_all_history(
@@ -533,6 +614,7 @@ async def collect_benchmark_resource_metrics(
             client,
             url,
             not_before=interval.start,
+            query_interval=benchmark_query_interval(interval),
         )
     _project_samples(response, history, phase_id)
     hardware._update_device_history(devices, response)
@@ -552,7 +634,7 @@ async def collect_benchmark_resource_metrics(
 
 
 def _project_samples(response, history, phase_id):
-    """Exclude boundary samples and rollups whose lookback crosses a phase."""
+    """Keep display bounds and isolate rolling lookbacks for selected phases."""
     for metric in response.metrics.values():
         observations = list(metric.series) + list(metric.summaries)
         if response.source == 'engine' and any(
@@ -564,7 +646,7 @@ def _project_samples(response, history, phase_id):
             metric.series, metric.summaries, metric.coverage = [], [], None
             continue
         for series in metric.series:
-            rolling = metric.kind != 'gauge'
+            rolling = metric.kind != 'gauge' and phase_id is not None
             earliest = response.start + (response.rate_window_seconds if rolling else 0)
             series.points = [
                 (t, v if t >= earliest else None)
@@ -572,7 +654,8 @@ def _project_samples(response, history, phase_id):
                 if response.start <= t < response.end
             ]
         if (
-            metric.kind != 'gauge'
+            phase_id is not None
+            and metric.kind != 'gauge'
             and metric.series
             and metric.status not in ('query_error', 'unsupported', 'not_applicable')
             and response.end - response.start <= response.rate_window_seconds

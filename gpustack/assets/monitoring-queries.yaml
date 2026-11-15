@@ -17,6 +17,11 @@ time_windows:
     target_points: 240
     min_step_seconds: 15
     freshness_seconds: 120
+  # Engine and hardware share the benchmark evaluation grid. This does not
+  # shorten the LLM rolling rate window or create additional scrape samples.
+  benchmark:
+    target_points: 120
+    min_step_seconds: 1
 
 # Common scaffolding always applies; metric declarations cannot disable guards.
 expressions:
@@ -43,6 +48,14 @@ profiles:
     kind: gauge
     expressions:
       sample: ${family}${selector}
+  scheduler_queue_total:
+    kind: gauge
+    # SGLang emits a total and optional per-priority breakdowns. An empty
+    # matcher selects the total and also matches exporters without this label.
+    sample_labels:
+      priority: ''
+    expressions:
+      sample: ${family}${selector}
   counter:
     kind: counter
     expressions:
@@ -64,6 +77,14 @@ profiles:
     expressions:
       sample: >-
         (${selector}) and (time() - timestamp(${selector}) <= ${freshness_seconds})
+  gateway_average:
+    kind: histogram
+    scope: gateway
+    # Higress exposes cumulative milliseconds and request counts, not buckets.
+    # Sum paired cohorts before division; only Avg is supported.
+    expressions:
+      rate: rate(${family}${selector}[${window_seconds}s])
+      increase: increase(${family}${selector}[${window_seconds}s])
 
 # Keys are existing API metric keys. Backend overrides select semantic kind,
 # not native exporter-version names (those belong to Worker normalization).
@@ -138,6 +159,9 @@ metrics:
     measurement_scope: engine_local_requests
     query_profile: gauge
     section: llm
+    backend_overrides:
+      sglang:
+        query_profile: scheduler_queue_total
   waiting_requests:
     family: gpustack:num_requests_waiting
     kind: gauge
@@ -145,6 +169,9 @@ metrics:
     measurement_scope: engine_local_requests
     query_profile: gauge
     section: llm
+    backend_overrides:
+      sglang:
+        query_profile: scheduler_queue_total
   kv_usage:
     family: gpustack:kv_cache_usage_ratio
     kind: gauge
@@ -203,6 +230,96 @@ metrics:
     unit: state
     measurement_scope: router_upstream_health
     query_profile: gauge
+    section: pd
+  # Native gateway observations are independent of role-local engine timers.
+  # Streaming TTFT and all-request service latency have different counts.
+  ingress_ttft:
+    family: route_upstream_model_consumer_metric_llm_first_token_duration
+    denominator: route_upstream_model_consumer_metric_llm_stream_duration_count
+    kind: histogram
+    unit: seconds
+    measurement_scope: service_ingress
+    query_profile: gateway_average
+    scale: 0.001
+    section: pd
+  ingress_e2e:
+    family: route_upstream_model_consumer_metric_llm_service_duration
+    denominator: route_upstream_model_consumer_metric_llm_duration_count
+    kind: histogram
+    unit: seconds
+    measurement_scope: service_ingress
+    query_profile: gateway_average
+    scale: 0.001
+    section: pd
+  pd_kv_transfer_post:
+    family: gpustack:pd_kv_transfer_post_seconds
+    kind: histogram
+    unit: seconds
+    measurement_scope: transfer_submission_duration
+    query_profile: histogram
+    section: pd
+  pd_kv_allocation:
+    family: gpustack:pd_kv_transfer_alloc_seconds
+    kind: histogram
+    unit: seconds
+    measurement_scope: receive_allocation_duration
+    query_profile: histogram
+    section: pd
+  pd_kv_transfer_bytes:
+    family: gpustack:pd_kv_transfer_bytes
+    kind: histogram
+    unit: bytes
+    measurement_scope: connector_reported_transfer_size
+    query_profile: histogram
+    section: pd
+  pd_kv_transfer_speed:
+    family: gpustack:pd_kv_transfer_bandwidth_bytes_per_second
+    kind: histogram
+    unit: bytes_per_second
+    measurement_scope: connector_reported_transfer_speed
+    query_profile: histogram
+    section: pd
+  pd_prefill_bootstrap_queue:
+    family: gpustack:pd_prefill_bootstrap_queue_requests
+    kind: gauge
+    unit: requests
+    measurement_scope: prefill_bootstrap_queue
+    query_profile: scheduler_queue_total
+    section: pd
+  pd_prefill_inflight_queue:
+    family: gpustack:pd_prefill_inflight_queue_requests
+    kind: gauge
+    unit: requests
+    measurement_scope: prefill_inflight_queue
+    query_profile: scheduler_queue_total
+    section: pd
+  pd_decode_prealloc_queue:
+    family: gpustack:pd_decode_prealloc_queue_requests
+    kind: gauge
+    unit: requests
+    measurement_scope: decode_preallocation_queue
+    query_profile: scheduler_queue_total
+    section: pd
+  pd_decode_transfer_queue:
+    family: gpustack:pd_decode_transfer_queue_requests
+    kind: gauge
+    unit: requests
+    measurement_scope: decode_transfer_queue
+    query_profile: scheduler_queue_total
+    section: pd
+  router_requests:
+    family: gpustack:pd_router_requests_total
+    kind: counter
+    unit: requests_per_second
+    measurement_scope: router_received_requests
+    query_profile: counter
+    section: pd
+  router_request_duration:
+    family: gpustack:pd_router_request_duration_seconds
+    kind: histogram
+    unit: seconds
+    measurement_scope: router_observed_request
+    query_profile: histogram
     section: pd
 hardware_metrics:
   gpu_utilization:
@@ -270,6 +387,40 @@ hardware_metrics:
     maximum: 100
     model_resource: false
 charts:
+  model.pd_ingress:
+    description: Service-ingress experience, unavailable until collected
+    metrics:
+    - ingress_ttft
+    - ingress_e2e
+    apis:
+    - model_runtime
+  model.pd_handoff:
+    description: Connector-specific handoff observations; submission and transfer are not summed
+    metrics:
+    - pd_kv_transfer
+    - pd_kv_transfer_post
+    - pd_kv_allocation
+    - pd_kv_transfer_bytes
+    - pd_kv_transfer_speed
+    apis:
+    - model_runtime
+  model.pd_queues:
+    description: Separate scheduler handoff queues on their native Prefill or Decode role
+    metrics:
+    - pd_prefill_bootstrap_queue
+    - pd_prefill_inflight_queue
+    - pd_decode_prealloc_queue
+    - pd_decode_transfer_queue
+    apis:
+    - model_runtime
+  model.pd_router:
+    description: Router received requests and router-observed forwarding request duration
+    metrics:
+    - router_requests
+    - router_request_duration
+    - router_health
+    apis:
+    - model_runtime
   model.ttft:
     description: Time to first token (TTFT)
     metrics:

@@ -553,7 +553,7 @@ def _all_metric(key, targets, history=(), current=(), *, query_failed=False):
 
 
 async def _query_all_metric(
-    key, targets, response, client, url, semaphore, not_before=None
+    key, targets, response, client, url, semaphore, not_before=None, query_interval=None
 ):
     selectors = {
         _fresh(
@@ -572,8 +572,13 @@ async def _query_all_metric(
     async def query(kind):
         async with semaphore:
             if kind == 'range':
+                start, end = (
+                    (query_interval.start, query_interval.end)
+                    if query_interval is not None
+                    else (response.start, response.end)
+                )
                 return await prometheus_query.query_range(
-                    client, url, expression, response.start, response.end, response.step
+                    client, url, expression, start, end, response.step
                 )
             return await prometheus_query.query_instant(
                 client, url, expression, response.end
@@ -601,6 +606,7 @@ async def _collect_all_history(
     url,
     extra_targets=None,
     not_before=None,
+    query_interval=None,
 ):
     semaphore = asyncio.Semaphore(4)
     deadline = asyncio.get_running_loop().time() + COLLECTION_TIMEOUT_SECONDS
@@ -630,7 +636,14 @@ async def _collect_all_history(
             asyncio.gather(
                 *(
                     _query_all_metric(
-                        key, targets, response, client, url, semaphore, not_before
+                        key,
+                        targets,
+                        response,
+                        client,
+                        url,
+                        semaphore,
+                        not_before,
+                        query_interval,
                     )
                     for key, targets in jobs
                 )

@@ -80,6 +80,21 @@ class BenchmarkMonitoringStage(BaseModel):
     sequence: int
     input_tokens: Optional[int] = None
     rate: Optional[FiniteFloat] = None
+    measurement_number: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description='One-based recorded sequence within the input-length cohort; probes have no number.',
+    )
+    search_phase: Optional[Literal['expand', 'refine', 'manual', 'single', 'probe']] = (
+        Field(
+            default=None,
+            description='Navigation grouping, not a runner planner annotation.',
+        )
+    )
+    search_phase_source: Optional[Literal['load_history', 'configuration']] = Field(
+        default=None,
+        description='Adaptive groups use observed loads in recorded sequence; other groups use the run configuration.',
+    )
     start: Optional[FiniteFloat] = None
     end: Optional[FiniteFloat] = None
     traffic_start: Optional[FiniteFloat] = None

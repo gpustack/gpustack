@@ -84,11 +84,85 @@ def test_metric_profiles_and_chart_sources_are_resolved_from_yaml():
     assert declaration.charts['model.ttft'].metrics == ('ttft',)
     assert all(m.kind == 'gauge' for m in declaration.hardware_metrics.values())
     assert declaration.metrics['ttft'].query_profile == 'histogram'
+    ingress = declaration.metrics['ingress_ttft']
+    assert ingress.query_profile == 'gateway_average'
+    assert ingress.family.endswith('llm_first_token_duration')
+    assert ingress.denominator.endswith('llm_stream_duration_count')
+    assert ingress.scale == 0.001
+    assert declaration.profiles[ingress.query_profile].scope == 'gateway'
     assert (
         declaration.profiles['histogram']
         .expressions['p95']
         .startswith('histogram_quantile(0.95,')
     )
+
+
+def test_scheduler_totals_select_empty_priority_before_guarding_and_aggregation():
+    definitions = {m.key: m for m in model_metric_definitions('sglang')}
+    scope = MetricQueryScope(1, 9, (12,), ('prefill',), sample_start=1000.25)
+    for key in (
+        'running_requests',
+        'waiting_requests',
+        'pd_prefill_bootstrap_queue',
+        'pd_prefill_inflight_queue',
+        'pd_decode_prealloc_queue',
+        'pd_decode_transfer_queue',
+    ):
+        definition = definitions[key]
+        query = build_gauge_query(
+            definition.family, scope, profile=definition.query_profile
+        )
+        sample_selector = scope.selector({'priority': ''})
+        assert definition.family + sample_selector in query
+        assert f'timestamp({definition.family}{sample_selector}) >= 1000.25' in query
+        assert 'gpustack:runtime_metrics_scrape_status' in query
+        assert 'gpustack:model_instance_source_info' in query
+        assert 'sum by (role)' in query
+    regular = {m.key: m for m in model_metric_definitions('vllm')}
+    assert regular['running_requests'].query_profile == 'gauge'
+
+
+@pytest.mark.parametrize(
+    'label', ['cluster_id', 'model_instance_id', 'role', 'worker_id']
+)
+def test_profile_native_labels_cannot_override_authorized_scope(label):
+    document = _document()
+    document['profiles']['gauge']['sample_labels'] = {label: 'other'}
+    with pytest.raises(ValidationError):
+        config.MonitoringQueries.model_validate(document)
+
+
+@pytest.mark.parametrize('profile', ['counter', 'histogram', 'hardware_gauge'])
+def test_native_sample_labels_do_not_change_non_engine_gauge_profiles(profile):
+    document = _document()
+    document['profiles'][profile]['sample_labels'] = {'priority': ''}
+    with pytest.raises(ValidationError):
+        config.MonitoringQueries.model_validate(document)
+
+
+def test_pd_query_kinds_match_independent_worker_normalization_definitions():
+    from gpustack.utils.metrics import get_builtin_metrics_config
+
+    worker = get_builtin_metrics_config()['gpustack_metrics']
+    declaration = config.get_query_config()
+    for key in (
+        'pd_kv_transfer',
+        'pd_kv_transfer_post',
+        'pd_kv_allocation',
+        'pd_kv_transfer_bytes',
+        'pd_kv_transfer_speed',
+        'pd_prefill_bootstrap_queue',
+        'pd_prefill_inflight_queue',
+        'pd_decode_prealloc_queue',
+        'pd_decode_transfer_queue',
+        'router_requests',
+        'router_request_duration',
+    ):
+        metric = declaration.metrics[key]
+        family = metric.family.removesuffix('_total')
+        assert worker[family]['type'].lower() == metric.kind
+    assert declaration.metrics['pd_kv_transfer_speed'].unit == 'bytes_per_second'
+    assert declaration.metrics['router_requests'].family.endswith('_total')
 
 
 def test_changing_only_a_declared_expression_changes_the_query_and_keeps_scope(
@@ -158,6 +232,29 @@ def test_declared_default_windows_match_the_api(seconds, step, window):
     policy = config.get_query_config().time_windows.llm
     assert policy.step(seconds) == step
     assert policy.rate_window(step) == window
+
+
+def test_benchmark_grid_policy_is_bounded_and_separate_from_model_sampling():
+    windows = config.get_query_config().time_windows
+    assert windows.benchmark.step(3) == windows.benchmark.step(15) == 1
+    assert windows.benchmark.step(604800) == 5040
+    assert windows.llm.step(15) == windows.hardware.step(15) == 15
+
+
+@pytest.mark.parametrize(
+    'field,value',
+    [
+        ('min_step_seconds', 0),
+        ('target_points', 1001),
+        ('target_points', True),
+        ('unknown', 1),
+    ],
+)
+def test_invalid_benchmark_grid_policy_is_rejected(field, value):
+    document = _document()
+    document['time_windows']['benchmark'][field] = value
+    with pytest.raises(ValidationError):
+        config.MonitoringQueries.model_validate(document)
 
 
 @pytest.mark.parametrize(
@@ -310,3 +407,30 @@ async def test_direct_resource_collector_consumes_hardware_expression_and_window
     )
     assert response.step == 30
     assert calls and all('<= 90)' in expression for expression in calls)
+
+
+@pytest.mark.parametrize(
+    'mutation',
+    [
+        'engine_gateway_family',
+        'gateway_engine_family',
+        'missing_count',
+        'engine_profile',
+    ],
+)
+def test_gateway_query_declarations_cannot_alias_engine_histograms(mutation):
+    document = _document()
+    if mutation == 'engine_gateway_family':
+        document['metrics']['ttft']['family'] = document['metrics']['ingress_ttft'][
+            'family'
+        ]
+    elif mutation == 'gateway_engine_family':
+        document['metrics']['ingress_ttft']['family'] = document['metrics']['ttft'][
+            'family'
+        ]
+    elif mutation == 'missing_count':
+        document['metrics']['ingress_ttft']['denominator'] = None
+    else:
+        document['metrics']['ingress_ttft']['query_profile'] = 'histogram'
+    with pytest.raises(ValidationError):
+        config.MonitoringQueries.model_validate(document)

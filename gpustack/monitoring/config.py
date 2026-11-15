@@ -19,21 +19,30 @@ import yaml
 
 from gpustack.utils.compat_importlib import pkg_resources
 
+_RUNTIME_FAMILY = (
+    r'^(gpustack:[A-Za-z_][A-Za-z0-9_]*|'
+    r'route_upstream_model_consumer_metric_llm_'
+    r'(first_token_duration|service_duration|duration_count|stream_duration_count))$'
+)
+
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True)
 
 
-class WindowPolicy(_StrictModel):
+class EvaluationPolicy(_StrictModel):
     target_points: int = Field(ge=1, le=1000, strict=True)
     min_step_seconds: int = Field(ge=1, le=3600, strict=True)
-    rate_window_extra_seconds: int = Field(default=0, ge=0, le=86400, strict=True)
-    freshness_seconds: int = Field(default=120, ge=1, le=86400, strict=True)
 
     def step(self, seconds: int) -> int:
         if type(seconds) is not int or seconds <= 0:
             raise ValueError('Invalid query span')
         return max(math.ceil(seconds / self.target_points), self.min_step_seconds)
+
+
+class WindowPolicy(EvaluationPolicy):
+    rate_window_extra_seconds: int = Field(default=0, ge=0, le=86400, strict=True)
+    freshness_seconds: int = Field(default=120, ge=1, le=86400, strict=True)
 
     def rate_window(self, step: int) -> int:
         return step + self.rate_window_extra_seconds
@@ -42,31 +51,41 @@ class WindowPolicy(_StrictModel):
 class TimeWindows(_StrictModel):
     llm: WindowPolicy
     hardware: WindowPolicy
+    benchmark: EvaluationPolicy
 
 
 class QueryProfile(_StrictModel):
     kind: Literal['gauge', 'counter', 'histogram']
-    scope: Literal['engine', 'hardware'] = 'engine'
+    scope: Literal['engine', 'hardware', 'gateway'] = 'engine'
     expressions: Dict[str, str]
+    sample_labels: Dict[Literal['priority'], str] = Field(default_factory=dict)
+
+    @model_validator(mode='after')
+    def validate_sample_labels(self):
+        if self.sample_labels and (self.kind, self.scope) != ('gauge', 'engine'):
+            raise ValueError('Native sample labels only apply to engine gauge profiles')
+        return self
 
 
 class RuntimeMetric(_StrictModel):
-    family: str = Field(pattern=r'^gpustack:[A-Za-z_][A-Za-z0-9_]*$')
+    family: str = Field(pattern=_RUNTIME_FAMILY)
     kind: Literal['gauge', 'counter', 'histogram']
     unit: str
     measurement_scope: str
     query_profile: str
     section: Literal['llm', 'pd'] = 'llm'
-    denominator: Optional[str] = Field(
-        default=None, pattern=r'^gpustack:[A-Za-z_][A-Za-z0-9_]*$'
-    )
+    denominator: Optional[str] = Field(default=None, pattern=_RUNTIME_FAMILY)
     scale: FiniteFloat = Field(default=1.0, gt=0)
     per_source: bool = False
     backend_overrides: Dict[str, dict] = Field(default_factory=dict)
 
     @model_validator(mode='after')
     def validate_ratio(self):
-        if self.denominator is not None and self.kind != 'counter':
+        if (
+            self.denominator is not None
+            and self.kind != 'counter'
+            and self.measurement_scope != 'service_ingress'
+        ):
             raise ValueError('Only counter metrics may declare a denominator')
         return self
 
@@ -148,6 +167,10 @@ _PROFILE_VARIABLES = {
         'p99': {'buckets'},
     },
     ('hardware', 'gauge'): {'sample': {'selector', 'freshness_seconds'}},
+    ('gateway', 'histogram'): {
+        'rate': {'family', 'selector', 'window_seconds'},
+        'increase': {'family', 'selector', 'window_seconds'},
+    },
 }
 
 
@@ -235,7 +258,27 @@ class MonitoringQueries(_StrictModel):
                 raise ValueError('Invalid metric key')
             for backend in ('', *metric.backend_overrides):
                 resolved = metric.for_backend(backend)
-                self._profile(resolved.query_profile, resolved.kind, 'engine')
+                gateway = resolved.measurement_scope == 'service_ingress'
+                self._profile(
+                    resolved.query_profile,
+                    resolved.kind,
+                    'gateway' if gateway else 'engine',
+                )
+                if gateway:
+                    if resolved.kind != 'histogram' or not resolved.denominator:
+                        raise ValueError('Gateway latency requires duration and count')
+                    if not all(
+                        value.startswith('route_upstream_model_consumer_metric_llm_')
+                        for value in (resolved.family, resolved.denominator)
+                    ):
+                        raise ValueError(
+                            'Gateway latency requires native gateway counters'
+                        )
+                elif not resolved.family.startswith('gpustack:') or (
+                    resolved.denominator
+                    and not resolved.denominator.startswith('gpustack:')
+                ):
+                    raise ValueError('Engine metrics require normalized families')
         for name, metric in self.hardware_metrics.items():
             if not re.fullmatch(r'[a-z][a-z0-9_]*', name):
                 raise ValueError('Invalid hardware metric key')
