@@ -541,6 +541,8 @@ class TestReconnect:
             if manager is not None and manager.websocket is websocket:
                 break
             await asyncio.sleep(0.01)
+        else:
+            pytest.fail(f"client {client_id} did not register {websocket!r}")
         return task
 
     @pytest.mark.asyncio
