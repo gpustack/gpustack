@@ -14,6 +14,8 @@ chart repository turns this suite red.
 import pathlib
 import shutil
 import subprocess
+from copy import deepcopy
+from functools import lru_cache
 
 import pytest
 import yaml
@@ -21,6 +23,7 @@ import yaml
 from gpustack import __operator_version__
 
 HELM = shutil.which("helm")
+SAFE_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 pytestmark = pytest.mark.skipif(HELM is None, reason="helm is not installed")
 
@@ -116,6 +119,18 @@ SERVER_AND_TOKEN = [
 
 
 def render(*args: str) -> list[dict]:
+    # Identical values render once, but assertions receive independent objects.
+    return deepcopy(_render(*args))
+
+
+@pytest.fixture(scope="module", autouse=True)
+def render_cache():
+    yield
+    _render.cache_clear()
+
+
+@lru_cache(maxsize=None)
+def _render(*args: str) -> list[dict]:
     result = subprocess.run(
         [HELM, "template", "gpustack", CHART, *BASE, *args],
         capture_output=True,
@@ -124,7 +139,7 @@ def render(*args: str) -> list[dict]:
     )
     if result.returncode != 0:
         pytest.fail(f"helm template failed:\n{result.stderr}")
-    return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    return [doc for doc in yaml.load_all(result.stdout, Loader=SAFE_YAML_LOADER) if doc]
 
 
 def render_error(*args: str) -> str:
@@ -171,6 +186,51 @@ class TestServerOnly:
     def test_no_registration_token_secret(self):
         # Nothing registers, so no token is minted.
         assert "registration-token" not in names(render(), "Secret")
+
+
+class TestHigressPlugins:
+    """The plugin-server Deployment rides the server image by default.
+
+    The server publishes WasmPlugin URLs from its own bundled
+    gpustack-higress-plugins manifest, so a plugin-server on a stale dedicated
+    image 404s them and wedges the gateway listener. Sharing the server
+    image.tag makes the two move together under `helm upgrade --set
+    image.tag=...` without pulling a new chart.
+    """
+
+    def _deployment(self, docs: list[dict]) -> dict:
+        for doc in docs:
+            if doc["kind"] == "Deployment" and doc["metadata"]["name"].endswith(
+                "higress-plugins"
+            ):
+                return doc
+        pytest.fail("higress-plugins Deployment not rendered")
+
+    def test_defaults_to_the_server_image(self):
+        pod_spec = self._deployment(render())["spec"]["template"]["spec"]
+        container = pod_spec["containers"][0]
+        assert container["image"] == "docker.io/gpustack/gpustack:test"
+        # The server image's ENTRYPOINT funnels everything into
+        # `gpustack start`; the plugin server must bypass it explicitly, with
+        # the command the dedicated image's Dockerfile CMD already carries.
+        assert container["command"] == [
+            "gpustack-plugins",
+            "start",
+            "--port",
+            "8080",
+            "--host",
+            "0.0.0.0",
+        ]
+
+    def test_pinned_dedicated_image_still_renders(self):
+        docs = render(
+            "--set",
+            "higressPlugins.image.repository=gpustack/higress-plugins",
+            "--set",
+            "higressPlugins.image.tag=0.5.0.post2",
+        )
+        container = self._deployment(docs)["spec"]["template"]["spec"]["containers"][0]
+        assert container["image"] == "docker.io/gpustack/higress-plugins:0.5.0.post2"
 
 
 class TestServerAndWorker:

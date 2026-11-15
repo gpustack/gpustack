@@ -3,6 +3,7 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 from transformers import PretrainedConfig
 from gpustack.utils import hub, model_config
 from gpustack.utils.hub import (
+    FileEntry,
     get_hugging_face_model_min_gguf_path,
     get_model_scope_model_min_gguf_path,
     get_model_weight_size,
@@ -10,6 +11,7 @@ from gpustack.utils.hub import (
     match_model_scope_file_paths,
     read_repo_file_content,
 )
+from gpustack.worker.downloaders import select_model_scope_file_info
 from gpustack.schemas.models import (
     Model,
     SourceEnum,
@@ -157,6 +159,95 @@ def test_get_hub_model_weight_size():
         assert (
             computed == expected_weight_size
         ), f"weight_size mismatch for {model}, computed: {computed}, expected: {expected_weight_size}"
+
+
+def test_get_hf_min_gguf_file_skips_mmproj(monkeypatch):
+    # mmproj files sort before the main weights alphabetically; the main
+    # model must be selected regardless of ordering or quantization match.
+    files = [
+        "mmproj-vllm-d3-mini-Q8_0.gguf",
+        "vllm-d3-mini-Q8_0.gguf",
+    ]
+    monkeypatch.setattr(
+        'gpustack.utils.hub.HfApi.list_repo_files', lambda self, model_id: files
+    )
+
+    got = get_hugging_face_model_min_gguf_path('ggml-org/vllm-d3-mini-GGUF')
+    assert got == "vllm-d3-mini-Q8_0.gguf"
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("mmproj-vllm-d3-mini-Q8_0.gguf", True),
+        # Case-insensitive: fnmatch is case-sensitive on Linux.
+        ("MMPROJ-vllm-d3-mini-Q8_0.GGUF", True),
+        # File-name matching only: a cache directory whose name contains
+        # "mmproj" must not disqualify main weights.
+        ("/srv/mmproj-cache/huggingface/org/model/model-Q8_0.gguf", False),
+        (
+            "/var/lib/gpustack/cache/model_scope/ggml-org/m/vllm-d3-mini-Q8_0.gguf",
+            False,
+        ),
+    ],
+)
+def test_is_mmproj_file(path, expected):
+    assert hub.is_mmproj_file(path) is expected
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        # Repo-relative matching also catches a projector that lives in an
+        # "mmproj/" subfolder with a plain file name.
+        ("mmproj/vllm-d3-mini-Q8_0.gguf", True),
+        ("MMProj/vllm-d3-mini-Q8_0.gguf", True),
+        ("mmproj-vllm-d3-mini-Q8_0.gguf", True),
+        ("vllm-d3-mini-Q8_0.gguf", False),
+        ("subdir/vllm-d3-mini-Q8_0.gguf", False),
+    ],
+)
+def test_is_mmproj_repo_path(path, expected):
+    assert hub.is_mmproj_repo_path(path) is expected
+
+
+def test_get_ms_min_gguf_file_skips_mmproj(monkeypatch):
+    files = [
+        "mmproj-vllm-d3-mini-Q8_0.gguf",
+        "vllm-d3-mini-Q8_0.gguf",
+    ]
+    monkeypatch.setattr(
+        'gpustack.utils.hub.HubApi.get_model_files',
+        lambda self, model_id, recursive=True: [{"Path": f} for f in files],
+    )
+
+    got = get_model_scope_model_min_gguf_path('ggml-org/vllm-d3-mini-GGUF')
+    assert got == "vllm-d3-mini-Q8_0.gguf"
+
+
+def _ms_source(file_path):
+    from gpustack.schemas.models import ModelSource, SourceEnum
+
+    return ModelSource(
+        source=SourceEnum.MODEL_SCOPE,
+        model_scope_model_id='ggml-org/vllm-d3-mini-GGUF',
+        model_scope_file_path=file_path,
+    )
+
+
+def test_select_model_scope_file_info_keeps_main_file_first():
+    # The first entry feeds resolved_path; the projector must never sort
+    # ahead of the main weights, even when the user pattern also matches it.
+    files = [
+        FileEntry('mmproj-vllm-d3-mini-Q8_0.gguf', 366894720),
+        FileEntry('vllm-d3-mini-Q8_0.gguf', 5157835264),
+    ]
+
+    got = select_model_scope_file_info(files, _ms_source('*Q8_0.gguf'))
+    assert [f.rfilename for f in got] == [
+        'vllm-d3-mini-Q8_0.gguf',
+        'mmproj-vllm-d3-mini-Q8_0.gguf',
+    ]
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))

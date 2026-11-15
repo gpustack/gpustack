@@ -95,6 +95,12 @@ if len(pool) != count or any(not item.strip() for item in pool):
 os.environ[key] = ','.join(pool[i].strip() for i in indexes)
 if key == 'ASCEND_RT_VISIBLE_DEVICES':
     os.environ['NPU_VISIBLE_DEVICES'] = os.environ[key]
+cache_root = os.environ.get('VLLM_CACHE_ROOT')
+if cache_root:
+    # AOT graphs encode logical device indices, which depend on the local pool size.
+    os.environ['VLLM_CACHE_ROOT'] = os.path.join(
+        cache_root, 'isolated_devices', str(len(indexes))
+    )
 os.execvpe(sys.argv[4], sys.argv[4:], os.environ)
 """
 

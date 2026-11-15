@@ -1,4 +1,6 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
@@ -251,7 +253,128 @@ def test_confirmed_scope_miss_is_negative_cached():
     assert http.get.call_count == 2
 
 
-def test_org_row_event_clears_negative_cache():
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        [("vLLM", 42), ("vLLM", 43)],
+        [("vLLM", 42), ("SGLang", 42)],
+    ],
+    ids=["multiple-owners", "multiple-backends"],
+)
+def test_confirmed_scope_misses_survive_other_scope_refreshes(scopes):
+    rows = [
+        create_backend(id=1, backend_name="vLLM"),
+        create_backend(id=2, backend_name="SGLang"),
+    ]
+    manager = create_manager(rows)
+    http = manager._clientset.http_client.get_httpx_client.return_value
+
+    for backend_name, owner in scopes:
+        manager._last_refresh = 0.0
+        manager.get_backend_by_name(backend_name, owner)
+
+    assert http.get.call_count == 3
+    for _ in range(3):
+        for backend_name, owner in scopes:
+            manager._last_refresh = 0.0
+            view = manager.get_backend_by_name(backend_name, owner)
+            assert view.backend_name == backend_name
+            assert view.owner_principal_id is None
+    assert http.get.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_failed_watch_connections_preserve_negative_cache(monkeypatch):
+    manager = create_manager([create_backend()])
+    http = manager._clientset.http_client.get_httpx_client.return_value
+    manager._last_refresh = 0.0
+    manager.get_backend_by_name("vLLM", 42)
+    manager._running = True
+    watch = AsyncMock(side_effect=ConnectionError("connect failed"))
+    manager._clientset.inference_backends.awatch = watch
+
+    async def retry(seconds):
+        manager._last_refresh = 0.0
+        manager.get_backend_by_name("vLLM", 42)
+        assert http.get.call_count == 2
+        if watch.call_count == 2:
+            manager._running = False
+
+    monkeypatch.setattr(
+        "gpustack.worker.inference_backend_manager.asyncio.sleep", retry
+    )
+    await manager._watch_changes()
+
+    assert watch.call_count == 2
+    assert ("vLLM", 42) in manager._missing_scopes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "org_available,replay_org_row",
+    [(False, False), (True, False), (True, True)],
+    ids=["no-override", "stale-replay", "current-replay"],
+)
+async def test_watch_reconnect_revalidates_scope_once(
+    monkeypatch, org_available, replay_org_row
+):
+    platform_row = create_backend(health_check_path="/platform/health")
+    org_row = create_backend(
+        id=2,
+        owner_principal_id=42,
+        health_check_path="/org/health",
+    )
+    manager = create_manager([platform_row])
+    http = manager._clientset.http_client.get_httpx_client.return_value
+    manager._last_refresh = 0.0
+    manager.get_backend_by_name("vLLM", 42)
+    manager._running = True
+    missing_on_connect = []
+    health_paths = []
+
+    async def replay(*, callback):
+        missing_on_connect.append(set(manager._missing_scopes))
+        callback(
+            Event(type=EventType.CREATED, data=platform_row.model_dump(mode="json"))
+        )
+        if len(missing_on_connect) == 2 and replay_org_row:
+            callback(
+                Event(type=EventType.CREATED, data=org_row.model_dump(mode="json"))
+            )
+        for _ in range(3):
+            manager._last_refresh = 0.0
+            view = manager.get_backend_by_name("vLLM", 42)
+            health_paths.append(view.health_check_path)
+            callback(
+                Event(type=EventType.UPDATED, data=platform_row.model_dump(mode="json"))
+            )
+        if len(missing_on_connect) == 1:
+            raise ConnectionError("watch disconnected")
+        manager._running = False
+
+    watch = AsyncMock(side_effect=replay)
+    manager._clientset.inference_backends.awatch = watch
+
+    async def retry(seconds):
+        if org_available:
+            serve_rows(manager, [platform_row, org_row])
+        if watch.await_count >= 2:
+            manager._running = False
+
+    monkeypatch.setattr(
+        "gpustack.worker.inference_backend_manager.asyncio.sleep", retry
+    )
+    await manager._watch_changes()
+
+    assert missing_on_connect == [{("vLLM", 42)}, {("vLLM", 42)}]
+    expected_path = "/org/health" if org_available else "/platform/health"
+    assert health_paths == ["/platform/health"] * 3 + [expected_path] * 3
+    assert (("vLLM", 42) in manager._missing_scopes) is not org_available
+    assert http.get.call_count == (3 if replay_org_row else 4)
+
+
+@pytest.mark.parametrize("event_type", [EventType.CREATED, EventType.UPDATED])
+def test_org_row_event_clears_negative_cache(event_type):
     platform_row = create_backend(id=1, version_configs={"0.11.0": built_in_version()})
     manager = create_manager([platform_row])
 
@@ -264,9 +387,7 @@ def test_org_row_event_clears_negative_cache():
         owner_principal_id=42,
         version_configs={"a-custom": custom_version()},
     )
-    manager._handle_event(
-        Event(type=EventType.CREATED, data=org_row.model_dump(mode="json"))
-    )
+    manager._handle_event(Event(type=event_type, data=org_row.model_dump(mode="json")))
     assert ("vLLM", 42) not in manager._missing_scopes
     view = manager.get_backend_by_name("vLLM", 42)
     assert set(view.version_configs.root.keys()) == {"0.11.0", "a-custom"}

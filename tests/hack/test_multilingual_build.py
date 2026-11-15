@@ -24,7 +24,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.fixture
 def multilingual_source(tmp_path):
-    root = tmp_path / "documentation"
+    return _write_multilingual_source(tmp_path / "documentation")
+
+
+def _write_multilingual_source(root: Path) -> Path:
     (root / "docs-i18n/mkdocs").mkdir(parents=True)
     for language in i18n.LANGUAGES:
         source = root / ("docs" if language == "en" else f"docs-i18n/{language}")
@@ -329,8 +332,12 @@ def test_ordinary_mkdocs_build_publishes_every_language_and_native_search(
     assert not list(multilingual_source.glob(".docs-build-*"))
 
 
-@pytest.fixture
-def mike_publication(multilingual_source):
+@pytest.fixture(scope="module")
+def mike_publication(tmp_path_factory):
+    """Publish a read-only version tree shared by the navigation assertions."""
+    multilingual_source = _write_multilingual_source(
+        tmp_path_factory.mktemp("mike-publication") / "documentation"
+    )
     environment = {
         **os.environ,
         "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],

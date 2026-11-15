@@ -5,6 +5,7 @@ import pytest
 
 from gpustack.api.exceptions import ForbiddenException, NotFoundException
 from gpustack.routes.workers import (
+    _build_worker_config_dict,
     check_existing_worker_ownership,
     delete_worker,
     get_worker_privatekey,
@@ -22,6 +23,46 @@ from gpustack.schemas.workers import (
     SystemReserved,
 )
 from gpustack.schemas.clusters import Cluster, ClusterProvider
+from gpustack.schemas.config import PredefinedConfigNoDefaults
+
+
+def test_worker_config_inherits_the_server_container_namespace(monkeypatch):
+    server_config = SimpleNamespace(
+        system_default_container_registry=None,
+        container_namespace="gpustack-ai",
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.workers.get_global_config", lambda: server_config
+    )
+    cluster = Cluster(
+        name="c",
+        worker_config=PredefinedConfigNoDefaults(),
+    )
+
+    config = _build_worker_config_dict(cluster)
+
+    assert config["container_namespace"] == "gpustack-ai"
+
+
+@pytest.mark.parametrize("cluster_namespace", ["cluster-org", ""])
+def test_cluster_container_namespace_overrides_the_server(
+    monkeypatch, cluster_namespace
+):
+    server_config = SimpleNamespace(
+        system_default_container_registry=None,
+        container_namespace="gpustack-ai",
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.workers.get_global_config", lambda: server_config
+    )
+    cluster = Cluster(
+        name="c",
+        worker_config=PredefinedConfigNoDefaults(container_namespace=cluster_namespace),
+    )
+
+    config = _build_worker_config_dict(cluster)
+
+    assert config["container_namespace"] == cluster_namespace
 
 
 def test_update_worker_data_preserves_maintenance_mode():
@@ -230,7 +271,15 @@ def _worker(owner_principal_id=None, deleted_at=None):
         ssh_key_id=None,
         external_id=None,
         state=WorkerStateEnum.READY,
+        worker_uuid="6f1c3f0e-1a5b-4c6d-9e7f-2b8a4d0c5e11",
     )
+
+
+def _request(handler=None):
+    """Stub the request the delete route uses to reach the tunnel registry."""
+    request = MagicMock()
+    request.app.state.message_server_handler = handler
+    return request
 
 
 def _patch_worker_one_by_id(worker):
@@ -253,7 +302,7 @@ async def test_delete_worker_allowed_for_org_admin_in_owning_org():
     ):
         service = service_cls.return_value
         service.delete = AsyncMock()
-        await delete_worker(ctx=ctx, session=session, id=worker.id)
+        await delete_worker(request=_request(), ctx=ctx, session=session, id=worker.id)
         service.delete.assert_awaited_once()
 
 
@@ -265,7 +314,9 @@ async def test_delete_worker_forbidden_for_plain_org_user():
 
     with _patch_worker_one_by_id(worker):
         with pytest.raises(ForbiddenException):
-            await delete_worker(ctx=ctx, session=session, id=worker.id)
+            await delete_worker(
+                request=_request(), ctx=ctx, session=session, id=worker.id
+            )
 
 
 @pytest.mark.asyncio
@@ -277,7 +328,9 @@ async def test_delete_worker_returns_not_found_for_other_org():
 
     with _patch_worker_one_by_id(worker):
         with pytest.raises(NotFoundException):
-            await delete_worker(ctx=ctx, session=session, id=worker.id)
+            await delete_worker(
+                request=_request(), ctx=ctx, session=session, id=worker.id
+            )
 
 
 @pytest.mark.asyncio
@@ -292,7 +345,9 @@ async def test_delete_worker_on_globally_shared_cluster_requires_platform_admin(
 
     with _patch_worker_one_by_id(worker):
         with pytest.raises(ForbiddenException):
-            await delete_worker(ctx=ctx, session=session, id=worker.id)
+            await delete_worker(
+                request=_request(), ctx=ctx, session=session, id=worker.id
+            )
 
 
 @pytest.mark.asyncio
@@ -307,7 +362,7 @@ async def test_delete_worker_allowed_for_platform_admin():
     ):
         service = service_cls.return_value
         service.delete = AsyncMock()
-        await delete_worker(ctx=ctx, session=session, id=worker.id)
+        await delete_worker(request=_request(), ctx=ctx, session=session, id=worker.id)
         service.delete.assert_awaited_once()
 
 
@@ -325,7 +380,9 @@ async def test_delete_already_soft_deleted_worker_returns_not_found():
 
     with _patch_worker_one_by_id(worker):
         with pytest.raises(NotFoundException):
-            await delete_worker(ctx=ctx, session=session, id=worker.id)
+            await delete_worker(
+                request=_request(), ctx=ctx, session=session, id=worker.id
+            )
 
 
 @pytest.mark.asyncio

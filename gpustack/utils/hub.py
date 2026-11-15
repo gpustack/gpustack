@@ -3,7 +3,7 @@ import logging
 import gzip
 import os
 import tempfile
-from typing import Dict, List, Optional, Any
+from typing import Dict, Iterable, List, Optional, Any, Tuple
 from pathlib import Path
 import fnmatch
 from threading import Lock
@@ -28,6 +28,7 @@ from gpustack.schemas.models import (
     SourceEnum,
     get_mmproj_filename,
 )
+from gpustack.schemas.models import MMPROJ_GGUF_PATTERN
 from gpustack.utils.cache import is_cached, load_cache, save_cache
 from gpustack.utils import model_config
 
@@ -180,11 +181,21 @@ def match_hugging_face_files(
     return matching_files
 
 
+def _list_repo_cache_key(repo_id: str, source: str, root_dir_only: bool) -> str:
+    return f"{source}:{repo_id}:{root_dir_only}"
+
+
 def is_repo_cached(repo_id: str, source: str) -> bool:
     if not repo_id or not source:
         return False
-    cache_key = f"{source}:{repo_id}"
-    return is_cached(LIST_REPO_CACHE_DIR, cache_key)
+    # list_repo keeps one entry per listing depth, and either one proves that the
+    # repository was reachable.
+    return any(
+        is_cached(
+            LIST_REPO_CACHE_DIR, _list_repo_cache_key(repo_id, source, root_dir_only)
+        )
+        for root_dir_only in (False, True)
+    )
 
 
 def list_repo(
@@ -194,7 +205,7 @@ def list_repo(
     cache_expiration: Optional[int] = None,
     root_dir_only: bool = False,
 ) -> List[Dict[str, any]]:
-    cache_key = f"{source}:{repo_id}:{root_dir_only}"
+    cache_key = _list_repo_cache_key(repo_id, source, root_dir_only)
     cached_result, is_succ = load_cache(
         LIST_REPO_CACHE_DIR, cache_key, cache_expiration
     )
@@ -372,20 +383,53 @@ def read_repo_file_content(  # noqa: C901
         return None
 
 
+def sum_weight_file_sizes(files: Iterable[Tuple[str, int]]) -> int:
+    """
+    Sum the sizes of the weight files that hold one copy of the model weights.
+
+    A repository can ship the same weights in several forms, and engines load only
+    one of them, so summing by extension alone counts the model more than once:
+    - vLLM and SGLang load *.safetensors when any exist and fall back to *.bin
+      otherwise. Example: https://huggingface.co/mistralai/Mistral-7B-v0.1
+    - consolidated.safetensors duplicates the other *.safetensors files when there
+      are any, and is the only copy in Mistral-format repositories. Examples:
+      https://huggingface.co/mistralai/Voxtral-Small-24B-2507 (duplicate),
+      https://huggingface.co/mistralai/Pixtral-12B-2409 (only copy)
+
+    Args:
+        files: The (file name, size) pairs of one directory.
+    Returns:
+        int: The size of the model weights
+    """
+    sizes = {
+        name: size
+        for name, size in files
+        if name.endswith((".safetensors", ".bin", ".pt", ".pth"))
+    }
+    has_other_safetensors = any(
+        name.endswith(".safetensors") and name != "consolidated.safetensors"
+        for name in sizes
+    )
+    if has_other_safetensors:
+        sizes.pop("consolidated.safetensors", None)
+    has_safetensors = any(name.endswith(".safetensors") for name in sizes)
+    return sum(
+        size
+        for name, size in sizes.items()
+        if not (has_safetensors and name.endswith(".bin"))
+    )
+
+
 def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     """
-    Get the size of the model weights. This is the sum of all the weight files with extensions
-    .safetensors, .bin, .pt, .pth in the root directory only.
+    Get the size of the model weights in the root directory only, see
+    sum_weight_file_sizes for which files count.
     Args:
         model: Model to get the weight size for
         token: Optional Hugging Face API token
     Returns:
         int: The size of the model weights
     """
-    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
-    # consolidated.safetensors is usually a duplicate of other weight files. Exclude by default.
-    # Example: https://huggingface.co/mistralai/Voxtral-Small-24B-2507
-    exclude_files = ["consolidated.safetensors"]
     if model.source == SourceEnum.HUGGING_FACE:
         repo_id = model.huggingface_repo_id
     elif model.source == SourceEnum.MODEL_SCOPE:
@@ -393,13 +437,8 @@ def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     else:
         raise ValueError(f"Unknown source {model.source}")
     repo_file_infos = list_repo(repo_id, model.source, token=token, root_dir_only=True)
-    return sum(
-        file.get("size", 0)
-        for file in repo_file_infos
-        if (
-            file.get("name", "").endswith(weight_file_extensions)
-            and file.get("name", "") not in exclude_files
-        )
+    return sum_weight_file_sizes(
+        (file.get("name", ""), file.get("size", 0)) for file in repo_file_infos
     )
 
 
@@ -529,6 +568,27 @@ quantization_list = [
 ]
 
 
+def is_mmproj_file(file_path: str) -> bool:
+    """Multimodal projector files are CLIP weights that can only be loaded
+    via --mmproj, never as the main model. Matched case-insensitively
+    (fnmatch is case-sensitive on Linux) against the file name only, so this
+    is safe for absolute local paths where a cache directory (e.g.
+    ".../mmproj-cache/org/model/model-Q8_0.gguf") must not disqualify the
+    main weights."""
+    return fnmatch.fnmatch(Path(file_path).name.lower(), MMPROJ_GGUF_PATTERN.lower())
+
+
+def is_mmproj_repo_path(repo_path: str) -> bool:
+    """Same projector detection for repository-relative paths, where the
+    full path is significant: a projector may live in an "mmproj/" subfolder
+    with an otherwise plain file name, and the extra-file matcher identifies
+    it by the full repo path. Repository paths carry no cache prefix, so
+    matching the whole string cannot produce false positives."""
+    return is_mmproj_file(repo_path) or fnmatch.fnmatch(
+        Path(repo_path).as_posix().lower(), MMPROJ_GGUF_PATTERN.lower()
+    )
+
+
 def get_hugging_face_model_min_gguf_path(
     model_id: str,
     token: Optional[str] = None,
@@ -536,7 +596,9 @@ def get_hugging_face_model_min_gguf_path(
     api = HfApi(token=token)
     files = api.list_repo_files(model_id)
 
-    gguf_files = sorted([f for f in files if f.endswith(".gguf")])
+    gguf_files = sorted(
+        [f for f in files if f.endswith(".gguf") and not is_mmproj_repo_path(f)]
+    )
     if not gguf_files:
         return None
 
@@ -581,7 +643,9 @@ def get_model_scope_model_min_gguf_path(
     files = api.get_model_files(model_id, recursive=True)
     file_paths: List[str] = [file["Path"] for file in files]
 
-    gguf_files = sorted([f for f in file_paths if f.endswith(".gguf")])
+    gguf_files = sorted(
+        [f for f in file_paths if f.endswith(".gguf") and not is_mmproj_repo_path(f)]
+    )
     if not gguf_files:
         return None
 

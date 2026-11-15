@@ -267,7 +267,12 @@ def test_custom_mode_permits_a_mixed_engine_group():
         _model(
             roles=[
                 RoleSpec(name="prefill", backend="vLLM"),
-                RoleSpec(name="decode", backend="Custom"),
+                RoleSpec(
+                    name="decode",
+                    backend="Custom",
+                    image_name="my/decode:1",
+                    run_command="decode-server",
+                ),
             ],
             disaggregation=_pd(PDModeEnum.CUSTOM),
             replicas=1,

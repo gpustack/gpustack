@@ -102,8 +102,17 @@ def model(**kwargs):
         ({}, [], "0.30.0", None, True),
         ({}, [], "0.29.0", None, False),
         ({}, [], None, None, True),
-        ({}, [], "0.30.0-custom", None, False),
-        ({}, [], "0.30.0", "custom:latest", False),
+        ({}, [], "0.30.0-custom", None, True),
+        ({}, [], "0.30.0", "custom:latest", True),
+        ({"VLLM_PLE_CPU_OFFLOAD": "0"}, [], "custom", None, False),
+        ({"VLLM_PLE_CPU_OFFLOAD": "1"}, [], "custom", None, True),
+        (
+            {"VLLM_PLE_CPU_OFFLOAD": "1"},
+            ['--engram-config={"cpu_offload":false}'],
+            "custom",
+            None,
+            False,
+        ),
         ({}, ['--engram-config=invalid'], "0.30.0", None, False),
         ({}, ['--engram-config={"cpu_offload":"false"}'], "0.30.0", None, False),
         ({"VLLM_PLE_CPU_OFFLOAD": "invalid"}, [], "0.30.0", None, False),
@@ -251,11 +260,29 @@ async def test_mixed_engram_config_resident_weights_affect_admission(config, man
     assert not candidates[0].computed_resource_claim.ram
 
 
-@pytest.mark.parametrize("version", [None, "", "0.30.0", "0.31.0", "0.32.0", "0.33.0"])
+@pytest.mark.parametrize(
+    "version",
+    [
+        None,
+        "",
+        "0.30.0",
+        "0.31.0",
+        "0.32.0",
+        "0.33.0",
+        "v0.33.0",
+        "0.33.1",
+        "0.34.0",
+        "0.100.0",
+        "1.0.0",
+    ],
+)
 @pytest.mark.parametrize("legacy_env", ["0", "1", "invalid"])
 @pytest.mark.parametrize("explicit", [None, False, True])
-def test_offload_defaults_follow_verified_backend_versions(
-    version, legacy_env, explicit
+@pytest.mark.parametrize(
+    "architecture", ["DeepseekV41ForCausalLM", "Qwen4ExpForCausalLM"]
+)
+def test_offload_defaults_follow_backend_versions(
+    version, legacy_env, explicit, architecture
 ):
     parameters = (
         []
@@ -272,8 +299,8 @@ def test_offload_defaults_follow_verified_backend_versions(
     elif version == "0.30.0":
         enabled = legacy_env == "1"
     else:
-        enabled = version in (None, "", "0.31.0", "0.32.0")
-    assert estimate_offloaded_lookup_bytes(m, lookup_config()) == (
+        enabled = True
+    assert estimate_offloaded_lookup_bytes(m, lookup_config(architecture)) == (
         TABLE_BYTES if enabled else 0
     )
 
@@ -305,12 +332,16 @@ def test_published_model_dimensions(filename, expected, decoded):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", [None, ""])
-async def test_auto_version_estimates_qwen_ple_resources(version):
+@pytest.mark.parametrize(
+    "version",
+    [None, "", "0.32.0", "0.33.0", "v0.33.0", "0.34.0", "1.0.0", "0.33.0-custom"],
+)
+@pytest.mark.parametrize("image", [None, "custom:latest"])
+async def test_backend_version_estimates_qwen_ple_resources(version, image):
     data = json.loads(
         (Path(__file__).parents[1] / "fixtures/model_configs/qwen_ple.json").read_text()
     )
-    m = model(backend_version=version)
+    m = model(backend_version=version, image_name=image)
     offloaded = estimate_offloaded_lookup_bytes(m, data)
     with patch(
         "gpustack.policies.utils.get_model_weight_size", return_value=185523317458
@@ -318,7 +349,7 @@ async def test_auto_version_estimates_qwen_ple_resources(version):
         vram = await estimate_model_vram(m, offloaded_weights=offloaded)
     assert round(vram / GIB, 2) == 152.12
     assert get_model_ram_claim(m, offloaded) == 51200000000
-    # Estimating Auto does not pin the runtime version chosen by the worker.
+    # Estimation preserves the runtime version selection, including Auto.
     assert m.backend_version == version
 
 
@@ -603,7 +634,6 @@ def test_per_layer_ple_precision_and_nested_quantization():
     "parameters",
     [
         ["--quantization=awq"],
-        ['--hf-overrides={"ngram_vocab_size_base":1}'],
         ["--dtype=float32"],
     ],
 )
@@ -617,26 +647,84 @@ def test_incompatible_runtime_overrides_fall_back(parameters):
 @pytest.mark.parametrize(
     "architecture", ["DeepseekV41ForCausalLM", "Qwen4ExpForCausalLM"]
 )
+@pytest.mark.parametrize(
+    "backend,parameters,expected",
+    [
+        (BackendEnum.VLLM, ["--quantization=fp8"], TABLE_BYTES),
+        (BackendEnum.VLLM, ["--quantization=FP8"], TABLE_BYTES),
+        (BackendEnum.VLLM, ["-q", "Fp8"], TABLE_BYTES),
+        (BackendEnum.VLLM, ["--quantization=AWQ", "-q=FP8"], TABLE_BYTES),
+        (BackendEnum.VLLM, ["--quantization=FP8", "-q=AWQ"], 0),
+        (BackendEnum.VLLM, ["--quantization=AWQ"], 0),
+        (BackendEnum.SGLANG, ["--quantization=fp8"], TABLE_BYTES),
+        (BackendEnum.SGLANG, ["--quantization=FP8"], 0),
+    ],
+)
+def test_runtime_quantization_matches_backend_case_handling(
+    architecture, backend, parameters, expected
+):
+    offload = (
+        '{"cpu_offload":true}' if backend == BackendEnum.VLLM else '{"placement":"cpu"}'
+    )
+    m = model(backend_parameters=["--engram-config", offload, *parameters])
+    m.backend = backend
+    assert estimate_offloaded_lookup_bytes(m, lookup_config(architecture)) == expected
+
+
+@pytest.mark.parametrize(
+    "architecture", ["DeepseekV41ForCausalLM", "Qwen4ExpForCausalLM"]
+)
 @pytest.mark.parametrize("name", ["hf-overrides", "hf_overrides"])
 @pytest.mark.parametrize("dotted", [False, True])
 @pytest.mark.parametrize("syntax", ["equals", "separate", "combined"])
-def test_hf_override_aliases_disable_lookup_deduction(
-    architecture, name, dotted, syntax
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("generation_config", {"reasoning_effort": "low"}),
+        ("text_config", {"ple_embed_dim": 512}),
+    ],
+)
+def test_hf_overrides_preserve_checkpoint_lookup_deduction(
+    architecture, name, dotted, syntax, field, value
 ):
     config = lookup_config(architecture)
-    config.text_config.ple_embed_dim *= 2
-    config.text_config.engram_num_embeddings = [2**29]
     m = model(backend_version="0.32.0")
-    assert estimate_offloaded_lookup_bytes(m, config) == 2 * TABLE_BYTES
-    option = f"--{name}.text_config.ple_embed_dim" if dotted else f"--{name}"
-    value = "512" if dotted else '{"text_config":{"ple_embed_dim":512}}'
+    option = f"--{name}.{field}" if dotted else f"--{name}"
+    value = json.dumps(value if dotted else {field: value})
     m.backend_parameters = {
         "equals": [f"{option}={value}"],
         "separate": [option, value],
         "combined": [f"{option} {value}"],
     }[syntax]
-    # Runtime architecture overrides invalidate the dimensions used for deduction.
-    assert estimate_offloaded_lookup_bytes(m, config) == 0
+    # Lookup sizes come from checkpoint metadata, independently of HF overrides.
+    assert estimate_offloaded_lookup_bytes(m, config) == TABLE_BYTES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "override",
+    [
+        [],
+        ["--hf-overrides='{}'"],
+        ["--hf-overrides='{\"generation_config\": {\"reasoning_effort\": \"low\"}}'"],
+    ],
+)
+async def test_hf_overrides_preserve_qwen_ple_resource_claims(override):
+    data = json.loads(
+        (Path(__file__).parents[1] / "fixtures/model_configs/qwen_ple.json").read_text()
+    )
+    m = model(
+        env={"VLLM_PLE_CPU_OFFLOAD": "1"},
+        backend_parameters=["--engram-config", '{"cpu_offload": true}', *override],
+    )
+    offloaded = estimate_offloaded_lookup_bytes(m, data)
+    assert offloaded == 51200000000
+    with patch(
+        "gpustack.policies.utils.get_model_weight_size", return_value=185523317458
+    ):
+        vram = await estimate_model_vram(m, offloaded_weights=offloaded)
+    assert round(vram / GIB, 2) == 152.12
+    assert get_model_ram_claim(m, offloaded) == offloaded
 
 
 def test_engram_requires_native_scale_format():
@@ -1859,27 +1947,44 @@ async def test_lookup_ram_keeps_pcp_copies_and_assumes_dp_sharing(
 
 
 @pytest.mark.parametrize(
-    "version,image",
+    "version,image,default_offload",
     [
-        ("0.33.0", None),
-        ("invalid", None),
-        ("0.32.0", "custom:latest"),
-        (None, "custom:latest"),
-        ("", "custom:latest"),
+        ("0.29.0", None, False),
+        ("0.33.0rc1", None, False),
+        ("0.34.0.dev1", None, False),
+        ("1.0.0rc1", None, False),
+        ("invalid", None, True),
+        ("0.33.0-custom", None, True),
+        ("0.33.0-cu128", None, True),
+        ("vllm-v0.33.0", None, True),
+        ("latest", None, True),
+        ("nightly", None, True),
+        ("0.32.0", "custom:latest", True),
+        ("0.33.0", "custom:latest", True),
+        ("1.0.0", "custom:latest", True),
+        ("invalid", "custom:latest", True),
+        (None, "custom:latest", True),
+        ("", "custom:latest", True),
     ],
 )
 @pytest.mark.parametrize("dotted", [False, True])
-def test_unverified_backends_require_explicit_offload(version, image, dotted):
+@pytest.mark.parametrize("explicit", [None, False, True])
+@pytest.mark.parametrize(
+    "architecture", ["DeepseekV41ForCausalLM", "Qwen4ExpForCausalLM"]
+)
+def test_custom_backend_offload_defaults_and_overrides(
+    version, image, default_offload, dotted, explicit, architecture
+):
     m = model(backend_version=version, image_name=image)
-    assert estimate_offloaded_lookup_bytes(m, lookup_config("Qwen4ExpForCausalLM")) == 0
-    m.backend_parameters = (
-        ["--engram_config.cpu_offload=true", "--engram_config.embedding_across_dp=true"]
-        if dotted
-        else ['--engram-config={"cpu_offload":true,"embedding_across_dp":true}']
-    )
-    assert (
-        estimate_offloaded_lookup_bytes(m, lookup_config("Qwen4ExpForCausalLM"))
-        == TABLE_BYTES
+    if explicit is not None:
+        m.backend_parameters = (
+            [f"--engram_config.cpu_offload={json.dumps(explicit)}"]
+            if dotted
+            else [f"--engram-config={json.dumps({'cpu_offload': explicit})}"]
+        )
+    enabled = default_offload if explicit is None else explicit
+    assert estimate_offloaded_lookup_bytes(m, lookup_config(architecture)) == (
+        TABLE_BYTES if enabled else 0
     )
 
 
@@ -2055,7 +2160,9 @@ async def test_auto_multinode_table_ram_skips_insufficient_worker(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", [None, "", "0.30.0", "0.31.0", "0.32.0"])
+@pytest.mark.parametrize(
+    "version", [None, "", "0.30.0", "0.31.0", "0.32.0", "0.33.0", "0.34.0", "1.0.0"]
+)
 @pytest.mark.parametrize("ram", [4, 12])
 async def test_removed_offload_env_does_not_suppress_ram_accounting(
     config, version, ram
@@ -2198,6 +2305,9 @@ def test_sglang_ple_default_accepts_legacy_torch_dtype(nested):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "override", [None, '{"generation_config":{"reasoning_effort":"low"}}']
+)
+@pytest.mark.parametrize(
     "dtype,flag,offloaded",
     [
         ("bfloat16", None, True),
@@ -2207,7 +2317,7 @@ def test_sglang_ple_default_accepts_legacy_torch_dtype(nested):
     ],
 )
 async def test_sglang_ple_dtype_and_flags_control_scheduling(
-    config, dtype, flag, offloaded
+    config, dtype, flag, offloaded, override
 ):
     worker = linux_nvidia_1_4090_24gx1()
     worker.status.memory.total = 64 * GIB
@@ -2215,6 +2325,8 @@ async def test_sglang_ple_dtype_and_flags_control_scheduling(
     parameters = [f"--dtype={dtype}", "--mem-fraction-static=0.9"]
     if flag:
         parameters.append(flag)
+    if override is not None:
+        parameters.extend(["--json-model-override-args", override])
     m = model(backend_parameters=parameters)
     m.backend = BackendEnum.SGLANG
     selector = SGLangResourceFitSelector(config, m, [], resource_view=ResourceView([]))
@@ -2234,17 +2346,34 @@ async def test_sglang_ple_dtype_and_flags_control_scheduling(
         assert candidates[0].computed_resource_claim.ram == TABLE_BYTES
 
 
-@pytest.mark.parametrize("override", ["{}", '{"ple_embed_dim":128}'])
-def test_sglang_model_overrides_disable_lookup_estimation(override):
-    m = model(
-        backend_parameters=[
-            "--ple-offload-embedding",
-            "--json-model-override-args",
-            override,
-        ]
-    )
+@pytest.mark.parametrize(
+    "architecture,offload",
+    [
+        ("Qwen4ExpForCausalLM", "--ple-offload-embedding"),
+        ("DeepseekV41ForCausalLM", '--engram-config={"placement":"cpu"}'),
+    ],
+)
+@pytest.mark.parametrize(
+    "override",
+    ["{}", '{"generation_config":{"reasoning_effort":"low"}}', '{"ple_embed_dim":128}'],
+)
+@pytest.mark.parametrize("syntax", ["equals", "separate", "combined"])
+@pytest.mark.parametrize("quantization", [None, "fp8", "awq"])
+def test_sglang_model_overrides_preserve_checkpoint_lookup_deduction(
+    architecture, offload, override, syntax, quantization
+):
+    option = "--json-model-override-args"
+    parameters = {
+        "equals": [f"{option}={override}"],
+        "separate": [option, override],
+        "combined": [f"{option} {override}"],
+    }[syntax]
+    if quantization is not None:
+        parameters.append(f"--quantization={quantization}")
+    m = model(backend_parameters=[offload, *parameters])
     m.backend = BackendEnum.SGLANG
-    assert estimate_offloaded_lookup_bytes(m, lookup_config("Qwen4ExpForCausalLM")) == 0
+    expected = 0 if quantization == "awq" else TABLE_BYTES
+    assert estimate_offloaded_lookup_bytes(m, lookup_config(architecture)) == expected
 
 
 def test_sglang_engram_precision_must_match_runtime_storage():

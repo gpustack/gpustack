@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import re
-from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Set, Union
 
 from gpustack.schemas.models import (
     BackendEnum,
@@ -850,25 +850,6 @@ def sglang_smg_mode(model) -> bool:
         return False
     dp, _, _ = sglang_parallelism(model.backend_parameters)
     return dp > 1
-
-
-def sglang_component_port_requests(
-    model: Model, gpu_per_node: List[int]
-) -> List[Tuple[str, int]]:
-    """Ordered Engine, internal TCP and SMG bands on every participating Worker."""
-    # Single-node DPA binds rendezvous at +0, ZMQ at +1..6, NCCL at +7,
-    # and the DP-controller handshake at +13.
-    connecting = (
-        14
-        if len(gpu_per_node) == 1 and sglang_parallelism(model.backend_parameters)[2]
-        else 1
-    )
-    return [
-        ("_sglang_engine_api", 1),
-        ("_sglang_connecting", connecting),
-        ("_sglang_smg_api", 1),
-        ("_sglang_smg_metrics", 1),
-    ]
 
 
 def sglang_policy_parameters(

@@ -1,6 +1,8 @@
 import json
 import os
 import time
+from copy import deepcopy
+from functools import lru_cache
 import pytest
 from tenacity import retry, stop_after_attempt, wait_fixed
 from gpustack.routes.model_sets import filter_specs_by_gpu
@@ -28,6 +30,12 @@ from modelscope.hub.api import HubApi
 
 
 def _packaged_model_sets(catalog_file=None):
+    # Each caller owns its models even though the packaged YAML is parsed once.
+    return deepcopy(_load_packaged_model_sets(catalog_file))
+
+
+@lru_cache(maxsize=None)
+def _load_packaged_model_sets(catalog_file):
     """Model set name -> model set, loaded from the packaged catalog via the source
     pipeline (no DB). Mirrors what CatalogSourceController materializes."""
     content = normalize_catalog_yaml(read_builtin_catalog_text(catalog_file))
@@ -39,6 +47,12 @@ def _packaged_model_sets(catalog_file=None):
         for entry in entries
         if entry.kind == KIND_MODEL_SET
     }
+
+
+@pytest.fixture(scope="module", autouse=True)
+def catalog_cache():
+    yield
+    _load_packaged_model_sets.cache_clear()
 
 
 def _packaged_model_set_specs(catalog_file=None):

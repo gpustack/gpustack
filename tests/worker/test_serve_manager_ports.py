@@ -1439,7 +1439,7 @@ def test_sglang_component_ports_preserve_engine_and_connecting_layout(
             [2, 2],
             True,
             [],
-            '40000-40003',
+            '40000-40016',
         ),
     ],
 )
@@ -1594,6 +1594,189 @@ def test_sglang_dpa_requires_the_complete_internal_band_before_publishing():
     with pytest.raises(network.PortRangeExhaustedError):
         manager._select_ports(mi, model, BackendEnum.SGLANG, set(), '40000-40015')
     assert mi.port is None and not mi.ports and not mi.named_ports
+
+
+@pytest.mark.parametrize('role', ['prefill', 'decode'])
+@pytest.mark.parametrize('cross_worker', [False, True])
+@pytest.mark.parametrize('attention', [False, True])
+def test_sglang_pd_internal_ports_are_named_reserved_and_declared(
+    role, cross_worker, attention
+):
+    from gpustack.scheduler.port_budget import member_port_demand
+    from gpustack.utils.command import find_parameter
+    from gpustack.worker.backends.sglang import SGLangServer
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    model = _pd_model(
+        PDModeEnum.SGLANG_MOONCAKE,
+        backend='SGLang',
+        backend_parameters=['--tp=8']
+        + (['--dp=8', '--ep=8', '--enable-dp-attention'] if attention else []),
+    )
+    mi = _instance(role=role, cards=4 if cross_worker else 8)
+    mi.distributed_servers = DistributedServers(
+        subordinate_workers=(
+            [
+                ModelInstanceSubordinateWorker(
+                    worker_id=2, worker_ip='127.0.0.2', gpu_indexes=list(range(4))
+                )
+            ]
+            if cross_worker
+            else []
+        )
+    )
+    manager = _manager()
+    manager._select_ports(mi, model, BackendEnum.SGLANG, set(), PORT_RANGE)
+    backend = SGLangServer.__new__(SGLangServer)
+    backend._model, backend._model_instance = model, mi
+    backend._worker = SimpleNamespace(id=1, ip=mi.worker_ip)
+    counts = [4, 4] if cross_worker else [8]
+    reserved = model_instance_ports(mi, 1)
+    assert len(reserved) == member_port_demand(model, role, counts[0], counts)
+    if not (attention or cross_worker):
+        assert '_sglang_connecting' not in (mi.named_ports or {})
+        return
+    band = mi.named_ports['_sglang_connecting']
+    assert band.count == (14 if attention else 1)
+    internal = set(range(band.base, band.base + band.count))
+    assert internal <= reserved
+    assert mi.port not in internal
+    if role == 'prefill':
+        assert mi.named_ports['bootstrap'].base not in internal
+    args = backend._port_bindings(True).arguments
+    host = mi.worker_ip if cross_worker else '127.0.0.1'
+    assert find_parameter(args, ['dist-init-addr']) == f'{host}:{band.base}'
+    assert internal <= {port.internal for port in backend._get_configured_ports()}
+    if attention:
+        assert find_parameter(args, ['nccl-port']) == str(band.base + 7)
+    if cross_worker:
+        backend._worker = SimpleNamespace(id=2, ip='127.0.0.2')
+        follower = backend._port_bindings(False).arguments
+        assert (
+            find_parameter(follower, ['dist-init-addr'])
+            == f'{mi.worker_ip}:{band.base}'
+        )
+        assert find_parameter(follower, ['node-rank']) == '1'
+        assert internal <= model_instance_ports(mi, 2)
+
+
+def test_sglang_distributed_pd_dpa_reservations_survive_restart_on_every_worker():
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    model = _pd_model(
+        PDModeEnum.SGLANG_MOONCAKE,
+        backend='SGLang',
+        backend_parameters=['--tp=8', '--dp=8', '--ep=8', '--enable-dp-attention'],
+    )
+    taken, instances = set(), []
+    for number, role in enumerate(('prefill', 'decode'), 1):
+        mi = _instance(number, role, cards=4)
+        mi.distributed_servers = DistributedServers(
+            subordinate_workers=[
+                ModelInstanceSubordinateWorker(worker_id=2, gpu_indexes=list(range(4)))
+            ]
+        )
+        _manager()._select_ports(mi, model, BackendEnum.SGLANG, taken, PORT_RANGE)
+        instances.append(mi)
+    for worker_id in (1, 2):
+        restarted = _manager(worker_id=worker_id)
+        for mi in instances:
+            restarted._assign_ports(mi, model, BackendEnum.SGLANG)
+            band = mi.named_ports['_sglang_connecting']
+            assert (
+                set(range(band.base, band.base + 14))
+                <= restarted._assigned_ports[mi.id]
+            )
+        assert not model_instance_ports(instances[0], worker_id) & model_instance_ports(
+            instances[1], worker_id
+        )
+
+
+def test_sglang_pd_dpa_fragmentation_does_not_publish_partial_ports():
+    model = _pd_model(
+        PDModeEnum.SGLANG_MOONCAKE,
+        backend='SGLang',
+        backend_parameters=['--tp=8', '--dp=8', '--enable-dp-attention'],
+    )
+    mi = _instance(cards=8)
+    with pytest.raises(network.PortRangeExhaustedError):
+        _manager()._select_ports(
+            mi, model, BackendEnum.SGLANG, set(range(40006, 40064, 7)), PORT_RANGE
+        )
+    assert mi.port is None and not mi.ports and not mi.named_ports
+
+
+@pytest.mark.parametrize(
+    'mode', ['native', 'complete_dpa', 'old_dpa', 'non_dpa', 'router']
+)
+def test_single_node_sglang_reuses_published_allocations(mode):
+    model = _pd_model(
+        PDModeEnum.SGLANG_MOONCAKE,
+        backend='SGLang',
+        backend_parameters=['--tp=2', '--dp=2']
+        + (['--enable-dp-attention'] if mode != 'non_dpa' else []),
+    )
+    if mode == 'native':
+        model.disaggregation = None
+    mi = _instance(role=None if mode == 'native' else 'prefill', cards=2)
+    mi.port, mi.ports = 40000, [40000, 40001]
+    if mode == 'complete_dpa':
+        mi.named_ports = {'_sglang_connecting': PortBand(base=40001, count=14)}
+    elif mode == 'router':
+        mi.role = 'router'
+        mi.named_ports = {'prometheus': PortBand(base=40001)}
+    before = mi.model_dump()
+    manager = _manager()
+
+    manager._assign_ports(mi, model, BackendEnum.SGLANG)
+
+    assert mi.model_dump() == before
+    assert mi.id in manager._assigned_ports
+
+
+def test_sglang_pd_router_does_not_reserve_engine_dpa_ports():
+    from gpustack.scheduler.port_budget import member_port_demand
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    model = _pd_model(
+        PDModeEnum.SGLANG_MOONCAKE,
+        backend='SGLang',
+        backend_parameters=['--tp=8', '--dp=8', '--enable-dp-attention'],
+        roles=[RoleSpec(name='router')],
+    )
+    mi = _instance(role='router')
+    _manager()._select_ports(mi, model, BackendEnum.SGLANG, set(), PORT_RANGE)
+    assert member_port_demand(model, 'router', 0) == 2
+    assert len(model_instance_ports(mi, 1)) == 2
+    assert set(mi.named_ports) == {'prometheus'}
+
+
+@pytest.mark.parametrize('ranks', [2, 8, 16])
+@pytest.mark.parametrize('rust_env', ['1', 'true', 'yes', 'y'])
+def test_sglang_rust_dpa_reserves_rank_slots_before_nccl(ranks, rust_env):
+    from gpustack.utils.command import find_parameter
+    from gpustack.worker.backends.sglang import SGLangServer
+    from gpustack.worker.port_reservations import model_instance_ports
+
+    model = _pd_model(
+        PDModeEnum.SGLANG_MOONCAKE,
+        backend='SGLang',
+        backend_parameters=[f'--tp={ranks}', f'--dp={ranks}', '--enable-dp-attention'],
+        env={'SGLANG_RUST_SERVER': rust_env},
+    )
+    mi = _instance(cards=ranks)
+    _manager()._select_ports(mi, model, BackendEnum.SGLANG, set(), PORT_RANGE)
+    band = mi.named_ports['_sglang_connecting']
+    backend = SGLangServer.__new__(SGLangServer)
+    backend._model, backend._model_instance = model, mi
+    backend._worker = SimpleNamespace(id=1, ip=mi.worker_ip)
+    args = backend._port_bindings(True).arguments
+    nccl = int(find_parameter(args, ['nccl-port']))
+    rank_ports = set(range(band.base + 7, band.base + 7 + ranks))
+    assert nccl == band.base + 7 + ranks
+    assert nccl not in rank_ports
+    assert rank_ports | {nccl, band.base + 13} <= model_instance_ports(mi, 1)
+    assert band.count == max(14, 8 + ranks)
 
 
 @pytest.mark.parametrize('cross_worker', [False, True])

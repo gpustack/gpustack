@@ -235,8 +235,24 @@ hence the hard failure rather than a silently unreachable default.
 {{- end -}}
 {{- end -}}
 
+{{/*
+Resolve the higress-plugins container image.
+
+Empty `higressPlugins.image.repository` (the default) runs the plugin server on
+the gpustack server image, so both Deployments share one tag and a
+`helm upgrade --set image.tag=...` moves them together -- the plugin modules
+stay version-locked to the server that publishes their WasmPlugin URLs. Setting
+`repository` (with `tag`) pins a dedicated image, e.g. the historical
+`gpustack/higress-plugins`.
+*/}}
 {{ define "higressPlugins.image" -}}
-{{ printf "%s/%s:%s" (include "gpustack.hub" .) .Values.higressPlugins.image.repository (required "higressPlugins.image.tag is required" .Values.higressPlugins.image.tag) -}}
+{{- if and (not .Values.higressPlugins.image.repository) .Values.higressPlugins.image.tag -}}
+{{- fail "higressPlugins.image.tag is set but higressPlugins.image.repository is empty: the tag would be ignored because the server image is used. Set repository too, or clear the tag." -}}
+{{- else if .Values.higressPlugins.image.repository -}}
+{{ printf "%s/%s:%s" (include "gpustack.hub" .) .Values.higressPlugins.image.repository (required "higressPlugins.image.tag is required when higressPlugins.image.repository is set" .Values.higressPlugins.image.tag) -}}
+{{- else -}}
+{{ printf "%s:%s" (include "gpustack.image" .) (include "gpustack.imageTag" .) -}}
+{{- end -}}
 {{- end -}}
 
 {{ define "chart_labels" -}}

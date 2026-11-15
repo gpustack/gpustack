@@ -874,9 +874,57 @@ def test_smg_only_success_does_not_probe_an_engine_version():
     aggregator._metrics_client.fetch_runtime_version_from_endpoint.assert_not_called()
 
 
-def test_managed_version_probe_is_once_per_epoch_batch_and_never_persisted():
+@pytest.mark.parametrize('fallback', [None, '0.27.1'])
+def test_pd_router_metrics_are_collected_without_version_probes(fallback):
     instance = _managed_instance(
-        [_rank_task(2, 0), _rank_task(2, 1)], api_detected_backend_version=None
+        role='router',
+        port=40020,
+        ports=[40020, 40000],
+        named_ports={'prometheus': {'base': 40000}},
+        api_detected_backend_version=None,
+        backend_version=fallback,
+    )
+    aggregator, client = _source_aggregator(instance, worker_id=1)
+    payload = _families(
+        '# TYPE vllm_router_pd_requests_total counter\n'
+        'vllm_router_pd_requests_total 7\n',
+        None,
+    )
+    scrape = Mock(return_value={'10.0.0.1:40000': payload})
+    aggregator._metrics_client.fetch_metrics_from_endpoints = scrape
+    probe = Mock(return_value=None)
+    aggregator._metrics_client.fetch_runtime_version_from_endpoint = probe
+    client.model_instances.update = Mock()
+
+    for _ in range(3):
+        aggregator.aggregate()
+
+    assert scrape.call_count == 3
+    scrape.assert_called_with({'10.0.0.1:40000'})
+    probe.assert_not_called()
+    client.model_instances.update.assert_not_called()
+    for kind, name in (
+        ('raw', 'vllm_router_pd_requests'),
+        ('unified', 'gpustack:pd_router_requests'),
+    ):
+        samples = aggregator._cache[kind][name].samples
+        assert len(samples) == 1
+        assert samples[0].value == 7
+        assert samples[0].labels['role'] == 'router'
+    endpoints = aggregator._find_active_model_endpoints(
+        1, get_builtin_metrics_config()
+    )[1]
+    assert aggregator._fetch_source_versions(
+        endpoints, {'10.0.0.1:40000': payload}
+    ) == {instance.id: fallback}
+
+
+@pytest.mark.parametrize('role', [None, 'prefill', 'decode'])
+def test_managed_version_probe_is_once_per_epoch_batch_and_never_persisted(role):
+    instance = _managed_instance(
+        [_rank_task(2, 0), _rank_task(2, 1)],
+        api_detected_backend_version=None,
+        role=role,
     )
     aggregator, client = _source_aggregator(instance)
     payload = _families(PROMETHEUS_TEXT, None)

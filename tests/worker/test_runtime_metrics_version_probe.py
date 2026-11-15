@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import pytest
 import gpustack.worker.runtime_metrics_aggregator as agg
 
 
@@ -22,6 +23,7 @@ def _router():
     """A PD router: API on 40020, Prometheus exposition on a separate band."""
     return SimpleNamespace(
         id=74,
+        role="router",
         worker_ip="192.168.13.3",
         port=40020,
         ports=[40020, 40000],
@@ -32,22 +34,27 @@ def _router():
     )
 
 
-def test_router_version_is_probed_on_the_api_port_not_the_exposition_port():
+@pytest.mark.parametrize('fallback', [None, '0.27.1'])
+def test_router_version_uses_configured_fallback_without_probing(fallback):
     client, updated = _Client(), []
     mi = _router()
+    mi.backend_version = fallback
     exposition = f"{mi.worker_ip}:{agg._metrics_port(mi)}"
     assert exposition == "192.168.13.3:40000"
 
-    _mgr(client, updated).fetch_and_update_api_backend_version(mi, exposition)
+    result = _mgr(client, updated).fetch_and_update_api_backend_version(mi, exposition)
 
-    assert client.calls == ["192.168.13.3:40020"]
-    assert updated == [(74, {"api_detected_backend_version": "0.27.1"})]
+    assert result == fallback
+    assert client.calls == []
+    assert updated == []
 
 
-def test_an_engine_probes_the_one_port_it_has():
+@pytest.mark.parametrize('role', [None, 'prefill', 'decode'])
+def test_an_engine_probes_the_one_port_it_has(role):
     client, updated = _Client(), []
     mi = SimpleNamespace(
         id=67,
+        role=role,
         worker_ip="192.168.50.15",
         port=40046,
         ports=[40046, 40000],

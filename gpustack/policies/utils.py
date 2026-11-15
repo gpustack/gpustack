@@ -142,9 +142,16 @@ def group_workers_by_gpu_type(workers: List[Worker]) -> Dict[str, List[Worker]]:
             gpus.setdefault(gpu.type, []).append(gpu)
 
         # Add worker to each GPU type group
-        for gpu_type in gpus.keys():
-            w = worker.model_copy()
-            w.status.gpu_devices = gpus[gpu_type]
+        for gpu_type, gpus_of_type in gpus.items():
+            # Each group gets its own status: a shallow worker copy shares it,
+            # so every group of a mixed worker would end up with the last type.
+            w = worker.model_copy(
+                update={
+                    "status": worker.status.model_copy(
+                        update={"gpu_devices": gpus_of_type}
+                    )
+                }
+            )
             gpu_type_to_workers.setdefault(gpu_type, []).append(w)
 
     return gpu_type_to_workers

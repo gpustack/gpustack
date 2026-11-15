@@ -98,17 +98,33 @@ async def validate_pd_mode_runtime(
     if not vendors:
         return
 
-    backend = model_field(model_in, stored, "backend") or BackendEnum.VLLM.value
-    resolution = resolve_pd_mode(
-        backend, vendors, vendor=getattr(disaggregation, "vendor", None)
+    default_backend = model_field(model_in, stored, "backend") or BackendEnum.VLLM.value
+    engines = [
+        role
+        for role in (model_field(model_in, stored, "roles") or [])
+        if role.name in ("prefill", "decode")
+    ]
+    backends = (
+        {role.backend or default_backend for role in engines}
+        if engines
+        else {default_backend}
     )
-    verdict = next(
-        (option for option in resolution.options if option.name == mode_name), None
-    )
-    if verdict is not None and not verdict.eligible:
-        raise BadRequestException(
-            message=(
-                f"pd mode '{mode_name}' cannot run here: "
-                f"{verdict.ineligible_reason}"
-            )
+    # Custom images retain the selected recipe's connector contract; only
+    # known engine identities can disprove that contract before launch.
+    backends.discard(BackendEnum.CUSTOM.value)
+    # With no known engine identity, validate the recipe's accelerator
+    # requirements without selecting an engine on the custom image's behalf.
+    for backend in sorted(backends) or [None]:
+        resolution = resolve_pd_mode(
+            backend, vendors, vendor=getattr(disaggregation, "vendor", None)
         )
+        verdict = next(
+            (option for option in resolution.options if option.name == mode_name), None
+        )
+        if verdict is not None and not verdict.eligible:
+            raise BadRequestException(
+                message=(
+                    f"pd mode '{mode_name}' cannot run here: "
+                    f"{verdict.ineligible_reason}"
+                )
+            )

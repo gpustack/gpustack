@@ -39,6 +39,7 @@ def _server_config(monkeypatch, **cfg):
     cfg.setdefault("image_name_override", _OVERRIDE)
     cfg.setdefault("image_repo", "gpustack/gpustack")
     cfg.setdefault("system_default_container_registry", "registry.example.com")
+    cfg.setdefault("container_namespace", None)
     monkeypatch.setattr(
         config_module, "get_global_config", lambda: SimpleNamespace(**cfg)
     )
@@ -82,7 +83,8 @@ def test_cluster_repo_alone_wins_over_the_server_override(monkeypatch):
 def test_cluster_level_override_decides_the_image_outright(monkeypatch):
     _server_config(monkeypatch)
     worker_config = PredefinedConfigNoDefaults(
-        image_name_override="mirror.example.com/myorg/gpustack:custom"
+        image_name_override="mirror.example.com/myorg/gpustack:custom",
+        container_namespace="gpustack-ai",
     )
 
     image = get_cluster_image_name(worker_config, "other.example.com")
@@ -122,3 +124,57 @@ def test_server_repo_and_registry_apply_without_an_override(monkeypatch):
     image = get_cluster_image_name(PredefinedConfigNoDefaults())
 
     assert image == f"registry.example.com/myorg/gpustack:{_VERSION}"
+
+
+def test_cluster_namespace_repoints_the_default_worker_image(monkeypatch):
+    _server_config(monkeypatch)
+    worker_config = PredefinedConfigNoDefaults(container_namespace="gpustack-ai")
+
+    image = get_cluster_image_name(worker_config)
+
+    assert image == f"registry.example.com/gpustack-ai/gpustack:{_VERSION}"
+
+
+def test_server_namespace_applies_without_a_cluster_override(monkeypatch):
+    _server_config(
+        monkeypatch,
+        image_name_override=None,
+        container_namespace="gpustack-ai",
+    )
+
+    image = get_cluster_image_name(PredefinedConfigNoDefaults())
+
+    assert image == f"registry.example.com/gpustack-ai/gpustack:{_VERSION}"
+
+
+@pytest.mark.parametrize("image_repo", ["gpustack/gpustack", "myorg/gpustack"])
+def test_cluster_repo_overrides_container_namespace(monkeypatch, image_repo):
+    _server_config(monkeypatch)
+    worker_config = PredefinedConfigNoDefaults(
+        image_repo=image_repo,
+        container_namespace="gpustack-ai",
+    )
+
+    image = get_cluster_image_name(worker_config)
+
+    assert image == f"registry.example.com/{image_repo}:{_VERSION}"
+
+
+def test_server_override_wins_over_the_server_namespace(monkeypatch):
+    _server_config(monkeypatch, container_namespace="gpustack-ai")
+
+    image = get_cluster_image_name(PredefinedConfigNoDefaults())
+
+    assert image == _OVERRIDE
+
+
+@pytest.mark.parametrize("container_namespace", ["", "gpustack"])
+def test_noop_cluster_namespace_preserves_the_server_override(
+    monkeypatch, container_namespace
+):
+    _server_config(monkeypatch)
+    worker_config = PredefinedConfigNoDefaults(container_namespace=container_namespace)
+
+    image = get_cluster_image_name(worker_config)
+
+    assert image == _OVERRIDE

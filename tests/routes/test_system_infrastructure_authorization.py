@@ -36,11 +36,19 @@ def _principal(kind):
     )
 
 
-@pytest.fixture
-def infrastructure(monkeypatch):
+@pytest.fixture(scope="module")
+def management_app():
     app = FastAPI()
     register_handlers(app)
     app.include_router(management_router)
+    return app
+
+
+@pytest.fixture
+def infrastructure(management_app, monkeypatch):
+    app = management_app
+    # Reuse route registration while keeping authentication local to each test.
+    monkeypatch.setattr(app, "dependency_overrides", {})
     session = AsyncMock()
     app.dependency_overrides[get_session] = lambda: session
     row = SimpleNamespace(

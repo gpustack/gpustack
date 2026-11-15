@@ -44,6 +44,10 @@ docker run -d --name gpustack \
 
 After the server is up and running with the new version, upgrade the workers in each cluster. See [Upgrade a Cluster Deployment](cluster.md) for the Docker, Kubernetes, and cloud cluster procedures.
 
+SGLang deployments using DP Attention may have incomplete port reservations from an older version. After upgrading all participating workers, use **Restart Model** on the deployment or redeploy it to create new instances with complete reservations. Restarting an engine process or worker alone preserves the existing instance's ports.
+
+For custom `run_command` templates, declare DP Attention options in the model or role's `backend_parameters` so port planning can reserve the required range before launch. The worker checks the rendered command and reports insufficient reservations without changing published ports.
+
 ## Upgrade via Docker Compose
 
 If you deployed with Docker Compose from a cloned repository, check out the new release tag and recreate the containers with the updated image:

@@ -994,3 +994,40 @@ async def test_active_cache_references_are_protected_and_validated(
         )
     assert "Cache service not found" in error.value.message
     assert models_route.CacheService.one_by_id.await_args.args[1] == 9
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'backend,version,allowed',
+    [
+        ('SGLang', None, True),
+        (None, '0.26.0', True),
+        (None, None, False),
+        (None, '0.24.1', False),
+    ],
+)
+async def test_cache_version_checks_follow_role_backend_ownership(
+    monkeypatch, backend, version, allowed
+):
+    _patch_lookups(
+        monkeypatch,
+        _service(),
+        provider_backends=('vLLM', 'SGLang'),
+        versions='>=0.25.0',
+    )
+    model = _model_in(
+        _shared_ext(),
+        backend='vLLM',
+        backend_version='0.24.1',
+        roles=[_role('prefill', backend=backend, backend_version=version)],
+    )
+    if allowed:
+        await models_route.validate_shared_kv_cache(
+            MagicMock(), model, OWNER_PRINCIPAL, 1
+        )
+    else:
+        with pytest.raises(BadRequestException) as exc:
+            await models_route.validate_shared_kv_cache(
+                MagicMock(), model, OWNER_PRINCIPAL, 1
+            )
+        assert '0.24.1' in exc.value.message

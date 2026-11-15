@@ -300,6 +300,7 @@ cache_dir: "/var/lib/gpustack/cache"
 log_dir: "/var/lib/gpustack/log"
 bin_dir: "/var/lib/gpustack/bin"
 # ========= container & image ===========
+container_namespace: "gpustack"
 image_name_override: "gpustack/gpustack:main"
 image_repo: "gpustack/gpustack"
 # ========= service & networking ===========
@@ -323,7 +324,9 @@ insecure_tls: false
 
 上記の YAML は、`Worker Configuration YAML` で現在サポートしているすべてのオプションを示しています。各オプションの意味は、GPUStack の[設定ファイルのドキュメント](../cli-reference/start.md#config-file)を参照してください。`proxy_mode` オプションは、サーバーからワーカーへの接続方法を制御します。[ワーカー接続モード](#worker-connection-modes)を参照してください。
 
-`Docker` クラスターと `Kubernetes` クラスターのどちらも、デフォルトのコンテナーレジストリーをここで設定しなくなりました。代わりに、`Advanced` 設定にあるクラスター単位の `Default Container Registry` オプションで設定してください。`Kubernetes` クラスターの名前空間も同様に、`Namespace` オプションで設定します（[Kubernetes クラスターのオプション](#kubernetes-cluster-options)を参照）。
+`container_namespace` は、GPUStack のデフォルトのワーカー、ランナー、ランタイムイメージが使用する `gpustack` 名前空間を置き換えます。例えば、クラスターの `Default Container Registry` を `registry.example.com` に、`container_namespace: gpustack-ai` を設定すると、デフォルトのワーカーイメージは `registry.example.com/gpustack-ai/gpustack:<version>` に解決され、ランナーとランタイムイメージはそれぞれ `registry.example.com/gpustack-ai/runner` と `registry.example.com/gpustack-ai/runtime` 以下に解決されます。明示的な `image_name_override` はこの設定より優先されます。明示的なクラスターの `image_repo` はワーカーイメージだけを上書きし、ランナーとランタイムイメージは引き続き `container_namespace` を使用します。
+
+`Docker` と `Kubernetes` のどちらのクラスターでも、デフォルトのコンテナーレジストリーはこの YAML では設定しません。代わりに、`Advanced` 設定にあるクラスター単位の `Default Container Registry` オプションで設定してください。`Kubernetes` クラスターの `Namespace` オプションは、コンテナーイメージの名前空間ではなく Kubernetes リソースの名前空間を制御します（[Kubernetes クラスターのオプション](#kubernetes-cluster-options)を参照）。
 
 ## ワーカー接続モード { #worker-connection-modes }
 

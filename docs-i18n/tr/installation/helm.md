@@ -27,7 +27,7 @@ Ayrıca:
 
 - GPUStack sunucusu `StatefulSet` olarak dağıtılır ve şu anda birden fazla replikayı **desteklemez**.
 - Varsayılan olarak, paket halindeki gömülü `PostgreSQL` veritabanı kullanılır. Üretim için `server.externalDatabaseURL` üzerinden harici bir veritabanının belirtilmesi tavsiye edilir.
-- Higress eklentileri, GPUStack ile birlikte kurulan özel bir `gpustack/higress-plugins` Dağıtım tarafından sunulur. Higress ağ geçidi yeniden başlatıldığında bu hizmetten eklentileri indirir; hizmet kullanılamıyorsa, eklentiler erişilebilir hale gelene kadar ağ geçidinin başlatılması engellenir.
+- Higress eklentileri, GPUStack ile birlikte kurulan özel bir Dağıtım (Deployment) tarafından sunulur; varsayılan olarak GPUStack sunucu imajı üzerinde çalıştığından eklenti modülleri sunucu ile sürüm uyumlu kalır. Higress ağ geçidi yeniden başlatıldığında bu hizmetten eklentileri indirir; hizmet kullanılamıyorsa, eklentiler erişilebilir hale gelene kadar ağ geçidinin başlatılması engellenir.
 - Paketlenmiş `higress-core` alt chart'ı, Higress'i kümenin giriş denetleyicisi olarak dağıtır. Başka bir giriş denetleyicisi zaten çalışıyorsa, `higress-core.enabled=false`'i ayarlayın ve `gateway.ingressClassname`'yi mevcut bir Higress örneğine yönlendirin.
 
 ## k3s'yi yükleyin (isteğe bağlı) { #install-k3s-optional }

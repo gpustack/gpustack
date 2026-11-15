@@ -91,7 +91,7 @@ def test_archive_drains_exit_output_and_resumes_without_duplicates(
         return output if output_type == "bytes" else output.decode()
 
     with patch(
-        "gpustack.worker.container_logs.logs_workload", side_effect=runtime_logs
+        "gpustack.worker.container_logs._read_runtime_logs", side_effect=runtime_logs
     ):
         assert manager.archive(instance(), path)
         assert manager.archive(instance(), path)
@@ -105,7 +105,7 @@ def test_failed_archive_keeps_retry_possible(tmp_path):
     manager = CacheServiceLogManager(str(tmp_path))
     path = manager.prepare(instance())
     with patch(
-        "gpustack.worker.container_logs.logs_workload",
+        "gpustack.worker.container_logs._read_runtime_logs",
         side_effect=RuntimeError("runtime unavailable"),
     ):
         assert not manager.archive(instance(), path)

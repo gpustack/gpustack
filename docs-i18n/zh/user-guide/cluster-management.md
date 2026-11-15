@@ -304,6 +304,7 @@ cache_dir: "/var/lib/gpustack/cache"
 log_dir: "/var/lib/gpustack/log"
 bin_dir: "/var/lib/gpustack/bin"
 # ========= container & image ===========
+container_namespace: "gpustack"
 image_name_override: "gpustack/gpustack:main"
 image_repo: "gpustack/gpustack"
 # ========= service & networking ===========
@@ -327,7 +328,9 @@ insecure_tls: false
 
 上方 YAML 列出了 `Worker Configuration YAML` 当前支持的全部选项。各选项的含义参见完整的 GPUStack [配置文件文档](../cli-reference/start.md#config-file)。`proxy_mode` 选项控制 GPUStack Server 访问 Worker 的方式，参见 [Worker 连接模式](#worker-connection-modes)。
 
-`Docker` 和 `Kubernetes` 集群的默认容器镜像仓库都不再于此设置；请通过 `Advanced` 设置中的集群级 `Default Container Registry` 选项配置。对于 `Kubernetes` 集群，命名空间同样通过 `Namespace` 选项配置（参见 [Kubernetes 集群选项](#kubernetes-cluster-options)）。
+`container_namespace` 用于替换 GPUStack 默认 Worker、Runner 和 Runtime 镜像的 `gpustack` 命名空间。例如，将集群的 `Default Container Registry` 设置为 `registry.example.com`，并设置 `container_namespace: gpustack-ai` 后，默认 Worker 镜像解析为 `registry.example.com/gpustack-ai/gpustack:<version>`，Runner 和 Runtime 镜像分别解析到 `registry.example.com/gpustack-ai/runner` 和 `registry.example.com/gpustack-ai/runtime` 下。显式设置的 `image_name_override` 优先于此配置；显式设置的集群 `image_repo` 仅覆盖 Worker 镜像，Runner 和 Runtime 镜像仍使用 `container_namespace`。
+
+`Docker` 和 `Kubernetes` 集群的默认容器镜像仓库不在此 YAML 中设置；请通过 `Advanced` 设置中的集群级 `Default Container Registry` 选项配置。对于 `Kubernetes` 集群，`Namespace` 选项控制的是 Kubernetes 资源命名空间，而不是容器镜像命名空间（参见 [Kubernetes 集群选项](#kubernetes-cluster-options)）。
 
 ## Worker 连接模式 { #worker-connection-modes }
 

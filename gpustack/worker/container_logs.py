@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import io
+from itertools import chain
 import json
 import logging
 import os
@@ -13,7 +14,8 @@ from typing import Optional, Tuple
 
 from gpustack_runtime.deployer import (
     get_workload,
-    logs_workload,
+    supported_list,
+    UnsupportedError,
     WorkloadStatusStateEnum,
 )
 
@@ -42,6 +44,13 @@ _LOG_TIMESTAMP_RE = re.compile(
     r'^(?P<stamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})'
     r'(?:\.\d+)?(?P<offset>Z|[+-]\d{2}:\d{2})$'
 )
+
+
+def _read_runtime_logs(**options):
+    """Keep log reads on their caller instead of nesting runtime-pool jobs."""
+    for deployer in supported_list():
+        return deployer.logs(async_mode=False, **options)
+    raise UnsupportedError('No available container runtime for logs')
 
 
 def _split_log_timestamp(text: str) -> Tuple[Optional[int], str]:
@@ -93,7 +102,8 @@ def _streamed_lines(log_stream, stop_event: threading.Event):
             else str(chunk)
         )
         epoch, content = _split_log_timestamp(text)
-        yield epoch, content, text.endswith('\n')
+        if content:
+            yield epoch, content, text.endswith('\n')
 
 
 def _log_archive_is_empty(log_path: str) -> bool:
@@ -351,7 +361,7 @@ class ContainerLogPersister:
                 # fragment is an empty one.
                 _drop_partial_last_line(log_path)
                 self._locate_cursor(cursor, log_path)
-                log_stream = logs_workload(
+                log_stream = _read_runtime_logs(
                     name=workload_name,
                     token=token,
                     tail=-1,
@@ -388,9 +398,14 @@ class ContainerLogPersister:
                 # TODO: Unify retry termination for missing workloads across
                 # model and cache log persistence during workload unification.
                 retry_count += 1
-                logger.debug(
+                log = (
+                    logger.warning
+                    if retry_count == 5 or retry_count % 30 == 0
+                    else logger.debug
+                )
+                log(
                     f"Container not ready for {workload_name}, retrying "
-                    f"(attempt {retry_count}): {e}"
+                    f"(attempt {retry_count}, archive {log_path}): {e}"
                 )
                 stop_event.wait(timeout=2)
 
@@ -402,7 +417,7 @@ class ContainerLogPersister:
         cursor.load()
         _drop_partial_last_line(log_path)
         self._locate_cursor(cursor, log_path)
-        stream = logs_workload(
+        stream = _read_runtime_logs(
             name=workload_name,
             tail=-1,
             timestamps=True,
@@ -461,6 +476,10 @@ class ContainerLogPersister:
         """
         skipper = _ReplaySkipper(cursor)
         relocating = cursor.epoch is not None
+        lines = iter(_streamed_lines(log_stream, stop_event))
+        first = next(lines, None)
+        if first is None:
+            return
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
         with CappedLogWriter(
             log_path, append=not _log_archive_is_empty(log_path)
@@ -469,7 +488,7 @@ class ContainerLogPersister:
             # decided once, on the chunk that starts it, and holds until it ends.
             starting, replayed, line_epoch = True, False, None
             wrote, stamped = False, False
-            for epoch, text, ends_line in _streamed_lines(log_stream, stop_event):
+            for epoch, text, ends_line in chain((first,), lines):
                 stamped = stamped or epoch is not None
                 if starting:
                     line_epoch = epoch

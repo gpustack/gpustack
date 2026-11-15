@@ -951,7 +951,7 @@ def note_settled(model_id: int, fingerprint: str, now: Optional[float] = None) -
     _settled[model_id] = (fingerprint, at)
 
 
-def reconcile_after(model: Model) -> Optional[float]:
+def reconcile_after(model: Model, inference_backend=None) -> Optional[float]:
     """Return the next dynamic membership check delay for an active deployment."""
     from gpustack.server.pd_router_membership import membership_policy
 
@@ -959,7 +959,8 @@ def reconcile_after(model: Model) -> Optional[float]:
         model.deleted_at is not None
         or model.replicas == 0
         or model.disaggregation is None
-        or membership_policy(model) != PDRouterMembershipUpdateEnum.DYNAMIC
+        or membership_policy(model, inference_backend)
+        != PDRouterMembershipUpdateEnum.DYNAMIC
     ):
         return None
     outcome = outcome_for(model.id)

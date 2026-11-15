@@ -1,7 +1,6 @@
 import argparse
 
 from gpustack import __benchmark_runner_version__, __operator_version__
-from gpustack_higress_plugins import __version__ as __higress_plugins_version__
 
 from gpustack_runtime.cmds import (
     CopyImagesSubCommand,
@@ -39,7 +38,6 @@ python_version = "3.12-alpine"
 # from _append_self_image() instead, since it cannot be resolved at import time.
 append_images(
     f"gpustack/benchmark-runner:{__benchmark_runner_version__}",
-    f"gpustack/higress-plugins:{__higress_plugins_version__}",
     f"gpustack/mirrored-higress-higress:{higress_version}",
     f"gpustack/mirrored-higress-pilot:{higress_version}",
     f"gpustack/mirrored-higress-gateway:{higress_version}",

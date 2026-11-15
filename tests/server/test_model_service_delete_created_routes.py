@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from sqlalchemy import event
+from sqlalchemy import event, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel import SQLModel
@@ -34,6 +34,7 @@ from gpustack.schemas.model_routes import (
 from gpustack.schemas.models import (
     DistributedServers,
     Model,
+    ModelUpdate,
     ModelInstance,
     ModelInstanceStateEnum,
     ModelInstanceWorkloadStateEnum,
@@ -235,6 +236,264 @@ async def _managed_instance(session, model, state="running", group_id="pd-group"
             ),
         ),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('task_state', ['running', 'stopped'])
+@pytest.mark.parametrize('request_model', [False, True])
+@pytest.mark.parametrize('auto_commit', [False, True])
+async def test_start_during_managed_stop_rebuilds_only_after_confirmation(
+    session, task_state, request_model, auto_commit
+):
+    from gpustack.server.controllers import sync_replicas
+
+    model = await _model_with_created_route(session, 'resume-stop')
+    await model.update(
+        session,
+        {'replicas': 0, 'roles': [RoleSpec(name='prefill'), RoleSpec(name='decode')]},
+    )
+    instance = await _managed_instance(session, model, task_state)
+    await instance.update(session, {'spec_digest': 'old-config'})
+    await ModelInstanceService(session).request_stop([instance])
+    source = (
+        ModelUpdate(
+            name=model.name,
+            source=model.source,
+            huggingface_repo_id=model.huggingface_repo_id,
+            replicas=1,
+        )
+        if request_model
+        else {'replicas': 1}
+    )
+    await ModelService(session).update(model, source, auto_commit=auto_commit)
+    if not auto_commit:
+        await session.commit()
+    assert model.restarting_since is not None
+    since = model.restarting_since
+    await ModelService(session).update(model, {'replicas': 1})
+    assert model.restarting_since == since
+
+    due = await sync_replicas(session, model)
+    if task_state == 'running':
+        assert due is not None and 0 < due <= 30
+        assert await ModelInstance.all_by_field(session, 'model_id', model.id) == [
+            instance
+        ]
+        servers = instance.distributed_servers.model_copy(deep=True)
+        servers.workloads[0].state = ModelInstanceWorkloadStateEnum.STOPPED
+        await instance.update(session, {'distributed_servers': servers})
+        await sync_replicas(session, model)
+    assert await ModelInstance.all_by_field(session, 'model_id', model.id) == []
+    await sync_replicas(session, model)
+    replacements = await ModelInstance.all_by_field(session, 'model_id', model.id)
+    assert {item.role for item in replacements} == {'prefill', 'decode'}
+    assert all(item.draining_since is None for item in replacements)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('has_instance', [False, True])
+async def test_start_without_managed_stop_does_not_set_restart_guard(
+    session, has_instance
+):
+    model = await _model_with_created_route(session, 'ordinary-start')
+    await model.update(session, {'replicas': 0})
+    if has_instance:
+        await _managed_instance(session, model)
+    await ModelService(session).update(model, {'replicas': 1})
+    assert model.restarting_since is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'roles', [None, [RoleSpec(name='prefill'), RoleSpec(name='decode')]]
+)
+async def test_replica_sync_observes_stop_committed_after_model_was_loaded(
+    session, roles
+):
+    from gpustack.server.controllers import sync_replicas
+
+    model = await _model_with_created_route(session, 'stale-positive')
+    await model.update(session, {'replicas': 1, 'roles': roles})
+    async with AsyncSession(session.bind, expire_on_commit=False) as other:
+        current = await Model.one_by_id(other, model.id, for_update=True, refresh=True)
+        await ModelService(other).update(current, {'replicas': 0})
+    assert model.replicas == 1
+    await sync_replicas(session, model)
+    assert model.replicas == 0
+    assert await ModelInstance.all_by_field(session, 'model_id', model.id) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['stop', 'restart', 'edit', 'status'])
+async def test_replica_sync_rechecks_intent_after_retiring_orphans(
+    session, monkeypatch, operation
+):
+    from gpustack.server import controllers
+
+    model = await _model_with_created_route(session, 'orphan-race')
+    await model.update(
+        session,
+        {'replicas': 1, 'roles': [RoleSpec(name='prefill'), RoleSpec(name='decode')]},
+    )
+    await _managed_instance(session, model, group_id=None)
+    # A legacy orphan is retired without a physical stop barrier.
+    instance = (await ModelInstance.all_by_field(session, 'model_id', model.id))[0]
+    await instance.update(session, {'distributed_servers': None})
+    release = controllers._release_and_delete
+
+    async def retire_then_change(*args, **kwargs):
+        result = await release(*args, **kwargs)
+        async with AsyncSession(session.bind, expire_on_commit=False) as other:
+            current = await Model.one_by_id(
+                other, model.id, for_update=True, refresh=True
+            )
+            source = {
+                'stop': {'replicas': 0},
+                'restart': {'restarting_since': datetime.now(timezone.utc)},
+                'edit': {'backend_parameters': ['--max-model-len=2048']},
+                'status': {'ready_replicas': 1},
+            }[operation]
+            if operation == 'edit':
+                # Configuration changes can share a stored timestamp on databases
+                # whose timestamp columns have only second precision.
+                await other.execute(
+                    update(Model)
+                    .where(Model.id == model.id)
+                    .values(**source, updated_at=current.updated_at)
+                )
+                await other.commit()
+            else:
+                await ModelService(other).update(current, source)
+        return result
+
+    monkeypatch.setattr(controllers, '_release_and_delete', retire_then_change)
+    due = await controllers.sync_replicas(session, model)
+    instances = await ModelInstance.all_by_field(session, 'model_id', model.id)
+    if operation == 'status':
+        assert {item.role for item in instances} == {'prefill', 'decode'}
+    else:
+        assert due == 0
+        assert instances == []
+
+
+@pytest.mark.asyncio
+async def test_ordinary_replica_sync_rechecks_stop_between_creations(
+    session, monkeypatch
+):
+    from gpustack.server.controllers import sync_replicas
+
+    model = await _model_with_created_route(session, 'ordinary-create-race')
+    await model.update(session, {'replicas': 2})
+    create = ModelInstanceService.create
+
+    async def create_then_stop(service, instance):
+        result = await create(service, instance)
+        async with AsyncSession(session.bind, expire_on_commit=False) as other:
+            current = await Model.one_by_id(
+                other, model.id, for_update=True, refresh=True
+            )
+            await ModelService(other).update(current, {'replicas': 0})
+        return result
+
+    monkeypatch.setattr(ModelInstanceService, 'create', create_then_stop)
+    assert await sync_replicas(session, model) == 0
+    instances = await ModelInstance.all_by_field(session, 'model_id', model.id)
+    assert len(instances) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['stop', 'restart'])
+async def test_role_repair_rechecks_intent_between_creation_batches(
+    session, monkeypatch, operation
+):
+    from gpustack.server.controllers import model_spec_digest, sync_replicas
+
+    model = await _model_with_created_route(session, 'role-create-race')
+    await model.update(
+        session,
+        {
+            'replicas': 1,
+            'roles': [RoleSpec(name='prefill', replicas=2), RoleSpec(name='decode')],
+        },
+    )
+    instance = await _managed_instance(session, model)
+    await instance.update(
+        session,
+        {'role': 'prefill', 'spec_digest': await model_spec_digest(session, model)},
+    )
+    create = ModelInstanceService.batch_create
+
+    async def create_then_change(service, pending):
+        result = await create(service, pending)
+        async with AsyncSession(session.bind, expire_on_commit=False) as other:
+            current = await Model.one_by_id(
+                other, model.id, for_update=True, refresh=True
+            )
+            source = (
+                {'replicas': 0}
+                if operation == 'stop'
+                else {'restarting_since': datetime.now(timezone.utc)}
+            )
+            await ModelService(other).update(current, source)
+        return result
+
+    monkeypatch.setattr(ModelInstanceService, 'batch_create', create_then_change)
+    assert await sync_replicas(session, model) == 0
+    instances = await ModelInstance.all_by_field(session, 'model_id', model.id)
+    assert [item.role for item in instances] == ['prefill', 'prefill']
+
+
+@pytest.mark.asyncio
+async def test_role_scale_down_rechecks_intent_between_drain_commits(
+    session, monkeypatch
+):
+    from gpustack.server import controllers
+
+    model = await _model_with_created_route(session, 'role-drain-race')
+    await model.update(session, {'roles': [RoleSpec(name='prefill')]})
+    first = await _managed_instance(session, model)
+    await first.update(session, {'role': 'prefill'})
+    instances = [first]
+    for index in range(2):
+        instances.append(
+            await ModelInstance.create(
+                session,
+                ModelInstance(
+                    **{
+                        **first.model_dump(exclude={'id', 'created_at', 'updated_at'}),
+                        'name': f'prefill-{index}',
+                    }
+                ),
+            )
+        )
+    monkeypatch.setattr(
+        controllers,
+        'find_scale_down_candidates',
+        AsyncMock(
+            return_value=[SimpleNamespace(model_instance=item) for item in instances]
+        ),
+    )
+    update = ModelInstance.update
+    changed = []
+
+    async def drain_then_scale_up(instance, *args, **kwargs):
+        result = await update(instance, *args, **kwargs)
+        if not changed:
+            changed.append(instance.id)
+            async with AsyncSession(session.bind, expire_on_commit=False) as other:
+                current = await Model.one_by_id(
+                    other, model.id, for_update=True, refresh=True
+                )
+                await ModelService(other).update(
+                    current, {'roles': [RoleSpec(name='prefill', replicas=3)]}
+                )
+        return result
+
+    monkeypatch.setattr(ModelInstance, 'update', drain_then_scale_up)
+    await controllers._scale_down_role(
+        session, model, model.roles[0], instances, instances
+    )
+    assert sum(item.draining_since is not None for item in instances) == 1
 
 
 @pytest.mark.asyncio

@@ -1,30 +1,26 @@
 import os
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse, urlunparse
 import aiohttp
 from fastapi.responses import JSONResponse
 import logging
-from typing import Callable, Optional
+import re
+from typing import Annotated, Callable, Optional
 from functools import partial
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 
-from gpustack.api.exceptions import (
-    BadRequestException,
-    ForbiddenException,
-)
+from gpustack.api.auth import get_current_user
+from gpustack.api.exceptions import ForbiddenException
+from gpustack.api.tenant import TenantContext, get_tenant_context
 from gpustack.config.config import get_global_config
+from gpustack.schemas.principals import OrgRole
+from gpustack.schemas.users import User
 from gpustack.utils.network import use_proxy_env_for_url
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
-
-ALLOWED_SITES = [
-    "https://modelscope.cn",
-    "https://www.modelscope.cn",
-    "https://huggingface.co",
-]
 
 HEADER_FORWARDED_PREFIX = "x-forwarded-"
 HEADER_SKIPPED = [
@@ -45,6 +41,11 @@ HEADER_SKIPPED = [
     "x-forwarded-server",
 ]
 
+# Credentials of the calling user must never reach the upstream host through
+# the /proxy route: the server attaches the Hugging Face token itself when the
+# matched rule allows it, and ModelScope requests need no credentials at all.
+CREDENTIAL_HEADERS = ["authorization", "x-api-key"]
+
 HF_ENDPOINT = os.getenv("HF_ENDPOINT")
 
 
@@ -55,6 +56,157 @@ def is_huggingface_url(url: str) -> bool:
     except Exception:
         return False
     return parsed.scheme == "https" and parsed.hostname == "huggingface.co"
+
+
+def parse_hf_endpoint() -> Optional[dict]:
+    """
+    Parse HF_ENDPOINT into scheme / host / port / path prefix.
+
+    Mirrors are administrator-configured (hf-mirror.com, an internal
+    http://host:port, or a path-prefixed https://example.com/hf), so they are
+    parsed strictly with urlparse instead of string prefix matching. The port
+    is part of the origin: requests to the same host on a different port must
+    not be treated as the mirror, or the server token could be sent to
+    whatever unrelated service listens there.
+    """
+    if not HF_ENDPOINT:
+        return None
+    endpoint = HF_ENDPOINT if HF_ENDPOINT.endswith("/") else HF_ENDPOINT + "/"
+    parsed = urlparse(endpoint)
+    if not parsed.scheme or not parsed.hostname:
+        return None
+    return {
+        "scheme": parsed.scheme,
+        "host": parsed.hostname,
+        "port": parsed.port,
+        "path_prefix": parsed.path.rstrip("/"),
+    }
+
+
+def _effective_port(scheme: Optional[str], port: Optional[int]) -> Optional[int]:
+    if port is not None:
+        return port
+    return 443 if scheme == "https" else 80
+
+
+def canonicalize_hf_url(url: str) -> str:
+    """
+    Map an HF_ENDPOINT mirror URL back to https://huggingface.co.
+
+    Mirrors must satisfy exactly the same read-only rule set as the official
+    host, so rule matching runs against the canonical URL regardless of which
+    host the request actually targets.
+    """
+    endpoint = parse_hf_endpoint()
+    if endpoint is None:
+        return url
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    if parsed.scheme != endpoint["scheme"] or parsed.hostname != endpoint["host"]:
+        return url
+    if _effective_port(parsed.scheme, parsed.port) != _effective_port(
+        endpoint["scheme"], endpoint["port"]
+    ):
+        return url
+    path = parsed.path
+    if endpoint["path_prefix"]:
+        if path == endpoint["path_prefix"]:
+            path = "/"
+        elif path.startswith(endpoint["path_prefix"] + "/"):
+            path = path[len(endpoint["path_prefix"]) :]
+        else:
+            return url
+    return urlunparse(("https", "huggingface.co", path, "", parsed.query, ""))
+
+
+class ProxyRule:
+    """
+    An allow-list entry for the /proxy route: which methods may be forwarded
+    to which scheme://host/path prefix, and whether the server-side Hugging
+    Face token may be attached.
+    """
+
+    def __init__(self, methods: set, pattern: "re.Pattern", attach_token: bool):
+        self.methods = methods
+        self.pattern = pattern
+        self.attach_token = attach_token
+
+    def matches(self, method: str, canonical_url: str) -> bool:
+        if method not in self.methods:
+            return False
+        parsed = urlparse(canonical_url)
+        # aiohttp (yarl) removes dot segments — including percent-encoded ones
+        # like %2e%2e — before sending, so a path such as
+        # /api/models/%2e%2e/whoami-v2 would reach the upstream as
+        # /api/whoami-v2 while matching the /api/models rule here. Match
+        # against the decoded path and refuse dot segments entirely: no
+        # allow-listed API shape needs path traversal.
+        path = unquote(parsed.path)
+        if "\\" in path or any(segment == ".." for segment in path.split("/")):
+            return False
+        target = urlunparse((parsed.scheme, parsed.netloc, path, "", "", "")).rstrip(
+            "/"
+        )
+        return self.pattern.match(target) is not None
+
+
+# Hugging Face: the UI only performs read-only model search, file listing and
+# file downloads, so only those API shapes are proxied and only for them the
+# server token is attached. Write endpoints (repos create/delete, settings,
+# whoami) stay unreachable through /proxy.
+#
+# ModelScope: the search API (api/v1/dolphin/models) only accepts PUT with a
+# JSON body, so that single path is allow-listed for PUT. No server-side
+# token exists for ModelScope.
+PROXY_RULES = [
+    ProxyRule(
+        {"GET", "HEAD"},
+        re.compile(r"^https://huggingface\.co/api/models(/|$)"),
+        attach_token=True,
+    ),
+    ProxyRule(
+        {"GET", "HEAD"},
+        re.compile(r"^https://huggingface\.co/[^/]+/[^/]+/(tree|resolve|blob)(/|$)"),
+        attach_token=True,
+    ),
+    ProxyRule(
+        {"PUT"},
+        re.compile(r"^https://www\.modelscope\.cn/api/v1/dolphin/models$"),
+        attach_token=False,
+    ),
+    ProxyRule(
+        {"GET"},
+        re.compile(r"^https://(www\.)?modelscope\.cn/api/v1/models(/|$)"),
+        attach_token=False,
+    ),
+    ProxyRule(
+        {"GET"},
+        re.compile(r"^https://modelscope\.cn/[^/]+/[^/]+/resolve/"),
+        attach_token=False,
+    ),
+]
+
+
+def match_proxy_rule(method: str, url: str) -> Optional[ProxyRule]:
+    """
+    Find the allow-list entry permitting this method and URL.
+
+    Matching runs on the canonical URL so HF_ENDPOINT mirrors follow the same
+    rules as huggingface.co. Malformed URLs (unparseable IPv6 brackets,
+    non-numeric ports, ...) fail closed: urlparse raises ValueError only when
+    the malformed part is read, so every access stays inside this guard and
+    maps to "no rule" instead of a server error.
+    """
+    try:
+        canonical_url = canonicalize_hf_url(url)
+        for rule in PROXY_RULES:
+            if rule.matches(method, canonical_url):
+                return rule
+    except ValueError:
+        return None
+    return None
 
 
 def replace_hf_endpoint(url: str) -> str:
@@ -93,16 +245,61 @@ timeout = aiohttp.ClientTimeout(
 )
 
 
+def may_attach_hf_token(user: Optional[User], ctx: Optional[TenantContext]) -> bool:
+    """
+    Whether the caller may spend the server-side Hugging Face token.
+
+    The token reads every private / gated repository the administrator
+    configured it for, so attaching it is reserved to platform admins and
+    Org owners. Everyone else still reaches the allow-listed read-only
+    paths, but anonymously — public model browsing keeps working while
+    private repositories stay invisible.
+    """
+    if user is not None and user.is_admin:
+        return True
+    if ctx is not None and ctx.is_platform_admin:
+        return True
+    return ctx is not None and ctx.org_role == OrgRole.OWNER
+
+
 @router.api_route("", methods=["GET", "POST", "PUT", "DELETE"])
-async def proxy(request: Request, url: str):
+async def proxy(
+    request: Request,
+    url: str,
+    user: Annotated[User, Depends(get_current_user)],
+    tenant_context: Annotated[TenantContext, Depends(get_tenant_context)],
+):
 
-    validate_http_method(request.method)
-    validate_url(url)
+    rule = match_proxy_rule(request.method, url)
+    if rule is None:
+        raise ForbiddenException(
+            message="This site, path or HTTP method is not allowed"
+        )
 
-    url = replace_hf_endpoint(url)
+    effective_url = replace_hf_endpoint(url)
+    attach_token = rule.attach_token and may_attach_hf_token(user, tenant_context)
     return await proxy_to(
-        request, url, header_func=partial(apply_hf_token_to_headers, url)
+        request,
+        effective_url,
+        header_func=partial(proxy_rule_header_func, attach_token),
     )
+
+
+def proxy_rule_header_func(attach_token: bool, headers: dict) -> dict:
+    """
+    Header transform for the /proxy route: drop the caller's own credentials,
+    then attach the server-side Hugging Face token only when both the matched
+    rule and the caller's role permit spending it on this request.
+    """
+    for key in list(headers.keys()):
+        if key.lower() in CREDENTIAL_HEADERS:
+            del headers[key]
+
+    if attach_token:
+        global_config = get_global_config()
+        if global_config.huggingface_token:
+            headers["Authorization"] = f"Bearer {global_config.huggingface_token}"
+    return headers
 
 
 async def proxy_to(
@@ -147,35 +344,6 @@ async def proxy_to(
             content={"detail": "Failed to proxy the request."},
             media_type="application/json",
         )
-
-
-def validate_http_method(method: str):
-    allowed_methods = ["GET", "POST", "PUT", "DELETE"]
-    if method not in allowed_methods:
-        raise BadRequestException(message=f"HTTP method '{method}' is not allowed")
-
-
-def validate_url(url: str):
-    if not url:
-        raise BadRequestException(message="Missing 'url' query parameter")
-
-    try:
-        parsed_url = urlparse(url)
-    except Exception:
-        raise BadRequestException(message="Invalid 'url' query parameter")
-
-    if not parsed_url.netloc or not parsed_url.scheme:
-        raise BadRequestException(message="Invalid 'url' query parameter")
-
-    for allowed_site in ALLOWED_SITES:
-        parsed_allowed_site_url = urlparse(allowed_site)
-        if (
-            parsed_url.netloc == parsed_allowed_site_url.netloc
-            and parsed_url.scheme == parsed_allowed_site_url.scheme
-        ):
-            return
-
-    raise ForbiddenException(message="This site is not allowed")
 
 
 def process_headers(headers: dict) -> dict:

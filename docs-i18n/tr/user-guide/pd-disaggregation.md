@@ -28,11 +28,75 @@ Tek bir GPU veya istemleri ve nesilleri kısa olan bir iş yükü, onsuz genelli
 4. İki tarafın farklı olduğu rol başına ayarları geçersiz kılın. Miras olarak kalan her alan, dağıtım düzeyindeki değeri alır, dolayısıyla yalnızca farkların yazılması gerekir.
 5. Kaydet.
 
-Yönlendirici sizin için yönetilir: görüntüsü, komutu, eş adresleri ve sağlık yolu, hepsi modun tarifinden gelir, dolayısıyla form bunları istemez. İstediği şey, bir tarifin bilemeyeceği şeydir - yönlendiricinin kendi argümanları ve ortamı - ve platformun türettiği bağlantı argümanları aynı listeye eklenir, böylece ona güvenmek yerine neyin oluşturulduğunu görebilirsiniz. Dokunmadan bıraktığınız bir satır kaydetme sırasında tekrar bırakılır ve sunucu onu oluşturmaya devam eder.
+### Rollere özel bağımsız arka uçlar { #independent-role-backends }
 
-Yönlendirici yapısal olarak tek kopya olduğundan ayarlanacak bir sayı yoktur: bir saniye, önek önbelleğini böler ve gruba iki adres verir.
+Dağıtımın arka ucu, sürümü, imajı ve çalıştırma komutu üç rolün de varsayılanlarıdır. Her rolün **Backend** listesinde başlangıçta **Dağıtım ayarlarını devral** seçilir; yanında geçerli arka uç ve sürüm veya imaj gösterilir. Bu seçenek seçiliyken dağıtım ayarlarındaki değişiklikler role uygulanmaya devam eder. Dağıtım komutu çıkarım motorları için varsayılandır; Router komutu aşağıdaki kurallarla ayrıca çözümlenir.
 
-Kendi yönlendiricinizi kullanacaksanız `custom` modunu seçin; imajı ve çalıştırma komutunu yönlendirici rolünde değil **dağıtımda** ayarlayın. Rol ikisini de devralır. Tek imaj hem yönlendiriciyi hem motoru içerir ve role göre uygun bileşeni başlatır. Böylece imajı iki yerde belirtmekle aynı iş yapılır, ancak ikinci bir ayarı eşzamanlı tutmak gerekmez.
+Prefill, Decode veya Router için belirli bir arka uç seçerek rolü bağımsız yapılandırın. Dağıtımla aynı arka ucu seçmek geçerli başlatma ayarlarını kopyalar; farklı bir arka uç seçmek onun varsayılanlarını kullanır. Üç rol de dağıtımla aynı arka uç listesini ve alanları sunar:
+
+- Yapılandırılmış runner imajını kullanmak için arka uç ve sürüm seçin. **Auto**, sürümü dağıtım sürümünden bağımsız seçer.
+- İmaj belirtmek için **Custom** seçin. P/D rolleri komut da gerektirir. Yerleşik PD modundaki Router komutu boş bırakabilir; GPUStack, P/D hazır olduğunda üretir. İmajın tag veya digest değeri sürümü belirler.
+- Özel imajları destekleyen yerleşik arka uçlar, imajı geçersiz kılma ve isteğe bağlı çalıştırma komutu alanlarını sunmaya devam eder.
+
+Router için dağıtımın arka ucunu seçmek imajı ve sürümü kopyalar; komutu seçilen arka uç tanımı veya PD şeması sağlar. Üst çıkarım komutu hiçbir PD modunda kopyalanmaz. Bağımsız arka ucu yeniden seçmek girilmiş Router komutunu korur.
+
+Bağımsız rol, ilk değerler dağıtımla aynı olsa bile dağıtım varsayılanları değiştiğinde seçimini korur. **Dağıtım ayarlarını devral** seçeneğini yeniden seçmek rolün arka uç geçersiz kılmalarını temizler ve devralmayı geri getirir. Parametreler, ortam, kaynaklar ve zamanlama kendi mevcut kurallarını korur.
+
+API'de null olmayan `roles[].backend`, `backend`, `backend_version`, `image_name` ve `run_command` alanlarından oluşan bağımsız bir grup seçer. Null sürüm Auto anlamına gelir; null imaj ve komut, arka ucun ürettiği ayarları kullanır. Dağıtım varsayılanlarını devralmak için dört alanı da null yapın. `backend` alanını null bırakan mevcut kısmi API geçersiz kılmaları, belirtilmeyen alanları ayrı ayrı devralmaya devam eder.
+
+Seçilen arka uç ve sürüm Router imajını sağlar. Komut önceliği: Router rolünün açık komutu, seçilen sürümün komutu, arka uç varsayılan komutu ve PD şeması komutu. Yerleşik arka uçlar dahil hepsi aynı kurala uyar. Yalnızca imajı değiştirmek şema komutunu korur. Eş başvurusu olmayan komutlar elle yönetilir; eşlere başvuran şablonlar Router yeniden başlatılarak güncellenir. `custom` PD modunda konektörleri de kullanıcı yapılandırır.
+
+Farklı imaj ve sürümler uyumlu konektör protokolleri ve KV düzenleri uygulamalıdır. Yerleşik PD tarifleri P/D motor uyumluluğunu doğrular. Router, P/D motor kısıtlamaları uygulanmadan aynı arka uç seçeneklerini kullanır.
+
+Katalog bağlantı argümanları ve ayarlanabilir varsayılanlar yalnızca PD şeması komutu kullanılırken gösterilir.
+
+Yönlendiricinin yapısı gereği tek kopyası vardır; ikinci kopya önek önbelleğini bölüp gruba iki adres vereceğinden kopya sayısı ayarlanmaz.
+
+### Router çalışma zamanı komut şablonları { #runtime-router-command-arguments }
+
+Rol veya arka uç komutu tüm bayrakları belirler. GPUStack P/D hazır olduğunda çalışma zamanı verilerini doldurur ve şema bayraklarını eklemez. İkisi de komut sağlamıyorsa PD şemasının varsayılan komutu ve üyelik politikası kullanılır. Şablonlar `custom` PD modunda da çalışır.
+
+- `{{worker_ip}}` bu Router’ın Worker IP adresidir; `{{port}}` ayrılan servis portudur; `{{ports.prometheus}}` tarif ayırıyorsa adlandırılmış porttur.
+- `prefill` / `decode` geçerli gruptaki tüm hazır uç noktaları kararlı adres sırasıyla içerir. Her öğenin alanları: `ip`, `port`, `url`, `ports`. Adlandırılmış portlar her uç noktaya aittir; örneğin `{{p.ports.bootstrap}}`.
+- `prefill_urls` / `decode_urls` şu işlemi destekleyen URL listeleridir: `join`.
+
+İki prefill ve iki decode uç noktası varsa her döngü iki argüman grubu üretir. Bayrakları ve dinleme adresini kullandığınız programa göre değiştirebilirsiniz. vLLM NIXL örneği:
+
+```text
+vllm-router --vllm-pd-disaggregation --kv-connector nixl
+  --host 0.0.0.0 --port {{port}}
+  --prometheus-host 0.0.0.0 --prometheus-port {{ports.prometheus}}
+  {% for p in prefill %}
+    --prefill {{p.url}}
+  {% endfor %}
+  {% for d in decode %}
+    --decode {{d.url}}
+  {% endfor %}
+```
+
+Virgülle ayrılmış uç nokta listelerini kabul eden bir program için:
+
+```text
+my-router --listen {{worker_ip}} --listen-port {{port}}
+  --prefill-endpoints "{{prefill_urls | join(',')}}"
+  --decode-endpoints "{{decode_urls | join(',')}}"
+```
+
+Yalnızca değişken değerleri, uç nokta/URL listelerinde tek seviyeli döngüler ve sabit ayırıcıyla URL birleştirme desteklenir. Bilinmeyen adlar ve desteklenmeyen sözdizimi kayıtta reddedilir; bulunamayan adlandırılmış portlar başlatmayı durdurur. İşlev çağrıları, içe aktarma, koşullar, iç içe döngüler ve diğer filtreler desteklenmez. Yeni satırlar argümanları ayırır; bu, örtük shell çalıştırmayan bir argv şablonudur. Boşluk veya tırnak içeren değerler tek argüman olarak kalır.
+
+Şablonlar, `{{ROUTER_CONFIG}}` gibi açıkça yapılandırılmış ortam değişkenlerine de başvurabilir. Rolün ortam haritası belirtilmişse o kullanılır, aksi halde dağıtım ortamı devralınır; katalog değerleri varsayılan olarak birleştirilir. Aynı adlı çalışma zamanı şablon değişkenleri önceliklidir.
+
+Router üst imajı ve sürümü devralır ancak hiçbir PD modunda üst çıkarım komutunu devralmaz. Bağımsız seçilen arka uç, sürümün `run_command` veya `default_run_command` değerini normal entrypoint ve argüman anlamıyla sağlar. Rolün `run_command` değeri tam başlatma komutudur ve entrypoint değerini geçersiz kılar. `custom` PD modu dahil hiçbir komut kaynağı yoksa kayıt eksik Router komutu hatasıyla reddedilir.
+
+Komutun sabit metni POSIX tırnak kurallarını izler. Düzenli ifade veya yollardaki ters eğik çizgileri korumak için aşağıdaki gibi tek tırnak kullanın:
+
+```text
+my-router --regex '\d+\s+' --config 'C:\models\router.json' --port {{port}}
+```
+
+Dağıtım özgün şablonu saklar; örnek yapılandırma anlık görüntüsüne açılmış komut kaydedilir. Eş verilerine başvuran komutlar, üyeler veya yeniden başlatma nesilleri değiştiğinde yeniden açılır ve Router yeniden oluşturulur. Eş verisi kullanmayan özel komutlar elle üyelik güncellemesi gerektirir; GPUStack bayraklardan üyelik API’si çıkarmaz.
+
+Router veya dağıtım imajı açıkça belirtildiğinde tam komut imajın uygulama ENTRYPOINT ayarını geçersiz kılar; imaj içinde shell gerekmez.
 
 ## Bir grup nasıl başlar? { #how-a-group-starts }
 
@@ -72,7 +136,7 @@ Değişikliği uygulamak için dağıtımda `Restart` kullanın. Grubun tamamı 
 | `restart` | vLLM Mooncake | GPUStack, eklenen GPU üyeleri hazır olduğunda yönlendiricinin yerini alır, başlangıç eşlerini ve önyükleme meta verilerini yeniler. Kaldırılan veya yeniden başlatılan üyeler, her iki tarafta da kullanılabilir bir eş bulunduğunda yenilemeyi tetikler. Hayatta kalan GPU örnekleri çalışmaya devam ediyor ancak hizmet kısa süreliğine kullanılamıyor ve yayın sırasındaki istekler başarısız olabilir. |
 | `manual` | Özel | Operatör, yönlendirici eşlerini ve önyükleme meta verilerini günceller ve gerektiğinde yönlendiriciyi yeniden başlatır. |
 
-Kullanıcının belirlediği yönlendirici çalıştırma komutu, seçilen mod otomatik güncellemeyi desteklese bile üyeliğin elle yönetilmesini gerektirir. Dağıtım formu ve replika düzenleyicisi katalogdaki politikayı gösterir. Örnek silinirken de kurtarma için yönlendirici değişimi veya operatör müdahalesi gerekiyorsa uyarı gösterilir.
+Çalışma zamanı argüman yer tutucuları içermeyen statik Router komutu, üyeliği elle yönetir. Yer tutuculu komutlar yukarıdaki güncelleme kurallarını kullanır. Dağıtım formu ve replika düzenleyicisi katalogdaki politikayı gösterir. Örnek silinirken de kurtarma için yönlendirici değişimi veya operatör müdahalesi gerekiyorsa uyarı gösterilir.
 
 Statik yönlendirici anlık görüntüleri, örnek kimliğini, yeniden başlatma oluşturmayı, HTTP adresini ve adlandırılmış bağlantı noktalarını içerir. Aynı adreste değiştirme veya yeniden başlatma bu nedenle Mooncake önyükleme meta verilerini yenilemeye devam eder. Anlık görüntüsü olmayan mevcut yönlendiriciler, eşleri hazır olduğunda bir kez değiştirilir.
 

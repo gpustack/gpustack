@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 import asyncio
@@ -44,7 +45,7 @@ from tests.worker.test_serve_manager_ports import (
     _pd_model,
     _wide_band_mode,
 )
-from tests.worker.test_worker_provisioning import _wait_for_shutdown
+from tests.utils.process import wait_for_shutdown
 
 
 @pytest.fixture
@@ -190,6 +191,96 @@ def _running_managed(state):
     )
     state.serve._assigned_ports[state.instance.id] = {40020, 40021}
     return state.instance.model_copy(deep=True)
+
+
+def test_managed_sync_reattaches_log_collectors(managed, monkeypatch):
+    state = managed
+    state.instance.state = ModelInstanceStateEnum.RUNNING
+    for item in state.instance.distributed_servers.workloads:
+        item.state = ModelInstanceWorkloadStateEnum.RUNNING
+    _running_managed(state)
+    monkeypatch.setattr(state.serve, '_sync_managed_rank_health', MagicMock())
+
+    state.serve.sync_model_instances_state()
+
+    state.serve._start_container_log_persistence.assert_called_once()
+    args, kwargs = state.serve._start_container_log_persistence.call_args
+    assert args[0].id == state.instance.id
+    assert kwargs == {'resume': True}
+
+
+def test_managed_log_failure_does_not_fail_workload_creation(managed):
+    state = managed
+    state.serve._start_container_log_persistence.side_effect = OSError('disk full')
+    local = _local_manifest(state)
+    state.instance.distributed_servers.workloads = []
+
+    assert state.serve._start_managed_workloads(
+        state.instance.model_copy(deep=True), local, _managed_plans(local)
+    )
+    assert not state.serve._managed_stopping
+    assert state.create.call_count == len(local)
+
+
+def test_managed_collectors_use_registered_names_and_separate_archives(
+    managed, monkeypatch
+):
+    from gpustack.worker.log_sources import list_log_sources
+    from gpustack.worker.container_logs import _LogCursor
+
+    state = managed
+    threads = []
+
+    def thread(**kwargs):
+        result = MagicMock()
+        result.is_alive.return_value = True
+        threads.append((result, kwargs))
+        return result
+
+    monkeypatch.setattr('gpustack.worker.serve_manager.threading.Thread', thread)
+    ServeManager._start_container_log_persistence(
+        state.serve, state.instance, resume=True
+    )
+    collectors = [
+        kwargs
+        for _, kwargs in threads
+        if kwargs['target'] == state.serve._persist_container_logs
+    ]
+    local = _local_manifest(state)
+    assert {c['args'][0] for c in collectors} == {w.name for w in local}
+    assert len({c['args'][1] for c in collectors}) == len(local)
+    assert all(c['kwargs']['resume'] for c in collectors)
+    for collector in collectors:
+        path = Path(collector['args'][1])
+        state.serve._copy_container_log_stream(
+            iter([f"2026-11-08T00:00:00Z {collector['args'][0]}\n"]),
+            str(path),
+            _LogCursor(str(path)),
+            threading.Event(),
+        )
+    sources = list_log_sources(
+        Path(state.serve._serve_log_dir),
+        state.instance.id,
+        state.serve._worker_id,
+        state.instance.restart_count,
+    )
+    engines = [s for s in sources if s.descriptor.kind == 'workload']
+    assert {s.descriptor.workload_name for s in engines} == {w.name for w in local}
+    for source in engines:
+        assert ''.join(p.read_text() for p in source.paths) == (
+            source.descriptor.workload_name + '\n'
+        )
+    count = len(threads)
+    state.serve._ensure_container_log_persistence(state.instance)
+    assert len(threads) == count
+    extra = collectors[1]
+    next(
+        result for result, kwargs in threads if kwargs is extra
+    ).is_alive.return_value = False
+    state.serve._ensure_container_log_persistence(state.instance)
+    assert len(threads) == count + 1
+    assert threads[-1][1]['args'][:2] == extra['args'][:2]
+    assert threads[-1][1]['kwargs'] == {'resume': True}
 
 
 @pytest.mark.parametrize('hybrid', [False, True])
@@ -1036,7 +1127,7 @@ def test_external_preparer_stop_releases_the_old_generation(
     serve, mi = state.serve, state.instance
     context = multiprocessing.get_context("spawn")
     ready = context.Event()
-    process = context.Process(target=_wait_for_shutdown, args=(ready,))
+    process = context.Process(target=wait_for_shutdown, args=(ready,))
     monkeypatch.setattr(
         "gpustack.worker.serve_manager.terminate_multiprocessing_process",
         terminate_multiprocessing_process,
@@ -1269,25 +1360,190 @@ def test_managed_replayed_start_adopts_existing_workloads(managed):
     assert state.instance.restart_count == 3
 
 
-def test_managed_partial_create_failure_cleans_up_even_a_lost_create_response(managed):
+@pytest.mark.parametrize('response_lost', [False, True])
+def test_managed_partial_create_failure_cleans_up_even_a_lost_create_response(
+    managed, monkeypatch, response_lost
+):
+    from gpustack.worker.log_sources import (
+        container_log_path,
+        engine_log_targets,
+        list_log_sources,
+        sidecar_container_log_path,
+    )
+
     state = managed
     local = _local_manifest(state)
-    normal_create = state.create.side_effect
+    normal_create, normal_delete = state.create.side_effect, state.delete.side_effect
+    root = Path(state.serve._serve_log_dir)
+    paths = {
+        name: (
+            container_log_path(root, state.instance.name, state.instance.id, 3)
+            if archive is None
+            else sidecar_container_log_path(
+                root, state.instance.name, state.instance.id, archive, 3
+            )
+        )
+        for name, archive in engine_log_targets(state.instance, state.serve._worker_id)
+    }
+    created = {item.name: threading.Event() for item in local}
+    removed = {item.name: threading.Event() for item in local}
+    deleting = threading.Event()
+    deleted_logs, live_collectors = {}, []
+
+    def start(*args, **kwargs):
+        state.events.append('logs-attached')
+        ServeManager._start_container_log_persistence(state.serve, *args, **kwargs)
+
+    monkeypatch.setattr(state.serve, '_start_container_log_persistence', start)
+    monkeypatch.setattr(
+        state.serve,
+        '_stop_container_log_persistence',
+        ServeManager._stop_container_log_persistence.__get__(state.serve),
+    )
+    monkeypatch.setattr(
+        state.serve,
+        '_wait_for_managed_engine_logs',
+        ServeManager._wait_for_managed_engine_logs.__get__(state.serve),
+    )
+    monkeypatch.setattr(state.serve, '_discover_sidecar_logs', lambda *a, **kw: None)
+
+    def logs(*, name, follow, **kwargs):
+        assert follow
+        while not created[name].wait(0.01):
+            if deleting.is_set():
+                return
+        for message in ('started', 'diagnostic'):
+            yield f'2026-11-08T00:00:00Z {name} {message}\n'
+        assert removed[name].wait(3)
+
+    monkeypatch.setattr('gpustack.worker.container_logs._read_runtime_logs', logs)
 
     def create(plan):
+        if state.create.call_count == 2 and not response_lost:
+            raise OSError('create rejected')
         normal_create(plan)
+        created[plan.name].set()
         if state.create.call_count == 2:
-            raise OSError("create response lost")
+            raise OSError('create response lost')
+
+    def delete(name):
+        path = paths[name]
+        deleted_logs[name] = path.read_text() if path.exists() else ''
+        persistence = state.serve._log_persistence[state.instance.id]
+        live_collectors.append(not persistence.stop_event.is_set())
+        normal_delete(name)
+        removed[name].set()
+        deleting.set()
 
     state.create.side_effect = create
-    assert not state.serve._start_managed_workloads(
-        state.instance, local, _managed_plans(local)
+    state.delete.side_effect = delete
+    try:
+        assert not state.serve._start_managed_workloads(
+            state.instance, local, _managed_plans(local)
+        )
+        assert not state.runtime
+        assert deleted_logs == {
+            item.name: f'{item.name} started\n{item.name} diagnostic\n'
+            for item in local[: 2 if response_lost else 1]
+        }
+        assert all(live_collectors)
+        assert state.events.index('report') < state.events.index('logs-attached')
+        assert state.events.index('logs-attached') < next(
+            i for i, event in enumerate(state.events) if event.startswith('create:')
+        )
+        sources = list_log_sources(root, state.instance.id, state.serve._worker_id, 3)
+        assert {s.descriptor.workload_name for s in sources if s.paths} == set(
+            deleted_logs
+        )
+        assert state.instance.id not in state.serve._assigned_ports
+    finally:
+        deleting.set()
+        for event in removed.values():
+            event.set()
+        state.serve._stop_container_log_persistence(state.instance.id)
+
+
+@pytest.mark.parametrize('stat_error_at', [None, 0, 1])
+def test_managed_log_flush_retries_archive_rotation(
+    managed, monkeypatch, caplog, stat_error_at
+):
+    state = managed
+    name = _local_manifest(state)[0].name
+    clock = SimpleNamespace(now=0.0)
+    stat = SimpleNamespace(st_size=10, st_mtime_ns=1)
+    samples = [stat, stat]
+    if stat_error_at is not None:
+        samples = [stat] * stat_error_at + [FileNotFoundError('rotated'), stat, stat]
+    archive = MagicMock(spec=Path)
+    archive.stat.side_effect = samples
+    source = SimpleNamespace(
+        descriptor=SimpleNamespace(previous=False, kind='workload', workload_name=name),
+        paths=[archive],
     )
+
+    def sleep(seconds):
+        clock.now += seconds
+
+    monkeypatch.setattr(
+        'gpustack.worker.serve_manager.time',
+        SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep),
+    )
+    monkeypatch.setattr(
+        'gpustack.worker.serve_manager.list_log_sources', lambda *a: [source]
+    )
+    ServeManager._wait_for_managed_engine_logs(
+        state.serve,
+        state.instance,
+        {name: [SimpleNamespace(labels={'gpustack.ai/restart-count': '3'})]},
+    )
+    # One stat per snapshot; a failed sample cannot establish archive stability.
+    expected_samples = 2 if stat_error_at is None else stat_error_at + 3
+    assert archive.stat.call_count == expected_samples
+    assert clock.now == pytest.approx(0.1 * (expected_samples - 1))
+    assert 'retained logs may be incomplete' not in caplog.text
+
+
+def test_managed_cleanup_continues_after_flush_deadline(managed, monkeypatch, caplog):
+    state = managed
+    _running_managed(state)
+    clock = SimpleNamespace(now=0.0)
+
+    def sleep(seconds):
+        clock.now += seconds
+
+    monkeypatch.setattr(
+        'gpustack.worker.serve_manager.time',
+        SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep),
+    )
+    monkeypatch.setattr('gpustack.worker.serve_manager.list_log_sources', lambda *a: [])
+    monkeypatch.setattr(
+        state.serve,
+        '_wait_for_managed_engine_logs',
+        ServeManager._wait_for_managed_engine_logs.__get__(state.serve),
+    )
+    assert state.serve._stop_model_instance(state.instance)
     assert not state.runtime
-    assert {item.state for item in _local_manifest(state)} == {
-        ModelInstanceWorkloadStateEnum.STOPPED
-    }
-    assert state.instance.id not in state.serve._assigned_ports
+    assert clock.now == 5
+    assert 'retained logs may be incomplete' in caplog.text
+
+
+def test_managed_cleanup_continues_when_archive_inspection_fails(
+    managed, monkeypatch, caplog
+):
+    state = managed
+    _running_managed(state)
+    monkeypatch.setattr(
+        state.serve,
+        '_wait_for_managed_engine_logs',
+        ServeManager._wait_for_managed_engine_logs.__get__(state.serve),
+    )
+    monkeypatch.setattr(
+        'gpustack.worker.serve_manager.list_log_sources',
+        MagicMock(side_effect=OSError('archive unavailable')),
+    )
+    assert state.serve._stop_model_instance(state.instance)
+    assert not state.runtime
+    assert 'archive unavailable' in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -2217,6 +2473,7 @@ def manager(request, tmp_path, monkeypatch):
         "_purge_instance_logs",
         "_start_container_log_persistence",
         "_stop_container_log_persistence",
+        "_wait_for_managed_engine_logs",
         "_update_model_instance",
     ):
         monkeypatch.setattr(manager, name, MagicMock())
@@ -2466,6 +2723,157 @@ def test_running_instance_without_ports_has_no_inference_endpoint(manager, ports
     instance.ports = ports
     serve._model_instance_by_instance_id[instance.id] = instance
     assert serve.get_instance_port_by_model_instance_id(instance.id) is None
+
+
+@pytest.mark.parametrize(
+    "state, queued_for_recovery",
+    [
+        (ModelInstanceStateEnum.RUNNING, False),
+        (ModelInstanceStateEnum.UNREACHABLE, False),
+        (ModelInstanceStateEnum.ERROR, True),
+    ],
+)
+def test_replayed_instance_is_not_launched(manager, state, queued_for_recovery):
+    serve, _ = manager
+    if serve._worker_id != 1:
+        pytest.skip("CREATED only starts an instance on its main worker")
+    instance = _instance()
+    instance.state = state
+
+    with patch.object(serve, "_launch_model_instance") as launch:
+        serve._dispatch_model_instance_event(
+            Event(type=EventType.CREATED, data=instance)
+        )
+
+    launch.assert_not_called()
+    assert (instance.id in serve._error_model_instances) is queued_for_recovery
+
+
+def _terminate_mock():
+    from gpustack.worker import serve_manager
+
+    return serve_manager.terminate_multiprocessing_process
+
+
+def _failing_state_write(serve):
+    if serve._worker_id != 1:
+        pytest.skip("A follower's workload is torn down before it is relaunched")
+    instance = _instance()
+    instance.state = ModelInstanceStateEnum.STARTING
+    serve._update_model_instance.side_effect = ReadTimeout("update unavailable")
+    return instance
+
+
+def test_failed_state_write_keeps_running_workload(manager):
+    serve, _ = manager
+    instance = _failing_state_write(serve)
+
+    with patch("gpustack.worker.serve_manager.delete_workload") as delete:
+        serve._start_model_instance(instance)
+
+    delete.assert_not_called()
+    _terminate_mock().assert_called_once()
+    assert _terminate_mock().call_args.args[0].pid == 1234
+    assert instance.id not in serve._provisioning_processes
+    assert instance.id not in serve._error_model_instances
+    assert serve._update_model_instance.call_count == 1
+
+
+def test_failed_state_write_keeps_workload_without_tracked_process(manager):
+    serve, _ = manager
+    instance = _failing_state_write(serve)
+
+    def fail_after_process_is_untracked(*args, **kwargs):
+        serve._provisioning_processes.pop(instance.id)
+        raise ReadTimeout("update unavailable")
+
+    serve._update_model_instance.side_effect = fail_after_process_is_untracked
+
+    with patch("gpustack.worker.serve_manager.delete_workload") as delete:
+        serve._start_model_instance(instance)
+
+    delete.assert_not_called()
+    _terminate_mock().assert_not_called()
+
+
+def test_failed_state_write_cancels_queued_recovery_of_running_workload(manager):
+    serve, _ = manager
+    instance = _failing_state_write(serve)
+    serve._error_model_instances[instance.id] = instance
+    serve._pending_model_instance_errors[instance.id] = {"state_message": "unreported"}
+
+    with patch("gpustack.worker.serve_manager.delete_workload") as delete:
+        serve._start_model_instance(instance)
+
+    delete.assert_not_called()
+    assert instance.id not in serve._error_model_instances
+    assert instance.id not in serve._pending_model_instance_errors
+
+
+def test_failed_state_write_keeps_workload_when_lookup_fails(manager):
+    serve, _ = manager
+    instance = _failing_state_write(serve)
+
+    with (
+        patch(
+            "gpustack.worker.serve_manager.get_workload",
+            side_effect=RuntimeError("runtime unavailable"),
+        ),
+        patch("gpustack.worker.serve_manager.delete_workload") as delete,
+    ):
+        serve._start_model_instance(instance)
+
+    delete.assert_not_called()
+    _terminate_mock().assert_called_once()
+    assert instance.id not in serve._provisioning_processes
+
+
+@pytest.mark.parametrize(
+    "state, workload",
+    [
+        (ModelInstanceStateEnum.STARTING, None),
+        (
+            ModelInstanceStateEnum.SCHEDULED,
+            SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING),
+        ),
+    ],
+)
+def test_failed_state_write_without_workload_to_keep_fails_launch(
+    manager, state, workload
+):
+    serve, _ = manager
+    instance = _failing_state_write(serve)
+    instance.state = state
+
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=workload),
+        patch("gpustack.worker.serve_manager.delete_workload") as delete,
+        pytest.raises(ReadTimeout, match="update unavailable"),
+    ):
+        serve._start_model_instance(instance)
+
+    delete.assert_called_once()
+    assert instance.id in serve._error_model_instances
+
+
+def test_failed_state_write_under_group_recovery_fails_launch(manager):
+    serve, client = manager
+    instance = _failing_state_write(serve)
+    instance.backend = BackendEnum.VLLM
+    assert instance.distributed_servers.group_recovery is True
+    client.model_instances.report_workloads.side_effect = ReadTimeout(
+        "update unavailable"
+    )
+
+    with (
+        patch("gpustack.worker.serve_manager.delete_workload") as delete,
+        pytest.raises(ReadTimeout, match="update unavailable"),
+    ):
+        serve._launch_model_instance(instance)
+
+    delete.assert_called_once()
+    _terminate_mock().assert_not_called()
+    assert instance.id in serve._error_model_instances
 
 
 def test_successful_launch_cancels_pending_failure_recovery(manager):

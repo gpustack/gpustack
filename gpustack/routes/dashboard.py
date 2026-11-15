@@ -447,10 +447,27 @@ async def _get_maas_active_models(
         return []
 
     provider_ids = [p.id for p in all_providers]
+    models_by_provider_and_name = {
+        (p.id, m.name): m for p in all_providers for m in (p.models or [])
+    }
+    if not models_by_provider_and_name:
+        return []
+
     total_tokens = func.sum(
         ModelUsage.prompt_token_count + ModelUsage.completion_token_count
     )
-    # Aggregate model usage in the database for efficiency
+    # Aggregate model usage in the database for efficiency. Only models still
+    # present on their provider are eligible, so a model removed from the
+    # provider's list does not show up on the dashboard even though its
+    # historical usage rows remain. Filtering in SQL keeps the result bounded
+    # by the limit instead of materializing every historical model name.
+    current_model_conditions = [
+        and_(
+            col(ModelUsage.provider_id) == provider_id,
+            col(ModelUsage.model_name) == model_name,
+        )
+        for provider_id, model_name in models_by_provider_and_name
+    ]
     statement = (
         select(
             ModelUsage.provider_id,
@@ -458,15 +475,12 @@ async def _get_maas_active_models(
             total_tokens.label("total_token_count"),
         )
         .where(col(ModelUsage.provider_id).in_(provider_ids))
+        .where(or_(*current_model_conditions))
         .group_by(ModelUsage.provider_id, ModelUsage.model_name)
         .order_by(func.coalesce(total_tokens, 0).desc())
         .limit(10)
     )
     top_model_usages = (await session.exec(statement)).all()
-
-    models_by_provider_and_name = {
-        (p.id, m.name): m for p in all_providers for m in (p.models or [])
-    }
 
     provider_id_to_name = {p.id: p.name for p in all_providers}
 

@@ -1,6 +1,5 @@
 import os
 import multiprocessing
-import signal
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -17,35 +16,16 @@ from gpustack_runtime.deployer import (
 )
 
 from gpustack.utils.runtime import transform_workload_plan
-from gpustack.utils.process import (
-    add_signal_handlers,
-    terminate_multiprocessing_process,
-)
+from gpustack.utils.process import terminate_multiprocessing_process
 from gpustack.worker.provisioning import _provision, run_provisioning
-
-
-def _wait_for_shutdown(ready, mode="terminate"):
-    if mode == "tree":
-        child = multiprocessing.get_context("spawn").Process(
-            target=_wait_for_shutdown, args=(ready,)
-        )
-        child.start()
-        child.join()
-        return
-    if mode == "kill":
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    elif mode == "handler":
-        add_signal_handlers()
-    ready.set()
-    if mode != "exit":
-        threading.Event().wait()
+from tests.utils.process import wait_for_shutdown
 
 
 @pytest.mark.parametrize("mode", ["exit", "terminate", "kill", "handler", "tree"])
 def test_owned_process_stop_preserves_exit_status_and_cleans_children(mode):
     context = multiprocessing.get_context("spawn")
     ready = context.Event()
-    process = context.Process(target=_wait_for_shutdown, args=(ready, mode))
+    process = context.Process(target=wait_for_shutdown, args=(ready, mode))
     children = []
     try:
         process.start()
@@ -81,7 +61,7 @@ def test_owned_process_stop_preserves_exit_status_and_cleans_children(mode):
 def test_owned_process_stop_reaps_parent_after_psutil_error(error_type, failure_stage):
     context = multiprocessing.get_context("spawn")
     ready = context.Event()
-    process = context.Process(target=_wait_for_shutdown, args=(ready,))
+    process = context.Process(target=wait_for_shutdown, args=(ready,))
     try:
         process.start()
         assert ready.wait(15)
@@ -123,7 +103,7 @@ def test_cancellation_terminates_and_reaps_the_child(tmp_path):
     cancelled = threading.Event()
     context = multiprocessing.get_context("spawn")
     ready = context.Event()
-    process = context.Process(target=_wait_for_shutdown, args=(ready,))
+    process = context.Process(target=wait_for_shutdown, args=(ready,))
     start = process.start
 
     def start_and_cancel(self):

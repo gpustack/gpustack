@@ -315,6 +315,7 @@ class InferenceBackend(InferenceBackendBase, BaseModelMixin, table=True):
 
 
 class VersionListItem(BaseModel):
+    run_command: Optional[str] = Field(None)
     version: str = Field(...)
     is_deprecated: bool = Field(default=False)
     env: Optional[Dict[str, str]] = Field(None)
@@ -324,6 +325,11 @@ class VersionListItem(BaseModel):
 
 class InferenceBackendListItem(BaseModel):
     """Backend configuration item."""
+
+    # Auto command selection follows the backend definition; default_version
+    # can instead be the runner recommendation presented in the version picker.
+    default_command_version: Optional[str] = Field(None)
+    default_run_command: Optional[str] = Field(None)
 
     backend_name: str = Field(...)
     is_built_in: Optional[bool] = Field(None)

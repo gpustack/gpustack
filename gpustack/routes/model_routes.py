@@ -1672,6 +1672,25 @@ async def set_fallback_target(
         if input.fallback_status_codes is not None:
             await unset_fallback_target(session, existing.route_id, auto_commit=False)
         existing.fallback_status_codes = input.fallback_status_codes
+        if input.fallback_status_codes is None and not (existing.weight or 0):
+            # Clearing the codes turns the row back into an LB candidate.
+            # A fallback-only row typically carries weight 0 (meaningless
+            # on the fallback path); kept as-is it would leave the route
+            # with a weighted/unweighted mix that LB cannot render, and
+            # the weight-consistency check below would reject the very
+            # update that turns the fallback off. Restore the default
+            # weight instead so the candidate classifies.
+            others = await ModelRouteTarget.all_by_field(
+                session, "route_id", existing.route_id
+            )
+            if any(
+                target.deleted_at is None
+                and target.id != existing.id
+                and not target.fallback_status_codes
+                and (target.weight or 0) > 0
+                for target in others
+            ):
+                existing.weight = 100
         await existing.update(session=session, auto_commit=False)
         # clearing the codes turns the target back into an LB candidate
         # — the post-write shape must still classify

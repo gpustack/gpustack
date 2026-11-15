@@ -254,6 +254,10 @@ class RuntimeMetricsAggregator:
             if mi.api_detected_backend_version is not None:
                 versions[mi.id] = mi.api_detected_backend_version
                 continue
+            if mi.role == "router":
+                # PD routers expose metrics but do not serve engine version APIs.
+                versions[mi.id] = mi.backend_version
+                continue
             key = (mi.id, source, context.host, context.worker_identity, mi.backend)
             if key in self._runtime_version_cache:
                 versions[mi.id] = self._runtime_version_cache[key]
@@ -299,18 +303,15 @@ class RuntimeMetricsAggregator:
     ) -> Optional[str]:
         if model_instance.api_detected_backend_version is not None:
             return model_instance.api_detected_backend_version
+        if model_instance.role == "router":
+            return model_instance.backend_version
 
         api_endpoint = api_endpoint or (
             f"{model_instance.worker_ip}:{_api_port(model_instance)}"
         )
         if api_endpoint != endpoint:
-            # The caller hands us the EXPOSITION endpoint, which for a router is a
-            # separate port band (see `_metrics_port`). `/version` does not live
-            # there. Worse than a 404: the router's exposition listener answers
-            # EVERY path with 200 + Prometheus text, so probing it returns a body
-            # that is not JSON and the parse raises once per scrape — an ERROR
-            # every few seconds that reads like metrics collection is broken when
-            # only the version probe is.
+            # Version APIs belong to the API listener, which can use a different
+            # port from the Prometheus exposition listener.
             logger.trace(
                 f"Instance {model_instance.id} exposes metrics on a separate port; "
                 f"probing the API port {api_endpoint} for its runtime version."

@@ -46,7 +46,8 @@ gpustack start [OPTIONS]
 | `--insecure-tls`                            | `False`                                | GPUStack自身のHTTPS接続（ワーカーからサーバー、サーバーから外部認証IdP）のTLS検証を省略します。他の方法でサーバー証明書を検証できない、信頼済みネットワーク向けです。 |
 | `--bin-dir` 値                           | （空）                                | 追加バイナリー（バージョン別のバックエンド実行ファイルなど）を保存するディレクトリー。 |
 | `--pipx-path` 値                         | （空）                                | バージョン別のバックエンドをインストールするためのpipx実行ファイルのパス。 |
-| `--system-default-container-registry` 値 | `docker.io`                            | GPUStackがシステム用および推論用イメージを取得するデフォルトのコンテナーレジストリー。<br/>GPUStackの業務用イメージはすべて`gpustack`名前空間に配置してください。多階層の名前空間が必要な場合も、`awesome.com/amazing-group/amazing-subgroup/gpustack`のように最終階層を`gpustack`にします。このフラグ（またはサーバー/ワーカーの設定キー`system_default_container_registry`、環境変数`GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY`）には、`awesome.com/amazing-group/amazing-subgroup`のように親のパスを指定してください。<br/>イメージを`gpustack`名前空間に配置できない場合（例：`gpustack-ai`）、`--image-repo`と`--benchmark-image-repo`を適宜変更してください。 |
+| `--system-default-container-registry` 値 | `docker.io`                            | GPUStackがシステム用および推論用イメージを取得するデフォルトのコンテナーレジストリー。<br/>GPUStackの業務用イメージはすべて`gpustack`名前空間に配置してください。多階層の名前空間が必要な場合も、`awesome.com/amazing-group/amazing-subgroup/gpustack`のように最終階層を`gpustack`にします。このフラグ（またはサーバー/ワーカーの設定キー`system_default_container_registry`、環境変数`GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY`）には、`awesome.com/amazing-group/amazing-subgroup`のように親のパスを指定してください。<br/>デフォルトのGPUStackワーカー、ランナー、ランタイムイメージを別の名前空間に移すには、サーバー/ワーカーの設定キー`container_namespace`を設定してください。`--image-repo`と`--benchmark-image-repo`は、リポジトリー個別の上書きに使用します。 |
+| `--container-namespace` 値               | （空）                                | GPUStack のワーカー、ランナー、ランタイム、ベンチマーク、キャッシュサービスイメージのデフォルト名前空間。`container_namespace` 設定キーまたは `GPUSTACK_CONTAINER_NAMESPACE` 環境変数でも設定できます。 |
 | `--image-repo` 値                        | `gpustack/gpustack`                    | GPUStackコンテナーのデフォルトのイメージリポジトリーを上書きします。値にタグを含めないでください。GPUStackがバージョンタグを自動で付加します。<br/>イメージ`gpustack/gpustack:<tag>`が`gpustack`名前空間の外（例：`awesome.com/amazing-group/amazing-subgroup/gpustack-ai/gpustack:<tag>`）にある場合、まず`--system-default-container-registry=awesome.com/amazing-group/amazing-subgroup`で親の名前空間を含むレジストリーを指定し、次にこのフラグ（またはサーバー/ワーカーの設定キー`image_repo`、環境変数`GPUSTACK_IMAGE_REPO`）を`gpustack-ai/gpustack`に設定してください。 |
 | `--gateway-mode` 値                      | `auto`                                 | ゲートウェイの動作モード。選択肢はembedded、in-cluster、external、disabled、auto（デフォルト）です。 |
 | `--gateway-kubeconfig` 値                | （空）                                | ゲートウェイ用kubeconfigファイルのパス。gateway-modeがexternalの場合のみ有効です。 |
@@ -170,6 +171,7 @@ data_dir: /path/to/data_dir
 cache_dir: /path/to/cache_dir
 benchmark_dir: /path/to/benchmark_dir
 benchmark_image_repo: gpustack/benchmark-runner
+container_namespace: gpustack
 token: your_token
 huggingface_token: your_huggingface_token
 insecure_tls: false

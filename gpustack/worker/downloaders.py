@@ -17,6 +17,7 @@ from modelscope.hub.utils.utils import model_id_to_group_owner_name
 from gpustack.schemas.models import Model, ModelSource, SourceEnum, get_mmproj_filename
 from gpustack.utils import file
 from gpustack.utils.hub import (
+    is_mmproj_repo_path,
     match_hugging_face_files,
     match_model_scope_file_paths,
     select_most_suitable_extra_file,
@@ -102,28 +103,41 @@ def get_model_file_info(
 def select_model_scope_file_info(
     files: List[FileEntry], model: ModelSource
 ) -> List[FileEntry]:
-    """Select the ModelScope files used for size, progress, and download."""
+    """Select the ModelScope files used for size, progress, and download.
+
+    Main files come first and the mmproj extra file is appended last, so
+    downstream consumers that take the first entry (e.g. resolved_path)
+    always see a main-model file."""
     by_path = {
         file.rfilename: file
         for file in files
         if file.rfilename and file.file_type != 'tree'
     }
     if not model.model_scope_file_path:
-        return [by_path[path] for path in sorted(by_path)]
+        main_paths = [p for p in sorted(by_path) if not is_mmproj_repo_path(p)]
+        extra_paths = [p for p in sorted(by_path) if is_mmproj_repo_path(p)]
+        return [by_path[p] for p in main_paths + extra_paths]
 
     selected = {
         path for path in by_path if fnmatch.fnmatch(path, model.model_scope_file_path)
     }
     if not selected:
         return []
+
+    def _partition(paths: List[str]) -> List[str]:
+        return sorted(p for p in paths if not is_mmproj_repo_path(p)) + sorted(
+            p for p in paths if is_mmproj_repo_path(p)
+        )
+
     extra_pattern = get_mmproj_filename(model)
     if extra_pattern:
         extra = select_most_suitable_extra_file(
             [path for path in by_path if fnmatch.fnmatch(path, extra_pattern)]
         )
         if extra:
-            selected.add(extra)
-    return [by_path[path] for path in sorted(selected)]
+            selected.discard(extra)
+            return [by_path[p] for p in _partition(list(selected))] + [by_path[extra]]
+    return [by_path[p] for p in _partition(list(selected))]
 
 
 class HfDownloader:
@@ -295,7 +309,15 @@ class HfDownloader:
         )
 
         logger.info(f"Downloaded model {repo_id}/{filename}")
-        return sorted(downloaded_files)
+        # thread_map preserves the matching_files order. Keep main weights
+        # ahead of mmproj files so downstream first-entry consumers
+        # (resolved_path) always see a main-model file, even when the user
+        # pattern matched the projector too.
+        paths_by_file = dict(zip(matching_files, downloaded_files))
+        ordered_files = [f for f in matching_files if not is_mmproj_repo_path(f)] + [
+            f for f in matching_files if is_mmproj_repo_path(f)
+        ]
+        return [paths_by_file[f] for f in ordered_files]
 
     def __call__(self):
         return self.download()

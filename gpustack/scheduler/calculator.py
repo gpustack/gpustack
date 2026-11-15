@@ -35,6 +35,7 @@ from gpustack.utils.hub import (
     match_model_scope_file_paths,
     get_pretrained_config,
     read_repo_file_content,
+    sum_weight_file_sizes,
 )
 from gpustack.utils.model_config import safe_pretrained_config_from_dict
 from gpustack.utils import platform
@@ -545,6 +546,11 @@ class GGUFParserCommandMutableParameters:
         except Exception as e:
             slogger.warning(f"Failed to parse mutable parameters: {e}")
 
+        # gguf-parser rejects -1 (llama.cpp "auto"), which needs the host
+        # devices to resolve, so the draft model keeps the default estimate.
+        if self.gpu_layers_draft == -1:
+            self.gpu_layers_draft = None
+
     def extend_command(self, command: List[str]):
         internal_properties = [
             "backend_version",
@@ -595,7 +601,7 @@ async def _gguf_parser_command(
         command.extend(["--cache-path", cache_dir])
 
     if offload == GPUOffloadEnum.Full:
-        command.extend(["--gpu-layers", "-1"])
+        command.extend(["--gpu-layers", "-2"])
     elif offload == GPUOffloadEnum.Partial:
         command.extend(["--gpu-layers-step", "1"])
     elif offload == GPUOffloadEnum.Disable:
@@ -1336,19 +1342,14 @@ def calculate_llm_model_weight_size(path: str) -> int:
     if not os.path.isdir(path):
         raise NotADirectoryError(f"The specified path '{path}' is not a directory.")
 
-    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
-    total_size = 0
-
     try:
         with os.scandir(path) as it:
-            for entry in it:
-                if entry.is_file() and entry.name.endswith(weight_file_extensions):
-                    total_size += entry.stat().st_size
+            return sum_weight_file_sizes(
+                (entry.name, entry.stat().st_size) for entry in it if entry.is_file()
+            )
     except PermissionError:
         logger.error(f"Permission denied when accessing '{path}'.")
         raise
-
-    return total_size
 
 
 def calculate_diffusion_model_weight_size(path: str) -> int:

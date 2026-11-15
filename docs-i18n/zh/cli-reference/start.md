@@ -46,7 +46,8 @@ gpustack start [OPTIONS]
 | `--insecure-tls`                            | `False`                                | 跳过 GPUStack 自身 HTTPS 连接的 TLS 验证（Worker 到 Server、Server 到外部身份认证 IdP）。适用于无法通过其他方式验证 Server 证书的可信网络。                                                                                                                                                                                                              |
 | `--bin-dir` value                           | (empty)                                | 额外二进制文件的存储目录，例如带版本的后端可执行文件。                                                          |
 | `--pipx-path` value                         | (empty)                                | pipx 可执行文件路径，用于安装带版本的后端。                                                                      |
-| `--system-default-container-registry` value | `docker.io`                            | GPUStack 拉取系统镜像和推理镜像的默认容器镜像仓库。<br/>所有 GPUStack 业务镜像应放在 `gpustack` 命名空间下；如果需要多级命名空间，应将 `gpustack` 保留为最后一级，例如 `awesome.com/amazing-group/amazing-subgroup/gpustack`。然后将此参数（或 Server/Worker 的 `system_default_container_registry` 配置键，或 `GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY` 环境变量）设置为父路径，例如 `awesome.com/amazing-group/amazing-subgroup`。<br/>如果镜像无法放在 `gpustack` 命名空间下（例如使用 `gpustack-ai`），请相应调整 `--image-repo` 和 `--benchmark-image-repo`。 |
+| `--system-default-container-registry` value | `docker.io`                            | GPUStack 拉取系统镜像和推理镜像的默认容器镜像仓库。<br/>所有 GPUStack 业务镜像应放在 `gpustack` 命名空间下；如果需要多级命名空间，应将 `gpustack` 保留为最后一级，例如 `awesome.com/amazing-group/amazing-subgroup/gpustack`。然后将此参数（或 Server/Worker 的 `system_default_container_registry` 配置键，或 `GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY` 环境变量）设置为父路径，例如 `awesome.com/amazing-group/amazing-subgroup`。<br/>如需将默认的 GPUStack Worker、Runner 和 Runtime 镜像迁移到其他命名空间，请设置 Server/Worker 的 `container_namespace` 配置键；`--image-repo` 和 `--benchmark-image-repo` 用于覆盖特定镜像仓库。 |
+| `--container-namespace` value               | (empty)                                | GPUStack Worker、Runner、Runtime、Benchmark 和 Cache Service 镜像的默认命名空间。也可通过 `container_namespace` 配置键或 `GPUSTACK_CONTAINER_NAMESPACE` 环境变量设置。 |
 | `--image-repo` value                        | `gpustack/gpustack`                    | 覆盖 GPUStack 容器的默认镜像仓库。值中不要包含标签，GPUStack 会自动追加版本标签。<br/>如果镜像 `gpustack/gpustack:<tag>` 位于 `gpustack` 命名空间之外，例如 `awesome.com/amazing-group/amazing-subgroup/gpustack-ai/gpustack:<tag>`，请先将 `--system-default-container-registry=awesome.com/amazing-group/amazing-subgroup` 指向包含父命名空间的镜像仓库，再将此参数（或 Server/Worker 的 `image_repo` 配置键，或 `GPUSTACK_IMAGE_REPO` 环境变量）设置为 `gpustack-ai/gpustack`。 |
 | `--gateway-mode` value                      | `auto`                                 | 网关运行模式。可选值：embedded、in-cluster、external、disabled 或 auto（默认）。                                           |
 | `--gateway-kubeconfig` value                | (empty)                                | 网关使用的 kubeconfig 文件路径。仅对 external gateway-mode 有效。                                                       |
@@ -170,6 +171,7 @@ data_dir: /path/to/data_dir
 cache_dir: /path/to/cache_dir
 benchmark_dir: /path/to/benchmark_dir
 benchmark_image_repo: gpustack/benchmark-runner
+container_namespace: gpustack
 token: your_token
 huggingface_token: your_huggingface_token
 insecure_tls: false

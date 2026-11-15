@@ -8,6 +8,7 @@ from gpustack.schemas.models import Model, ModelInstance, ModelInstanceCreate
 from gpustack.schemas.pd_modes import PDRouterMembershipUpdateEnum
 from gpustack.schemas.workers import Worker
 from gpustack.server.pd_mode_catalog import get_pd_mode
+from gpustack.utils.pd_router_launch import router_backend_definition
 from gpustack.utils.pd_router_membership import (
     membership_update_policy,
     router_peer_snapshot,
@@ -16,12 +17,14 @@ from gpustack.utils.pd_router_membership import (
 MEMBERSHIP_REFRESH_REASON = "router membership changed; rebuilding router"
 
 
-def membership_policy(model: Model) -> PDRouterMembershipUpdateEnum:
+def membership_policy(
+    model: Model, inference_backend=None
+) -> PDRouterMembershipUpdateEnum:
     """Resolve the catalog policy with user-authored commands respected."""
     mode = (
         get_pd_mode(model.disaggregation.mode.value) if model.disaggregation else None
     )
-    return membership_update_policy(model, mode)
+    return membership_update_policy(model, mode, inference_backend)
 
 
 async def expected_router_peers(
@@ -97,7 +100,10 @@ async def seed_router_peer_snapshots(
     caused by a worker that does not yet write this field.
     """
     routers = [member for member in pending if member.role == "router"]
-    if not routers or membership_policy(model) != PDRouterMembershipUpdateEnum.RESTART:
+    if not routers:
+        return
+    backend = await router_backend_definition(session, model, cached=True)
+    if membership_policy(model, backend) != PDRouterMembershipUpdateEnum.RESTART:
         return
     snapshot = await expected_router_peers(session, model, instances, group_id)
     for router in routers:

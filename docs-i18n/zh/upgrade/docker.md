@@ -44,6 +44,10 @@ docker run -d --name gpustack \
 
 GPUStack Server 使用新版本启动并正常运行后，升级各集群中的 Worker。Docker、Kubernetes 和云集群的操作流程见[升级集群部署](cluster.md)。
 
+使用 DP Attention 的 SGLang 部署可能保留旧版本的不完整端口预留。升级所有参与的 Worker 后，在部署上执行 **Restart Model**，或重新部署，以创建具有完整端口预留的新实例。仅重启引擎进程或 Worker 会保留现有实例的端口。
+
+对于自定义 `run_command` 模板，请在模型或角色的 `backend_parameters` 中声明 DP Attention 参数，使端口规划能在启动前预留所需范围。Worker 会检查模板渲染后的命令，并在端口预留不足时报错，不会更改已发布的端口。
+
 ## 通过 Docker Compose 升级 { #upgrade-via-docker-compose }
 
 如果使用从仓库克隆的 Docker Compose 部署，请切换到新发布标签，并使用更新后的镜像重新创建容器：

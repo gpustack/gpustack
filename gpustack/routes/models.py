@@ -34,6 +34,7 @@ from gpustack.schemas.models import (
     get_backend,
     ModelListParams,
     shared_cache_service_ids_by_role,
+    role_backend_field,
 )
 from gpustack.schemas.cache_services import (
     CacheService,
@@ -566,6 +567,7 @@ async def validate_model_in(
     *,
     cluster_id: Optional[int] = None,
     stored: Optional[Model] = None,
+    owner_principal_id: Optional[int] = None,
 ):
     from gpustack.validation.pd.common import effective_model_spec
 
@@ -574,7 +576,13 @@ async def validate_model_in(
     # send. Absent on create, where there is nothing to merge.
     effective = effective_model_spec(model_in, stored)
     manual_dp = _validate_manual_dp_config(effective)
-    await validate_pd_config(session, model_in, cluster_id=cluster_id, stored=stored)
+    await validate_pd_config(
+        session,
+        model_in,
+        cluster_id=cluster_id,
+        stored=stored,
+        owner_principal_id=owner_principal_id,
+    )
 
     # API responses use short LoRA names; compare their stored form when
     # deciding whether a request only pauses an unchanged deployment.
@@ -623,13 +631,12 @@ async def validate_model_in(
 
         if param_gpu_layers:
             int_param_gpu_layers = safe_int(param_gpu_layers, None)
-            if (
-                not param_gpu_layers.isdigit()
-                or int_param_gpu_layers < 0
-                or int_param_gpu_layers > 999
+            # llama.cpp reads -1 as "auto" and -2 as "all".
+            if param_gpu_layers not in ("-1", "-2") and (
+                not param_gpu_layers.isdigit() or int_param_gpu_layers > 999
             ):
                 raise BadRequestException(
-                    message="Invalid backend parameter --gpu-layers. Please provide an integer in the range 0-999 (inclusive)."
+                    message="Invalid backend parameter --gpu-layers. Please provide -1 (auto), -2 (all), or an integer in the range 0-999 (inclusive)."
                 )
 
             if (
@@ -1091,7 +1098,7 @@ def _cache_declarations(
                 role.name,
                 ext,
                 role.backend or model_backend,
-                role.backend_version or model_version,
+                role_backend_field(role, "backend_version", model_version),
             )
         )
 
@@ -1513,7 +1520,7 @@ async def _validate_model_spec(
     model_in.scaling_schedule = _preserve_scaling_schedule_pause(
         model_in.scaling_schedule, allow_override=True
     )
-    await validate_model_in(session, model_in)
+    await validate_model_in(session, model_in, owner_principal_id=target_org_id)
     # Server-side assignment, after validation: validation must see the replica
     # count the caller submitted, not the schedule-driven one.
     apply_scaling_schedule_baseline(model_in)
@@ -1684,6 +1691,13 @@ async def _create_model_route(
 async def create_model(
     session: SessionDep, ctx: TenantContextDep, model_in: ModelCreate
 ):
+    if model_in.cluster_id is None:
+        # The column is NOT NULL, so an omitted cluster_id would only surface
+        # after the insert fails, as a bare 500. The requirement lives on this
+        # route rather than the schema because import entries share
+        # ModelCreate and resolve their cluster by name during import
+        # planning, which can legitimately parse without one.
+        raise BadRequestException(message="cluster_id is required to create a model")
     target_org_id, cluster = await _resolve_target_org(
         ctx, session, model_in.cluster_id
     )

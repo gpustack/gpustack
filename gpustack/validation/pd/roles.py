@@ -13,8 +13,16 @@ from gpustack.schemas.models import (
     ModelUpdate,
     PDModeEnum,
     RoleNameEnum,
+    role_backend_field,
 )
 from gpustack.server.pd_mode_catalog import get_pd_mode
+from gpustack.schemas.pd_modes import PDRouterProtocolEnum
+from gpustack.utils.pd_router_command import (
+    is_router_command_template,
+    references_router_peers,
+    router_environment,
+    validate_router_command_template,
+)
 from gpustack.utils.command import (
     find_last_int_parameter,
     find_last_parameter,
@@ -25,12 +33,13 @@ from gpustack.utils.vllm_topology import (
     validate_managed_lb_parameters,
     vllm_lb_mode,
 )
-from gpustack.validation.pd.common import model_field
+from gpustack.validation.pd.common import model_field, effective_model_spec
 
 
 def validate_roles(  # noqa: C901
     model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
     stored: Optional[Model] = None,
+    router_backend=None,
 ) -> None:
     """Validate role structure and mode-specific constraints on the merged spec.
 
@@ -72,7 +81,61 @@ def validate_roles(  # noqa: C901
             )
         )
 
+    mode = get_pd_mode(disaggregation.mode.value) if disaggregation else None
+    managed_router = bool(
+        mode
+        and mode.router
+        and mode.router.protocol != PDRouterProtocolEnum.USER_PROVIDED
+    )
+    effective = effective_model_spec(model_in, stored)
+    from gpustack.utils.pd_router_launch import resolve_router_launch
+
+    launch = resolve_router_launch(effective, router_backend)
     for role in roles:
+        command = (
+            launch.command
+            if role.name == RoleNameEnum.ROUTER.value
+            else role_backend_field(role, "run_command", field("run_command"))
+        )
+        env = (
+            router_environment(
+                effective,
+                {
+                    **(
+                        mode.router.env
+                        if mode and mode.router and not launch.uses_backend_command
+                        else {}
+                    ),
+                    **launch.env,
+                },
+            )
+            if role.name == RoleNameEnum.ROUTER.value
+            else role.env
+        )
+        if is_router_command_template(command):
+            if role.name != RoleNameEnum.ROUTER.value:
+                if "{%" in command or references_router_peers(command):
+                    raise BadRequestException(
+                        message="Peer command templates require a Router role."
+                    )
+            else:
+                try:
+                    validate_router_command_template(command, env=env)
+                except ValueError as exc:
+                    raise BadRequestException(message=str(exc)) from exc
+        if role.image_name and role.backend_version:
+            raise BadRequestException(
+                message=f"Role '{role.name}' cannot set both a custom image and a backend version."
+            )
+        command_optional = role.name == RoleNameEnum.ROUTER.value and managed_router
+        if role.backend == BackendEnum.CUSTOM and (
+            not (role.image_name and role.image_name.strip())
+            or (not command_optional and not (command and command.strip()))
+        ):
+            required = "image" if command_optional else "image and command"
+            raise BadRequestException(
+                message=f"Role '{role.name}' with Custom backend requires {required}."
+            )
         if role.name == RoleNameEnum.ROUTER.value and role.replicas != 1:
             raise BadRequestException(
                 message="The router role runs exactly one replica."
@@ -187,7 +250,8 @@ def validate_roles(  # noqa: C901
     _reject_an_engine_that_cannot_be_disaggregated(field, roles)
     _reject_cache_under_a_hand_written_mode(field, roles, disaggregation)
     _reject_a_policy_the_mode_cannot_apply(disaggregation)
-    _reject_router_params_the_platform_owns(roles, disaggregation)
+    if not launch.command:
+        _reject_router_params_the_platform_owns(roles, disaggregation)
     launch_fields = ("backend", "backend_parameters", "disaggregation")
     changed = stored is None or any(
         field(name) != getattr(stored, name) for name in launch_fields
@@ -209,7 +273,8 @@ def validate_roles(  # noqa: C901
                     else field("backend_parameters")
                 ),
             )
-    _reject_static_hybrid_local_dp(field, roles, disaggregation)
+    if not launch.command:
+        _reject_static_hybrid_local_dp(field, roles, disaggregation)
 
     # A recipe injects one engine's connector configuration into every role,
     # so a role on a different engine would receive settings it cannot read.
@@ -218,10 +283,14 @@ def validate_roles(  # noqa: C901
     # already loaded by the time this line runs -- the two rejections above
     # resolve the same mode -- so the second source of truth was buying a
     # dict lookup and owing a start-up assertion that the two still agreed.
-    mode = get_pd_mode(disaggregation.mode.value)
     permitted = list(mode.backends) if mode else []
     if permitted:
         for role in roles:
+            if (
+                role.name == RoleNameEnum.ROUTER.value
+                or role.backend == BackendEnum.CUSTOM
+            ):
+                continue
             role_backend = role.backend or field("backend")
             if role_backend and role_backend not in permitted:
                 raise BadRequestException(
@@ -340,7 +409,7 @@ def _reject_router_params_the_platform_owns(roles, disaggregation) -> None:
         ),
         None,
     )
-    if router is None:
+    if router is None or router.run_command:
         return
     mode = get_pd_mode(disaggregation.mode.value)
     if mode is None or mode.router is None:
@@ -495,6 +564,7 @@ def _reject_an_engine_that_cannot_be_disaggregated(field, roles) -> None:
     offenders = {
         role.backend or field("backend")
         for role in roles
+        if role.name != RoleNameEnum.ROUTER.value
         if (role.backend or field("backend")) not in PD_BACKENDS
     }
     offenders.discard(None)

@@ -110,6 +110,31 @@ def recovery(monkeypatch, config):
     return state
 
 
+@pytest.mark.parametrize("index", [0, 9, 99, 100])
+def test_existing_follower_lookup_and_delete_keep_runtime_identity(
+    recovery, monkeypatch, index
+):
+    instance = recovery.instance
+    suffix = f"-f{index}"
+    instance.name = "m" * (63 - len(suffix) - 6) + "-abc12"
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=i + 10) for i in range(index)
+    ] + [ModelInstanceSubordinateWorker(worker_id=2)]
+    follower = recovery.managers[1]
+    old_workload_name = instance.name + suffix
+    follower._start_or_restart_subordinate(instance)
+    recovery.get_workload.assert_called_once_with(old_workload_name)
+
+    delete = MagicMock()
+    monkeypatch.setattr(serve_manager, "delete_workload", delete)
+    monkeypatch.setattr(follower, "_stop_container_log_persistence", MagicMock())
+    monkeypatch.setattr(follower, "_forget_stopped_model_instance", MagicMock())
+    follower._stop_assigned_model_instance(
+        instance, clear_restart_backoff=False, delete_logs=False
+    )
+    delete.assert_called_once_with(old_workload_name)
+
+
 @pytest.mark.parametrize('failed_worker', [1, 2])
 @pytest.mark.parametrize('starting', [False, True])
 def test_legacy_group_failure_waits_for_real_stops_then_starts_one_round(

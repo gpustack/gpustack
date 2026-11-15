@@ -166,8 +166,9 @@ def _patch_reconcile(
 
 
 @pytest.mark.asyncio
-async def test_replicas_pins_one_instance_on_picked_worker(monkeypatch):
-    service = _service(worker_id=5)
+@pytest.mark.parametrize("service_name", ["svc", "s" * 100])
+async def test_replicas_pins_one_instance_on_picked_worker(monkeypatch, service_name):
+    service = _service(worker_id=5, name=service_name)
     created_instance = _instance(worker_id=5)
     create = _patch_reconcile(
         monkeypatch,
@@ -187,8 +188,8 @@ async def test_replicas_pins_one_instance_on_picked_worker(monkeypatch):
     assert created.state == CacheServiceStateEnum.PENDING
     # Display name: parent service's name plus a short random suffix,
     # following the model-instance convention.
-    assert created.name.startswith("svc-")
-    assert len(created.name) == len("svc-") + 5
+    assert created.name.startswith(service_name[:53] + "-")
+    assert len(created.name) == min(len(service_name) + 6, 59)
     # The one PENDING instance keeps the aggregate at PENDING (no write:
     # the service already is PENDING).
     service.update.assert_not_called()

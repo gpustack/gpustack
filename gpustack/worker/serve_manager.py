@@ -47,6 +47,10 @@ from gpustack.schemas.inference_backend import (
     is_custom_backend,
 )
 from gpustack.utils import network
+from gpustack.utils.sglang_port_layout import (
+    SGLANG_CONNECTING_BAND,
+    sglang_port_layout,
+)
 from gpustack.utils.convert import safe_int
 from gpustack.utils.attrs import set_attr
 from gpustack.utils.process import (
@@ -70,15 +74,15 @@ from gpustack.worker.log_sources import (
     write_log_sources,
     canonical_log_path,
     container_log_path,
+    engine_log_targets,
     find_instance_log_dir,
     flat_instance_logs,
-    instance_log_files,
-    select_log_files,
     instance_log_dir,
     legacy_main_log_path,
     main_log_path,
     restart_log_dirs,
     sidecar_container_log_path,
+    list_log_sources,
 )
 from gpustack.worker.container_logs import ContainerLogPersister
 from gpustack.worker.model_meta import get_meta_from_running_instance
@@ -138,6 +142,8 @@ from gpustack.server.bus import Event, EventType
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
 
 logger = logging.getLogger(__name__)
+
+_MANAGED_LOG_FLUSH_TIMEOUT = 5.0
 
 # Inference health check error message
 _INFERENCE_HEALTH_CHECK_FAILED_MESSAGE = "Inference health check failed."
@@ -237,6 +243,7 @@ class _LogPersistence:
         # Which restart's files the generation writes.
         self.restart_count = restart_count
         self.workload_name: Optional[str] = None
+        self.workload_writers: Dict[str, Tuple[threading.Thread, threading.Event]] = {}
         self.component_writer = None
         self.component_attempt = -1
         self._lock = threading.Lock()
@@ -282,16 +289,18 @@ class _LogPersistence:
 
         Args:
             model_instance_id: The model instance ID, for logging.
-            timeout: Maximum time to wait for each thread (seconds).
+            timeout: Total time to wait for all threads (seconds).
 
         Returns:
             Whether every thread of the generation is now gone.
         """
         self.stop_event.set()
         with self._lock:
+            stopping = self._stopping
             self._stopping = True
             stop_events = list(self._aux_stop_events)
             threads = [self.main_thread] + list(self._aux_threads)
+        deadline = time.monotonic() + (0 if stopping else timeout)
 
         for stop_event in stop_events:
             stop_event.set()
@@ -299,13 +308,14 @@ class _LogPersistence:
         gone = True
         for thread in threads:
             if thread and thread.is_alive():
-                thread.join(timeout=timeout)
+                thread.join(timeout=max(0, deadline - time.monotonic()))
                 if thread.is_alive():
                     gone = False
-                    logger.warning(
-                        f"Log persistence thread {thread.name} for model instance "
-                        f"{model_instance_id} did not stop within {timeout}s"
-                    )
+                    if not stopping:
+                        logger.warning(
+                            f"Log persistence thread {thread.name} for model instance "
+                            f"{model_instance_id} did not stop within {timeout}s"
+                        )
         return gone
 
 
@@ -784,6 +794,7 @@ class ServeManager(ContainerLogPersister):
                 item.name: item.state
                 for item in get_model_instance_workloads(mi, self._worker_id)
             }
+            self._ensure_managed_log_persistence(mi)
             if not self._create_registered_plans(
                 mi, local, plans, observed, registered_states
             ):
@@ -1384,7 +1395,25 @@ class ServeManager(ContainerLogPersister):
             return
         if mi.id in self._starting_model_instances:
             return
+        self._ensure_managed_log_persistence(current)
         self._sync_registered_workloads(current, tracked)
+
+    def _ensure_managed_log_persistence(self, mi: ModelInstance) -> None:
+        """Reconcile accepted Engine logs without turning logging into launch failure."""
+        if mi.draining_since is not None or not any(
+            (not item.component or item.component.kind != 'sglang_smg')
+            and item.state
+            not in (
+                ModelInstanceWorkloadStateEnum.FAILED,
+                ModelInstanceWorkloadStateEnum.STOPPED,
+            )
+            for item in get_model_instance_workloads(mi, self._worker_id) or []
+        ):
+            return
+        try:
+            self._ensure_container_log_persistence(mi)
+        except Exception as exc:
+            logger.warning('Cannot attach Engine logs for instance %s: %s', mi.id, exc)
 
     def _schedule_managed_stop(
         self, mi: ModelInstance, *, delete_logs: bool = False
@@ -1553,6 +1582,7 @@ class ServeManager(ContainerLogPersister):
             if self._is_provisioning(mi):
                 return False
         observed = self._managed_runtime_workloads(mi, allow_older_generation=True)
+        self._wait_for_managed_engine_logs(mi, observed)
         for name, matches in observed.items():
             if matches:
                 try:
@@ -1565,6 +1595,64 @@ class ServeManager(ContainerLogPersister):
         # still reserve their identity until runtime reads confirm absence.
         return not any(
             self._managed_runtime_workloads(mi, allow_older_generation=True).values()
+        )
+
+    def _wait_for_managed_engine_logs(self, mi: ModelInstance, observed) -> None:
+        """Give existing collectors a bounded flush window before runtime deletion."""
+        names = {
+            name
+            for name, _ in engine_log_targets(mi, self._worker_id)
+            if any(
+                (status.labels or {}).get('gpustack.ai/restart-count')
+                == str(mi.restart_count or 0)
+                and getattr(status, 'loggable', None) != []
+                for status in observed.get(name, [])
+            )
+        }
+        if not names:
+            return
+        self._record_log_sources(mi)
+        deadline = time.monotonic() + _MANAGED_LOG_FLUSH_TIMEOUT
+        previous = None
+        while time.monotonic() < deadline:
+            try:
+                sources = list_log_sources(
+                    Path(self._serve_log_dir),
+                    mi.id,
+                    self._worker_id,
+                    mi.restart_count or 0,
+                )
+                try:
+                    snapshot = {
+                        (source.descriptor.workload_name, str(path)): (
+                            stat.st_size,
+                            stat.st_mtime_ns,
+                        )
+                        for source in sources
+                        if not source.descriptor.previous
+                        and source.descriptor.kind == 'workload'
+                        and source.descriptor.workload_name in names
+                        for path in source.paths
+                        for stat in [path.stat()]
+                    }
+                except OSError:
+                    # Rotation can remove a shard after source discovery. Only
+                    # complete consecutive snapshots establish archive stability.
+                    previous = None
+                else:
+                    captured = {
+                        name for (name, _), (size, _) in snapshot.items() if size
+                    }
+                    if names <= captured and snapshot == previous:
+                        return
+                    previous = snapshot
+            except Exception as exc:
+                logger.warning('Cannot inspect Engine archives for %s: %s', mi.id, exc)
+                break
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+        logger.warning(
+            'Engine log flush window expired for %s; retained logs may be incomplete',
+            mi.id,
         )
 
     def _confirm_managed_stop(self, mi: ModelInstance) -> bool:
@@ -2355,7 +2443,9 @@ class ServeManager(ContainerLogPersister):
                     # router is the group's only entrance -- the one member whose
                     # liveness must not be assumed.
                     health_check_path = managed_router_health_path(
-                        model, model_instance.role
+                        model,
+                        model_instance.role,
+                        self._router_backend(model, model_instance.role),
                     )
                 if model.env and 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in model.env:
                     # A model-specific path can match a custom image whose health
@@ -2721,7 +2811,7 @@ class ServeManager(ContainerLogPersister):
         )
 
         Path(log_file_path).parent.mkdir(parents=True, exist_ok=True)
-        with CappedLogWriter(log_file_path, append=bool(mi.restart_count)) as log_file:
+        with CappedLogWriter(log_file_path) as log_file:
             with RedirectStdoutStderr(log_file):
                 try:
                     server_cls = _SERVER_CLASS_MAPPING.get(backend, CustomServer)
@@ -3198,6 +3288,11 @@ class ServeManager(ContainerLogPersister):
         """
         role = getattr(mi, "role", None)
         if not role or role == RoleNameEnum.ROUTER.value:
+            backend = self._router_backend(model, role)
+            if backend is not None:
+                return is_inference_ready(
+                    mi, model, timeout=timeout, inference_backend=backend
+                )
             return is_inference_ready(mi, model, timeout=timeout)
 
         backend = get_backend(model)
@@ -3490,6 +3585,18 @@ class ServeManager(ContainerLogPersister):
                     f"Model instance {mi.name} is already running. Skipping start."
                 )
                 return
+            # A watch reconnect replays every existing instance as CREATED, so
+            # this is not necessarily a first start. An unreachable instance
+            # has a workload to reconcile through the periodic state sync, and
+            # an errored one is retried only as its recovery policy allows.
+            if mi.state == ModelInstanceStateEnum.UNREACHABLE:
+                logger.debug(
+                    f"Model instance {mi.name} is unreachable. Skipping start."
+                )
+                return
+            if mi.state == ModelInstanceStateEnum.ERROR:
+                self._error_model_instances[mi.id] = mi
+                return
             self._start_model_instance(mi)
             logger.trace(f"CREATED event: started created model instance {mi.name}.")
 
@@ -3570,34 +3677,6 @@ class ServeManager(ContainerLogPersister):
         return str(
             main_log_path(Path(self._serve_log_dir), mi.name, mi.id, restart_count)
         )
-
-    def _prepare_main_log_round(self, mi: ModelInstance) -> None:
-        """Carry bounded startup context into the next round before old-log cleanup."""
-        count = mi.restart_count or 0
-        if count == 0:
-            return
-        target = Path(self._get_numbered_log_path(mi))
-        try:
-            if target.exists() and target.stat().st_size:
-                return
-            previous = select_log_files(
-                instance_log_files(Path(self._serve_log_dir), mi.id),
-                restart_count=count - 1,
-            )
-            if not previous:
-                return
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with CappedLogWriter(target) as output:
-                output.write(
-                    '[GPUStack] Startup log copied from the previous startup '
-                    f'(round {count - 1} -> round {count})\n'
-                )
-                for path in previous:
-                    with path.open(encoding='utf-8', errors='replace') as source:
-                        shutil.copyfileobj(source, output, length=64 * 1024)
-                output.write(f'\n[GPUStack] Starting round {count}\n')
-        except OSError as exc:
-            logger.warning('Cannot copy startup context for %s: %s', mi.id, exc)
 
     def _discover_sidecar_logs(
         self,
@@ -3718,10 +3797,11 @@ class ServeManager(ContainerLogPersister):
             resume: Append to log files left behind by a previous worker process
                 instead of rewriting them.
         """
-        # Use deployment metadata name for the actual workload name,
-        # which differs for subordinate workers (e.g., "model-f0").
-        deployment_metadata = mi.get_deployment_metadata(self._worker_id)
-        workload_name = deployment_metadata.name if deployment_metadata else mi.name
+        targets = engine_log_targets(mi, self._worker_id)
+        if not targets:
+            self._record_log_sources(mi)
+            return
+        workload_name = targets[0][0]
 
         restart_count = mi.restart_count or 0
         log_path = str(
@@ -3780,6 +3860,7 @@ class ServeManager(ContainerLogPersister):
             thread.start()
             persistence.start_aux_thread(discovery_thread)
         self._record_log_sources(mi, persistence)
+        self._sync_workload_log_persistence(mi, persistence)
         self._sync_component_log_persistence(mi, persistence)
         logger.debug(f"Started container log persistence thread for {mi.name}")
 
@@ -3797,6 +3878,11 @@ class ServeManager(ContainerLogPersister):
         # Only the main log thread counts: the sidecar discovery thread beside it
         # polls forever on a single-container workload.
         restart = mi.restart_count or 0
+        targets = engine_log_targets(mi, self._worker_id)
+        if not targets:
+            self._record_log_sources(mi)
+            return
+        managed = get_model_instance_workloads(mi) is not None
         with self._log_persistence_lock:
             persistence = self._log_persistence.get(mi.id)
             if persistence and persistence.restart_count > restart:
@@ -3805,6 +3891,7 @@ class ServeManager(ContainerLogPersister):
                 persistence is not None
                 and persistence.restart_count == restart
                 and persistence.main_thread.is_alive()
+                and (not managed or persistence.workload_name == targets[0][0])
             )
             if reuse and persistence.stop_event.is_set():
                 return
@@ -3815,6 +3902,7 @@ class ServeManager(ContainerLogPersister):
                 self._migrate_flat_logs(mi)
         if reuse:
             self._record_log_sources(mi, persistence)
+            self._sync_workload_log_persistence(mi, persistence)
             self._sync_component_log_persistence(mi, persistence)
             return
 
@@ -3823,6 +3911,40 @@ class ServeManager(ContainerLogPersister):
             f"{mi.name}"
         )
         self._start_container_log_persistence(mi, resume=True)
+
+    def _sync_workload_log_persistence(self, mi, persistence) -> None:
+        """Attach each additional Engine to its own archive and reconnect cursor."""
+        with self._log_persistence_lock:
+            if (
+                self._log_persistence.get(mi.id) is not persistence
+                or persistence.restart_count != (mi.restart_count or 0)
+                or persistence.stop_event.is_set()
+            ):
+                return
+            for name, archive_name in engine_log_targets(mi, self._worker_id)[1:]:
+                previous = persistence.workload_writers.get(name)
+                if previous:
+                    thread, stopped = previous
+                    if thread.is_alive():
+                        continue
+                    persistence.discard_aux_thread(thread, stopped)
+                path = sidecar_container_log_path(
+                    Path(self._serve_log_dir),
+                    mi.name,
+                    mi.id,
+                    archive_name,
+                    mi.restart_count or 0,
+                )
+                stopped = threading.Event()
+                thread = threading.Thread(
+                    target=self._persist_container_logs,
+                    args=(name, str(path), stopped),
+                    kwargs={'resume': True},
+                    daemon=True,
+                    name=f'log-persist-{name}',
+                )
+                if persistence.start_aux_thread(thread, stopped):
+                    persistence.workload_writers[name] = (thread, stopped)
 
     def _record_log_sources(self, mi: ModelInstance, persistence=None) -> None:
         """Publish accepted identities without making logging an Engine fault."""
@@ -4180,7 +4302,6 @@ class ServeManager(ContainerLogPersister):
         # Follow a rename before anything writes under the new name, or the
         # instance's logs end up split across two directories.
         self._align_instance_log_dir(mi)
-        self._prepare_main_log_round(mi)
         # Clean up old log files before starting
         self._cleanup_old_logs(mi.id, mi.restart_count or 0)
 
@@ -4257,8 +4378,12 @@ class ServeManager(ContainerLogPersister):
                     log_file_path,
                     self._config,
                     self._worker_id,
-                    self._inference_backend_manager.get_backend_by_name(
-                        backend, model.owner_principal_id
+                    (
+                        self._router_backend(model, mi.role)
+                        if mi.role == 'router'
+                        else self._inference_backend_manager.get_backend_by_name(
+                            backend, model.owner_principal_id
+                        )
                     ),
                     fallback_registry,
                 )
@@ -4307,7 +4432,14 @@ class ServeManager(ContainerLogPersister):
                     mi, state=ModelInstanceStateEnum.INITIALIZING, pid=process.pid
                 )
             else:
-                self._report_model_instance(mi, **patch_dict)
+                try:
+                    self._report_model_instance(mi, **patch_dict)
+                except Exception as e:
+                    if is_main_worker and self._abandon_launch_for_running_workload(
+                        mi, e
+                    ):
+                        return
+                    raise
             self._error_model_instances.pop(mi.id, None)
             self._pending_model_instance_errors.pop(mi.id, None)
             logger.info(
@@ -4329,6 +4461,48 @@ class ServeManager(ContainerLogPersister):
                     )
 
             self._handle_model_instance_launch_failure(mi, e)
+
+    def _abandon_launch_for_running_workload(
+        self, mi: ModelInstance, error: Exception
+    ) -> bool:
+        """
+        Stop a launch whose state write failed unless it has no workload to keep.
+
+        A failed write says nothing about a running workload, which keeps serving
+        and is reconciled by the periodic state sync once the provisioning process
+        is gone. A workload that cannot be looked up is left to that sync as well,
+        rather than deleted on an unknown state. A SCHEDULED instance is excluded
+        from the sync and any workload it has is being replaced, so its launch
+        fails normally. Group recovery coordinates its own rounds, so its launch
+        fails normally too.
+
+        Returns:
+            True if the launch was abandoned, False if the launch should fail.
+        """
+        if mi.state == ModelInstanceStateEnum.SCHEDULED or requires_group_recovery(mi):
+            return False
+
+        try:
+            workload = get_workload(mi.name)
+        except Exception as lookup_error:
+            logger.warning(
+                f"Failed to look up workload of model instance {mi.name}: "
+                f"{lookup_error}"
+            )
+        else:
+            if not workload or workload.state != WorkloadStatusStateEnum.RUNNING:
+                return False
+
+        logger.warning(
+            f"Keeping workload of model instance {mi.name} "
+            f"after failing to update its state: {error}"
+        )
+        process = self._provisioning_processes.pop(mi.id, None)
+        if process:
+            terminate_multiprocessing_process(process)
+        self._error_model_instances.pop(mi.id, None)
+        self._pending_model_instance_errors.pop(mi.id, None)
+        return True
 
     def _assign_external_ports(self, mi: ModelInstance, model: Model) -> None:
         """Reserve all local rank APIs and the shared coordination ports atomically."""
@@ -4706,20 +4880,19 @@ class ServeManager(ContainerLogPersister):
 
     @staticmethod
     def _select_sglang_ports(mi, model, unavailable, port_range) -> None:
-        from gpustack.utils.model_instance_workers import sglang_smg_mode
-
-        if mi.role is not None or not sglang_smg_mode(model):
-            raise ValueError(
-                "Managed components require ordinary multi-rank SGLang DP/DPA"
-            )
         counts = [len(mi.gpu_indexes or [])] + [
             len(worker.gpu_indexes or [])
             for worker in mi.distributed_servers.subordinate_workers or []
         ]
+        layout = sglang_port_layout(model, mi.role, counts)
+        if not layout.components:
+            raise ValueError(
+                "Managed components require ordinary multi-rank SGLang DP/DPA"
+            )
         bands = ServeManager._allocate_port_plan(
             mi, model_port_requests(model, mi.role, counts), unavailable, port_range
         )
-        mi.port = bands["_sglang_engine_api"].base
+        mi.port = bands[layout.api_band].base
         mi.ports = [band.base for band in bands.values()]
         mi.named_ports = bands
 
@@ -4755,6 +4928,9 @@ class ServeManager(ContainerLogPersister):
         connector_names = [spec.name for spec in band_specs_for(model, mi.role)]
         named = dict(mi.named_ports or {})
         named.update({name: bands[name] for name in connector_names if name in bands})
+        sglang_connecting = bands.get(SGLANG_CONNECTING_BAND)
+        if sglang_connecting is not None:
+            named[SGLANG_CONNECTING_BAND] = sglang_connecting
         api = bands["_api"].base
         ports = [api]
         ports.extend(
@@ -4766,12 +4942,12 @@ class ServeManager(ContainerLogPersister):
             if name in bands
             for port in range(bands[name].base, bands[name].base + bands[name].count)
         )
-        connecting = bands.get("_connecting")
+        connecting = sglang_connecting or bands.get("_connecting")
         if connecting is not None:
             # Backends consume the connecting base as ports[-1]; derived
             # protection ports belong only in the named reservation metadata.
             ports.append(connecting.base)
-            if connecting.count > 1:
+            if sglang_connecting is None and connecting.count > 1:
                 named[_VLLM_MP_CONNECTING_BAND_NAME] = connecting
         mi.port, mi.ports = api, ports
         if named:
@@ -5214,7 +5390,9 @@ class ServeManager(ContainerLogPersister):
         # is what picks the port band and the fallback registry. No peers are
         # passed — the command they render into is the child's business, and
         # rendering it here would only be rendering it twice.
-        model = apply_managed_router(model, mi.role)
+        model = apply_managed_router(
+            model, mi.role, inference_backend=self._router_backend(model, mi.role)
+        )
         self._model_cache_by_instance[mi.id] = model
         return model
 
@@ -5232,7 +5410,11 @@ class ServeManager(ContainerLogPersister):
         refreshed_model = role_effective_model(
             self._clientset.models.get(mi.model_id), mi.role
         )
-        refreshed_model = apply_managed_router(refreshed_model, mi.role)
+        refreshed_model = apply_managed_router(
+            refreshed_model,
+            mi.role,
+            inference_backend=self._router_backend(refreshed_model, mi.role),
+        )
         self._model_cache_by_instance[mi.id] = refreshed_model
         return refreshed_model
 
@@ -5248,6 +5430,16 @@ class ServeManager(ContainerLogPersister):
                 process.join(timeout=0)
                 return process.is_alive()
         return False
+
+    def _router_backend(self, model, role_name):
+        from gpustack.schemas.models import find_role
+
+        role = find_role(model, role_name) if role_name == 'router' else None
+        if role is None or not role.backend or role.backend == BackendEnum.CUSTOM:
+            return None
+        return self._inference_backend_manager.get_backend_by_name(
+            role.backend, model.owner_principal_id
+        )
 
     def _get_health_check_path(
         self, backend: str, owner_principal_id: Optional[int] = None
@@ -5373,14 +5565,15 @@ def is_ready(
         and CategoryEnum.IMAGE in model.categories
         and not health_check_path
     ):
+        version = mi.backend_version or model.backend_version
         if custom_image:
             # A custom image's version key does not establish which health
             # endpoints its server implements.
             health_check_path = "/health"
-        elif not model.backend_version:
+        elif not version:
             # version may be empty at initialization, consider it not ready.
             return False
-        elif compare_versions(model.backend_version, "0.5.5.post3") >= 0:
+        elif compare_versions(version, "0.5.5.post3") >= 0:
             # SGLang Diffusion supported health check path at v0.5.5.post3
             health_check_path = "/health"
         else:
@@ -5502,7 +5695,12 @@ def _get_inference_health_check_config(
 
 
 def is_inference_ready(
-    mi: ModelInstance, model: Model, timeout: int = 15, *, allow_redirects: bool = True
+    mi: ModelInstance,
+    model: Model,
+    timeout: int = 15,
+    *,
+    allow_redirects: bool = True,
+    inference_backend: Optional[InferenceBackend] = None,
 ) -> bool:
     """
     Send a minimal inference request to verify the inference capability is working.
@@ -5510,7 +5708,9 @@ def is_inference_ready(
     # Check Custom backend (no standard inference API). A managed router is the
     # exception: it is only *launched* as a custom backend, and it serves the
     # group's OpenAI API -- which is exactly what this probe is for.
-    if is_custom_backend(model.backend) and not is_managed_router(model, mi.role):
+    if is_custom_backend(model.backend) and not is_managed_router(
+        model, mi.role, inference_backend
+    ):
         return True
 
     # Check port assignment
