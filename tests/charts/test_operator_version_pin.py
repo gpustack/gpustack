@@ -9,6 +9,7 @@ that pairs an old operator with fresh templates. Asserting it here fails the
 drift at review time instead.
 """
 
+import importlib
 import pathlib
 import re
 
@@ -62,3 +63,18 @@ def test_docker_build_default_matches_operator_version():
     )
     assert match is not None, "Dockerfile must pin the operator build stage"
     assert match.group(1) == __operator_version__
+
+
+def test_exported_images_include_operator_model_delivery_dependencies():
+    from gpustack_runtime.cmds import list_images
+
+    importlib.import_module("gpustack.cmd.images")
+    exported = {image.name for image in list_images()}
+
+    assert {
+        f"gpustack/gpustack-operator:{__operator_version__}",
+        "gpustack/model-transfer:v0.1.0-cuda12.9",
+        "gpustack/model-transfer:v0.1.0-rocm7.2",
+        "gpustack/model-transfer:v0.1.0-cann9.2-a5",
+        "gpustack/mirrored-modelexpress-server:v0.7.0",
+    } <= exported
