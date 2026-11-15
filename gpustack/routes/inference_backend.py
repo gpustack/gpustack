@@ -1067,15 +1067,20 @@ async def get_inference_backends(  # noqa: C901
 
     # Apply pagination to merged results
     total = len(filter_backends)
-    start_idx = (params.page - 1) * params.perPage
-    end_idx = start_idx + params.perPage
-    paginated_backends = filter_backends[start_idx:end_idx]
+    paginated_backends = filter_backends
+    total_page = 1
+    # perPage < 1 means no pagination, as in paginated_by_query.
+    if params.perPage > 0:
+        start_idx = (params.page - 1) * params.perPage
+        end_idx = start_idx + params.perPage
+        paginated_backends = filter_backends[start_idx:end_idx]
+        total_page = max(math.ceil(total / params.perPage), 1)
 
     pagination = Pagination(
         page=params.page,
         perPage=params.perPage,
         total=total,
-        totalPage=max(math.ceil(total / params.perPage), 1),
+        totalPage=total_page,
     )
 
     # Create the response with the same structure as the original
