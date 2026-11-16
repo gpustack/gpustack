@@ -733,7 +733,7 @@ def _migrate_community_built_in_versions(db_backend: InferenceBackendPublic) -> 
     versions_to_move = {
         version: config
         for version, config in db_backend.version_configs.root.items()
-        if config.built_in_frameworks
+        if config.built_in_frameworks is not None
     }
     if not versions_to_move:
         return
@@ -1689,13 +1689,15 @@ async def _validate_version_removal(
     """
     Check if any versions are being removed and validate they're not in use.
     """
-    # Get current versions (empty dict if none)
+    # Get current versions (empty dict if none): user-owned versions only —
+    # source versions (built_in_frameworks is not None, [] included) are
+    # preserved by the merge and can never be removed here.
     current_versions = {}
     if backend.version_configs and backend.version_configs.root:
         current_versions = {
             v: config
             for v, config in backend.version_configs.root.items()
-            if not config.built_in_frameworks
+            if config.built_in_frameworks is None
         }
 
     # Get new versions (empty dict if none)
@@ -1735,23 +1737,25 @@ def _merge_community_versions(
     """
     Merge built-in versions with new versions for COMMUNITY backends.
 
-    New entries whose key matches a stored built-in version are dropped: the
-    request payload carries no trusted built_in_frameworks marker (it is
+    New entries whose key matches a stored source-owned version are dropped:
+    the request payload carries no trusted built_in_frameworks marker (it is
     cleared before merging), so letting such an entry through would overwrite
-    the stored built-in entry with a framework-less copy and leave models
-    pinned to that version unschedulable. Built-in versions are owned by the
-    catalog; this API only manages user-defined '-custom' versions.
+    the stored entry with a framework-less copy and leave models pinned to
+    that version unschedulable. Source versions are owned by the catalog
+    (``built_in_frameworks is not None``, ``[]`` included — see
+    ``_source_owned_versions``); this API only manages user-defined
+    '-custom' versions.
 
     Returns:
         VersionConfigDict: Merged version configurations with built-in versions preserved
     """
-    # Extract built-in versions from current backend
+    # Extract source-owned versions from current backend
     built_in_versions = {}
     if backend.version_configs and backend.version_configs.root:
         built_in_versions = {
             k: v
             for k, v in backend.version_configs.root.items()
-            if v.built_in_frameworks
+            if v.built_in_frameworks is not None
         }
 
     if not new_version_configs or not new_version_configs.root:
@@ -1788,8 +1792,10 @@ def validate_custom_suffix(
     # Validate version names
     if version_configs and version_configs.root:
         for version, config in version_configs.root.items():
-            # Skip predefined versions (built_in_frameworks has value)
-            if config.built_in_frameworks:
+            # Skip source-owned versions: the marker normalizes to [] for a
+            # source version that declares no framework, so the check is
+            # ``is not None`` (same rule as _source_owned_versions).
+            if config.built_in_frameworks is not None:
                 continue
 
             # User-defined versions must have -custom suffix

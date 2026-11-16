@@ -238,7 +238,8 @@ async def test_a_downgraded_row_stays_writable_under_its_source_given_name(
 
 def _community_backend_with_custom_version(backend_id: int) -> InferenceBackend:
     """A Platform community row: catalog versions tagged with
-    built_in_frameworks plus one user-defined '-custom' version."""
+    built_in_frameworks (one declaring no framework, which normalizes to
+    the empty list) plus one user-defined '-custom' version."""
     return InferenceBackend(
         id=backend_id,
         backend_name="my-community",
@@ -250,6 +251,7 @@ def _community_backend_with_custom_version(backend_id: int) -> InferenceBackend:
             root={
                 "v1": VersionConfig(image_name="img:v1", built_in_frameworks=["vllm"]),
                 "v2": VersionConfig(image_name="img:v2", built_in_frameworks=["vllm"]),
+                "v3": VersionConfig(image_name="img:v3", built_in_frameworks=[]),
                 "v1-custom": VersionConfig(image_name="custom:v1"),
             }
         ),
@@ -275,6 +277,7 @@ async def test_update_with_echoed_get_body_preserves_built_in_versions(monkeypat
             root={
                 "v1": VersionConfig(image_name="img:v1", built_in_frameworks=["vllm"]),
                 "v2": VersionConfig(image_name="img:v2", built_in_frameworks=["vllm"]),
+                "v3": VersionConfig(image_name="img:v3", built_in_frameworks=[]),
                 "v1-custom": VersionConfig(image_name="custom:v2"),
                 "v3-custom": VersionConfig(image_name="custom:v3"),
             }
@@ -296,10 +299,12 @@ async def test_update_with_echoed_get_body_preserves_built_in_versions(monkeypat
     )
 
     merged = update_mock.await_args.args[1]["version_configs"].root
-    assert set(merged.keys()) == {"v1", "v2", "v1-custom", "v3-custom"}
+    assert set(merged.keys()) == {"v1", "v2", "v3", "v1-custom", "v3-custom"}
     assert merged["v1"].built_in_frameworks == ["vllm"]
     assert merged["v1"].image_name == "img:v1"
     assert merged["v2"].built_in_frameworks == ["vllm"]
+    assert merged["v3"].built_in_frameworks == []
+    assert merged["v3"].image_name == "img:v3"
     assert merged["v1-custom"].image_name == "custom:v2"
     assert merged["v3-custom"].image_name == "custom:v3"
     assert update_mock.await_args.args[1]["enabled"] is True
@@ -312,25 +317,32 @@ async def test_update_with_echoed_get_body_preserves_built_in_versions(monkeypat
     ids=['no-version-configs', 'empty-version-configs'],
 )
 def test_merge_community_versions_with_no_payload_keeps_built_ins(payload):
-    """With nothing user-defined submitted, the stored built-in versions are
-    the entire merged result."""
+    """With nothing user-defined submitted, the stored source-owned versions
+    are the entire merged result."""
     backend = _community_backend_with_custom_version(backend_id=45)
 
     merged = ib_route._merge_community_versions(backend, payload)
 
-    assert set(merged.root.keys()) == {"v1", "v2"}
+    assert set(merged.root.keys()) == {"v1", "v2", "v3"}
     assert merged.root["v1"].built_in_frameworks == ["vllm"]
-    assert merged.root["v2"].built_in_frameworks == ["vllm"]
+    assert merged.root["v3"].built_in_frameworks == []
 
 
-def test_merge_community_versions_drops_built_in_collision_entries():
-    """An entry whose key matches a stored built-in version never wins the
-    merge: the payload carries no trusted built_in_frameworks marker, so
-    letting it through would strip the marker from the stored entry."""
+@pytest.mark.parametrize(
+    'version, marker',
+    [("v1", ["vllm"]), ("v3", [])],
+    ids=['framework-list-marker', 'empty-list-marker'],
+)
+def test_merge_community_versions_drops_source_owned_collision_entries(version, marker):
+    """An entry whose key matches a stored source-owned version never wins
+    the merge: the payload carries no trusted built_in_frameworks marker, so
+    letting it through would strip the marker from the stored entry. The
+    empty-list marker counts too — a source version declaring no framework
+    normalizes to []."""
     backend = _community_backend_with_custom_version(backend_id=46)
     payload = VersionConfigDict(
         root={
-            "v1": VersionConfig(image_name="echoed:v1"),
+            version: VersionConfig(image_name="echoed"),
             "v1-custom": VersionConfig(image_name="custom:v2"),
             "v3-custom": VersionConfig(image_name="custom:v3"),
         }
@@ -338,11 +350,67 @@ def test_merge_community_versions_drops_built_in_collision_entries():
 
     merged = ib_route._merge_community_versions(backend, payload)
 
-    assert set(merged.root.keys()) == {"v1", "v2", "v1-custom", "v3-custom"}
-    assert merged.root["v1"].image_name == "img:v1"
-    assert merged.root["v1"].built_in_frameworks == ["vllm"]
+    assert set(merged.root.keys()) == {"v1", "v2", "v3", "v1-custom", "v3-custom"}
+    assert merged.root[version].image_name == f"img:{version}"
+    assert merged.root[version].built_in_frameworks == marker
     assert merged.root["v1-custom"].image_name == "custom:v2"
     assert merged.root["v3-custom"].image_name == "custom:v3"
+
+
+@pytest.mark.asyncio
+async def test_validate_version_removal_ignores_source_owned_versions(monkeypatch):
+    """A payload that omits a source-owned version (empty-list marker
+    included) must not count as a removal: the merge preserves it, so the
+    in-use guard has nothing to protect."""
+    backend = _community_backend_with_custom_version(backend_id=47)
+    payload = VersionConfigDict(
+        root={"v1-custom": VersionConfig(image_name="custom:v1")}
+    )
+
+    in_use_mock = AsyncMock(return_value=(True, ["deployed-model"]))
+    monkeypatch.setattr(ib_route, "check_backend_in_use", in_use_mock)
+
+    await ib_route._validate_version_removal(MagicMock(), backend, payload)
+
+    in_use_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_validate_version_removal_still_guards_user_versions(monkeypatch):
+    """Omitting a user-defined version from the payload is a removal and
+    must hit the in-use guard."""
+    backend = _community_backend_with_custom_version(backend_id=48)
+    payload = VersionConfigDict(root={})
+
+    in_use_mock = AsyncMock(return_value=(True, ["deployed-model"]))
+    monkeypatch.setattr(ib_route, "check_backend_in_use", in_use_mock)
+
+    with pytest.raises(BadRequestException) as e:
+        await ib_route._validate_version_removal(MagicMock(), backend, payload)
+
+    assert "v1-custom" in str(e.value.message)
+    in_use_mock.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    'marker, rejected',
+    [(["vllm"], False), ([], False), (None, True)],
+    ids=['framework-list-marker', 'empty-list-marker', 'user-defined'],
+)
+def test_validate_custom_suffix_skips_source_owned_versions(marker, rejected):
+    """Only user-defined versions (built_in_frameworks is None) are held to
+    the '-custom' suffix; source-owned versions pass regardless of marker
+    emptiness."""
+    version_configs = VersionConfigDict(
+        root={"v9": VersionConfig(image_name="img:v9", built_in_frameworks=marker)}
+    )
+
+    if rejected:
+        with pytest.raises(BadRequestException) as e:
+            ib_route.validate_custom_suffix(None, version_configs)
+        assert "must end with '-custom'" in str(e.value.message)
+    else:
+        ib_route.validate_custom_suffix(None, version_configs)
 
 
 @pytest.mark.asyncio
