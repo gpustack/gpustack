@@ -153,6 +153,50 @@ def test_a_pending_deleted_is_sticky():
     assert merge(deleted, updated) is deleted
 
 
+@pytest.mark.parametrize("bare_fields", [None, {}])
+@pytest.mark.parametrize("bare_first", [True, False])
+def test_a_bare_event_is_sticky_under_coalescing(bare_first, bare_fields):
+    """A bare event coalesced with a field-carrying one stays bare.
+
+    Consumers treat an empty/None ``changed_fields`` as "unknown changes,
+    act anyway" -- the coordinator drops the wire field and the status
+    change-gate absorbs the diff. Narrowing the merged event back to the
+    fielded side's delta would drop the route notification the bare
+    event was carrying, whichever order the two arrive in. Bare usually
+    arrives as ``{}`` (``Event`` defaults it), so both spellings are
+    covered."""
+    merge = ModelController._merge_events
+    bare = _work(1, WorkEventType.MODIFIED, bare_fields)
+    fielded = _work(1, WorkEventType.MODIFIED, {"description": ("a", "b")})
+
+    older, newer = (bare, fielded) if bare_first else (fielded, bare)
+    merged = merge(older, newer)
+
+    assert merged.object is newer.object
+    assert not merged.object.changed_fields
+
+
+@pytest.mark.parametrize("bare_fields", [None, {}])
+def test_a_bare_merge_keeps_the_decision_catalogue_gate_open(bare_fields):
+    """Merging a categories removal with a bare event must still sync.
+
+    The decision catalogue skips non-decision models unless the event
+    carries the categories change; a bare merge drops that delta, so the
+    gate has to treat bare as "may have moved" or the entry goes stale
+    with nothing periodic to rebuild it."""
+    controller = _controller()
+    merge = ModelController._merge_events
+    fielded = _work(1, WorkEventType.MODIFIED, {"categories": (["decision"], [])})
+    bare = _work(1, WorkEventType.MODIFIED, bare_fields)
+
+    merged = merge(fielded, bare)
+    # The row already settled without the category, so only the merged
+    # event can say what moved.
+    model = Model(id=1, name="m", categories=[])
+
+    assert controller._affects_decision_catalogue(model, merged.object)
+
+
 def test_a_deleted_upgrades_whatever_is_pending():
     merge = ModelController._merge_events
     updated = _work(1, WorkEventType.MODIFIED, {"replicas": (1, 2)})
@@ -1237,8 +1281,13 @@ async def test_rank_manifest_event_wakes_model_recovery_without_aggregate_change
         assert event.data.id == ctx.model.id
         assert event.type == EventType.UPDATED
     assert ensure_files.await_count == int(initializing and not guarded_legacy)
+    # The runtime-change wake applies to every orchestration shape: a
+    # legacy-guarded instance carries no workloads, but its identity or
+    # readiness change still rewrites the route's member set. Only the
+    # INITIALIZING early return (taken when no legacy stop is set) skips
+    # the notification.
     assert notify.await_count == int(
-        runtime_changed and not initializing and not guarded_legacy
+        runtime_changed and not (initializing and not guarded_legacy)
     )
 
 

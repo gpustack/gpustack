@@ -1277,10 +1277,35 @@ async def ensure_wasm_plugin(
 async def cleanup_model_mapper(
     namespace: str,
     expected_ingresses: List[str],
-    config: k8s_client.Configuration,
+    config: Optional[k8s_client.Configuration] = None,
     extra_labels: Optional[Dict[str, str]] = None,
+    api: Optional[ExtensionsHigressIoV1Api] = None,
 ):
-    api = ExtensionsHigressIoV1Api(k8s_client.ApiClient(config))
+    """Prune mapper-CR match rules to those referencing ``expected_ingresses``.
+
+    Pass ``api`` from a periodic caller to reuse its client; the ad-hoc
+    one built from ``config`` is scoped to the call.
+    """
+    if api is not None:
+        await _cleanup_model_mapper_rules(
+            api, namespace, expected_ingresses, extra_labels
+        )
+        return
+    async with k8s_client.ApiClient(config) as client:
+        await _cleanup_model_mapper_rules(
+            ExtensionsHigressIoV1Api(client),
+            namespace,
+            expected_ingresses,
+            extra_labels,
+        )
+
+
+async def _cleanup_model_mapper_rules(
+    api: ExtensionsHigressIoV1Api,
+    namespace: str,
+    expected_ingresses: List[str],
+    extra_labels: Optional[Dict[str, str]],
+):
     labels = copy.deepcopy(managed_labels)
     if extra_labels:
         labels.update(extra_labels)
@@ -1315,8 +1340,36 @@ async def cleanup_ingresses(
     config: k8s_client.Configuration,
     cleanup_prefix: str,
     reason: str = "orphaned",
+    networking_api: Optional[k8s_client.NetworkingV1Api] = None,
 ):
-    networking_api = k8s_client.NetworkingV1Api(k8s_client.ApiClient(config))
+    """Delete managed ingresses under ``cleanup_prefix`` not in ``expected_names``.
+
+    Pass ``networking_api`` from a periodic caller to reuse its client;
+    the ad-hoc one built from ``config`` is scoped to the call so a
+    one-shot caller does not leak an unclosed session.
+    """
+    if networking_api is not None:
+        await _cleanup_managed_ingresses(
+            networking_api, namespace, expected_names, cleanup_prefix, reason
+        )
+        return
+    async with k8s_client.ApiClient(config) as client:
+        await _cleanup_managed_ingresses(
+            k8s_client.NetworkingV1Api(client),
+            namespace,
+            expected_names,
+            cleanup_prefix,
+            reason,
+        )
+
+
+async def _cleanup_managed_ingresses(
+    networking_api: k8s_client.NetworkingV1Api,
+    namespace: str,
+    expected_names: List[str],
+    cleanup_prefix: str,
+    reason: str,
+):
     try:
         # Use label selector to filter only managed ingresses
         label_selector = ','.join([f"{k}={v}" for k, v in managed_labels.items()])
@@ -1992,23 +2045,40 @@ def cleanup_generic_proxy_router_spec_diff(
 
 async def cleanup_generic_proxy_router(
     routes: List[ModelRoute],
-    k8s_config: k8s_client.Configuration,
+    k8s_config: Optional[k8s_client.Configuration] = None,
+    *,
     namespace: str,
+    api: Optional[ExtensionsHigressIoV1Api] = None,
 ):
-    """Prune generic-proxy router entries to those for existing generic_proxy routes."""
+    """Prune generic-proxy router entries to those for existing generic_proxy routes.
+
+    Pass ``api`` from a periodic caller to reuse its client; the ad-hoc
+    one built from ``k8s_config`` is scoped to the call.
+    """
     expected_route_ids = {
         route.id for route in routes if getattr(route, "generic_proxy", False)
     }
-    api = ExtensionsHigressIoV1Api(k8s_client.ApiClient(k8s_config))
-    await ensure_wasm_plugin(
-        api=api,
-        name=gpustack_generic_proxy_router_name,
-        namespace=namespace,
-        spec_diff=partial(
-            cleanup_generic_proxy_router_spec_diff,
-            expected_route_ids=expected_route_ids,
-        ),
-    )
+    if api is not None:
+        await ensure_wasm_plugin(
+            api=api,
+            name=gpustack_generic_proxy_router_name,
+            namespace=namespace,
+            spec_diff=partial(
+                cleanup_generic_proxy_router_spec_diff,
+                expected_route_ids=expected_route_ids,
+            ),
+        )
+        return
+    async with k8s_client.ApiClient(k8s_config) as client:
+        await ensure_wasm_plugin(
+            api=ExtensionsHigressIoV1Api(client),
+            name=gpustack_generic_proxy_router_name,
+            namespace=namespace,
+            spec_diff=partial(
+                cleanup_generic_proxy_router_spec_diff,
+                expected_route_ids=expected_route_ids,
+            ),
+        )
 
 
 async def cleanup_mcpbridge_registry(

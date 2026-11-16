@@ -1264,7 +1264,10 @@ async def test_worker_notifications_load_models_only_for_matched_instances(
         condition = models.await_args.kwargs['extra_conditions'][0]
         assert list(condition.compile().params.values()) == [[model.id]]
     assert publish.await_count == int(matched)
-    assert notify.await_count == int(matched)
+    # The direct notification only carries the synthetic ``worker_*``
+    # fields; an `unreachable` flip rides the bare model event through
+    # the Model controller instead of notifying twice.
+    assert notify.await_count == int(matched and field != 'unreachable')
 
 
 @pytest.mark.asyncio

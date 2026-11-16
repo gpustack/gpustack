@@ -373,11 +373,12 @@ async def test_worker_recovery_fanout_wakes_models_and_rebuilds_tunnel_routes(fi
             )
         )
 
-    # One bare model event per model on the worker, plus the direct
-    # route-target notification that does not depend on ``changed_fields``
-    # surviving the event bus.
+    # One bare model event per model on the worker. The direct
+    # route-target notification only fires when it carries the synthetic
+    # ``worker_*`` fields; for a plain state or unreachable flip the bare
+    # model event alone reaches the route through the Model controller.
     assert publish.await_count == (
-        2 if field == 'proxy_address' else 0 if field == 'labels' else 1
+        2 if field == "proxy_address" else 0 if field == "labels" else 1
     )
     if field != 'labels':
         assert publish.await_args_list[0].args[1].data.id == MODEL_ID
