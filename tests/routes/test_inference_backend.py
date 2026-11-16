@@ -393,24 +393,180 @@ async def test_validate_version_removal_still_guards_user_versions(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    'marker, rejected',
-    [(["vllm"], False), ([], False), (None, True)],
-    ids=['framework-list-marker', 'empty-list-marker', 'user-defined'],
+    'version, owned, rejected',
+    [
+        ('v1', {'v1'}, False),
+        ('v1', {'v2'}, True),
+        ('v1', None, True),
+    ],
+    ids=['stored-source-version', 'key-not-owned', 'no-stored-ownership'],
 )
-def test_validate_custom_suffix_skips_source_owned_versions(marker, rejected):
-    """Only user-defined versions (built_in_frameworks is None) are held to
-    the '-custom' suffix; source-owned versions pass regardless of marker
-    emptiness."""
+def test_validate_custom_suffix_uses_stored_ownership(version, owned, rejected):
+    """The '-custom' suffix rule skips only versions the stored row owns.
+    The payload's own marker is never consulted: a client could forge it."""
     version_configs = VersionConfigDict(
-        root={"v9": VersionConfig(image_name="img:v9", built_in_frameworks=marker)}
+        root={version: VersionConfig(image_name="img:v9", built_in_frameworks=["vllm"])}
     )
 
     if rejected:
         with pytest.raises(BadRequestException) as e:
-            ib_route.validate_custom_suffix(None, version_configs)
+            ib_route.validate_custom_suffix(
+                None, version_configs, source_owned_versions=owned
+            )
         assert "must end with '-custom'" in str(e.value.message)
     else:
+        ib_route.validate_custom_suffix(
+            None, version_configs, source_owned_versions=owned
+        )
+
+
+@pytest.mark.parametrize(
+    'forged_marker', [["vllm"], []], ids=['non-empty', 'empty-list']
+)
+def test_validate_custom_suffix_ignores_payload_marker(forged_marker):
+    """A payload marker (empty list included) cannot exempt a version from
+    the '-custom' suffix rule: ownership comes from the stored row only."""
+    version_configs = VersionConfigDict(
+        root={
+            "v9": VersionConfig(image_name="img:v9", built_in_frameworks=forged_marker)
+        }
+    )
+
+    with pytest.raises(BadRequestException) as e:
         ib_route.validate_custom_suffix(None, version_configs)
+    assert "must end with '-custom'" in str(e.value.message)
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_forged_marker_version_without_suffix(monkeypatch):
+    """A PUT carrying a forged built_in_frameworks marker on a new key must
+    not slip past the '-custom' suffix rule or the merge."""
+    backend = _community_backend_with_custom_version(backend_id=49)
+    backend_in = InferenceBackendUpdate(
+        backend_name=backend.backend_name,
+        backend_source=BackendSourceEnum.COMMUNITY,
+        version_configs=VersionConfigDict(
+            root={
+                # Echoing the stored user version so the removal guard has
+                # nothing to flag before the suffix rule fires.
+                "v1-custom": VersionConfig(image_name="custom:v1"),
+                "forged": VersionConfig(image_name="forged:v1", built_in_frameworks=[]),
+            }
+        ),
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(
+        ib_route,
+        "_redirect_global_edit_to_org_row",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    with pytest.raises(BadRequestException) as e:
+        await ib_route.update_inference_backend(
+            MagicMock(), _all_mode_admin_ctx(), backend.id, backend_in
+        )
+
+    assert "'forged'" in str(e.value.message)
+    update_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_with_forged_marker_custom_version_gets_marker_cleared(
+    monkeypatch,
+):
+    """A '-custom'-suffixed version carrying a forged marker is accepted as
+    user-defined: the marker is cleared so it can never masquerade as
+    source-owned."""
+    backend = _community_backend_with_custom_version(backend_id=50)
+    backend_in = InferenceBackendUpdate(
+        backend_name=backend.backend_name,
+        backend_source=BackendSourceEnum.COMMUNITY,
+        version_configs=VersionConfigDict(
+            root={
+                "v1-custom": VersionConfig(image_name="custom:v1"),
+                "forged-custom": VersionConfig(
+                    image_name="forged:v1", built_in_frameworks=["vllm"]
+                ),
+            }
+        ),
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(
+        ib_route,
+        "_redirect_global_edit_to_org_row",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    await ib_route.update_inference_backend(
+        MagicMock(), _all_mode_admin_ctx(), backend.id, backend_in
+    )
+
+    merged = update_mock.await_args.args[1]["version_configs"].root
+    assert merged["forged-custom"].built_in_frameworks is None
+
+
+def test_process_version_configs_clears_markers_unconditionally():
+    """Sanitization must not trust truthiness: an empty-list marker is as
+    forgeable as a populated one and must be cleared the same way."""
+    processed = ib_route._process_version_configs(
+        {
+            "v1": {"image_name": "img:v1", "built_in_frameworks": ["vllm"]},
+            "v2": {"image_name": "img:v2", "built_in_frameworks": []},
+        }
+    )
+
+    assert processed.root["v1"].built_in_frameworks is None
+    assert processed.root["v2"].built_in_frameworks is None
+
+
+@pytest.mark.asyncio
+async def test_redirect_seeds_payload_versions_marker_less(monkeypatch):
+    """Seeded Org rows take ownership from the Platform row, not the
+    payload: a forged marker on a new payload version is cleared, and an
+    override of a catalog version keeps the catalog's marker."""
+    platform = _platform_community_backend()
+    backend_in = InferenceBackendUpdate(
+        backend_name="my-community",
+        backend_source=BackendSourceEnum.COMMUNITY,
+        enabled=True,
+        version_configs=VersionConfigDict(
+            root={
+                # Override of a catalog version, forged marker included.
+                "v1": VersionConfig(
+                    image_name="org-override:v1", built_in_frameworks=[]
+                ),
+                # New version with a forged non-empty marker.
+                "v9": VersionConfig(
+                    image_name="forged:v9", built_in_frameworks=["vllm"]
+                ),
+            }
+        ),
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_fields", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        InferenceBackend,
+        "create",
+        AsyncMock(side_effect=lambda session, obj: obj),
+    )
+
+    created = await ib_route._redirect_global_edit_to_org_row(
+        MagicMock(), _org_ctx(42), platform, backend_in
+    )
+
+    assert created.version_configs.root["v1"].built_in_frameworks == ["vllm"]
+    assert created.version_configs.root["v1"].image_name == "org-override:v1"
+    assert created.version_configs.root["v9"].built_in_frameworks is None
+    # The Platform row's own markers must be untouched.
+    assert platform.version_configs.root["v1"].built_in_frameworks == ["vllm"]
 
 
 @pytest.mark.asyncio

@@ -150,6 +150,22 @@ async def check_backend_in_use(
         ) from e
 
 
+def _source_owned_version_keys(backend: InferenceBackend) -> Set[str]:
+    """The version keys the backend's stored row marks as source-owned.
+
+    The request payload's ``built_in_frameworks`` marker is client-supplied
+    and forgeable, so ownership checks read the stored row instead — ``[]``
+    markers included, per the rule documented in ``_source_owned_versions``.
+    """
+    if not backend.version_configs or not backend.version_configs.root:
+        return set()
+    return {
+        version
+        for version, config in backend.version_configs.root.items()
+        if config.built_in_frameworks is not None
+    }
+
+
 async def _source_owned_versions(session: AsyncSession) -> Set[Tuple[str, str]]:
     """The ``(backend_name, version)`` pairs the community sources currently own.
 
@@ -1279,12 +1295,30 @@ async def _redirect_global_edit_to_org_row(
     # built_in_frameworks) would otherwise be lost — leaving the Org row
     # empty and its version blank in the uncollapsed "All" view, where the
     # disabled Platform row is filtered out and can't fill the gap.
+    # The payload is untrusted: source ownership travels with the catalog
+    # row, never with client-supplied markers. Payload entries are seeded
+    # marker-less; a payload entry overriding a catalog version gets that
+    # version's marker restored below.
+    payload_versions = {}
+    if backend_in.version_configs:
+        payload_versions = {
+            version: config.model_copy(deep=True)
+            for version, config in backend_in.version_configs.root.items()
+        }
+        for config in payload_versions.values():
+            config.built_in_frameworks = None
     seed_version_configs = VersionConfigDict(
         root={
             **(backend.version_configs.root if backend.version_configs else {}),
-            **(backend_in.version_configs.root if backend_in.version_configs else {}),
+            **payload_versions,
         }
     ).model_copy(deep=True)
+    if backend.version_configs:
+        for version, config in backend.version_configs.root.items():
+            if version in payload_versions and config.built_in_frameworks is not None:
+                seed_version_configs.root[version].built_in_frameworks = (
+                    config.built_in_frameworks
+                )
     new_row = InferenceBackend(
         backend_name=backend_in.backend_name,
         version_configs=seed_version_configs,
@@ -1359,7 +1393,11 @@ async def update_inference_backend(  # noqa: C901
         if backend.source_name is None:
             validate_custom_suffix(backend_in.backend_name, None)
     else:
-        validate_custom_suffix(None, backend_in.version_configs)
+        validate_custom_suffix(
+            None,
+            backend_in.version_configs,
+            source_owned_versions=_source_owned_version_keys(backend),
+        )
 
     for version in backend_in.version_configs.root.keys():
         backend_in.version_configs.root[version].built_in_frameworks = None
@@ -1521,8 +1559,9 @@ async def create_inference_backend_from_yaml(  # noqa: C901
         if 'version_configs' in yaml_data and yaml_data['version_configs']:
             version_configs_dict = {}
             for version, config in yaml_data['version_configs'].items():
-                if config.get('built_in_frameworks'):
-                    config['built_in_frameworks'] = None
+                # The payload's marker is client-supplied: clear it
+                # unconditionally ([] would otherwise survive a truthy check).
+                config['built_in_frameworks'] = None
                 version_configs_dict[version] = VersionConfig(**config)
             yaml_data['version_configs'] = VersionConfigDict(root=version_configs_dict)
 
@@ -1629,7 +1668,11 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             if backend.source_name is None:
                 validate_custom_suffix(yaml_data['backend_name'], None)
         else:
-            validate_custom_suffix(None, yaml_data.get('version_configs'))
+            validate_custom_suffix(
+                None,
+                yaml_data.get('version_configs'),
+                source_owned_versions=_source_owned_version_keys(backend),
+            )
 
         # Clear built_in_frameworks for all versions in yaml_data
         _clear_built_in_frameworks(yaml_data.get('version_configs'))
@@ -1673,9 +1716,9 @@ def _process_version_configs(
     """
     version_configs_dict = {}
     for version, config in version_configs_data.items() if version_configs_data else []:
-        # Clear built_in_frameworks during initial processing
-        if config.get('built_in_frameworks'):
-            config['built_in_frameworks'] = None
+        # The payload's marker is client-supplied: clear it unconditionally
+        # ([] would otherwise survive a truthy check and dodge the suffix rule).
+        config['built_in_frameworks'] = None
         version_configs_dict[version] = VersionConfig(**config)
 
     return VersionConfigDict(root=version_configs_dict)
@@ -1774,14 +1817,18 @@ def _merge_community_versions(
 def validate_custom_suffix(
     backend_name: Optional[str],
     version_configs: Optional[VersionConfigDict],
+    source_owned_versions: Optional[Set[str]] = None,
 ):
     """
     Validate custom suffix for backend names and version names.
 
     Rules:
     - Backend name: Must end with '-custom' if provided
-    - Version name: Must end with '-custom' ONLY if it's a user-defined version
-      (i.e., built_in_frameworks is None and custom_framework has value)
+    - Version name: Must end with '-custom' ONLY if it's a user-defined version.
+      A version is source-owned when its key is in ``source_owned_versions``
+      (the stored row's ownership, ``[]`` markers included). The request
+      payload's own ``built_in_frameworks`` marker is never trusted: a client
+      can forge it to dodge the suffix rule.
     """
     # Validate backend name
     if backend_name and not backend_name.endswith("-custom"):
@@ -1791,11 +1838,11 @@ def validate_custom_suffix(
 
     # Validate version names
     if version_configs and version_configs.root:
-        for version, config in version_configs.root.items():
-            # Skip source-owned versions: the marker normalizes to [] for a
-            # source version that declares no framework, so the check is
-            # ``is not None`` (same rule as _source_owned_versions).
-            if config.built_in_frameworks is not None:
+        owned = source_owned_versions or set()
+        for version in version_configs.root.keys():
+            # Source-owned versions are catalog-managed and never carry the
+            # suffix; their identity comes from the stored row, not the payload.
+            if version in owned:
                 continue
 
             # User-defined versions must have -custom suffix
