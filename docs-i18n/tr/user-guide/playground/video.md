@@ -54,8 +54,6 @@ Ortak `seconds` alanı tam saniye kabul eder. Kesirli süreler modele özgü yer
 
 H3 Playground şu anda metinden video üretimini (`t2va`) destekler. Referans girdileriyle H3 üretimi için API ve modele özgü referans parametreleri gerekir.
 
-Gelişmiş ayarlar isteğe bağlı bir `Extra Parameters (JSON)` nesnesi de sunar. Normal H3 metinden video isteklerinde boş bırakın. JSON gönderimden önce doğrulanır; model değiştirildiğinde ek parametreler temizlenir.
-
 ## Kodu Görüntüleme { #view-code }
 
 İstemleri ve parametreleri denedikten sonra, API'nin aynı girdilerle nasıl çağrılacağını görmek için `View Code` düğmesine tıklayın. `curl`, `Python` ve `Node.js` kod örnekleri sunulur.

@@ -50,8 +50,6 @@ The common `seconds` field accepts whole seconds. Fractional durations can be su
 
 The H3 Playground currently supports text-to-video (`t2va`). Reference-based H3 generation requires the API and model-specific reference parameters.
 
-Advanced settings also provide an optional `Extra Parameters (JSON)` object. Leave it empty for ordinary H3 text-to-video requests. Invalid JSON is rejected before submission; changing models clears these extra parameters.
-
 ## View Code
 
 After experimenting with prompts and parameters, click `View Code` to see how to call the API with the same inputs. Code examples are provided in `curl`, `Python`, and `Node.js`.

@@ -54,8 +54,6 @@ GPUStack 根据实际选中的推理目标转换通用的 `task`、`size` 和 `s
 
 H3 Playground 当前支持纯文生视频（`t2va`）。使用参考输入生成 H3 视频，需要通过 API 提供模型专用的参考参数。
 
-高级配置还提供可选的 `Extra Parameters (JSON)` 对象。普通 H3 文生视频无需填写。提交前会校验 JSON，切换模型时会清空额外参数。
-
 ## 查看代码 { #view-code }
 
 调整提示词和参数后，点击 `查看代码`，即可查看使用相同输入调用 API 的示例。支持 `curl`、`Python` 和 `Node.js`。
