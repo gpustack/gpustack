@@ -27,6 +27,19 @@ from gpustack.utils.model_instance_workers import get_model_instance_worker_matc
 
 from . import hardware
 from . import config as query_config
+from .time_range import MonitoringInterval, measured_interval, measured_query_interval
+
+
+def resource_interval(
+    window_seconds: int, start: Optional[float], end: Optional[float]
+) -> MonitoringInterval:
+    """Direct resource inspection also accepts exact short Benchmark phases."""
+    if start is None and end is None:
+        return hardware._resource_interval(window_seconds, start, end)
+    try:
+        return measured_interval(start, end)
+    except ValueError as exc:
+        raise InvalidException(message=str(exc)) from exc
 
 
 def instance_gpu_indexes(instance: ModelInstance, worker_id: int) -> Set[int]:
@@ -194,7 +207,15 @@ async def collect_resource_metrics(
     client: Optional[aiohttp.ClientSession] = None,
 ) -> ResourceMetrics:
     """Collect a directly authorized Worker or one of its current stable GPU identities."""
-    interval = hardware._resource_interval(window_seconds, start, end)
+    interval = resource_interval(window_seconds, start, end)
+    query_options = (
+        dict(
+            not_before=interval.start,
+            query_interval=measured_query_interval(interval),
+        )
+        if start is not None
+        else {}
+    )
     selected = select_device(devices, device_id)
     scoped = [selected] if selected else devices
     response = ResourceMetrics(
@@ -226,11 +247,11 @@ async def collect_resource_metrics(
     elif client is None:
         async with aiohttp.ClientSession() as owned:
             await hardware._collect_all_history(
-                scoped, workers, response, owned, url, extra
+                scoped, workers, response, owned, url, extra, **query_options
             )
     else:
         await hardware._collect_all_history(
-            scoped, workers, response, client, url, extra
+            scoped, workers, response, client, url, extra, **query_options
         )
     hardware._update_device_history(scoped, response)
     response.available = any(

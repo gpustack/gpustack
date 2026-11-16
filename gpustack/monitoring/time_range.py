@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_CEILING
 import math
 import re
 import time
@@ -36,6 +37,45 @@ class MonitoringInterval:
     start: float
     end: float
     seconds: int
+
+
+def measured_interval(
+    start: Optional[float],
+    end: Optional[float],
+    *,
+    now: Optional[float] = None,
+) -> MonitoringInterval:
+    """Keep precise measured boundaries without expanding a short inspection."""
+    for value in (start, end):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise ValueError('Monitoring range must span 1 millisecond to 7 days')
+    span = Decimal(str(end)) - Decimal(str(start))
+    if not Decimal('0.001') <= span <= MAX_QUERY_SECONDS:
+        raise ValueError('Monitoring range must span 1 millisecond to 7 days')
+    if end > (time.time() if now is None else now):
+        raise ValueError('Monitoring range cannot end in the future')
+    return MonitoringInterval(float(start), float(end), max(1, math.ceil(span)))
+
+
+def measured_query_interval(interval: MonitoringInterval) -> MonitoringInterval:
+    """Keep millisecond evaluation ticks inside a measured half-open range."""
+    start = int(
+        (Decimal(str(interval.start)) * 1000).to_integral_value(rounding=ROUND_CEILING)
+    )
+    end = (
+        int(
+            (Decimal(str(interval.end)) * 1000).to_integral_value(
+                rounding=ROUND_CEILING
+            )
+        )
+        - 1
+    )
+    return MonitoringInterval(start / 1000, end / 1000, interval.seconds)
 
 
 def monitoring_interval(

@@ -3,6 +3,7 @@
 import importlib
 import importlib.util
 import asyncio
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -153,7 +154,21 @@ def _prometheus(monkeypatch, module, instant, ranges=None):
 
     async def query_range(client, url, query, start, end, step):
         requests.append(('range', query))
-        return ranges(query) if ranges else []
+        rows = ranges(query) if ranges else []
+        if 'histogram_upper_bound' in query and not any(
+            'histogram_upper_bound' in row.get('metric', {}) for row in rows
+        ):
+            # These fixtures describe exact quantiles without overflow at the edge.
+            bound = re.search(r'"histogram_upper_bound", "([^"]+)"', query).group(1)
+            return [
+                {
+                    **row,
+                    'metric': {**row['metric'], 'histogram_upper_bound': bound},
+                    'values': [[at, '1'] for at, _ in row['values']],
+                }
+                for row in rows
+            ]
+        return rows
 
     monkeypatch.setattr(module, '_query_instant', query_instant)
     monkeypatch.setattr(module, '_query_range', query_range)
@@ -286,7 +301,8 @@ async def test_selected_latency_trends_share_a_window_and_keep_full_summaries(
         for kind, query in requests
         if kind == 'range' and 'time_to_first_token_seconds_' in query
     ]
-    assert len(queries) == len(statistics)
+    # One extra CDF verifies all quantiles reaching the shared finite edge.
+    assert len(queries) == len(statistics) + (0 if statistics == ('avg',) else 1)
     assert all('[90s]' in query for query in queries)
     for statistic, quantile in (('p50', '0.5'), ('p95', '0.95'), ('p99', '0.99')):
         assert any(f'histogram_quantile({quantile},' in query for query in queries) == (
@@ -1138,3 +1154,339 @@ async def test_complete_pd_query_fanout_remains_bounded(monkeypatch, backend, mo
     )
     assert response.metrics['pd_kv_transfer'].status == 'available'
     assert response.metrics['router_request_duration'].status == 'available'
+
+
+def _censored_transfer_source(monkeypatch, cdf_state='available', *, short=False):
+    module = _collector()
+    prefix = 'gpustack:pd_kv_transfer_seconds'
+    requests = []
+    times = (4990, 4999) if short else (4910, 5000)
+
+    def entry(value, **labels):
+        return _entry(value, role='decode', **labels)
+
+    async def instant(client, url, query, at):
+        empty = short and '[15s]' in query
+        if prefix + '_count{' in query:
+            return [entry(0 if empty else 100)]
+        if prefix + '_sum{' in query:
+            return [entry(0 if empty else 1400)]
+        if prefix + '_bucket{' in query:
+            return [
+                entry(0 if empty else value, le=bound)
+                for bound, value in [('1.0', 0), ('5.0', 2), ('+Inf', 100)]
+            ]
+        return []
+
+    async def ranged(client, url, query, start, end, step):
+        if prefix + '_' not in query:
+            return []
+        requests.append(query)
+        labels = entry(0)['metric']
+        if 'histogram_upper_bound' in query:
+            if cdf_state == 'failed':
+                raise OSError('CDF source unavailable')
+            return (
+                []
+                if cdf_state == 'missing'
+                else [
+                    {
+                        'metric': {**labels, 'histogram_upper_bound': '5.0'},
+                        'values': [[times[0], '0.02'], [times[1], '0.5']],
+                    }
+                ]
+            )
+        value = '5' if 'histogram_quantile(' in query else '14'
+        return [{'metric': labels, 'values': [[times[0], value], [times[1], value]]}]
+
+    monkeypatch.setattr(module, '_prometheus_url', lambda: 'http://metrics.invalid')
+    monkeypatch.setattr(module, '_query_instant', instant)
+    monkeypatch.setattr(module, '_query_range', ranged)
+    return module, requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('view', ['aggregate', 'instances'])
+@pytest.mark.parametrize('cdf_state', ['available', 'missing', 'failed'])
+async def test_transfer_overflow_retains_average_and_only_emits_proven_lower_bounds(
+    monkeypatch, view, cdf_state
+):
+    module, requests = _censored_transfer_source(monkeypatch, cdf_state)
+    result = await module.collect_model_metrics(
+        _model(pd=True),
+        [_instance(12, 'decode'), _instance(13, 'prefill')],
+        start=1400,
+        end=5000,
+        window_seconds=3600,
+        view=view,
+        client=object(),
+        section='pd',
+    )
+    metric = result.metrics['pd_kv_transfer']
+    assert metric.status == 'available'
+    avg = next(line for line in metric.series if line.statistic == 'avg')
+    assert avg.points == [(4910, 14), (5000, 14)]
+    assert avg.lower_bounds is None
+    assert next(s for s in metric.summaries if s.statistic == 'avg').value == 14
+    for summary in metric.summaries:
+        if summary.statistic != 'avg':
+            assert summary.value is None and summary.lower_bound == 5
+    assert sum('histogram_upper_bound' in query for query in requests) == 1
+    if cdf_state == 'available':
+        p50 = next(line for line in metric.series if line.statistic == 'p50')
+        assert p50.points == [(4910, None), (5000, 5)]
+        assert p50.lower_bounds == [(4910, 5)]
+        p99 = next(line for line in metric.series if line.statistic == 'p99')
+        assert p99.points == [(4910, None), (5000, None)]
+        assert p99.lower_bounds == [(4910, 5), (5000, 5)]
+        assert metric.reason == 'histogram_quantile_out_of_range'
+    else:
+        for line in metric.series:
+            if line.statistic != 'avg':
+                assert all(value is None for _, value in line.points)
+                assert line.lower_bounds is None
+        assert metric.reason == (
+            'query_failed' if cdf_state == 'failed' else 'histogram_bounds_unavailable'
+        )
+
+
+@pytest.mark.asyncio
+async def test_instance_bounds_keep_schemas_separate_from_incompatible_summaries(
+    monkeypatch,
+):
+    module = _collector()
+    prefix = 'gpustack:time_to_first_token_seconds'
+    calls = []
+
+    async def instant(client, url, query, at):
+        if prefix + '_count{' in query:
+            return [_entry(100, id=identity) for identity in (12, 13)]
+        if prefix + '_sum{' in query:
+            return [_entry(1400, id=identity) for identity in (12, 13)]
+        if prefix + '_bucket{' in query:
+            return [
+                _entry(value, id=identity, le=bound)
+                for identity, ceiling in [(12, '5.0'), (13, '10.0')]
+                for bound, value in [('1.0', 0), (ceiling, 2), ('+Inf', 100)]
+            ]
+        return []
+
+    async def ranged(client, url, query, start, end, step):
+        if prefix + '_' not in query:
+            return []
+        if 'histogram_upper_bound' in query:
+            calls.append(query)
+            return [
+                {
+                    'metric': {
+                        **_entry(0, id=identity)['metric'],
+                        'histogram_upper_bound': str(bound),
+                    },
+                    'values': [[5000, '0.02']],
+                }
+                for identity, bound in [(12, 5), (13, 10)]
+            ]
+        return [
+            {
+                'metric': _entry(0, id=identity)['metric'],
+                'values': [
+                    [5000, str(bound if 'histogram_quantile(' in query else 14)]
+                ],
+            }
+            for identity, bound in [(12, 5), (13, 10)]
+        ]
+
+    monkeypatch.setattr(module, '_prometheus_url', lambda: 'http://metrics.invalid')
+    monkeypatch.setattr(module, '_query_instant', instant)
+    monkeypatch.setattr(module, '_query_range', ranged)
+    result = await module.collect_model_metrics(
+        _model(),
+        [_instance(12), _instance(13)],
+        start=1400,
+        end=5000,
+        window_seconds=3600,
+        view='instances',
+        statistics=('p99',),
+        client=object(),
+    )
+    metric = result.metrics['ttft']
+    assert metric.status == 'available'
+    assert metric.reason == 'incompatible_histogram_buckets'
+    assert all(
+        s.value is None and s.lower_bound is None
+        for s in metric.summaries
+        if s.statistic != 'avg'
+    )
+    assert len(calls) == 1
+    assert calls[0].count('histogram_upper_bound') == 2
+    assert {
+        line.dimensions.model_instance_id: line.lower_bounds for line in metric.series
+    } == {12: [(5000, 5)], 13: [(5000, 10)]}
+
+
+@pytest.mark.asyncio
+async def test_average_only_trends_do_not_query_cdf_but_keep_summary_limits(
+    monkeypatch,
+):
+    module, requests = _censored_transfer_source(monkeypatch)
+    result = await module.collect_model_metrics(
+        _model(pd=True),
+        [_instance(12, 'decode')],
+        window_seconds=3600,
+        start=1400,
+        end=5000,
+        statistics=('avg',),
+        client=object(),
+        section='pd',
+    )
+    metric = result.metrics['pd_kv_transfer']
+    assert [line.statistic for line in metric.series] == ['avg']
+    assert not any('histogram_upper_bound' in query for query in requests)
+    assert next(s for s in metric.summaries if s.statistic == 'p99').lower_bound == 5
+
+
+@pytest.mark.asyncio
+async def test_short_phase_limits_do_not_borrow_rolling_observations_for_summaries(
+    monkeypatch,
+):
+    from gpustack.monitoring.time_range import MonitoringInterval
+
+    module, requests = _censored_transfer_source(monkeypatch, short=True)
+    result = await module.collect_model_metrics(
+        _model(pd=True),
+        [_instance(12, 'decode')],
+        window_seconds=3600,
+        interval=MonitoringInterval(4985, 5000, 15),
+        statistics=('p99',),
+        allow_trend_lookback=True,
+        client=object(),
+        section='pd',
+    )
+    metric = result.metrics['pd_kv_transfer']
+    assert all(
+        s.value is None and s.lower_bound is None and s.sample_count == 0
+        for s in metric.summaries
+    )
+    assert len(metric.series) == 1
+    assert metric.series[0].points == [(4990, None), (4999, None)]
+    assert metric.series[0].lower_bounds == [(4990, 5), (4999, 5)]
+    assert metric.reason == 'histogram_quantile_out_of_range'
+    assert metric.status == 'stale'
+    assert sum('histogram_upper_bound' in query for query in requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_cdf_deadline_never_leaves_unverified_ceiling_values(monkeypatch):
+    module, _ = _censored_transfer_source(monkeypatch)
+    original = module._query_range
+
+    async def delayed(client, url, query, start, end, step):
+        if 'histogram_upper_bound' in query:
+            await asyncio.sleep(10)
+        return await original(client, url, query, start, end, step)
+
+    monkeypatch.setattr(module, '_query_range', delayed)
+    monkeypatch.setattr(module, '_COLLECT_DEADLINE_SECONDS', 0.05)
+    result = await module.collect_model_metrics(
+        _model(pd=True),
+        [_instance(12, 'decode')],
+        window_seconds=3600,
+        start=1400,
+        end=5000,
+        client=object(),
+        section='pd',
+    )
+    metric = result.metrics['pd_kv_transfer']
+    assert metric.status == 'query_error' and metric.reason == 'query_failed'
+    assert next(s for s in metric.summaries if s.statistic == 'avg').value == 14
+    assert next(s for s in metric.summaries if s.statistic == 'p99').lower_bound == 5
+    assert all(
+        value is None
+        for line in metric.series
+        if line.statistic != 'avg'
+        for _, value in line.points
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'case,valid',
+    [
+        ('same-cohort-alias', False),
+        ('conflicting-alias', False),
+        ('distinct-cohort-alias', True),
+        ('same-le-scrape-copy', True),
+    ],
+)
+async def test_numeric_bucket_aliases_fail_closed_only_within_one_native_cohort(
+    monkeypatch, case, valid
+):
+    module = _collector()
+    prefix = 'gpustack:time_to_first_token_seconds'
+    requests = []
+
+    def records(part):
+        profiles = [('a', '5.0')]
+        if case == 'distinct-cohort-alias':
+            profiles.append(('b', '5'))
+        if part == 'bucket':
+            rows = [
+                _entry(value, engine=engine, le=label)
+                for engine, ceiling in profiles
+                for label, value in [('1.0', 0), (ceiling, 2), ('+Inf', 100)]
+            ]
+            if case in ('same-cohort-alias', 'conflicting-alias'):
+                rows.append(
+                    _entry(3 if case == 'conflicting-alias' else 2, engine='a', le='5')
+                )
+        else:
+            rows = [
+                _entry(1400 if part == 'sum' else 100, engine=engine)
+                for engine, _ in profiles
+            ]
+        if case == 'same-le-scrape-copy':
+            rows += [
+                {**row, 'metric': {**row['metric'], 'job': 'second-scraper'}}
+                for row in rows
+            ]
+        return rows
+
+    async def instant(client, url, query, at):
+        for part in ('count', 'sum', 'bucket'):
+            if prefix + '_' + part + '{' in query:
+                return records(part)
+        return []
+
+    async def ranged(client, url, query, start, end, step):
+        if prefix + '_' not in query:
+            return []
+        requests.append(query)
+        return [{'metric': _entry(0)['metric'], 'values': [[5000, '0.25']]}]
+
+    monkeypatch.setattr(module, '_prometheus_url', lambda: 'http://metrics.invalid')
+    monkeypatch.setattr(module, '_query_instant', instant)
+    monkeypatch.setattr(module, '_query_range', ranged)
+    result = await module.collect_model_metrics(
+        _model(),
+        [_instance()],
+        window_seconds=3600,
+        start=1400,
+        end=5000,
+        client=object(),
+    )
+    metric = result.metrics['ttft']
+    assert next(s for s in metric.summaries if s.statistic == 'avg').value == 14
+    assert any('histogram_quantile(' in q for q in requests) == valid
+    if valid:
+        assert (
+            next(s for s in metric.summaries if s.statistic == 'p99').lower_bound == 5
+        )
+        assert metric.reason == 'histogram_quantile_out_of_range'
+    else:
+        assert metric.reason == 'incompatible_histogram_buckets'
+        assert metric.supported_statistics == ['avg']
+        assert all(
+            s.value is None and s.lower_bound is None
+            for s in metric.summaries
+            if s.statistic != 'avg'
+        )

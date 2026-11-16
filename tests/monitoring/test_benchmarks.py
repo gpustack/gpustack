@@ -199,6 +199,24 @@ def test_exact_interval_does_not_change_public_model_minimum():
         monitoring_interval(0, 1000, 1041)
 
 
+@pytest.mark.parametrize(
+    'start,end,message',
+    [
+        (1000, 1000.0009, 'Benchmark range must span 1 millisecond to 7 days'),
+        (True, 1001, 'Benchmark range must span 1 millisecond to 7 days'),
+        (float('nan'), 1001, 'Benchmark range must span 1 millisecond to 7 days'),
+        (1000, 1001, 'Benchmark range cannot end in the future'),
+    ],
+)
+def test_exact_interval_preserves_benchmark_validation_messages(
+    monkeypatch, start, end, message
+):
+    module = _module()
+    monkeypatch.setattr(module.time, 'time', lambda: 1000)
+    with pytest.raises(ValueError, match=message):
+        module.exact_interval(start, end)
+
+
 def test_fractional_summary_duration_is_rendered_as_milliseconds():
     from gpustack.monitoring.queries import (
         MetricQueryScope,
@@ -1100,8 +1118,10 @@ async def test_short_resource_grid_counts_evaluations_and_never_borrows_old_gaug
         [point]
     )
     monkeypatch.setattr(module.prometheus, 'prometheus_url', lambda: 'http://unused')
-    monkeypatch.setattr(module.hardware, '_identity_presence', AsyncMock())
-    monkeypatch.setattr(module.prometheus, 'query_instant', AsyncMock(return_value=[]))
+    identity = AsyncMock()
+    instant = AsyncMock(return_value=[])
+    monkeypatch.setattr(module.hardware, '_identity_presence', identity)
+    monkeypatch.setattr(module.prometheus, 'query_instant', instant)
     calls = []
 
     async def ranges(client, url, query, query_start, query_end, step):
@@ -1132,6 +1152,9 @@ async def test_short_resource_grid_counts_evaluations_and_never_borrows_old_gaug
     result = await module.collect_benchmark_resource_metrics(
         history, phase_id=phase_id, client=object()
     )
+    assert identity.await_args.args[3] == 1003.0
+    assert instant.await_count > 0
+    assert all(call.args[3] == 1003.0 for call in instant.await_args_list)
     assert result.start == start and result.end == end and result.step == 1
     assert result.available is raw_samples
     metric = result.metrics['gpu_utilization']

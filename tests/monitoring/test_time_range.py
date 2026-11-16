@@ -43,6 +43,56 @@ def test_invalid_absolute_intervals_are_rejected_before_queries(start, end):
         monitoring.monitoring_interval(3600, start, end, now=900000)
 
 
+@pytest.mark.parametrize(
+    'start,end,seconds',
+    [
+        (1730000000.123, 1730000000.124, 1),
+        (1000.25, 1040.75, 41),
+        (1000, 1001, 1),
+        (1000.25, 1300.5, 301),
+        (1000.25, 605800.25, 604800),
+    ],
+)
+def test_measured_intervals_keep_precise_bounds_and_round_only_query_duration(
+    start, end, seconds
+):
+    value = monitoring.measured_interval(start, end, now=1800000000)
+    assert (value.start, value.end, value.seconds) == (start, end, seconds)
+
+
+@pytest.mark.parametrize(
+    'start,end',
+    [
+        (None, None),
+        (None, 2000),
+        (1000, None),
+        (1000, 1000),
+        (2000, 1000),
+        (1000, 1000.0009),
+        (1000.25, 605800.251),
+        (-0.001, 1),
+        (float('nan'), 2000),
+        (1000, float('nan')),
+        (1000, float('inf')),
+        (float('-inf'), 1000),
+        (True, 1000),
+        (0, True),
+        ('1000', 2000),
+        (1000, '2000'),
+        (899999.5, 900000.001),
+    ],
+)
+def test_measured_intervals_reject_invalid_bounds(start, end):
+    with pytest.raises(ValueError):
+        monitoring.measured_interval(start, end, now=900000)
+
+
+@pytest.mark.parametrize('seconds', [1, 299, 604801, True, 300.0])
+def test_measured_intervals_do_not_relax_model_relative_windows(seconds):
+    with pytest.raises(ValueError):
+        monitoring.monitoring_interval(seconds, now=900000)
+
+
 @pytest.fixture
 def status_environment(monkeypatch):
     monitoring._POLICY_CACHE.clear()

@@ -28,6 +28,13 @@ from gpustack.utils.model_instance_workers import (
     model_instance_metrics_source_inventory,
 )
 from .catalog import model_metric_definitions
+from .histogram_bounds import (
+    apply_lower_bounds,
+    ceiling_scopes,
+    histogram_lower_bounds,
+    requires_bound_check,
+    trend_ceilings,
+)
 from .ingress import collect_ingress_metric
 from . import config as query_config
 from .queries import (
@@ -39,6 +46,7 @@ from .queries import (
     build_gauge_query,
     build_histogram_components,
     build_histogram_query,
+    build_histogram_cdf_query,
     build_ratio_query,
     cohort_identity,
     deduplicate_instant,
@@ -154,6 +162,16 @@ _PD_TRANSFER_KEYS = {
     'pd_kv_transfer_post',
     'pd_kv_transfer_bytes',
     'pd_kv_transfer_speed',
+    'pd_kv_completion',
+    'pd_kv_throughput',
+    'pd_kv_transfer_failures',
+    'pd_kv_bootstrap_failures',
+    'pd_kv_expired',
+}
+_PD_EVENT_KEYS = {
+    'pd_kv_transfer_failures',
+    'pd_kv_bootstrap_failures',
+    'pd_kv_expired',
 }
 _SGLANG_PD_KEYS = {
     'pd_kv_allocation',
@@ -177,12 +195,34 @@ def _transfer_selection(definition, model):
         return set(), 'unsupported', 'metric_not_provided'
     if definition.key == 'pd_kv_transfer_post' and transfer.connector != 'nixl':
         return set(), 'unsupported', 'metric_not_provided'
+    sglang = transfer.connector.startswith('sglang-')
+    if definition.key == 'pd_kv_expired':
+        return (
+            (set(), 'unsupported', 'metric_not_provided')
+            if sglang
+            else ({'prefill'}, None, None)
+        )
+    if definition.key == 'pd_kv_bootstrap_failures':
+        return (
+            ({'prefill', 'decode'}, None, None)
+            if sglang
+            else (set(), 'unsupported', 'metric_not_provided')
+        )
+    if definition.key == 'pd_kv_transfer_failures' and sglang:
+        # Each side reports its own failures; retain role populations separately.
+        return {'prefill', 'decode'}, None, None
     # SGLang's receiver records bootstrap/allocation unconditionally; only its
     # sender can report the optional transfer size and bandwidth histograms.
-    sender_measurement = definition.key in (
-        'pd_kv_transfer_bytes',
-        'pd_kv_transfer_speed',
-    ) and transfer.connector.startswith('sglang-')
+    sender_measurement = (
+        definition.key
+        in (
+            'pd_kv_transfer_bytes',
+            'pd_kv_transfer_speed',
+            'pd_kv_completion',
+            'pd_kv_throughput',
+        )
+        and sglang
+    )
     selected = {'prefill' if sender_measurement else transfer.read_from_role}
     return selected, None, None
 
@@ -283,8 +323,19 @@ class _Collection:
         self.query_interval = query_interval
         self.slots = asyncio.Semaphore(8)
         self.completed = set()
+        self.reads = {}
 
     async def read(self, query, *, ranged=False):
+        # Completion and legacy connector views can share an identical native
+        # query. Coalesce concurrent reads within this authorized collection only.
+        key = (query, ranged)
+        if key not in self.reads:
+            self.reads[key] = asyncio.create_task(
+                self.read_native(query, ranged=ranged)
+            )
+        return await self.reads[key]
+
+    async def read_native(self, query, *, ranged=False):
         async with self.slots:
             if ranged:
                 start, end = (
@@ -443,7 +494,9 @@ class _Collection:
             scale=definition.scale,
             source=definition.per_source,
         )
-        if definition.per_source:
+        if definition.key in _PD_EVENT_KEYS:
+            metric.summaries = self.event_summaries(rows, definition.scale)
+        elif definition.per_source:
             for row in rows:
                 value = _instant(row)
                 if (
@@ -468,13 +521,38 @@ class _Collection:
             ]
         self.numeric_status(metric)
 
+    def event_summaries(self, rows, scale):
+        """Retain per-role event rates and full-interval estimated event counts."""
+        grouped = {}
+        for row in rows:
+            labels, value = row.get('metric') or {}, _instant(row)
+            if self.instance_id(labels) is None or value is None or value < 0:
+                continue
+            dimensions = self.dimensions(labels, instances=self.view == 'instances')
+            key = (dimensions.role, dimensions.model_instance_id)
+            if key not in grouped:
+                grouped[key] = [dimensions, 0.0]
+            grouped[key][1] += value * scale
+        return [
+            MetricSummary(
+                statistic='rate',
+                dimensions=dimensions,
+                value=_finite(rate),
+                sample_count=_finite(rate * self.window),
+            )
+            for dimensions, rate in grouped.values()
+        ]
+
     @staticmethod
     def numeric_status(metric):
-        if any(summary.value is not None for summary in metric.summaries):
+        if any(
+            summary.value is not None or summary.lower_bound is not None
+            for summary in metric.summaries
+        ):
             metric.status, metric.reason = 'available', None
         elif any(
             value is not None for line in metric.series for _, value in line.points
-        ):
+        ) or any(line.lower_bounds for line in metric.series):
             metric.status, metric.reason = 'stale', 'no_samples'
 
     def ratio_groups(self, numerator, denominator):
@@ -621,7 +699,11 @@ class _Collection:
         if context:
             reason = metric.reason
             self.numeric_status(metric)
-            if incompatible:
+            if incompatible or reason in (
+                'histogram_quantile_out_of_range',
+                'histogram_bounds_unavailable',
+                'query_failed',
+            ):
                 metric.reason = reason
 
     async def histogram_trends(
@@ -668,6 +750,57 @@ class _Collection:
         )
         for (stat, _), entries in zip(requests, ranges):
             metric.series.extend(self.series(entries, stat))
+        await self.histogram_trend_bounds(
+            definition, metric, scope, sums, counts, buckets, trend_scopes
+        )
+
+    async def histogram_trend_bounds(
+        self, definition, metric, scope, sums, counts, buckets, candidates
+    ):
+        groups = self.histogram_groups(
+            sums, counts, buckets, by_instance=self.view == 'instances'
+        )
+        ceilings = trend_ceilings(groups)
+        if not requires_bound_check(metric.series, ceilings, self.view):
+            return
+        rows, failed = [], False
+        try:
+            for candidate in candidates:
+                populations = ceiling_scopes(candidate, ceilings, buckets)
+                if not populations:
+                    continue
+                try:
+                    rows.extend(
+                        await self.read(
+                            build_histogram_cdf_query(
+                                definition.family,
+                                populations,
+                                self.rate_window,
+                                profile=definition.query_profile,
+                            ),
+                            ranged=True,
+                        )
+                    )
+                except _QUERY_ERRORS:
+                    failed = True
+        finally:
+            censored, incomplete = apply_lower_bounds(
+                metric.series, ceilings, rows, view=self.view
+            )
+            if incomplete:
+                if failed:
+                    metric.reason = 'query_failed'
+                elif metric.reason not in (
+                    'query_failed',
+                    'incompatible_histogram_buckets',
+                ):
+                    metric.reason = 'histogram_bounds_unavailable'
+            elif censored and metric.reason in (
+                None,
+                'no_samples',
+                'zero_observations',
+            ):
+                metric.reason = 'histogram_quantile_out_of_range'
 
     def histogram_groups(self, sums, counts, buckets, *, by_instance=False):
         groups, cohort_roles = {}, {}
@@ -701,7 +834,10 @@ class _Collection:
                 continue
             profile = groups[cohort_roles[identity]]['profiles'].get(identity)
             if profile is not None:
-                profile[bound] = value
+                if bound in profile:
+                    groups[cohort_roles[identity]]['ambiguous_bounds'] = True
+                else:
+                    profile[bound] = value
         return groups
 
     @staticmethod
@@ -711,9 +847,14 @@ class _Collection:
             if set(group['profiles']).issubset(group['sum_profiles'])
             else math.nan
         )
-        return histogram_statistics(
+        stats, compatible = histogram_statistics(
             group['profiles'], count=group['count'], total=total
         )
+        if group.get('ambiguous_bounds'):
+            return {
+                key: value if key == 'avg' else None for key, value in stats.items()
+            }, False
+        return stats, compatible
 
     def histogram_summaries(self, metric, groups):
         metric.summaries.clear()
@@ -721,12 +862,20 @@ class _Collection:
         for role, group in sorted(groups.items()):
             stats, compatible = self.histogram_group_statistics(group)
             incompatible |= group['count'] > 0 and not compatible
+            bounds = (
+                histogram_lower_bounds(group['profiles'], count=group['count'])
+                if compatible
+                else {}
+            )
+            if bounds and metric.reason in (None, 'no_samples'):
+                metric.reason = 'histogram_quantile_out_of_range'
             for stat in HISTOGRAM_STATISTICS:
                 metric.summaries.append(
                     MetricSummary(
                         statistic=stat,
                         dimensions=MetricDimensions(role=role or None),
-                        value=_finite(stats[stat]),
+                        value=None if stat in bounds else _finite(stats[stat]),
+                        lower_bound=bounds.get(stat),
                         sample_count=group['count'],
                     )
                 )

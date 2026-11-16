@@ -1,7 +1,6 @@
 """Benchmark-time observations over recorded associations and measured phases."""
 
 from dataclasses import dataclass, field
-from decimal import Decimal, ROUND_CEILING
 from hashlib import sha256
 import json
 import math
@@ -59,7 +58,12 @@ from .benchmark_access import (
 from .catalog import HARDWARE_KEYS, model_metric_definitions
 from .config import get_query_config
 from .models import _Collection, collect_model_metrics, parse_instance_ids
-from .time_range import MAX_QUERY_SECONDS, MonitoringInterval, collect_storage_policy
+from .time_range import (
+    MonitoringInterval,
+    collect_storage_policy,
+    measured_interval,
+    measured_query_interval,
+)
 
 HISTORY_SCOPE = 'benchmark_snapshot'
 _ASSOCIATION_BATCH_SIZE = 512
@@ -144,31 +148,17 @@ def benchmark_windows(results, *, mode='stages'):
 
 def exact_interval(start, end) -> MonitoringInterval:
     """Resolve a measured sub-second boundary without widening a short phase."""
-    start, end = _timestamp(start), _timestamp(end)
-    if start is None or end is None:
-        raise ValueError('Benchmark range must span 1 millisecond to 7 days')
-    span = Decimal(str(end)) - Decimal(str(start))
-    if not Decimal('0.001') <= span <= MAX_QUERY_SECONDS:
-        raise ValueError('Benchmark range must span 1 millisecond to 7 days')
-    if end > time.time():
-        raise ValueError('Benchmark range cannot end in the future')
-    return MonitoringInterval(start, end, max(1, math.ceil(span)))
+    try:
+        return measured_interval(start, end)
+    except ValueError as exc:
+        raise ValueError(
+            str(exc).replace('Monitoring range', 'Benchmark range', 1)
+        ) from exc
 
 
 def benchmark_query_interval(interval) -> MonitoringInterval:
     """Keep Prometheus millisecond evaluation ticks inside the exact run bounds."""
-    start = int(
-        (Decimal(str(interval.start)) * 1000).to_integral_value(rounding=ROUND_CEILING)
-    )
-    end = (
-        int(
-            (Decimal(str(interval.end)) * 1000).to_integral_value(
-                rounding=ROUND_CEILING
-            )
-        )
-        - 1
-    )
-    return MonitoringInterval(start / 1000, end / 1000, interval.seconds)
+    return measured_query_interval(interval)
 
 
 def sample_statistics(series, start, end, *, step, threshold=None):

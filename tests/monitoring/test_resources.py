@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gpustack.api.exceptions import NotFoundException
+from gpustack.api.exceptions import InvalidException, NotFoundException
 from gpustack.schemas.workers import MountPoint, WorkerStatus
 from tests.monitoring.test_hardware import _worker, _context, _instance
 
@@ -354,6 +354,222 @@ async def test_gpu_history_contains_only_the_selected_current_identity(monkeypat
                 series.dimensions.device_id == devices[1].public.id
                 for series in metric.series
             )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('selected_gpu', [False, True])
+@pytest.mark.parametrize(
+    'start,end,query_start,query_end',
+    [
+        (1730000000.123, 1730000000.124, 1730000000.123, 1730000000.123),
+        (1730000000.25, 1730000040.75, 1730000000.25, 1730000040.749),
+        (1000.250001, 1000.251001, 1000.251, 1000.251),
+    ],
+)
+async def test_resource_phase_queries_keep_exact_bounds_and_owner_identity(
+    monkeypatch, selected_gpu, start, end, query_start, query_end
+):
+    from tests.monitoring.test_hardware import _device, _environment
+    from gpustack.monitoring.resources import (
+        collect_resource_metrics,
+        inventory_devices,
+    )
+
+    worker = _worker(devices=[_device(1, 'GPU-a', 0), _device(2, 'GPU-b', 0)])
+    hardware, _, calls = _environment(monkeypatch, [worker])
+    range_query = AsyncMock(wraps=hardware.prometheus_query.query_range)
+    instant_query = AsyncMock(wraps=hardware.prometheus_query.query_instant)
+    monkeypatch.setattr(hardware.prometheus_query, 'query_range', range_query)
+    monkeypatch.setattr(hardware.prometheus_query, 'query_instant', instant_query)
+    devices = inventory_devices(worker)
+    device_id = devices[1].public.id if selected_gpu else None
+    result = await collect_resource_metrics(
+        worker,
+        devices,
+        device_id=device_id,
+        window_seconds=3600,
+        start=start,
+        end=end,
+        client=object(),
+    )
+    assert (result.start, result.end) == (start, end)
+    assert result.selected_device_id == device_id
+    assert range_query.await_count > 0 and instant_query.await_count > 0
+    assert all(
+        call.args[3:5] == (query_start, query_end)
+        for call in range_query.await_args_list
+    )
+    assert all(call.args[3] == query_end for call in instant_query.await_args_list)
+    assert all('owner_principal_id="17"' in expr for expr in calls)
+    assert all('worker_uuid="server-worker"' in expr for expr in calls)
+    assert all(f'>= {start}' in expr for expr in calls if 'identity_info' not in expr)
+    if selected_gpu:
+        assert [device.index for device in result.devices] == [2]
+        assert all('GPU-a' not in expr for expr in calls if 'identity_info' not in expr)
+        assert all(
+            series.dimensions.device_id == device_id
+            for key, metric in result.metrics.items()
+            if key.startswith('gpu_')
+            for series in metric.series
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fixed_range', [False, True])
+@pytest.mark.parametrize('observed', [False, True])
+@pytest.mark.parametrize('selected_gpu', [False, True])
+@pytest.mark.parametrize(
+    'start,end', [(1730000000.123, 1730000000.124), (1000.25, 1040.75)]
+)
+async def test_fixed_phase_excludes_boundary_and_old_samples_without_requiring_new_metadata(
+    monkeypatch, fixed_range, observed, selected_gpu, start, end
+):
+    import math
+    from gpustack.monitoring import resources
+
+    worker = _worker()
+    labels = {
+        'worker_id': '7',
+        'worker_uuid': 'server-worker',
+        'owner_principal_id': '17',
+        'gpu_uuid': 'GPU-private',
+        'gpu_chip_index': '2',
+        'gpu_index': '8',
+    }
+    samples = [(start - 0.001, 75), (end, 99)]
+    if observed:
+        samples.append((start, 0))
+    calls = []
+
+    def rows(expr, ticks, field):
+        calls.append((expr, ticks))
+        if 'identity_info' in expr:
+            # Stable metadata can be older than the selected phase.
+            assert '>= ' not in expr
+            return [{'metric': labels, 'value': [ticks[-1], '1']}]
+        if 'worker_gpu_utilization' not in expr:
+            return []
+        guarded = f'>= {start}' in expr
+        values = []
+        for tick in ticks:
+            eligible = [(t, v) for t, v in samples if t <= tick]
+            if eligible:
+                timestamp, value = max(eligible)
+                if not guarded or timestamp >= start:
+                    values.append([tick, str(value)])
+        result = (
+            [{'metric': labels, field: values if field == 'values' else values[-1]}]
+            if values
+            else []
+        )
+        # Unexpected rows cannot substitute another tenant, Worker or GPU identity.
+        for key, value in (
+            ('owner_principal_id', '99'),
+            ('worker_uuid', 'old-worker'),
+            ('gpu_uuid', 'replaced-gpu'),
+        ):
+            foreign = [[tick, '88'] for tick in ticks]
+            result.append(
+                {
+                    'metric': {**labels, key: value},
+                    field: foreign if field == 'values' else foreign[-1],
+                }
+            )
+        return result
+
+    async def ranged(client, url, expr, query_start, query_end, step):
+        ticks = [
+            query_start + n * step
+            for n in range(math.floor((query_end - query_start) / step) + 1)
+        ]
+        return rows(expr, ticks, 'values')
+
+    async def instant(client, url, expr, at):
+        return rows(expr, [at], 'value')
+
+    monkeypatch.setattr(resources.time, 'time', lambda: end)
+    monkeypatch.setattr(
+        resources.hardware.prometheus_query, 'prometheus_url', lambda: 'http://prom'
+    )
+    monkeypatch.setattr(resources.hardware.prometheus_query, 'query_range', ranged)
+    monkeypatch.setattr(resources.hardware.prometheus_query, 'query_instant', instant)
+    devices = resources.inventory_devices(worker)
+    result = await resources.collect_resource_metrics(
+        worker,
+        devices,
+        device_id=devices[0].public.id if selected_gpu else None,
+        window_seconds=300,
+        start=start if fixed_range else None,
+        end=end if fixed_range else None,
+        client=object(),
+    )
+    assert (result.start, result.end) == (
+        start if fixed_range else end - 300,
+        end,
+    )
+    metric = result.metrics['gpu_utilization']
+    assert metric.summaries[0].value == (
+        (0 if observed else None) if fixed_range else 99
+    )
+    assert metric.status == ('available' if observed or not fixed_range else 'no_data')
+    assert result.devices[0].history_available is (observed or not fixed_range)
+    if fixed_range:
+        assert all(start <= tick < end for _, ticks in calls for tick in ticks)
+        assert all(
+            f'>= {start}' in expr for expr, _ in calls if 'identity_info' not in expr
+        )
+        assert all(
+            value in (0, None) for series in metric.series for _, value in series.points
+        )
+    else:
+        assert any(end in ticks for _, ticks in calls)
+        assert all('>= ' not in expr for expr, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_fixed_phase_never_replaces_a_removed_opaque_gpu(monkeypatch):
+    from gpustack.monitoring import resources
+    from tests.monitoring.test_hardware import _device
+
+    worker = _worker(devices=[_device(1, 'GPU-old', 0)])
+    old_device_id = resources.inventory_devices(worker)[0].public.id
+    worker.status.gpu_devices = [_device(1, 'GPU-new', 0)]
+    query = AsyncMock()
+    monkeypatch.setattr(resources.hardware.prometheus_query, 'query_range', query)
+    monkeypatch.setattr(resources.hardware.prometheus_query, 'query_instant', query)
+    with pytest.raises(NotFoundException):
+        await resources.collect_resource_metrics(
+            worker,
+            resources.inventory_devices(worker),
+            device_id=old_device_id,
+            window_seconds=3600,
+            start=1730000000.25,
+            end=1730000040.75,
+            client=object(),
+        )
+    query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('start,end', [(1000, None), (1000, 1000.0009), (0, 604801)])
+async def test_invalid_resource_fixed_range_is_not_replaced_by_relative_window(
+    monkeypatch, start, end
+):
+    from gpustack.monitoring import resources
+
+    query = AsyncMock()
+    monkeypatch.setattr(resources.hardware, '_collect_all_history', query)
+    worker = _worker()
+    with pytest.raises(InvalidException):
+        await resources.collect_resource_metrics(
+            worker,
+            resources.inventory_devices(worker),
+            window_seconds=3600,
+            start=start,
+            end=end,
+            client=object(),
+        )
+    query.assert_not_awaited()
 
 
 @pytest.mark.asyncio

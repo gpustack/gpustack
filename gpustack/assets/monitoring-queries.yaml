@@ -71,6 +71,23 @@ profiles:
       p50: histogram_quantile(0.5, ${buckets})
       p95: histogram_quantile(0.95, ${buckets})
       p99: histogram_quantile(0.99, ${buckets})
+      bucket_population: max without (le) (${expression})
+      canonical_bucket: >-
+        (max without (le) (${expression})) ==
+        (min without (le) (${expression}))
+      paired_buckets: >-
+        (((${finite}) >= 0) <= (${count})) and ((${infinite}) == (${count}))
+      cdf: >-
+        label_replace(
+          ((sum by (${grouping}) (${paired})) /
+          (sum by (${grouping}) (${count}))) and on (${grouping})
+          ((count by (${grouping}) (${paired})) ==
+          (count by (${grouping}) (${finite_population}))) and on (${grouping})
+          ((count by (${grouping}) (${paired})) ==
+          (count by (${grouping}) (${count}))) and on (${grouping})
+          ((count by (${grouping}) (${paired})) ==
+          (count by (${grouping}) (${infinite_population}))),
+          "histogram_upper_bound", "${upper_bound}", "__name__", ".*")
   hardware_gauge:
     kind: gauge
     scope: hardware
@@ -224,6 +241,46 @@ metrics:
     backend_overrides:
       sglang:
         measurement_scope: bootstrap_handshake
+  # Completion is separate from the legacy connector/handshake observation.
+  # SGLang only records the sender histogram when its connector reports bytes.
+  pd_kv_completion:
+    family: gpustack:pd_kv_transfer_seconds
+    kind: histogram
+    unit: seconds
+    measurement_scope: kv_transfer_duration
+    query_profile: histogram
+    section: pd
+    backend_overrides:
+      sglang:
+        family: gpustack:pd_kv_transfer_latency_seconds
+  pd_kv_throughput:
+    family: gpustack:pd_kv_transfer_bytes_sum
+    kind: counter
+    unit: bytes_per_second
+    measurement_scope: connector_bytes_per_wall_second
+    query_profile: counter
+    section: pd
+  pd_kv_transfer_failures:
+    family: gpustack:pd_kv_transfer_failed_total
+    kind: counter
+    unit: events_per_second
+    measurement_scope: connector_transfer_failures
+    query_profile: counter
+    section: pd
+  pd_kv_bootstrap_failures:
+    family: gpustack:pd_bootstrap_failed_total
+    kind: counter
+    unit: events_per_second
+    measurement_scope: connector_bootstrap_failures
+    query_profile: counter
+    section: pd
+  pd_kv_expired:
+    family: gpustack:pd_kv_lease_expired_total
+    kind: counter
+    unit: events_per_second
+    measurement_scope: connector_kv_expiry
+    query_profile: counter
+    section: pd
   router_health:
     family: gpustack:pd_router_worker_health
     kind: gauge
@@ -395,13 +452,13 @@ charts:
     apis:
     - model_runtime
   model.pd_handoff:
-    description: Connector-specific handoff observations; submission and transfer are not summed
+    description: Transfer completion, wall-time byte throughput and independent failure/expiry events
     metrics:
-    - pd_kv_transfer
-    - pd_kv_transfer_post
-    - pd_kv_allocation
-    - pd_kv_transfer_bytes
-    - pd_kv_transfer_speed
+    - pd_kv_completion
+    - pd_kv_throughput
+    - pd_kv_transfer_failures
+    - pd_kv_bootstrap_failures
+    - pd_kv_expired
     apis:
     - model_runtime
   model.pd_queues:

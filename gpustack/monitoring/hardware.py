@@ -568,21 +568,19 @@ async def _query_all_metric(
         response.metrics[key] = _all_metric(key, targets)
         return
     expression = ' or '.join(sorted(selectors))
+    start, end = (
+        (query_interval.start, query_interval.end)
+        if query_interval is not None
+        else (response.start, response.end)
+    )
 
     async def query(kind):
         async with semaphore:
             if kind == 'range':
-                start, end = (
-                    (query_interval.start, query_interval.end)
-                    if query_interval is not None
-                    else (response.start, response.end)
-                )
                 return await prometheus_query.query_range(
                     client, url, expression, start, end, response.step
                 )
-            return await prometheus_query.query_instant(
-                client, url, expression, response.end
-            )
+            return await prometheus_query.query_instant(client, url, expression, end)
 
     tasks = [asyncio.create_task(query(kind)) for kind in ('range', 'instant')]
     try:
@@ -610,9 +608,10 @@ async def _collect_all_history(
 ):
     semaphore = asyncio.Semaphore(4)
     deadline = asyncio.get_running_loop().time() + COLLECTION_TIMEOUT_SECONDS
+    end = query_interval.end if query_interval is not None else response.end
     try:
         await asyncio.wait_for(
-            _identity_presence(devices, client, url, response.end, semaphore),
+            _identity_presence(devices, client, url, end, semaphore),
             timeout=COLLECTION_TIMEOUT_SECONDS,
         )
     except Exception:

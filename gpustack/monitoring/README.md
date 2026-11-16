@@ -56,8 +56,37 @@ average of instance percentiles. Missing observations remain missing, including
 when an engine does not export a metric. Current inventory and allocation
 metadata come from resource records and do not replay historical ownership.
 
+Classic histograms cannot estimate a quantile inside their `+Inf` bucket. Such
+summaries have `value: null` and an optional `lower_bound` in the metric's base
+unit; trends use a null point with a matching `[timestamp, bound]` in optional
+`lower_bounds`. An observation at the last finite boundary is not automatically
+censored. Full-window bounds reuse validated, compatible source buckets.
+When a trend reaches that boundary, one additional CDF range query per validated
+population pairs finite buckets, `+Inf` and counts with the same source guards.
+Completeness is symmetric across all three native populations, including
+bucket-only cohorts. Bucket aliases are collapsed only when their values agree;
+source and rank labels remain distinct. Duplicate numeric bucket bounds within
+one cohort make its summary and trend quantiles incompatible rather than allowing
+the native percentile query to double-count aliases. Identical scrape copies
+still follow the regular transport deduplication rules.
+Unmatched populations or a failed CDF cannot prove a lower bound; the risky
+quantile is missing with an explicit reason, while Avg remains independent.
+Normal trends below the ceiling need no additional query. Updating an engine's
+bucket schema improves future observations, not the precision of stored history.
+
 Allocation counts include only placements on currently visible Workers. Hidden
 or missing Workers do not contribute to the GPU or Worker totals.
+
+Direct Worker/GPU fixed-range inspection accepts precise measured boundaries from
+1 millisecond to 7 days, so a Benchmark resource link does not expand a short
+phase or fall back to a moving window. Resource capabilities advertise a
+1-second minimum for the whole-second time editor. Relative resource windows and
+all Model fixed ranges retain the 5-minute minimum. Fixed hardware inspection
+uses the same inner millisecond grid as Benchmark: range, instant and identity
+queries read before the exclusive end, and physical gauges cannot borrow samples
+before the selected start. Static identity metadata keeps its existing freshness
+checks; it need not be re-exported inside a one-millisecond phase. Response
+start/end remain the original selected boundaries.
 
 Duplicate scrape paths must agree after removing transport labels. PromQL
 excludes conflicting copies instead of selecting the largest value; defensive
@@ -179,6 +208,11 @@ adds their percentile latencies.
 | `pd_decode_prealloc_queue`, `pd_decode_transfer_queue` | SGLang Decode scheduler queues |
 | `pd_kv_transfer_bytes` | vLLM connector owner, or SGLang Prefill when the connector reports transfer size |
 | `pd_kv_transfer_speed` | SGLang Prefill connector-reported bandwidth distribution; unsupported on vLLM |
+| `pd_kv_completion` | NIXL completion on Decode, vLLM Mooncake completion on Prefill, optional SGLang transfer-stage latency on Prefill; never a bootstrap fallback |
+| `pd_kv_throughput` | Rate of the owner connector's normalized `pd_kv_transfer_bytes_sum`; completed bytes per wall-clock second, not a percentile of per-transfer speed |
+| `pd_kv_transfer_failures` | Connector owner on vLLM; separate native Prefill and Decode event populations on SGLang |
+| `pd_kv_bootstrap_failures` | Separate SGLang Prefill/Decode handshake failures; unsupported on vLLM, whose NIXL aggregate may already include handshake failures |
+| `pd_kv_expired` | Prefill KV lease-expiry events on supported vLLM connectors; unsupported on SGLang, which reports bootstrap failures instead |
 | `router_requests`, `router_request_duration`, `router_health` | Router received requests, router-observed request duration, and separately resolved peer health |
 
 SGLang size and speed families are optional: their absence remains `no_data`,
@@ -191,6 +225,19 @@ or Benchmark client observations. vLLM Prefill duration runs from first scheduli
 to the first locally recorded token, including interruptions within that interval;
 it is not a pure GPU compute timer. SGLang does not expose a compatible Prefill
 stage histogram, so that metric stays unsupported.
+
+Deployment and Benchmark KV handoff use one flat primary section: completion
+duration, wall-clock byte throughput, optional separate Prefill/Decode backlog
+charts, and compact failure/expiry counts. Submission, bootstrap/allocation
+timers and per-transfer size/speed distributions remain API compatibility fields;
+they are not rendered as additional monitoring cards or nested sections.
+Identical native queries are coalesced only within one authorized collection.
+Failure metrics retain rate trends and interval-average `value` in events/second.
+Their summary `sample_count` contains the selected interval's estimated counter
+increase, including reset handling. Counts can be fractional because Prometheus
+extrapolates to interval boundaries. Role/instance events are not summed into a
+unique failed-request count, and notification failures already included in NIXL's
+aggregate are not counted again. Missing or restricted sources never become zero.
 
 SGLang queue totals use the declared `scheduler_queue_total` gauge profile. Its
 `sample_labels: {priority: ''}` selects the native total before source guarding

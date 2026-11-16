@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -165,8 +166,97 @@ def test_gpu_http_routes_reject_replaced_inventory_identity(resource_api, suffix
     api = resource_api
     api.row.uuid = 'old-device'
     with TestClient(api.app) as client:
-        response = client.get(f'/v2/gpu-devices/gpu-7/{suffix}', follow_redirects=False)
+        response = client.get(
+            f'/v2/gpu-devices/gpu-7/{suffix}',
+            params={'start': 1730000000.25, 'end': 1730000040.75},
+            follow_redirects=False,
+        )
     assert response.status_code == 404
     api.metrics.assert_not_awaited()
     api.policy.assert_not_awaited()
     api.allocated.assert_not_awaited()
+
+
+@pytest.mark.parametrize('resource', ['workers/7', 'gpu-devices/gpu-7'])
+@pytest.mark.parametrize('suffix', ['metrics', 'monitoring-dashboard'])
+@pytest.mark.parametrize(
+    'start,end,seconds,start_ms,end_ms',
+    [
+        (1730000000.123, 1730000000.124, 1, '1730000000123', '1730000000124'),
+        (1730000000.25, 1730000040.75, 41, '1730000000250', '1730000040750'),
+    ],
+)
+def test_resource_http_ranges_keep_precise_phase_boundaries(
+    resource_api, resource, suffix, start, end, seconds, start_ms, end_ms
+):
+    api = resource_api
+    with TestClient(api.app) as client:
+        response = client.get(
+            f'/v2/{resource}/{suffix}',
+            params={'window': 'invalid', 'start': start, 'end': end},
+            follow_redirects=False,
+        )
+    if suffix == 'metrics':
+        assert response.status_code == 200
+        kwargs = api.metrics.await_args.kwargs
+        assert (kwargs['start'], kwargs['end'], kwargs['window_seconds']) == (
+            start,
+            end,
+            seconds,
+        )
+        if resource.startswith('gpu-devices/'):
+            from gpustack.monitoring.resources import inventory_devices
+
+            assert kwargs['device_id'] == inventory_devices(api.worker)[0].public.id
+    else:
+        assert response.status_code == 302
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['from'] == [start_ms]
+        assert query['to'] == [end_ms]
+        assert query['var-worker_name'] == [api.worker.name]
+        if resource.startswith('gpu-devices/'):
+            assert query['var-gpu_index'] == ['0']
+
+
+@pytest.mark.parametrize('resource', ['workers/7', 'gpu-devices/gpu-7'])
+@pytest.mark.parametrize('suffix', ['metrics', 'monitoring-dashboard'])
+@pytest.mark.parametrize(
+    'params',
+    [
+        {'start': 1000},
+        {'start': 1000, 'end': 1000.0009},
+        {'start': 0, 'end': 604800.001},
+        {'start': 'nan', 'end': 2000},
+        {'start': 1000, 'end': 'inf'},
+        {'start': 'true', 'end': 1001},
+        {'start': 9999999999, 'end': 10000000000},
+    ],
+)
+def test_resource_http_invalid_ranges_fail_before_metrics_or_redirect(
+    resource_api, resource, suffix, params
+):
+    api = resource_api
+    with TestClient(api.app) as client:
+        response = client.get(
+            f'/v2/{resource}/{suffix}', params=params, follow_redirects=False
+        )
+    assert response.status_code == 422
+    assert 'location' not in response.headers
+    api.metrics.assert_not_awaited()
+
+
+@pytest.mark.parametrize('resource', ['workers/7', 'gpu-devices/gpu-7'])
+def test_resource_capability_minimum_matches_second_precision_custom_range(
+    resource_api, resource
+):
+    with TestClient(resource_api.app) as client:
+        capabilities = client.get(f'/v2/{resource}/monitoring-capabilities')
+        response = client.get(
+            f'/v2/{resource}/metrics', params={'start': 1000, 'end': 1001}
+        )
+    assert capabilities.status_code == response.status_code == 200
+    assert capabilities.json()['min_query_seconds'] == 1
+    assert capabilities.json()['max_query_seconds'] == 604800
+    assert capabilities.json()['supports_custom_range']
+    kwargs = resource_api.metrics.await_args.kwargs
+    assert (kwargs['start'], kwargs['end'], kwargs['window_seconds']) == (1000, 1001, 1)
