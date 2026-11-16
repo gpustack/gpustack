@@ -2,7 +2,14 @@
 
 from typing import Dict, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, model_serializer
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FiniteFloat,
+    model_serializer,
+    model_validator,
+)
 
 MetricStatistic = Literal['avg', 'p50', 'p95', 'p99', 'rate', 'current']
 MetricStatus = Literal[
@@ -63,6 +70,26 @@ class MetricSeries(BaseModel):
     points: List[Tuple[FiniteFloat, Optional[FiniteFloat]]] = Field(
         default_factory=list
     )
+    lower_bounds: Optional[List[Tuple[FiniteFloat, FiniteFloat]]] = None
+
+    @model_validator(mode='after')
+    def validate_bounds(self):
+        if not self.lower_bounds:
+            return self
+        points = dict(self.points)
+        for timestamp, bound in self.lower_bounds or []:
+            if self.statistic not in ('p50', 'p95', 'p99') or bound < 0:
+                raise ValueError('Only quantiles may carry nonnegative lower bounds')
+            if timestamp not in points or points[timestamp] is not None:
+                raise ValueError('A censored point cannot also be an exact observation')
+        return self
+
+    @model_serializer(mode='wrap')
+    def serialize_bounds(self, handler):
+        result = handler(self)
+        if not self.lower_bounds:
+            result.pop('lower_bounds', None)
+        return result
 
 
 class MetricSummary(BaseModel):
@@ -70,6 +97,24 @@ class MetricSummary(BaseModel):
     dimensions: MetricDimensions = Field(default_factory=MetricDimensions)
     value: Optional[FiniteFloat]
     sample_count: Optional[FiniteFloat] = None
+    lower_bound: Optional[FiniteFloat] = None
+
+    @model_validator(mode='after')
+    def validate_bound(self):
+        if self.lower_bound is not None and (
+            self.value is not None
+            or self.lower_bound < 0
+            or self.statistic not in ('p50', 'p95', 'p99')
+        ):
+            raise ValueError('A quantile lower bound cannot be an exact observation')
+        return self
+
+    @model_serializer(mode='wrap')
+    def serialize_bound(self, handler):
+        result = handler(self)
+        if self.lower_bound is None:
+            result.pop('lower_bound', None)
+        return result
 
 
 class MetricCoverage(BaseModel):

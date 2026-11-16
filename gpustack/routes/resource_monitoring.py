@@ -28,7 +28,6 @@ from gpustack.schemas.workers import Worker
 from gpustack.server.deps import SessionDep, TenantContextDep
 from gpustack.monitoring.prometheus import parse_window
 from gpustack.monitoring.time_range import (
-    monitoring_interval,
     collect_storage_policy,
 )
 from gpustack.monitoring.resources import (
@@ -36,6 +35,7 @@ from gpustack.monitoring.resources import (
     inventory_devices,
     resource_associations,
     select_device,
+    resource_interval,
 )
 from gpustack.utils.grafana import resolve_grafana_base_url
 
@@ -83,7 +83,7 @@ async def _resolve(session, ctx, id, gpu=False):
 
 def _interval(window, start, end):
     try:
-        return monitoring_interval(
+        return resource_interval(
             parse_window(window) if start is None and end is None else 0, start, end
         )
     except ValueError as exc:
@@ -188,7 +188,7 @@ async def _capabilities(request, session, ctx, id, gpu):
     policy = await collect_storage_policy(
         getattr(request.app.state, 'http_client_no_proxy', None)
     )
-    return MonitoringCapabilities(**policy)
+    return MonitoringCapabilities(min_query_seconds=1, **policy)
 
 
 @router.get(

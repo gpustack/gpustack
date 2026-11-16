@@ -165,6 +165,17 @@ _PROFILE_VARIABLES = {
         'p50': {'buckets'},
         'p95': {'buckets'},
         'p99': {'buckets'},
+        'bucket_population': {'expression'},
+        'canonical_bucket': {'expression'},
+        'paired_buckets': {'finite', 'count', 'infinite'},
+        'cdf': {
+            'paired',
+            'count',
+            'finite_population',
+            'infinite_population',
+            'grouping',
+            'upper_bound',
+        },
     },
     ('hardware', 'gauge'): {'sample': {'selector', 'freshness_seconds'}},
     ('gateway', 'histogram'): {

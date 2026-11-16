@@ -365,6 +365,77 @@ def build_histogram_components(
     return queries
 
 
+def build_histogram_cdf_query(
+    name: str,
+    ceilings: Sequence[Tuple[MetricQueryScope, float, Tuple[str, ...]]],
+    seconds: int,
+    *,
+    profile: str = 'histogram',
+) -> str:
+    """Read finite-bucket fractions for compatible, source-paired populations."""
+    name = _metric_name(name)
+    queries = []
+    for scope, bound, aliases in ceilings:
+        if not math.isfinite(bound) or bound < 0 or not aliases or len(aliases) > 64:
+            raise ValueError('Invalid histogram ceiling')
+        if any(
+            len(label) > 64 or not math.isfinite(float(label)) or float(label) != bound
+            for label in aliases
+        ):
+            raise ValueError('Histogram bucket labels do not match their ceiling')
+        regex = json.dumps('|'.join(re.escape(label) for label in sorted(set(aliases))))
+        selector = scope.selector()[:-1] + ',le=~' + regex + '}'
+
+        def rate(part, selected, scope=scope):
+            raw = query_config.get_query_config().query(
+                profile,
+                'histogram',
+                'rate',
+                family=name,
+                part=part,
+                selector=selected,
+                window_seconds=seconds,
+            )
+            return scope.guard(raw)
+
+        declaration = query_config.get_query_config()
+        finite = rate('bucket', selector)
+        count = rate('count', scope.selector())
+        infinite = rate('bucket', scope.selector({'le': '+Inf'}))
+        paired = declaration.query(
+            profile,
+            'histogram',
+            'paired_buckets',
+            finite=declaration.query(
+                profile, 'histogram', 'canonical_bucket', expression=finite
+            ),
+            count=count,
+            infinite=declaration.query(
+                profile, 'histogram', 'canonical_bucket', expression=infinite
+            ),
+        )
+        queries.append(
+            declaration.query(
+                profile,
+                'histogram',
+                'cdf',
+                paired=paired,
+                count=count,
+                finite_population=declaration.query(
+                    profile, 'histogram', 'bucket_population', expression=finite
+                ),
+                infinite_population=declaration.query(
+                    profile, 'histogram', 'bucket_population', expression=infinite
+                ),
+                grouping=', '.join(scope.grouping),
+                upper_bound=str(bound),
+            )
+        )
+    if not queries:
+        raise ValueError('Histogram ceiling population is empty')
+    return ' or '.join('(' + query + ')' for query in queries)
+
+
 def _quantile(quantile: float, buckets: Mapping[float, float]) -> Optional[float]:
     ordered = sorted(buckets.items())
     if len(ordered) < 2 or ordered[-1][0] != math.inf or ordered[-1][1] <= 0:
