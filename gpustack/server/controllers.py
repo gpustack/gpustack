@@ -237,6 +237,7 @@ from gpustack.gateway.client.extensions_higress_io_v1_api import (
 from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
     NetworkingIstioIoV1Alpha3Api,
 )
+from gpustack.envs import GATEWAY_ROUTE_RESYNC_INTERVAL_SECONDS
 from gpustack.gateway import utils as mcp_handler
 from gpustack.routes.plugins import (
     RouteArtifactCollector,
@@ -407,12 +408,17 @@ class ModelController:
 
         old_event: Event = existing.object
         new_event: Event = incoming.object
-        if (
-            old_event is None
-            or new_event is None
-            or not old_event.changed_fields
-            or new_event.changed_fields is None
-        ):
+        if old_event is None or new_event is None:
+            return incoming
+        # Bare is sticky, in either direction: consumers treat an
+        # empty/None field set as "unknown changes, act anyway" (the
+        # coordinator drops the wire field and the status change-gate
+        # absorbs the diff), so a coalesced pass that had any bare member
+        # must stay bare -- merging in the other side's field delta would
+        # narrow it back to "only these fields" and drop the
+        # notification the bare event was carrying.
+        if not old_event.changed_fields or not new_event.changed_fields:
+            new_event.changed_fields = None
             return incoming
 
         merged = dict(new_event.changed_fields)
@@ -701,7 +707,16 @@ class ModelController:
         covers both the entry's existence and its cluster target."""
         if is_decision_model(model):
             return True
-        changed = event.changed_fields or {}
+        if not event.changed_fields:
+            # A bare event (empty or None) is coalesced from a pass whose
+            # field deltas were lost -- the coordinator drops the wire
+            # field, and ``_merge_events`` collapses to bare when any
+            # member was bare. It may carry the categories removal that
+            # retired the entry's owner, so treat it as "may have moved":
+            # rebuilding is idempotent, while skipping leaves a stale
+            # entry nothing periodic rebuilds.
+            return True
+        changed = event.changed_fields
         if "categories" not in changed:
             return False
         categories_change = changed["categories"]
@@ -847,10 +862,19 @@ def _model_instance_runtime_changed(event: Event) -> bool:
 async def _notify_model_instance_endpoints(
     session: AsyncSession, model: Model, event: Event
 ) -> None:
-    """Refresh rank routing when identity/readiness changes without replica counts."""
-    if get_model_instance_workloads(
-        event.data
-    ) is None or not _model_instance_runtime_changed(event):
+    """Wake the route on instance identity/readiness changes.
+
+    Covers the swaps ``ready_replicas`` cannot see: a rolling replacement
+    keeps the count constant while the member address changes. Applies to
+    plain TP replicas too -- they carry no workloads, and skipping them
+    here left ordinary scale-outs dependent on the replica-count edge
+    alone.
+
+    UPDATED only: the subscription replays a CREATED event per existing
+    instance at startup, and that burst needs no per-target fan-out --
+    the route resync covers convergence.
+    """
+    if event.type != EventType.UPDATED or not _model_instance_runtime_changed(event):
         return
     await notify_model_route_target(
         session=session,
@@ -5813,15 +5837,22 @@ class WorkerController:
                             data=copied_model,
                         ),
                     )
-                    await notify_model_route_target(
-                        session=session,
-                        model=copied_model,
-                        event=Event(
-                            type=EventType.UPDATED,
-                            data=copied_model,
-                            changed_fields=worker_changed_fields,
-                        ),
-                    )
+                    # The direct notification carries the synthetic
+                    # ``worker_*`` fields, which the bare model event
+                    # above cannot; without them (a plain state or
+                    # unreachable flip) the bare event already reaches
+                    # the route through the Model controller, so a
+                    # direct call here would only double the reconciles.
+                    if worker_changed_fields:
+                        await notify_model_route_target(
+                            session=session,
+                            model=copied_model,
+                            event=Event(
+                                type=EventType.UPDATED,
+                                data=copied_model,
+                                changed_fields=worker_changed_fields,
+                            ),
+                        )
 
 
 class InferenceBackendController:
@@ -7316,10 +7347,23 @@ async def notify_model_ai_proxy_change(
 
 
 async def notify_model_route_target(session: AsyncSession, model: Model, event: Event):
-    if event.type == EventType.DELETED:
+    # DELETED needs no route-target notification (the delete paths
+    # publish their own events), and CREATED is the subscription replay
+    # burst -- one per existing row at startup -- which the route resync
+    # covers without a per-target fan-out.
+    if event.type != EventType.UPDATED:
         return
-    should_notify = False
-    if event.changed_fields is not None:
+    # A bare event is not evidence that nothing changed. The coordinator
+    # drops ``changed_fields`` on the wire and ``Event`` defaults it to an
+    # empty dict, so a cross-instance arrival is None-or-empty; either
+    # way no field delta will ever appear again, because by the time this
+    # runs the status change-gate has usually absorbed the diff already
+    # -- ``sync_model_status`` wrote ``ready_replicas`` in an earlier
+    # pass. The downstream write is diff-gated (``sync_gateway`` compares
+    # against the live CR), so an extra notification costs one
+    # comparison, not a CR rewrite.
+    should_notify = not event.changed_fields
+    if event.changed_fields:
         # ``native_anthropic_api`` is read where the route's ai-proxy provider
         # entry is built, and that only runs off a route event -- so without it
         # here, flipping the selector would change nothing until the deployment
@@ -7351,6 +7395,8 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
             if field in event.changed_fields:
                 should_notify = True
                 break
+    if not should_notify:
+        return
     model: Model = await Model.one_by_id(
         session=session,
         id=model.id,
@@ -8066,6 +8112,12 @@ class ModelRouteController:
         self._gateway_namespace = cfg.gateway_namespace
         self._k8s_config = get_async_k8s_config(cfg=cfg)
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
+        self._resync_task: Optional[asyncio.Task] = None
+        # One reconcile at a time: the resync task and the subscription
+        # loop below both drive ``_reconcile``, whose diff-gated writes
+        # are read-compare-write on the shared gateway CRs. Interleaving
+        # two passes lets a stale comparison clobber a fresher write.
+        self._reconcile_lock = asyncio.Lock()
 
     async def start(self):
         if not self._disable_gateway:
@@ -8073,12 +8125,135 @@ class ModelRouteController:
             self._networking_api = k8s_client.NetworkingV1Api(base_client)
             self._higress_extension_api = ExtensionsHigressIoV1Api(base_client)
             self._networking_istio_api = NetworkingIstioIoV1Alpha3Api(base_client)
+            # No synchronous first pass: the subscription below replays a
+            # CREATED event per existing route, and the server's startup
+            # cleanup retires orphaned artifacts -- only the periodic
+            # repair loop is added here.
+            self._resync_task = asyncio.create_task(self._resync_loop())
 
-        async for event in ModelRoute.subscribe(source="model_route_controller"):
+        try:
+            async for event in ModelRoute.subscribe(source="model_route_controller"):
+                try:
+                    async with self._reconcile_lock:
+                        await self._reconcile(event)
+                except Exception as e:
+                    logger.exception(f"Failed to reconcile model route: {e}")
+        finally:
+            if self._resync_task is not None:
+                self._resync_task.cancel()
+                await asyncio.gather(self._resync_task, return_exceptions=True)
+
+    async def _resync_loop(self):
+        interval = GATEWAY_ROUTE_RESYNC_INTERVAL_SECONDS
+        if interval <= 0:
+            return
+        while True:
+            await asyncio.sleep(interval)
             try:
-                await self._reconcile(event)
+                await self._resync_all_routes()
             except Exception as e:
-                logger.exception(f"Failed to reconcile model route: {e}")
+                logger.warning("Periodic gateway route resync failed: %s", e)
+
+    async def _resync_all_routes(self):
+        """Reconcile every live route once; the periodic loop drives it.
+
+        Write-on-difference like ``ModelRouteTargetController._resync_all_targets``:
+        each pass rides the ordinary ``_reconcile``, whose gateway writes
+        compare against the live CRs, so a healthy fleet reads and writes
+        nothing.
+        """
+        try:
+            # The id snapshot only seeds the sweep. Each row is re-read
+            # under the reconcile lock below, so a rename or a config
+            # edit that lands mid-sweep is written with its new values
+            # rather than the stale snapshot.
+            async with async_session() as session:
+                route_ids = [
+                    route.id
+                    for route in await ModelRoute.all_by_fields(
+                        session, fields={"deleted_at": None}
+                    )
+                ]
+            for route_id in route_ids:
+                try:
+                    async with self._reconcile_lock:
+                        async with async_session() as session:
+                            route = await ModelRoute.one_by_id(session, route_id)
+                        if route is None or route.deleted_at is not None:
+                            continue
+                        await self._reconcile(Event(type=EventType.UPDATED, data=route))
+                except Exception as e:
+                    logger.error(
+                        "Gateway route resync failed for route %s: %s",
+                        route_id,
+                        e,
+                    )
+            await self._cleanup_orphan_gateway_artifacts()
+        except Exception as e:
+            # Never fatal: the event-driven path keeps working regardless.
+            logger.warning("Gateway route resync failed: %s", e)
+
+    async def _cleanup_orphan_gateway_artifacts(self) -> None:
+        """Retire gateway artifacts whose route row no longer exists.
+
+        A DELETED event lost to a restart or a subscription gap leaves
+        the ingress, the fallback filter, the mapper match rules and the
+        generic-proxy entries behind with no row left for any sweep to
+        reference; enumerating what this controller manages on the
+        gateway retires them. The same set as the server's startup
+        cleanup, on an interval.
+        """
+        try:
+            async with self._reconcile_lock:
+                async with async_session() as session:
+                    routes = await ModelRoute.all_by_fields(
+                        session, fields={"deleted_at": None}
+                    )
+                live = [route for route in routes if route.deleted_at is None]
+                expected = [
+                    mcp_handler.model_route_ingress_name(route.id) for route in live
+                ]
+                # FallbackPlugin creates a companion "...fallback.internal"
+                # ingress per route that shares the route ingress prefix
+                # and the managed labels; keep it out of the orphan set
+                # the same way the startup cleanup does. Listing the
+                # fallback name for every live route is conservative: a
+                # name with no ingress behind it never matches.
+                expected += [mcp_handler.fallback_ingress_name(n) for n in expected]
+                await mcp_handler.cleanup_ingresses(
+                    namespace=self._config.get_namespace(),
+                    expected_names=expected,
+                    config=self._k8s_config,
+                    cleanup_prefix=mcp_handler.model_route_ingress_prefix,
+                    reason="orphaned",
+                    networking_api=self._networking_api,
+                )
+                await mcp_handler.cleanup_fallback_filters(
+                    namespace=self._config.get_namespace(),
+                    expected_names=expected,
+                    cleanup_prefix=mcp_handler.model_route_ingress_prefix,
+                    reason="orphaned",
+                    networking_istio_api=self._networking_istio_api,
+                )
+                await mcp_handler.cleanup_model_mapper(
+                    namespace=self._config.gateway_namespace,
+                    expected_ingresses=mcp_handler.route_rule_ingress_names(
+                        [route.id for route in live],
+                        resource_namespace=self._config.get_namespace(),
+                        gateway_namespace=self._config.gateway_namespace,
+                    ),
+                    config=self._k8s_config,
+                    api=self._higress_extension_api,
+                )
+                await mcp_handler.cleanup_generic_proxy_router(
+                    routes=live,
+                    k8s_config=self._k8s_config,
+                    namespace=self._config.gateway_namespace,
+                    api=self._higress_extension_api,
+                )
+        except Exception as e:
+            # Never fatal: the next interval retries.
+            logger.warning("Gateway orphan artifact cleanup failed: %s", e)
 
     async def _sync_targets(self, session: AsyncSession, event: Event) -> bool:
         if event.type == EventType.DELETED:

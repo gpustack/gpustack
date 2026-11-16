@@ -160,6 +160,19 @@ GATEWAY_AUTH_RECONCILE_INTERVAL_SECONDS = int(
     os.getenv("GPUSTACK_GATEWAY_AUTH_RECONCILE_INTERVAL_SECONDS", 30)
 )
 
+# How often ModelRouteController re-derives every live route's gateway
+# artifacts and retires orphaned ones. The steady state is event-driven and
+# the bus does not replay, so this is the worst-case time a route whose
+# triggering event was lost (controller restart, subscription gap, a
+# coordinator that drops changed_fields) keeps a stale destination set.
+# Each pass only reads -- the writes underneath are diff-gated -- but a
+# full sweep costs K8s GETs per route, so the default is conservative and
+# the knob exists for large fleets; set it to 0 to disable the periodic
+# pass entirely.
+GATEWAY_ROUTE_RESYNC_INTERVAL_SECONDS = int(
+    os.getenv("GPUSTACK_GATEWAY_ROUTE_RESYNC_INTERVAL_SECONDS", 300)
+)
+
 # Whether a custom API key -- one whose secret the user supplied rather than
 # this server generating it -- may be authenticated at the gateway.
 #
