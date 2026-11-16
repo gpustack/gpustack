@@ -46,6 +46,8 @@ For MiniMax H3, model metadata selects `t2va`, provides a model-specific default
 
 GPUStack translates the common `task`, `size`, and `seconds` inputs for the selected inference target: SGLang uses `task`, `conditions`, and `target`; vLLM-Omni uses `extra_params`. Explicit model-specific values are preserved, and conflicting values are rejected.
 
+The common `seconds` field accepts whole seconds. Fractional durations can be supplied through native model-specific duration parameters.
+
 The H3 Playground currently supports text-to-video (`t2va`). Reference-based H3 generation requires the API and model-specific reference parameters.
 
 Advanced settings also provide an optional `Extra Parameters (JSON)` object. Leave it empty for ordinary H3 text-to-video requests. Invalid JSON is rejected before submission; changing models clears these extra parameters.

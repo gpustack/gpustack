@@ -58,8 +58,11 @@ def _duration(value: Any) -> float:
         isinstance(value, bool)
         or not math.isfinite(duration)
         or not 4 <= duration <= 15
+        or not duration.is_integer()
     ):
-        raise ValueError("seconds must be between 4 and 15 for MiniMax H3")
+        raise ValueError(
+            "seconds must be between 4 and 15 in whole seconds for MiniMax H3"
+        )
     return duration
 
 

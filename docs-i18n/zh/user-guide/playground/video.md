@@ -50,6 +50,8 @@ translation_status: translated
 
 GPUStack 根据实际选中的推理目标转换通用的 `task`、`size` 和 `seconds`：SGLang 使用 `task`、`conditions` 和 `target`；vLLM-Omni 使用 `extra_params`。显式填写的模型专用参数会保留，冲突参数会报错。
 
+通用 `seconds` 字段接受整数秒。小数时长可以通过模型原生的专用时长参数传入。
+
 H3 Playground 当前支持纯文生视频（`t2va`）。使用参考输入生成 H3 视频，需要通过 API 提供模型专用的参考参数。
 
 高级配置还提供可选的 `Extra Parameters (JSON)` 对象。普通 H3 文生视频无需填写。提交前会校验 JSON，切换模型时会清空额外参数。

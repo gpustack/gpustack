@@ -75,7 +75,7 @@ def test_explicit_target_is_preserved_and_invalid_json_is_rejected(backend):
             adapt_h3_parameters(h3(backend), {"extra_body": value})
 
 
-@pytest.mark.parametrize("seconds", [0, 3, 16, True, "NaN", "invalid"])
+@pytest.mark.parametrize("seconds", [0, 3, 4.5, 16, True, "NaN", "invalid"])
 def test_invalid_common_duration_fails_before_submission(seconds):
     with pytest.raises(ValueError, match="seconds must be between"):
         adapt_h3_parameters(h3(), {"seconds": seconds})

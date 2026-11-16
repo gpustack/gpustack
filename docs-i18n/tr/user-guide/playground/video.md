@@ -50,6 +50,8 @@ MiniMax H3 için model metadata bilgileri `t2va` görevini, modele özgü varsay
 
 GPUStack ortak `task`, `size` ve `seconds` girdilerini seçilen çıkarım hedefine göre dönüştürür: SGLang `task`, `conditions` ve `target` kullanır; vLLM-Omni ise `extra_params` kullanır. Açıkça belirtilen modele özgü değerler korunur; çakışan değerler reddedilir.
 
+Ortak `seconds` alanı tam saniye kabul eder. Kesirli süreler modele özgü yerel süre parametreleriyle gönderilebilir.
+
 H3 Playground şu anda metinden video üretimini (`t2va`) destekler. Referans girdileriyle H3 üretimi için API ve modele özgü referans parametreleri gerekir.
 
 Gelişmiş ayarlar isteğe bağlı bir `Extra Parameters (JSON)` nesnesi de sunar. Normal H3 metinden video isteklerinde boş bırakın. JSON gönderimden önce doğrulanır; model değiştirildiğinde ek parametreler temizlenir.
