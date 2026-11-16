@@ -1481,6 +1481,15 @@ async def evaluate_diffusion_model(
     model: Model, workers: Optional[List[Worker]] = None
 ) -> bool:
     """Classify generation artifacts while retaining explicit video declarations."""
+    from gpustack.utils.video import get_video_capabilities, update_video_metadata
+
+    if model.categories and not is_image_or_video_model(model):
+        return False
+    update_video_metadata(model)
+    if get_video_capabilities(model) is not None:
+        if not model.categories or model.categories == [CategoryEnum.IMAGE]:
+            model.categories = [CategoryEnum.VIDEO]
+        return True
     if CategoryEnum.VIDEO in (model.categories or []):
         return True
     if model.categories and not is_image_or_video_model(model):
@@ -1488,6 +1497,7 @@ async def evaluate_diffusion_model(
     index = await get_diffusers_model_index_with_workers(model, workers)
     if index is None:
         return False
+    update_video_metadata(model, index)
     if not model.categories or model.categories == [CategoryEnum.IMAGE]:
         model.categories = [diffusion_model_category(index)]
     return True

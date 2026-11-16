@@ -28,6 +28,7 @@ from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.model_common import build_category_conditions
+from gpustack.routes.video_parameters import adapt_video_request
 from gpustack.schemas.models import Model, servable_instances
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
@@ -304,6 +305,7 @@ async def proxy_request_by_model(
                 getattr(request.state, "tenant_context", None),
                 getattr(request.state, "api_key", None),
             )
+            body_json, form_data = adapt_video_request(model, body_json, form_data)
 
         mutate_request(request, model_name, body_json, form_data)
 

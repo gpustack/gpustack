@@ -69,9 +69,31 @@ async def test_existing_video_is_reclassified_without_restarting_instances(
     monkeypatch.setattr(module, "get_diffusers_model_index_with_workers", read)
     await reconciler.reconcile()
     update.assert_awaited_once_with(video, source={"categories": ["video"]})
-    assert read.await_count == 2
+    assert read.await_count == 3
     await reconciler.reconcile()
-    assert read.await_count == 2
+    assert read.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_running_h3_receives_metadata_without_category_change(
+    monkeypatch, setup_reconciler
+):
+    reconciler, update = setup_reconciler
+    model = new_model(
+        1,
+        "renamed",
+        huggingface_repo_id="MiniMaxAI/MiniMax-H3",
+        backend="SGLang",
+        categories=["video"],
+    )
+    monkeypatch.setattr(module.Model, "all_by_fields", AsyncMock(return_value=[model]))
+    monkeypatch.setattr(module.Model, "one_by_id", AsyncMock(return_value=model))
+    read = AsyncMock(side_effect=AssertionError("Known source needs no Hub request"))
+    monkeypatch.setattr(module, "get_diffusers_model_index_with_workers", read)
+    await reconciler.reconcile()
+    update.assert_awaited_once_with(model, source={"meta": model.meta})
+    assert model.meta["video"]["default_task"] == "t2va"
+    read.assert_not_awaited()
 
 
 @pytest.mark.asyncio

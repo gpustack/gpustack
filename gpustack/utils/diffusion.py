@@ -3,10 +3,12 @@
 from typing import Any, Dict, Optional
 
 from gpustack.schemas.models import CategoryEnum
+from gpustack.utils.video import MINIMAX_H3_PIPELINES
 
 # These identifiers name video pipelines, not repositories or model aliases.
 VIDEO_PIPELINES = frozenset(
     {
+        *MINIMAX_H3_PIPELINES,
         "WanPipeline",
         "WanImageToVideoPipeline",
         "WanVideoToVideoPipeline",

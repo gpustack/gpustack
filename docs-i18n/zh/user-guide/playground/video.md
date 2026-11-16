@@ -44,6 +44,16 @@ translation_status: translated
 
 点击清除按钮可移除参考图片或链接。是否支持参考图片取决于所选模型；选择 `video` 类别不会让纯文生视频模型自动支持图片输入。
 
+## 模型能力 { #model-capabilities }
+
+对于 MiniMax H3，模型 metadata 会选择 `t2va`、提供模型默认分辨率，并将时长范围设置为 4–15 秒。服务端根据模型文件和加载的权重分支识别能力，支持 Catalog 部署和直接从 Hugging Face 部署。已有部署会通过后台协调补充能力 metadata。
+
+GPUStack 根据实际选中的推理目标转换通用的 `task`、`size` 和 `seconds`：SGLang 使用 `task`、`conditions` 和 `target`；vLLM-Omni 使用 `extra_params`。显式填写的模型专用参数会保留，冲突参数会报错。
+
+H3 Playground 当前支持纯文生视频（`t2va`）。使用参考输入生成 H3 视频，需要通过 API 提供模型专用的参考参数。
+
+高级配置还提供可选的 `Extra Parameters (JSON)` 对象。普通 H3 文生视频无需填写。提交前会校验 JSON，切换模型时会清空额外参数。
+
 ## 查看代码 { #view-code }
 
 调整提示词和参数后，点击 `查看代码`，即可查看使用相同输入调用 API 的示例。支持 `curl`、`Python` 和 `Node.js`。

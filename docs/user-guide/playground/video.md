@@ -40,6 +40,16 @@ Use a compatible SGLang Diffusion or vLLM-Omni deployment. Video understanding m
 
 Use the clear button to remove a reference image or URL. Reference-image support depends on the selected model; choosing the `video` category does not make a text-to-video model accept image input.
 
+## Model Capabilities
+
+For MiniMax H3, model metadata selects `t2va`, provides a model-specific default resolution, and sets the duration range to 4–15 seconds. The server recognizes the model artifact and loaded partition for both Catalog and direct Hugging Face deployments. Existing deployments receive capability metadata through background reconciliation.
+
+GPUStack translates the common `task`, `size`, and `seconds` inputs for the selected inference target: SGLang uses `task`, `conditions`, and `target`; vLLM-Omni uses `extra_params`. Explicit model-specific values are preserved, and conflicting values are rejected.
+
+The H3 Playground currently supports text-to-video (`t2va`). Reference-based H3 generation requires the API and model-specific reference parameters.
+
+Advanced settings also provide an optional `Extra Parameters (JSON)` object. Leave it empty for ordinary H3 text-to-video requests. Invalid JSON is rejected before submission; changing models clears these extra parameters.
+
 ## View Code
 
 After experimenting with prompts and parameters, click `View Code` to see how to call the API with the same inputs. Code examples are provided in `curl`, `Python`, and `Node.js`.

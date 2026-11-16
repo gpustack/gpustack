@@ -17,6 +17,7 @@ from gpustack.schemas.workers import Worker
 from gpustack.server.db import async_session
 from gpustack.server.services import ModelService
 from gpustack.utils.diffusion import diffusion_model_category
+from gpustack.utils.video import get_video_capabilities, update_video_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class VideoCategoryReconciler:
             models = [
                 model
                 for model in models
-                if model.categories == [CategoryEnum.IMAGE]
+                if model.categories in ([CategoryEnum.IMAGE], [CategoryEnum.VIDEO])
                 and get_backend(model) in (BackendEnum.VLLM, BackendEnum.SGLANG)
                 and not is_gguf_model(model)
             ]
@@ -50,13 +51,24 @@ class VideoCategoryReconciler:
             workers = await Worker.all(session)
 
         for model in models:
-            key = (model.id, model.model_source_index, model.cluster_id)
+            key = (
+                model.id,
+                model.model_source_index,
+                model.cluster_id,
+                model.backend,
+                model.backend_version,
+                tuple(model.backend_parameters or []),
+            )
             if key in self._checked:
                 continue
             try:
-                index = await get_diffusers_model_index_with_workers(model, workers)
+                index = None
+                if get_video_capabilities(model) is None:
+                    index = await get_diffusers_model_index_with_workers(model, workers)
+                capabilities = get_video_capabilities(model, index)
                 if (
-                    index is not None
+                    capabilities is not None
+                    or index is not None
                     and diffusion_model_category(index) == CategoryEnum.VIDEO
                 ):
                     async with async_session() as session:
@@ -66,16 +78,26 @@ class VideoCategoryReconciler:
                             and current.deleted_at is None
                             and current.model_source_index == model.model_source_index
                             and current.cluster_id == model.cluster_id
-                            and current.categories == [CategoryEnum.IMAGE]
+                            and current.categories
+                            in ([CategoryEnum.IMAGE], [CategoryEnum.VIDEO])
+                            and current.backend == model.backend
+                            and current.backend_version == model.backend_version
+                            and current.backend_parameters == model.backend_parameters
                             and get_backend(current)
                             in (BackendEnum.VLLM, BackendEnum.SGLANG)
                         ):
                             # ModelService publishes the event that updates only
                             # the routes created by this deployment. Categories
                             # do not change its desired instance generation.
-                            await ModelService(session).update(
-                                current, source={"categories": [CategoryEnum.VIDEO]}
-                            )
+                            source = {}
+                            if current.categories != [CategoryEnum.VIDEO]:
+                                source["categories"] = [CategoryEnum.VIDEO]
+                            if update_video_metadata(current, index):
+                                source["meta"] = current.meta
+                            if source:
+                                await ModelService(session).update(
+                                    current, source=source
+                                )
                 self._checked[key] = True
             except Exception:
                 logger.warning(
