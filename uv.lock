@@ -1047,7 +1047,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0,<0.137.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "filelock", specifier = ">=4.2.1" },
-    { name = "gpustack-higress-plugins", specifier = "==0.5.1.post2" },
+    { name = "gpustack-higress-plugins", specifier = "==0.5.2.post2" },
     { name = "gpustack-runner", specifier = "==0.1.32.post6" },
     { name = "gpustack-runtime", specifier = "==0.2.8" },
     { name = "hf-xet", specifier = ">=1.6.0,<2.0.0" },
@@ -1134,7 +1134,7 @@ docs = [
 
 [[package]]
 name = "gpustack-higress-plugins"
-version = "0.5.1.post2"
+version = "0.5.2.post2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
@@ -1142,7 +1142,7 @@ dependencies = [
     { name = "uvicorn" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/64/bf/0f28fc3d294ed7daf21ec2b5894aa85a181ab0ff301b694e8a156d887449/gpustack_higress_plugins-0.5.1.post2-py3-none-any.whl", hash = "sha256:c9807fde567c9ef73c60afc27d95ebc0aaf7bbb1c5c47793eeb9bce942e6abf1", size = 26647989, upload-time = "2026-11-10T07:19:04.12Z" },
+    { url = "https://files.pythonhosted.org/packages/01/1b/068ee69f58c9ccf004a20a6306e83b49070a705e9ccb97671239c1b30e3e/gpustack_higress_plugins-0.5.2.post2-py3-none-any.whl", hash = "sha256:e75aa63175cc7a71012d8492d582164b3b981dc318a2f009d7aa312942a1f57d", size = 26579721, upload-time = "2026-11-16T02:17:35.342Z" },
 ]
 
 [[package]]
