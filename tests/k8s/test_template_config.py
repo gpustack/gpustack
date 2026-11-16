@@ -103,6 +103,70 @@ def test_container_namespace_strips_embedded_registry_with_port():
 
 
 # ---------------------------------------------------------------------------
+# operator_image — the cluster registry is a fallback, not an override: a
+# reference that already names a registry keeps it, whatever the cluster
+# default says, and one that doesn't gets the prefix.
+# ---------------------------------------------------------------------------
+
+
+def test_operator_image_gets_the_cluster_registry_when_it_carries_none():
+    cfg = _config(
+        k8s_options=K8sOptions(operatorImage="gpustack/gpustack-operator:v1"),
+        system_default_container_registry="harbor.example.com/project",
+    )
+    assert (
+        cfg.operator_image == "harbor.example.com/project/gpustack/gpustack-operator:v1"
+    )
+
+
+def test_operator_image_naming_its_own_registry_is_left_alone():
+    # Prefixing here would nest one registry inside another
+    # (harbor.example.com/project/quay.io/acme/…); the explicit reference wins.
+    cfg = _config(
+        k8s_options=K8sOptions(operatorImage="quay.io/acme/gpustack-operator:v1"),
+        system_default_container_registry="harbor.example.com/project",
+    )
+    assert cfg.operator_image == "quay.io/acme/gpustack-operator:v1"
+
+
+def test_operator_image_on_the_cluster_registry_is_untouched():
+    reference = "harbor.example.com/project/gpustack/gpustack-operator:v1"
+    cfg = _config(
+        k8s_options=K8sOptions(operatorImage=reference),
+        system_default_container_registry="harbor.example.com/project",
+    )
+    assert cfg.operator_image == reference
+
+
+def test_a_registry_with_a_port_is_still_a_registry():
+    cfg = _config(
+        k8s_options=K8sOptions(operatorImage="localhost:5000/gpustack-operator:v1"),
+        system_default_container_registry="harbor.example.com/project",
+    )
+    assert cfg.operator_image == "localhost:5000/gpustack-operator:v1"
+
+
+def test_a_bare_name_with_a_tag_still_gets_the_prefix():
+    # The only colon in "gpustack-operator:v1" is the tag's, so the reference
+    # carries no registry and the cluster default applies.
+    cfg = _config(
+        k8s_options=K8sOptions(operatorImage="gpustack-operator:v1"),
+        system_default_container_registry="harbor.example.com/project",
+    )
+    assert cfg.operator_image == "harbor.example.com/project/gpustack-operator:v1"
+
+
+def test_a_namespace_matching_the_registry_is_not_duplicated():
+    # "myorg" carries no dot or colon, so it is a namespace, not a registry —
+    # but a reference already starting with it must not gain it twice.
+    cfg = _config(
+        k8s_options=K8sOptions(operatorImage="myorg/gpustack-operator:v1"),
+        system_default_container_registry="myorg",
+    )
+    assert cfg.operator_image == "myorg/gpustack-operator:v1"
+
+
+# ---------------------------------------------------------------------------
 # GPU Service operator knobs — the three settings GPUStack manages on a GPU
 # Service cluster. Each is tri-state: unset means GPUStack does not manage it
 # and the cluster's own value stands, which is a different instruction from an

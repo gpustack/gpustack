@@ -272,7 +272,13 @@ def build_chart_values(config: TemplateConfig) -> Dict[str, Any]:
             "imageNamespace"
         ] = config.container_namespace
 
-    operator_image = k8s_options.operator_image if k8s_options else None
+    # The resolved reference the bootstrap Job runs, not the raw
+    # ``k8s_options.operator_image``: the Job's image prefixes the cluster's
+    # ``system_default_container_registry`` (which may carry a project path,
+    # e.g. ``registry.example.com/harbor-project``), and resolving the chart's
+    # copy from anything else puts the installer and the operator it installs
+    # on different images.
+    operator_image = config.operator_image
     if operator_image:
         image_registry, image_repository, image_tag = split_image_reference(
             operator_image
@@ -294,9 +300,12 @@ def build_chart_values(config: TemplateConfig) -> Dict[str, Any]:
         }
         values["gpustack-operator"]["image"] = operator_values
         if image_registry:
-            values["gpustack-operator"].setdefault("global", {})[
-                "imageRegistry"
-            ] = image_registry
+            # Assign, not setdefault: the worker image's registry was mirrored
+            # above only as a fallback, and an operator reference that names
+            # its own registry is the more specific fact about where that image
+            # lives.
+            values["gpustack-operator"].setdefault("global", {})
+            values["gpustack-operator"]["global"]["imageRegistry"] = image_registry
 
     merged = _merge_helm_values(
         values, k8s_options.helm_values if k8s_options else None

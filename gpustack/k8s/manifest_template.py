@@ -19,6 +19,24 @@ _DEFAULT_CONTAINER_NAMESPACE = "gpustack"
 _DEFAULT_CLUSTER_NAMESPACE = "gpustack-system"
 
 
+def _leading_segment_is_registry(reference: str) -> bool:
+    """
+    Whether ``reference`` already names a registry in its first path segment.
+
+    The same test ``split_image_reference`` applies and the operator chart's
+    own helper does: a leading segment is a registry when it carries a ``.``
+    or ``:``, or is exactly ``localhost``. That is what tells
+    ``quay.io/gpustack/gpustack`` apart from ``gpustack/gpustack``, which are
+    otherwise the same shape. A reference with no ``/`` carries no registry:
+    its only colon is a tag's (``gpustack-operator:v1``), which is not a
+    separator.
+    """
+    head, slash, _ = reference.partition("/")
+    if not slash:
+        return False
+    return "." in head or ":" in head or head == "localhost"
+
+
 IMAGE_PULL_SECRET_NAME_PREFIX = "gpustack-image-pull-secret"
 
 
@@ -130,13 +148,20 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
         via ``GPUSTACK_OPERATOR_IMAGE``) when the cluster doesn't override it —
         and falls back to the built-in default otherwise (e.g. in unit tests);
         prefixes the cluster's container registry when one is configured and
-        the image doesn't already carry one.
+        the image doesn't already carry one. A reference that names its own
+        registry (``quay.io/…``, ``localhost:5000/…``) is left alone: prefixing
+        it would nest one registry inside another, and the explicit reference
+        is the more specific instruction about where that image lives.
         """
         image = (
             self.k8s_options.operator_image if self.k8s_options else None
         ) or _DEFAULT_OPERATOR_IMAGE
         registry = (self.system_default_container_registry or "").strip().rstrip("/")
-        if registry and not image.startswith(registry + "/"):
+        if (
+            registry
+            and not image.startswith(registry + "/")
+            and not _leading_segment_is_registry(image)
+        ):
             return f"{registry}/{image}"
         return image
 
@@ -164,8 +189,8 @@ class TemplateConfig(ClusterRegistrationTokenPublic):
         registry = (self.system_default_container_registry or "").strip().rstrip("/")
         if registry and image.startswith(registry + "/"):
             image = image[len(registry) + 1 :]
-        first, sep, rest = image.partition("/")
-        if sep and ("." in first or ":" in first or first == "localhost"):
+        _, _, rest = image.partition("/")
+        if _leading_segment_is_registry(image):
             image = rest
         if "/" not in image:
             return None
