@@ -84,7 +84,9 @@ Aborting an HTTP request or stopping client-side polling does not cancel an acce
 generation job. GPUStack does not currently expose `DELETE /v1/videos/{id}` to
 forward an engine cancellation request.
 
-Job handles are valid for 24 hours; the engine may expire its output sooner.
+GPUStack does not impose a separate expiry on video job IDs. Task status and output
+availability follow the creating engine and instance lifecycle. Every read still
+checks the caller's current user, organization, API-key, and model-route access.
 Requests cannot fail over to another replica because job state and generated files
 belong to the creating engine process. Restarting that instance can make its jobs
 unavailable. The optional `/v1/videos/sync` extension remains available for engines

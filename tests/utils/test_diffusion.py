@@ -1,6 +1,9 @@
+import json
+from unittest.mock import Mock
+
 import pytest
 
-from gpustack.schemas.models import CategoryEnum
+from gpustack.schemas.models import CategoryEnum, Model, SourceEnum
 from gpustack.utils import hub
 from gpustack.utils.diffusion import (
     VIDEO_PIPELINES,
@@ -50,3 +53,49 @@ def test_generation_weight_estimate_includes_pipeline_components(monkeypatch, ca
         ],
     )
     assert hub.get_diffusion_model_weight_size(model) == 120
+
+
+def test_missing_hub_index_requires_an_accessible_repository(monkeypatch):
+    model = new_model(1, "image", huggingface_repo_id="org/image")
+    api = Mock()
+    api.file_exists.return_value = False
+    monkeypatch.setattr(hub, "HfApi", Mock(return_value=api))
+    filesystem = Mock()
+    monkeypatch.setattr(hub, "HfFileSystem", filesystem)
+    assert hub.get_diffusers_model_index(model) is None
+    api.repo_info.assert_called_once_with("org/image")
+    filesystem.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error", [PermissionError(), ConnectionError(), TimeoutError()]
+)
+def test_unavailable_hub_repository_is_not_a_missing_index(monkeypatch, error):
+    model = new_model(1, "image", huggingface_repo_id="org/image")
+    api = Mock()
+    api.file_exists.return_value = False
+    api.repo_info.side_effect = error
+    monkeypatch.setattr(hub, "HfApi", Mock(return_value=api))
+    with pytest.raises(type(error)):
+        hub.get_diffusers_model_index(model)
+
+
+def test_hub_index_read_failure_is_not_negative_metadata(monkeypatch):
+    model = new_model(1, "image", huggingface_repo_id="org/image")
+    api = Mock()
+    api.file_exists.return_value = True
+    monkeypatch.setattr(hub, "HfApi", Mock(return_value=api))
+    filesystem = Mock()
+    filesystem.open.side_effect = TimeoutError("hub read timed out")
+    monkeypatch.setattr(hub, "HfFileSystem", Mock(return_value=filesystem))
+    with pytest.raises(TimeoutError):
+        hub.get_diffusers_model_index(model)
+
+
+def test_local_absence_and_invalid_metadata_are_distinct(tmp_path):
+    model = Model(name="local", source=SourceEnum.LOCAL_PATH, local_path=str(tmp_path))
+    assert hub.get_diffusers_model_index(model) is None
+    (tmp_path / "model_index.json").write_text("invalid json")
+    with pytest.raises(json.JSONDecodeError):
+        hub.get_diffusers_model_index(model)
+    assert hub.read_repo_file_content(model, "model_index.json") is None

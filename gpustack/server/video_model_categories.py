@@ -55,11 +55,10 @@ class VideoCategoryReconciler:
                 continue
             try:
                 index = await get_diffusers_model_index_with_workers(model, workers)
-                if index is None:
-                    # Missing metadata also covers transient worker or hub failures;
-                    # retry rather than caching an unavailable artifact as an image.
-                    continue
-                if diffusion_model_category(index) == CategoryEnum.VIDEO:
+                if (
+                    index is not None
+                    and diffusion_model_category(index) == CategoryEnum.VIDEO
+                ):
                     async with async_session() as session:
                         current = await Model.one_by_id(session, model.id)
                         if (

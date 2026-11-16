@@ -3,7 +3,6 @@
 import asyncio
 import json
 import re
-from datetime import timedelta
 from typing import Dict
 from urllib.parse import quote
 
@@ -40,7 +39,7 @@ def _job_payload(request: Request, video_id: str, user, ctx) -> Dict:
     try:
         if not video_id.startswith(_ID_PREFIX) or len(video_id) > 4096:
             raise _not_found()
-        payload = request.app.state.jwt_manager.decode_jwt_data(
+        payload = request.app.state.jwt_manager.decode_resource_token(
             video_id[len(_ID_PREFIX) :]
         )
         if (
@@ -85,9 +84,7 @@ async def create_video(
         "user_id": user.id,
         "principal_id": ctx.current_principal_id,
     }
-    token = request.app.state.jwt_manager.create_token(
-        payload, expires_delta=timedelta(days=1)
-    )
+    token = request.app.state.jwt_manager.create_resource_token(payload)
     job["id"] = _ID_PREFIX + token
     headers = openai._worker_response_headers(response.headers)
     return JSONResponse(job, status_code=response.status_code, headers=headers)

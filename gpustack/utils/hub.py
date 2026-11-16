@@ -300,6 +300,8 @@ def read_repo_file_content(  # noqa: C901
     model: Model,
     file_path: str,
     token: Optional[str] = None,
+    *,
+    raise_on_error: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     Read a JSON config file from the model's source.
@@ -308,10 +310,17 @@ def read_repo_file_content(  # noqa: C901
     - ModelScope: downloads a snapshot matching `file_path` and cleaned automatically after reading locally.
     - Local Path: reads from the local directory only (no worker broadcast).
 
-    Returns None if the file cannot be found or read.
+    Returns None if the file cannot be found or read. With raise_on_error,
+    unavailable repositories and read failures raise instead of returning None.
     """
     try:
         if model.source == SourceEnum.HUGGING_FACE:
+            if raise_on_error:
+                api = HfApi(token=token)
+                if not api.file_exists(model.huggingface_repo_id, file_path):
+                    # A missing or inaccessible repository is not a negative file check.
+                    api.repo_info(model.huggingface_repo_id)
+                    return None
             hffs = HfFileSystem(token=token)
             repo_path = f"{model.huggingface_repo_id}/{file_path}"
             with hffs.open(repo_path, "rb") as f:
@@ -366,6 +375,12 @@ def read_repo_file_content(  # noqa: C901
             if not local_path or not os.path.isdir(local_path):
                 return None
             fp = os.path.join(local_path, file_path)
+            if raise_on_error:
+                try:
+                    with open(fp, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except FileNotFoundError:
+                    return None
             if os.path.exists(fp):
                 with open(fp, "r", encoding="utf-8") as f:
                     return json.load(f)
@@ -374,6 +389,8 @@ def read_repo_file_content(  # noqa: C901
         else:
             return None
     except Exception as e:
+        if raise_on_error:
+            raise
         source_key = (
             model.huggingface_repo_id
             or model.model_scope_model_id
@@ -662,14 +679,8 @@ def get_diffusers_model_index(
     model: Model, token: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """Read Diffusers metadata without discarding the pipeline identity."""
-    try:
-        return normalize_diffusers_model_index(
-            read_repo_file_content(model, "model_index.json", token=token)
+    return normalize_diffusers_model_index(
+        read_repo_file_content(
+            model, "model_index.json", token=token, raise_on_error=True
         )
-    except Exception:
-        logger.debug(
-            "Could not read Diffusers index for %s",
-            model.readable_source,
-            exc_info=True,
-        )
-        return None
+    )

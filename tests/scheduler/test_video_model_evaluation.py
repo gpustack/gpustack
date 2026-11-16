@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock
 from types import SimpleNamespace
 
@@ -47,7 +48,7 @@ async def test_remote_local_path_video_index_is_preserved(monkeypatch):
     workers = [object()]
     assert await scheduler.evaluate_diffusion_model(model, workers)
     assert model.categories == [CategoryEnum.VIDEO]
-    read.assert_awaited_once_with(model, "model_index.json", workers)
+    read.assert_awaited_once_with(model, "model_index.json", workers, missing_ok=True)
 
 
 @pytest.mark.asyncio
@@ -98,4 +99,54 @@ async def test_remote_video_metadata_uses_only_model_cluster_workers(monkeypatch
     )
     monkeypatch.setattr(calculator, "read_local_path_file_from_workers", read)
     await calculator.get_diffusers_model_index_with_workers(model, [selected, other])
-    read.assert_awaited_once_with(model, "model_index.json", [selected])
+    read.assert_awaited_once_with(
+        model, "model_index.json", [selected], missing_ok=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_metadata_timeout_is_logged_and_remains_retryable(
+    monkeypatch, caplog
+):
+    model = Model(
+        id=1, name="local", source=SourceEnum.LOCAL_PATH, local_path="/worker/model"
+    )
+    monkeypatch.setattr(calculator, "get_diffusers_model_index", lambda *a, **k: None)
+    monkeypatch.setattr(calculator, "_DIFFUSERS_INDEX_TIMEOUT_SECONDS", 0.01)
+
+    async def slow_read(*args, **kwargs):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(calculator, "read_local_path_file_from_workers", slow_read)
+    with pytest.raises(TimeoutError):
+        await calculator.get_diffusers_model_index_with_workers(model, [object()])
+    assert "Timed out inspecting Diffusers metadata for model 1" in caplog.text
+    assert "/worker/model" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_missing_workers_cannot_confirm_local_metadata_absence(
+    monkeypatch, tmp_path
+):
+    model = Model(
+        id=1, name="local", source=SourceEnum.LOCAL_PATH, local_path=str(tmp_path)
+    )
+    monkeypatch.setattr(calculator, "get_diffusers_model_index", lambda *a, **k: None)
+    with pytest.raises(ValueError, match="No workers are available"):
+        await calculator.get_diffusers_model_index_with_workers(model, [])
+
+
+@pytest.mark.asyncio
+async def test_metadata_failure_without_a_model_id_keeps_its_diagnostic(
+    monkeypatch, caplog
+):
+    model = SimpleNamespace(source=SourceEnum.HUGGING_FACE, readable_source="org/model")
+
+    def unavailable(*args, **kwargs):
+        raise ConnectionError("hub unavailable")
+
+    monkeypatch.setattr(calculator, "get_diffusers_model_index", unavailable)
+    with pytest.raises(ConnectionError, match="hub unavailable"):
+        await calculator.get_diffusers_model_index_with_workers(model)
+    assert "org/model" in caplog.text
+    assert "hub unavailable" in caplog.text

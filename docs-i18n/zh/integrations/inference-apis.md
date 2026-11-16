@@ -69,7 +69,7 @@ curl http://your_gpustack_server_url/v1/chat/completions \
 
 中断 HTTP 请求或停止客户端轮询不会取消已接受的生成任务。GPUStack 当前未暴露用于转发引擎取消请求的 `DELETE /v1/videos/{id}`。
 
-任务句柄有效期为 24 小时，推理引擎可能更早清理输出。由于任务状态和生成文件属于创建任务的引擎进程，请求无法切换到其他副本。重启该实例可能导致任务不可用。实现了 `/v1/videos/sync` 的引擎仍可使用这一可选扩展。
+GPUStack 不为视频任务 ID 设置额外的有效期。任务状态和输出的可用性由创建任务的推理引擎和实例生命周期决定。每次读取仍会校验调用方当前的用户、组织、API Key 和模型路由访问权限。由于任务状态和生成文件属于创建任务的引擎进程，请求无法切换到其他副本。重启该实例可能导致任务不可用。实现了 `/v1/videos/sync` 的引擎仍可使用这一可选扩展。
 
 ## Anthropic 兼容 API { #anthropic-compatible-apis }
 

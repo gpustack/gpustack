@@ -1,9 +1,10 @@
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import jwt
 from fastapi.responses import JSONResponse, Response
 from starlette.requests import Request
 
@@ -228,7 +229,32 @@ async def test_download_streams_binary_and_removes_worker_transfer_headers(
 
 
 @pytest.mark.asyncio
-async def test_expired_handle_is_not_usable(video_api):
+async def test_video_handle_outlives_a_day_and_retains_instance_binding(
+    video_api, monkeypatch
+):
+    api = video_api
+    job = await _create(api)
+    manager = api.request.app.state.jwt_manager
+    claims = manager.decode_jwt_token(job["id"][len(videos._ID_PREFIX) :])
+    assert "exp" not in claims
+    future = datetime.now(timezone.utc) + timedelta(days=2)
+
+    class FutureDatetime:
+        @classmethod
+        def now(cls, tz=None):
+            return future
+
+    monkeypatch.setattr(jwt.api_jwt, "datetime", FutureDatetime)
+    response = await videos.retrieve_video(job["id"], api.request, api.user, api.ctx)
+    assert response.status_code == 200
+    assert api.forward.call_args.kwargs["path"] == "v1/videos/native-task"
+    api.instance.restart_count += 1
+    with pytest.raises(ServiceUnavailableException):
+        await videos.retrieve_video(job["id"], api.request, api.user, api.ctx)
+
+
+@pytest.mark.asyncio
+async def test_video_handle_with_elapsed_expiry_still_rechecks_access(video_api):
     api = video_api
     job = await _create(api)
     manager = api.request.app.state.jwt_manager
@@ -236,8 +262,13 @@ async def test_expired_handle_is_not_usable(video_api):
     expired = videos._ID_PREFIX + manager.create_token(
         payload, expires_delta=timedelta(seconds=-1)
     )
-    with pytest.raises(NotFoundException):
-        await videos.retrieve_video(expired, api.request, api.user, api.ctx)
+    response = await videos.retrieve_video(expired, api.request, api.user, api.ctx)
+    assert response.status_code == 200
+    api.forward.reset_mock()
+    api.access_result.first.return_value = None
+    for handler in (videos.retrieve_video, videos.download_video):
+        with pytest.raises(NotFoundException):
+            await handler(expired, api.request, api.user, api.ctx)
     api.forward.assert_not_awaited()
 
 

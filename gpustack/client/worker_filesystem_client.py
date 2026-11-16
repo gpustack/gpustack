@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Dict
+from typing import Dict, Optional
 
 import aiohttp
 from gpustack.schemas.filesystem import FileExistsResponse
@@ -47,18 +47,21 @@ class WorkerFilesystemClient:
         self,
         worker: Worker,
         path: str,
-    ) -> Dict:
+        *,
+        missing_ok: bool = False,
+    ) -> Optional[Dict]:
         """
         Read and parse a config file on a worker.
 
         Args:
             worker: The worker to query
             path: The file path to read
+            missing_ok: Return None for a confirmed missing file (HTTP 404).
 
         Returns:
             Parsed config as dict
         """
-        _, body = await request_to_worker(
+        response, body = await request_to_worker(
             worker=worker,
             method="GET",
             path="files/model-config",
@@ -66,7 +69,12 @@ class WorkerFilesystemClient:
             no_proxy_client=self._http_client_no_proxy,
             params={"path": path},
             timeout=aiohttp.ClientTimeout(total=_TIMEOUT, sock_connect=5),
+            raise_on_error=not missing_ok,
         )
+        if missing_ok:
+            if response.status == 404:
+                return None
+            response.raise_for_status()
         return json.loads(body)
 
     async def path_exists(

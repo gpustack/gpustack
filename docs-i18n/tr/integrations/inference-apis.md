@@ -69,7 +69,7 @@ Görevi oluşturun, durum `completed` veya `failed` olana kadar sorgulayın ve a
 
 Bir HTTP isteğini kesmek veya istemci tarafındaki sorgulamayı durdurmak, kabul edilmiş üretim görevini iptal etmez. GPUStack şu anda motorun iptal isteğini iletmek için `DELETE /v1/videos/{id}` uç noktasını sunmaz.
 
-Görev tanıtıcıları 24 saat geçerlidir; motor çıktıyı daha erken silebilir. Görev durumu ve üretilen dosyalar görevi oluşturan motor sürecine ait olduğundan istekler başka bir kopyaya aktarılamaz. Bu örneğin yeniden başlatılması görevleri kullanılamaz hale getirebilir. İsteğe bağlı `/v1/videos/sync` uzantısı, bunu uygulayan motorlarda kullanılabilir.
+GPUStack, video görev kimliklerine ayrı bir geçerlilik süresi koymaz. Görev durumunun ve çıktının kullanılabilirliği, görevi oluşturan motorun ve örneğin yaşam döngüsüne bağlıdır. Her okuma isteğinde çağıranın güncel kullanıcı, kuruluş, API anahtarı ve model yönlendirmesi erişim izinleri doğrulanır. Görev durumu ve üretilen dosyalar görevi oluşturan motor sürecine ait olduğundan istekler başka bir kopyaya aktarılamaz. Bu örneğin yeniden başlatılması görevleri kullanılamaz hale getirebilir. İsteğe bağlı `/v1/videos/sync` uzantısı, bunu uygulayan motorlarda kullanılabilir.
 
 ## Anthropic Uyumlu API'ler { #anthropic-compatible-apis }
 

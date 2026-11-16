@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from cachetools import TTLCache
 
 from gpustack.server import video_model_categories as module
 from tests.utils.model import new_model
@@ -88,7 +89,10 @@ async def test_unavailable_worker_metadata_retries_and_preserves_category(
     monkeypatch.setattr(module.Model, "all_by_fields", AsyncMock(return_value=[model]))
     monkeypatch.setattr(module.Model, "one_by_id", AsyncMock(return_value=model))
     read = AsyncMock(
-        side_effect=[None, {"_diffusers_version": "1", "_class_name": "WanPipeline"}]
+        side_effect=[
+            TimeoutError("metadata unavailable"),
+            {"_diffusers_version": "1", "_class_name": "WanPipeline"},
+        ]
     )
     monkeypatch.setattr(module, "get_diffusers_model_index_with_workers", read)
     await reconciler.reconcile()
@@ -96,6 +100,34 @@ async def test_unavailable_worker_metadata_retries_and_preserves_category(
     assert model.categories == ["image"]
     await reconciler.reconcile()
     update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_confirmed_missing_metadata_is_cached_until_the_next_ttl(
+    monkeypatch, setup_reconciler
+):
+    reconciler, update = setup_reconciler
+    clock = [0]
+    reconciler._checked = TTLCache(maxsize=1024, ttl=3600, timer=lambda: clock[0])
+    model = new_model(
+        1,
+        "image",
+        backend="vLLM",
+        categories=["image"],
+        huggingface_repo_id="org/image",
+    )
+    monkeypatch.setattr(module.Model, "all_by_fields", AsyncMock(return_value=[model]))
+    read = AsyncMock(return_value=None)
+    monkeypatch.setattr(module, "get_diffusers_model_index_with_workers", read)
+
+    await reconciler.reconcile()
+    await reconciler.reconcile()
+    assert read.await_count == 1
+    update.assert_not_awaited()
+
+    clock[0] = 3601
+    await reconciler.reconcile()
+    assert read.await_count == 2
 
 
 @pytest.mark.asyncio
