@@ -149,6 +149,55 @@ class TestSplitImageReference:
             build_chart_values(config(image="gpustack/gpustack"))
 
 
+class TestOperatorImage:
+    """The operator image has two consumers — the bootstrap Job and the chart —
+    and the release only matches the cluster when both resolve to the same
+    reference. The Job's image prefixes the cluster's registry, which may carry
+    a project path (a Harbor project, a Docker Hub namespace), so the chart's
+    values have to be resolved from that same prefixed reference."""
+
+    def test_the_cluster_registrys_project_path_reaches_the_values(self):
+        # Resolving from the raw operator image instead drops the project
+        # segment: the worker image's registry carries only the host, so the
+        # chart would deploy an operator one path short of what the Job ran.
+        cfg = config(
+            image="registry.example.com/project/gpustack/gpustack:dev",
+            k8s_options=K8sOptions(operator_image="gpustack/gpustack-operator:v0.10.0"),
+            system_default_container_registry="registry.example.com/project",
+        )
+        values = build_chart_values(cfg)
+        operator = values["gpustack-operator"]["image"]
+        assert operator["repository"] == "project/gpustack/gpustack-operator"
+        assert operator["tag"] == "v0.10.0"
+        assert (
+            values["gpustack-operator"]["global"]["imageRegistry"]
+            == "registry.example.com"
+        )
+
+    def test_a_fully_qualified_operator_image_is_untouched_by_the_cluster_registry(
+        self,
+    ):
+        cfg = config(
+            image="docker.io/gpustack/gpustack:dev",
+            k8s_options=K8sOptions(
+                operator_image=(
+                    "registry.example.com/project/gpustack/gpustack-operator:v0.10.0"
+                )
+            ),
+            system_default_container_registry="registry.example.com/project",
+        )
+        values = build_chart_values(cfg)
+        operator = values["gpustack-operator"]["image"]
+        assert operator["repository"] == "project/gpustack/gpustack-operator"
+        assert operator["tag"] == "v0.10.0"
+        # The reference names its own registry, which wins over the host
+        # mirrored from the worker image.
+        assert (
+            values["gpustack-operator"]["global"]["imageRegistry"]
+            == "registry.example.com"
+        )
+
+
 class TestGpuVendors:
     """The chart normalizes this list itself, so these pin the values, not the
     render: they are hashed into the revision the in-cluster Job compares
