@@ -236,6 +236,115 @@ async def test_a_downgraded_row_stays_writable_under_its_source_given_name(
         update_mock.assert_not_called()
 
 
+def _community_backend_with_custom_version(backend_id: int) -> InferenceBackend:
+    """A Platform community row: catalog versions tagged with
+    built_in_frameworks plus one user-defined '-custom' version."""
+    return InferenceBackend(
+        id=backend_id,
+        backend_name="my-community",
+        owner_principal_id=None,
+        backend_source=BackendSourceEnum.COMMUNITY,
+        enabled=True,
+        default_version="v1",
+        version_configs=VersionConfigDict(
+            root={
+                "v1": VersionConfig(image_name="img:v1", built_in_frameworks=["vllm"]),
+                "v2": VersionConfig(image_name="img:v2", built_in_frameworks=["vllm"]),
+                "v1-custom": VersionConfig(image_name="custom:v1"),
+            }
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_with_echoed_get_body_preserves_built_in_versions(monkeypatch):
+    """GET /v2/inference-backends/{id} returns built-in versions carrying
+    built_in_frameworks. A client that edits other fields and PUTs that body
+    back must not strip them: the stored built-in entries survive the merge
+    so models pinned to those versions stay schedulable, while user-defined
+    versions still take the payload's updates."""
+    backend = _community_backend_with_custom_version(backend_id=44)
+    # The GET body: built-in versions echoed with their marker, the
+    # user-defined version edited, a new user-defined version added.
+    backend_in = InferenceBackendUpdate(
+        backend_name=backend.backend_name,
+        backend_source=BackendSourceEnum.COMMUNITY,
+        enabled=True,
+        default_version="v1",
+        version_configs=VersionConfigDict(
+            root={
+                "v1": VersionConfig(image_name="img:v1", built_in_frameworks=["vllm"]),
+                "v2": VersionConfig(image_name="img:v2", built_in_frameworks=["vllm"]),
+                "v1-custom": VersionConfig(image_name="custom:v2"),
+                "v3-custom": VersionConfig(image_name="custom:v3"),
+            }
+        ),
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(
+        ib_route,
+        "_redirect_global_edit_to_org_row",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    await ib_route.update_inference_backend(
+        MagicMock(), _all_mode_admin_ctx(), backend.id, backend_in
+    )
+
+    merged = update_mock.await_args.args[1]["version_configs"].root
+    assert set(merged.keys()) == {"v1", "v2", "v1-custom", "v3-custom"}
+    assert merged["v1"].built_in_frameworks == ["vllm"]
+    assert merged["v1"].image_name == "img:v1"
+    assert merged["v2"].built_in_frameworks == ["vllm"]
+    assert merged["v1-custom"].image_name == "custom:v2"
+    assert merged["v3-custom"].image_name == "custom:v3"
+    assert update_mock.await_args.args[1]["enabled"] is True
+    assert update_mock.await_args.args[1]["default_version"] == "v1"
+
+
+@pytest.mark.parametrize(
+    'payload',
+    [None, VersionConfigDict(root={})],
+    ids=['no-version-configs', 'empty-version-configs'],
+)
+def test_merge_community_versions_with_no_payload_keeps_built_ins(payload):
+    """With nothing user-defined submitted, the stored built-in versions are
+    the entire merged result."""
+    backend = _community_backend_with_custom_version(backend_id=45)
+
+    merged = ib_route._merge_community_versions(backend, payload)
+
+    assert set(merged.root.keys()) == {"v1", "v2"}
+    assert merged.root["v1"].built_in_frameworks == ["vllm"]
+    assert merged.root["v2"].built_in_frameworks == ["vllm"]
+
+
+def test_merge_community_versions_drops_built_in_collision_entries():
+    """An entry whose key matches a stored built-in version never wins the
+    merge: the payload carries no trusted built_in_frameworks marker, so
+    letting it through would strip the marker from the stored entry."""
+    backend = _community_backend_with_custom_version(backend_id=46)
+    payload = VersionConfigDict(
+        root={
+            "v1": VersionConfig(image_name="echoed:v1"),
+            "v1-custom": VersionConfig(image_name="custom:v2"),
+            "v3-custom": VersionConfig(image_name="custom:v3"),
+        }
+    )
+
+    merged = ib_route._merge_community_versions(backend, payload)
+
+    assert set(merged.root.keys()) == {"v1", "v2", "v1-custom", "v3-custom"}
+    assert merged.root["v1"].image_name == "img:v1"
+    assert merged.root["v1"].built_in_frameworks == ["vllm"]
+    assert merged.root["v1-custom"].image_name == "custom:v2"
+    assert merged.root["v3-custom"].image_name == "custom:v3"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failing", [Worker, RunnerOverrideEntry, InferenceBackend])
 async def test_list_backend_configs_reports_database_failures(monkeypatch, failing):

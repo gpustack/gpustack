@@ -1383,14 +1383,9 @@ async def update_inference_backend(  # noqa: C901
         if backend_in.backend_source == BackendSourceEnum.COMMUNITY:
             if backend_in.enabled is not None:
                 update_data["enabled"] = backend_in.enabled
-            built_in_version = {
-                k: v
-                for k, v in backend.version_configs.root.items()
-                if v.built_in_frameworks
-            }
-            # merge built-in versions with custom versions for update
-            built_in_version.update(update_data['version_configs'].root)
-            update_data['version_configs'].root = built_in_version
+            update_data['version_configs'] = _merge_community_versions(
+                backend, update_data['version_configs']
+            )
 
         await backend.update(session, update_data)
     except Exception as e:
@@ -1740,6 +1735,13 @@ def _merge_community_versions(
     """
     Merge built-in versions with new versions for COMMUNITY backends.
 
+    New entries whose key matches a stored built-in version are dropped: the
+    request payload carries no trusted built_in_frameworks marker (it is
+    cleared before merging), so letting such an entry through would overwrite
+    the stored built-in entry with a framework-less copy and leave models
+    pinned to that version unschedulable. Built-in versions are owned by the
+    catalog; this API only manages user-defined '-custom' versions.
+
     Returns:
         VersionConfigDict: Merged version configurations with built-in versions preserved
     """
@@ -1755,8 +1757,12 @@ def _merge_community_versions(
     if not new_version_configs or not new_version_configs.root:
         return VersionConfigDict(root=built_in_versions)
 
-    # Merge: built-in versions + new versions (new versions take precedence)
-    built_in_versions.update(new_version_configs.root or {})
+    # Merge: built-in versions + user-defined versions. A collision key keeps
+    # the stored built-in entry (see docstring).
+    user_versions = {
+        k: v for k, v in new_version_configs.root.items() if k not in built_in_versions
+    }
+    built_in_versions.update(user_versions)
     new_version_configs.root = built_in_versions
     return new_version_configs
 
