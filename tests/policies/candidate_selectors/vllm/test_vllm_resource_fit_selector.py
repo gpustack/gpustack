@@ -29,6 +29,7 @@ from gpustack.schemas.models import (
     SourceEnum,
 )
 from tests.fixtures.workers.fixtures import (
+    linux_nvidia_19_4090_24gx2,
     linux_mix_1_nvidia_4080_16gx1_rocm_7800_16gx1,
     linux_nvidia_0_4090_24gx1,
     linux_nvidia_1_4090_24gx1,
@@ -2379,3 +2380,82 @@ async def test_hybrid_offer_capacity_reserves_every_node_of_each_global_group(co
     assert result.claim.vram == 8 * int(
         workers[0].status.gpu_devices[0].memory.total * 0.9
     )
+
+
+async def _select_tp2_candidates(config, model, worker, claimed):
+    mis = [
+        new_model_instance(
+            9,
+            "other-0",
+            2,
+            worker_id=worker.id,
+            gpu_indexes=list(claimed),
+            computed_resource_claim=ComputedResourceClaim(vram=claimed, ram=0),
+        )
+    ]
+    selector = VLLMResourceFitSelector(
+        config, model, mis, resource_view=ResourceView(mis)
+    )
+    pretrained = PretrainedConfig(
+        num_hidden_layers=2, num_attention_heads=8, hidden_size=64
+    )
+
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=pretrained),
+        ),
+        patch("gpustack.policies.utils.get_model_weight_size", return_value=1024**3),
+    ):
+        return await selector.select_candidates([worker])
+
+
+# Each card has exactly the reservation free, `int(total * utilization)`
+# bytes, after another instance's claim. On these cards `total * 0.92` is
+# not a whole number of bytes, so the reservation is rounded down.
+@pytest.mark.parametrize("utilization", [1.0, 0.5, 0.92])
+@pytest.mark.asyncio
+async def test_multi_gpu_placement_accepts_cards_exactly_at_the_utilization(
+    config, utilization
+):
+    worker = linux_nvidia_19_4090_24gx2()
+    claimed = {
+        gpu.index: gpu.memory.total - int(gpu.memory.total * utilization)
+        for gpu in worker.status.gpu_devices
+    }
+    model = new_model(
+        1,
+        "exact-utilization",
+        huggingface_repo_id="test/exact-utilization",
+        backend=BackendEnum.VLLM.value,
+        cpu_offloading=False,
+        backend_parameters=[
+            "--tensor-parallel-size=2",
+            f"--gpu-memory-utilization={utilization}",
+        ],
+    )
+
+    candidates = await _select_tp2_candidates(config, model, worker, claimed)
+
+    assert [sorted(c.gpu_indexes) for c in candidates] == [[0, 1]]
+
+
+@pytest.mark.asyncio
+async def test_multi_gpu_placement_rejects_full_card_for_embedding_model(config):
+    # Embedding models run without a GPU memory utilization, so a card with
+    # nothing left cannot host a tensor-parallel shard.
+    worker = linux_nvidia_19_4090_24gx2()
+    claimed = {1: worker.status.gpu_devices[1].memory.total}
+    model = new_model(
+        1,
+        "embedding",
+        huggingface_repo_id="test/embedding",
+        backend=BackendEnum.VLLM.value,
+        cpu_offloading=False,
+        categories=[CategoryEnum.EMBEDDING],
+        backend_parameters=["--tensor-parallel-size=2"],
+    )
+
+    candidates = await _select_tp2_candidates(config, model, worker, claimed)
+
+    assert candidates == []
