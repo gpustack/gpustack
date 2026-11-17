@@ -17,12 +17,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
+from fastapi import FastAPI
 
 from gpustack.api.exceptions import (
     GatewayTimeoutException,
     ServiceUnavailableException,
 )
+from gpustack.api.middlewares import (
+    ModelUsageMiddleware,
+    RefreshTokenMiddleware,
+    RequestTimeMiddleware,
+)
 from gpustack.routes import openai as openai_route
+from gpustack.server.deps import get_current_user
 from gpustack.server import worker_request
 from gpustack.server.services import RouteTargetResolution
 from tests.utils.mock import mock_async_session
@@ -51,6 +58,8 @@ def _request():
     request.url.path = "/v1/chat/completions"
     request.method = "POST"
     request.headers = {"content-type": "application/json"}
+    request.json = AsyncMock(return_value={"model": "qwen3", "stream": False})
+    request.receive = AsyncMock(side_effect=asyncio.Event().wait)
     return request
 
 
@@ -75,11 +84,9 @@ def _stub_pipeline(monkeypatch):
     )
     monkeypatch.setattr(openai_route, "async_session", lambda: mock_async_session())
     monkeypatch.setattr(
-        openai_route,
-        "parse_request_body",
-        AsyncMock(
-            return_value=("qwen3", False, {"model": "qwen3", "stream": False}, None)
-        ),
+        openai_route.UserService,
+        "model_allowed_for_user",
+        AsyncMock(return_value=True),
     )
     monkeypatch.setattr(openai_route, "mutate_request", MagicMock())
     monkeypatch.setattr(
@@ -209,3 +216,74 @@ async def test_worker_timeout_is_gateway_timeout(monkeypatch):
         await _proxy(monkeypatch, error=asyncio.TimeoutError())
 
     assert exc.value.status_code == 504
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["headers", "body"])
+async def test_disconnect_cancels_non_streaming_worker_request(monkeypatch, phase):
+    _stub_pipeline(monkeypatch)
+    app = FastAPI()
+    app.include_router(openai_route.get_api_router(), prefix="/v1")
+    app.add_middleware(RequestTimeMiddleware)
+    app.add_middleware(ModelUsageMiddleware)
+    app.add_middleware(RefreshTokenMiddleware)
+    app.state.jwt_manager = None
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    disconnect = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def wait_for_worker():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async def request_worker(**kwargs):
+        if phase == "headers":
+            await wait_for_worker()
+        return SimpleNamespace(status=200, read=wait_for_worker, close=closed.set)
+
+    session = SimpleNamespace(request=request_worker)
+    app.state.http_client = app.state.http_client_no_proxy = session
+    sent = []
+    body_pending = True
+
+    async def receive():
+        nonlocal body_pending
+        if body_pending:
+            body_pending = False
+            return {"type": "http.request", "body": b'{"model":"qwen3"}'}
+        await disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/chat/completions",
+        "query_string": b"",
+        "headers": [(b"content-type", b"application/json")],
+    }
+    task = asyncio.create_task(app(scope, receive, send))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        disconnect.set()
+        await asyncio.wait_for(asyncio.shield(task), 1)
+        assert cancelled.is_set()
+        assert closed.is_set() == (phase == "body")
+        assert (
+            next(m["status"] for m in sent if m["type"] == "http.response.start") == 499
+        )
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
