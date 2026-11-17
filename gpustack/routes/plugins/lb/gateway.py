@@ -332,7 +332,16 @@ def _lb_gateway_entries(cfg: Config) -> List[RouteGatewayEntry]:
         "modelMapping": {},
         "enableOnPathSuffix": list(mapper_enable_on_path_suffixes),
     }
-    finisher_default: Dict[str, Any] = {"mode": "finisher"}
+    # The finisher gates its body rewrite on enableOnPathSuffix exactly like
+    # the context role; without the key the plugin falls back to its built-in
+    # default suffix list, which predates endpoints like
+    # /v1/messages/count_tokens and /v1/complete -- those requests get the
+    # right cluster (the header is written regardless) but their model name
+    # is never rewritten and the upstream rejects the route name.
+    finisher_default: Dict[str, Any] = {
+        "mode": "finisher",
+        "enableOnPathSuffix": list(mapper_enable_on_path_suffixes),
+    }
     if redis_block is not None:
         context_default["redis"] = dict(redis_block)
         finisher_default["redis"] = dict(redis_block)
