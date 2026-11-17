@@ -543,6 +543,33 @@ class TestRedisOnBothCRs:
             assert "redis" not in (default_config or {})
 
 
+class TestFinisherPathSuffixes:
+    def _finisher_default(self, monkeypatch):
+        import gpustack.routes.plugins.lb.gateway as lb_gateway
+        from gpustack.routes.plugins.lb.gateway import lb_gateway_entries
+
+        monkeypatch.setattr(
+            lb_gateway,
+            "plugin_spec_overrides",
+            lambda name, version=None, cfg=None: {"url": "file://wasm"},
+        )
+        cfg = type(
+            "Cfg", (), {"redis_url": None, "gateway_namespace": "higress-system"}
+        )
+        by_name = {e.name: e.spec.defaultConfig for e in lb_gateway_entries(cfg)}
+        return by_name["gpustack-lb"], by_name["gpustack-model-mapper"]
+
+    def test_finisher_gates_rewrite_on_the_full_suffix_list(self, monkeypatch):
+        # The finisher's body rewrite is gated by enableOnPathSuffix; without
+        # the key the plugin's built-in default list applies and endpoints
+        # like /v1/messages/count_tokens are routed correctly but never have
+        # their model name rewritten.
+        finisher, context = self._finisher_default(monkeypatch)
+        assert finisher["mode"] == "finisher"
+        assert finisher["enableOnPathSuffix"] == context["enableOnPathSuffix"]
+        assert "/v1/messages/count_tokens" in finisher["enableOnPathSuffix"]
+
+
 class TestHooks:
     def test_route_section_lands_in_meta(self):
         import asyncio
