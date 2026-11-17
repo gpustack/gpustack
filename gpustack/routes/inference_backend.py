@@ -150,30 +150,38 @@ async def check_backend_in_use(
         ) from e
 
 
+def _is_source_owned(config: VersionConfig) -> bool:
+    """Whether a version entry is owned by the backend's source.
+
+    ``built_in_frameworks`` is not None — ``[]`` included. Not ``if
+    config.built_in_frameworks``: a source version that declares no
+    framework normalizes to ``[]``, and treating that as "not ours" would
+    quietly exclude it from every check below. One shared predicate so the
+    ownership rule cannot drift between the places that apply it.
+    """
+    return config.built_in_frameworks is not None
+
+
 def _source_owned_version_keys(backend: InferenceBackend) -> Set[str]:
     """The version keys the backend's stored row marks as source-owned.
 
     The request payload's ``built_in_frameworks`` marker is client-supplied
-    and forgeable, so ownership checks read the stored row instead — ``[]``
-    markers included, per the rule documented in ``_source_owned_versions``.
+    and forgeable, so ownership checks read the stored row instead.
     """
     if not backend.version_configs or not backend.version_configs.root:
         return set()
     return {
         version
         for version, config in backend.version_configs.root.items()
-        if config.built_in_frameworks is not None
+        if _is_source_owned(config)
     }
 
 
 async def _source_owned_versions(session: AsyncSession) -> Set[Tuple[str, str]]:
     """The ``(backend_name, version)`` pairs the community sources currently own.
 
-    A version is source-owned when ``built_in_frameworks`` is not None — the very
-    rule the upsert's smart merge uses to tell a source version from one the user
-    added by hand. Not ``if config.built_in_frameworks``: a source version that
-    declares no framework normalizes to ``[]``, and treating that as "not ours"
-    would quietly exclude it from the check below.
+    Ownership follows ``_is_source_owned`` — the same rule the upsert's smart
+    merge uses to tell a source version from one the user added by hand.
     """
     owned: Set[Tuple[str, str]] = set()
     for backend in await InferenceBackend.all(session):
@@ -184,7 +192,7 @@ async def _source_owned_versions(session: AsyncSession) -> Set[Tuple[str, str]]:
         ):
             continue
         for version, version_config in backend.version_configs.root.items():
-            if version_config.built_in_frameworks is not None:
+            if _is_source_owned(version_config):
                 owned.add((backend.backend_name, version))
     return owned
 
@@ -749,7 +757,7 @@ def _migrate_community_built_in_versions(db_backend: InferenceBackendPublic) -> 
     versions_to_move = {
         version: config
         for version, config in db_backend.version_configs.root.items()
-        if config.built_in_frameworks is not None
+        if _is_source_owned(config)
     }
     if not versions_to_move:
         return
@@ -1262,7 +1270,10 @@ async def _redirect_global_edit_to_org_row(
 
     Returns:
     - the existing Org row if found (caller continues the update on it), OR
-    - the freshly created Org row (early return; caller should propagate).
+    - the freshly created Org row (flushed but NOT committed; caller should
+      propagate). The caller validates the payload against this row and then
+      commits it together with the update, so a request that fails validation
+      leaves nothing behind.
     Returns ``None`` when no redirect is needed (target already
     belongs to the caller's Org, or caller is in "All" mode).
     """
@@ -1289,39 +1300,24 @@ async def _redirect_global_edit_to_org_row(
     # not a freshly invented custom backend. That keeps suffix-validation
     # and other built-in-aware code paths firing identically.
     #
-    # version_configs also inherits the Platform row's versions, with the
-    # payload layered on top. A bare "enable" carries no versions, so the
-    # catalog versions (community rows keep them here, tagged with
-    # built_in_frameworks) would otherwise be lost — leaving the Org row
-    # empty and its version blank in the uncollapsed "All" view, where the
-    # disabled Platform row is filtered out and can't fill the gap.
-    # The payload is untrusted: source ownership travels with the catalog
-    # row, never with client-supplied markers. Payload entries are seeded
-    # marker-less; a payload entry overriding a catalog version gets that
-    # version's marker restored below.
-    payload_versions = {}
-    if backend_in.version_configs:
-        payload_versions = {
-            version: config.model_copy(deep=True)
-            for version, config in backend_in.version_configs.root.items()
-        }
-        for config in payload_versions.values():
-            config.built_in_frameworks = None
-    seed_version_configs = VersionConfigDict(
-        root={
-            **(backend.version_configs.root if backend.version_configs else {}),
-            **payload_versions,
-        }
-    ).model_copy(deep=True)
-    if backend.version_configs:
-        for version, config in backend.version_configs.root.items():
-            if version in payload_versions and config.built_in_frameworks is not None:
-                seed_version_configs.root[version].built_in_frameworks = (
-                    config.built_in_frameworks
-                )
+    # version_configs also inherits the Platform row's versions. A bare
+    # "enable" carries no versions, so the catalog versions would otherwise
+    # be lost — leaving the Org row empty and its version blank in the
+    # uncollapsed "All" view, where the disabled Platform row is filtered
+    # out and can't fill the gap. The seed goes through the same
+    # source-ownership merge as the update itself: the payload is untrusted,
+    # so a payload entry colliding with a catalog version keeps the stored
+    # entry (content and marker) rather than layering client-supplied
+    # content under a restored catalog marker, and entries carrying a
+    # marker for unknown keys are dropped as untrusted.
+    payload_versions = None
+    if backend_in.version_configs and backend_in.version_configs.root:
+        payload_versions = backend_in.version_configs.model_copy(deep=True)
+        _drop_untrusted_marker_entries(backend, payload_versions)
+    seed_version_configs = _merge_source_owned_versions(backend, payload_versions)
     new_row = InferenceBackend(
         backend_name=backend_in.backend_name,
-        version_configs=seed_version_configs,
+        version_configs=seed_version_configs.model_copy(deep=True),
         default_version=backend_in.default_version,
         default_backend_param=backend_in.default_backend_param,
         default_run_command=backend_in.default_run_command,
@@ -1337,7 +1333,12 @@ async def _redirect_global_edit_to_org_row(
         icon=backend.icon,
         owner_principal_id=ctx.current_principal_id,
     )
-    return await InferenceBackend.create(session, new_row)
+    # Flush without committing: the caller runs the payload validations
+    # (removal, suffix, source-version edits) against this row and then
+    # commits it together with the update. If validation rejects the
+    # request, the session teardown rolls the seed back — an invalid PUT
+    # to the Platform row must not leave a half-seeded Org row behind.
+    return await InferenceBackend.create(session, new_row, auto_commit=False)
 
 
 @router.put("/{id}", response_model=InferenceBackend)
@@ -1379,8 +1380,21 @@ async def update_inference_backend(  # noqa: C901
             message=f"Built-in backend '{backend.backend_name}' cannot have default_version set. Default version is managed automatically.",
         )
 
-    if backend_in.version_configs is not None:
+    # An omitted version_configs means "leave the versions untouched": the
+    # field defaults to an empty dict, so a bare enable/disable would
+    # otherwise read as "replace with nothing" and silently delete every
+    # undeployed user-defined version. An explicit empty dict is still a
+    # replace request (e.g. clearing the last custom version) and keeps the
+    # removal checks below.
+    payload_has_versions = "version_configs" in backend_in.model_fields_set
+
+    if payload_has_versions:
+        # Entries carrying a marker for a key the stored row does not own are
+        # untrusted (see _drop_untrusted_marker_entries) and must be gone
+        # before the removal and suffix checks see them.
+        _drop_untrusted_marker_entries(backend, backend_in.version_configs)
         await _validate_version_removal(session, backend, backend_in.version_configs)
+        _reject_source_version_edits(backend, backend_in.version_configs)
 
     # Validate version names for custom backends before updating
     if backend.backend_source == BackendSourceEnum.CUSTOM or (
@@ -1395,18 +1409,18 @@ async def update_inference_backend(  # noqa: C901
     else:
         validate_custom_suffix(
             None,
-            backend_in.version_configs,
+            backend_in.version_configs if payload_has_versions else None,
             source_owned_versions=_source_owned_version_keys(backend),
         )
 
-    for version in backend_in.version_configs.root.keys():
-        backend_in.version_configs.root[version].built_in_frameworks = None
+    if payload_has_versions:
+        for version in backend_in.version_configs.root.keys():
+            backend_in.version_configs.root[version].built_in_frameworks = None
 
     try:
         # Use a dict for changes to prevent version_config serialization errors and None field overrides issues.
         update_data = {
             "backend_name": backend_in.backend_name,
-            "version_configs": backend_in.version_configs,
             "default_version": backend_in.default_version,
             "default_backend_param": backend_in.default_backend_param,
             "default_run_command": backend_in.default_run_command,
@@ -1414,15 +1428,22 @@ async def update_inference_backend(  # noqa: C901
             "health_check_path": backend_in.health_check_path,
             "description": backend_in.description,
             "default_env": backend_in.default_env,
-            "backend_source": backend_in.backend_source,
+            # backend_source is server-owned: the merge, suffix validation and
+            # the catalog sync all branch on it, so a payload that omits it or
+            # sends a different value must not demote the row.
+            "backend_source": backend.backend_source,
             "parameter_format": backend_in.parameter_format,
             "common_parameters": backend_in.common_parameters,
         }
-        if backend_in.backend_source == BackendSourceEnum.COMMUNITY:
+        if backend.backend_source == BackendSourceEnum.COMMUNITY:
             if backend_in.enabled is not None:
                 update_data["enabled"] = backend_in.enabled
-            update_data['version_configs'] = _merge_community_versions(
-                backend, update_data['version_configs']
+        if payload_has_versions:
+            # Source-owned versions survive the write on every row (see
+            # _merge_source_owned_versions); the payload manages only the
+            # user-defined ones.
+            update_data["version_configs"] = _merge_source_owned_versions(
+                backend, backend_in.version_configs
             )
 
         await backend.update(session, update_data)
@@ -1648,16 +1669,23 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             allowed_keys.append("default_version")
 
         yaml_data = {k: req_yaml_data[k] for k in allowed_keys if k in req_yaml_data}
+        # backend_source is server-owned (same rule as the JSON update route):
+        # the merge, suffix validation and the catalog sync all branch on it.
+        yaml_data["backend_source"] = backend.backend_source
 
-        # Process version_configs if present
+        # Process version_configs if present. The payload's markers survive
+        # processing on purpose: the untrusted ones are dropped and the rest
+        # are validated below before being cleared.
         yaml_data['version_configs'] = _process_version_configs(
             yaml_data.get('version_configs')
         )
+        _drop_untrusted_marker_entries(backend, yaml_data.get('version_configs'))
 
         # Check if any versions are being removed and validate they're not in use
         await _validate_version_removal(
             session, backend, yaml_data.get('version_configs')
         )
+        _reject_source_version_edits(backend, yaml_data.get('version_configs'))
 
         # Validate version names based on backend source
         if backend.backend_source == BackendSourceEnum.CUSTOM or (
@@ -1677,11 +1705,11 @@ async def update_inference_backend_from_yaml(  # noqa: C901
         # Clear built_in_frameworks for all versions in yaml_data
         _clear_built_in_frameworks(yaml_data.get('version_configs'))
 
-        # Merge built-in versions for COMMUNITY backends
-        if backend.backend_source == BackendSourceEnum.COMMUNITY:
-            yaml_data['version_configs'] = _merge_community_versions(
-                backend, yaml_data.get('version_configs')
-            )
+        # Source-owned versions survive the write on every row; the YAML
+        # manages only the user-defined ones.
+        yaml_data['version_configs'] = _merge_source_owned_versions(
+            backend, yaml_data.get('version_configs')
+        )
 
         # Validate YAML data using Pydantic model to ensure field types are correct
         try:
@@ -1716,9 +1744,6 @@ def _process_version_configs(
     """
     version_configs_dict = {}
     for version, config in version_configs_data.items() if version_configs_data else []:
-        # The payload's marker is client-supplied: clear it unconditionally
-        # ([] would otherwise survive a truthy check and dodge the suffix rule).
-        config['built_in_frameworks'] = None
         version_configs_dict[version] = VersionConfig(**config)
 
     return VersionConfigDict(root=version_configs_dict)
@@ -1733,14 +1758,14 @@ async def _validate_version_removal(
     Check if any versions are being removed and validate they're not in use.
     """
     # Get current versions (empty dict if none): user-owned versions only —
-    # source versions (built_in_frameworks is not None, [] included) are
-    # preserved by the merge and can never be removed here.
+    # source versions are preserved by the merge and can never be removed
+    # here.
     current_versions = {}
     if backend.version_configs and backend.version_configs.root:
         current_versions = {
             v: config
             for v, config in backend.version_configs.root.items()
-            if config.built_in_frameworks is None
+            if not _is_source_owned(config)
         }
 
     # Get new versions (empty dict if none)
@@ -1773,39 +1798,102 @@ def _clear_built_in_frameworks(version_configs: Optional[VersionConfigDict]):
         version_config.built_in_frameworks = None
 
 
-def _merge_community_versions(
+def _drop_untrusted_marker_entries(
+    backend: InferenceBackend,
+    version_configs: Optional[VersionConfigDict],
+) -> None:
+    """Drop payload entries carrying a ``built_in_frameworks`` marker for a
+    key the stored row does not own, in place.
+
+    The marker is client-supplied and untrusted, so the entry cannot be
+    honored as source data. Neither may it continue through validation as
+    user data: a forged marker would then dodge the '-custom' suffix rule
+    and land in the row unsuffixed. Dropping covers both legitimate shapes
+    of such an entry — a runner version echoed from the list response's
+    ``built_in_version_configs`` (built-in backends keep those out of
+    ``version_configs`` entirely), and a catalog version the source removed
+    between the client's GET and PUT — and keeps the echo round trip
+    idempotent: the write applies to user-defined versions only.
+    """
+    if not version_configs or not version_configs.root:
+        return
+    owned = _source_owned_version_keys(backend)
+    version_configs.root = {
+        version: config
+        for version, config in version_configs.root.items()
+        if config.built_in_frameworks is None or version in owned
+    }
+
+
+def _reject_source_version_edits(
+    backend: InferenceBackend,
+    version_configs: Optional[VersionConfigDict],
+) -> None:
+    """Reject a payload entry that modifies a stored source-owned version.
+
+    Source versions are catalog-managed: this API manages user-defined
+    '-custom' versions only. An entry colliding with a source-owned key is
+    kept as the stored entry by the merge, so a modified entry would
+    otherwise return 200 while silently discarding the edit. An identical
+    echo (field-for-field, ignoring the untrusted ``built_in_frameworks``
+    marker) is the round trip this route exists to support and passes.
+    """
+    if (
+        not version_configs
+        or not version_configs.root
+        or not backend.version_configs
+        or not backend.version_configs.root
+    ):
+        return
+    for version, config in version_configs.root.items():
+        stored = backend.version_configs.root.get(version)
+        if stored is None or not _is_source_owned(stored):
+            continue
+        payload_fields = config.model_dump(exclude={"built_in_frameworks"})
+        stored_fields = stored.model_dump(exclude={"built_in_frameworks"})
+        if payload_fields != stored_fields:
+            raise BadRequestException(
+                message=(
+                    f"Version '{version}' of backend '{backend.backend_name}' is "
+                    "managed by the backend source and cannot be modified"
+                ),
+            )
+
+
+def _merge_source_owned_versions(
     backend: InferenceBackend,
     new_version_configs: Optional[VersionConfigDict],
 ) -> VersionConfigDict:
     """
-    Merge built-in versions with new versions for COMMUNITY backends.
+    Merge source-owned versions with the payload's user-defined versions.
 
     New entries whose key matches a stored source-owned version are dropped:
     the request payload carries no trusted built_in_frameworks marker (it is
     cleared before merging), so letting such an entry through would overwrite
     the stored entry with a framework-less copy and leave models pinned to
     that version unschedulable. Source versions are owned by the catalog
-    (``built_in_frameworks is not None``, ``[]`` included — see
-    ``_source_owned_versions``); this API only manages user-defined
-    '-custom' versions.
+    (``_is_source_owned``); this API only manages user-defined '-custom'
+    versions.
+
+    Applies to every row, not only community ones: a row a source no longer
+    owns may still carry marked versions, and dropping them on write would
+    bypass the in-use check.
 
     Returns:
-        VersionConfigDict: Merged version configurations with built-in versions preserved
+        VersionConfigDict: Merged version configurations with source-owned versions preserved
     """
     # Extract source-owned versions from current backend
     built_in_versions = {}
     if backend.version_configs and backend.version_configs.root:
         built_in_versions = {
-            k: v
-            for k, v in backend.version_configs.root.items()
-            if v.built_in_frameworks is not None
+            k: v for k, v in backend.version_configs.root.items() if _is_source_owned(v)
         }
 
     if not new_version_configs or not new_version_configs.root:
         return VersionConfigDict(root=built_in_versions)
 
-    # Merge: built-in versions + user-defined versions. A collision key keeps
-    # the stored built-in entry (see docstring).
+    # Merge: source-owned versions + user-defined versions. A collision key
+    # keeps the stored source-owned entry (see docstring).
     user_versions = {
         k: v for k, v in new_version_configs.root.items() if k not in built_in_versions
     }
