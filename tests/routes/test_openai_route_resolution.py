@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -43,6 +44,7 @@ def _stub_resolution(monkeypatch, *, route):
 def _request():
     request = MagicMock()
     request.url.path = "/v1-openai/chat/completions"
+    request.receive = AsyncMock(side_effect=asyncio.Event().wait)
     return request
 
 

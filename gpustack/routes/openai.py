@@ -2,7 +2,7 @@ import json
 import re
 import random
 import asyncio
-from typing import AsyncGenerator, List, Optional, Tuple, Union, Dict
+from typing import Any, AsyncGenerator, Coroutine, List, Optional, Tuple, Union, Dict
 import aiohttp
 import logging
 
@@ -324,17 +324,23 @@ async def proxy_request_by_model(
             # malformed body) carries the status and message the caller needs,
             # and raising would flatten every 4xx into the 503 below. The
             # streaming branch forwards the same statuses for the same reason.
-            resp, body = await request_to_worker(
-                worker=worker,
-                method=request.method,
-                path=path,
-                proxy_client=request.app.state.http_client,
-                no_proxy_client=request.app.state.http_client_no_proxy,
-                data=data,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT),
-                raise_on_error=False,
+            result = await _request_until_disconnect(
+                request,
+                request_to_worker(
+                    worker=worker,
+                    method=request.method,
+                    path=path,
+                    proxy_client=request.app.state.http_client,
+                    no_proxy_client=request.app.state.http_client_no_proxy,
+                    data=data,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT),
+                    raise_on_error=False,
+                ),
             )
+            if result is None:
+                return Response(status_code=499)
+            resp, body = result
             # The worker's headers must not be forwarded verbatim: aiohttp
             # hands over an already-decoded body, so a Content-Encoding or
             # Content-Length from the worker leg describes a body the caller
@@ -365,6 +371,32 @@ async def proxy_request_by_model(
             message=error_message,
             is_openai_exception=True,
         )
+
+
+async def _request_until_disconnect(
+    request: Request,
+    upstream: Coroutine[Any, Any, Tuple[aiohttp.ClientResponse, Optional[bytes]]],
+) -> Optional[Tuple[aiohttp.ClientResponse, Optional[bytes]]]:
+    # The inbound body has already been buffered, so receiving here cannot
+    # consume upload data needed by the worker request.
+    async def wait_for_disconnect() -> None:
+        while (await request.receive())["type"] != "http.disconnect":
+            pass
+
+    work = asyncio.create_task(upstream)
+    watcher = asyncio.create_task(wait_for_disconnect())
+    try:
+        done, _ = await asyncio.wait(
+            {work, watcher}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if watcher in done:
+            watcher.result()
+            return None
+        return work.result()
+    finally:
+        work.cancel()
+        watcher.cancel()
+        await asyncio.gather(work, watcher, return_exceptions=True)
 
 
 async def parse_request_body(request: Request):
