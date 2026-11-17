@@ -1300,24 +1300,37 @@ async def _redirect_global_edit_to_org_row(
     # not a freshly invented custom backend. That keeps suffix-validation
     # and other built-in-aware code paths firing identically.
     #
-    # version_configs also inherits the Platform row's versions. A bare
-    # "enable" carries no versions, so the catalog versions would otherwise
-    # be lost — leaving the Org row empty and its version blank in the
+    # version_configs also inherits the Platform row's versions — all of
+    # them, user-defined ones included. The Platform row can carry
+    # '-custom' versions a platform admin added in "All" mode, and once the
+    # Org row exists nothing re-inherits them, so dropping them here would
+    # silently remove those versions for the org. A bare "enable" carries
+    # no versions, so the catalog versions would otherwise be lost
+    # entirely — leaving the Org row empty and its version blank in the
     # uncollapsed "All" view, where the disabled Platform row is filtered
-    # out and can't fill the gap. The seed goes through the same
-    # source-ownership merge as the update itself: the payload is untrusted,
-    # so a payload entry colliding with a catalog version keeps the stored
-    # entry (content and marker) rather than layering client-supplied
-    # content under a restored catalog marker, and entries carrying a
-    # marker for unknown keys are dropped as untrusted.
+    # out and can't fill the gap. The payload layers user-defined entries
+    # on top of that inheritance: a payload entry colliding with a
+    # source-owned stored version keeps the stored entry (content and
+    # marker), and entries carrying a marker for unknown keys were already
+    # dropped as untrusted above.
     payload_versions = None
     if backend_in.version_configs and backend_in.version_configs.root:
         payload_versions = backend_in.version_configs.model_copy(deep=True)
         _drop_untrusted_marker_entries(backend, payload_versions)
-    seed_version_configs = _merge_source_owned_versions(backend, payload_versions)
+    seed_versions = {
+        version: config.model_copy(deep=True)
+        for version, config in (
+            backend.version_configs.root if backend.version_configs else {}
+        ).items()
+    }
+    if payload_versions is not None:
+        for version, config in payload_versions.root.items():
+            stored = seed_versions.get(version)
+            if stored is None or not _is_source_owned(stored):
+                seed_versions[version] = config
     new_row = InferenceBackend(
         backend_name=backend_in.backend_name,
-        version_configs=seed_version_configs.model_copy(deep=True),
+        version_configs=VersionConfigDict(root=seed_versions),
         default_version=backend_in.default_version,
         default_backend_param=backend_in.default_backend_param,
         default_run_command=backend_in.default_run_command,

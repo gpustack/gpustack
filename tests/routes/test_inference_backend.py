@@ -113,6 +113,84 @@ async def test_redirect_seed_is_flushed_without_commit(monkeypatch):
     assert create_mock.await_args.kwargs["auto_commit"] is False
 
 
+def _platform_community_backend_with_user_version() -> InferenceBackend:
+    """A Platform community row that also carries a user-defined '-custom'
+    version — a platform admin editing the Global row in "All" mode writes
+    such versions onto it."""
+    platform = _platform_community_backend()
+    platform.version_configs.root["v1-custom"] = VersionConfig(image_name="custom:v1")
+    return platform
+
+
+@pytest.mark.asyncio
+async def test_redirect_seed_inherits_stored_user_defined_versions(monkeypatch):
+    """The seed inherits every stored version, user-defined ones included:
+    once the Org row exists nothing re-inherits them, so dropping the ones
+    absent from the payload would silently remove those versions for the
+    org."""
+    platform = _platform_community_backend_with_user_version()
+    backend_in = InferenceBackendUpdate(
+        backend_name="my-community",
+        backend_source=BackendSourceEnum.COMMUNITY,
+        enabled=True,
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_fields", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        InferenceBackend,
+        "create",
+        AsyncMock(side_effect=lambda session, obj, **kwargs: obj),
+    )
+
+    created = await ib_route._redirect_global_edit_to_org_row(
+        MagicMock(), _org_ctx(42), platform, backend_in
+    )
+
+    assert set(created.version_configs.root.keys()) == {"v1", "v2", "v1-custom"}
+    assert created.version_configs.root["v1-custom"].image_name == "custom:v1"
+    assert created.version_configs.root["v1-custom"].built_in_frameworks is None
+
+
+@pytest.mark.asyncio
+async def test_redirect_seed_inherits_user_versions_alongside_payload_edits(
+    monkeypatch,
+):
+    """A payload that edits user-defined versions layers over the
+    inheritance: stored user-defined versions absent from the payload
+    survive, payload ones take their updates."""
+    platform = _platform_community_backend_with_user_version()
+    backend_in = InferenceBackendUpdate(
+        backend_name="my-community",
+        backend_source=BackendSourceEnum.COMMUNITY,
+        enabled=True,
+        version_configs=VersionConfigDict(
+            root={"v2-custom": VersionConfig(image_name="custom:v2")}
+        ),
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_fields", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        InferenceBackend,
+        "create",
+        AsyncMock(side_effect=lambda session, obj, **kwargs: obj),
+    )
+
+    created = await ib_route._redirect_global_edit_to_org_row(
+        MagicMock(), _org_ctx(42), platform, backend_in
+    )
+
+    assert set(created.version_configs.root.keys()) == {
+        "v1",
+        "v2",
+        "v1-custom",
+        "v2-custom",
+    }
+    assert created.version_configs.root["v1-custom"].image_name == "custom:v1"
+    assert created.version_configs.root["v2-custom"].image_name == "custom:v2"
+    # The catalog versions and their markers are inherited untouched.
+    assert created.version_configs.root["v1"].built_in_frameworks == ["vllm"]
+
+
 @pytest.mark.asyncio
 async def test_redirect_seed_keeps_stored_version_on_collision(monkeypatch):
     """A payload entry colliding with a catalog version never wins the seed:
