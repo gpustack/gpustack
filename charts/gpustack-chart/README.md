@@ -43,20 +43,20 @@ kubectl version
 The GPUStack Helm chart is published as an OCI artifact to Docker Hub at `oci://registry-1.docker.io/gpustack/gpustack-chart`. Install GPUStack directly from the registry:
 
 ```bash
-helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace
+helm install -n gpustack-system gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace
 ```
 
 To install a specific chart version, append `--version <chart-version>`:
 
 ```bash
-helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
+helm install -n gpustack-system gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
   --version <chart-version>
 ```
 
 By default, the `higress-core` sub-chart is enabled and deployed alongside GPUStack. If you already have Higress installed in your cluster, disable the bundled Higress and point GPUStack to your existing instance:
 
 ```bash
-helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
+helm install -n gpustack-system gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
   --set higress-core.enabled=false \
   --set gateway.ingressClassname=<your-higress-ingressclass>
 ```
@@ -186,7 +186,7 @@ worker:
 To pull all images (gpustack server/worker and higress-plugins, the bundled higress-core gateway/controller/pilot, and the gpustack-operator with the Kueue / NFD / CSI charts under it) from a mirrored private registry, override `global.hub`:
 
 ```bash
-helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
+helm install -n gpustack-system gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
   --set global.hub=myregistry.example.com
 ```
 
@@ -212,14 +212,14 @@ GPUStack supports two ways to configure image pull credentials, which may be com
 1. Reference one or more existing Secrets in the release namespace:
 
    ```bash
-   helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
+   helm install -n gpustack-system gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
      --set global.imagePullSecrets[0].name=my-existing-secret
    ```
 
 2. Provide registry credentials; the chart creates a `docker-registry` Secret named `gpustack-image-pull-secret` and references it automatically:
 
    ```bash
-   helm install -n gpustack-system gpustack oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
+   helm install -n gpustack-system gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
      --set imagePullSecret.credentials.registry=registry.example.com \
      --set imagePullSecret.credentials.username=myuser \
      --set imagePullSecret.credentials.password=mypassword
@@ -248,11 +248,11 @@ higress-core:
 After installing all required charts, retrieve the initial admin password for the GPUStack server with:
 
 ```bash
-kubectl exec -it -n gpustack-system gpustack-server-0 -- cat /var/lib/gpustack/initial_admin_password
+kubectl exec -it -n gpustack-system gpustack-server-server-0 -- cat /var/lib/gpustack/initial_admin_password
 ```
 
 If you did not specify `server.ingress.hostname`, you can obtain the GPUStack Server UI address with:
 
 ```bash
-kubectl get ingress -n gpustack-system gpustack -o jsonpath="{.status.loadBalancer.ingress[0].ip}"
+kubectl get ingress -n gpustack-system gpustack-server -o jsonpath="{.status.loadBalancer.ingress[0].ip}"
 ```

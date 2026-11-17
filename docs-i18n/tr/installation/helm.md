@@ -53,14 +53,20 @@ Chart, Docker Hub'da `oci://registry-1.docker.io/gpustack/gpustack-chart`'da OCI
 En son kararlı sürümü yükleyin. `--version` atlandığında, Helm en yeni kararlı chart sürümünü otomatik olarak çözer ve geliştirme/yayın öncesi derlemeleri atlar:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace
 ```
+
+!!! note
+
+    Sürüm adı bilinçli olarak `gpustack` yerine `gpustack-server` olarak seçilmiştir: Sunucunun kendi kümesini **Register Cluster** aracılığıyla çalışan olarak kaydettiğinizde, aynı `gpustack-system` ad alanına `gpustack` adı sabitlenmiş yalnızca çalışan (worker-only) bir Helm sürümü yüklenir. Sunucu sürümü için farklı bir ad bu çakışmayı önler; böylece aynı ad alanına küme kaydetme ve çalışanları sonradan yükseltme işlemlerinde sürüm adı çakışması riski olmaz. `gpustack` adıyla kurulmuş mevcut bir kurulum çalışmaya devam eder; `helm upgrade gpustack-server …` komutunu yalnızca yukarıdaki adla kurulum yaptıysanız kullanın.
+
+    Bu, varsayılan `worker.enabled=false` değeri için geçerlidir. Sunucu sürümünde chart yönetimli çalışanları etkinleştirirseniz (`worker.enabled=true`), sunucu sürümü de sabit adlı nesneleri (`worker-config` ConfigMap'i, `worker` Service'i ve `registration-token` Secret'ı) işler ve aynı ad alanına kayıt, bootstrap ön kontrolü tarafından reddedilir (bu reddedilmeden önce kayıt manifesti, sunucu bölmesinin okuduğu `registration-token` Secret'ını zaten değiştirmiş olur). Bu durumda kümeyi farklı bir ad alanına kaydedin.
 
 Belirli bir sürümü sabitlemek için `--version <chart-version>` ekleyin (chart sürümü GPUStack sürümüyle eşleşir, örneğin `2.2.0`):
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --version <chart-version>
 ```
@@ -68,7 +74,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 Varsayılan olarak `higress-core` alt chart'ı etkinleştirilir ve GPUStack ile birlikte dağıtılır. Kümenizde zaten Higress yüklüyse, birlikte verilen Higress'i devre dışı bırakın ve GPUStack'i mevcut örneğinize yönlendirin:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set higress-core.enabled=false \
   --set gateway.ingressClassname=<your-higress-ingressclass>
@@ -84,7 +90,7 @@ Alternatif olarak, depoyu kopyalayın ve yerel chart dizininden yükleyin (ağda
 git clone https://github.com/gpustack/gpustack.git
 cd gpustack/charts
 helm dependency update ./gpustack-chart
-helm install gpustack ./gpustack-chart \
+helm install gpustack-server ./gpustack-chart \
   --namespace gpustack-system --create-namespace
 ```
 
@@ -120,17 +126,17 @@ Sunucu bölmesinin hazır olmasını bekleyin:
 kubectl get pods -n gpustack-system -w
 ```
 
-İlk yönetici şifresini alın:
+İlk yönetici şifresini alın. Sunucu bölmesinin adı `<release-name>-server-0` şeklindedir (varsayılan `gpustack-server` sürümü için `gpustack-server-server-0`):
 
 ```bash
-kubectl exec -it -n gpustack-system gpustack-server-0 -- \
+kubectl exec -it -n gpustack-system gpustack-server-server-0 -- \
   cat /var/lib/gpustack/initial_admin_password
 ```
 
-`server.ingress.hostname` ayarlamadıysanız, girişten GPUStack UI adresini alın:
+`server.ingress.hostname` ayarlamadıysanız, girişten GPUStack UI adresini alın. Giriş adı sürüm adıyla aynıdır (varsayılan olarak `gpustack-server`):
 
 ```bash
-kubectl get ingress -n gpustack-system gpustack \
+kubectl get ingress -n gpustack-system gpustack-server \
   -o jsonpath="{.status.loadBalancer.ingress[0].ip}"
 ```
 
@@ -143,7 +149,7 @@ Adresi bir tarayıcıda açın ve `admin` kullanıcı adı ve yukarıda alınan 
 Worker DaemonSet'ler varsayılan olarak devre dışıdır (`worker.enabled=false`). Etkinleştirildiğinde, chart bir CPU çalışan DaemonSet'i (`<release>-worker`) ve `worker.gpuVendors`'de listelenen GPU satıcısı başına bir DaemonSet'i (`<release>-worker-<vendor>` olarak adlandırılır) oluşturur.
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set worker.enabled=true \
   --set 'worker.gpuVendors={nvidia}'
@@ -160,7 +166,7 @@ En az bir GPU satıcısı listelendiğinde (yani `worker.gpuVendors` boş değil
 CPU işçisi DaemonSet, `nodeSelector` `feature.gpustack.ai/acceleratable: "false"` aracılığıyla GPU satıcısının talep etmediği düğümleri kapsar. Bu düğümleri yalnız bırakmak için `worker.cpuEnabled=false`'yi ayarlayın; genellikle kontrol düzlemi kümeyi GPU düğümleriyle paylaştığında ve işçi kazanmaması gerektiğinde:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set worker.enabled=true \
   --set worker.cpuEnabled=false \
@@ -176,7 +182,7 @@ Alternatif olarak, kurulumdan sonra **Clusters** ve **Workers** sayfalarındaki 
 GPUStack varsayılan olarak yerleşik PostgreSQL veritabanını kullanır. Harici bir PostgreSQL veya MySQL veritabanı kullanmak için `server.externalDatabaseURL` değerini ayarlayın:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set server.externalDatabaseURL="postgresql://user:password@host:port/dbname"
 ```
@@ -202,7 +208,7 @@ server:
 ```
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   -f values.yaml
 ```
@@ -212,7 +218,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 Tüm imajları (GPUStack sunucusu/çalışanı, higress eklentileri ve paket halindeki higress-core ağ geçidi/denetleyici/pilot) yansıtılmış özel bir kayıt defterinden çekmek için `global.hub`'i geçersiz kılın. Bu, Helm'in global değerleri yayılımına dayanır, dolayısıyla her imajı kapsayan tek bir ayar vardır:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set global.hub=myregistry.example.com
 ```
@@ -222,7 +228,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 Çekme kimlik bilgilerini sağlamak için chart, `gpustack-image-pull-secret` adında bir `docker-registry` Sırrı oluşturabilir ve bunu tüm bölmelere bağlayabilir:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set imagePullSecret.credentials.registry=registry.example.com \
   --set imagePullSecret.credentials.username=myuser \
@@ -314,10 +320,11 @@ Bu Helm sürümü sunucudan fazlasını kurar: `gpustack-operator` alt chart'ı 
     kubectl delete resourceflavors.kueue.x-k8s.io --all
     ```
 
-4. Sürümü kaldırın. `--wait` parametresini kullanmayın: Node Feature Discovery'nin silme sonrası temizleme hook'u, silme işleminin tamamlanmasını `--timeout` süresinden daha uzun süre bekletir. Bundan çıkmak için Helm'i zorla sonlandırmak, temizlemeye ait RBAC kaynaklarını sahipsiz bırakır (5. adımda bunlar elle kaldırılır; `--wait` kullanmasanız da 5. adımı uygulayın):
+4. Ad alanındaki **tüm** GPUStack sürümlerini kaldırın. Bu sayfanın önerdiği yapıda — sunucu `gpustack-server` adıyla varsayılan `worker.enabled=false` ile kurulur ve aynı küme **Register Cluster** aracılığıyla kaydedilerek `gpustack-system` içine `gpustack` adlı yalnızca çalışan bir sürüm yüklenir — operatör, Kueue ve Node Feature Discovery çalışan sürümüne aittir, sunucu sürümüne değil; bu nedenle yalnızca sunucu sürümünü kaldırmak, çalışan sürümünü ve denetleyicilerini çalışır durumda bırakır. `helm list -n gpustack-system` ile kontrol edin ve listelenen her GPUStack sürümünü kaldırın. Kümeyi farklı bir ad alanına kaydettiyseniz (örneğin sunucu sürümünde `worker.enabled=true` etkinken — yukarıdaki nota bakın), aynı kaldırma işlemini o ad alanında da yineleyin: oradaki yalnızca çalışan sürüm kendi operatörünü, Kueue'sunu ve Node Feature Discovery'sini taşır. `--wait` parametresini kullanmayın: Node Feature Discovery'nin silme sonrası temizleme hook'u, silme işleminin tamamlanmasını `--timeout` süresinden daha uzun süre bekletir. Bundan çıkmak için Helm'i zorla sonlandırmak, temizlemeye ait RBAC kaynaklarını sahipsiz bırakır (5. adımda bunlar elle kaldırılır; `--wait` kullanmasanız da 5. adımı uygulayın):
 
     ```bash
-    helm uninstall gpustack -n gpustack-system
+    helm list -n gpustack-system -q | grep -E '^gpustack(-server)?$' \
+      | xargs -r -n 1 helm uninstall -n gpustack-system
     ```
 
 5. `helm uninstall` komutunun kaldırmadığı kaynakları kaldırın. Helm, CRD'leri hiçbir zaman silmez; operatör de hiçbir sürümün sahip olmadığı admission webhook'ları ve APIServices kaydeder. Operatörün Service'i artık bulunmadığından her ikisi de hata durumunda istekleri reddeder (fail closed); webhook'lar silinene kadar aşağıdaki finalizer kaldırma işlemini de reddeder:
@@ -343,7 +350,7 @@ Bu Helm sürümü sunucudan fazlasını kurar: `gpustack-operator` alt chart'ı 
 
     ```bash
     kubectl get crd -o json | jq -r '.items[]
-      | select(((.metadata.annotations // {})["meta.helm.sh/release-name"] // "") == "gpustack")
+      | select(((.metadata.annotations // {})["meta.helm.sh/release-name"] // "") | test("^gpustack(-server)?$"))
       | .metadata.name'
     ```
 
@@ -359,9 +366,10 @@ Bu Helm sürümü sunucudan fazlasını kurar: `gpustack-operator` alt chart'ı 
 
     Küme sağlayıcısının kendi CRD'leri hiçbir zaman GPUStack'in silinecekleri değildir — örneğin bir k3s kümesindeki `*.k3s.cattle.io` ve `helm.cattle.io` kümeye aittir.
 
-7. *(İsteğe bağlı)* Higress nesnelerini, bootstrap ConfigMap'i, ServiceAccount'u ve Secret kayıt belirtecini kendisiyle birlikte alan ad alanını silin. Bununla birlikte ne olacağını bilin: Ad alanı, sunucunun kalıcı verilerini (kullanıcıları, modelleri ve kümeleriyle birlikte yerleşik PostgreSQL veritabanı) taşıyan sunucunun PVC'sini (`gpustack-data-dir-gpustack-server-0`, `<volumeClaimTemplate>-<statefulset>-<ordinal>`) tutar. `Delete` geri alma politikasında (`local-path` varsayılan) temeldeki birim de silinir. Verilerin yeniden yüklenmesini istiyorsanız ad alanını koruyun; aksi halde ad alanını silin (ve geri alma politikası zaten kaldırmıyorsa önce PVC'yi):
+7. *(İsteğe bağlı)* Higress nesnelerini, bootstrap ConfigMap'i, ServiceAccount'u ve Secret kayıt belirtecini kendisiyle birlikte alan ad alanını silin. Bununla birlikte ne olacağını bilin: Ad alanı, sunucunun kalıcı verilerini (kullanıcıları, modelleri ve kümeleriyle birlikte yerleşik PostgreSQL veritabanı) taşıyan sunucunun PVC'sini (`gpustack-data-dir-<release-name>-server-0` olarak adlandırılır, örneğin varsayılan `gpustack-server` sürümü için `gpustack-data-dir-gpustack-server-server-0`) tutar. `Delete` geri alma politikasında (`local-path` varsayılan) temeldeki birim de silinir. Verilerin yeniden yüklenmesini istiyorsanız ad alanını koruyun; aksi halde ad alanını silin (ve geri alma politikası zaten kaldırmıyorsa önce PVC'yi):
 
     ```bash
-    kubectl delete pvc gpustack-data-dir-gpustack-server-0 -n gpustack-system
+    kubectl get pvc -n gpustack-system -o name | grep -E '^persistentvolumeclaim/gpustack-data-dir-.*-server-0$' \
+      | xargs -r -n 1 kubectl delete -n gpustack-system
     kubectl delete namespace gpustack-system
     ```

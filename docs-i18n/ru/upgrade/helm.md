@@ -16,19 +16,24 @@ translation_status: translated
 
     **Сначала сделайте резервную копию:** Прежде чем приступить к обновлению, настоятельно рекомендуется создать резервную копию базы данных.
 
-    Если вы используете встроенную базу данных PostgreSQL, ее данные находятся в PVC сервера (с именем `gpustack-data-dir-<release-name>-server-0`, например `gpustack-data-dir-gpustack-server-0` для выпуска по умолчанию `gpustack`), который монтируется внутри модуля сервера в `/var/lib/gpustack`; встроенный каталог данных PostgreSQL находится под этим монтированием по адресу `postgresql/data`. Создайте резервную копию перед обновлением.
+    Если вы используете встроенную базу данных PostgreSQL, ее данные находятся в PVC сервера (с именем `gpustack-data-dir-<release-name>-server-0`, например `gpustack-data-dir-gpustack-server-server-0` для выпуска по умолчанию `gpustack-server`), который монтируется внутри модуля сервера в `/var/lib/gpustack`; встроенный каталог данных PostgreSQL находится под этим монтированием по адресу `postgresql/data`. Создайте резервную копию перед обновлением.
 
     Если вы используете внешнюю базу данных (`server.externalDatabaseURL`), вместо этого следуйте процедуре резервного копирования вашего поставщика базы данных.
 
 ## Обновить версию { #upgrade-the-release }
 
-Всегда закрепляйте целевую версию с помощью `--version <chart-version>`, чтобы обновление выполнялось на известной, воспроизводимой версии (версия чарта соответствует выпуску GPUStack, например `2.2.0`). Повторно используйте значения, которые вы указали во время установки, передав те же флаги `-f values.yaml` (и/или `--set`), которые вы использовали изначально, или `--reuse-values`, чтобы сохранить ранее примененные значения:
+Всегда закрепляйте целевую версию с помощью `--version <chart-version>`, чтобы обновление выполнялось на известной, воспроизводимой версии (версия чарта соответствует выпуску GPUStack, например `2.2.0`), и повторно используйте значения, указанные при установке, передав те же флаги `-f values.yaml` (и/или `--set`), или `--reuse-values` для сохранения ранее примененных значений. Имя выпуска зависит от документации, которой вы следовали при установке: старые инструкции использовали `gpustack`, текущие — `gpustack-server`, поэтому приведенная ниже команда автоматически выводит его из аннотаций `meta.helm.sh/release-name` StatefulSet'ов в пространстве имен (рабочие выпуски, зарегистрированные через кластеры GPUStack, не владеют StatefulSet'ами и исключаются шаблоном) и выполняет обновление, только если найден ровно один совпадающий выпуск:
 
 ```bash
-helm upgrade gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
-  --namespace gpustack-system \
-  --version <chart-version> \
-  -f values.yaml
+RELEASE_NAME=$(kubectl get statefulset -n gpustack-system \
+  -o jsonpath='{range .items[*]}{.metadata.annotations.meta\.helm\.sh/release-name}{"\n"}{end}' \
+  | grep -E '^gpustack(-server)?$' | sort -u)
+[ "$(printf '%s\n' "$RELEASE_NAME" | grep -c .)" -eq 1 ] \
+  || { echo "expected one GPUStack server release in gpustack-system, got: '$RELEASE_NAME'" >&2; false; } \
+  && helm upgrade "$RELEASE_NAME" oci://registry-1.docker.io/gpustack/gpustack-chart \
+    --namespace gpustack-system \
+    --version <chart-version> \
+    -f values.yaml
 ```
 
 !!! warning
@@ -40,7 +45,7 @@ helm upgrade gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 Сервер GPUStack развертывается как `StatefulSet`, а рабочие процессы, управляемые чартом, как `DaemonSet`, поэтому оба они переводятся на новый образ в рамках обновления выпуска. Поскольку сервер и рабочие процессы принадлежат к **одному и тому же выпуску**, порядок «сначала сервер, затем рабочие» не может быть реализован с помощью одного `helm upgrade`. Если в вашей среде важен строгий порядок, подождите, пока серверный модуль будет готов, прежде чем разрешать рабочие модули:
 
 ```bash
-kubectl rollout status statefulset/<release-name>-server -n gpustack-system
+kubectl rollout status statefulset/${RELEASE_NAME}-server -n gpustack-system
 ```
 
 Рабочие процессы, которые были зарегистрированы вне чарта через кластеры GPUStack (например, кластеры Docker или Kubernetes, добавленные через пользовательский интерфейс), не управляются этой версией Helm и должны быть обновлены, выполнив шаги [Обновление развертывания кластера](cluster.md).
