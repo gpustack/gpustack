@@ -160,55 +160,36 @@ async def _cancel_on_client_disconnect(
 
     ``discard`` releases a result that completed but can no longer be used.
     """
+
+    def discard_if_completed(task: asyncio.Task[T]) -> None:
+        if not task.cancelled() and task.exception() is None:
+            discard(task.result())
+
     work = asyncio.create_task(coro)
     watcher = asyncio.create_task(_wait_for_client_disconnect(request, body_consumed))
     try:
         await asyncio.wait({work, watcher}, return_when=asyncio.FIRST_COMPLETED)
-    except asyncio.CancelledError:
+        if not watcher.done():
+            watcher.cancel()
+            # An outer cancellation must propagate even while the watcher stops.
+            await asyncio.gather(watcher, return_exceptions=True)
+            if watcher.cancelled():
+                return work.result()
+
+        # A successful watcher consumed the disconnect, including when it raced
+        # cancellation. If listening failed, propagate that error instead.
+        watcher.result()
+        raise _ClientDisconnected()
+    except BaseException:
         work.cancel()
         watcher.cancel()
-        await asyncio.gather(work, watcher, return_exceptions=True)
-        # Cancellation can race an upstream response that already owns a connection.
-        if not work.cancelled() and work.exception() is None:
-            discard(work.result())
-        raise
-
-    if not watcher.done():
-        watcher.cancel()
-        try:
-            await watcher
-        except asyncio.CancelledError:
-            pass
+        if work.done():
+            discard_if_completed(work)
         else:
-            # The watcher raced the cancellation and already consumed the
-            # http.disconnect message; nobody is listening anymore.
-            if not work.cancelled() and work.exception() is None:
-                discard(work.result())
-            raise _ClientDisconnected()
-        return work.result()
-
-    # The watcher finished: either the client disconnected, or listening for
-    # it failed, in which case that error is propagated rather than being
-    # mistaken for a disconnect.
-    watcher_error = watcher.exception()
-    if work.done():
-        # Both finished in the same loop iteration. The disconnect message has
-        # already been consumed here, so the StreamingResponse's own
-        # disconnect watch would never fire and the response would be relayed
-        # to nobody until the upstream finished: discard it instead.
-        if not work.cancelled() and work.exception() is None:
-            discard(work.result())
-    else:
-        work.cancel()
-        try:
-            await work
-        except asyncio.CancelledError:
-            # Only the deliberate cancellation is absorbed.
-            pass
-
-    if watcher_error is not None:
-        raise watcher_error
-    raise _ClientDisconnected()
+            # A second cancellation can interrupt the wait, but not result cleanup.
+            work.add_done_callback(discard_if_completed)
+        await asyncio.gather(work, watcher, return_exceptions=True)
+        raise
 
 
 def _filter_response_headers(resp_headers) -> List[Tuple[str, str]]:

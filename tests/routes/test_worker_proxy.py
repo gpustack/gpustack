@@ -626,14 +626,31 @@ class TestCancelOnClientDisconnect:
         assert discarded == (["upstream"] if outcome == "success" else [])
 
     @pytest.mark.asyncio
-    async def test_handler_cancellation_discards_completed_upstream(self):
+    @pytest.mark.parametrize("timing", ["once", "twice", "late_result"])
+    async def test_handler_cancellation_discards_completed_upstream(self, timing):
         discarded = []
+        listening = asyncio.Event()
+        watcher_cancelled = asyncio.Event()
+        cancel_twice = timing != "once"
 
         async def never_disconnects():
-            await asyncio.Event().wait()
+            listening.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if cancel_twice:
+                    watcher_cancelled.set()
+                    await asyncio.Event().wait()
+                raise
 
         async def work():
+            await listening.wait()
             task.cancel()
+            if timing == "late_result":
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    pass
             return "upstream"
 
         task = asyncio.create_task(
@@ -644,8 +661,16 @@ class TestCancelOnClientDisconnect:
                 discard=discarded.append,
             )
         )
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        try:
+            if cancel_twice:
+                await asyncio.wait_for(watcher_cancelled.wait(), 1)
+                task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         assert discarded == ["upstream"]
 
     @pytest.mark.asyncio
@@ -721,6 +746,44 @@ class TestCancelOnClientDisconnect:
         )
         assert result == "upstream"
         assert received == []
+
+
+@pytest.mark.asyncio
+async def test_stream_read_failure_closes_upstream_response():
+    body = ScriptedBody([(0, b"data: first\n\n"), (0, ConnectionResetError("reset"))])
+    upstream = SimpleNamespace(
+        status=200,
+        headers={"content-type": "text/event-stream"},
+        content=SimpleNamespace(iter_chunked=lambda size: body),
+        close=Mock(),
+    )
+    client = SimpleNamespace(request=AsyncMock(return_value=upstream))
+    app = _build_worker_app(12345)
+    app.state.http_client = client
+    app.state.http_client_no_proxy = client
+    messages = [{"type": "http.request", "body": b"{}", "more_body": False}]
+
+    async def receive():
+        if messages:
+            return messages.pop(0)
+        await asyncio.Event().wait()
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/proxy/v1/chat/completions",
+            "query_string": b"",
+            "headers": [],
+            "app": app,
+        },
+        receive,
+    )
+    request.state.x_target_port = "12345"
+    response = await worker_proxy.proxy("v1/chat/completions", request)
+    with pytest.raises(ConnectionResetError, match="reset"):
+        await _collect(response.body_iterator)
+    upstream.close.assert_called_once()
 
 
 @pytest.fixture
@@ -2159,39 +2222,3 @@ def test_hybrid_getter_checks_watch_worker_and_local_fences(hybrid_instance, cha
         )
         is None
     )
-@pytest.mark.asyncio
-async def test_stream_read_failure_closes_upstream_response():
-    body = ScriptedBody([(0, b"data: first\n\n"), (0, ConnectionResetError("reset"))])
-    upstream = SimpleNamespace(
-        status=200,
-        headers={"content-type": "text/event-stream"},
-        content=SimpleNamespace(iter_chunked=lambda size: body),
-        close=Mock(),
-    )
-    client = SimpleNamespace(request=AsyncMock(return_value=upstream))
-    app = _build_worker_app(12345)
-    app.state.http_client = client
-    app.state.http_client_no_proxy = client
-    messages = [{"type": "http.request", "body": b"{}", "more_body": False}]
-
-    async def receive():
-        if messages:
-            return messages.pop(0)
-        await asyncio.Event().wait()
-
-    request = Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/proxy/v1/chat/completions",
-            "query_string": b"",
-            "headers": [],
-            "app": app,
-        },
-        receive,
-    )
-    request.state.x_target_port = "12345"
-    response = await worker_proxy.proxy("v1/chat/completions", request)
-    with pytest.raises(ConnectionResetError, match="reset"):
-        await _collect(response.body_iterator)
-    upstream.close.assert_called_once()

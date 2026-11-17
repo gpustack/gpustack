@@ -10,7 +10,7 @@ from multidict import CIMultiDict
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from gpustack.api import exceptions
-from gpustack.api.auth import worker_auth
+from gpustack.api.auth import worker_proxy_auth
 from gpustack.routes.worker import proxy
 
 
@@ -18,7 +18,7 @@ def worker(client):
     app = FastAPI()
     app.include_router(proxy.router)
     exceptions.register_handlers(app)
-    app.dependency_overrides[worker_auth] = lambda: None
+    app.dependency_overrides[worker_proxy_auth] = lambda: None
     app.state.worker_ip_getter = lambda: "127.0.0.1"
     app.state.http_client = client
     app.state.http_client_no_proxy = client
