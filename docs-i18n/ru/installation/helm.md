@@ -53,14 +53,20 @@ kubectl version
 Установите последнюю стабильную версию. Если `--version` опущено, Helm автоматически обрабатывает новейшую стабильную версию чарта и пропускает сборки для разработчиков и предварительные версии:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace
 ```
+
+!!! note
+
+    Имя выпуска намеренно `gpustack-server`, а не `gpustack`: при регистрации собственного кластера сервера как рабочего (через **Register Cluster**) в том же пространстве имен `gpustack-system` устанавливается рабочий выпуск Helm с фиксированным именем `gpustack`. Отдельное имя для выпуска сервера позволяет избежать этого конфликта, поэтому регистрация кластера в том же пространстве имен и последующее обновление его воркеров не несут риска конфликта имен выпусков. Существующая установка с выпуском `gpustack` продолжает работать; команду `helm upgrade gpustack-server …` выполняйте только при установке с именем, указанным выше.
+
+    Это справедливо для значения по умолчанию `worker.enabled=false`. Если вы включите управляемые чартом воркеры в выпуске сервера (`worker.enabled=true`), выпуск сервера также отрендерит объекты с фиксированными именами — ConfigMap `worker-config`, Service `worker` и Secret `registration-token` — и регистрация того же пространства имен будет отклонена предварительной проверкой bootstrap (после того как манифест регистрации уже заменит Secret `registration-token`, который читает pod сервера). В этом случае зарегистрируйте кластер в другом пространстве имен.
 
 Чтобы закрепить конкретную версию, добавьте `--version <chart-version>` (версия чарта соответствует выпуску GPUStack, например `2.2.0`):
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --version <chart-version>
 ```
@@ -68,7 +74,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 По умолчанию субчарт `higress-core` включён и развертывается вместе с GPUStack. Если в вашем кластере уже установлен Higress, отключите встроенный Higress и укажите GPUStack на существующий экземпляр:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set higress-core.enabled=false \
   --set gateway.ingressClassname=<your-higress-ingressclass>
@@ -84,7 +90,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 git clone https://github.com/gpustack/gpustack.git
 cd gpustack/charts
 helm dependency update ./gpustack-chart
-helm install gpustack ./gpustack-chart \
+helm install gpustack-server ./gpustack-chart \
   --namespace gpustack-system --create-namespace
 ```
 
@@ -120,17 +126,17 @@ kubectl get ingressclass higress
 kubectl get pods -n gpustack-system -w
 ```
 
-Получите первоначальный пароль администратора:
+Получите первоначальный пароль администратора. Pod сервера называется `<release-name>-server-0` (`gpustack-server-server-0` для выпуска по умолчанию `gpustack-server`):
 
 ```bash
-kubectl exec -it -n gpustack-system gpustack-server-0 -- \
+kubectl exec -it -n gpustack-system gpustack-server-server-0 -- \
   cat /var/lib/gpustack/initial_admin_password
 ```
 
-Если вы не установили `server.ingress.hostname`, получите адрес пользовательского интерфейса GPUStack из входа:
+Если вы не установили `server.ingress.hostname`, получите адрес пользовательского интерфейса GPUStack из входа, имя которого совпадает с именем выпуска (`gpustack-server` по умолчанию):
 
 ```bash
-kubectl get ingress -n gpustack-system gpustack \
+kubectl get ingress -n gpustack-system gpustack-server \
   -o jsonpath="{.status.loadBalancer.ingress[0].ip}"
 ```
 
@@ -143,7 +149,7 @@ kubectl get ingress -n gpustack-system gpustack \
 Worker DaemonSet по умолчанию отключены (`worker.enabled=false`). При включении чарт создаёт DaemonSet для CPU-воркеров (`<release>-worker`) и по одному DaemonSet для каждого производителя GPU из `worker.gpuVendors` (с именем `<release>-worker-<vendor>`).
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set worker.enabled=true \
   --set 'worker.gpuVendors={nvidia}'
@@ -160,7 +166,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 Рабочий DaemonSet ЦП охватывает узлы, на которые не претендует ни один поставщик графического процессора, через `nodeSelector` `feature.gpustack.ai/acceleratable: "false"`. Установите `worker.cpuEnabled=false`, чтобы оставить эти узлы в покое — обычно, когда плоскость управления разделяет кластер с узлами графического процессора и не должна привлекать рабочих:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set worker.enabled=true \
   --set worker.cpuEnabled=false \
@@ -176,7 +182,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 По умолчанию GPUStack использует встроенную базу данных PostgreSQL. Чтобы использовать внешнюю базу данных PostgreSQL или MySQL, установите `server.externalDatabaseURL`:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set server.externalDatabaseURL="postgresql://user:password@host:port/dbname"
 ```
@@ -202,7 +208,7 @@ server:
 ```
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   -f values.yaml
 ```
@@ -212,7 +218,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 Чтобы загружать все образы (сервера/воркера GPUStack, higress-plugins и входящих в комплект компонентов higress-core: gateway/controller/pilot) из зеркального частного реестра, переопределите `global.hub`. Благодаря распространению глобальных значений Helm одна настройка применяется ко всем образам:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set global.hub=myregistry.example.com
 ```
@@ -222,7 +228,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 Чтобы предоставить учетные данные извлечения, чарт может создать секрет `docker-registry` с именем `gpustack-image-pull-secret` и подключить его ко всем модулям:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set imagePullSecret.credentials.registry=registry.example.com \
   --set imagePullSecret.credentials.username=myuser \
@@ -314,10 +320,11 @@ global:
     kubectl delete resourceflavors.kueue.x-k8s.io --all
     ```
 
-4. Удалите релиз. Не передавайте `--wait`: хук очистки Node Feature Discovery после удаления блокирует ожидание завершения дольше, чем задано в `--timeout`. Если принудительно завершить Helm, созданные для очистки ресурсы RBAC останутся без владельца (на шаге 5 они удаляются вручную — выполните шаг 5 и в случае, когда `--wait` не использовался):
+4. Удалите **все** выпуски GPUStack в пространстве имен. В конфигурации, которую рекомендует эта страница — сервер установлен как `gpustack-server` со значением по умолчанию `worker.enabled=false`, а тот же кластер зарегистрирован через **Register Cluster**, что устанавливает рабочий выпуск с именем `gpustack` в `gpustack-system` — оператор, Kueue и Node Feature Discovery принадлежат рабочему выпуску, а не выпуску сервера, поэтому удаление только выпуска сервера оставляет рабочий выпуск и его контроллеры запущенными. Проверьте `helm list -n gpustack-system` и удалите каждый показанный выпуск GPUStack. Если вы зарегистрировали кластер в другом пространстве имен (например, при включенном `worker.enabled=true` в выпуске сервера — см. примечание выше), повторите удаление и в том пространстве имен: его рабочий выпуск несет собственные оператор, Kueue и Node Feature Discovery. Не передавайте `--wait`: хук очистки Node Feature Discovery после удаления блокирует ожидание завершения дольше, чем задано в `--timeout`. Если принудительно завершить Helm, созданные для очистки ресурсы RBAC останутся без владельца (на шаге 5 они удаляются вручную — выполните шаг 5 и в случае, когда `--wait` не использовался):
 
     ```bash
-    helm uninstall gpustack -n gpustack-system
+    helm list -n gpustack-system -q | grep -E '^gpustack(-server)?$' \
+      | xargs -r -n 1 helm uninstall -n gpustack-system
     ```
 
 5. Удалите то, что не удаляет `helm uninstall`. Helm никогда не удаляет CRD, а оператор регистрирует admission webhooks и APIServices, не принадлежащие ни одному релизу. После исчезновения Service оператора оба механизма блокируют запросы при ошибке обращения к нему (fail closed), а webhooks не позволяют снять финализаторы приведённой ниже командой, пока сами не будут удалены:
@@ -343,7 +350,7 @@ global:
 
     ```bash
     kubectl get crd -o json | jq -r '.items[]
-      | select(((.metadata.annotations // {})["meta.helm.sh/release-name"] // "") == "gpustack")
+      | select(((.metadata.annotations // {})["meta.helm.sh/release-name"] // "") | test("^gpustack(-server)?$"))
       | .metadata.name'
     ```
 
@@ -359,9 +366,10 @@ global:
 
     Собственные CRD провайдера кластера никогда не являются объектами GPUStack для удаления — например, `*.k3s.cattle.io` и `helm.cattle.io` в кластере k3s принадлежат кластеру.
 
-7. *(Необязательно)* Удалите пространство имен, которое включает в себя объекты Higress, загрузочную карту ConfigMap, ServiceAccount и регистрационный токен Secret. Знайте, что с этим связано: пространство имен содержит PVC сервера (`gpustack-data-dir-gpustack-server-0`, `<volumeClaimTemplate>-<statefulset>-<ordinal>`), в котором хранятся постоянные данные сервера — встроенная база данных PostgreSQL с ее пользователями, моделями и кластерами. В политике возврата `Delete` (по умолчанию `local-path`) базовый том также удаляется. Сохраните пространство имен, если вам нужны данные для переустановки; в противном случае удалите пространство имен (и сначала PVC, если политика восстановления еще не удалила его):
+7. *(Необязательно)* Удалите пространство имен, которое включает в себя объекты Higress, загрузочную карту ConfigMap, ServiceAccount и регистрационный токен Secret. Знайте, что с этим связано: пространство имен содержит PVC сервера (с именем `gpustack-data-dir-<release-name>-server-0`, например `gpustack-data-dir-gpustack-server-server-0` для выпуска по умолчанию `gpustack-server`), в котором хранятся постоянные данные сервера — встроенная база данных PostgreSQL с ее пользователями, моделями и кластерами. В политике возврата `Delete` (по умолчанию `local-path`) базовый том также удаляется. Сохраните пространство имен, если вам нужны данные для переустановки; в противном случае удалите пространство имен (и сначала PVC, если политика восстановления еще не удалила его):
 
     ```bash
-    kubectl delete pvc gpustack-data-dir-gpustack-server-0 -n gpustack-system
+    kubectl get pvc -n gpustack-system -o name | grep -E '^persistentvolumeclaim/gpustack-data-dir-.*-server-0$' \
+      | xargs -r -n 1 kubectl delete -n gpustack-system
     kubectl delete namespace gpustack-system
     ```

@@ -49,14 +49,20 @@ Chart 作为 OCI 产物发布在 Docker Hub 的 `oci://registry-1.docker.io/gpus
 安装最新稳定版本。省略 `--version` 时，Helm 会自动选择最新稳定 Chart 版本，跳过开发版和预发布版：
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace
 ```
+
+!!! note
+
+    Release 名称特意使用 `gpustack-server` 而非 `gpustack`：通过 **Register Cluster** 将 server 所在集群注册为 worker 时，会在同一 `gpustack-system` 命名空间中安装一个名称固定为 `gpustack` 的 worker-only Helm release。为 server release 使用不同的名称可以避免该冲突，因此后续在同命名空间注册集群、升级 worker 都没有 release 名冲突风险。已有安装若 release 名为 `gpustack` 仍可继续使用；仅在使用上述名称安装时才执行 `helm upgrade gpustack-server …`。
+
+    以上前提是默认的 `worker.enabled=false`。如果在 server release 上启用 Chart 管理的 worker（`worker.enabled=true`），server release 也会渲染一组固定名称的对象——`worker-config` ConfigMap、`worker` Service 和 `registration-token` Secret——此时注册同一命名空间会被 bootstrap 预检拒绝（且注册 manifest 在预检之前就已替换 server Pod 读取的 `registration-token` Secret）。在这种情况下，请将集群注册到其他命名空间。
 
 如需固定版本，请附加 `--version <chart-version>`，Chart 版本与 GPUStack 发布版本一致，例如 `2.2.0`：
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --version <chart-version>
 ```
@@ -64,7 +70,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 默认启用 `higress-core` 子 Chart，并与 GPUStack 一同部署。如果集群中已安装 Higress，请禁用内置 Higress，并将 GPUStack 指向现有实例：
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set higress-core.enabled=false \
   --set gateway.ingressClassname=<your-higress-ingressclass>
@@ -80,7 +86,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 git clone https://github.com/gpustack/gpustack.git
 cd gpustack/charts
 helm dependency update ./gpustack-chart
-helm install gpustack ./gpustack-chart \
+helm install gpustack-server ./gpustack-chart \
   --namespace gpustack-system --create-namespace
 ```
 
@@ -116,17 +122,17 @@ Higress 自定义配置见 [Higress 文档](https://higress.cn/en/docs/latest/op
 kubectl get pods -n gpustack-system -w
 ```
 
-获取初始管理员密码：
+获取初始管理员密码。Server Pod 名为 `<release-name>-server-0`——默认 `gpustack-server` release 对应 `gpustack-server-server-0`：
 
 ```bash
-kubectl exec -it -n gpustack-system gpustack-server-0 -- \
+kubectl exec -it -n gpustack-system gpustack-server-server-0 -- \
   cat /var/lib/gpustack/initial_admin_password
 ```
 
-如果未设置 `server.ingress.hostname`，请从 Ingress 获取 GPUStack UI 地址：
+如果未设置 `server.ingress.hostname`，请从 Ingress 获取 GPUStack UI 地址。Ingress 名称即 release 名（默认为 `gpustack-server`）：
 
 ```bash
-kubectl get ingress -n gpustack-system gpustack \
+kubectl get ingress -n gpustack-system gpustack-server \
   -o jsonpath="{.status.loadBalancer.ingress[0].ip}"
 ```
 
@@ -139,7 +145,7 @@ kubectl get ingress -n gpustack-system gpustack \
 Worker DaemonSet 默认禁用（`worker.enabled=false`）。启用后，Chart 会生成一个 CPU Worker DaemonSet（`<release>-worker`），并为 `worker.gpuVendors` 列出的每个 GPU 厂商生成一个 DaemonSet，名称为 `<release>-worker-<vendor>`。
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set worker.enabled=true \
   --set 'worker.gpuVendors={nvidia}'
@@ -156,7 +162,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 CPU Worker DaemonSet 通过 `nodeSelector` 条件 `feature.gpustack.ai/acceleratable: "false"`，覆盖未匹配任何 GPU 厂商的节点。设置 `worker.cpuEnabled=false` 可让这些节点不运行 Worker，通常适用于控制平面与 GPU 节点位于同一集群、且不应运行 Worker 的场景：
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set worker.enabled=true \
   --set worker.cpuEnabled=false \
@@ -172,7 +178,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 GPUStack 默认使用内嵌 PostgreSQL 数据库。如需使用外部 PostgreSQL 或 MySQL 数据库，请设置 `server.externalDatabaseURL`：
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set server.externalDatabaseURL="postgresql://user:password@host:port/dbname"
 ```
@@ -198,7 +204,7 @@ server:
 ```
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   -f values.yaml
 ```
@@ -208,7 +214,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 如需从私有镜像仓库拉取所有镜像，包括 GPUStack Server/Worker、higress-plugins 和内置 higress-core gateway/controller/pilot，请覆盖 `global.hub`。Helm 的全局值传播机制可让一个设置应用于所有镜像：
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set global.hub=myregistry.example.com
 ```
@@ -218,7 +224,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 为提供拉取凭据，Chart 可以创建名为 `gpustack-image-pull-secret` 的 `docker-registry` Secret，并关联到所有 Pod：
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set imagePullSecret.credentials.registry=registry.example.com \
   --set imagePullSecret.credentials.username=myuser \
@@ -310,10 +316,11 @@ Release 部署的不仅是 Server：`gpustack-operator` 子 Chart 还会部署 K
     kubectl delete resourceflavors.kueue.x-k8s.io --all
     ```
 
-4. 卸载 Release。不要传入 `--wait`：Node Feature Discovery 的 post-delete prune hook 会阻塞删除等待，超过其 `--timeout`；为退出等待而终止 Helm，会留下没有归属的 prune RBAC 资源。第 5 步会手动移除这些资源，即使未使用 `--wait`，也应执行第 5 步：
+4. 卸载命名空间内**所有** GPUStack Release。按照本页推荐的布局——server 以 `gpustack-server` 安装且保持默认 `worker.enabled=false`，同一集群再通过 **Register Cluster** 注册，会在 `gpustack-system` 中安装一个名为 `gpustack` 的 worker-only release——operator、Kueue 和 Node Feature Discovery 都属于 worker release 而非 server release，只卸载 server release 会留下 worker release 及其控制器继续运行。请先执行 `helm list -n gpustack-system` 确认，并逐一卸载其中的 GPUStack Release。如果集群注册到了其他命名空间（例如 server release 上启用了 `worker.enabled=true`，参见上方说明），请在那个命名空间中同样执行卸载——其中的 worker-only release 也带有自己的 operator、Kueue 和 Node Feature Discovery。不要传入 `--wait`：Node Feature Discovery 的 post-delete prune hook 会阻塞删除等待，超过其 `--timeout`；为退出等待而终止 Helm，会留下没有归属的 prune RBAC 资源。第 5 步会手动移除这些资源，即使未使用 `--wait`，也应执行第 5 步：
 
     ```bash
-    helm uninstall gpustack -n gpustack-system
+    helm list -n gpustack-system -q | grep -E '^gpustack(-server)?$' \
+      | xargs -r -n 1 helm uninstall -n gpustack-system
     ```
 
 5. 移除 `helm uninstall` 未删除的资源。Helm 从不删除 CRD，Operator 注册的准入 Webhook 和 APIService 也不属于任何 Release。这两类资源都会因 Operator Service 已不存在而拒绝请求；在删除 Webhook 之前，它们还会拒绝下文移除 finalizer 的操作：
@@ -339,7 +346,7 @@ Release 部署的不仅是 Server：`gpustack-operator` 子 Chart 还会部署 K
 
     ```bash
     kubectl get crd -o json | jq -r '.items[]
-      | select(((.metadata.annotations // {})["meta.helm.sh/release-name"] // "") == "gpustack")
+      | select(((.metadata.annotations // {})["meta.helm.sh/release-name"] // "") | test("^gpustack(-server)?$"))
       | .metadata.name'
     ```
 
@@ -355,9 +362,10 @@ Release 部署的不仅是 Server：`gpustack-operator` 子 Chart 还会部署 K
 
     集群提供方自身的 CRD 不属于 GPUStack，不应删除。例如，k3s 集群中的 `*.k3s.cattle.io` 和 `helm.cattle.io` 属于集群自身。
 
-7. *（可选）* 删除命名空间，同时移除其中的 Higress 对象、引导 ConfigMap、ServiceAccount 和注册令牌 Secret。请了解同时会被删除的数据：命名空间中还包含 Server 的 PVC（`gpustack-data-dir-gpustack-server-0`，命名规则为 `<volumeClaimTemplate>-<statefulset>-<ordinal>`），其中保存了 Server 的持久化数据，即包含用户、模型和集群信息的内嵌 PostgreSQL 数据库。在 `Delete` 回收策略下（`local-path` 的默认策略），底层卷也会被删除。如需保留数据以便重新安装，请保留命名空间；否则可删除命名空间，如果回收策略未自动移除 PVC，请先删除 PVC：
+7. *（可选）* 删除命名空间，同时移除其中的 Higress 对象、引导 ConfigMap、ServiceAccount 和注册令牌 Secret。请了解同时会被删除的数据：命名空间中还包含 Server 的 PVC（命名规则为 `gpustack-data-dir-<release-name>-server-0`，默认 `gpustack-server` release 对应 `gpustack-data-dir-gpustack-server-server-0`），其中保存了 Server 的持久化数据，即包含用户、模型和集群信息的内嵌 PostgreSQL 数据库。在 `Delete` 回收策略下（`local-path` 的默认策略），底层卷也会被删除。如需保留数据以便重新安装，请保留命名空间；否则可删除命名空间，如果回收策略未自动移除 PVC，请先删除 PVC：
 
     ```bash
-    kubectl delete pvc gpustack-data-dir-gpustack-server-0 -n gpustack-system
+    kubectl get pvc -n gpustack-system -o name | grep -E '^persistentvolumeclaim/gpustack-data-dir-.*-server-0$' \
+      | xargs -r -n 1 kubectl delete -n gpustack-system
     kubectl delete namespace gpustack-system
     ```

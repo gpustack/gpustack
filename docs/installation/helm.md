@@ -49,14 +49,20 @@ The chart is published as an OCI artifact on Docker Hub at `oci://registry-1.doc
 Install the latest stable release. When `--version` is omitted, Helm resolves the newest stable chart version automatically and skips dev/pre-release builds:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace
 ```
+
+!!! note
+
+    The release is deliberately named `gpustack-server` instead of `gpustack`: registering the server's own cluster as a worker (via **Register Cluster**) installs a worker-only Helm release whose name is fixed to `gpustack` in the same `gpustack-system` namespace. A distinct name for the server release avoids this conflict, so registering the same-namespace cluster and upgrading its workers later carry no release-name risk. An existing installation released as `gpustack` keeps working; only run `helm upgrade gpustack-server …` if you install with the name shown above.
+
+    This holds for the default `worker.enabled=false`. If you enable chart-managed workers on the server release (`worker.enabled=true`), the server release also renders objects with fixed names — the `worker-config` ConfigMap, the `worker` Service and the `registration-token` Secret — and registering the same namespace is then refused by the bootstrap pre-flight check (after the registration manifest has already replaced the `registration-token` Secret the server pod reads). With workers enabled on the server release, register the cluster into a different namespace instead.
 
 To pin a specific version, append `--version <chart-version>` (the chart version matches the GPUStack release, e.g. `2.2.0`):
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --version <chart-version>
 ```
@@ -64,7 +70,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 By default, the `higress-core` sub-chart is enabled and deployed alongside GPUStack. If you already have Higress installed in your cluster, disable the bundled Higress and point GPUStack at your existing instance:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set higress-core.enabled=false \
   --set gateway.ingressClassname=<your-higress-ingressclass>
@@ -80,7 +86,7 @@ Alternatively, clone the repository and install from the local chart directory (
 git clone https://github.com/gpustack/gpustack.git
 cd gpustack/charts
 helm dependency update ./gpustack-chart
-helm install gpustack ./gpustack-chart \
+helm install gpustack-server ./gpustack-chart \
   --namespace gpustack-system --create-namespace
 ```
 
@@ -116,17 +122,17 @@ Wait for the server pod to become ready:
 kubectl get pods -n gpustack-system -w
 ```
 
-Retrieve the initial admin password:
+Retrieve the initial admin password. The server pod is named `<release-name>-server-0` — `gpustack-server-server-0` for the default `gpustack-server` release:
 
 ```bash
-kubectl exec -it -n gpustack-system gpustack-server-0 -- \
+kubectl exec -it -n gpustack-system gpustack-server-server-0 -- \
   cat /var/lib/gpustack/initial_admin_password
 ```
 
-If you did not set `server.ingress.hostname`, obtain the GPUStack UI address from the ingress:
+If you did not set `server.ingress.hostname`, obtain the GPUStack UI address from the ingress, which carries the release name (`gpustack-server` for the default release):
 
 ```bash
-kubectl get ingress -n gpustack-system gpustack \
+kubectl get ingress -n gpustack-system gpustack-server \
   -o jsonpath="{.status.loadBalancer.ingress[0].ip}"
 ```
 
@@ -139,7 +145,7 @@ Open the address in a browser and log in with username `admin` and the password 
 Worker DaemonSets are disabled by default (`worker.enabled=false`). When enabled, the chart renders a CPU worker DaemonSet (`<release>-worker`), and one DaemonSet per GPU vendor listed in `worker.gpuVendors` (named `<release>-worker-<vendor>`).
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set worker.enabled=true \
   --set 'worker.gpuVendors={nvidia}'
@@ -156,7 +162,7 @@ Whenever at least one GPU vendor is listed (i.e. `worker.gpuVendors` is non-empt
 The CPU worker DaemonSet covers the nodes no GPU vendor claims, through the `nodeSelector` `feature.gpustack.ai/acceleratable: "false"`. Set `worker.cpuEnabled=false` to leave those nodes alone — typically when the control plane shares the cluster with the GPU nodes and must not gain workers:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set worker.enabled=true \
   --set worker.cpuEnabled=false \
@@ -172,7 +178,7 @@ Alternatively, add GPU clusters and worker nodes through the UI on the **Cluster
 By default GPUStack uses the embedded PostgreSQL database. To use an external PostgreSQL or MySQL database, set `server.externalDatabaseURL`:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set server.externalDatabaseURL="postgresql://user:password@host:port/dbname"
 ```
@@ -198,7 +204,7 @@ server:
 ```
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   -f values.yaml
 ```
@@ -208,7 +214,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 To pull all images (GPUStack server/worker, higress-plugins, and the bundled higress-core gateway/controller/pilot) from a mirrored private registry, override `global.hub`. This relies on Helm's global-values propagation, so a single setting covers every image:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set global.hub=myregistry.example.com
 ```
@@ -218,7 +224,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 To supply pull credentials, the chart can create a `docker-registry` Secret named `gpustack-image-pull-secret` and wire it into all pods:
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set imagePullSecret.credentials.registry=registry.example.com \
   --set imagePullSecret.credentials.username=myuser \
@@ -310,10 +316,11 @@ The release deploys more than the server: the `gpustack-operator` sub-chart brin
     kubectl delete resourceflavors.kueue.x-k8s.io --all
     ```
 
-4. Uninstall the release. Do not pass `--wait`: the Node Feature Discovery post-delete prune hook blocks the deletion wait for longer than its `--timeout`, and killing Helm to escape it leaves the prune RBAC behind ownerless (step 5 removes those by hand — and run step 5 even without `--wait`):
+4. Uninstall **every** GPUStack release in the namespace. With the layout this page recommends — the server installed as `gpustack-server` with the default `worker.enabled=false`, and the same cluster registered through **Register Cluster**, which installs a worker-only release named `gpustack` into `gpustack-system` — the operator, Kueue and Node Feature Discovery all belong to the worker release, not the server release, so uninstalling the server release alone leaves the worker release and its controllers running. Check `helm list -n gpustack-system` and uninstall each GPUStack release it shows. If you registered the cluster into a different namespace (for example with `worker.enabled=true` on the server release, see the note above), repeat this uninstall in that namespace as well — its worker-only release carries its own operator, Kueue and Node Feature Discovery. Do not pass `--wait`: the Node Feature Discovery post-delete prune hook blocks the deletion wait for longer than its `--timeout`, and killing Helm to escape it leaves the prune RBAC behind ownerless (step 5 removes those by hand — and run step 5 even without `--wait`):
 
     ```bash
-    helm uninstall gpustack -n gpustack-system
+    helm list -n gpustack-system -q | grep -E '^gpustack(-server)?$' \
+      | xargs -r -n 1 helm uninstall -n gpustack-system
     ```
 
 5. Remove what `helm uninstall` does not. Helm never deletes CRDs, and the operator registers admission webhooks and APIServices that no release owns — both fail closed against the now-gone operator Service, and the webhooks reject the finalizer strip below until they are deleted:
@@ -339,7 +346,7 @@ The release deploys more than the server: the `gpustack-operator` sub-chart brin
 
     ```bash
     kubectl get crd -o json | jq -r '.items[]
-      | select(((.metadata.annotations // {})["meta.helm.sh/release-name"] // "") == "gpustack")
+      | select(((.metadata.annotations // {})["meta.helm.sh/release-name"] // "") | test("^gpustack(-server)?$"))
       | .metadata.name'
     ```
 
@@ -355,9 +362,10 @@ The release deploys more than the server: the `gpustack-operator` sub-chart brin
 
     The cluster provider's own CRDs are never GPUStack's to delete — `*.k3s.cattle.io` and `helm.cattle.io` on a k3s cluster, for instance, belong to the cluster.
 
-7. *(Optional)* Delete the namespace, which takes the Higress objects, the bootstrap ConfigMap, ServiceAccount and the registration token Secret with it. Know what goes with it: the namespace holds the server's PVC (`gpustack-data-dir-gpustack-server-0`, `<volumeClaimTemplate>-<statefulset>-<ordinal>`), which carries the server's persisted data — the embedded PostgreSQL database with its users, models and clusters. On a `Delete` reclaim policy (the `local-path` default) the underlying volume is deleted as well. Keep the namespace if you want the data for a reinstall; otherwise delete the namespace (and the PVC first, if the reclaim policy does not already remove it):
+7. *(Optional)* Delete the namespace, which takes the Higress objects, the bootstrap ConfigMap, ServiceAccount and the registration token Secret with it. Know what goes with it: the namespace holds the server's PVC (`gpustack-data-dir-<release-name>-server-0`, e.g. `gpustack-data-dir-gpustack-server-server-0` for the default `gpustack-server` release), which carries the server's persisted data — the embedded PostgreSQL database with its users, models and clusters. On a `Delete` reclaim policy (the `local-path` default) the underlying volume is deleted as well. Keep the namespace if you want the data for a reinstall; otherwise delete the namespace (and the PVC first, if the reclaim policy does not already remove it):
 
     ```bash
-    kubectl delete pvc gpustack-data-dir-gpustack-server-0 -n gpustack-system
+    kubectl get pvc -n gpustack-system -o name | grep -E '^persistentvolumeclaim/gpustack-data-dir-.*-server-0$' \
+      | xargs -r -n 1 kubectl delete -n gpustack-system
     kubectl delete namespace gpustack-system
     ```

@@ -53,14 +53,20 @@ kubectl version
 最新の安定版をインストールします。`--version` を省略すると、Helm は開発版やプレリリースを除く最新の安定版チャートを自動的に選択します。
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace
 ```
+
+!!! note
+
+    リリース名は意図的に `gpustack` ではなく `gpustack-server` としています。**Register Cluster** でサーバー自身のクラスターをワーカーとして登録すると、同じ `gpustack-system` 名前空間に `gpustack` という固定名のワーカー専用 Helm リリースがインストールされます。サーバーリリースに別の名前を使うことでこの競合を回避でき、同一名前空間へのクラスター登録やワーカーのアップグレードにリリース名の競合リスクはありません。既存の `gpustack` という名前のリリースはそのまま動作します。上記の名前でインストールした場合のみ `helm upgrade gpustack-server …` を実行してください。
+
+    これはデフォルトの `worker.enabled=false` を前提とします。サーバーリリースでチャート管理のワーカーを有効にした場合（`worker.enabled=true`）、サーバーリリースも固定名のオブジェクト（`worker-config` ConfigMap、`worker` Service、`registration-token` Secret）をレンダリングし、同じ名前空間への登録は bootstrap の事前チェックで拒否されます（その前に登録 manifest が、サーバー Pod が読み取る `registration-token` Secret を置き換えてしまいます）。この場合は、クラスターを別の名前空間に登録してください。
 
 バージョンを固定するには、`--version <chart-version>` を追加します（チャートのバージョンは GPUStack のリリースに対応し、例として `2.2.0` があります）。
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --version <chart-version>
 ```
@@ -68,7 +74,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 デフォルトでは `higress-core` サブチャートが有効で、GPUStack とともにデプロイされます。既存の Higress を使用する場合は、同梱の Higress を無効にし、既存インスタンスを GPUStack に指定します。
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set higress-core.enabled=false \
   --set gateway.ingressClassname=<your-higress-ingressclass>
@@ -84,7 +90,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 git clone https://github.com/gpustack/gpustack.git
 cd gpustack/charts
 helm dependency update ./gpustack-chart
-helm install gpustack ./gpustack-chart \
+helm install gpustack-server ./gpustack-chart \
   --namespace gpustack-system --create-namespace
 ```
 
@@ -120,17 +126,17 @@ Higress のカスタマイズについては、[Higress ドキュメント](http
 kubectl get pods -n gpustack-system -w
 ```
 
-初期管理者パスワードを取得します。
+初期管理者パスワードを取得します。サーバー Pod の名前は `<release-name>-server-0` で、デフォルトの `gpustack-server` リリースでは `gpustack-server-server-0` です。
 
 ```bash
-kubectl exec -it -n gpustack-system gpustack-server-0 -- \
+kubectl exec -it -n gpustack-system gpustack-server-server-0 -- \
   cat /var/lib/gpustack/initial_admin_password
 ```
 
-`server.ingress.hostname` を設定していない場合は、Ingress から GPUStack UI のアドレスを取得します。
+`server.ingress.hostname` を設定していない場合は、Ingress から GPUStack UI のアドレスを取得します。Ingress 名はリリース名と同じです（デフォルトは `gpustack-server`）。
 
 ```bash
-kubectl get ingress -n gpustack-system gpustack \
+kubectl get ingress -n gpustack-system gpustack-server \
   -o jsonpath="{.status.loadBalancer.ingress[0].ip}"
 ```
 
@@ -143,7 +149,7 @@ kubectl get ingress -n gpustack-system gpustack \
 ワーカー DaemonSet はデフォルトで無効です（`worker.enabled=false`）。有効にすると、CPU ワーカーの DaemonSet（`<release>-worker`）と、`worker.gpuVendors` に指定した各 GPU ベンダーの DaemonSet（`<release>-worker-<vendor>`）が生成されます。
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set worker.enabled=true \
   --set 'worker.gpuVendors={nvidia}'
@@ -160,7 +166,7 @@ GPU ベンダーを 1 つ以上指定すると（`worker.gpuVendors` が空で�
 CPU ワーカーの DaemonSet は、`nodeSelector` の `feature.gpustack.ai/acceleratable: "false"` により、どの GPU ベンダーにも選択されないノードを対象にします。これらのノードにワーカーを配置しない場合は `worker.cpuEnabled=false` にします。たとえば、GPU ノードと同じクラスターのコントロールプレーンにワーカーを追加したくない場合です。
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set worker.enabled=true \
   --set worker.cpuEnabled=false \
@@ -176,7 +182,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 GPUStack はデフォルトで組み込み PostgreSQL を使用します。外部 PostgreSQL または MySQL を使用するには、`server.externalDatabaseURL` を設定します。
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set server.externalDatabaseURL="postgresql://user:password@host:port/dbname"
 ```
@@ -202,7 +208,7 @@ server:
 ```
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   -f values.yaml
 ```
@@ -212,7 +218,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 すべてのイメージ（GPUStack サーバー・ワーカー、higress-plugins、同梱の higress-core の gateway/controller/pilot）をプライベートミラーレジストリから取得するには、`global.hub` を上書きします。Helm のグローバル値の伝播により、1 つの設定ですべてのイメージに適用されます。
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set global.hub=myregistry.example.com
 ```
@@ -222,7 +228,7 @@ helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
 取得用の認証情報を指定すると、チャートは `gpustack-image-pull-secret` という `docker-registry` Secret を作成してすべての Pod に設定できます。
 
 ```bash
-helm install gpustack oci://registry-1.docker.io/gpustack/gpustack-chart \
+helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
   --namespace gpustack-system --create-namespace \
   --set imagePullSecret.credentials.registry=registry.example.com \
   --set imagePullSecret.credentials.username=myuser \
@@ -314,10 +320,11 @@ global:
     kubectl delete resourceflavors.kueue.x-k8s.io --all
     ```
 
-4. リリースをアンインストールします。`--wait` は指定しないでください。Node Feature Discovery の post-delete prune フックが `--timeout` より長く削除の待機をブロックし、抜けるために Helm を強制終了すると prune 用 RBAC が所有者なしで残ります（手順 5 で手動削除します。`--wait` を使わなくても手順 5 を実行してください）。
+4. 名前空間内の**すべての** GPUStack リリースをアンインストールします。本ページが推奨する構成では、サーバーを `gpustack-server` としてデフォルトの `worker.enabled=false` でインストールし、同じクラスターを **Register Cluster** で登録すると、`gpustack-system` に `gpustack` という名前のワーカー専用リリースがインストールされます。operator、Kueue、Node Feature Discovery はすべてワーカー側のリリースに属し、サーバーリリースには含まれないため、サーバーリリースだけをアンインストールするとワーカーリリースとそのコントローラーが残ります。`helm list -n gpustack-system` で確認し、表示された GPUStack リリースをそれぞれアンインストールしてください。クラスターを別の名前空間に登録した場合（例：サーバーリリースで `worker.enabled=true` を有効にした場合。上記の注記を参照）、その名前空間でも同じアンインストールを実行してください。そこにあるワーカー専用リリースにも独自の operator、Kueue、Node Feature Discovery が含まれます。`--wait` は指定しないでください。Node Feature Discovery の post-delete prune フックが `--timeout` より長く削除の待機をブロックし、抜けるために Helm を強制終了すると prune 用 RBAC が所有者なしで残ります（手順 5 で手動削除します。`--wait` を使わなくても手順 5 を実行してください）。
 
     ```bash
-    helm uninstall gpustack -n gpustack-system
+    helm list -n gpustack-system -q | grep -E '^gpustack(-server)?$' \
+      | xargs -r -n 1 helm uninstall -n gpustack-system
     ```
 
 5. `helm uninstall` が削除しないものを削除します。Helm は CRD を削除しません。また、Operator はどのリリースにも所有されない admission webhook と APIService を登録します。いずれも、削除済みの Operator Service に対して fail-closed となります。Webhook を削除しないと、以下の finalizer 除去も拒否されます。
@@ -343,7 +350,7 @@ global:
 
     ```bash
     kubectl get crd -o json | jq -r '.items[]
-      | select(((.metadata.annotations // {})["meta.helm.sh/release-name"] // "") == "gpustack")
+      | select(((.metadata.annotations // {})["meta.helm.sh/release-name"] // "") | test("^gpustack(-server)?$"))
       | .metadata.name'
     ```
 
@@ -359,9 +366,10 @@ global:
 
     クラスタープロバイダー自身の CRD は GPUStack が削除すべきものではありません。たとえば k3s クラスターの `*.k3s.cattle.io` や `helm.cattle.io` はクラスターに属します。
 
-7. *（任意）* 名前空間を削除すると、Higress オブジェクト、ブートストラップ ConfigMap、ServiceAccount、登録トークン Secret も削除されます。削除されるデータを把握してください。この名前空間には、ユーザー、モデル、クラスターを格納する組み込み PostgreSQL などのサーバー永続データを持つ PVC（`gpustack-data-dir-gpustack-server-0`、`<volumeClaimTemplate>-<statefulset>-<ordinal>`）があります。回収ポリシーが `Delete`（`local-path` のデフォルト）の場合、基盤のボリュームも削除されます。再インストール用にデータを残す場合は名前空間を保持し、不要なら名前空間を削除します（回収ポリシーで削除されない場合は、先に PVC も削除します）。
+7. *（任意）* 名前空間を削除すると、Higress オブジェクト、ブートストラップ ConfigMap、ServiceAccount、登録トークン Secret も削除されます。削除されるデータを把握してください。この名前空間には、ユーザー、モデル、クラスターを格納する組み込み PostgreSQL などのサーバー永続データを持つ PVC（命名規則は `gpustack-data-dir-<release-name>-server-0`、デフォルトの `gpustack-server` リリースでは `gpustack-data-dir-gpustack-server-server-0`）があります。回収ポリシーが `Delete`（`local-path` のデフォルト）の場合、基盤のボリュームも削除されます。再インストール用にデータを残す場合は名前空間を保持し、不要なら名前空間を削除します（回収ポリシーで削除されない場合は、先に PVC も削除します）。
 
     ```bash
-    kubectl delete pvc gpustack-data-dir-gpustack-server-0 -n gpustack-system
+    kubectl get pvc -n gpustack-system -o name | grep -E '^persistentvolumeclaim/gpustack-data-dir-.*-server-0$' \
+      | xargs -r -n 1 kubectl delete -n gpustack-system
     kubectl delete namespace gpustack-system
     ```
