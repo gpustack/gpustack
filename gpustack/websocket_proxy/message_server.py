@@ -625,15 +625,17 @@ class MessageServerHandler:
         for cidr in cidr_list:
             self._cidr_registry.insert(cidr, client_id)
 
+        # Get generation for this connection (used to filter stale disconnect
+        # callbacks). Taken before the next await so generations follow
+        # registration order even when a reconnect registers in between.
+        generation = await self._get_next_generation(client_id)
+
         logger.debug(
             f"[Server] Client registered via WS: {client_id}, CIDRs: {cidr_list}"
         )
 
         # Broadcast new client to peers
         await self.broadcast_client_update("add", client_id, cidr_list, socket_list)
-
-        # Get generation for this connection (used to filter stale disconnect callbacks)
-        generation = await self._get_next_generation(client_id)
 
         if self._callback_on_connect:
             await self._safe_callback(self._callback_on_connect, None, client_info)
@@ -725,16 +727,19 @@ class MessageServerHandler:
             cidr_list = client_info.cidrs if client_info else []
             socket_list = client_info.unix_sockets if client_info else []
 
-            if client_id and client_id in self.client_registry:
+            # A reconnecting client can register a new websocket under the
+            # same client_id before this one's close is noticed. Release the
+            # registration only while it still belongs to this websocket.
+            current = self.connection_managers.get(client_id)
+            if current is not None and current.websocket is websocket:
                 self._cidr_registry.remove_client(client_id)
-                del self.client_registry[client_id]
-            if client_id and client_id in self.connection_managers:
+                self.client_registry.pop(client_id, None)
                 del self.connection_managers[client_id]
 
-            # Broadcast client disconnection to peers
-            await self.broadcast_client_update(
-                "remove", client_id, cidr_list, socket_list
-            )
+                # Broadcast client disconnection to peers
+                await self.broadcast_client_update(
+                    "remove", client_id, cidr_list, socket_list
+                )
 
             # Call disconnect callback (filtered by generation to avoid stale callbacks)
             if self._callback_on_disconnect:
