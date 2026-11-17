@@ -58,14 +58,31 @@ async def test_delete_worker_releases_its_tunnel_claims(monkeypatch):
     _patch_route(monkeypatch, worker, delete)
 
     handler = MagicMock()
-    handler.release_client = AsyncMock(return_value=True)
+    handler.force_release = AsyncMock(return_value=True)
 
     await workers_route.delete_worker(
         request=_request(handler), ctx=MagicMock(), session=_session(), id=1
     )
 
     delete.assert_awaited_once_with(worker, soft=False)
-    handler.release_client.assert_awaited_once_with(uuid.UUID(worker_uuid))
+    handler.force_release.assert_awaited_once_with(uuid.UUID(worker_uuid))
+
+
+@pytest.mark.asyncio
+async def test_delete_worker_without_worker_uuid_skips_release(monkeypatch, caplog):
+    worker = _worker(None)
+    delete = AsyncMock()
+    _patch_route(monkeypatch, worker, delete)
+
+    handler = MagicMock()
+    handler.force_release = AsyncMock()
+
+    await workers_route.delete_worker(
+        request=_request(handler), ctx=MagicMock(), session=_session(), id=1
+    )
+
+    handler.force_release.assert_not_awaited()
+    assert any("no worker_uuid" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -75,7 +92,7 @@ async def test_delete_worker_ignores_a_release_failure(monkeypatch):
     _patch_route(monkeypatch, worker, delete)
 
     handler = MagicMock()
-    handler.release_client = AsyncMock(side_effect=RuntimeError("registry gone"))
+    handler.force_release = AsyncMock(side_effect=RuntimeError("registry gone"))
 
     # The row is already deleted, so a release failure must not fail the
     # request: a leftover claim is a degraded state, not a failed delete.

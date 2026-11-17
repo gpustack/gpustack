@@ -5,9 +5,12 @@ Message Server - Handles WebSocket connections and message protocol
 
 import uuid
 import asyncio
+import contextlib
 import ipaddress
 import logging
-from typing import Optional, Dict, List, Callable, Coroutine, Any, TypeAlias
+import time
+from typing import Optional, Dict, List, Tuple, Callable, Coroutine, Any, TypeAlias
+from contextlib import asynccontextmanager
 
 from .patricia_trie import CIDRRegistry
 from fastapi import WebSocket, Depends, APIRouter
@@ -74,6 +77,11 @@ MIN_CIDR_PREFIXLEN = 8
 # locations so one client cannot claim another's socket by path.
 UNIX_SOCKET_PREFIXES = ("/var/run/", "/run/", "/tmp/")
 
+# A client that has sent at least one heartbeat is expected to keep the
+# signal flowing; a websocket silent for this long is a half-open tunnel and
+# is reaped. Clients on older versions never heartbeat and are never reaped.
+DEFAULT_CLIENT_READ_TIMEOUT = 45.0
+
 
 def _valid_cidr_claim(cidr: str) -> bool:
     try:
@@ -133,6 +141,7 @@ class MessageServerHandler:
         authenticator: Authenticator = None,
         callback_on_connect: Optional[WSCallback] = None,
         callback_on_disconnect: Optional[WSCallback] = None,
+        client_read_timeout: float = DEFAULT_CLIENT_READ_TIMEOUT,
     ):
         self._server_info = ServerInfo(
             server_id=server_id or uuid.uuid4(),
@@ -158,6 +167,28 @@ class MessageServerHandler:
         # Generation tracking for disconnect callbacks
         self._client_generations: Dict[uuid.UUID, int] = {}  # client_id -> generation
         self._generation_lock = asyncio.Lock()
+        self._client_read_timeout = client_read_timeout
+
+        # Serializes a client's registration/release together with the peer
+        # broadcast that announces it, so a reconnecting websocket cannot
+        # interleave its "add" with the previous websocket's "remove" in
+        # flight and leave peers with a stale (missing) route. Entries are
+        # reference-counted and dropped once the last user leaves, so worker
+        # churn does not accumulate locks forever.
+        self._client_update_locks: Dict[uuid.UUID, list] = {}
+        self._update_locks_guard = asyncio.Lock()
+
+        # Serializes CIDR ownership checks against claim writes across ALL
+        # clients. The per-client sections cannot do this: two different
+        # clients claiming the same CIDR race through their own locks, and
+        # the later write would silently steal the other's route.
+        self._cidr_claims_lock = asyncio.Lock()
+
+        # Per-client chain of queued peer-update sends. Sends never run under
+        # the per-client section lock (a wedged peer's full write buffer
+        # would then stall registration/release); chaining keeps each
+        # client's updates ordered as produced.
+        self._client_broadcast_chains: Dict[uuid.UUID, asyncio.Task] = {}
 
         # Server federation
         self.peers: Dict[uuid.UUID, ServerPeer] = {}  # Outgoing: servers I connected to
@@ -165,6 +196,31 @@ class MessageServerHandler:
             {}
         )  # Incoming: servers that connected to me
         self.peer_tasks: Dict[uuid.UUID, asyncio.Task] = {}  # server_id -> task
+
+    @asynccontextmanager
+    async def _client_update_section(self, client_id: uuid.UUID):
+        """Run a critical section serialized against every other
+        registration/release/peer-update for this client.
+
+        The keyed lock is dropped once the last user (including waiters)
+        leaves, so a long-lived server does not accumulate one lock per
+        client id it has ever served.
+        """
+        async with self._update_locks_guard:
+            entry = self._client_update_locks.get(client_id)
+            if entry is None:
+                entry = [asyncio.Lock(), 0]
+                self._client_update_locks[client_id] = entry
+            entry[1] += 1
+            lock = entry[0]
+        try:
+            async with lock:
+                yield
+        finally:
+            async with self._update_locks_guard:
+                entry[1] -= 1
+                if entry[1] == 0 and self._client_update_locks.get(client_id) is entry:
+                    del self._client_update_locks[client_id]
 
     async def _get_next_generation(self, client_id: uuid.UUID) -> int:
         """Get the next generation number for a client (thread-safe)."""
@@ -407,56 +463,102 @@ class MessageServerHandler:
 
             logger.debug(f"[Server] Peer disconnected: {peer_server_id}")
 
-    def _foreign_cidr_claims(self, client_id: uuid.UUID, cidrs: List[str]) -> List[str]:
-        """Return CIDRs in ``cidrs`` already owned by a different client.
+    def _cidr_claim_owners(
+        self, client_id: uuid.UUID, cidrs: List[str]
+    ) -> List[Tuple[str, uuid.UUID]]:
+        """Return ``(cidr, owner)`` pairs for claims owned by another client.
 
         ``CIDRRegistry.insert`` overwrites an existing mapping, so accepting
         such a claim would silently redirect the owning client's tunneled
         traffic to the caller.
         """
-        foreign = []
+        owned = []
         for cidr in cidrs:
             owner = self._cidr_registry.find_exact(cidr)
             if owner is not None and owner != client_id:
-                foreign.append(cidr)
-        return foreign
+                owned.append((cidr, owner))
+        return owned
 
-    async def release_client(self, client_id: uuid.UUID) -> bool:
+    async def release_client(
+        self, client_id: uuid.UUID, only_if_websocket: Optional[WebSocket] = None
+    ) -> bool:
         """Drop a client's registration and route claims without waiting for its socket.
 
         ``handle_client`` releases these in its ``finally`` block, which only
         runs once the websocket reports a disconnect. A tunnel that is
         half-open — NAT keepalives never reach the server, or the socket was
         never detected as closed — keeps its claims reserved indefinitely, and
-        ``_foreign_cidr_claims`` then rejects the next worker that claims the
+        the claim-owner check then rejects the next worker that claims the
         same CIDR. Callers use this when the client is known to be gone for
         another reason (its worker row was deleted) so the claims are freed
         immediately instead of after an unbounded wait.
 
+        When ``only_if_websocket`` is given, the release is skipped (under the
+        same lock) unless the registration still belongs to that websocket, so
+        a caller's earlier ownership check cannot be invalidated by a
+        reconnect registering in between.
+
         Returns whether anything was registered for ``client_id``.
         """
-        client_info = self.client_registry.pop(client_id, None)
-        connection_manager = self.connection_managers.pop(client_id, None)
-        if client_info is None and connection_manager is None:
-            return False
+        async with self._client_update_section(client_id):
+            connection_manager = self.connection_managers.get(client_id)
+            if only_if_websocket is not None and (
+                connection_manager is None
+                or connection_manager.websocket is not only_if_websocket
+            ):
+                return False
+            client_info = self.client_registry.pop(client_id, None)
+            connection_manager = self.connection_managers.pop(client_id, None)
+            if client_info is None and connection_manager is None:
+                return False
 
-        self._cidr_registry.remove_client(client_id)
-        # Advance the generation so the socket's own disconnect path treats
-        # its callback as stale: the client is gone on purpose, and writing
-        # its state back to the database would resurrect a deleted worker.
-        await self._get_next_generation(client_id)
+            self._cidr_registry.remove_client(client_id)
+            cidr_list = client_info.cidrs if client_info else []
+            socket_list = client_info.unix_sockets if client_info else []
+            # Enqueue before the next await: a task cancelled at the
+            # generation bump must not leave peers holding a stale mirrored
+            # entry for an already-released client.
+            self._enqueue_client_update("remove", client_id, cidr_list, socket_list)
+            logger.debug(f"[Server] Released client: {client_id}")
 
-        if connection_manager is not None and connection_manager.websocket is not None:
+            # Advance the generation so the socket's own disconnect path treats
+            # its callback as stale: the client is gone on purpose, and writing
+            # its state back to the database would resurrect a deleted worker.
+            await self._get_next_generation(client_id)
+
+            websocket_to_close = (
+                connection_manager.websocket if connection_manager is not None else None
+            )
+
+        # Close outside the section: a hung close handshake on a half-open
+        # socket must not stall the registrations, releases, and peer updates
+        # serialized on this client.
+        if websocket_to_close is not None:
             try:
-                await connection_manager.websocket.close()
+                await websocket_to_close.close()
             except Exception as e:
                 logger.debug(f"[Server] Error closing released client {client_id}: {e}")
-
-        cidr_list = client_info.cidrs if client_info else []
-        socket_list = client_info.unix_sockets if client_info else []
-        await self.broadcast_client_update("remove", client_id, cidr_list, socket_list)
-        logger.debug(f"[Server] Released client: {client_id}")
         return True
+
+    async def force_release(self, client_id: uuid.UUID) -> bool:
+        """Release a client's tunnel on whatever server replica holds it.
+
+        ``release_client`` only frees state this process knows about. A
+        delete request may land on a replica that is not the tunnel's owner,
+        in which case the local release (at most a mirrored registry entry)
+        must be followed by a ``force_remove`` update so the owning server
+        releases and closes the socket; an ordinary ``remove`` would leave
+        the owner's live websocket and generation untouched.
+
+        ``force_remove`` requires every server replica to run this version:
+        an older peer decodes it as ``remove`` and only drops its mirror,
+        leaving the owning replica's live tunnel untouched.
+        """
+        owns_tunnel = client_id in self.connection_managers
+        released = await self.release_client(client_id)
+        if not owns_tunnel:
+            self._enqueue_client_update("force_remove", client_id, [], [])
+        return released
 
     async def handle_peer_client_update(self, msg: ClientUpdateMessage):
         """Handle client update from peer"""
@@ -469,18 +571,46 @@ class MessageServerHandler:
                     server_id=msg.server_id,
                 )
                 invalid = _invalid_client_claims(client_info)
-                invalid += self._foreign_cidr_claims(update.client_id, update.cidrs)
                 if invalid:
                     logger.warning(
                         f"[Server] Dropping client update from peer {msg.server_id}"
-                        f" for client {update.client_id} with out-of-policy claims: {invalid}"
+                        f" for client {update.client_id} with invalid claims: {invalid}"
                     )
                     continue
-                self.client_registry[update.client_id] = client_info
-                # Index CIDRs for efficient lookup
-                for cidr in update.cidrs:
-                    self._cidr_registry.insert(cidr, update.client_id)
+                foreign: List[Tuple[str, uuid.UUID]] = []
+                async with self._client_update_section(update.client_id):
+                    # Check and write in one await-free, registry-wide
+                    # critical section, so a concurrent registration for a
+                    # different client cannot slip a claim in between.
+                    async with self._cidr_claims_lock:
+                        foreign = self._cidr_claim_owners(
+                            update.client_id, update.cidrs
+                        )
+                        if not foreign:
+                            self.client_registry[update.client_id] = client_info
+                            # The update's claim set is authoritative: a
+                            # re-registered client whose address changed must
+                            # not keep its old CIDRs.
+                            self._cidr_registry.update_client(
+                                update.client_id, update.cidrs
+                            )
+                if foreign:
+                    logger.warning(
+                        f"[Server] Dropping client update from peer {msg.server_id}"
+                        f" for client {update.client_id} claiming CIDRs owned by"
+                        " another client: "
+                        + ", ".join(
+                            f"{cidr} (owner {owner})" for cidr, owner in foreign
+                        )
+                    )
+                    continue
                 logger.debug(f"[Server] Added client from peer: {update.client_id}")
+            elif update.action == "force_remove":
+                # One path covers both cases, entirely under the per-client
+                # lock: on the owning replica this closes the socket, drops
+                # the route, and advances the generation; on a mirror-only
+                # replica it drops the mirrored registry entry.
+                await self.release_client(update.client_id)
             elif update.action == "remove":
                 # Remove client from local registry
                 if update.client_id in self.client_registry:
@@ -505,54 +635,74 @@ class MessageServerHandler:
                 f"[Server] Removed client {client_id} from disconnected peer {peer_server_id}"
             )
 
-    async def send_client_update_to_peer(self, websocket, action: str):
-        """Send client updates to a peer"""
-        updates = []
-        for client_id, client_info in self.client_registry.items():
+    def send_client_update_to_peer(self, websocket, action: str) -> None:
+        """Announce this server's clients to peers (used on peer connect).
+
+        Each client's update is enqueued on its per-client chain instead of
+        being packed into one snapshot send: a release racing the
+        announcement could otherwise deliver a stale snapshot ``add`` after
+        its queued ``remove`` and resurrect an already-released route on the
+        new peer. The chains broadcast to every connected peer, which
+        includes the one this announcement is for.
+        """
+        for client_id, client_info in list(self.client_registry.items()):
             # Only send clients owned by this server
             if client_info.server_id == self._server_info.server_id:
-                updates.append(
-                    ClientUpdateInfo(
-                        client_id=client_id,
-                        action=action,
-                        cidrs=client_info.cidrs,
-                        unix_sockets=client_info.unix_sockets,
-                    )
+                self._enqueue_client_update(
+                    action,
+                    client_id,
+                    client_info.cidrs,
+                    client_info.unix_sockets,
                 )
 
-        if updates:
-            msg = ClientUpdateMessage(
-                server_id=self._server_info.server_id, updates=updates
-            )
-            msg_data = pack_message(msg)
-            if hasattr(websocket, 'send_bytes'):
-                await websocket.send_bytes(msg_data)
-            else:
-                await websocket.send(msg_data)
-
-    async def broadcast_client_update(
+    def _enqueue_client_update(
         self,
         action: str,
         client_id: uuid.UUID,
         cidrs: List[str],
         unix_sockets: List[str],
-    ):
-        """Broadcast client update to all peers (both outgoing and incoming)"""
+    ) -> None:
+        """Queue a client update to all peers without awaiting the sends.
+
+        Registration and release paths call this while holding the client's
+        per-client section. Awaiting the sends there would let one wedged
+        peer websocket (a full write buffer) stall every other operation
+        serialized on that client. The sends run outside the section,
+        chained per client so peers observe a client's updates in the order
+        the server produced them.
+        """
         update = ClientUpdateInfo(
             client_id=client_id,
             action=action,
             cidrs=cidrs,
             unix_sockets=unix_sockets,
         )
-        msg = ClientUpdateMessage(
-            server_id=self._server_info.server_id, updates=[update]
+        msg_data = pack_message(
+            ClientUpdateMessage(server_id=self._server_info.server_id, updates=[update])
         )
+        prior = self._client_broadcast_chains.get(client_id)
 
+        async def _send_in_order() -> None:
+            if prior is not None and not prior.done():
+                with contextlib.suppress(Exception):
+                    await prior
+            await self._send_client_update_to_peers(msg_data)
+
+        task = asyncio.create_task(_send_in_order())
+        self._client_broadcast_chains[client_id] = task
+
+        def _forget(done: asyncio.Task) -> None:
+            if self._client_broadcast_chains.get(client_id) is done:
+                del self._client_broadcast_chains[client_id]
+
+        task.add_done_callback(_forget)
+
+    async def _send_client_update_to_peers(self, msg_data: bytes) -> None:
+        """Send a packed client update to every peer (outgoing and incoming)."""
         # Broadcast to outgoing peers
         for peer_id, peer in self.peers.items():
             if peer.connected and peer.websocket:
                 try:
-                    msg_data = pack_message(msg)
                     if hasattr(peer.websocket, 'send_bytes'):
                         await peer.websocket.send_bytes(msg_data)
                     else:
@@ -566,7 +716,6 @@ class MessageServerHandler:
         for peer_id, peer in self.serving_peers.items():
             if peer.connected and peer.websocket:
                 try:
-                    msg_data = pack_message(msg)
                     if hasattr(peer.websocket, 'send_bytes'):
                         await peer.websocket.send_bytes(msg_data)
                     else:
@@ -596,50 +745,114 @@ class MessageServerHandler:
 
         client_id = client_info.client_id
         invalid = _invalid_client_claims(client_info)
-        invalid += self._foreign_cidr_claims(client_id, client_info.cidrs)
-        if authorized_addresses is not None:
-            invalid += [
-                cidr
-                for cidr in client_info.cidrs
-                if not _authorized_host_route(cidr, authorized_addresses)
-            ]
         if invalid:
             logger.warning(
-                f"[Server] Rejecting client {client_id} with out-of-policy claims: {invalid}"
+                f"[Server] Rejecting client {client_id} with invalid claims: {invalid}"
             )
             await websocket.close(
                 code=1008, reason="invalid client registration claims"
             )
             return
+        if authorized_addresses is not None:
+            unauthorized = [
+                cidr
+                for cidr in client_info.cidrs
+                if not _authorized_host_route(cidr, authorized_addresses)
+            ]
+            if unauthorized:
+                logger.warning(
+                    f"[Server] Rejecting client {client_id} claiming CIDRs outside "
+                    f"its addresses: {unauthorized}"
+                )
+                await websocket.close(
+                    code=1008, reason="invalid client registration claims"
+                )
+                return
         cidr_list = client_info.cidrs
         socket_list = client_info.unix_sockets
 
-        connection_manager = ConnectionManager(websocket)
-        self.connection_managers[client_id] = connection_manager
-
         # Set server_id so send_client_update_to_peer can filter correctly
         client_info.server_id = self._server_info.server_id
-        self.client_registry[client_id] = client_info
 
-        # Index CIDRs for efficient lookup
-        for cidr in cidr_list:
-            self._cidr_registry.insert(cidr, client_id)
+        # Registration and its "add" broadcast are serialized against the
+        # release path (and its "remove" broadcast) by the per-client lock, so
+        # a reconnecting websocket cannot interleave the two on peers. The
+        # generation is taken under the same lock so generations follow
+        # registration order.
+        registered = False
+        rejected = False
+        generation: Optional[int] = None
+        foreign: List[Tuple[str, uuid.UUID]] = []
+        try:
+            async with self._client_update_section(client_id):
+                # The ownership check and the claim write run in one
+                # await-free critical section guarded registry-wide, so two
+                # different clients claiming the same CIDR cannot both pass
+                # the check and have the later write steal the other's route.
+                async with self._cidr_claims_lock:
+                    foreign = self._cidr_claim_owners(client_id, cidr_list)
+                    if not foreign:
+                        self.connection_managers[client_id] = ConnectionManager(
+                            websocket
+                        )
+                        self.client_registry[client_id] = client_info
 
-        # Get generation for this connection (used to filter stale disconnect
-        # callbacks). Taken before the next await so generations follow
-        # registration order even when a reconnect registers in between.
-        generation = await self._get_next_generation(client_id)
+                        # The registration's claim set is authoritative: a
+                        # re-registered client whose address changed must not
+                        # keep its old CIDRs.
+                        self._cidr_registry.update_client(client_id, cidr_list)
+                        registered = True
 
-        logger.debug(
-            f"[Server] Client registered via WS: {client_id}, CIDRs: {cidr_list}"
-        )
+                if not registered:
+                    logger.warning(
+                        f"[Server] Rejecting client {client_id} claiming CIDRs "
+                        "owned by another client: "
+                        + ", ".join(
+                            f"{cidr} (owner {owner})" for cidr, owner in foreign
+                        )
+                    )
+                    rejected = True
+                else:
+                    # Get generation for this connection (used to filter
+                    # stale disconnect callbacks).
+                    generation = await self._get_next_generation(client_id)
 
-        # Broadcast new client to peers
-        await self.broadcast_client_update("add", client_id, cidr_list, socket_list)
+                    logger.debug(
+                        f"[Server] Client registered via WS: {client_id}, "
+                        f"CIDRs: {cidr_list}"
+                    )
 
-        if self._callback_on_connect:
-            await self._safe_callback(self._callback_on_connect, None, client_info)
-        await self.handle_client(websocket, client_id, generation)
+                    # Broadcast new client to peers
+                    self._enqueue_client_update(
+                        "add", client_id, cidr_list, socket_list
+                    )
+
+            if rejected:
+                # Close outside the per-client section, like release_client:
+                # a hung close handshake must not stall the operations
+                # serialized on this client.
+                await websocket.close(
+                    code=1008, reason="invalid client registration claims"
+                )
+                return
+
+            if self._callback_on_connect:
+                await self._safe_callback(self._callback_on_connect, None, client_info)
+            await self.handle_client(websocket, client_id, generation)
+        finally:
+            # Safety net for anything between registration and handle_client
+            # that raises or is cancelled. On the normal disconnect path this
+            # runs AFTER handle_client's own finally (which releases the
+            # registration and fires the disconnect callback), so the
+            # ownership check below simply fails and the generation is left
+            # untouched. Deregistration only happens when this websocket still
+            # owns the registration, checked under the release lock so a
+            # reconnect registering in between cannot be released by mistake.
+            # Shielded so a cancellation of this task cannot abort the cleanup
+            # mid-way.
+            await asyncio.shield(
+                self.release_client(client_id, only_if_websocket=websocket)
+            )
 
     async def handle_server_federation(
         self,
@@ -677,18 +890,49 @@ class MessageServerHandler:
             await self._safe_callback(self._callback_on_connect, server_info, None)
 
         # Send existing clients to new peer
-        await self.send_client_update_to_peer(websocket, "add")
+        self.send_client_update_to_peer(websocket, "add")
 
         await self.handle_peer(websocket, server_info.server_id)
+
+    async def _reap_when_stale(
+        self,
+        websocket: WebSocket,
+        client_id: uuid.UUID,
+        liveness: dict,
+    ) -> None:
+        """Close the websocket when a heartbeating client has gone silent.
+
+        Only clients that have proven liveness (sent at least one heartbeat)
+        are subject to the idle timeout; clients on older versions never
+        heartbeat and cannot be told from a live silent connection. Reaping
+        closes the socket instead of cancelling ``receive()`` with a timeout —
+        a cancelled receive can discard a frame already being delivered.
+        """
+        while True:
+            await asyncio.sleep(self._client_read_timeout)
+            idle = time.monotonic() - liveness["last_activity"]
+            if liveness["heartbeat_seen"] and idle >= self._client_read_timeout:
+                logger.info(
+                    f"[Server] Reaping stale tunnel for client {client_id}: "
+                    f"no traffic for {idle:.0f}s"
+                )
+                with contextlib.suppress(Exception):
+                    await websocket.close()
+                return
 
     async def handle_client(
         self, websocket: WebSocket, client_id: uuid.UUID, generation: int
     ):
         """Handle a client connection"""
+        liveness = {"heartbeat_seen": False, "last_activity": time.monotonic()}
+        watchdog = asyncio.create_task(
+            self._reap_when_stale(websocket, client_id, liveness)
+        )
         try:
             while True:
                 try:
                     message = await websocket.receive()
+                    liveness["last_activity"] = time.monotonic()
                     if message.get("type") == "websocket.disconnect":
                         break
 
@@ -710,6 +954,7 @@ class MessageServerHandler:
                         if client_id in self.connection_managers:
                             await self.connection_managers[client_id].dispatch(msg)
                     elif isinstance(msg, HeartbeatMessage):
+                        liveness["heartbeat_seen"] = True
                         response = HeartbeatMessage(timestamp=msg.timestamp)
                         await websocket.send_bytes(pack_message(response))
 
@@ -722,24 +967,35 @@ class MessageServerHandler:
         except Exception as e:
             logger.debug(f"[Server] Client error: {e}")
         finally:
+            watchdog.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watchdog
+
             # Get client info before removing
             client_info = self.client_registry.get(client_id)
             cidr_list = client_info.cidrs if client_info else []
             socket_list = client_info.unix_sockets if client_info else []
 
-            # A reconnecting client can register a new websocket under the
-            # same client_id before this one's close is noticed. Release the
-            # registration only while it still belongs to this websocket.
-            current = self.connection_managers.get(client_id)
-            if current is not None and current.websocket is websocket:
-                self._cidr_registry.remove_client(client_id)
-                self.client_registry.pop(client_id, None)
-                del self.connection_managers[client_id]
+            # The release and its "remove" broadcast are serialized against
+            # registrations (and their "add" broadcast) by the per-client
+            # section, and the sends themselves are chained per client, so
+            # peers never observe a reconnect's "add" before an in-flight
+            # "remove" for the same client.
+            async with self._client_update_section(client_id):
+                # A reconnecting client can register a new websocket under the
+                # same client_id before this one's close is noticed. Release
+                # the registration only while it still belongs to this
+                # websocket.
+                current = self.connection_managers.get(client_id)
+                if current is not None and current.websocket is websocket:
+                    self._cidr_registry.remove_client(client_id)
+                    self.client_registry.pop(client_id, None)
+                    del self.connection_managers[client_id]
 
-                # Broadcast client disconnection to peers
-                await self.broadcast_client_update(
-                    "remove", client_id, cidr_list, socket_list
-                )
+                    # Broadcast client disconnection to peers
+                    self._enqueue_client_update(
+                        "remove", client_id, cidr_list, socket_list
+                    )
 
             # Call disconnect callback (filtered by generation to avoid stale callbacks)
             if self._callback_on_disconnect:
