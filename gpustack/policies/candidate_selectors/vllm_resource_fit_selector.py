@@ -859,7 +859,16 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             allocatable_vram = allocatable.vram.get(gpu.index, 0)
             total_allocatable_vram += allocatable_vram
 
-            if allocatable_vram / gpu.memory.total > self._gpu_memory_utilization:
+            # Compare with the bytes `_find_single_worker_gpu_claim` books on
+            # the card. Without a utilization the claim is whatever is left,
+            # so the card needs some VRAM left.
+            if self._gpu_memory_utilization > 0:
+                fits = allocatable_vram >= int(
+                    gpu.memory.total * self._gpu_memory_utilization
+                )
+            else:
+                fits = allocatable_vram > 0
+            if fits:
                 satisfied_gpu_count += 1
                 gpu_list.append(gpu)
 
