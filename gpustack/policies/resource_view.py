@@ -44,7 +44,11 @@ def compute_worker_allocated(
                     continue
                 if sw.computed_resource_claim:
                     allocated.ram += sw.computed_resource_claim.ram or 0
-                    if gpu_type is None or mi.gpu_type == gpu_type:
+                    if (
+                        gpu_type is None
+                        or mi.gpu_type is None
+                        or mi.gpu_type == gpu_type
+                    ):
                         add_vram(sw.computed_resource_claim)
 
     return allocated
