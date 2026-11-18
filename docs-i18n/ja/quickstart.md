@@ -64,13 +64,17 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 5. `Add Worker` の手順に従います。`Run command` に表示される Docker コマンドには、ワーカーの登録に使うクラスタートークンが含まれています。以下の例では `your_cluster_registration_token` がトークンのプレースホルダーです。
 
+!!! note "Server と Worker のデータを分離する"
+
+    Server と Worker を同じホストで実行する場合は、異なるデータボリュームを使用してください。この例では Server に `gpustack-data`、Worker に `gpustack-worker-data` を使用します。Server のホストで UI が生成した Worker コマンドを実行する前に、ボリューム名を確認してください。これらは新規デプロイ用の名前です。マウント名を変更しても既存のデータは移行されません。
+
 ```bash
 sudo docker run -d --name gpustack-worker \
       --restart=unless-stopped \
       --privileged \
       --network=host \
       --volume /var/run/docker.sock:/var/run/docker.sock \
-      --volume gpustack-data:/var/lib/gpustack \
+      --volume gpustack-worker-data:/var/lib/gpustack \
       --runtime nvidia \
       gpustack/gpustack \
       --server-url http://your_gpustack_server_url \
