@@ -25,7 +25,7 @@ GPUStack, küme tabanlı çalışan yönetimini destekler ve birden fazla küme 
    - `Specify the worker IP` veya çalışanın `Auto-detect the Worker IP` olmasına izin verin. Çalışan IP'sine sunucudan erişilebildiğinden emin olun.
    - Çalışan konteyneri için bir `Additional Volume Mount` belirtin. Montaj yolu mevcut model dosyalarını yeniden kullanmak için kullanılabilir.
 
-7. `Run command` çalışan konteynerini oluşturmak ve başlatmak için. Bash betiğini kopyalayın ve ortamınızda çalıştırın.
+7. `Run command` adımında oluşturulan komutu kopyalayıp çalışan düğümde çalıştırın. Komutu kendiniz yazıyorsanız küme kayıt belirtecini `--token` ile iletin veya çalışan konteynerinde `GPUSTACK_TOKEN` ortam değişkenini ayarlayın.
 
 Cluster oluşturulduktan sonra çalışan de eklenebilir.
 
