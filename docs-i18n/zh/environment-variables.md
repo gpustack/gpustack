@@ -68,7 +68,7 @@ GPUStack 支持通过多种环境变量进行配置。
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- | --------------- |
 | `GPUSTACK_PROXY_TIMEOUT_SECONDS`               | 代理推理请求的绝对最长时限，单位为秒。                                                                                                 | `1800`  | Server & Worker |
 | `GPUSTACK_PROXY_TTFT_TIMEOUT_SECONDS`          | 等待流式响应首个数据块的兜底超时时间，单位为秒。由于包含排队和预填充阶段，应设置得足够宽裕。                             | `300`   | Server & Worker |
-| `GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS`   | 流式响应开始后，数据块之间允许的最长间隔，单位为秒。不适用于非流式响应，因为其响应体仅在结束时返回。 | `60`    | Server & Worker |
+| `GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS`   | 流式响应开始后，数据块之间允许的最长间隔，单位为秒。不适用于非流式响应，因为其响应体仅在结束时返回。可在运行时通过 `PUT /v1/config`（或 `gpustack reload-config --set proxy-stream-idle-timeout=N`）更新，无需重启进程。 | `60`    | Server & Worker |
 | `GPUSTACK_PROXY_UPSTREAM_IDLE_TIMEOUT_SECONDS` | Higress 上游连接池的空闲超时时间，单位为秒。与请求持续时间无关：它回收空闲连接，不限制单个请求的时长。        | `3`     | Server          |
 | `GPUSTACK_TCP_CONNECTOR_LIMIT`                 | HTTP 客户端 TCP 连接器的连接数限制。                                                                                                                             | `1000`  | Server & Worker |
 
