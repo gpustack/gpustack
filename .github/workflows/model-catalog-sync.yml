@@ -1,0 +1,193 @@
+name: Model Catalog Sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_ids:
+        description: 'Model IDs, separated by commas or whitespace (hf:org/model, ms:org/model, or model URL; max 10)'
+        type: string
+        required: true
+      dry_run:
+        description: 'Only produce validated artifacts and a diff; do not create a PR'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-catalog-sync
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  research:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    outputs:
+      base_sha: ${{ steps.freeze.outputs.base_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - id: freeze
+        run: echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.8.24'
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --locked
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+      - name: Install pinned Qwen Code
+        run: |
+          curl --fail --location --retry 2 \
+            https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.25.0.tgz \
+            --output "$RUNNER_TEMP/qwen-code.tgz"
+          echo "afeab0c85d682f201101319ce05decf3302d7ed7fb6319baa6a592051ea1a1ba  $RUNNER_TEMP/qwen-code.tgz" | sha256sum --check
+          npm install --global --ignore-scripts "$RUNNER_TEMP/qwen-code.tgz"
+          qwen --version
+      - name: Prepare requested targets
+        env:
+          CATALOG_MODEL_IDS: ${{ inputs.model_ids }}
+        run: uv run python -m hack.catalog_sync.run prepare --output "$RUNNER_TEMP/catalog-request"
+      - name: Research with the catalog skill
+        env:
+          CATALOG_LLM_URL: ${{ vars.CI_GPUSTACK_CATALOG_LLM_URL }}
+          CATALOG_LLM_MODEL: ${{ vars.CI_GPUSTACK_CATALOG_LLM_MODEL }}
+          CATALOG_LLM_TOKEN: ${{ secrets.CI_GPUSTACK_CATALOG_LLM_AUTH_TOKEN }}
+        run: |
+          uv run python -m hack.catalog_sync.run research \
+            --request "$RUNNER_TEMP/catalog-request/request.json" \
+            --output "$RUNNER_TEMP/catalog-research"
+      - name: Preserve proposal
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: catalog-proposal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/catalog-research/proposal.json
+            ${{ runner.temp }}/catalog-research/research-error.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+  validation:
+    needs: research
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    outputs:
+      changed: ${{ steps.validate.outputs.changed }}
+      sha256: ${{ steps.validate.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.research.outputs.base_sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.8.24'
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --locked
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: catalog-proposal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/catalog-research
+      - name: Rebuild request from trusted workflow input
+        env:
+          CATALOG_MODEL_IDS: ${{ inputs.model_ids }}
+        run: uv run python -m hack.catalog_sync.run prepare --output "$RUNNER_TEMP/catalog-request"
+      - name: Independently verify evidence and render changes
+        id: validate
+        run: |
+          uv run python -m hack.catalog_sync.run validate \
+            --request "$RUNNER_TEMP/catalog-request/request.json" \
+            --proposal "$RUNNER_TEMP/catalog-research/proposal.json" \
+            --output "$RUNNER_TEMP/catalog-validated"
+          cat "$RUNNER_TEMP/catalog-validated/pr-body.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Apply validated changes for checks
+        env:
+          CATALOG_BUNDLE_SHA256: ${{ steps.validate.outputs.sha256 }}
+        run: |
+          uv run python -m hack.catalog_sync.run apply --output "$RUNNER_TEMP/catalog-validated"
+          git add --intent-to-add -- static/catalog_icons
+          git diff --check
+          git diff --binary > "$RUNNER_TEMP/catalog-validated/catalog.patch"
+      - name: Run offline regression checks
+        run: |
+          uv run pytest tests/hack/test_catalog_sync.py tests/hack/test_catalog_sync_review.py tests/server/test_catalog.py tests/server/test_catalog_accessors.py
+          make lint
+      - name: Report incomplete targets
+        if: steps.validate.outputs.partial == 'true'
+        env:
+          CATALOG_CHANGED: ${{ steps.validate.outputs.changed }}
+        run: |
+          echo '::warning::Some model targets remain blocked; see the validation report.'
+          if [[ "$CATALOG_CHANGED" != 'true' ]]; then
+            echo '::error::No catalog changes could be validated.'
+            exit 1
+          fi
+      - name: Preserve validated bundle and evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: catalog-validated-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/catalog-validated
+          if-no-files-found: warn
+          retention-days: 30
+
+  publication:
+    needs: [research, validation]
+    if: needs.validation.outputs.changed == 'true' && !inputs.dry_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.research.outputs.base_sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.8.24'
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --locked
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: catalog-validated-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/catalog-validated
+      - name: Verify unchanged base and validated bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ needs.research.outputs.base_sha }}
+          CATALOG_BUNDLE_SHA256: ${{ needs.validation.outputs.sha256 }}
+        run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [[ "$current" != "$BASE_SHA" ]]; then
+            echo '::error::main changed during research; rerun to validate against the new base.'
+            exit 1
+          fi
+          uv run python -m hack.catalog_sync.run verify --output "$RUNNER_TEMP/catalog-validated"
+      - name: Create write token after verification
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.CI_PRT_GENERATOR_ID }}
+          private-key: ${{ secrets.CI_PRT_GENERATOR_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Publish draft PR on the frozen base
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          CATALOG_BUNDLE_SHA256: ${{ needs.validation.outputs.sha256 }}
+          CATALOG_PR_BRANCH: automation/model-catalog-${{ github.run_id }}-${{ github.run_attempt }}
+        run: uv run python -m hack.catalog_sync.publish --output "$RUNNER_TEMP/catalog-validated"
