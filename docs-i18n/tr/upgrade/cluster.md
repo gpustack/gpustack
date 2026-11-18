@@ -28,7 +28,7 @@ docker run -d --name gpustack-worker \
   ... \
   gpustack/gpustack:vx.y.z \
   --server-url http://your_gpustack_server_url \
-  --token your_worker_token \
+  --token your_cluster_registration_token \
   --advertise-address your_worker_ip
 ```
 

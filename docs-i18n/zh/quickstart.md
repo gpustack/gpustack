@@ -58,7 +58,7 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 4. 填写新集群的 `Name` 和 `Description` 字段，然后单击 `Save` 按钮。
 
-5. 按照界面指引配置新的 Worker。您需要在 Worker 上运行 Docker 命令，将其连接到 GPUStack Server。命令类似如下：
+5. 按照 `Add Worker` 的步骤配置节点。`Run command` 中的 Docker 命令已包含用于注册 Worker 的集群注册令牌。下方示例用 `your_cluster_registration_token` 作为占位符。
 
 ```bash
 sudo docker run -d --name gpustack-worker \
@@ -70,7 +70,7 @@ sudo docker run -d --name gpustack-worker \
       --runtime nvidia \
       gpustack/gpustack \
       --server-url http://your_gpustack_server_url \
-      --token your_worker_token \
+      --token your_cluster_registration_token \
       --advertise-address 192.168.1.2
 ```
 

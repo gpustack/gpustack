@@ -21,7 +21,7 @@ GPUStack supports cluster-based worker management and provides multiple cluster 
    - `Specify the worker IP`, or let the worker `Auto-detect the Worker IP`. Make sure the worker IP is accessible from the server.
    - Specify a `Additional Volume Mount` for the worker container. The mount path can be used to reuse existing model files.
 
-7. `Run command` to create and start the worker container. Copy the bash script and run it in your environment.
+7. In `Run command`, copy the generated command and run it on the worker node. If you write your own command, pass the cluster registration token with `--token` or set `GPUSTACK_TOKEN` in the worker container.
 
 The worker also can be added after the cluster is created.
 

@@ -61,6 +61,7 @@ gpustack start [OPTIONS]
 | <div style="width:180px">Bayrak</div>              | <div style="width:100px">Varsayılan</div>           | Açıklama |
 |--------------------------------------------------|--------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--port` değer                                   | `80`                                             | Sunucunun bağlanacağı port. |
+| `-t` değer, `--token` değer                      | (boş)                                            | Yalnızca sunucu çalıştıran yeni bir kurulumda belirteç verirseniz yerleşik `Default Cluster` oluşturulur. `--enable-worker` kullanırken belirteci boş bırakırsanız sunucu bir belirteç oluşturur. Yerleşik çalışan düğüm de aynı belirteci kullanır. Sunucu mevcut belirteci korur ve geçerli değeri `<data-dir>/token` dosyasına yazar. |
 | `--tls-port` değer                               | `443`                                            | TLS sunucusunun bağlanacağı port. |
 | `--api-port` değer                               | `30080`                                          | GPUStack API sunucusunun bağlanacağı port. |
 | `--proxy-port` değer                             | `30079`                                          | GPUStack proxy sunucusunun bağlanacağı port. |
@@ -130,7 +131,7 @@ gpustack start [OPTIONS]
 
 | <div style="width:180px">Bayrak</div>      | <div style="width:100px">Varsayılan</div> | Açıklama |
 |------------------------------------------|----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `-t` değer, `--token` değer              | Otomatik oluşturulur.                        | Worker kaydında kullanılan paylaşılan sır. |
+| `-t` değer, `--token` değer              | (boş)                                | Çalışan düğümde aynı seçenek hedef kümenin kayıt belirtecini alır. Belirteci `Add Worker` → `Run command` adımından veya yerleşik `Default Cluster` için sunucudaki `<data-dir>/token` dosyasından alabilirsiniz. Düğüm yeniden başlatıldığında tekrar kayıt için bu belirtece ihtiyaç duyar. |
 | `-s` değer, `--server-url` değer         | (boş)                                | Bağlanılacak sunucu. |
 | `--worker-name` değer                    | (boş)                                | Worker düğümünün adı. Varsayılan olarak ana makine adı kullanılır. |
 | `--worker-ip` değer                      | (boş)                                | Worker düğümünün IP adresi. Varsayılan olarak otomatik algılanır. |

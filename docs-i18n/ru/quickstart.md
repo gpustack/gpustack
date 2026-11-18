@@ -62,7 +62,7 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 4. Заполните поля `Name` и `Description` для нового кластера, затем нажмите кнопку `Save`.
 
-5. Следуйте рекомендациям пользовательского интерфейса, чтобы настроить новый рабочий узел. Вам нужно будет запустить команду Docker на рабочем узле, чтобы подключить его к серверу GPUStack. Команда будет выглядеть примерно так:
+5. Выполните шаги в `Add Worker`. Команда Docker на шаге `Run command` уже содержит токен кластера для регистрации рабочего узла. В примере ниже вместо токена указано `your_cluster_registration_token`.
 
 ```bash
 sudo docker run -d --name gpustack-worker \
@@ -74,7 +74,7 @@ sudo docker run -d --name gpustack-worker \
       --runtime nvidia \
       gpustack/gpustack \
       --server-url http://your_gpustack_server_url \
-      --token your_worker_token \
+      --token your_cluster_registration_token \
       --advertise-address 192.168.1.2
 ```
 

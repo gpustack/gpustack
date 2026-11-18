@@ -191,6 +191,15 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=os.getenv("POD_NAMESPACE"),
     )
 
+    common_group.add_argument(
+        "-t",
+        "--token",
+        type=str,
+        help="Initial registration token for the server's built-in Default Cluster, "
+        "or the target cluster's registration token when starting a worker.",
+        default=get_gpustack_env("TOKEN"),
+    )
+
     server_group = parser_server.add_argument_group("Server settings")
 
     # Database settings
@@ -613,13 +622,6 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     )
 
     worker_group = parser_server.add_argument_group("Worker settings")
-    worker_group.add_argument(
-        "-t",
-        "--token",
-        type=str,
-        help="Shared secret used to add a worker.",
-        default=get_gpustack_env("TOKEN"),
-    )
     worker_group.add_argument(
         "-s",
         "--server-url",

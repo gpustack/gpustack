@@ -58,7 +58,7 @@ Open your browser and navigate to `http://your_host_ip` to access the GPUStack U
 
 4. Fill in the `Name` and `Description` fields for the new cluster, then click the `Save` button.
 
-5. Follow the UI guidelines to configure the new worker node. You will need to run a Docker command on the worker node to connect it to the GPUStack server. The command will look similar to the following:
+5. Follow the `Add Worker` steps. The Docker command in `Run command` includes the cluster registration token used to register the worker. The example below uses `your_cluster_registration_token` as a placeholder.
 
 ```bash
 sudo docker run -d --name gpustack-worker \
@@ -70,7 +70,7 @@ sudo docker run -d --name gpustack-worker \
       --runtime nvidia \
       gpustack/gpustack \
       --server-url http://your_gpustack_server_url \
-      --token your_worker_token \
+      --token your_cluster_registration_token \
       --advertise-address 192.168.1.2
 ```
 

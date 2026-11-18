@@ -25,7 +25,7 @@ GPUStack 支持按集群管理 Worker，并提供多种集群类型。可以通�
    - `Specify the worker IP`，或让 Worker `Auto-detect the Worker IP`。确保 GPUStack Server 可以访问 Worker IP。
    - 为 Worker 容器指定 `Additional Volume Mount`。此挂载路径可以用于复用已有模型文件。
 
-7. 执行 `Run command`，创建并启动 Worker 容器。复制 Bash 脚本并在你的环境中运行。
+7. 在 `Run command` 中复制生成的命令，并在 Worker 节点上运行。自行编写命令时，可通过 `--token` 传入集群注册令牌，也可在 Worker 容器中设置 `GPUSTACK_TOKEN`。
 
 集群创建后也可以添加 Worker。
 

@@ -62,7 +62,7 @@ Tarayıcınızı açın ve GPUStack kullanıcı arayüzüne erişmek için `http
 
 4. Yeni küme için `Name` ve `Description` alanlarını doldurun ve ardından `Save` düğmesine tıklayın.
 
-5. Yeni çalışan düğümü yapılandırmak için kullanıcı arayüzü yönergelerini izleyin. Çalışan düğümü GPUStack sunucusuna bağlamak için bir Docker komutu çalıştırmanız gerekecektir. Komut aşağıdakine benzer görünecektir:
+5. `Add Worker` adımlarını izleyin. `Run command` adımındaki Docker komutu, çalışan düğümün kaydı için gereken küme kayıt belirtecini içerir. Aşağıdaki örnekte `your_cluster_registration_token` bu belirtecin yerini tutar.
 
 ```bash
 sudo docker run -d --name gpustack-worker \
@@ -74,7 +74,7 @@ sudo docker run -d --name gpustack-worker \
       --runtime nvidia \
       gpustack/gpustack \
       --server-url http://your_gpustack_server_url \
-      --token your_worker_token \
+      --token your_cluster_registration_token \
       --advertise-address 192.168.1.2
 ```
 

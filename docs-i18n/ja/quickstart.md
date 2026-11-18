@@ -62,7 +62,7 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 4. 新しいクラスターの `Name` と `Description` を入力し、`Save` ボタンをクリックします。
 
-5. UI の案内に従って新しいワーカーノードを構成します。ワーカーノードで Docker コマンドを実行し、GPUStack サーバーに接続します。コマンドは次のようになります。
+5. `Add Worker` の手順に従います。`Run command` に表示される Docker コマンドには、ワーカーの登録に使うクラスタートークンが含まれています。以下の例では `your_cluster_registration_token` がトークンのプレースホルダーです。
 
 ```bash
 sudo docker run -d --name gpustack-worker \
@@ -74,7 +74,7 @@ sudo docker run -d --name gpustack-worker \
       --runtime nvidia \
       gpustack/gpustack \
       --server-url http://your_gpustack_server_url \
-      --token your_worker_token \
+      --token your_cluster_registration_token \
       --advertise-address 192.168.1.2
 ```
 
