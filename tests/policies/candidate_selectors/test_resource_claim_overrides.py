@@ -108,7 +108,9 @@ async def test_custom_ram_override_controls_admission(config, selection, ram, vr
     assert selector.get_resource_claim().ram == expected_ram
     assert selector.get_resource_claim().vram == (14 * GIB if vram is None else vram)
     shortage = expected_ram > 64 * GIB
-    assert bool(candidates) == (not shortage or selection == "manual")
+    # A pinned GPU selection is admitted even when its claim exceeds the
+    # worker: the candidate is kept and marked overcommit.
+    assert bool(candidates) == (not shortage or selection.startswith("manual"))
     if candidates:
         assert all(c.computed_resource_claim.ram == expected_ram for c in candidates)
         assert all(bool(c.overcommit) == shortage for c in candidates)
@@ -232,7 +234,9 @@ async def test_mindie_ram_only_override_controls_admission(
         config, m, [], resource_view=ResourceView([])
     )
     candidates = await selector.select_candidates([worker])
-    assert bool(candidates) == (ram <= 64 or selection == "manual")
+    # Pinned GPUs are admitted on an overcommit; automatic selection still
+    # refuses the shortage.
+    assert bool(candidates) == (ram <= 64 or selection.startswith("manual"))
     if candidates:
         assert candidates[0].computed_resource_claim.ram == ram * GIB
         assert bool(candidates[0].overcommit) == (ram > 64)
