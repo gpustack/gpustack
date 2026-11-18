@@ -69,8 +69,8 @@ If you set `higress-core.enabled=false`, install a compatible Higress instance b
 # Add the Higress Helm repository
 helm repo add higress.io https://higress.io/helm-charts
 
-# Install higress-core v2.1.9
-helm install higress higress.io/higress-core -n higress-system --create-namespace --version 2.1.9
+# Install higress-core v2.2.6
+helm install higress higress.io/higress-core -n higress-system --create-namespace --version 2.2.6
 ```
 
 Verify the IngressClass is available:

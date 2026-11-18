@@ -105,7 +105,7 @@ helm repo add higress.io https://higress.io/helm-charts
 # Install higress-core (match the version pinned by the GPUStack chart)
 helm install higress higress.io/higress-core \
   --namespace higress-system --create-namespace \
-  --version 2.1.9
+  --version 2.2.6
 ```
 
 Убедитесь, что IngressClass доступен и что его имя соответствует `gateway.ingressClassname`:
