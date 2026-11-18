@@ -164,6 +164,19 @@ def test_backend_detail_returns_not_found_when_missing(backends, monkeypatch):
     assert response.status_code == 404
 
 
+@pytest.mark.parametrize("per_page", [0, -1])
+def test_backend_list_treats_page_size_below_one_as_unpaginated(backends, per_page):
+    backends.app.dependency_overrides[get_tenant_context] = lambda: _context("admin")
+    with TestClient(backends.app) as client:
+        response = client.get("/v2/inference-backends", params={"perPage": per_page})
+    assert response.status_code == 200
+    body = response.json()
+    assert {item["backend_name"] for item in body["items"]} == {
+        row.backend_name for row in backends.rows
+    }
+    assert body["pagination"]["totalPage"] == 1
+
+
 @pytest.mark.parametrize("scope", SCOPES)
 @pytest.mark.parametrize("has_override", [False, True])
 def test_backend_name_prefers_own_override_then_global(backends, scope, has_override):

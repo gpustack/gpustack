@@ -27,6 +27,7 @@ from gpustack.routes.models import (
 )
 from gpustack.routes.model_common import ModelStateFilterEnum
 from gpustack.schemas.clusters import Cluster
+from gpustack.schemas.common import ListParams
 from gpustack.schemas.deployment_document import (
     ENTRY_FIELDS,
     OVERWRITABLE_FIELDS,
@@ -2164,3 +2165,41 @@ async def test_import_stamps_the_callers_org_and_refuses_foreign_clusters(
             )
         )
         assert list(granted.all()) == [CUSTOM_ORG_ID]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("per_page", [0, -1])
+async def test_get_model_instances_treats_page_size_below_one_as_unpaginated(
+    monkeypatch, per_page
+):
+    timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    instance = ModelInstance(
+        id=1,
+        name="m1-0",
+        model_id=1,
+        model_name="m1",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/repo",
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(models_route, "async_session", lambda: session)
+    monkeypatch.setattr(
+        models_route.Model,
+        "one_by_id",
+        AsyncMock(return_value=SimpleNamespace(instances=[instance])),
+    )
+    monkeypatch.setattr(
+        "gpustack.routes.models.assert_resource_visible", lambda *a, **k: None
+    )
+
+    result = await models_route.get_model_instances(
+        ctx=_ctx(DEFAULT_ORG_ID), id=1, params=ListParams(perPage=per_page)
+    )
+
+    assert [item.name for item in result.items] == ["m1-0"]
+    assert result.pagination.total == 1
+    assert result.pagination.totalPage == 1

@@ -107,7 +107,10 @@ async def get_model_specs(
     specs = filter_specs_by_gpu(gpus or [], specs)
 
     count = len(specs)
-    total_page = math.ceil(count / params.perPage)
+    # perPage < 1 means no pagination, as in paginated_by_query.
+    total_page = (
+        math.ceil(count / params.perPage) if params.perPage > 0 else int(count > 0)
+    )
     pagination = Pagination(
         page=params.page,
         perPage=params.perPage,

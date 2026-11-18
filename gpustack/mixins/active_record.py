@@ -562,7 +562,9 @@ class ActiveRecordMixin(ImmutableFieldsMixin):
                     else desc(field_expression)
                 )
 
-        if page is not None and page > 0 and per_page is not None:
+        # A page size below one means "no pagination", as for page < 1.
+        sized = per_page is not None and per_page > 0
+        if page is not None and page > 0 and sized:
             statement = statement.offset((page - 1) * per_page).limit(per_page)
         items = (await session.exec(statement)).all()
 
@@ -580,7 +582,7 @@ class ActiveRecordMixin(ImmutableFieldsMixin):
             count_statement = count_statement.where(and_(*extra_conditions))
 
         count = (await session.exec(count_statement)).one()
-        total_page = math.ceil(count / per_page)
+        total_page = math.ceil(count / per_page) if sized else int(count > 0)
         pagination = Pagination(
             page=page,
             perPage=per_page,
