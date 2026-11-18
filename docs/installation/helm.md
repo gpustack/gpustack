@@ -211,7 +211,7 @@ helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart 
 
 ### Pulling Images From a Private Registry
 
-To pull all images (GPUStack server/worker, higress-plugins, and the bundled higress-core gateway/controller/pilot) from a mirrored private registry, override `global.hub`. This relies on Helm's global-values propagation, so a single setting covers every image:
+To pull the GPUStack server/worker, higress-plugins, and bundled higress-core gateway/controller/pilot images from a mirrored private registry, override `global.hub`:
 
 ```bash
 helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \
@@ -221,7 +221,10 @@ helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart 
 
 `global.hub` is also passed to the server as `GPUSTACK_SYSTEM_DEFAULT_CONTAINER_REGISTRY`, ensuring inference engine images (e.g. vLLM, llama.cpp) are pulled from the same registry.
 
-To supply pull credentials, the chart can create a `docker-registry` Secret named `gpustack-image-pull-secret` and wire it into all pods:
+If you enable Promtail or the Higress built-in Plugin Server, configure their
+[private image repositories separately](./air-gapped.md#optional-higress-images-for-helm).
+
+To supply pull credentials for the GPUStack workloads, the chart can create a `docker-registry` Secret named `gpustack-image-pull-secret`:
 
 ```bash
 helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart \

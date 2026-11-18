@@ -136,6 +136,45 @@ This command imports all image packages from the specified directory into the lo
 
 For more details on `load-images`, see the [CLI Reference](../cli-reference/load-images.md).
 
+### Optional Higress Images for Helm
+
+Promtail and the Higress built-in Plugin Server are disabled by default. If
+you enable either component in the bundled Higress chart, mirror its image
+separately. GPUStack's `copy-images` and `save-images` commands omit these
+images, and `global.hub` alone leaves them on the public Higress registry.
+
+- Mirror `higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/promtail:2.9.4`
+  to `myregistry.example.com/higress/promtail:2.9.4`.
+- Mirror `higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/plugin-server:2.2.6`
+  to `myregistry.example.com/higress/plugin-server:2.2.6`.
+
+Add the settings for the components you use to your Helm values file. This
+example enables both:
+
+```yaml
+global:
+  hub: myregistry.example.com
+higress-core:
+  global:
+    o11y:
+      enabled: true
+      promtail:
+        image:
+          repository: myregistry.example.com/higress/promtail
+          tag: "2.9.4"
+    enablePluginServer: true
+  pluginServer:
+    hub: myregistry.example.com
+    tag: "2.2.6"
+```
+
+Set Promtail's `repository` to the full repository path and supply the tag
+separately. For Plugin Server, the chart appends `/higress/plugin-server` to
+`pluginServer.hub` when using the default image name. If your registry
+requires authentication, add the pull Secret to
+`higress-core.gateway.imagePullSecrets` for Promtail and to
+`higress-core.pluginServer.imagePullSecrets` for Plugin Server.
+
 ## Installation
 
 After preparing the internal container registry with the required images, you can install GPUStack in the air-gapped environment.
