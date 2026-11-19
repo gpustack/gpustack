@@ -304,6 +304,7 @@ class _Collection:
         upstream_instances=None,
         allow_trend_lookback=False,
         query_interval=None,
+        summary_only=False,
     ):
         self.model = model
         self.instances = {instance.id: instance for instance in instances}
@@ -321,9 +322,12 @@ class _Collection:
         self.statistics = [s for s in HISTOGRAM_STATISTICS if s in statistics]
         self.allow_trend_lookback = allow_trend_lookback
         self.query_interval = query_interval
+        self.summary_only = summary_only
         self.slots = asyncio.Semaphore(8)
         self.completed = set()
         self.reads = {}
+        self.read_waiters = defaultdict(int)
+        self.pending_reads = set()
 
     async def read(self, query, *, ranged=False):
         # Completion and legacy connector views can share an identical native
@@ -333,9 +337,41 @@ class _Collection:
             self.reads[key] = asyncio.create_task(
                 self.read_native(query, ranged=ranged)
             )
-        return await self.reads[key]
+        task = self.reads[key]
+        waiter = asyncio.current_task()
+        self.pending_reads.add(waiter)
+        self.read_waiters[task] += 1
+        try:
+            # A metric can abandon its read while another metric still needs it.
+            return await asyncio.shield(task)
+        finally:
+            try:
+                self.read_waiters[task] -= 1
+                if not self.read_waiters[task]:
+                    del self.read_waiters[task]
+                    if not task.done():
+                        if self.reads.get(key) is task:
+                            del self.reads[key]
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                if task.done() and (task.cancelled() or task.exception() is not None):
+                    if self.reads.get(key) is task:
+                        del self.reads[key]
+            finally:
+                self.pending_reads.discard(waiter)
+
+    async def close(self, fills):
+        """Drain collection-owned tasks before releasing their HTTP client."""
+        # Stop metric producers first, then reads abandoned by failed gathers.
+        for tasks in (fills, tuple(self.pending_reads), tuple(self.reads.values())):
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def read_native(self, query, *, ranged=False):
+        if ranged and self.summary_only:
+            return []
         async with self.slots:
             if ranged:
                 start, end = (
@@ -1046,6 +1082,46 @@ class _Collection:
         self.completed.add(definition.key)
 
 
+async def _wait_for_fills(fills):
+    # Protected cleanup owns cancellation of fills and shared reads.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _COLLECT_DEADLINE_SECONDS
+    pending = set(fills)
+    while pending:
+        done, pending = await asyncio.wait(
+            pending,
+            timeout=max(0, deadline - loop.time()),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            raise asyncio.TimeoutError
+        for task in done:
+            task.result()
+
+
+async def _close_collection(collection, fills, client):
+    async def close():
+        try:
+            if collection is not None:
+                await collection.close(fills)
+        finally:
+            if client is not None:
+                await client.close()
+
+    # Keep ownership until all cleanup finishes, including after repeated request
+    # cancellation. Shielding once would leave the cleanup running independently.
+    cleanup = asyncio.create_task(close())
+    cancelled = False
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            cancelled = True
+    cleanup.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
 async def collect_model_metrics(
     model: Model,
     instances: List[ModelInstance],
@@ -1065,6 +1141,9 @@ async def collect_model_metrics(
     allow_trend_lookback: bool = False,
     query_step: Optional[int] = None,
     query_interval: Optional[MonitoringInterval] = None,
+    query_rate_window_seconds: Optional[int] = None,
+    summary_only: bool = False,
+    source_not_before: Optional[float] = None,
     ingress_context: str = 'deployment',
 ) -> ModelMetrics:
     """Collect guarded runtime observations for an already authorized population.
@@ -1105,7 +1184,11 @@ async def collect_model_metrics(
         start=start,
         end=end,
         step=query_step if query_step is not None else step,
-        rate_window_seconds=time_policy.rate_window(step),
+        rate_window_seconds=(
+            query_rate_window_seconds
+            if query_rate_window_seconds is not None
+            else time_policy.rate_window(step)
+        ),
         last_refreshed_at=end,
         history_scope=_HISTORY_SCOPE,
     )
@@ -1116,7 +1199,8 @@ async def collect_model_metrics(
         for definition in model_metric_definitions(backend)
         if section == 'all' or definition.section == section
     ]
-    fills, scheduled = [], set()
+    fills, scheduled, fill_tasks = [], set(), []
+    collection = None
     if owned and url:
         client = aiohttp.ClientSession()
     try:
@@ -1134,6 +1218,7 @@ async def collect_model_metrics(
             upstream_instances,
             allow_trend_lookback,
             query_interval,
+            summary_only,
         )
         for definition in definitions:
             roles, status, reason = _observation_roles(
@@ -1185,23 +1270,30 @@ async def collect_model_metrics(
                 view,
                 launches,
                 source_identities,
-                interval.start if source_identities else None,
+                (
+                    (
+                        source_not_before
+                        if source_not_before is not None
+                        else interval.start
+                    )
+                    if source_identities
+                    else None
+                ),
             )
             fills.append((definition, metric, scope))
             scheduled.add(definition.key)
         try:
             if fills:
-                await asyncio.wait_for(
-                    asyncio.gather(*(collection.fill(*fill) for fill in fills)),
-                    _COLLECT_DEADLINE_SECONDS,
-                )
+                fill_tasks = [
+                    asyncio.create_task(collection.fill(*fill)) for fill in fills
+                ]
+                await _wait_for_fills(fill_tasks)
         except asyncio.TimeoutError:
             for key in scheduled - collection.completed:
                 metric = result.metrics[key]
                 metric.status, metric.reason = 'query_error', 'query_failed'
     finally:
-        if owned and client is not None:
-            await client.close()
+        await _close_collection(collection, fill_tasks, client if owned else None)
     result.last_refreshed_at = time.time()
     result.available = bool(url) and any(
         m.status in ('available', 'no_data', 'no_observations', 'stale')

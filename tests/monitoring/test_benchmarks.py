@@ -470,6 +470,22 @@ async def test_generation_changed_never_queries_reallocated_resources(monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('step', [1, 15, 60])
+async def test_archived_resource_capture_retains_its_explicit_frozen_grid(
+    monkeypatch, step
+):
+    module, history = _module(), _history()
+    monkeypatch.setattr(module.prometheus, 'prometheus_url', lambda: 'http://prom')
+    collect = AsyncMock()
+    monkeypatch.setattr(module.hardware, '_collect_all_history', collect)
+    result = await module.collect_benchmark_resource_metrics(
+        history, phase_id='128:0', query_step=step, client=object()
+    )
+    assert result.step == step
+    assert collect.await_args.args[2].step == step
+
+
+@pytest.mark.asyncio
 async def test_stage_end_resource_value_excludes_next_stage_start(monkeypatch):
     from gpustack.schemas.model_metrics import (
         MetricSeries,

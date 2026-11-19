@@ -453,6 +453,11 @@ async def collect_benchmark_model_metrics(
     statistic='avg,p50,p95,p99',
     section='all',
     client=None,
+    query_step=None,
+    query_interval=None,
+    rate_window_seconds=None,
+    summary_only=False,
+    source_not_before=None,
 ):
     """Reuse role-aware normalized queries with frozen model and launch identities."""
     interval = _selected_interval(history, phase_id, start, end)
@@ -496,8 +501,15 @@ async def collect_benchmark_model_metrics(
             source for i in instances for source in i.source_identities
         ),
         allow_trend_lookback=phase_id is None,
-        query_step=get_query_config().time_windows.benchmark.step(interval.seconds),
-        query_interval=benchmark_query_interval(interval),
+        query_step=(
+            query_step
+            if query_step is not None
+            else get_query_config().time_windows.benchmark.step(interval.seconds)
+        ),
+        query_interval=query_interval or benchmark_query_interval(interval),
+        query_rate_window_seconds=rate_window_seconds,
+        summary_only=summary_only,
+        source_not_before=source_not_before,
         ingress_context=(
             'direct'
             if history.target_mode != 'route'
@@ -506,7 +518,8 @@ async def collect_benchmark_model_metrics(
     )
     response = BenchmarkModelMetrics(**response.model_dump(), phase_id=phase_id)
     response.history_scope = HISTORY_SCOPE
-    _project_samples(response, history, phase_id)
+    if not summary_only:
+        _project_samples(response, history, phase_id)
     response.available = any(
         summary.value is not None
         for metric in response.metrics.values()
@@ -519,7 +532,7 @@ async def collect_benchmark_model_metrics(
     )
     if not response.available and response.reason is None:
         response.reason = 'no_samples'
-    return _statistics(response)
+    return response if summary_only else _statistics(response)
 
 
 def _hardware_devices(history):
@@ -545,6 +558,9 @@ async def collect_benchmark_resource_metrics(
     start=None,
     end=None,
     client=None,
+    query_step=None,
+    query_interval=None,
+    source_not_before=None,
 ):
     """Query every visible captured GPU/Worker using its stable owner identity."""
     interval = _selected_interval(history, phase_id, start, end)
@@ -555,8 +571,12 @@ async def collect_benchmark_resource_metrics(
         model_id=history.context.model_id,
         start=interval.start if interval else None,
         end=interval.end if interval else None,
-        step=get_query_config().time_windows.benchmark.step(
-            interval.seconds if interval else 1
+        step=(
+            query_step
+            if query_step is not None
+            else get_query_config().time_windows.benchmark.step(
+                interval.seconds if interval else 1
+            )
         ),
         last_refreshed_at=time.time(),
         history_scope=HISTORY_SCOPE,
@@ -593,8 +613,12 @@ async def collect_benchmark_resource_metrics(
                 response,
                 owned,
                 url,
-                not_before=interval.start,
-                query_interval=benchmark_query_interval(interval),
+                not_before=(
+                    source_not_before
+                    if source_not_before is not None
+                    else interval.start
+                ),
+                query_interval=query_interval or benchmark_query_interval(interval),
             )
     else:
         await hardware._collect_all_history(
@@ -603,8 +627,10 @@ async def collect_benchmark_resource_metrics(
             response,
             client,
             url,
-            not_before=interval.start,
-            query_interval=benchmark_query_interval(interval),
+            not_before=(
+                source_not_before if source_not_before is not None else interval.start
+            ),
+            query_interval=query_interval or benchmark_query_interval(interval),
         )
     _project_samples(response, history, phase_id)
     hardware._update_device_history(devices, response)
@@ -747,7 +773,7 @@ async def verify_benchmark_run(benchmark, session, *, confirm=False):
         BenchmarkRunEvent(at=now, kind='generation_changed', model_instance_id=id)
         for id in sorted(changed - seen)
     )
-    if confirm and not changed:
+    if confirm and not changed and recorded.confirmed_at is None:
         recorded.confirmed_at = now
     return snapshot.model_copy(update={'monitoring': recorded})
 

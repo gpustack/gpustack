@@ -67,6 +67,282 @@ def _collector():
     return importlib.import_module(name)
 
 
+def _collection(module):
+    return module._Collection(
+        _model(),
+        [_instance()],
+        object(),
+        'http://metrics.invalid',
+        1400,
+        5000,
+        15,
+        90,
+        'aggregate',
+        ('avg',),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', [asyncio.TimeoutError, asyncio.CancelledError])
+async def test_failed_coalesced_read_can_retry(monkeypatch, failure):
+    module = _collector()
+    collection = _collection(module)
+    native = AsyncMock(side_effect=[failure(), []])
+    monkeypatch.setattr(collection, 'read_native', native)
+
+    with pytest.raises(failure):
+        await collection.read('same query')
+    assert await collection.read('same query') == []
+    assert native.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cancelled_waiter_keeps_shared_read_and_success_cache(monkeypatch):
+    module = _collector()
+    collection = _collection(module)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def native(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return []
+
+    native = AsyncMock(side_effect=native)
+    monkeypatch.setattr(collection, 'read_native', native)
+    first = asyncio.create_task(collection.read('same query'))
+    await started.wait()
+    second = asyncio.create_task(collection.read('same query'))
+    await asyncio.sleep(0)
+    first.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        release.set()
+        assert await second == []
+        assert await collection.read('same query') == []
+        assert native.await_count == 1
+    finally:
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_last_cancelled_waiter_drains_read_before_retry(monkeypatch):
+    module = _collector()
+    collection = _collection(module)
+    started, finalized = asyncio.Event(), asyncio.Event()
+
+    async def native(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            finalized.set()
+
+    monkeypatch.setattr(collection, 'read_native', native)
+    waiter = asyncio.create_task(collection.read('same query'))
+    await started.wait()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert finalized.is_set()
+    replacement = AsyncMock(return_value=[])
+    monkeypatch.setattr(collection, 'read_native', replacement)
+    assert await collection.read('same query') == []
+    replacement.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owned', [True, False])
+@pytest.mark.parametrize('outcome', ['failure', 'unexpected', 'cancelled', 'deadline'])
+async def test_collection_drains_reads_before_releasing_client(
+    monkeypatch,
+    owned,
+    outcome,
+):
+    module = _collector()
+    monkeypatch.setattr(module, '_prometheus_url', lambda: 'http://metrics.invalid')
+    definition = next(
+        item
+        for item in module.model_metric_definitions('vllm')
+        if item.key == 'running_requests'
+    )
+    monkeypatch.setattr(module, 'model_metric_definitions', lambda _: [definition])
+    started, finalized = asyncio.Event(), asyncio.Event()
+    native_tasks, read_tasks = set(), set()
+    read = module._Collection.read
+
+    async def track_read(self, *args, **kwargs):
+        read_tasks.add(asyncio.current_task())
+        return await read(self, *args, **kwargs)
+
+    monkeypatch.setattr(module._Collection, 'read', track_read)
+
+    async def instant(*args):
+        if outcome not in ('failure', 'unexpected'):
+            return []
+        await started.wait()
+        if outcome == 'unexpected':
+            raise RuntimeError('Unexpected query failure')
+        raise asyncio.TimeoutError('Summary query failed')
+
+    async def ranged(*args):
+        native_tasks.add(asyncio.current_task())
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            finalized.set()
+
+    closed_after_drain = []
+
+    async def close():
+        closed_after_drain.append(
+            finalized.is_set()
+            and all(task.done() for task in native_tasks | read_tasks)
+        )
+
+    client = SimpleNamespace(close=AsyncMock(side_effect=close))
+    monkeypatch.setattr(module.aiohttp, 'ClientSession', lambda: client)
+    monkeypatch.setattr(module, '_query_instant', instant)
+    monkeypatch.setattr(module, '_query_range', ranged)
+    if outcome == 'deadline':
+        monkeypatch.setattr(module, '_COLLECT_DEADLINE_SECONDS', 0.01)
+    collector = asyncio.create_task(
+        module.collect_model_metrics(
+            _model(),
+            [_instance()],
+            window_seconds=3600,
+            **({} if owned else {'client': client}),
+        )
+    )
+    try:
+        await started.wait()
+        if outcome == 'cancelled':
+            collector.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await collector
+        elif outcome == 'unexpected':
+            with pytest.raises(RuntimeError, match='Unexpected query failure'):
+                await collector
+        else:
+            result = await collector
+            assert result.metrics['running_requests'].status == 'query_error'
+        assert finalized.is_set()
+        assert all(task.done() for task in native_tasks | read_tasks)
+        assert closed_after_drain == ([True] if owned else [])
+        assert client.close.await_count == int(owned)
+    finally:
+        for task in native_tasks | read_tasks | {collector}:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *native_tasks, *read_tasks, collector, return_exceptions=True
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owned', [True, False])
+@pytest.mark.parametrize('cancellations', [1, 3])
+@pytest.mark.parametrize('initial', ['failure', 'cancelled', 'native_cancelled'])
+async def test_cancellation_during_cleanup_waits_for_every_owned_task(
+    monkeypatch,
+    owned,
+    cancellations,
+    initial,
+):
+    module = _collector()
+    definitions = [
+        definition
+        for definition in module.model_metric_definitions('vllm')
+        if definition.key in ('running_requests', 'waiting_requests')
+    ]
+    monkeypatch.setattr(module, 'model_metric_definitions', lambda _: definitions)
+    monkeypatch.setattr(module, '_prometheus_url', lambda: 'http://metrics.invalid')
+    started = {name: asyncio.Event() for name in ('running', 'waiting')}
+    cleaning, release_native = asyncio.Event(), asyncio.Event()
+    client_closing, release_client = asyncio.Event(), asyncio.Event()
+    native_tasks, finalized = {}, set()
+    closed_after_drain = []
+
+    async def instant(client, url, query, at):
+        if 'num_requests_running' in query:
+            await started['running'].wait()
+            await started['waiting'].wait()
+            if initial == 'failure':
+                raise RuntimeError('Unexpected query failure')
+            if initial == 'native_cancelled':
+                raise asyncio.CancelledError
+        return []
+
+    async def ranged(client, url, query, *args):
+        name = 'running' if 'num_requests_running' in query else 'waiting'
+        native_tasks[name] = asyncio.current_task()
+        started[name].set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            if name == 'waiting':
+                cleaning.set()
+            await release_native.wait()
+            finalized.add(name)
+
+    async def close_client():
+        closed_after_drain.append(
+            finalized == {'running', 'waiting'}
+            and all(task.done() for task in native_tasks.values())
+        )
+        client_closing.set()
+        await release_client.wait()
+
+    client = SimpleNamespace(close=AsyncMock(side_effect=close_client))
+    monkeypatch.setattr(module.aiohttp, 'ClientSession', lambda: client)
+    monkeypatch.setattr(module, '_query_instant', instant)
+    monkeypatch.setattr(module, '_query_range', ranged)
+    existing_tasks = asyncio.all_tasks()
+    collector = asyncio.create_task(
+        module.collect_model_metrics(
+            _model(),
+            [_instance()],
+            window_seconds=3600,
+            **({} if owned else {'client': client}),
+        )
+    )
+    try:
+        if initial == 'cancelled':
+            await started['running'].wait()
+            await started['waiting'].wait()
+            collector.cancel()
+        await asyncio.wait_for(cleaning.wait(), 1)
+        for _ in range(cancellations):
+            collector.cancel()
+            await asyncio.sleep(0)
+        assert not collector.done()
+        assert client.close.await_count == 0
+        release_native.set()
+        if owned:
+            await asyncio.wait_for(client_closing.wait(), 1)
+            collector.cancel()
+            await asyncio.sleep(0)
+            assert not collector.done()
+            release_client.set()
+        with pytest.raises(asyncio.CancelledError):
+            await collector
+        assert finalized == {'running', 'waiting'}
+        assert client.close.await_count == int(owned)
+        assert closed_after_drain == ([True] if owned else [])
+        assert not asyncio.all_tasks() - existing_tasks
+    finally:
+        release_native.set()
+        release_client.set()
+        leftovers = asyncio.all_tasks() - existing_tasks
+        for task in leftovers:
+            task.cancel()
+        await asyncio.gather(collector, *leftovers, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owned', [True, False])
 async def test_session_lifetime_covers_query_preparation_errors(monkeypatch, owned):
