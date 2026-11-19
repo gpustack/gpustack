@@ -385,7 +385,7 @@ class Config(WorkerConfig, BaseSettings):
 
     # Seed the shared database policy once; administrators can change it online.
     # Zero keeps the installation unlimited.
-    artifact_storage_max_total_bytes: int = Field(default=0, ge=0, le=9007199254740991)
+    benchmark_archive_max_total_bytes: int = Field(default=0, ge=0, le=9007199254740991)
 
     # Archive retention follows the Benchmark unless an administrator sets days.
     benchmark_archive_retention_days: Optional[int] = Field(default=None, ge=1)
@@ -423,14 +423,6 @@ class Config(WorkerConfig, BaseSettings):
     )
 
     def __init__(self, **values):
-        # Retired storage settings may contain credentials. Drop them before
-        # pydantic accepts extra values or exports server settings.
-        values = {
-            key: value
-            for key, value in values.items()
-            if not key.startswith('artifact_storage_')
-            or key == 'artifact_storage_max_total_bytes'
-        }
         super().__init__(**values)
         self._set_worker_fields = self.model_dump(
             exclude_defaults=True,

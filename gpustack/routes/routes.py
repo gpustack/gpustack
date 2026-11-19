@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Request
 
 from gpustack.routes import (
     api_keys,
+    artifact_storage,
     auth,
     cache_providers,
     cacerts,
@@ -441,6 +442,11 @@ tenant_routers = model_routers + [
 
 # Platform-only routers — admin can manage globally; non-admin gets 403.
 admin_routers = [
+    {
+        'router': artifact_storage.router,
+        'prefix': '/artifact-storage',
+        'tags': ['Benchmark Archive Capacity'],
+    },
     {"router": users.router, "prefix": "/users", "tags": ["Users"]},
     {
         "router": organizations.router,

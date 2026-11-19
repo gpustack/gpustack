@@ -53,6 +53,20 @@ no prompts, the run fails before sending benchmark requests.
 2. Find the benchmark you want to view.
 3. Click the benchmark name to view the results and configurations snapshot.
 
+## Saved monitoring
+
+GPUStack saves monitoring for new benchmarks in its server database. This is the embedded PostgreSQL database by default, or the database configured with `--database-url`. The **Stages and Monitoring** view can replay the available curves for the full benchmark and individual measured phases after deployment resources are gone. An archive can be partial if source metrics were incomplete. Viewers authorized to access the archived hardware details can see the compressed size alongside the save status. Benchmark results remain available without an archive.
+
+A route benchmark records the running replicas of the selected deployment when the benchmark is created. If GPUStack detects that a recorded replica was restarted, reallocated, or removed, live monitoring for that benchmark becomes unavailable. The archive preserves eligible observations from before the change and marks their coverage as partial.
+
+Archives are compressed, and the per-run limit applies to both compressed and uncompressed data (256 MiB by default). A sizing test compressed data from two roughly six-minute benchmarks to about 177 KiB for one regular deployment and 528 KiB for one PD deployment. Larger runs can produce larger archives. Include archive storage in your database sizing and backups.
+
+Platform administrators can set a global byte limit in **Archive Storage** on the **Benchmarks** page. By default, the installation-wide quota is unlimited (`0`). A finite quota counts compressed archive bytes across all organizations. One organization can use the available space and block saves that would increase archive storage for any organization. The last successful saves remain available.
+
+Each save writes the compressed archive in one database statement. For a MySQL-compatible database, check the effective `max_allowed_packet` and set `--benchmark-archive-max-run-bytes` below that limit, leaving room for SQL encoding and metadata. [MySQL packet limits](https://dev.mysql.com/doc/refman/8.0/en/packet-too-large.html) · [OceanBase packet limits](https://en.oceanbase.com/docs/common-oceanbase-database-10000000003681766)
+
+A repeat repair of a sealed archive starts at least one archive flush interval after the previous attempt ends (60 seconds by default).
+
 ## Export Benchmark Results
 
 1. Go to the `Benchmarks` page.
