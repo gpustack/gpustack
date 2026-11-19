@@ -770,6 +770,9 @@ class BenchmarkRuntime(SQLModel):
     `BenchmarkResultCreate` narrowing the per-point upload.
     """
 
+    run_id: Optional[str] = Field(default=None, max_length=36)
+    """Server-assigned identity of one execution, independent of result row IDs."""
+
     state: BenchmarkStateEnum = Field(
         default=BenchmarkStateEnum.PENDING,
         index=True,

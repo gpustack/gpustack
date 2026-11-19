@@ -101,6 +101,12 @@ from gpustack.schemas.resource_events import (  # noqa: F401  table registration
     ResourceEventArchive,
 )
 from gpustack.schemas.common import PaginatedList
+from gpustack.schemas.benchmark_monitoring_payload import (  # noqa: F401 table registration
+    BenchmarkMonitoringPayload,
+)
+from gpustack.schemas.artifact_storage import (  # noqa: F401 table registration
+    ArtifactStorageCapacity,
+)
 from gpustack.schemas.benchmark import (
     ModelInstanceRuntimeInfo,
     ModelInstanceSnapshot,
