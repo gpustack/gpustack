@@ -3,7 +3,6 @@ import logging
 import os
 import sys
 
-
 # Suppress warnings from transformers
 # https://github.com/huggingface/transformers/issues/27214
 # Note: This should be set before importing transformers
@@ -54,6 +53,7 @@ def setup_logging(debug: bool = False):
         "huggingface_hub.file_download",
         "docker.auth",
         "kubernetes_asyncio.client.rest",
+        "kubernetes.client.rest",
         "azure.core.pipeline.policies.http_logging_policy",
         "websockets.client",
     ]
