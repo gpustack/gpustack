@@ -232,7 +232,10 @@ def test_v231_indexes_run_for_databases_already_at_v230():
     pending = list(
         scripts.iterate_revisions(scripts.get_current_head(), "a7e2c9d4f681")
     )
-    assert [step.revision for step in pending] == ["c8d3e6f1a902"]
+    assert [step.revision for step in pending] == [
+        "f8c4a291bd65",
+        "c8d3e6f1a902",
+    ]
 
 
 def test_v231_bundle_applies_snapshot_and_lookup_indexes(lookup_migration, monkeypatch):

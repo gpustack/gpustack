@@ -17,7 +17,13 @@ from gpustack_runtime.detector import (
     available_manufacturers,
     available_backends,
 )
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from gpustack.utils import validators
 from gpustack.schemas.workers import (
@@ -377,6 +383,19 @@ class Config(WorkerConfig, BaseSettings):
     grafana_pd_dashboard_uid: Optional[str] = "gpustack-pd"
     grafana_cache_service_dashboard_uid: Optional[str] = "gpustack-cache-service"
 
+    # Seed the shared database policy once; administrators can change it online.
+    # Zero keeps the installation unlimited.
+    artifact_storage_max_total_bytes: int = Field(default=0, ge=0, le=9007199254740991)
+
+    # Archive retention follows the Benchmark unless an administrator sets days.
+    benchmark_archive_retention_days: Optional[int] = Field(default=None, ge=1)
+    benchmark_archive_sample_step_seconds: int = Field(default=5, ge=1)
+    benchmark_archive_source_interval_seconds: Optional[int] = Field(default=None, ge=1)
+    benchmark_archive_flush_interval_seconds: int = Field(default=60, ge=1)
+    benchmark_archive_settle_seconds: int = Field(default=30, ge=0)
+    benchmark_archive_max_concurrency: int = Field(default=2, ge=1, le=32)
+    benchmark_archive_max_run_bytes: int = Field(default=256 * 1024 * 1024, ge=1)
+
     # Server-wide default for the GPUStack Operator image. Cluster-level
     # ``k8s_options.operator_image`` overrides this when set.
     operator_image: str = f"gpustack/gpustack-operator:{__operator_version__}"
@@ -397,10 +416,21 @@ class Config(WorkerConfig, BaseSettings):
     _data_dir_was_fresh = False
 
     model_config = SettingsConfigDict(
-        env_prefix="GPUSTACK_", protected_namespaces=('settings_',), extra="allow"
+        env_prefix="GPUSTACK_",
+        protected_namespaces=('settings_',),
+        extra="allow",
+        hide_input_in_errors=True,
     )
 
     def __init__(self, **values):
+        # Retired storage settings may contain credentials. Drop them before
+        # pydantic accepts extra values or exports server settings.
+        values = {
+            key: value
+            for key, value in values.items()
+            if not key.startswith('artifact_storage_')
+            or key == 'artifact_storage_max_total_bytes'
+        }
         super().__init__(**values)
         self._set_worker_fields = self.model_dump(
             exclude_defaults=True,
