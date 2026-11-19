@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from gpustack.api.exceptions import BadRequestException, InternalServerErrorException
 from gpustack.api.tenant import TenantContext
@@ -73,10 +74,11 @@ async def test_redirect_seeds_org_row_with_platform_versions_on_bare_enable(
         AsyncMock(side_effect=lambda session, obj, **kwargs: obj),
     )
 
-    created = await ib_route._redirect_global_edit_to_org_row(
+    created, fresh_seeded = await ib_route._redirect_global_edit_to_org_row(
         MagicMock(), _org_ctx(42), platform, backend_in
     )
 
+    assert fresh_seeded is True
     assert created.owner_principal_id == 42
     assert created.backend_source == BackendSourceEnum.COMMUNITY
     assert set(created.version_configs.root.keys()) == {"v1", "v2"}
@@ -105,11 +107,12 @@ async def test_redirect_seed_is_flushed_without_commit(monkeypatch):
     create_mock = AsyncMock(side_effect=lambda session, obj, **kwargs: obj)
     monkeypatch.setattr(InferenceBackend, "create", create_mock)
 
-    created = await ib_route._redirect_global_edit_to_org_row(
+    created, fresh_seeded = await ib_route._redirect_global_edit_to_org_row(
         MagicMock(), _org_ctx(42), platform, backend_in
     )
 
     assert created is not None
+    assert fresh_seeded is True
     assert create_mock.await_args.kwargs["auto_commit"] is False
 
 
@@ -142,62 +145,24 @@ async def test_redirect_seed_inherits_stored_user_defined_versions(monkeypatch):
         AsyncMock(side_effect=lambda session, obj, **kwargs: obj),
     )
 
-    created = await ib_route._redirect_global_edit_to_org_row(
+    created, fresh_seeded = await ib_route._redirect_global_edit_to_org_row(
         MagicMock(), _org_ctx(42), platform, backend_in
     )
 
+    assert fresh_seeded is True
     assert set(created.version_configs.root.keys()) == {"v1", "v2", "v1-custom"}
     assert created.version_configs.root["v1-custom"].image_name == "custom:v1"
     assert created.version_configs.root["v1-custom"].built_in_frameworks is None
 
 
 @pytest.mark.asyncio
-async def test_redirect_seed_inherits_user_versions_alongside_payload_edits(
-    monkeypatch,
-):
-    """A payload that edits user-defined versions layers over the
-    inheritance: stored user-defined versions absent from the payload
-    survive, payload ones take their updates."""
+async def test_redirect_seed_is_a_pure_copy_of_the_platform_row(monkeypatch):
+    """The seed carries the Platform row's versions and nothing else: the
+    payload is not layered into it. The update that follows on the new row
+    layers the payload over the inheritance (_layer_payload_over_inherited),
+    so the collision rule lives in one place and the seed itself is a plain
+    snapshot of the Platform row."""
     platform = _platform_community_backend_with_user_version()
-    backend_in = InferenceBackendUpdate(
-        backend_name="my-community",
-        backend_source=BackendSourceEnum.COMMUNITY,
-        enabled=True,
-        version_configs=VersionConfigDict(
-            root={"v2-custom": VersionConfig(image_name="custom:v2")}
-        ),
-    )
-
-    monkeypatch.setattr(InferenceBackend, "one_by_fields", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        InferenceBackend,
-        "create",
-        AsyncMock(side_effect=lambda session, obj, **kwargs: obj),
-    )
-
-    created = await ib_route._redirect_global_edit_to_org_row(
-        MagicMock(), _org_ctx(42), platform, backend_in
-    )
-
-    assert set(created.version_configs.root.keys()) == {
-        "v1",
-        "v2",
-        "v1-custom",
-        "v2-custom",
-    }
-    assert created.version_configs.root["v1-custom"].image_name == "custom:v1"
-    assert created.version_configs.root["v2-custom"].image_name == "custom:v2"
-    # The catalog versions and their markers are inherited untouched.
-    assert created.version_configs.root["v1"].built_in_frameworks == ["vllm"]
-
-
-@pytest.mark.asyncio
-async def test_redirect_seed_keeps_stored_version_on_collision(monkeypatch):
-    """A payload entry colliding with a catalog version never wins the seed:
-    the seed keeps the stored entry, matching the update merge — otherwise a
-    client could plant content under a restored catalog marker and no API
-    path could ever correct it."""
-    platform = _platform_community_backend()
     backend_in = InferenceBackendUpdate(
         backend_name="my-community",
         backend_source=BackendSourceEnum.COMMUNITY,
@@ -205,7 +170,7 @@ async def test_redirect_seed_keeps_stored_version_on_collision(monkeypatch):
         version_configs=VersionConfigDict(
             root={
                 "v1": VersionConfig(image_name="org-override:v1"),
-                "v3": VersionConfig(image_name="img:v3"),
+                "v9-custom": VersionConfig(image_name="custom:v9"),
             }
         ),
     )
@@ -217,16 +182,16 @@ async def test_redirect_seed_keeps_stored_version_on_collision(monkeypatch):
         AsyncMock(side_effect=lambda session, obj, **kwargs: obj),
     )
 
-    created = await ib_route._redirect_global_edit_to_org_row(
+    created, fresh_seeded = await ib_route._redirect_global_edit_to_org_row(
         MagicMock(), _org_ctx(42), platform, backend_in
     )
 
-    assert set(created.version_configs.root.keys()) == {"v1", "v2", "v3"}
+    assert fresh_seeded is True
+    assert set(created.version_configs.root.keys()) == {"v1", "v2", "v1-custom"}
     assert created.version_configs.root["v1"].image_name == "img:v1"
     assert created.version_configs.root["v1"].built_in_frameworks == ["vllm"]
-    assert created.version_configs.root["v2"].image_name == "img:v2"
-    assert created.version_configs.root["v3"].image_name == "img:v3"
-    assert created.version_configs.root["v3"].built_in_frameworks is None
+    # The Platform row the caller still holds is untouched by the payload.
+    assert platform.version_configs.root["v1"].image_name == "img:v1"
 
 
 @pytest.mark.asyncio
@@ -253,11 +218,12 @@ async def test_redirect_returns_existing_org_row(monkeypatch):
     create_mock = AsyncMock()
     monkeypatch.setattr(InferenceBackend, "create", create_mock)
 
-    result = await ib_route._redirect_global_edit_to_org_row(
+    result, fresh_seeded = await ib_route._redirect_global_edit_to_org_row(
         MagicMock(), _org_ctx(42), platform, backend_in
     )
 
     assert result is existing
+    assert fresh_seeded is False
     create_mock.assert_not_called()
 
 
@@ -274,11 +240,137 @@ async def test_redirect_noop_in_all_mode(monkeypatch):
     ctx = _org_ctx(42)
     ctx.current_principal_id = None
 
-    result = await ib_route._redirect_global_edit_to_org_row(
+    result, fresh_seeded = await ib_route._redirect_global_edit_to_org_row(
         MagicMock(), ctx, platform, backend_in
     )
 
     assert result is None
+    assert fresh_seeded is False
+
+
+def _seed_row(platform_row: InferenceBackend) -> InferenceBackend:
+    """A freshly seeded Org row: a shallow clone of the Platform row with an
+    owner and the row's version_configs copied in."""
+    return InferenceBackend(
+        backend_name=platform_row.backend_name,
+        owner_principal_id=42,
+        backend_source=platform_row.backend_source,
+        is_built_in=platform_row.is_built_in,
+        version_configs=platform_row.version_configs.model_copy(deep=True),
+    )
+
+
+def _layered(platform_row, payload_keys):
+    """Run the inheritance layering for a payload of plain image names."""
+    payload = VersionConfigDict(
+        root={
+            version: VersionConfig(image_name=image)
+            for version, image in payload_keys.items()
+        }
+    )
+    return ib_route._layer_payload_over_inherited(platform_row, payload)
+
+
+def test_layer_payload_over_inherited_keeps_inherited_and_layers_payload():
+    """The first write on a freshly seeded Org row removes nothing: every
+    inherited entry stands, the payload's new versions join them, and a
+    payload edit of an inherited user-defined version takes effect."""
+    platform = _platform_community_backend_with_user_version()
+    seed = _seed_row(platform)
+
+    merged = _layered(seed, {"v2-custom": "custom:v2", "v1-custom": "edited:custom"})
+
+    assert set(merged.root.keys()) == {"v1", "v2", "v1-custom", "v2-custom"}
+    assert merged.root["v1-custom"].image_name == "edited:custom"
+    assert merged.root["v2-custom"].image_name == "custom:v2"
+    # The catalog versions are inherited untouched, markers included.
+    assert merged.root["v1"].image_name == "img:v1"
+    assert merged.root["v1"].built_in_frameworks == ["vllm"]
+
+
+def test_layer_payload_over_inherited_keeps_source_owned_collision():
+    """A payload entry colliding with an inherited source-owned version never
+    wins: its marker is untrusted, and letting a framework-less copy land
+    would leave models pinned to that version unschedulable."""
+    platform = _platform_community_backend()
+    seed = _seed_row(platform)
+
+    merged = _layered(seed, {"v1": "org-override:v1", "v3": "img:v3"})
+
+    assert set(merged.root.keys()) == {"v1", "v2", "v3"}
+    assert merged.root["v1"].image_name == "img:v1"
+    assert merged.root["v1"].built_in_frameworks == ["vllm"]
+    assert merged.root["v3"].image_name == "img:v3"
+    assert merged.root["v3"].built_in_frameworks is None
+
+
+def test_layer_payload_over_inherited_with_no_payload_keeps_inheritance():
+    """With no version_configs in the payload the inheritance is the entire
+    result — a bare enable keeps every Platform version."""
+    platform = _platform_community_backend_with_user_version()
+    seed = _seed_row(platform)
+
+    merged = ib_route._layer_payload_over_inherited(seed, None)
+    other = ib_route._layer_payload_over_inherited(seed, VersionConfigDict(root={}))
+
+    for merged_versions in (merged, other):
+        assert set(merged_versions.root.keys()) == {"v1", "v2", "v1-custom"}
+    assert merged.root["v1"].built_in_frameworks == ["vllm"]
+
+
+@pytest.mark.asyncio
+async def test_seed_org_row_continues_on_the_race_winner(monkeypatch):
+    """Two concurrent first edits from one Org both insert; the loser blocks
+    on the unique index until the winner commits and fails with
+    IntegrityError. The seed handler rolls back and continues on the
+    winner's row instead of surfacing a 500."""
+    platform = _platform_community_backend()
+    winner = _seed_row(platform)
+    session = MagicMock()
+    session.rollback = AsyncMock()
+
+    create_mock = AsyncMock(
+        side_effect=IntegrityError("duplicate key", None, Exception())
+    )
+    monkeypatch.setattr(InferenceBackend, "create", create_mock)
+    monkeypatch.setattr(
+        InferenceBackend, "one_by_fields", AsyncMock(return_value=winner)
+    )
+
+    new_row = InferenceBackend(
+        backend_name=platform.backend_name, owner_principal_id=42
+    )
+    result = await ib_route._seed_org_row(session, platform, new_row)
+
+    assert result is winner
+    session.rollback.assert_awaited_once()
+    assert create_mock.await_count == 1
+    assert create_mock.await_args.kwargs["auto_commit"] is False
+
+
+@pytest.mark.asyncio
+async def test_seed_org_row_gives_up_when_no_winner_emerges(monkeypatch):
+    """If the conflicting writer also rolled back, one retry is made; a
+    second conflict with still no winner is reported as a 500 instead of
+    spinning."""
+    platform = _platform_community_backend()
+    session = MagicMock()
+    session.rollback = AsyncMock()
+
+    create_mock = AsyncMock(
+        side_effect=IntegrityError("duplicate key", None, Exception())
+    )
+    monkeypatch.setattr(InferenceBackend, "create", create_mock)
+    monkeypatch.setattr(InferenceBackend, "one_by_fields", AsyncMock(return_value=None))
+
+    new_row = InferenceBackend(
+        backend_name=platform.backend_name, owner_principal_id=42
+    )
+    with pytest.raises(InternalServerErrorException):
+        await ib_route._seed_org_row(session, platform, new_row)
+
+    assert create_mock.await_count == 2
+    assert session.rollback.await_count == 2
 
 
 def _all_mode_admin_ctx() -> TenantContext:
@@ -396,7 +488,7 @@ async def test_update_with_echoed_get_body_preserves_built_in_versions(monkeypat
     monkeypatch.setattr(
         ib_route,
         "_redirect_global_edit_to_org_row",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=(None, False)),
     )
     monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
     update_mock = AsyncMock()
@@ -435,7 +527,7 @@ async def test_update_without_version_configs_leaves_versions_untouched(monkeypa
     monkeypatch.setattr(
         ib_route,
         "_redirect_global_edit_to_org_row",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=(None, False)),
     )
     monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
     in_use_mock = AsyncMock(return_value=(False, []))
@@ -477,7 +569,7 @@ async def test_update_uses_stored_source_when_payload_omits_it(monkeypatch):
     monkeypatch.setattr(
         ib_route,
         "_redirect_global_edit_to_org_row",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=(None, False)),
     )
     monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
     update_mock = AsyncMock()
@@ -495,9 +587,11 @@ async def test_update_uses_stored_source_when_payload_omits_it(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_update_rejects_modified_source_version(monkeypatch):
-    """Editing a source-owned version must return 400, not 200 with the edit
-    silently discarded by the merge."""
+async def test_update_ignores_modified_source_version(monkeypatch):
+    """A payload entry that edits a source-owned version is ignored, not
+    rejected: the entry the client holds can go stale against the stored one
+    at any moment a catalog sync lands, so comparing field-by-field would
+    400 legitimate echoes. The stored entry always wins the merge instead."""
     backend = _community_backend_with_custom_version(backend_id=53)
     backend_in = InferenceBackendUpdate(
         backend_name=backend.backend_name,
@@ -505,7 +599,7 @@ async def test_update_rejects_modified_source_version(monkeypatch):
         version_configs=VersionConfigDict(
             root={
                 "v1": VersionConfig(image_name="evil:v1", built_in_frameworks=["vllm"]),
-                "v1-custom": VersionConfig(image_name="custom:v1"),
+                "v1-custom": VersionConfig(image_name="custom:edited"),
             }
         ),
     )
@@ -514,7 +608,7 @@ async def test_update_rejects_modified_source_version(monkeypatch):
     monkeypatch.setattr(
         ib_route,
         "_redirect_global_edit_to_org_row",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=(None, False)),
     )
     monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
     monkeypatch.setattr(
@@ -523,13 +617,14 @@ async def test_update_rejects_modified_source_version(monkeypatch):
     update_mock = AsyncMock()
     monkeypatch.setattr(InferenceBackend, "update", update_mock)
 
-    with pytest.raises(BadRequestException) as e:
-        await ib_route.update_inference_backend(
-            MagicMock(), _all_mode_admin_ctx(), backend.id, backend_in
-        )
+    await ib_route.update_inference_backend(
+        MagicMock(), _all_mode_admin_ctx(), backend.id, backend_in
+    )
 
-    assert "managed by the backend source" in str(e.value.message)
-    update_mock.assert_not_awaited()
+    merged = update_mock.await_args.args[1]["version_configs"].root
+    assert merged["v1"].image_name == "img:v1"
+    assert merged["v1"].built_in_frameworks == ["vllm"]
+    assert merged["v1-custom"].image_name == "custom:edited"
 
 
 @pytest.mark.asyncio
@@ -553,7 +648,7 @@ async def test_update_accepts_identical_source_version_echo(monkeypatch):
     monkeypatch.setattr(
         ib_route,
         "_redirect_global_edit_to_org_row",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=(None, False)),
     )
     monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
     update_mock = AsyncMock()
@@ -604,7 +699,7 @@ async def test_update_accepts_runner_version_echo_on_built_in_backend(monkeypatc
     monkeypatch.setattr(
         ib_route,
         "_redirect_global_edit_to_org_row",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=(None, False)),
     )
     monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
     update_mock = AsyncMock()
@@ -621,11 +716,11 @@ async def test_update_accepts_runner_version_echo_on_built_in_backend(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_update_from_yaml_rejects_modified_source_version(monkeypatch):
-    """Editing a source-owned version in the YAML editor must return 400.
-    Before the ownership rules read the stored row this produced a 400 for a
-    different reason (marker-stripped names failing the suffix rule); the
-    rejection itself is the contract."""
+async def test_update_from_yaml_ignores_modified_source_version(monkeypatch):
+    """A YAML entry that edits a source-owned version is ignored, not
+    rejected: the entry the client holds can go stale against the stored one
+    at any moment a catalog sync lands, so the stored entry always wins the
+    merge instead."""
     backend = _community_backend_with_custom_version(backend_id=56)
     yaml_content = (
         'backend_name: "my-community"\n'
@@ -634,7 +729,7 @@ async def test_update_from_yaml_rejects_modified_source_version(monkeypatch):
         '    image_name: "evil:v1"\n'
         '    built_in_frameworks: ["vllm"]\n'
         '  "v1-custom":\n'
-        '    image_name: "custom:v1"\n'
+        '    image_name: "custom:edited"\n'
     )
 
     monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
@@ -645,20 +740,22 @@ async def test_update_from_yaml_rejects_modified_source_version(monkeypatch):
     update_mock = AsyncMock()
     monkeypatch.setattr(InferenceBackend, "update", update_mock)
 
-    with pytest.raises(BadRequestException) as e:
-        await ib_route.update_inference_backend_from_yaml(
-            MagicMock(), _all_mode_admin_ctx(), backend.id, {"content": yaml_content}
-        )
+    await ib_route.update_inference_backend_from_yaml(
+        MagicMock(), _all_mode_admin_ctx(), backend.id, {"content": yaml_content}
+    )
 
-    assert "managed by the backend source" in str(e.value.message)
-    update_mock.assert_not_awaited()
+    merged = update_mock.await_args.args[1]["version_configs"].root
+    assert merged["v1"].image_name == "img:v1"
+    assert merged["v1"].built_in_frameworks == ["vllm"]
+    assert merged["v1-custom"].image_name == "custom:edited"
 
 
 @pytest.mark.asyncio
 async def test_update_from_yaml_accepts_identical_source_version_echo(monkeypatch):
     """A YAML round trip that echoes the source-owned versions unchanged and
     edits only user-defined versions must succeed and keep the stored
-    entries — this is the flow that used to 400 on every save."""
+    entries: the source-owned entries carry the stored marker, the
+    user-defined ones take the YAML's updates."""
     backend = _community_backend_with_custom_version(backend_id=57)
     yaml_content = (
         'backend_name: "my-community"\n'
@@ -790,7 +887,9 @@ async def test_validate_version_removal_ignores_source_owned_versions(monkeypatc
     in_use_mock = AsyncMock(return_value=(True, ["deployed-model"]))
     monkeypatch.setattr(ib_route, "check_backend_in_use", in_use_mock)
 
-    await ib_route._validate_version_removal(MagicMock(), backend, payload)
+    await ib_route._validate_version_removal(
+        MagicMock(), _org_ctx(42), backend, payload
+    )
 
     in_use_mock.assert_not_called()
 
@@ -806,7 +905,9 @@ async def test_validate_version_removal_still_guards_user_versions(monkeypatch):
     monkeypatch.setattr(ib_route, "check_backend_in_use", in_use_mock)
 
     with pytest.raises(BadRequestException) as e:
-        await ib_route._validate_version_removal(MagicMock(), backend, payload)
+        await ib_route._validate_version_removal(
+            MagicMock(), _org_ctx(42), backend, payload
+        )
 
     assert "v1-custom" in str(e.value.message)
     in_use_mock.assert_awaited_once()
@@ -858,15 +959,13 @@ def test_validate_custom_suffix_ignores_payload_marker(forged_marker):
 
 
 @pytest.mark.asyncio
-async def test_update_drops_untrusted_marker_entries(monkeypatch):
-    """An entry carrying a built_in_frameworks marker for a key the stored
-    row does not own is dropped, not validated or stored: the marker is
-    forgeable, so the entry cannot be honored as source data and must not
-    continue as user data either (a forged marker would dodge the '-custom'
-    suffix rule). Legitimate shapes of this entry — a runner version echoed
-    from the list response, a version removed by a catalog sync between the
-    client's GET and PUT — are echoed catalog data, and dropping them keeps
-    the echo round trip idempotent."""
+async def test_update_drops_unsuffixed_unknown_marker_entries(monkeypatch):
+    """A marker on an unknown key without the '-custom' suffix is dropped:
+    such a key is echoed catalog data (a runner version, a version the sync
+    removed between GET and PUT) or pure forgery, and the suffix rule would
+    reject it as user data anyway — dropping keeps the echo round trip
+    idempotent without hiding anything the client could legitimately
+    write."""
     backend = _community_backend_with_custom_version(backend_id=49)
     backend_in = InferenceBackendUpdate(
         backend_name=backend.backend_name,
@@ -886,7 +985,7 @@ async def test_update_drops_untrusted_marker_entries(monkeypatch):
     monkeypatch.setattr(
         ib_route,
         "_redirect_global_edit_to_org_row",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=(None, False)),
     )
     monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
     update_mock = AsyncMock()
@@ -905,10 +1004,12 @@ async def test_update_drops_untrusted_marker_entries(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_update_drops_forged_marker_entries_even_with_custom_suffix(monkeypatch):
+async def test_update_clears_forged_marker_on_custom_suffix_entry(monkeypatch):
     """A '-custom'-suffixed entry carrying a marker for an unknown key is
-    dropped too: user-defined versions never carry the marker, server- or
-    client-side, so a marked entry is never user data."""
+    user data with an untrusted marker: the marker is cleared and the entry
+    validated as the user version its name claims to be. Dropping the whole
+    entry instead would delete a stored user version the payload echoes, or
+    hide an add behind a 200."""
     backend = _community_backend_with_custom_version(backend_id=50)
     backend_in = InferenceBackendUpdate(
         backend_name=backend.backend_name,
@@ -927,7 +1028,7 @@ async def test_update_drops_forged_marker_entries_even_with_custom_suffix(monkey
     monkeypatch.setattr(
         ib_route,
         "_redirect_global_edit_to_org_row",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=(None, False)),
     )
     monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
     update_mock = AsyncMock()
@@ -938,8 +1039,88 @@ async def test_update_drops_forged_marker_entries_even_with_custom_suffix(monkey
     )
 
     merged = update_mock.await_args.args[1]["version_configs"].root
-    assert "forged-custom" not in merged
+    assert merged["forged-custom"].image_name == "forged:v1"
+    assert merged["forged-custom"].built_in_frameworks is None
     assert merged["v1-custom"].image_name == "custom:v1"
+
+
+@pytest.mark.asyncio
+async def test_update_keeps_user_version_echoed_with_stale_marker(monkeypatch):
+    """Echoing a stored user-defined version with a stale
+    built_in_frameworks marker left in place must not delete it: dropping
+    the entry would turn the PUT into a removal behind a 200. The marker is
+    stripped and the entry lands as the user version its '-custom' name
+    declares."""
+    backend = _community_backend_with_custom_version(backend_id=58)
+    backend_in = InferenceBackendUpdate(
+        backend_name=backend.backend_name,
+        backend_source=BackendSourceEnum.COMMUNITY,
+        version_configs=VersionConfigDict(
+            root={
+                # A user duplicating a source version in the YAML editor can
+                # leave the copied marker in place.
+                "v1-custom": VersionConfig(
+                    image_name="custom:v1", built_in_frameworks=["cuda"]
+                ),
+                "v2-custom": VersionConfig(image_name="custom:v2"),
+            }
+        ),
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(
+        ib_route,
+        "_redirect_global_edit_to_org_row",
+        AsyncMock(return_value=(None, False)),
+    )
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    await ib_route.update_inference_backend(
+        MagicMock(), _all_mode_admin_ctx(), backend.id, backend_in
+    )
+
+    merged = update_mock.await_args.args[1]["version_configs"].root
+    assert merged["v1-custom"].image_name == "custom:v1"
+    assert merged["v1-custom"].built_in_frameworks is None
+    assert merged["v2-custom"].image_name == "custom:v2"
+
+
+@pytest.mark.asyncio
+async def test_update_normalizes_forged_marker_on_source_owned_entry(monkeypatch):
+    """A forged marker on a key the stored row owns is corrected to the
+    stored one, never honored: the payload cannot strip or rewrite the
+    framework information of a catalog version by writing."""
+    backend = _community_backend_with_custom_version(backend_id=59)
+    backend_in = InferenceBackendUpdate(
+        backend_name=backend.backend_name,
+        backend_source=BackendSourceEnum.COMMUNITY,
+        version_configs=VersionConfigDict(
+            root={
+                "v1": VersionConfig(image_name="img:v1", built_in_frameworks=[]),
+                "v1-custom": VersionConfig(image_name="custom:v1"),
+            }
+        ),
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(
+        ib_route,
+        "_redirect_global_edit_to_org_row",
+        AsyncMock(return_value=(None, False)),
+    )
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    await ib_route.update_inference_backend(
+        MagicMock(), _all_mode_admin_ctx(), backend.id, backend_in
+    )
+
+    merged = update_mock.await_args.args[1]["version_configs"].root
+    assert merged["v1"].built_in_frameworks == ["vllm"]
+    assert merged["v1"].image_name == "img:v1"
 
 
 def test_process_version_configs_preserves_markers_for_validation():
@@ -955,54 +1136,6 @@ def test_process_version_configs_preserves_markers_for_validation():
 
     assert processed.root["v1"].built_in_frameworks == ["vllm"]
     assert processed.root["v2"].built_in_frameworks == []
-
-
-@pytest.mark.asyncio
-async def test_redirect_seed_rejects_payload_versions_by_ownership(monkeypatch):
-    """Seeded Org rows take ownership from the Platform row, not the payload:
-    an override of a catalog version keeps the stored entry (content and
-    marker), and an entry carrying a marker for an unknown key is dropped as
-    untrusted."""
-    platform = _platform_community_backend()
-    backend_in = InferenceBackendUpdate(
-        backend_name="my-community",
-        backend_source=BackendSourceEnum.COMMUNITY,
-        enabled=True,
-        version_configs=VersionConfigDict(
-            root={
-                # Override of a catalog version, forged marker included.
-                "v1": VersionConfig(
-                    image_name="org-override:v1", built_in_frameworks=[]
-                ),
-                # New version with a forged non-empty marker.
-                "v9": VersionConfig(
-                    image_name="forged:v9", built_in_frameworks=["vllm"]
-                ),
-                # A genuine user-defined version.
-                "v9-custom": VersionConfig(image_name="custom:v9"),
-            }
-        ),
-    )
-
-    monkeypatch.setattr(InferenceBackend, "one_by_fields", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        InferenceBackend,
-        "create",
-        AsyncMock(side_effect=lambda session, obj, **kwargs: obj),
-    )
-
-    created = await ib_route._redirect_global_edit_to_org_row(
-        MagicMock(), _org_ctx(42), platform, backend_in
-    )
-
-    assert set(created.version_configs.root.keys()) == {"v1", "v2", "v9-custom"}
-    assert created.version_configs.root["v1"].image_name == "img:v1"
-    assert created.version_configs.root["v1"].built_in_frameworks == ["vllm"]
-    assert created.version_configs.root["v9-custom"].image_name == "custom:v9"
-    assert created.version_configs.root["v9-custom"].built_in_frameworks is None
-    # The Platform row's own markers must be untouched.
-    assert platform.version_configs.root["v1"].built_in_frameworks == ["vllm"]
-    assert platform.version_configs.root["v1"].image_name == "img:v1"
 
 
 @pytest.mark.asyncio
@@ -1051,7 +1184,7 @@ async def test_delete_backend_fails_closed_when_usage_query_fails(monkeypatch):
 
     monkeypatch.setattr(
         Model,
-        "all_by_field",
+        "all_by_fields",
         AsyncMock(side_effect=RuntimeError(db_error)),
     )
     monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
@@ -1090,7 +1223,7 @@ async def test_remove_version_fails_closed_when_usage_query_fails(monkeypatch):
     monkeypatch.setattr(
         ib_route,
         "_redirect_global_edit_to_org_row",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=(None, False)),
     )
     update_mock = AsyncMock()
     monkeypatch.setattr(InferenceBackend, "update", update_mock)
@@ -1183,3 +1316,207 @@ async def test_backend_options_expose_the_same_command_defaults_as_worker_resolu
         == platform.version_configs.root['v1'].run_command
     )
     assert set(owner.version_configs.root) == {'v2'}
+
+
+def _org_seeded_backend(backend_id: int) -> InferenceBackend:
+    """An Org's seeded community row: a copy of the Platform catalog the sync
+    never reconciles, carrying the inherited marker plus a user-defined
+    version."""
+    return InferenceBackend(
+        id=backend_id,
+        backend_name="my-community",
+        owner_principal_id=42,
+        backend_source=BackendSourceEnum.COMMUNITY,
+        enabled=True,
+        default_version="v1",
+        version_configs=VersionConfigDict(
+            root={
+                "v1": VersionConfig(image_name="img:v1", built_in_frameworks=["vllm"]),
+                "v1-custom": VersionConfig(image_name="custom:v1"),
+            }
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_org_row_source_versions_are_removable_owner_data(monkeypatch):
+    """On an Org's seeded row the inherited source versions are the owner's
+    data: the sync never reconciles the row, so omitting one from the
+    payload is a removal like any other, guarded only by the in-use check —
+    otherwise a catalog change could freeze an unusable copy in place with
+    no API path to fix it."""
+    backend = _org_seeded_backend(backend_id=60)
+    backend_in = InferenceBackendUpdate(
+        backend_name=backend.backend_name,
+        backend_source=BackendSourceEnum.COMMUNITY,
+        version_configs=VersionConfigDict(
+            root={"v1-custom": VersionConfig(image_name="custom:v1")}
+        ),
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(
+        ib_route,
+        "_redirect_global_edit_to_org_row",
+        AsyncMock(return_value=(None, False)),
+    )
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    in_use_mock = AsyncMock(return_value=(False, []))
+    monkeypatch.setattr(ib_route, "check_backend_in_use", in_use_mock)
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    await ib_route.update_inference_backend(
+        MagicMock(), _org_ctx(42), backend.id, backend_in
+    )
+
+    in_use_mock.assert_awaited_once()
+    merged = update_mock.await_args.args[1]["version_configs"].root
+    assert set(merged.keys()) == {"v1-custom"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'payload_marker', [None, [], ['trino']], ids=['absent', 'empty', 'forged']
+)
+async def test_org_row_source_version_edits_take_payload_with_stored_marker(
+    monkeypatch, payload_marker
+):
+    """Editing an inherited source version on an Org's seeded row lands the
+    payload's content under the stored marker: the row is not sync-managed,
+    so the edit is the owner's to make, and the stored marker — not the
+    payload's absent, empty, or forged one — keeps models pinned to the
+    version schedulable."""
+    backend = _org_seeded_backend(backend_id=61)
+    backend_in = InferenceBackendUpdate(
+        backend_name=backend.backend_name,
+        backend_source=BackendSourceEnum.COMMUNITY,
+        version_configs=VersionConfigDict(
+            root={
+                "v1": VersionConfig(
+                    image_name="org-build:v1", built_in_frameworks=payload_marker
+                ),
+                "v1-custom": VersionConfig(image_name="custom:v1"),
+            }
+        ),
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(
+        ib_route,
+        "_redirect_global_edit_to_org_row",
+        AsyncMock(return_value=(None, False)),
+    )
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    monkeypatch.setattr(
+        ib_route, "check_backend_in_use", AsyncMock(return_value=(False, []))
+    )
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    await ib_route.update_inference_backend(
+        MagicMock(), _org_ctx(42), backend.id, backend_in
+    )
+
+    merged = update_mock.await_args.args[1]["version_configs"].root
+    assert merged["v1"].image_name == "org-build:v1"
+    assert merged["v1"].built_in_frameworks == ["vllm"]
+
+
+@pytest.mark.asyncio
+async def test_fresh_seed_layers_payload_over_inherited_versions(monkeypatch):
+    """The first write on a freshly seeded Org row removes nothing: the
+    payload layers over the inherited Platform versions, so an org adding
+    its own version does not delete the inherited ones — and the in-use
+    guard has nothing to check, since no version is going away."""
+    platform = _platform_community_backend_with_user_version()
+    backend_in = InferenceBackendUpdate(
+        backend_name="my-community",
+        backend_source=BackendSourceEnum.COMMUNITY,
+        enabled=True,
+        version_configs=VersionConfigDict(
+            root={"v2-custom": VersionConfig(image_name="custom:v2")}
+        ),
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=platform))
+    monkeypatch.setattr(InferenceBackend, "one_by_fields", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        InferenceBackend,
+        "create",
+        AsyncMock(side_effect=lambda session, obj, **kwargs: obj),
+    )
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    in_use_mock = AsyncMock(return_value=(True, ["deployed-model"]))
+    monkeypatch.setattr(ib_route, "check_backend_in_use", in_use_mock)
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    await ib_route.update_inference_backend(
+        MagicMock(), _org_ctx(42), platform.id, backend_in
+    )
+
+    # The inherited shared version is not in the payload, yet the add
+    # succeeds and no removal guard fires.
+    in_use_mock.assert_not_called()
+    merged = update_mock.await_args.args[1]["version_configs"].root
+    assert set(merged.keys()) == {"v1", "v2", "v1-custom", "v2-custom"}
+    assert merged["v1-custom"].image_name == "custom:v1"
+    assert merged["v2-custom"].image_name == "custom:v2"
+    assert merged["v1"].built_in_frameworks == ["vllm"]
+
+
+@pytest.mark.asyncio
+async def test_update_from_yaml_without_version_configs_leaves_versions_untouched(
+    monkeypatch,
+):
+    """A /from-yaml PUT that only changes other fields must not read as
+    "replace all versions": the absent version_configs key is a no-op on the
+    versions, matching the JSON route's omitted-field semantics."""
+    backend = _custom_backend_with_version(backend_id=62)
+    backend.source_name = "upstream"
+    yaml_content = (
+        'backend_name: "custom-backend"\n' 'description: "edited description"\n'
+    )
+
+    monkeypatch.setattr(InferenceBackend, "one_by_id", AsyncMock(return_value=backend))
+    monkeypatch.setattr(ib_route, "assert_org_owned_writable", MagicMock())
+    in_use_mock = AsyncMock(return_value=(True, ["deployed-model"]))
+    monkeypatch.setattr(ib_route, "check_backend_in_use", in_use_mock)
+    update_mock = AsyncMock()
+    monkeypatch.setattr(InferenceBackend, "update", update_mock)
+
+    await ib_route.update_inference_backend_from_yaml(
+        MagicMock(), _all_mode_admin_ctx(), backend.id, {"content": yaml_content}
+    )
+
+    update_data = update_mock.await_args.args[1]
+    assert "version_configs" not in update_data
+    assert update_data["description"] == "edited description"
+    # No version was touched, so the in-use guard had nothing to check.
+    in_use_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_backend_in_use_is_tenant_scoped(monkeypatch):
+    """The usage lookup filters by the caller's tenant context: an org
+    context must not block on — or name — another org's models, while a
+    platform admin in "All" mode still sees every deployment."""
+    captured = {}
+
+    async def capture(session, fields=None, extra_conditions=None, **kwargs):
+        captured["conditions"] = extra_conditions
+        return []
+
+    monkeypatch.setattr(Model, "all_by_fields", AsyncMock(side_effect=capture))
+
+    _, org_names = await ib_route.check_backend_in_use(
+        MagicMock(), _org_ctx(42), "my-community"
+    )
+    assert org_names == []
+    assert captured["conditions"]
+
+    await ib_route.check_backend_in_use(
+        MagicMock(), _all_mode_admin_ctx(), "my-community"
+    )
+    assert captured["conditions"] == []
