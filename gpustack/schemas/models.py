@@ -2703,6 +2703,72 @@ def is_decision_model(model: Model) -> bool:
     return "decision" in (model.categories or [])
 
 
+# The decision API image-parameter contract, keyed by serving backend name
+# (lowercase). vLLM's /v1/systemone request schema (StructuredDecisionRequest,
+# ``extra="forbid"``) accepts ``images`` only, so a decision request that also
+# carries ``assets`` is rejected by request validation before the model runs.
+# Engines absent from this map (e.g. the vLLM-SR d3 series, which accepts both
+# spellings) carry no declaration on purpose: a None field means "no contract
+# known" and consumers keep their current behavior.
+_DECISION_IMAGE_INPUT_BY_BACKEND = {BackendEnum.VLLM.value.lower(): "images"}
+
+# The model.meta key the declaration is published under. The Model
+# controller's categories/meta sync carries it onto the route row, and
+# /v1/models?with_meta=true hands it to clients (the Playground's decision
+# model dropdown): an entry whose meta carries "images" must not also send
+# ``assets``; a missing key means "no declaration" — keep the current
+# request construction.
+DECISION_IMAGE_INPUT_META_KEY = "decision_image_input"
+
+
+def decision_image_input(backend: Optional[str]) -> Optional[str]:
+    """
+    The image parameter name the backend's decision API accepts, or None when
+    the backend carries no declaration.
+
+    Args:
+        backend: The serving backend name of the decision deployment.
+
+    Returns:
+        ``"images"``, or None when the backend is undeclared or unknown.
+    """
+    if not backend:
+        return None
+    return _DECISION_IMAGE_INPUT_BY_BACKEND.get(backend.strip().lower())
+
+
+def apply_decision_image_input_meta(model: "Model") -> bool:
+    """
+    Record (or clear) the deployment's decision-API image-parameter contract
+    in ``model.meta``.
+
+    Called from model evaluation, after categories are settled: the key is
+    written for a decision deployment whose serving backend declares a
+    contract, and removed when the deployment stops being one (category or
+    backend changed) so a stale declaration cannot outlive its model.
+
+    Args:
+        model: The model being evaluated.
+
+    Returns:
+        Whether ``model.meta`` was modified.
+    """
+    declared = (
+        decision_image_input(get_backend(model)) if is_decision_model(model) else None
+    )
+    meta = dict(model.meta or {})
+    if declared is None:
+        if DECISION_IMAGE_INPUT_META_KEY not in meta:
+            return False
+        del meta[DECISION_IMAGE_INPUT_META_KEY]
+    else:
+        if meta.get(DECISION_IMAGE_INPUT_META_KEY) == declared:
+            return False
+        meta[DECISION_IMAGE_INPUT_META_KEY] = declared
+    model.meta = meta
+    return True
+
+
 def get_backend(model: Model) -> str:
     if model.backend:
         return model.backend
