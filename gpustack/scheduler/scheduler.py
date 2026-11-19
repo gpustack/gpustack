@@ -71,6 +71,7 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
+    apply_decision_image_input_meta,
     get_backend,
     is_gguf_model,
     DistributedServerCoordinateModeEnum,
@@ -1474,7 +1475,11 @@ async def evaluate_gguf_model(
         gpus_per_replica_modified = set_model_gpus_per_replica(model)
         should_update = should_update or gpus_per_replica_modified
 
-    return should_update
+    # The GGUF ladder settles categories too (decision GGUFs exist), so the
+    # decision-API image-parameter contract is published/cleared on this
+    # path as well — a vLLM-served decision GGUF must reach the route with
+    # the key, and a reclassified one must lose it.
+    return apply_decision_image_input_meta(model) or should_update
 
 
 async def evaluate_diffusion_model(
@@ -1578,6 +1583,19 @@ async def evaluate_pretrained_config(
     Returns:
         True if the model's categories are updated, False otherwise.
     """
+    modified = await _evaluate_pretrained_config_core(model, workers, raise_raw)
+    # Runs on every successful evaluation path — including the core's early
+    # returns (diffusion classification, skipped architecture check): a
+    # category change down one of those must still publish or clear the
+    # decision-API image-parameter contract.
+    return apply_decision_image_input_meta(model) or modified
+
+
+async def _evaluate_pretrained_config_core(
+    model: Union[Model, ModelSpec],
+    workers: Optional[List[Worker]] = None,
+    raise_raw: bool = False,
+) -> bool:
     # 1) try to evaluate as diffusion model
     try:
         is_image_category = await evaluate_diffusion_model(model, workers=workers)
