@@ -247,7 +247,10 @@ def test_subordinate_health_check_waits_for_start(state, mode):
         ("OnFailure", 1, False),
     ],
 )
-def test_terminal_container_with_live_sidecar(policy, code, failed):
+@pytest.mark.parametrize(
+    "state", [WorkloadStatusStateEnum.PENDING, WorkloadStatusStateEnum.INITIALIZING]
+)
+def test_terminal_container_with_live_sidecar(policy, code, failed, state):
     from kubernetes import client
 
     manager, clientset = _build_serve_manager()
@@ -284,7 +287,7 @@ def test_terminal_container_with_live_sidecar(policy, code, failed):
         ),
     )
     workload = SimpleNamespace(
-        state=WorkloadStatusStateEnum.INITIALIZING,
+        state=state,
         _k_pod=pod,
         exits=[],
         message="engine exited",
@@ -301,6 +304,48 @@ def test_terminal_container_with_live_sidecar(policy, code, failed):
         assert report.call_args.kwargs["state"] == ModelInstanceStateEnum.ERROR
     else:
         report.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        None,
+        SimpleNamespace(),
+        SimpleNamespace(_k_pod=None),
+        SimpleNamespace(_k_pod=SimpleNamespace(spec=None, status=None)),
+        SimpleNamespace(
+            _k_pod=SimpleNamespace(
+                spec=SimpleNamespace(restart_policy="Never"), status=None
+            )
+        ),
+    ],
+)
+def test_terminal_container_ignores_incomplete_snapshots(snapshot):
+    from gpustack.worker.serve_manager import _has_terminal_run_container
+
+    assert not _has_terminal_run_container(snapshot)
+
+
+@pytest.mark.parametrize("code", [None, 0, 1])
+@pytest.mark.parametrize("location", ["current", "last", "init"])
+def test_terminal_container_uses_only_known_current_regular_exit(code, location):
+    from gpustack.worker.serve_manager import _has_terminal_run_container
+
+    terminated = SimpleNamespace(terminated=SimpleNamespace(exit_code=code))
+    status = SimpleNamespace(
+        state=terminated if location != "last" else None,
+        last_state=terminated if location == "last" else None,
+    )
+    pod = SimpleNamespace(
+        spec=SimpleNamespace(restart_policy="Never"),
+        status=SimpleNamespace(
+            container_statuses=[status] if location != "init" else [],
+            init_container_statuses=[status] if location == "init" else [],
+        ),
+    )
+    assert bool(_has_terminal_run_container(SimpleNamespace(_k_pod=pod))) == (
+        location == "current" and code == 1
+    )
 
 
 def test_sync_model_instances_state_marks_main_unreachable_when_subordinate_unreachable():
