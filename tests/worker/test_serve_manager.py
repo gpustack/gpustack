@@ -238,6 +238,71 @@ def test_subordinate_health_check_waits_for_start(state, mode):
         update.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    "policy,code,failed",
+    [
+        ("Never", 1, True),
+        ("Never", 0, False),
+        ("Always", 1, False),
+        ("OnFailure", 1, False),
+    ],
+)
+def test_terminal_container_with_live_sidecar(policy, code, failed):
+    from kubernetes import client
+
+    manager, clientset = _build_serve_manager()
+    mi = new_model_instance(
+        1, "distributed", 1, worker_id=1, state=ModelInstanceStateEnum.STARTING
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[mi])
+    pod = client.V1Pod(
+        spec=client.V1PodSpec(containers=[], restart_policy=policy),
+        status=client.V1PodStatus(
+            phase="Running",
+            container_statuses=[
+                client.V1ContainerStatus(
+                    name="default",
+                    image="runner",
+                    image_id="runner",
+                    ready=False,
+                    restart_count=0,
+                    state=client.V1ContainerState(
+                        terminated=client.V1ContainerStateTerminated(exit_code=code)
+                    ),
+                ),
+                client.V1ContainerStatus(
+                    name="ray-head",
+                    image="runner",
+                    image_id="runner",
+                    ready=True,
+                    restart_count=0,
+                    state=client.V1ContainerState(
+                        running=client.V1ContainerStateRunning()
+                    ),
+                ),
+            ],
+        ),
+    )
+    workload = SimpleNamespace(
+        state=WorkloadStatusStateEnum.INITIALIZING,
+        _k_pod=pod,
+        exits=[],
+        message="engine exited",
+    )
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=workload),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_mark_crash_loop", return_value=False),
+        patch.object(manager, "_append_log_diagnosis", side_effect=lambda mi, msg: msg),
+        patch.object(manager, "_report_model_instance") as report,
+    ):
+        manager.sync_model_instances_state()
+    if failed:
+        assert report.call_args.kwargs["state"] == ModelInstanceStateEnum.ERROR
+    else:
+        report.assert_not_called()
+
+
 def test_sync_model_instances_state_marks_main_unreachable_when_subordinate_unreachable():
     manager, clientset = _build_serve_manager()
 

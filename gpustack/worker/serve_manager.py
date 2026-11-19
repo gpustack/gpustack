@@ -319,6 +319,19 @@ class _LogPersistence:
         return gone
 
 
+def _has_terminal_run_container(workload) -> bool:
+    """Detect a failed Kubernetes run container while sidecars keep the Pod alive."""
+    pod = getattr(workload, "_k_pod", None)
+    if pod is None or pod.spec.restart_policy != "Never":
+        return False
+    return any(
+        status.state
+        and status.state.terminated
+        and status.state.terminated.exit_code != 0
+        for status in pod.status.container_statuses or []
+    )
+
+
 def _describe_workload_failure(workload) -> str:
     """
     Explain why a workload stopped serving, for the instance's state message.
@@ -2312,6 +2325,10 @@ class ServeManager(ContainerLogPersister):
                         else model_instance.name
                     )
                     workload = get_workload(workload_name)
+
+                # Runtime may report INITIALIZING when a failed run container has live sidecars.
+                if _has_terminal_run_container(workload):
+                    workload.state = WorkloadStatusStateEnum.FAILED
 
                 if workload and workload.state in [
                     WorkloadStatusStateEnum.PENDING,
