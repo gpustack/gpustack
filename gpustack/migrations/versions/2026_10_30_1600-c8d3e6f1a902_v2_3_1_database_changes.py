@@ -1,6 +1,7 @@
 """v2.3.1 database changes.
 
 Persist model launch configuration and index instance membership lookups.
+Meter image generation in images and pixels on the model usage tables.
 
 Revision ID: c8d3e6f1a902
 Revises: a7e2c9d4f681
@@ -20,6 +21,14 @@ down_revision: Union[str, None] = 'a7e2c9d4f681'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+# Tables that carry per-request or rolled-up model usage quantities.
+_USAGE_TABLES = (
+    'model_usages',
+    'model_usage_details',
+    'model_usage_details_archive',
+)
+_IMAGE_USAGE_COLUMNS = ('image_count', 'image_pixel_count')
+
 
 def upgrade() -> None:
     if table_exists('model_instances') and not column_exists(
@@ -31,9 +40,11 @@ def upgrade() -> None:
         )
 
     _upgrade_model_instance_lookup_indexes()
+    _upgrade_image_usage_columns()
 
 
 def downgrade() -> None:
+    _downgrade_image_usage_columns()
     _downgrade_model_instance_lookup_indexes()
     if table_exists('model_instances') and column_exists(
         'model_instances', 'model_config_snapshot'
@@ -77,3 +88,29 @@ def _downgrade_model_instance_lookup_indexes() -> None:
             ):
                 continue
             op.drop_index(name, table_name='model_instances')
+
+
+def _upgrade_image_usage_columns() -> None:
+    for table in _USAGE_TABLES:
+        if not table_exists(table):
+            continue
+        for column in _IMAGE_USAGE_COLUMNS:
+            if column_exists(table, column):
+                continue
+            # ``server_default`` backfills existing rows to 0 on every
+            # supported database without a separate UPDATE.
+            op.add_column(
+                table,
+                sa.Column(
+                    column, sa.BigInteger(), nullable=False, server_default='0'
+                ),
+            )
+
+
+def _downgrade_image_usage_columns() -> None:
+    for table in _USAGE_TABLES:
+        if not table_exists(table):
+            continue
+        for column in _IMAGE_USAGE_COLUMNS:
+            if column_exists(table, column):
+                op.drop_column(table, column)

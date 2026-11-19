@@ -8,6 +8,12 @@ from sqlmodel import Field, SQLModel
 from gpustack.mixins.active_record import ActiveRecordMixin
 
 
+# Largest value the BIGINT usage quantity columns hold on every supported
+# database. Quantities derived from client or reporter input are clamped to
+# it: one out-of-range value would fail the whole usage flush batch.
+USAGE_QUANTITY_MAX = 2**63 - 1
+
+
 class OperationEnum(str, Enum):
     COMPLETION = "completion"
     CHAT_COMPLETION = "chat_completion"
@@ -73,6 +79,21 @@ class ModelUsage(SQLModel, ActiveRecordMixin, table=True):
     )
     request_count: int = Field(
         default=..., sa_column=Column(BigInteger, nullable=False)
+    )
+    # Media generation units — see ``ImageUsage`` in ``gpustack/schemas/images.py``
+    # for how they are derived. Image generation is billed per image (and per
+    # resolution tier), not per token, so these are the quantities that make
+    # an ``image_generation`` row meaningful; they stay 0 for text operations.
+    image_count: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, default=0, server_default='0'),
+    )
+    # Sum of width x height over every generated image. 0 when the request
+    # did not carry a parseable ``size`` (e.g. ``auto``); ``image_count`` is
+    # still authoritative then.
+    image_pixel_count: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, default=0, server_default='0'),
     )
     operation: Optional[OperationEnum] = Field(default=None)
 

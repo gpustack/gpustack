@@ -243,7 +243,12 @@ def test_v231_bundle_applies_snapshot_and_lookup_indexes(lookup_migration, monke
     monkeypatch.setattr(migration, 'table_exists', lambda _: True)
     monkeypatch.setattr(migration, 'column_exists', lambda *args: False)
     migration.upgrade()
-    assert migration.op.add_column.call_args.args[1].name == 'model_config_snapshot'
+    instance_columns = [
+        c.args[1].name
+        for c in migration.op.add_column.call_args_list
+        if c.args[0] == 'model_instances'
+    ]
+    assert instance_columns == ['model_config_snapshot']
     assert migration.op.create_index.call_count == 2
     inspector.get_indexes.return_value = [
         {'name': f'ix_model_instances_{field}', 'column_names': [field]}
@@ -252,6 +257,9 @@ def test_v231_bundle_applies_snapshot_and_lookup_indexes(lookup_migration, monke
     monkeypatch.setattr(migration, 'column_exists', lambda *args: True)
     migration.downgrade()
     assert migration.op.drop_index.call_count == 2
-    migration.op.drop_column.assert_called_once_with(
-        'model_instances', 'model_config_snapshot'
-    )
+    instance_drops = [
+        c.args
+        for c in migration.op.drop_column.call_args_list
+        if c.args[0] == 'model_instances'
+    ]
+    assert instance_drops == [('model_instances', 'model_config_snapshot')]
