@@ -1261,7 +1261,7 @@ class TestTerminalSyncRobustness:
         calls = {"metrics": 0}
 
         class _Httpx:
-            def post(self, url, json=None):
+            def post(self, url, json=None, params=None):
                 if "/metrics" in url:
                     calls["metrics"] += 1
                     if calls["metrics"] < 3:
@@ -2276,7 +2276,7 @@ class TestResultsUploadIsTreatedLikeMetrics:
         calls = {"metrics": 0, "results": 0}
 
         class _Httpx:
-            def post(self, url, json=None):
+            def post(self, url, json=None, params=None):
                 key = "metrics" if url.endswith("/metrics") else "results"
                 calls[key] += 1
                 if key == fail_on and calls[key] <= fail_times:
@@ -2304,7 +2304,7 @@ class TestResultsUploadIsTreatedLikeMetrics:
         payloads = {}
 
         class HttpClient:
-            def post(self, url, json):
+            def post(self, url, json, params=None):
                 payloads[url] = json
                 return object()
 

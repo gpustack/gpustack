@@ -7,12 +7,16 @@ the placement are therefore resolved independently.
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from starlette.requests import Request
 
-from gpustack.api.exceptions import BadRequestException, NotFoundException
+from gpustack.api.exceptions import (
+    BadRequestException,
+    InternalServerErrorException,
+    NotFoundException,
+)
 from gpustack.api.tenant import TenantContext
 from gpustack.routes import benchmarks as route
 from gpustack.routes import clusters as cluster_routes
@@ -133,7 +137,7 @@ class TestClusterGatewaySnapshot:
         monkeypatch.setattr(
             route.Benchmark, "one_by_field", AsyncMock(return_value=None)
         )
-        save = AsyncMock(side_effect=lambda session, value: value)
+        save = AsyncMock(side_effect=lambda session, value, *, auto_commit: value)
         monkeypatch.setattr(route.Benchmark, "create", save)
         config = SimpleNamespace(
             server_external_url="https://public-gateway.example/",
@@ -148,6 +152,9 @@ class TestClusterGatewaySnapshot:
             worker_lookup=worker_lookup,
             cluster_lookup=cluster_lookup,
             save=save,
+            session=SimpleNamespace(
+                commit=AsyncMock(), refresh=AsyncMock(), rollback=AsyncMock()
+            ),
             config=config,
             request=Request(
                 {
@@ -168,7 +175,7 @@ class TestClusterGatewaySnapshot:
 
     async def _create(self, setup, mode=BenchmarkTargetModeEnum.ROUTE):
         return await route.create_benchmark(
-            None,
+            setup.session,
             setup.ctx,
             BenchmarkCreate(
                 name="bm",
@@ -183,6 +190,32 @@ class TestClusterGatewaySnapshot:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('enrollment_fails', [False, True])
+    async def test_creation_enrolls_before_commit(
+        self, setup, monkeypatch, enrollment_fails
+    ):
+        def enroll(session, benchmark):
+            assert session is setup.session
+            assert benchmark.run_id
+            assert setup.save.await_args.kwargs['auto_commit'] is False
+            setup.session.commit.assert_not_awaited()
+            if enrollment_fails:
+                raise RuntimeError('Enrollment failed')
+
+        record = Mock(side_effect=enroll)
+        monkeypatch.setattr(route, 'enroll_archive', record)
+        if enrollment_fails:
+            with pytest.raises(InternalServerErrorException):
+                await self._create(setup)
+            setup.session.commit.assert_not_awaited()
+            setup.session.rollback.assert_awaited_once()
+        else:
+            benchmark = await self._create(setup)
+            record.assert_called_once_with(setup.session, benchmark)
+            setup.session.commit.assert_awaited_once()
+            setup.session.rollback.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_creation_freezes_the_placement_workers_cluster_url(self, setup):
         benchmark = await self._create(setup)
 
@@ -191,7 +224,7 @@ class TestClusterGatewaySnapshot:
             == "https://cluster-gateway.example:8443/prefix"
         )
         setup.worker_lookup.assert_awaited_once_with(12)
-        setup.cluster_lookup.assert_awaited_once_with(None, 7)
+        setup.cluster_lookup.assert_awaited_once_with(setup.session, 7)
         assert benchmark.worker_id == 12
         assert benchmark.cluster_id == 1
         transferred = BenchmarkSnapshot.model_validate_json(

@@ -893,6 +893,7 @@ class BenchmarkUpdate(SQLModel):
 
 
 class BenchmarkStateUpdate(SQLModel):
+    run_id: Optional[str] = Field(default=None, max_length=36)
     state: Optional[BenchmarkStateEnum] = None
     state_message: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
