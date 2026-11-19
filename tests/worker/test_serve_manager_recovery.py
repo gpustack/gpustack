@@ -578,12 +578,152 @@ def test_subordinate_does_not_recover_without_running_workload(
         else None
     )
     recovery.managers[1].sync_model_instances_state()
-    if expected == ModelInstanceStateEnum.UNREACHABLE:
+    if workload_state is None and subordinate_state == ModelInstanceStateEnum.PENDING:
+        expected = ModelInstanceStateEnum.PENDING
+    elif expected == ModelInstanceStateEnum.UNREACHABLE:
         expected = subordinate_state
     assert (
         recovery.instance.distributed_servers.subordinate_workers[0].state == expected
     )
     recovery.clients[1].workers.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "subordinate_state",
+    [
+        ModelInstanceStateEnum.PENDING,
+        ModelInstanceStateEnum.SCHEDULED,
+        ModelInstanceStateEnum.DOWNLOADING,
+    ],
+)
+def test_unlaunched_subordinate_absence_is_not_a_failure(recovery, subordinate_state):
+    """A follower still waiting for its first launch has no workload by design.
+
+    INITIALIZE_LATER starts followers one at a time, so the main worker can
+    already be STARTING while this member has not been launched yet.
+    """
+    instance = recovery.instance
+    instance.state = ModelInstanceStateEnum.STARTING
+    sw = instance.distributed_servers.subordinate_workers[0]
+    sw.state = subordinate_state
+    recovery.workload = None
+
+    recovery.managers[1].sync_model_instances_state()
+
+    recovery.clients[1].model_instances.update.assert_not_called()
+    sw = recovery.instance.distributed_servers.subordinate_workers[0]
+    assert sw.state == subordinate_state
+
+
+def test_run_first_unlaunched_follower_absence_still_fails(recovery):
+    """RUN_FIRST starts followers before the main worker.
+
+    A follower that has never been launched in that mode is not the expected
+    pre-launch absence INITIALIZE_LATER has; a missing workload is a failure.
+    """
+    instance = recovery.instance
+    instance.state = ModelInstanceStateEnum.STARTING
+    instance.distributed_servers.mode = DistributedServerCoordinateModeEnum.RUN_FIRST
+    instance.distributed_servers.subordinate_workers[0].state = (
+        ModelInstanceStateEnum.PENDING
+    )
+    recovery.workload = None
+
+    recovery.managers[1].sync_model_instances_state()
+
+    recovery.clients[1].model_instances.update.assert_called_once()
+    sw = recovery.instance.distributed_servers.subordinate_workers[0]
+    assert sw.state == ModelInstanceStateEnum.ERROR
+
+
+def test_launched_subordinate_with_missing_workload_still_fails(recovery):
+    """Once a launch is recorded, a missing workload is a real failure."""
+    instance = recovery.instance
+    instance.state = ModelInstanceStateEnum.STARTING
+    sw = instance.distributed_servers.subordinate_workers[0]
+    sw.state = ModelInstanceStateEnum.INITIALIZING
+    recovery.workload = None
+
+    recovery.managers[1].sync_model_instances_state()
+
+    recovery.clients[1].model_instances.update.assert_called_once()
+    sw = recovery.instance.distributed_servers.subordinate_workers[0]
+    assert sw.state == ModelInstanceStateEnum.ERROR
+    assert sw.state_message.startswith(serve_manager._WORKLOAD_FAILED_MESSAGE)
+
+
+def test_start_in_progress_is_not_reconciled(recovery):
+    """The start path owns the instance until it records the launch."""
+    recovery.instance.state = ModelInstanceStateEnum.STARTING
+    recovery.workload = None
+    manager = recovery.managers[0]
+    manager._starting_model_instances.add(recovery.instance.id)
+
+    manager.sync_model_instances_state()
+
+    recovery.clients[0].model_instances.update.assert_not_called()
+    assert recovery.instance.state == ModelInstanceStateEnum.STARTING
+
+
+def test_created_replay_starts_a_follower_that_missed_its_update(recovery, monkeypatch):
+    """A watch reconnect replays instances as CREATED.
+
+    A follower that missed the UPDATED event that would have launched it must
+    not stay PENDING forever; the replay is the only path that can recover it.
+    """
+    recovery.instance.state = ModelInstanceStateEnum.STARTING
+    recovery.instance.distributed_servers.subordinate_workers[0].state = (
+        ModelInstanceStateEnum.PENDING
+    )
+    recovery.workload = None
+    follower = recovery.managers[1]
+    monkeypatch.setattr(follower, "_start_model_instance", MagicMock())
+
+    follower._dispatch_model_instance_event(
+        Event(type=EventType.CREATED, data=recovery.instance)
+    )
+
+    follower._start_model_instance.assert_called_once()
+
+
+def test_created_replay_does_not_restart_a_running_follower(recovery, monkeypatch):
+    """The replay path is idempotent: a healthy workload is left alone."""
+    recovery.instance.state = ModelInstanceStateEnum.STARTING
+    recovery.instance.distributed_servers.subordinate_workers[0].state = (
+        ModelInstanceStateEnum.PENDING
+    )
+    recovery.workload = SimpleNamespace(state=WorkloadStatusStateEnum.RUNNING)
+    follower = recovery.managers[1]
+    monkeypatch.setattr(follower, "_start_model_instance", MagicMock())
+    monkeypatch.setattr(follower, "_stop_model_instance", MagicMock())
+    start_or_restart = MagicMock(wraps=follower._start_or_restart_subordinate)
+    monkeypatch.setattr(follower, "_start_or_restart_subordinate", start_or_restart)
+
+    follower._dispatch_model_instance_event(
+        Event(type=EventType.CREATED, data=recovery.instance)
+    )
+
+    start_or_restart.assert_called_once()
+    follower._start_model_instance.assert_not_called()
+    follower._stop_model_instance.assert_not_called()
+
+
+def test_created_replay_does_not_start_a_failed_instance(recovery, monkeypatch):
+    """A replay must leave an already failed instance to the recovery path."""
+    recovery.instance.state = ModelInstanceStateEnum.ERROR
+    recovery.instance.distributed_servers.subordinate_workers[0].state = (
+        ModelInstanceStateEnum.PENDING
+    )
+    recovery.workload = None
+    follower = recovery.managers[1]
+    monkeypatch.setattr(follower, "_start_model_instance", MagicMock())
+
+    follower._dispatch_model_instance_event(
+        Event(type=EventType.CREATED, data=recovery.instance)
+    )
+
+    follower._start_model_instance.assert_not_called()
+    assert recovery.instance.id in follower._error_model_instances
 
 
 def test_recovered_subordinate_does_not_bypass_main_health_check(recovery):
