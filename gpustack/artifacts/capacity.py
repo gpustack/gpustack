@@ -20,7 +20,7 @@ async def lock_capacity(session):
     capacity = await _read_capacity(session)
     if not capacity.initialized:
         config = get_global_config()
-        capacity.max_bytes = getattr(config, 'artifact_storage_max_total_bytes', 0)
+        capacity.max_bytes = getattr(config, 'benchmark_archive_max_total_bytes', 0)
         capacity.initialized = True
         session.add(capacity)
     return capacity

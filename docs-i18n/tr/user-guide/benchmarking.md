@@ -39,6 +39,20 @@ Yerleşik ShareGPT veri kümesinde giriş token uzunluğu için isteğe bağlı 
 2. Görüntülemek istediğiniz kriteri bulun.
 3. Sonuçları ve yapılandırma anlık görüntüsünü görüntülemek için kıyaslama adına tıklayın.
 
+## Kaydedilen izleme verileri { #saved-monitoring }
+
+GPUStack, yeni kıyaslamaların izleme verilerini sunucu veritabanına kaydeder. Varsayılan olarak gömülü PostgreSQL kullanılır. `--database-url` ile başka bir veritabanı yapılandırılabilir. Dağıtım kaynakları kaldırıldıktan sonra da **Stages and Monitoring** görünümünde kıyaslamanın tamamına ve ölçüm aşamalarına ait mevcut grafikler açılabilir. Kaynak metrikleri eksikse arşiv kısmi olabilir. Arşivlenmiş donanım ayrıntılarını görüntüleme yetkisi olan kullanıcılar, kayıt durumunun yanında sıkıştırılmış boyutu görebilir. Kıyaslama sonuçları arşivden bağımsız olarak görüntülenebilir.
+
+Rota üzerinden çalışan bir kıyaslama oluşturulduğunda, seçilen dağıtımın çalışan replikaları kaydedilir. GPUStack, kaydedilen bir replikanın yeniden başlatıldığını, kaynaklarının yeniden tahsis edildiğini veya kaldırıldığını algılarsa kıyaslamanın canlı izleme verileri kullanılamaz. Arşiv, değişiklikten önceki uygun gözlemleri saklar ve kapsamı kısmi olarak işaretler.
+
+Arşivler sıkıştırılır. Çalıştırma başına boyut sınırı hem sıkıştırılmış hem sıkıştırılmamış verilere uygulanır ve varsayılan olarak 256 MiB'dir. Yaklaşık altı dakika süren iki kıyaslamayla yapılan kapasite ölçümünde sıkıştırılmış veri, standart bir dağıtım için yaklaşık 177 KiB ve bir PD dağıtımı için 528 KiB olmuştur. Daha büyük çalıştırmalar daha büyük arşivler oluşturabilir. Veritabanı kapasitesini ve yedekleri planlarken arşivleri de hesaba katın.
+
+Platform yöneticileri **Benchmarks** sayfasındaki **Archive Storage** bölümünde genel boyut sınırı belirleyebilir. Varsayılan kota sınırsızdır (`0`). Sonlu bir kota, tüm kuruluşların sıkıştırılmış arşiv baytlarını birlikte sayar. Bir kuruluş kullanılabilir alanı tüketirse arşiv alanını artıracak kayıtlar tüm kuruluşlar için durur. Son başarılı kayıtlar erişilebilir kalır.
+
+Her kayıt, sıkıştırılmış arşivi tek bir veritabanı deyimiyle yazar. MySQL uyumlu bir veritabanı için geçerli `max_allowed_packet` değerini kontrol edin. `--benchmark-archive-max-run-bytes` değerini paket sınırının altında tutarak SQL kodlaması ve üst veriler için pay bırakın. [MySQL paket sınırları](https://dev.mysql.com/doc/refman/8.0/en/packet-too-large.html) · [OceanBase paket sınırları](https://en.oceanbase.com/docs/common-oceanbase-database-10000000003681766)
+
+Tamamlanan bir arşiv, önceki onarım denemesinin bitiminden en az bir arşiv yazma aralığı (varsayılan olarak 60 saniye) sonra tekrar onarılabilir.
+
 ## Karşılaştırma Sonuçlarını Dışa Aktarma { #export-benchmark-results }
 
 1. `Benchmarks` sayfasına gidin.

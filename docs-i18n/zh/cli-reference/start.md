@@ -126,6 +126,14 @@ gpustack start [OPTIONS]
 | `--grafana-url` value                            | (empty)                                          | Grafana 基础 URL，用于仪表盘重定向和代理。必须能从浏览器访问（不能仅为容器内部主机名）。设置后，内置 Grafana 和 Prometheus 将被禁用。仅使用外部 Grafana 时需要。                                                                                                                               |
 | `--grafana-worker-dashboard-uid` value           | (empty)                                          | Worker 仪表盘重定向使用的 Grafana 仪表盘 UID。                                                                                                                                                                                                                                                                                         |
 | `--grafana-model-dashboard-uid` value            | (empty)                                          | 模型仪表盘重定向使用的 Grafana 仪表盘 UID。                                                                                                                                                                                                                                                                                          |
+| `--benchmark-archive-max-total-bytes` value | `0`                                              | Server 首次初始化共享策略时设置的基准测试归档总容量上限，单位为字节。0 表示无限制。可在基准测试页面的归档存储中修改当前上限。 |
+| `--benchmark-archive-retention-days` value       | (empty)                                          | 归档保留天数。未设置时随基准测试记录保留。 |
+| `--benchmark-archive-sample-step-seconds` value  | `5`                                              | 监控曲线的期望采样间隔，单位为秒。 |
+| `--benchmark-archive-source-interval-seconds` value | (empty)                                          | 外置 Prometheus 数据源的有效更新间隔，单位为秒。按基准测试图表涉及的源设置。 |
+| `--benchmark-archive-flush-interval-seconds` value | `60`                                             | 保存检查点的间隔，单位为秒。基准测试结束后另行安排最终采集。 |
+| `--benchmark-archive-settle-seconds` value       | `30`                                             | 基准测试结束后等待源指标稳定的秒数。 |
+| `--benchmark-archive-max-concurrency` value      | `2`                                              | 每个 Server 的归档并发上限。 |
+| `--benchmark-archive-max-run-bytes` value        | `268435456`                                      | 压缩包和解压后数据各自的字节数上限。 |
 
 ### Worker 选项 { #worker-options }
 

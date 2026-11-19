@@ -621,6 +621,53 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("EXTERNAL_AUTH_POST_LOGOUT_REDIRECT_KEY"),
     )
 
+    for name, help_text in (
+        (
+            'max_total_bytes',
+            'Total benchmark archive capacity in bytes when the server first '
+            'initializes the shared policy. Use 0 for unlimited. Change the '
+            'active limit under Archive Storage on the Benchmarks page.',
+        ),
+        (
+            'retention_days',
+            'Benchmark archive retention in days. When unset, archives are '
+            'retained with the benchmark record.',
+        ),
+        (
+            'sample_step_seconds',
+            'Requested interval in seconds between saved benchmark monitoring points.',
+        ),
+        (
+            'source_interval_seconds',
+            'Effective interval in seconds at which the external Prometheus '
+            'sources used by benchmark charts are updated.',
+        ),
+        (
+            'flush_interval_seconds',
+            'Seconds between saved benchmark archive checkpoints. Final capture '
+            'is scheduled separately when the benchmark ends.',
+        ),
+        (
+            'settle_seconds',
+            'Seconds to wait for source metrics to finish arriving after the benchmark ends.',
+        ),
+        (
+            'max_concurrency',
+            'Maximum concurrent benchmark archive jobs per server.',
+        ),
+        (
+            'max_run_bytes',
+            'Maximum size in bytes for each of the compressed and uncompressed '
+            'forms of a benchmark archive.',
+        ),
+    ):
+        server_group.add_argument(
+            '--benchmark-archive-' + name.replace('_', '-'),
+            type=int,
+            help=help_text,
+            default=get_gpustack_env('BENCHMARK_ARCHIVE_' + name.upper()),
+        )
+
     worker_group = parser_server.add_argument_group("Worker settings")
     worker_group.add_argument(
         "-s",
@@ -905,6 +952,9 @@ def set_common_options(args, config_data: dict):
 
 
 def set_server_options(args, config_data: dict):
+    for option in Config.model_fields:
+        if option.startswith('benchmark_archive_'):
+            set_config_option(args, config_data, option)
     options = [
         "metrics_port",
         "database_port",

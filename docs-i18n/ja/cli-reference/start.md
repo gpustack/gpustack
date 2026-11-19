@@ -126,6 +126,14 @@ gpustack start [OPTIONS]
 | `--grafana-url` 値                            | （空）                                          | ダッシュボードのリダイレクトとプロキシーに使用するGrafanaのベースURL。コンテナー内専用のホスト名ではなく、ブラウザーから到達できる必要があります。設定すると組み込みGrafanaとPrometheusは無効になります。外部Grafanaを使用する場合のみ必要です。 |
 | `--grafana-worker-dashboard-uid` 値           | （空）                                          | ワーカーダッシュボードへのリダイレクトに使用するGrafanaダッシュボードUID。 |
 | `--grafana-model-dashboard-uid` 値            | （空）                                          | モデルダッシュボードへのリダイレクトに使用するGrafanaダッシュボードUID。 |
+| `--benchmark-archive-max-total-bytes` 値 | `0`                                              | サーバーが共有ポリシーを初期化する際に設定するベンチマークアーカイブの総容量上限（バイト）。0 は無制限です。適用中の上限はベンチマークページのアーカイブストレージから変更できます。 |
+| `--benchmark-archive-retention-days` 値           | （空）                                              | 保存日数。未設定の場合はベンチマークの保存期間に従います。 |
+| `--benchmark-archive-sample-step-seconds` 値      | `5`                                              | 監視グラフの要求サンプリング間隔（秒）。 |
+| `--benchmark-archive-source-interval-seconds` 値  | （空）                                              | 外部 Prometheus の対象データソースの実効更新間隔（秒）。 |
+| `--benchmark-archive-flush-interval-seconds` 値   | `60`                                             | チェックポイント保存間隔（秒）。終了時には最終保存を別途予約します。 |
+| `--benchmark-archive-settle-seconds` 値           | `30`                                             | ベンチマーク終了後にメトリクスの確定を待つ秒数。 |
+| `--benchmark-archive-max-concurrency` 値          | `2`                                              | Server ごとの同時アーカイブ処理数。 |
+| `--benchmark-archive-max-run-bytes` 値            | `268435456`                                      | 圧縮データと展開済みデータそれぞれのサイズ上限（バイト）。 |
 
 ### ワーカーオプション { #worker-options }
 

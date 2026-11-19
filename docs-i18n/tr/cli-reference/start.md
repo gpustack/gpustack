@@ -126,6 +126,14 @@ gpustack start [OPTIONS]
 | `--grafana-url` değer                            | (boş)                                          | Pano yönlendirmeleri ve proxy işlemleri için Grafana temel URL'si. Yalnızca konteyner içinden erişilen bir ana makine adı değil, tarayıcıdan erişilebilir bir adres olmalıdır. Ayarlanırsa yerleşik Grafana ve Prometheus devre dışı bırakılır. Yalnızca harici Grafana için gereklidir. |
 | `--grafana-worker-dashboard-uid` değer           | (boş)                                          | Worker panosu yönlendirmeleri için Grafana pano UID'si. |
 | `--grafana-model-dashboard-uid` değer            | (boş)                                          | Model panosu yönlendirmeleri için Grafana pano UID'si. |
+| `--benchmark-archive-max-total-bytes` değer | `0`                                              | Sunucu, ortak politikayı ilk kez başlatırken uygulanan bayt cinsinden toplam benchmark arşivi kapasitesi. 0 sınırsız demektir. Etkin sınırı Benchmark sayfasındaki Arşiv Depolama bölümünden değiştirin. |
+| `--benchmark-archive-retention-days` değer       | (boş)                                            | Gün cinsinden saklama süresi. Ayarlanmazsa arşiv Benchmark kaydıyla birlikte saklanır. |
+| `--benchmark-archive-sample-step-seconds` değer  | `5`                                              | Grafik noktaları için istenen saniye cinsinden örnekleme aralığı. |
+| `--benchmark-archive-source-interval-seconds` değer | (boş)                                            | Harici Prometheus kaynaklarının saniye cinsinden etkin güncellenme aralığı. |
+| `--benchmark-archive-flush-interval-seconds` değer | `60`                                             | Saniye cinsinden kontrol noktası aralığı. Test bitince son kayıt ayrı olarak planlanır. |
+| `--benchmark-archive-settle-seconds` değer       | `30`                                             | Testten sonra kaynak metriklerin tamamlanması için beklenecek saniye. |
+| `--benchmark-archive-max-concurrency` değer      | `2`                                              | Server başına eşzamanlı arşivleme görevi sınırı. |
+| `--benchmark-archive-max-run-bytes` değer        | `268435456`                                      | Sıkıştırılmış ve açılmış veri için bayt cinsinden boyut sınırı. |
 
 ### Worker seçenekleri { #worker-options }
 
