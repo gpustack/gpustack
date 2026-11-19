@@ -79,6 +79,7 @@ from gpustack.server.deps import (
 from gpustack.schemas.models import (
     ExtendedKVCacheConfig,
     LoraListEntry,
+    apply_decision_image_input_meta,
     Model,
     ModelCreate,
     ModelSpecBase,
@@ -1585,6 +1586,12 @@ async def _persist_model_create(
         model_in_dict["access_policy"] = AccessPolicyEnum.ALLOWED_PRINCIPALS
 
     model: Model = await Model.create(session, source=model_in_dict, auto_commit=False)
+    # The pre-create evaluation runs on a ModelSpec copy whose meta (this
+    # contract included) never reaches the persisted row, and nothing
+    # re-evaluates a stored model afterward — so the write path itself
+    # publishes the decision-API image-parameter contract, and the Model
+    # controller's categories/meta sync carries it onto the route.
+    apply_decision_image_input_meta(model)
     await append_revision(session, model, 1, created_by)
     if not model_in.enable_model_route:
         return model
@@ -2328,6 +2335,10 @@ async def _persist_model_update(
     if patch["scaling_schedule"] and patch["scaling_schedule"].paused:
         patch["replicas"] = 0
     await ModelService(session).update(existing, patch, auto_commit=False)
+    # Same decision-API image contract as the create and PUT paths: an
+    # import replaces the deployment's whole desired state, so the
+    # contract is republished (or cleared) against the imported row too.
+    apply_decision_image_input_meta(existing)
     await record_update(session, existing, before, latest, created_by)
 
     own = await _own_model_routes(session, existing)
@@ -2551,6 +2562,11 @@ async def _apply_model_update(
     )
 
     await ModelService(session).update(model, model_in, auto_commit=False)
+    # Same contract as the create path: an update is the one write that can
+    # change the deployment's category or serving backend after creation,
+    # and existing rows created before the contract existed heal here too
+    # (any whole-object PUT republishes it).
+    apply_decision_image_input_meta(model)
     base_route = await ModelRoute.one_by_fields(
         session, {"name": model.name, "owner_principal_id": model.owner_principal_id}
     )
