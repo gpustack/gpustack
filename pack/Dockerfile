@@ -325,7 +325,8 @@ COPY mkdocs.yml mkdocs.offline.yml pyproject.toml uv.lock /workspace/
 
 WORKDIR /workspace
 
-RUN --mount=type=cache,target=/root/.cache \
+# Keep the docs dependency cache separate from the parallel application build.
+RUN --mount=type=cache,id=gpustack-docs-python,target=/root/.cache \
     --mount=type=cache,target=/workspace/.cache <<EOF
     # Build the offline documentation site
 
@@ -349,7 +350,6 @@ SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 ARG TARGETPLATFORM
 ARG TARGETOS
 ARG TARGETARCH
-
 ## Configure data volume
 VOLUME /var/lib/gpustack
 
@@ -563,10 +563,10 @@ RUN --mount=type=cache,target=/root/.cache \
     export UV_LINK_MODE=copy
     export UI_DOWNLOAD=${UI_DOWNLOAD}
 
-    # Build GPUStack
+    # Build GPUStack with runtime dependencies. The docs stage installs its own.
     cd /workspace/gpustack \
         && git config --global --add safe.directory /workspace/gpustack \
-        && make build
+        && UV_NO_DEV=1 make build
 
     # Install GPUStack.
     uv pip install --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cpu/ \
