@@ -1,6 +1,7 @@
 """Current authorized resource associations and owner-qualified hardware history."""
 
 from collections import Counter
+import math
 import time
 from typing import List, Optional, Set
 
@@ -91,6 +92,7 @@ async def resource_associations(
         select(ModelInstance, Model)
         .join(Model, Model.id == ModelInstance.model_id)
         .where(
+            ModelInstance.cluster_id == worker.cluster_id,
             or_(
                 ModelInstance.worker_id == worker.id,
                 ModelInstance.distributed_servers.is_not(None),
@@ -218,14 +220,24 @@ async def collect_resource_metrics(
     )
     selected = select_device(devices, device_id)
     scoped = [selected] if selected else devices
+    policies = query_config.get_query_config().time_windows
+    step = policies.hardware.step(interval.seconds)
+    if start is not None:
+        # Exact inspections include short Benchmark phases. Retain the hardware
+        # point budget while allowing the finer configured evaluation minimum.
+        step = max(
+            math.ceil(interval.seconds / policies.hardware.target_points),
+            min(
+                policies.hardware.min_step_seconds,
+                policies.benchmark.min_step_seconds,
+            ),
+        )
     response = ResourceMetrics(
         worker_id=worker.id,
         selected_device_id=device_id,
         start=interval.start,
         end=interval.end,
-        step=query_config.get_query_config().time_windows.hardware.step(
-            interval.seconds
-        ),
+        step=step,
         last_refreshed_at=interval.end,
         devices=[device.public for device in scoped],
     )
