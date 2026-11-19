@@ -380,7 +380,8 @@ async def _collect_history(devices, selected, worker, response, client, url):
             _identity_presence(devices, client, url, response.end, semaphore),
             timeout=COLLECTION_TIMEOUT_SECONDS,
         )
-    except Exception:
+    except Exception as exc:
+        logger.warning('GPU identity presence query failed (%s)', type(exc).__name__)
         for device in devices:
             if device.identity is not None:
                 device.public.reason = 'query_failed'
@@ -423,6 +424,9 @@ async def _collect_history(devices, selected, worker, response, client, url):
         jobs.append((key, labels, dimensions, scope, empty_reason))
     remaining = deadline - asyncio.get_running_loop().time()
     if remaining <= 0:
+        logger.warning(
+            'Hardware metric collection timed out before queries (selected resource)'
+        )
         return
     try:
         await asyncio.wait_for(
@@ -442,7 +446,9 @@ async def _collect_history(devices, selected, worker, response, client, url):
             timeout=remaining,
         )
     except asyncio.TimeoutError:
-        pass
+        logger.warning(
+            'Hardware metric collection timed out during queries (selected resource)'
+        )
 
 
 def _device_target(key, device):
@@ -614,7 +620,8 @@ async def _collect_all_history(
             _identity_presence(devices, client, url, end, semaphore),
             timeout=COLLECTION_TIMEOUT_SECONDS,
         )
-    except Exception:
+    except Exception as exc:
+        logger.warning('GPU identity presence query failed (%s)', type(exc).__name__)
         for device in devices:
             if device.identity is not None:
                 device.public.reason = 'query_failed'
@@ -629,6 +636,9 @@ async def _collect_all_history(
         jobs.append((key, targets))
     remaining = deadline - asyncio.get_running_loop().time()
     if remaining <= 0:
+        logger.warning(
+            'Hardware metric collection timed out before queries (associated resources)'
+        )
         return
     try:
         await asyncio.wait_for(
@@ -650,7 +660,9 @@ async def _collect_all_history(
             timeout=remaining,
         )
     except asyncio.TimeoutError:
-        pass
+        logger.warning(
+            'Hardware metric collection timed out during queries (associated resources)'
+        )
 
 
 def _update_device_history(devices, response):

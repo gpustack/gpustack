@@ -231,6 +231,31 @@ async def test_failed_hardware_queries_keep_failure_reason_and_diagnostics(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('all_devices', [False, True])
+async def test_identity_presence_failure_logs_safe_diagnostics(
+    monkeypatch, caplog, all_devices
+):
+    hardware, session, _ = _environment(monkeypatch, [_worker()])
+    secret = 'https://private-user:private-password@prom.example.test'
+    monkeypatch.setattr(
+        hardware, '_identity_presence', AsyncMock(side_effect=OSError(secret))
+    )
+
+    result = await _collect(hardware, session, all_devices=all_devices)
+
+    assert result.available
+    assert result.metrics['gpu_utilization'].status == 'available'
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == hardware.__name__ and record.levelname == 'WARNING'
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].message == 'GPU identity presence query failed (OSError)'
+    assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_invalid_or_foreign_device_is_rejected_before_prometheus(monkeypatch):
     hardware, session, calls = _environment(monkeypatch, [_worker()])
     with pytest.raises(InvalidException):
@@ -351,7 +376,10 @@ async def test_one_sensor_query_failure_keeps_other_resources_and_sanitizes_erro
 
 
 @pytest.mark.asyncio
-async def test_identity_probe_and_numeric_queries_share_one_deadline(monkeypatch):
+@pytest.mark.parametrize('all_devices', [False, True])
+async def test_identity_probe_and_numeric_queries_share_one_deadline(
+    monkeypatch, caplog, all_devices
+):
     hardware, session, _ = _environment(monkeypatch, [_worker()])
     ranges = AsyncMock(return_value=[])
 
@@ -361,10 +389,15 @@ async def test_identity_probe_and_numeric_queries_share_one_deadline(monkeypatch
     monkeypatch.setattr(hardware, 'COLLECTION_TIMEOUT_SECONDS', 0.01)
     monkeypatch.setattr(hardware.prometheus_query, 'query_instant', never_finishes)
     monkeypatch.setattr(hardware.prometheus_query, 'query_range', ranges)
-    result = await _collect(hardware, session)
+    result = await _collect(hardware, session, all_devices=all_devices)
     assert not result.available
     assert result.devices[0].current['gpu_memory_used'] == 400
     assert ranges.await_count == 0
+    assert any(
+        record.levelname == 'WARNING'
+        and 'Hardware metric collection timed out before queries' in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -798,24 +831,45 @@ async def test_all_devices_failure_keeps_other_families_and_cancels_peer_query(
 
 
 @pytest.mark.asyncio
-async def test_all_devices_deadline_keeps_inventory_and_empty_authorized_series(
-    monkeypatch,
+@pytest.mark.parametrize('all_devices', [False, True])
+async def test_metric_query_deadline_keeps_inventory_and_warns(
+    monkeypatch, caplog, all_devices
 ):
     hardware, session, _ = _environment(monkeypatch, [_worker()])
+    original = hardware.prometheus_query.query_instant
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
 
-    async def never_finishes(*args):
-        await asyncio.Event().wait()
+    async def instant(client, url, expr, at):
+        if 'identity_info' in expr:
+            return await original(client, url, expr, at)
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
 
-    monkeypatch.setattr(hardware, 'COLLECTION_TIMEOUT_SECONDS', 0.01)
-    monkeypatch.setattr(hardware.prometheus_query, 'query_instant', never_finishes)
-    result = await _collect(hardware, session, all_devices=True)
+    monkeypatch.setattr(hardware, 'COLLECTION_TIMEOUT_SECONDS', 0.1)
+    monkeypatch.setattr(hardware.prometheus_query, 'query_instant', instant)
+    result = await _collect(hardware, session, all_devices=all_devices)
+    assert started.is_set() and cancelled.is_set()
     assert not result.available
     assert not result.devices[0].history_available
     assert result.devices[0].current['gpu_memory_used'] == 400
     metric = result.metrics['gpu_memory_used']
-    assert len(metric.series) == 1 and metric.series[0].points == []
-    assert metric.series[0].dimensions.device_id == result.devices[0].id
+    if all_devices:
+        assert len(metric.series) == 1 and metric.series[0].points == []
+        assert metric.series[0].dimensions.device_id == result.devices[0].id
     assert metric.status == 'query_error'
+    warnings = [
+        record.message
+        for record in caplog.records
+        if record.name == hardware.__name__ and record.levelname == 'WARNING'
+    ]
+    scope = 'associated resources' if all_devices else 'selected resource'
+    assert warnings == [
+        f'Hardware metric collection timed out during queries ({scope})'
+    ]
 
 
 @pytest.mark.asyncio

@@ -2,10 +2,94 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.dialects import mysql, postgresql
 
 from gpustack.api.exceptions import InvalidException, NotFoundException
 from gpustack.schemas.workers import MountPoint, WorkerStatus
 from tests.monitoring.test_hardware import _worker, _context, _instance
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'seconds,fixed,step',
+    [
+        (15, True, 1),
+        (273, True, 2),
+        (3600, True, 15),
+        (604800, True, 2520),
+        (300, False, 15),
+    ],
+)
+async def test_fixed_hardware_inspection_is_detailed_without_changing_relative_grids(
+    monkeypatch, seconds, fixed, step
+):
+    from gpustack.monitoring import resources
+
+    end = 1700000000
+    monkeypatch.setattr(resources.time, 'time', lambda: end)
+    monkeypatch.setattr(
+        resources.hardware.prometheus_query, 'prometheus_url', lambda: 'http://prom'
+    )
+    collect = AsyncMock()
+    monkeypatch.setattr(resources.hardware, '_collect_all_history', collect)
+    response = await resources.collect_resource_metrics(
+        _worker(),
+        [],
+        window_seconds=seconds,
+        start=end - seconds if fixed else None,
+        end=end if fixed else None,
+        client=object(),
+    )
+    assert response.step == step
+    assert collect.await_args.args[2].step == step
+    assert seconds / step <= 240
+
+
+@pytest.mark.asyncio
+async def test_short_hardware_inspection_retains_a_brief_cpu_peak(monkeypatch):
+    import math
+    from gpustack.monitoring import resources
+
+    worker = _worker()
+    labels = resources.hardware._worker_identity(worker)
+    monkeypatch.setattr(
+        resources.hardware.prometheus_query, 'prometheus_url', lambda: 'http://prom'
+    )
+
+    def value(at):
+        return '80' if 1006 <= at < 1010 else '20'
+
+    async def ranged(client, url, query, start, end, step):
+        if 'worker_host_cpu_utilization_percent' not in query:
+            return []
+        return [
+            {
+                'metric': labels,
+                'values': [
+                    [at, value(at)]
+                    for at in (
+                        start + i * step
+                        for i in range(math.floor((end - start) / step) + 1)
+                    )
+                ],
+            }
+        ]
+
+    async def instant(client, url, query, at):
+        return (
+            [{'metric': labels, 'value': [at, value(at)]}]
+            if 'worker_host_cpu_utilization_percent' in query
+            else []
+        )
+
+    monkeypatch.setattr(resources.hardware.prometheus_query, 'query_range', ranged)
+    monkeypatch.setattr(resources.hardware.prometheus_query, 'query_instant', instant)
+    result = await resources.collect_resource_metrics(
+        worker, [], window_seconds=20, start=1000, end=1020, client=object()
+    )
+    points = result.metrics['host_cpu'].series[0].points
+    assert max(value for _, value in points if value is not None) == 80
+    assert all(1000 <= at < 1020 for at, _ in points)
 
 
 @pytest.mark.asyncio
@@ -121,7 +205,8 @@ async def test_local_multi_gpu_placement_does_not_query_unrelated_workers():
 
 
 @pytest.mark.asyncio
-async def test_subordinate_worker_view_keeps_main_worker_and_cpu_placement():
+@pytest.mark.parametrize('dialect', [postgresql.dialect(), mysql.dialect()])
+async def test_subordinate_worker_view_keeps_main_worker_and_cpu_placement(dialect):
     from gpustack.schemas.models import (
         DistributedServers,
         Model,
@@ -132,6 +217,7 @@ async def test_subordinate_worker_view_keeps_main_worker_and_cpu_placement():
     worker = _worker()
     instance = _instance(gpu_indexes=[])
     instance.worker_id = 8
+    instance.cluster_id = worker.cluster_id
     instance.distributed_servers = DistributedServers(
         subordinate_workers=[
             ModelInstanceSubordinateWorker(worker_id=7, gpu_indexes=[8])
@@ -151,6 +237,13 @@ async def test_subordinate_worker_view_keeps_main_worker_and_cpu_placement():
     result = await resource_associations(
         worker, inventory_devices(worker), _context(), session
     )
+    statement = session.exec.await_args_list[0].args[0]
+    sql = str(
+        statement.compile(dialect=dialect, compile_kwargs={'literal_binds': True})
+    )
+    assert f'model_instances.cluster_id = {worker.cluster_id}' in sql
+    assert 'model_instances.owner_principal_id = 17' in sql
+    assert 'models.owner_principal_id = 17' in sql
     assert result[0].placements_complete
     assert [p.worker_id for p in result[0].placements] == [8, 7]
     assert [p.gpu_indexes for p in result[0].placements] == [[], [8]]
