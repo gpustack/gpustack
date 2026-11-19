@@ -15,6 +15,34 @@ from gpustack.schemas.model_metrics import (
 from gpustack.schemas.models import DisaggregationSpec, RoleSpec
 
 
+class BenchmarkObservationStorage(BaseModel):
+    source: Literal['live', 'archive'] = 'archive'
+    run_id: str
+    content_version: Optional[str] = None
+    compressed_bytes: Optional[int] = None
+    sealed: bool = False
+    retryable: bool = False
+    archive_state: str
+    last_error: Optional[str] = None
+    capture_complete: bool = False
+    data_coverage: Literal['complete', 'partial', 'none'] = 'partial'
+    captured_until: Optional[FiniteFloat] = None
+    expires_at: Optional[FiniteFloat] = None
+
+
+class BenchmarkArchiveQueryCapabilities(BaseModel):
+    run_replay: bool = True
+    phase_replay: bool = True
+    custom_range_trends: bool = False
+    custom_range_summary: bool = False
+    arbitrary_subset_summary: bool = False
+
+
+class BenchmarkArchiveMetadata(BaseModel):
+    observation_storage: Optional[BenchmarkObservationStorage] = None
+    query_capabilities: Optional[BenchmarkArchiveQueryCapabilities] = None
+
+
 class BenchmarkRunMember(BaseModel):
     id: int
     name: str
@@ -83,7 +111,10 @@ class BenchmarkMonitoringStage(BaseModel):
     measurement_number: Optional[int] = Field(
         default=None,
         ge=1,
-        description='One-based recorded sequence within the input-length cohort; probes have no number.',
+        description=(
+            'One-based recorded sequence within the input-length cohort; '
+            'probes have no number.'
+        ),
     )
     search_phase: Optional[Literal['expand', 'refine', 'manual', 'single', 'probe']] = (
         Field(
@@ -93,7 +124,10 @@ class BenchmarkMonitoringStage(BaseModel):
     )
     search_phase_source: Optional[Literal['load_history', 'configuration']] = Field(
         default=None,
-        description='Adaptive groups use observed loads in recorded sequence; other groups use the run configuration.',
+        description=(
+            'Adaptive groups use observed loads in recorded sequence; '
+            'other groups use the run configuration.'
+        ),
     )
     start: Optional[FiniteFloat] = None
     end: Optional[FiniteFloat] = None
@@ -112,7 +146,7 @@ class BenchmarkMonitoringMember(BaseModel):
     gpu_indexes: List[int] = Field(default_factory=list)
 
 
-class BenchmarkMonitoringContext(BaseModel):
+class BenchmarkMonitoringContext(BenchmarkArchiveMetadata):
     benchmark_id: int
     model_id: Optional[int] = None
     history_scope: Literal['benchmark_snapshot'] = 'benchmark_snapshot'
@@ -143,7 +177,7 @@ class BenchmarkSampleStatistics(BaseModel):
     coverage: float = 0
 
 
-class BenchmarkModelMetrics(ModelMetrics):
+class BenchmarkModelMetrics(ModelMetrics, BenchmarkArchiveMetadata):
     model_id: Optional[int] = None
     start: Optional[FiniteFloat] = None
     end: Optional[FiniteFloat] = None
@@ -153,7 +187,7 @@ class BenchmarkModelMetrics(ModelMetrics):
     )
 
 
-class BenchmarkResourceMetrics(ModelResourceMetrics):
+class BenchmarkResourceMetrics(ModelResourceMetrics, BenchmarkArchiveMetadata):
     model_id: Optional[int] = None
     start: Optional[FiniteFloat] = None
     end: Optional[FiniteFloat] = None

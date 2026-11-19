@@ -266,6 +266,7 @@ class Server:
         self._coordinator = None
         self._leader_election_task = None
         self._leader_ai_proxy_cleanup_task = None
+        self._benchmark_monitoring_archiver_task = None
 
     @property
     def all_processes(self):
@@ -330,6 +331,7 @@ class Server:
         await self._start_leader_only_tasks()
 
         # These tasks can run on all instances
+        self._start_benchmark_monitoring_archiver()
         self._start_worker_status_flusher()
         self._start_gateway_metrics_flusher()
         self._start_metrics_exporter()
@@ -1626,6 +1628,18 @@ class Server:
             "jwt_secret_key must be explicitly set in distributed mode. "
             "Mount a Kubernetes Secret or pass it via the --jwt-secret-key flag "
             "or set the GPUSTACK_JWT_SECRET_KEY environment variable."
+        )
+
+    def _start_benchmark_monitoring_archiver(self):
+        task = self._benchmark_monitoring_archiver_task
+        if task is not None and not task.done():
+            return
+        from gpustack.server.benchmark_monitoring_archiver import (
+            BenchmarkMonitoringArchiver,
+        )
+
+        self._benchmark_monitoring_archiver_task = self._create_async_task(
+            BenchmarkMonitoringArchiver(self._config).run()
         )
 
     async def _start_leader_only_tasks(self):

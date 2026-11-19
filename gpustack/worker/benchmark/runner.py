@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
@@ -221,6 +221,9 @@ class BenchmarkRunner:
             self._api_url = (
                 f"{_server_url.rstrip('/')}/v2/benchmarks/{self._benchmark.id}/state"
             )
+            run_id = getattr(benchmark, 'run_id', None)
+            if run_id is not None:
+                self._api_url += '?' + urlencode({'run_id': run_id})
             self._progress_insecure_skip_tls_verify = resolve_progress_insecure_tls()
 
         except Exception as e:
@@ -699,6 +702,9 @@ class BenchmarkRunner:
         return command_args
 
     def _update_benchmark_state(self, id: int, **kwargs):
+        run_id = getattr(self._benchmark, 'run_id', None)
+        if run_id is not None:
+            kwargs['run_id'] = run_id
         resp = self._clientset.http_client.get_httpx_client().patch(
             "/benchmarks/{id}/state".format(id=id), json=kwargs
         )

@@ -10,6 +10,7 @@ holds no weights.
 import json
 from types import SimpleNamespace
 from unittest.mock import Mock
+from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 
@@ -403,6 +404,31 @@ def test_request_model_name_comes_from_the_target(
 
     assert args[args.index("--model") + 1] == expected_model_name
     assert benchmark.model_name == "renamed-model"
+
+
+@pytest.mark.parametrize('run_id', ['execution-a', 'execution &x=#?+/%', None])
+def test_progress_url_carries_only_the_execution_identity(config, monkeypatch, run_id):
+    monkeypatch.setattr(runner_module, 'setup_logging', Mock())
+    monkeypatch.setattr(runner_module, 'setup_runtime_logging', Mock())
+    monkeypatch.setattr(runner_module, 'read_worker_token', lambda _: 'token')
+    endpoint = _snapshot('decode', worker_id=12, path='/cache/qwen3')
+    runner = BenchmarkRunner(
+        clientset=SimpleNamespace(base_url='http://server/gpustack/'),
+        benchmark=_benchmark(
+            worker_id=12,
+            members=[endpoint],
+            model_instance_name='decode',
+            run_id=run_id,
+        ),
+        cfg=config,
+    )
+
+    progress = urlsplit(runner._api_url)
+    assert progress.path == '/gpustack/v2/benchmarks/1/state'
+    assert progress.fragment == ''
+    assert parse_qsl(progress.query) == (
+        [('run_id', run_id)] if run_id is not None else []
+    )
 
 
 # ── warmup / cooldown: which axis gets trimmed ───────────────────────────────

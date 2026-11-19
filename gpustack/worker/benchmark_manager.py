@@ -102,6 +102,11 @@ class CollectedResults(NamedTuple):
 _TEARDOWN_MEMO_LIMIT = 1024
 
 
+def _execution_token(benchmark):
+    run_id = getattr(benchmark, 'run_id', None)
+    return {'run_id': run_id} if run_id is not None else {}
+
+
 class BenchmarkManager:
     @property
     def _worker_id(self) -> int:
@@ -298,16 +303,15 @@ class BenchmarkManager:
                 self._benchmark_queue.append(benchmark)
 
                 patch_dict = {"state": BenchmarkStateEnum.QUEUED}
-                if not await self._update_benchmark_state(benchmark.id, **patch_dict):
-                    # Deleted between the PENDING event and this patch. Mark it
-                    # canceled rather than popping it here: the queue is a deque
-                    # shared with the sync thread, and the existing
-                    # `_canceled_ids` guard drops the entry race-safely when the
-                    # queue worker reaches it.
+                if not await self._update_benchmark_state(
+                    benchmark.id, **_execution_token(benchmark), **patch_dict
+                ):
+                    # The queue worker observes the cancellation when it pops
+                    # this entry from the deque shared with the sync thread.
                     self._canceled_ids.add(benchmark.id)
                     logger.info(
-                        f"Benchmark {benchmark.name}(id={benchmark.id}) was deleted "
-                        "before it could be queued; dropping it."
+                        f"Benchmark {benchmark.name}(id={benchmark.id}) is no "
+                        "longer eligible to run; dropping it from the queue."
                     )
                     return
                 logger.info(
@@ -398,14 +402,14 @@ class BenchmarkManager:
                 "state": BenchmarkStateEnum.RUNNING,
                 "pid": process.pid,
             }
-            if not await self._update_benchmark_state(benchmark.id, **patch_dict):
-                # Deleted while we were starting it. Tear it down here and now:
-                # the state poll lists rows from the server, so this id is absent
-                # from every later tick and nothing else would ever release
-                # `_active_benchmark_id`.
+            if not await self._update_benchmark_state(
+                benchmark.id, **_execution_token(benchmark), **patch_dict
+            ):
+                # A deleted or terminal run may be absent from the next poll.
+                # Tear it down here to release the worker's active run.
                 logger.info(
-                    f"Benchmark {benchmark.name}(id={benchmark.id}) was deleted "
-                    "while starting; stopping it again."
+                    f"Benchmark {benchmark.name}(id={benchmark.id}) is no "
+                    "longer eligible to run; stopping local provisioning."
                 )
                 self._stop_benchmark(benchmark)
                 return
@@ -419,7 +423,9 @@ class BenchmarkManager:
                 "state": BenchmarkStateEnum.ERROR,
                 "state_message": f"Failed to start benchmark: {e}",
             }
-            await self._update_benchmark_state(benchmark.id, **patch_dict)
+            await self._update_benchmark_state(
+                benchmark.id, **_execution_token(benchmark), **patch_dict
+            )
             logger.error(
                 f"Failed to start benchmark {benchmark.name}(id={benchmark.id}): {e}"
             )
@@ -486,21 +492,10 @@ class BenchmarkManager:
 
     @staticmethod
     def _state_patch_landed(id: int, resp) -> bool:
-        """True when the patch landed, False when the row is gone.
+        """Return whether the server accepted an update for this execution.
 
-        A 404 here is not a failed write, it is the server stating that the
-        benchmark no longer exists — the user deleted it, or the workload cleaner
-        did. Raising on it aborted whichever caller was mid-teardown, and on the
-        state-poll paths the teardown is what releases `_active_benchmark_id`: a
-        run deleted while RUNNING therefore left this worker with an active id
-        forever, its queue popping nothing while the poll re-entered the same 404
-        every 3 seconds. The worker looked healthy throughout (ready, all GPUs,
-        instances running) — only the benchmark queue was dead.
-
-        Every caller already has a correct reaction to "this row is gone": the
-        same local teardown it runs for a terminal state. So report it and let
-        them get on with it. Every other status still raises — that one IS a
-        failed write, and the callers that retry should keep retrying it.
+        Missing rows and retired executions require local teardown. Other HTTP
+        failures propagate so callers can retry or surface the error.
         """
         if resp.status_code == 404:
             logger.info(
@@ -508,6 +503,19 @@ class BenchmarkManager:
                 "skipping the state update and cleaning up locally."
             )
             return False
+        if resp.status_code == 409:
+            try:
+                retired = resp.json().get('details', {}).get('code') in (
+                    'benchmark_run_changed',
+                    'benchmark_already_executed',
+                )
+            except (ValueError, TypeError, AttributeError):
+                retired = False
+            if retired:
+                logger.info(
+                    'Benchmark %s execution was retired; cleaning up locally', id
+                )
+                return False
         resp.raise_for_status()
         return True
 
@@ -827,7 +835,9 @@ class BenchmarkManager:
             "state": BenchmarkStateEnum.ERROR,
             "state_message": "Benchmark timed out.",
         }
-        self._update_benchmark_state_sync(benchmark.id, **patch_dict)
+        self._update_benchmark_state_sync(
+            benchmark.id, **_execution_token(benchmark), **patch_dict
+        )
         self._finalize_partial_analysis(benchmark)
         self._dump_benchmark_logs_to_file(benchmark)
         self._stop_benchmark(benchmark)
@@ -943,7 +953,9 @@ class BenchmarkManager:
                 "The benchmark was stopped because there was nothing left to measure."
             ),
         }
-        self._update_benchmark_state_sync(benchmark.id, **patch_dict)
+        self._update_benchmark_state_sync(
+            benchmark.id, **_execution_token(benchmark), **patch_dict
+        )
         self._finalize_partial_analysis(benchmark)
         self._dump_benchmark_logs_to_file(benchmark)
         self._stop_benchmark(benchmark)
@@ -989,7 +1001,9 @@ class BenchmarkManager:
             if sync_failure is not None:
                 patch_dict["state_message"] = sync_failure
             try:
-                self._update_benchmark_state_sync(benchmark.id, **patch_dict)
+                self._update_benchmark_state_sync(
+                    benchmark.id, **_execution_token(benchmark), **patch_dict
+                )
             except Exception as e:
                 # Leaves the row RUNNING with its workload gone; the next poll
                 # sees no workload, takes the failure branch and marks it ERROR.
@@ -1020,7 +1034,9 @@ class BenchmarkManager:
             "state": BenchmarkStateEnum.ERROR,
             "state_message": "Benchmark exited or unhealthy.",
         }
-        self._update_benchmark_state_sync(benchmark.id, **patch_dict)
+        self._update_benchmark_state_sync(
+            benchmark.id, **_execution_token(benchmark), **patch_dict
+        )
         self._finalize_partial_analysis(benchmark)
         self._dump_benchmark_logs_to_file(benchmark)
         self._stop_benchmark(benchmark)
@@ -1383,6 +1399,7 @@ class BenchmarkManager:
                 self._retry_sync(
                     lambda: self._update_benchmark_state_sync(
                         benchmark.id,
+                        **_execution_token(benchmark),
                         state_message=self._truncate_state_message(message),
                     ),
                     what=f"state message for {label}",
@@ -1416,7 +1433,11 @@ class BenchmarkManager:
         def _post(path: str, payload):
             def _do():
                 raise_if_response_error(
-                    client.post(f"/benchmarks/{benchmark.id}/{path}", json=payload)
+                    client.post(
+                        f"/benchmarks/{benchmark.id}/{path}",
+                        params=_execution_token(benchmark),
+                        json=payload,
+                    )
                 )
 
             return _do
@@ -1508,7 +1529,9 @@ class BenchmarkManager:
         label = f"{benchmark.name}(id={benchmark.id})"
         try:
             self._retry_sync(
-                lambda: self._update_benchmark_state_sync(benchmark.id, **patch),
+                lambda: self._update_benchmark_state_sync(
+                    benchmark.id, **_execution_token(benchmark), **patch
+                ),
                 what=f"best operating points / validity for {label}",
                 attempts=attempts,
             )
