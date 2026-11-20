@@ -15,7 +15,7 @@ from gpustack.extension import iter_plugin_classes, Plugin
 from gpustack.utils.envs import get_gpustack_env
 
 # The higress version should be sync with HIGRESS_VERSION in pack/Dockerfile.
-higress_version = "2.1.9"
+higress_version = "2.2.6"
 
 ssh_server_version = "v1.4.0"
 kueue_version = "v0.18.11"

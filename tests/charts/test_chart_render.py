@@ -64,8 +64,8 @@ def chart_dependencies():
     `helm template` resolves dependencies while loading the chart — before any
     value is read — so a missing `charts/` fails every render here regardless of
     what the test asks for, including the ones whose sub-charts are conditioned
-    off. The directory is generated, not committed, so a fresh checkout and a CI
-    runner both start without it.
+    off. Higress is checked in under charts/, while the operator is downloaded
+    when missing.
 
     `dependency update` rather than `build`: the lock file is not tracked either,
     and `build` refuses a repository that was never `helm repo add`-ed, which is
@@ -628,6 +628,19 @@ class TestGuards:
                 images.add(container["image"])
         strays = sorted(i for i in images if not i.startswith("mirror.example.com/"))
         assert not strays, f"images not pointing at the mirror: {strays}"
+
+    def test_higress_uses_existing_mirror_repositories(self):
+        images = {
+            container["image"].rsplit(":", 1)[0]
+            for doc in render()
+            if doc["kind"] in ("DaemonSet", "Deployment")
+            for container in doc["spec"]["template"]["spec"]["containers"]
+        }
+        assert {
+            "docker.io/gpustack/mirrored-higress-gateway",
+            "docker.io/gpustack/mirrored-higress-higress",
+            "docker.io/gpustack/mirrored-higress-pilot",
+        } <= images
 
     def test_requires_an_image_tag(self):
         result = subprocess.run(

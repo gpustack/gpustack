@@ -17,9 +17,9 @@ annotations:
     - name: GitHub
       url: https://github.com/gpustack/gpustack
 dependencies:
+  # Local chart preserves the GPUStack mirror image paths.
   - name: higress-core
-    version: "2.1.9"
-    repository: "https://higress.io/helm-charts"
+    version: "2.2.6"
     condition: higress-core.enabled
   # The operator's chart version and appVersion are kept equal upstream, and its
   # image tag defaults to `v<appVersion>`, so this pin selects the operator image

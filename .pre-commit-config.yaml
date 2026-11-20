@@ -4,7 +4,11 @@ repos:
     hooks:
       - id: check-yaml
         name: check-yaml (safe)
-        exclude: ^(mkdocs\.yml$|charts/.*/templates/)
+        exclude: ^(mkdocs\.yml$|charts/.*/templates/|charts/gpustack-chart/charts/higress-core/(crds|files)/)
+      - id: check-yaml
+        name: check-yaml (Higress manifests)
+        files: ^charts/gpustack-chart/charts/higress-core/crds/
+        args: [ --allow-multiple-documents ]
       - id: check-yaml
         name: check-yaml (unsafe for mkdocs)
         files: ^mkdocs\.yml$

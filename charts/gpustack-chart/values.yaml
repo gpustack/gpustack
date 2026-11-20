@@ -240,6 +240,12 @@ higress-core:
     ingressClass: higress
     # GPUStack manages its own plugin server; disable the built-in one
     enablePluginServer: false
+    # GPUStack configures routes through Ingress resources.
+    enableGatewayAPI: false
+    o11y:
+      promtail:
+        image:
+          repository: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/promtail
     # `hub` is inherited from the top-level `global.hub` via Helm's
     # global-values propagation. Override here only when higress images
     # live in a different registry than the rest of GPUStack.
@@ -280,6 +286,8 @@ higress-core:
   pilot:
     hub: ""
     image: gpustack/mirrored-higress-pilot
+  pluginServer:
+    hub: higress-registry.cn-hangzhou.cr.aliyuncs.com
 higressPlugins:
   # Number of higress-plugins deployment replicas.
   replicas: 1
