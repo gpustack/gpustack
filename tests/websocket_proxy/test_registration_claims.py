@@ -552,14 +552,14 @@ class TestReconnect:
         # not release the route, or tell peers to drop it, while the new
         # socket is still open.
         handler = _handler()
-        handler.broadcast_client_update = AsyncMock()
+        handler._enqueue_client_update = MagicMock()
         worker_id = uuid.uuid4()
 
         old_ws, close_old = _closable_websocket()
         old_task = await self._connect(handler, worker_id, old_ws)
         new_ws, close_new = _closable_websocket()
         new_task = await self._connect(handler, worker_id, new_ws)
-        handler.broadcast_client_update.reset_mock()
+        handler._enqueue_client_update.reset_mock()
 
         close_old()
         await old_task
@@ -567,51 +567,48 @@ class TestReconnect:
         route = handler.get_connection_manager("10.0.0.5")
         assert route is not None and route.websocket is new_ws
         assert worker_id in handler.client_registry
-        handler.broadcast_client_update.assert_not_awaited()
+        handler._enqueue_client_update.assert_not_called()
 
         close_new()
         await new_task
 
     @pytest.mark.asyncio
     async def test_reconnect_while_old_socket_is_closing_keeps_the_new_route(self):
-        # The previous socket has already released the registration and is
-        # still telling peers when the worker reconnects. The new socket's
-        # registration must survive the rest of that cleanup.
+        # The previous socket has already released the registration and its
+        # remove update is still being sent to peers when the worker
+        # reconnects. The reconnection registers immediately (a wedged peer
+        # must not stall it); its add update is chained behind the remove, so
+        # peers observe the two in the order the server produced them.
         handler = _handler()
-        removing = asyncio.Event()
-        resume_removal = asyncio.Event()
-
-        async def broadcast(action, *args):
-            if action == "remove":
-                removing.set()
-                await resume_removal.wait()
-
-        handler.broadcast_client_update = AsyncMock(side_effect=broadcast)
+        handler._enqueue_client_update = MagicMock()
         worker_id = uuid.uuid4()
 
         old_ws, close_old = _closable_websocket()
         old_task = await self._connect(handler, worker_id, old_ws)
+        handler._enqueue_client_update.reset_mock()
         close_old()
-        await removing.wait()
+        await old_task
 
         new_ws, close_new = _closable_websocket()
         new_task = await self._connect(handler, worker_id, new_ws)
-        resume_removal.set()
-        await old_task
 
         route = handler.get_connection_manager("10.0.0.5")
         assert route is not None and route.websocket is new_ws
         assert worker_id in handler.client_registry
+        actions = [
+            call.args[0] for call in handler._enqueue_client_update.call_args_list
+        ]
+        assert actions == ["remove", "add"]
 
         close_new()
         await new_task
 
     @pytest.mark.asyncio
     async def test_replaced_socket_still_announcing_skips_disconnect_callback(self):
-        # The previous socket is still announcing itself to peers when the
-        # worker reconnects, and the new socket finishes setting up first.
-        # Closing the previous socket must not run the disconnect callback,
-        # which would clear the proxy address of the live connection.
+        # The previous socket's add update is still queued for peers when the
+        # worker reconnects and the new socket registers. Closing the previous
+        # socket must not run the disconnect callback, which would clear the
+        # proxy address of the live connection.
         disconnected = []
 
         async def on_disconnect(server_info, client_info):
@@ -623,24 +620,13 @@ class TestReconnect:
             proxy_port=0,
             callback_on_disconnect=on_disconnect,
         )
-        announcing = asyncio.Event()
-        resume_announce = asyncio.Event()
-
-        async def broadcast(action, *args):
-            if action == "add" and not announcing.is_set():
-                announcing.set()
-                await resume_announce.wait()
-
-        handler.broadcast_client_update = AsyncMock(side_effect=broadcast)
+        handler._enqueue_client_update = MagicMock()
         worker_id = uuid.uuid4()
 
         old_ws, close_old = _closable_websocket()
         old_task = await self._connect(handler, worker_id, old_ws)
-        await announcing.wait()
         new_ws, close_new = _closable_websocket()
         new_task = await self._connect(handler, worker_id, new_ws)
-        resume_announce.set()
-        await asyncio.sleep(0)
 
         close_old()
         await old_task
@@ -669,7 +655,7 @@ class TestReconnect:
             proxy_port=0,
             callback_on_disconnect=on_disconnect,
         )
-        handler.broadcast_client_update = AsyncMock()
+        handler._enqueue_client_update = MagicMock()
         worker_id = uuid.uuid4()
 
         old_ws, close_old = _closable_websocket()
@@ -685,7 +671,7 @@ class TestReconnect:
 
         assert handler.get_connection_manager("10.0.0.5") is None
         assert worker_id not in handler.client_registry
-        handler.broadcast_client_update.assert_awaited_with(
+        handler._enqueue_client_update.assert_called_with(
             "remove", worker_id, ["10.0.0.5/32"], []
         )
         assert disconnected == [worker_id]

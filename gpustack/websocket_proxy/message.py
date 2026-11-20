@@ -586,7 +586,14 @@ class ListClientsResponseMessage(BaseMessage):
 class ClientUpdateInfo(BaseClientInfo):
     """Client information in an update message"""
 
-    action: Literal["add", "remove", ""] = ""
+    action: Literal["add", "remove", "force_remove", ""] = ""
+
+    # Wire compatibility: ``force_remove`` (action code 2) is decoded as a
+    # plain ``remove`` by servers on older versions (their parser maps every
+    # code other than 1 to remove). Such a replica only drops its mirrored
+    # registry entry; it does not close the live tunnel or advance the
+    # generation. Forced cross-replica cleanup therefore requires every
+    # server replica in the cluster to run this version.
 
 
 @MessageRegistry.register(BinaryType.CLIENT_UPDATE, TYPE_CLIENT_UPDATE)
@@ -605,7 +612,8 @@ class ClientUpdateMessage(BaseMessage):
         result += struct.pack(">H", len(self.updates))
         for update in self.updates:
             result += update.client_id.bytes
-            result += bytes([1 if update.action == "add" else 0])
+            action_code = {"add": 1, "force_remove": 2}.get(update.action, 0)
+            result += bytes([action_code])
             result += _pack_string_list(update.cidrs)
             result += _pack_string_list(update.unix_sockets)
         return result
@@ -627,7 +635,7 @@ class ClientUpdateMessage(BaseMessage):
             client_id = uuid.UUID(bytes=payload[pos : pos + 16])
             pos += 16
 
-            action = "add" if payload[pos] == 1 else "remove"
+            action = {1: "add", 2: "force_remove"}.get(payload[pos], "remove")
             pos += 1
 
             cidrs, pos = _unpack_string_list(payload, pos)
