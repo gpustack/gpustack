@@ -53,47 +53,47 @@ usually be faster without it.
 
 ### Independent role backends
 
-The deployment's backend, version, image and execution command are defaults for
-all three roles. Each role's **Backend** dropdown initially selects **Inherit
-deployment**, followed by the current backend and version or image. Changes to
-the deployment continue to apply while this option is selected. The deployment command is an engine default; Router command sources are resolved separately below.
+Prefill, Decode and Router can each use a different backend, version and image.
+**Deployment defaults** means the backend settings at the top of the deployment form.
 
-Select a specific backend on Prefill, Decode or Router to configure that role
-independently. Selecting the deployment's current backend copies its current
-launch configuration; selecting a different backend starts with that backend's
-defaults. All three roles offer the same backend list and fields as the deployment:
+**Inherit or configure a role separately**
 
-- Select a backend and version to use its configured runner image. **Auto**
-  selects a version independently of the deployment's version.
-- Select **Custom** to supply an image. P/D roles also require a command.
-  A Router in a built-in PD mode can leave it empty: GPUStack generates the
-  command after P/D is ready. The image tag or digest identifies its version.
-- Built-in backends that support custom images retain their image override
-  option and optional execution command.
+- Keep **Inherit deployment** to follow the deployment's backend, version and image.
+- To configure one role separately, select a backend in that role. Its backend, version, image and command are then a separate set of settings. Later changes to the deployment defaults do not change this set.
 
-For a Router, selecting the deployment's backend copies its image and version but leaves the command empty for the selected backend definition or PD recipe to supply. The deployment's inference command is never copied. Reselecting an already independent backend preserves any Router command you entered.
+For example, Prefill and Decode can keep using vLLM while Router uses a backend you registered for routing.
 
-An independent role keeps its selection when the deployment defaults change,
-including when its values initially match the defaults. Select **Inherit
-deployment** again to clear the role's backend overrides and resume inheritance. Parameters,
-environment, resources and scheduling retain their own existing settings.
+**Which setting takes priority?**
 
-For API clients, a non-null `roles[].backend` selects an independent group of
-`backend`, `backend_version`, `image_name` and `run_command`. Null version means
-Auto, and null image/command uses that backend's generated configuration. Set all
-four fields to null to inherit the deployment defaults. Existing API overrides
-that leave `backend` null continue to inherit unspecified fields individually.
+After selecting a backend for a role, use these rules. In a priority list, the first available value wins.
 
-The selected backend and version supply the Router image. Command priority is: the Router role's explicit command, the selected backend version's command, the backend's default command, then the PD recipe's command. This order applies to every backend, including built-in backends. Overriding only the image retains the recipe command. Custom commands without peer references use manual membership management; peer-dependent templates refresh by restarting the Router. The `custom` PD mode also leaves connector configuration to the operator.
+| Setting | Rule |
+| --- | --- |
+| Version | Use the role's selected version. **Auto** lets that role's backend choose a version; it does not use the deployment's version. |
+| Image | Image entered for the role → image configured for its backend/version → compatible GPUStack runner image. An image you enter is identified by its own tag or digest. |
+| Prefill / Decode command | A command entered for the role takes priority. Otherwise, GPUStack uses the selected inference backend's normal startup behavior. |
 
-Different images and versions must implement compatible connector protocols and
-KV layouts. Built-in PD recipes validate P/D engine compatibility. Router
-selection uses the same backend options without the P/D engine restrictions.
+Select **Custom** to provide an image directly. Prefill and Decode also need an execution command. Router uses the command priority below.
 
-Catalog connection arguments and tunable defaults are shown only when the command comes from the PD recipe.
+**Router command priority**
 
-A router is structurally one replica, so there is no count to set: a second
-would split the prefix cache and give the group two addresses.
+GPUStack checks these sources in order and uses the first available command:
+
+1. The execution command entered for the Router role.
+2. The execution command defined for the version selected on Router.
+3. The default execution command of the backend selected on Router.
+4. The Router command generated by the PD recipe.
+
+Items 2 and 3 come from the backend selected on Router itself. The same order applies to built-in, community and user-registered backends. Changing only the Router image keeps this command priority. If none of these sources provides a command, the deployment cannot be saved.
+
+**Backend parameters and environment variables**
+
+These are configured separately from the backend, version, image and command:
+
+- **Parameters:** a Prefill or Decode role's own list replaces the deployment's list. Router uses its own parameter list and appends it to the Router command. Backend default parameters are filled into the form when selecting a backend; the saved role list determines what is passed at startup.
+- **Environment variables:** a role's own map replaces the deployment's map as a whole. For Prefill and Decode, backend defaults brought into the form become part of the saved role configuration. Router also loads defaults at startup; for the same variable name, priority is: role values (or deployment values when the role has none) → selected backend version → backend defaults → PD recipe defaults, when applicable.
+
+The backends and versions used by Prefill and Decode must meet the selected PD recipe's requirements. Any image you provide must contain the required startup program and support the matching connector protocol.
 
 ### Runtime Router command templates { #runtime-router-command-arguments }
 
