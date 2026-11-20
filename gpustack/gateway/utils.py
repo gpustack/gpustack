@@ -228,13 +228,15 @@ openai_model_prefixes: List[RoutePrefix] = [
         ]
     ),
     RoutePrefix(["/rerank"], additional_versions=["/v2"]),
-    # Synchronous video generation (vLLM-Omni / SGLang diffusion,
+    # Synchronous video generation (vLLM-Omni,
     # multipart in, raw video bytes out). The gateway treats it as an
     # OpenAI-style model route: the request body carries ``model``, so
     # model-name resolution and mapping apply, while ai-proxy passes it
     # through untouched (no ApiName is registered for it upstream, which
     # also means neither the multipart body nor the binary response is
     # ever buffered by the gateway).
+    # Async video endpoints stay on the API server so polling and downloads
+    # use the creating instance instead of being load-balanced independently.
     RoutePrefix(["/videos/sync"]),
     # The Jev/System One decision API (decision-category deployments:
     # vLLM's /v1/systemone or any Jev-compatible server). Same dispatch

@@ -67,6 +67,53 @@ async def test_read_local_path_file_from_workers_reports_all_errors():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("unavailable", [False, True])
+async def test_negative_index_result_requires_every_worker_to_confirm_absence(
+    unavailable,
+):
+    model = make_local_path_model()
+    workers = [SimpleNamespace(name=f"worker-{i}") for i in range(2)]
+
+    async def read(self, worker, path, *, missing_ok=False):
+        assert missing_ok
+        if unavailable and worker.name == "worker-1":
+            raise TimeoutError("worker unavailable")
+        return None
+
+    with patch(
+        "gpustack.client.worker_filesystem_client.WorkerFilesystemClient.read_model_config",
+        new=read,
+    ):
+        if unavailable:
+            with pytest.raises(ValueError, match="Failed to read 'model_index.json'"):
+                await read_local_path_file_from_workers(
+                    model, "model_index.json", workers, missing_ok=True
+                )
+        else:
+            assert (
+                await read_local_path_file_from_workers(
+                    model, "model_index.json", workers, missing_ok=True
+                )
+                is None
+            )
+
+
+@pytest.mark.asyncio
+async def test_empty_metadata_is_a_successful_read():
+    workers = [SimpleNamespace(name="worker")]
+    with patch(
+        "gpustack.client.worker_filesystem_client.WorkerFilesystemClient.read_model_config",
+        new=AsyncMock(return_value={}),
+    ):
+        assert (
+            await read_local_path_file_from_workers(
+                make_local_path_model(), "model_index.json", workers, missing_ok=True
+            )
+            == {}
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "error",
     [

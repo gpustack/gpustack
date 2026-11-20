@@ -47,6 +47,36 @@ def test_jwt_rejects_expired_token():
         manager.decode_jwt_data(token)
 
 
+def test_resource_references_do_not_expire_and_authentication_tokens_do():
+    manager = JWTManager(secret_key=generate_secret_key())
+    payload = {"kind": "video-job-v1", "user_id": 1}
+    resource = manager.create_resource_token(payload)
+    assert "exp" not in manager.decode_jwt_token(resource)
+    assert manager.decode_resource_token(resource) == payload
+
+    expired = manager.create_token(payload, timedelta(seconds=-60))
+    assert manager.decode_resource_token(expired) == payload
+    with pytest.raises(jwt.ExpiredSignatureError):
+        manager.decode_jwt_data(expired)
+
+
+def test_resource_reference_rejects_a_different_signing_key():
+    issuer = JWTManager(secret_key=generate_secret_key())
+    verifier = JWTManager(secret_key=generate_secret_key())
+    token = issuer.create_resource_token({"kind": "video-job-v1"})
+    with pytest.raises(jwt.InvalidSignatureError):
+        verifier.decode_resource_token(token)
+
+
+@pytest.mark.parametrize("algorithm", ["none", "HS384"])
+def test_resource_reference_rejects_an_unconfigured_algorithm(algorithm):
+    manager = JWTManager(secret_key=generate_secret_key() + generate_secret_key())
+    key = "" if algorithm == "none" else manager.secret_key
+    token = jwt.encode({"data": {"kind": "video-job-v1"}}, key, algorithm=algorithm)
+    with pytest.raises(jwt.InvalidAlgorithmError):
+        manager.decode_resource_token(token)
+
+
 def test_jwt_rejects_token_signed_with_another_key():
     issuer = JWTManager(secret_key=generate_secret_key())
     verifier = JWTManager(secret_key=generate_secret_key())

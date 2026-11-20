@@ -376,3 +376,16 @@ class JWTManager:
 
     def decode_jwt_data(self, token: str) -> dict:
         return self.decode_jwt_token(token)["data"]
+
+    def create_resource_token(self, payload: dict) -> str:
+        """Sign a resource reference whose caller rechecks authorization on use."""
+        return jwt.encode({"data": payload}, self.secret_key, algorithm=self.algorithm)
+
+    def decode_resource_token(self, token: str) -> dict:
+        """Verify a resource reference, including references with an expiry claim."""
+        return jwt.decode(
+            token,
+            self.secret_key,
+            algorithms=[self.algorithm],
+            options={"verify_exp": False},
+        )["data"]

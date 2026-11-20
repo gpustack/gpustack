@@ -81,6 +81,7 @@ class CategoryEnum(str, Enum):
     LLM = "llm"
     EMBEDDING = "embedding"
     IMAGE = "image"
+    VIDEO = "video"
     RERANKER = "reranker"
     SPEECH_TO_TEXT = "speech_to_text"
     TEXT_TO_SPEECH = "text_to_speech"
@@ -2649,7 +2650,7 @@ def is_llm_model(model: Model):
 
 def is_omni_model(model: Model) -> bool:
     """
-    Check if the model is an omni model (Image or Audio category).
+    Check if the model is an omni model (image, video, or audio generation).
     Args:
         model: Model to check.
     """
@@ -2661,6 +2662,7 @@ def is_omni_model(model: Model) -> bool:
 
     OMNI_CATEGORIES = (
         CategoryEnum.IMAGE,
+        CategoryEnum.VIDEO,
         CategoryEnum.TEXT_TO_SPEECH,
     )
     return any(cat in model.categories for cat in OMNI_CATEGORIES)
@@ -2673,6 +2675,19 @@ def is_image_model(model: Model):
         model: Model to check.
     """
     return "image" in model.categories
+
+
+def is_video_model(model: Model) -> bool:
+    """Check whether the model generates video."""
+    return CategoryEnum.VIDEO in (model.categories or [])
+
+
+def is_image_or_video_model(model: Model) -> bool:
+    """Check whether the model generates images or video."""
+    return any(
+        category in (model.categories or [])
+        for category in (CategoryEnum.IMAGE, CategoryEnum.VIDEO)
+    )
 
 
 def is_embedding_model(model: Model):

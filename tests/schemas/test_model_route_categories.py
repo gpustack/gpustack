@@ -98,3 +98,9 @@ def test_stored_unknown_category_still_validates_on_the_read_path():
         }
     )
     assert public.categories == ["vqa"]
+
+
+def test_model_and_route_accept_video_category():
+    model = ModelCreate.model_validate(_model_payload(categories=["video"]))
+    route = ModelRouteUpdate(name="video-route", categories=["video"])
+    assert model.categories == route.categories == [CategoryEnum.VIDEO]

@@ -34,14 +34,17 @@ from gpustack.utils.hub import (
     match_hugging_face_files,
     match_model_scope_file_paths,
     get_pretrained_config,
+    get_diffusers_model_index,
     read_repo_file_content,
     sum_weight_file_sizes,
 )
 from gpustack.utils.model_config import safe_pretrained_config_from_dict
 from gpustack.utils import platform
+from gpustack.utils.diffusion import normalize_diffusers_model_index
 
 logger = logging.getLogger(__name__)
 fetch_file_timeout_in_seconds = 15
+_DIFFUSERS_INDEX_TIMEOUT_SECONDS = 10
 
 
 class GPUOffloadEnum(str, Enum):
@@ -783,7 +786,7 @@ async def get_pretrained_config_with_workers(
 
         if model.categories and any(
             cat in model.categories
-            for cat in [CategoryEnum.IMAGE, CategoryEnum.UNKNOWN]
+            for cat in [CategoryEnum.IMAGE, CategoryEnum.VIDEO, CategoryEnum.UNKNOWN]
         ):
             return pretrained_config
 
@@ -833,53 +836,63 @@ def should_fallback_load_config_json(e: Exception, model: Model) -> bool:
     )
 
 
-async def check_diffusers_model_index_from_workers(
-    model: Model,
-    workers: List[Worker],
-) -> bool:
-    """
-    Check if a LOCAL_PATH model is a diffusers model by querying workers.
-
-    This function is specifically for LOCAL_PATH models that are not available
-    locally on the server. It uses the optimized worker query strategy.
-
-    Args:
-        model: Model with source LOCAL_PATH
-        workers: List of workers to query
-
-    Returns:
-        True if model_index.json contains _diffusers_version, False otherwise
-    """
-    if not workers:
-        return False
-
-    # Read model_index.json from workers
+async def get_diffusers_model_index_with_workers(
+    model: Model, workers: Optional[List[Worker]] = None
+) -> Optional[Dict[str, Any]]:
+    """Return confirmed metadata or absence; raise when inspection is unavailable."""
+    if model.source not in (
+        SourceEnum.HUGGING_FACE,
+        SourceEnum.MODEL_SCOPE,
+        SourceEnum.LOCAL_PATH,
+    ):
+        return None
     try:
-        data = await read_local_path_file_from_workers(
-            model, "model_index.json", workers
+        data = await asyncio.wait_for(
+            asyncio.to_thread(
+                get_diffusers_model_index,
+                model,
+                token=get_global_config().huggingface_token,
+            ),
+            timeout=_DIFFUSERS_INDEX_TIMEOUT_SECONDS,
         )
-    except Exception as e:
-        logger.info(f"Failed to read model_index.json from workers: {e}")
-        return False
-
-    if data is None:
-        return False
-
-    # Check for _diffusers_version key
-    if isinstance(data, dict) and "_diffusers_version" in data:
-        return True
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict) and "_diffusers_version" in item:
-                return True
-
-    return False
+        if data is None and model.source == SourceEnum.LOCAL_PATH:
+            cluster_id = getattr(model, "cluster_id", None)
+            workers = [
+                worker
+                for worker in (workers or [])
+                if cluster_id is None or worker.cluster_id == cluster_id
+            ]
+            data = await asyncio.wait_for(
+                read_local_path_file_from_workers(
+                    model, "model_index.json", workers, missing_ok=True
+                ),
+                timeout=_DIFFUSERS_INDEX_TIMEOUT_SECONDS,
+            )
+        return normalize_diffusers_model_index(data)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Timed out inspecting Diffusers metadata for model %s (%s)",
+            getattr(model, "id", None),
+            model.readable_source,
+            exc_info=True,
+        )
+        raise
+    except Exception:
+        logger.warning(
+            "Could not inspect Diffusers metadata for model %s (%s)",
+            getattr(model, "id", None),
+            model.readable_source,
+            exc_info=True,
+        )
+        raise
 
 
 async def read_local_path_file_from_workers(  # noqa: C901
     model: Model,
     file_path: str,
     workers: List[Worker],
+    *,
+    missing_ok: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     Read a file from LOCAL_PATH model by querying workers.
@@ -892,6 +905,7 @@ async def read_local_path_file_from_workers(  # noqa: C901
         model: Model with source LOCAL_PATH
         file_path: Relative path to the file (e.g., "config.json", "model_index.json")
         workers: List of workers to query
+        missing_ok: Return None only when every matching worker confirms absence.
 
     Returns:
         File content as dict if successful
@@ -908,18 +922,26 @@ async def read_local_path_file_from_workers(  # noqa: C901
     fp = os.path.join(model.local_path, file_path)
 
     worker_errors: Dict[str, str] = {}
+    missing_workers = set()
 
     async def try_read_from_worker(worker: Worker) -> Optional[Dict[str, Any]]:
         """Try to read file from a single worker."""
         try:
             async with WorkerFilesystemClient() as filesystem_client:
                 logger.info(f"Trying to read {file_path} from worker {worker.name}")
-                content = await filesystem_client.read_model_config(worker, fp)
-                if content:
+                if missing_ok:
+                    content = await filesystem_client.read_model_config(
+                        worker, fp, missing_ok=True
+                    )
+                else:
+                    content = await filesystem_client.read_model_config(worker, fp)
+                if content or (missing_ok and content is not None):
                     logger.info(
                         f"Successfully read {file_path} from worker {worker.name}"
                     )
                     return content
+                if missing_ok:
+                    missing_workers.add(id(worker))
                 worker_errors[worker.name] = "file not found or empty"
                 return None
         except Exception as e:
@@ -984,7 +1006,7 @@ async def read_local_path_file_from_workers(  # noqa: C901
     try:
         for completed_task in asyncio.as_completed(tasks):
             result = await completed_task
-            if result:
+            if result or (missing_ok and result is not None):
                 return result
     finally:
         pending = [t for t in tasks if not t.done()]
@@ -992,6 +1014,9 @@ async def read_local_path_file_from_workers(  # noqa: C901
             t.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+
+    if missing_ok and len(missing_workers) == len(filtered_workers):
+        return None
 
     error_items = list(worker_errors.items())
     shown_errors = ";\n".join(f"{name}: {err}" for name, err in error_items[:3])

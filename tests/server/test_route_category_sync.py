@@ -345,3 +345,22 @@ async def test_a_soft_deleted_route_is_not_resurrected(db):
     await sync_categories_and_meta(db, model, _updated(model))
 
     assert (await ModelRoute.one_by_id(db, 1)).categories == []
+
+
+@pytest.mark.asyncio
+async def test_video_category_updates_only_automatically_created_route(db):
+    await db.seed(
+        _model(categories=["video"]),
+        _route(categories=["image"]),
+        _route(id=2, name="manual", created_model_id=None, categories=["image"]),
+        _target(),
+        _target(id=2, route_id=2),
+    )
+    model = await _as_reconcile_does(db, 1)
+    with patch(
+        "gpustack.server.controllers.ModelRouteService.update", new_callable=AsyncMock
+    ) as update:
+        await sync_categories_and_meta(db, model, _updated(model))
+    update.assert_awaited_once()
+    assert update.call_args.kwargs["model_route"].id == 1
+    assert update.call_args.kwargs["source"]["categories"] == ["video"]

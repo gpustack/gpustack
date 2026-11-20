@@ -3295,6 +3295,42 @@ model_sets:
       backend_version: *vllm_omni_ascend_stable_version
     - <<: *z_image_turbo_base_spec
       backend_version: *vllm_omni_stable_version
+- name: MiniMax-H3
+  description: MiniMax H3 generates video with synchronized audio from text, keyframes, or multimodal references. The playground currently supports text-to-video generation.
+  home: https://github.com/MiniMax-AI/MiniMax-H3
+  icon: /static/catalog_icons/minimax.png
+  categories:
+    - video
+  licenses:
+    - minimax-h3-community-license-agreement
+  specs:
+    - mode: standard
+      source: model_scope
+      model_scope_model_id: MiniMax/MiniMax-H3
+      backend: vLLM
+      backend_version: "0.33.0"
+      gpu_filters:
+        vendor: nvidia
+      backend_parameters:
+        - --omni
+        - --trust-remote-code
+        - --task-type=fl2va
+        - --enforce-eager
+      meta:
+        video:
+          family: minimax_h3
+    - mode: standard
+      source: model_scope
+      model_scope_model_id: MiniMax/MiniMax-H3
+      backend: SGLang
+      backend_version: "0.5.23"
+      gpu_filters:
+        vendor: nvidia
+      backend_parameters:
+        - --model-variant=fl2va
+      meta:
+        video:
+          family: minimax_h3
 - name: GLM-Image
   description: GLM-Image is Zhipu AI's text-to-image diffusion model built on the GlmImagePipeline architecture.
   home: https://z.ai
