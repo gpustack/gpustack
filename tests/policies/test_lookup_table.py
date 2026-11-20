@@ -1221,9 +1221,6 @@ async def test_manual_vram_overcommit_preserved_with_insufficient_table_ram(
         ),
     ):
         candidates = await selector.select_candidates([worker])
-    if replicas > 1:
-        assert candidates == []
-        return
     assert len(candidates) == 1
     assert candidates[0].overcommit
     assert candidates[0].computed_resource_claim.ram == TABLE_RAM
@@ -1266,9 +1263,6 @@ async def test_manual_ram_overcommit_without_offloaded_tables(
         ),
     ):
         candidates = await selector.select_candidates([worker])
-    if replicas > 1:
-        assert candidates == []
-        return
     assert len(candidates) == 1
     assert candidates[0].overcommit
     assert candidates[0].computed_resource_claim.ram == 2 * GIB
@@ -1307,9 +1301,6 @@ async def test_manual_selection_does_not_redistribute_gpus_for_ram(config, repli
         patch("gpustack.policies.utils.get_model_weight_size", return_value=40 * GIB),
     ):
         candidates = await selector.select_candidates(workers)
-    if replicas > 1:
-        assert candidates == []
-        return
     assert len(candidates) == 1
     candidate = candidates[0]
     assert candidate.overcommit
@@ -1473,10 +1464,6 @@ async def test_manual_selection_leaves_topology_validation_to_backend(
         patch("gpustack.policies.utils.get_model_weight_size", return_value=40 * GIB),
     ):
         candidates = await selector.select_candidates(workers)
-    if replicas > 1 and selected_counts == (4, 4):
-        # Multi-replica manual scheduling still requires resources to fit.
-        assert candidates == []
-        return
     assert len(candidates) == 1
     candidate = candidates[0]
     assert candidate.overcommit == (selected_counts == (4, 4))
@@ -1577,9 +1564,6 @@ async def test_manual_single_worker_keeps_gpu_subset(config, reverse_order, repl
         patch("gpustack.policies.utils.get_model_weight_size", return_value=40 * GIB),
     ):
         candidates = await selector.select_candidates([worker])
-    if replicas > 1 and not reverse_order:
-        assert candidates == []
-        return
     assert len(candidates) == 1
     candidate = candidates[0]
     assert candidate.overcommit == (not reverse_order)
@@ -1661,9 +1645,6 @@ async def test_manual_multi_worker_uses_one_greedy_allocation(
     ):
         candidates = await selector.select_candidates(workers)
     assert select_multi.call_count == 1
-    if replicas > 1 and scenario != "invalid_topology":
-        assert candidates == []
-        return
     assert len(candidates) == 1
     candidate = candidates[0]
     assert bool(candidate.overcommit) == (scenario != "invalid_topology")
@@ -2038,9 +2019,6 @@ async def test_manual_lookup_ram_assumes_dp_sharing_across_layouts(
     ):
         candidates = await selector.select_candidates(workers)
     overcommit = max(copies) * TABLE_RAM > ram * GIB
-    if replicas > 1 and overcommit:
-        assert candidates == []
-        return
     assert len(candidates) == 1
     candidate = candidates[0]
     assert bool(candidate.overcommit) == overcommit
