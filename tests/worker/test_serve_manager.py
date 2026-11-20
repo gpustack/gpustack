@@ -238,6 +238,116 @@ def test_subordinate_health_check_waits_for_start(state, mode):
         update.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    "policy,code,failed",
+    [
+        ("Never", 1, True),
+        ("Never", 0, False),
+        ("Always", 1, False),
+        ("OnFailure", 1, False),
+    ],
+)
+@pytest.mark.parametrize(
+    "state", [WorkloadStatusStateEnum.PENDING, WorkloadStatusStateEnum.INITIALIZING]
+)
+def test_terminal_container_with_live_sidecar(policy, code, failed, state):
+    from kubernetes import client
+
+    manager, clientset = _build_serve_manager()
+    mi = new_model_instance(
+        1, "distributed", 1, worker_id=1, state=ModelInstanceStateEnum.STARTING
+    )
+    clientset.model_instances.list.return_value = SimpleNamespace(items=[mi])
+    pod = client.V1Pod(
+        spec=client.V1PodSpec(containers=[], restart_policy=policy),
+        status=client.V1PodStatus(
+            phase="Running",
+            container_statuses=[
+                client.V1ContainerStatus(
+                    name="default",
+                    image="runner",
+                    image_id="runner",
+                    ready=False,
+                    restart_count=0,
+                    state=client.V1ContainerState(
+                        terminated=client.V1ContainerStateTerminated(exit_code=code)
+                    ),
+                ),
+                client.V1ContainerStatus(
+                    name="ray-head",
+                    image="runner",
+                    image_id="runner",
+                    ready=True,
+                    restart_count=0,
+                    state=client.V1ContainerState(
+                        running=client.V1ContainerStateRunning()
+                    ),
+                ),
+            ],
+        ),
+    )
+    workload = SimpleNamespace(
+        state=state,
+        _k_pod=pod,
+        exits=[],
+        message="engine exited",
+    )
+    with (
+        patch("gpustack.worker.serve_manager.get_workload", return_value=workload),
+        patch.object(manager, "_is_provisioning", return_value=False),
+        patch.object(manager, "_mark_crash_loop", return_value=False),
+        patch.object(manager, "_append_log_diagnosis", side_effect=lambda mi, msg: msg),
+        patch.object(manager, "_report_model_instance") as report,
+    ):
+        manager.sync_model_instances_state()
+    if failed:
+        assert report.call_args.kwargs["state"] == ModelInstanceStateEnum.ERROR
+    else:
+        report.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        None,
+        SimpleNamespace(),
+        SimpleNamespace(_k_pod=None),
+        SimpleNamespace(_k_pod=SimpleNamespace(spec=None, status=None)),
+        SimpleNamespace(
+            _k_pod=SimpleNamespace(
+                spec=SimpleNamespace(restart_policy="Never"), status=None
+            )
+        ),
+    ],
+)
+def test_terminal_container_ignores_incomplete_snapshots(snapshot):
+    from gpustack.worker.serve_manager import _has_terminal_run_container
+
+    assert not _has_terminal_run_container(snapshot)
+
+
+@pytest.mark.parametrize("code", [None, 0, 1])
+@pytest.mark.parametrize("location", ["current", "last", "init"])
+def test_terminal_container_uses_only_known_current_regular_exit(code, location):
+    from gpustack.worker.serve_manager import _has_terminal_run_container
+
+    terminated = SimpleNamespace(terminated=SimpleNamespace(exit_code=code))
+    status = SimpleNamespace(
+        state=terminated if location != "last" else None,
+        last_state=terminated if location == "last" else None,
+    )
+    pod = SimpleNamespace(
+        spec=SimpleNamespace(restart_policy="Never"),
+        status=SimpleNamespace(
+            container_statuses=[status] if location != "init" else [],
+            init_container_statuses=[status] if location == "init" else [],
+        ),
+    )
+    assert bool(_has_terminal_run_container(SimpleNamespace(_k_pod=pod))) == (
+        location == "current" and code == 1
+    )
+
+
 def test_sync_model_instances_state_marks_main_unreachable_when_subordinate_unreachable():
     manager, clientset = _build_serve_manager()
 
