@@ -394,6 +394,36 @@ class TestCPUWorkerDisabled:
         # message alone.
         assert "nvidia" in error
 
+    def test_an_unset_value_keeps_the_cpu_daemonset(self):
+        # Helm drops a key set to null, and plain truthiness would read that
+        # `nil` as false — deleting the CPU workers from a cluster that only
+        # meant to leave the key out.
+        docs = render("--set", "worker.enabled=true", "--set", "worker.cpuEnabled=null")
+        assert "gpustack-worker" in names(docs, "DaemonSet")
+
+    @pytest.mark.parametrize("written", ["false", "False", "FALSE"])
+    def test_a_string_false_turns_it_off_like_a_bool(self, written):
+        # `--set-string` (and a values file quoting the value) would otherwise
+        # be a non-empty string, i.e. read as "on" — the opposite of what it
+        # says. YAML reads an unquoted `False` as the bool, so only the quoted
+        # spellings reach the template with their case intact.
+        docs = render(
+            "--set",
+            "worker.enabled=true",
+            "--set-string",
+            f"worker.cpuEnabled={written}",
+        )
+        assert "gpustack-worker" not in names(docs, "DaemonSet")
+
+    def test_a_server_only_release_is_unaffected(self):
+        # The guard is about workers; a control plane that renders none of them
+        # must not be refused for switching this off.
+        render("--set", "worker.cpuEnabled=false")
+
+
+class TestWorkerGPUVendorsValidation:
+    """`worker.gpuVendors` names must be canonical vendors; a typo fails the render."""
+
     def test_every_listed_vendor_valid_renders_one_daemonset_each(self):
         docs = render(
             "--set",
@@ -423,32 +453,6 @@ class TestCPUWorkerDisabled:
 
     def test_ignores_gpu_vendors_when_the_worker_is_off(self):
         render("--set", "worker.gpuVendors={bogus}")
-
-    def test_an_unset_value_keeps_the_cpu_daemonset(self):
-        # Helm drops a key set to null, and plain truthiness would read that
-        # `nil` as false — deleting the CPU workers from a cluster that only
-        # meant to leave the key out.
-        docs = render("--set", "worker.enabled=true", "--set", "worker.cpuEnabled=null")
-        assert "gpustack-worker" in names(docs, "DaemonSet")
-
-    @pytest.mark.parametrize("written", ["false", "False", "FALSE"])
-    def test_a_string_false_turns_it_off_like_a_bool(self, written):
-        # `--set-string` (and a values file quoting the value) would otherwise
-        # be a non-empty string, i.e. read as "on" — the opposite of what it
-        # says. YAML reads an unquoted `False` as the bool, so only the quoted
-        # spellings reach the template with their case intact.
-        docs = render(
-            "--set",
-            "worker.enabled=true",
-            "--set-string",
-            f"worker.cpuEnabled={written}",
-        )
-        assert "gpustack-worker" not in names(docs, "DaemonSet")
-
-    def test_a_server_only_release_is_unaffected(self):
-        # The guard is about workers; a control plane that renders none of them
-        # must not be refused for switching this off.
-        render("--set", "worker.cpuEnabled=false")
 
 
 class TestWorkerOnly:
