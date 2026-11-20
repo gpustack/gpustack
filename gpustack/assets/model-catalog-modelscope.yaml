@@ -1818,6 +1818,86 @@ model_sets:
     - mit
   release_date: "2026-04-23"
   specs:
+    # BW1100, single-node TP=4 x DP=2 (8 devices), DSPark, channel FP8 W8A8.
+    # Preload the image archive on each eligible worker, then tag the loaded
+    # dsv4:bw1100 image as localhost/yk/dsv4:bw1100.
+    # Archive: https://modelscope.cn/models/sugonlyt/image_to/resolve/master/bw1100-dsv4-fp8.tar.gz
+    # Archive SHA256: 2e55abd2d18b049026e9bf3d490f3c6f33907e798b2caf60cca6f4f5d7365a28
+    - mode: Hygon-BW1100-TP4-DP2
+      source: model_scope
+      backend: SGLang
+      image_name: localhost/yk/dsv4:bw1100
+      backend_parameters:
+      - --reasoning-parser=deepseek-v4
+      - --tool-call-parser=deepseekv4
+      - --tp-size=4
+      - --dist-timeout=10000
+      - --watchdog-timeout=3600
+      - --model-loader-extra-config={"enable_multithread_load":true,"num_threads":64}
+      - --trust-remote-code
+      - --chunked-prefill-size=32768
+      - --disable-flashinfer-autotune
+      - --skip-server-warmup
+      - --cuda-graph-max-bs-decode=128
+      - --mem-fraction-static=0.8
+      - --speculative-algorithm=DSPARK
+      - --speculative-num-steps=1
+      - --speculative-eagle-topk=1
+      - --max-running-requests=256
+      - --context-length=139264
+      - --enable-metrics
+      - --moe-a2a-backend=none
+      - --dp=2
+      env:
+        NCCL_MIN_NCHANNELS: '16'
+        NCCL_MAX_NCHANNELS: '16'
+        SGLANG_TORCH_PROFILER_DIR: /home/proj_dpsk-v4/profile
+        SGLANG_OPT_USE_FUSED_STORE_CACHE: 'false'
+        SGLANG_OPT_USE_FUSED_HASH_TOPK: 'true'
+        SGLANG_OPT_SWIGLU_CLAMP_FUSION: 'false'
+        SGLANG_TOPK_TRANSFORM_512_TORCH: 'false'
+        SGLANG_OPT_USE_JIT_KERNEL_FUSED_TOPK: 'true'
+        SGLANG_JIT_DEEPGEMM_PRECOMPILE: '0'
+        SGLANG_USE_AITER_AG: '0'
+        ROCSHMEM_DISABLE_HDP_FLUSH: '1'
+        ROCSHMEM_GDA_NUM_QPS_DEFAULT_CTX: '288'
+        ROCSHMEM_HEAP_SIZE: '3173741824'
+        SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: '128'
+        SGLANG_ROCM_USE_AITER_MOE: '1'
+        SGLANG_USE_OPT_CAT: '1'
+        SGLANG_USE_FUSED_MLA_CAT: '1'
+        SGLANG_USE_LIGHTOP_GROUP_FP8_QUANT: '1'
+        SGLANG_USE_FUSED_DPSKV4_SILU_MUL_FP8_QUANT: '1'
+        SGLANG_USE_LINEAR_BF16_FP32_USE_BLASLT: '1'
+        SGLANG_APPLY_CONFIG_BACKUP: none
+        SGLANG_ROCM_USE_AITER_TILELANG_MHC: '1'
+        SGLANG_DSV4_SPLIT_PREFILL_DECODE_MLA: '1'
+        SGLANG_OPT_FLASHMLA_SPARSE_PREFILL: '0'
+        SGLANG_USE_LIGHTOP: '1'
+        SGLANG_USE_DPSKV4_LIGHTOP_QUANT_K_CACHE: '1'
+        SGLANG_USE_DPSKV4_LIGHTOP_RMSNORM: '1'
+        SGLANG_USE_FUSED_DPSKV4_QNORM_ROPE_KV_ROPE_QUANT: '1'
+        SGLANG_USE_LIGHTOP_EP_MOE_ALIGN: '1'
+        SGLANG_USE_LIGHTOP_EP_SCATTER: '1'
+        SGLANG_USE_LIGHTOP_EP_GATHER: '1'
+        SGLANG_USE_LIGHTOP_TOPK_IDS_POSTPROCESS: '1'
+        SGLANG_OPT_FP8_WO_A_GEMM: '0'
+        SGLANG_RAGGED_VERIFY_MODE: compact
+        SGLANG_DSPARK_CONFIDENCE_RELAY_LAG_STEPS: '2'
+        SGLANG_DSPARK_OPT_MARKOV_W2_TP_SHARD: '1'
+        SGLANG_DSPARK_ENABLE_MULTI_STREAM: '1'
+        SGLANG_DSPARK_FAST_KERNEL: '1'
+        SGLANG_DSPARK_FAST_SAMPLING: '1'
+        SGLANG_ROCM_USE_AITER_MOE_WITH_SHUFFLE: '0'
+        SGLANG_HCU_SMALL_M_FP32_GEMM: '1'
+        SGLANG_HCU_ASYNC_SEQ_LENS: '1'
+      distributed_inference_across_workers: false
+      gpu_filters:
+        vendor: hygon
+      model_scope_model_id: hygon/DeepSeek-V4-Flash-0731-Channel-FP8-w8a8
+      quantization: FP8
+      gpu_selector:
+        gpus_per_replica: 8
     # SGLang throughput (FP8 weights + FP8 attention) with EAGLE MTP.
     # Uses the SGLang-provided FP8 checkpoint: the native FP4 weights hit
     # an "Hidden size mismatch" assert in the fused MoE kernel
