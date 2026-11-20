@@ -12,6 +12,31 @@ if "TRANSFORMERS_NO_ADVISORY_WARNINGS" not in os.environ:
 
 TRACE_LEVEL = 5
 
+KUBERNETES_REST_LOGGER_NAME = "kubernetes.client.rest"
+
+
+class WireDumpTraceFilter(logging.Filter):
+    """Gate sync Kubernetes client wire dumps behind the TRACE level.
+
+    The sync Kubernetes client logs full request and response bodies at DEBUG
+    for every API call. During worker workload state sync this floods --debug
+    output with multi-kilobyte pod list dumps, so DEBUG records from this
+    logger are dropped unless the root logger is at TRACE, and are relabeled
+    from DEBUG to TRACE when it is. Non-DEBUG records pass unchanged.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.DEBUG:
+            return True
+        if not logging.getLogger().isEnabledFor(TRACE_LEVEL):
+            return False
+        record.levelno = TRACE_LEVEL
+        record.levelname = logging.getLevelName(TRACE_LEVEL)
+        return True
+
+
+_wire_dump_trace_filter = WireDumpTraceFilter()
+
 
 def setup_logging(debug: bool = False):
     level = logging.DEBUG if debug else logging.INFO
@@ -61,6 +86,14 @@ def setup_logging(debug: bool = False):
     for logger_name in disable_logger_names:
         logger = logging.getLogger(logger_name)
         logger.disabled = True
+
+    # The async Kubernetes client logger above is disabled entirely, while the
+    # sync one must keep non-DEBUG records visible, so its wire dumps are
+    # gated by a filter instead. setup_logging runs multiple times per
+    # process, so the filter is attached only once.
+    kubernetes_rest_logger = logging.getLogger(KUBERNETES_REST_LOGGER_NAME)
+    if _wire_dump_trace_filter not in kubernetes_rest_logger.filters:
+        kubernetes_rest_logger.addFilter(_wire_dump_trace_filter)
 
     # Third-party loggers to print on debug
     debug_logger_names = [
