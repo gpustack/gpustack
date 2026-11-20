@@ -254,6 +254,38 @@ TLS バージョンの設定は `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` で
 | `GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD` | インスタンスを異常と判定するまでの推論ヘルスチェックの連続失敗回数。 | `3`     | モデル |
 | `GPUSTACK_ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY`        | CUDA のマイナーバージョンが低いデバイスで、より高いマイナーバージョンのイメージを実行できるようにします。ワーカー全体またはモデルごとに設定でき、モデル側が優先されます。 | `false` | ワーカーとモデル |
 
+#### モデルをロードしないワークロード { #non-model-workloads }
+
+Dynamo frontend など、モデルの重みをロードしない独立したサービスでは、
+デプロイメントの環境変数に `GPUSTACK_NON_MODEL_WORKLOAD=true` を設定します。
+
+```yaml
+env:
+  GPUSTACK_NON_MODEL_WORKLOAD: "true"
+  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Optional: 4 GiB
+```
+
+このモードはモデルアーキテクチャと重みに基づくリソース評価をスキップし、CPU 候補のみを
+選択して、コンテナに CPU とメモリのリソースのみを宣言します。GPUStack は GPU を
+割り当てず、VRAM も予約しません。既定値は 2 CPU と
+2 GiB RAM です。`GPUSTACK_MODEL_RAM_CLAIM` はスケジューリングとコンテナ作成の両方で
+使用する RAM を上書きします。CPU はコンテナのリソース要求であり、GPUStack の
+スケジューラーの容量判定には含まれません。ファイルの確認、ダウンロード、マウントは
+引き続き適用されるため、tokenizer ファイルを利用できます。
+
+既定は無効です。`true`、`1`、`yes`、`on` を大文字小文字を区別せず受け付けます。
+GPUStack server/worker プロセスではなく、デプロイメントに設定してください。
+バックエンドバージョンのフレームワークとは独立しており、通常の CPU モデル推論は
+変更しません。カスタムバックエンドバージョン、またはイメージとコマンドを明示する
+**Custom** バックエンドに対応します。手動の `gpu_selector.gpu_ids`、
+`gpu_type_selector`、ネイティブの複数ロール/PD デプロイメントとの併用は拒否されます。
+これらを使用する場合は、このフラグを無効にしてください。
+
+コンテナの権限と環境変数は Custom バックエンドの通常の処理に従います。
+CPU で実行するようにイメージとアプリケーションを設定してください。コンテナは引き続き
+GPU デバイスにアクセスできる場合があり、Docker のミラーデプロイメントでは worker の
+デバイス要求を継承する場合もあります。
+
 #### 使用例 { #usage-example }
 
 モデルのデプロイ時に **Advanced Options > Environment Variables** に移動し、次を追加します。

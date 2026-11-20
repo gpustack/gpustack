@@ -236,6 +236,39 @@ Bu ağırlıklar ve pencereler, önceden doldurma-kod çözme ayrıştırılmı�
 | `GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD` | Örneği sağlıksız olarak işaretlemeden önce ardışık çıkarım durumu kontrolü başarısızlıklarının sayısı. | `3`     | Modeli |
 | `GPUSTACK_ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY`        | Daha düşük CUDA alt sürümüne sahip cihazların daha yüksek alt sürüm kullanan imajları çalıştırmasına izin verir. Worker genelinde veya model başına ayarlanır; model ayarı önceliklidir. | `false` | İşçi ve Model |
 
+#### Model Yüklemeyen İş Yükleri { #non-model-workloads }
+
+Dynamo frontend gibi model ağırlıklarını yüklemeyen bağımsız bir servis için
+dağıtımın ortam değişkenlerinde `GPUSTACK_NON_MODEL_WORKLOAD=true` ayarlayın:
+
+```yaml
+env:
+  GPUSTACK_NON_MODEL_WORKLOAD: "true"
+  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Optional: 4 GiB
+```
+
+Bu mod, model mimarisi ve ağırlıklara dayalı kaynak değerlendirmesini atlar,
+yalnızca CPU adaylarını seçer ve konteyner için yalnızca CPU ve bellek kaynaklarını
+bildirir. GPUStack GPU tahsis etmez ve VRAM ayırmaz. Varsayılan değerler 2 CPU ve
+2 GiB RAM'dir. `GPUSTACK_MODEL_RAM_CLAIM`,
+hem zamanlama hem de konteyner oluşturma için kullanılan RAM değerini geçersiz
+kılar. CPU, konteyner kaynak isteğidir; GPUStack zamanlayıcısının kapasite hesabına
+katılmaz. Dosya kaynağı kontrolleri, indirme ve bağlamalar devam eder; böylece
+servis tokenizer dosyalarını kullanabilir.
+
+Bayrak varsayılan olarak kapalıdır; büyük/küçük harfe duyarsız `true`, `1`, `yes`
+ve `on` değerlerini kabul eder. GPUStack server/worker sürecinde değil, dağıtımda
+ayarlayın. Arka uç sürümünün çerçevesinden bağımsızdır ve normal CPU model çıkarımını
+değiştirmez. Özel arka uç sürümleri veya açıkça imaj ve komut belirtilen **Custom**
+arka ucu desteklenir. Manuel `gpu_selector.gpu_ids`, `gpu_type_selector` ve yerel
+çok rollü/PD dağıtımlarıyla birlikte kullanım reddedilir. Bu ayarlar için bayrağı
+kapatın.
+
+Konteyner ayrıcalıkları ve ortam değişkenleri, Custom arka ucunun normal işleyişine
+uyar. İmajı ve uygulamayı CPU üzerinde çalışacak şekilde yapılandırın. Konteynerler
+GPU cihazlarına erişmeye devam edebilir; Docker yansıtmalı dağıtımları worker'ın
+cihaz isteklerini de devralabilir.
+
 #### Kullanım Örneği { #usage-example }
 
 Bir modeli dağıtırken **Gelişmiş Seçenekler > Ortam Değişkenleri** seçeneğine gidin ve şunu ekleyin:

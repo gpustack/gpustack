@@ -250,6 +250,38 @@ These weights and windows apply to deployments that declare roles — a prefill-
 | `GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD` | Number of consecutive inference health check failures before marking the instance as unhealthy.                                                                                                                                                                                                                             | `3`     | Model          |
 | `GPUSTACK_ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY`        | Allow lower-minor CUDA devices to run higher-minor images. Set globally on the worker or per model; per-model takes precedence.                                                                                                                                                                                             | `false` | Worker & Model |
 
+#### Non-model Workloads
+
+Set `GPUSTACK_NON_MODEL_WORKLOAD=true` in the deployment's environment for a
+standalone service that does not load model weights, such as a Dynamo frontend:
+
+```yaml
+env:
+  GPUSTACK_NON_MODEL_WORKLOAD: "true"
+  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Optional: 4 GiB
+```
+
+This mode skips model architecture and weight-based resource evaluation, selects
+only CPU candidates, and declares only CPU and memory resources for the container.
+GPUStack assigns no GPU and reserves no VRAM. It defaults to 2 CPU and 2 GiB RAM;
+`GPUSTACK_MODEL_RAM_CLAIM` overrides the RAM used by both scheduling and container
+creation. CPU is a container
+request, not a capacity dimension in GPUStack's scheduler. Source file checks,
+downloads, and mounts still apply, so the service can use tokenizer files.
+
+The flag defaults to false and accepts `true`, `1`, `yes`, or `on`
+(case-insensitive). Configure it on the deployment, not the GPUStack server or
+worker process. It is independent of the backend version's framework and does
+not change ordinary CPU model inference. Supported deployments use a custom
+backend version or the **Custom** backend with an explicit image and command.
+Manual `gpu_selector.gpu_ids`, `gpu_type_selector`, and native multi-role/PD
+deployments are rejected. Disable the flag to use those settings.
+
+Container privileges and environment variables follow the Custom backend's normal
+behavior. Configure the image and application for CPU execution. Containers may
+still access GPU devices; Docker mirrored deployments can also inherit the
+worker's device requests.
+
 #### Usage Example
 
 When deploying a model, navigate to **Advanced Options > Environment Variables** and add:
