@@ -3190,7 +3190,10 @@ def test_error_state_surfaces_workload_state_message():
     update_model_instance.assert_called_once_with(
         model_instance.id,
         state=ModelInstanceStateEnum.ERROR,
-        state_message="Allocate failed due to no enough sliced units",
+        state_message=(
+            "Inference server exited or unhealthy. "
+            "Allocate failed due to no enough sliced units"
+        ),
     )
 
 
@@ -3261,7 +3264,7 @@ def test_error_state_surfaces_the_container_exit_code():
     update_model_instance.assert_called_once_with(
         model_instance.id,
         state=ModelInstanceStateEnum.ERROR,
-        state_message="Error (exit code 7)",
+        state_message="Inference server exited or unhealthy. Error (exit code 7)",
     )
 
 
