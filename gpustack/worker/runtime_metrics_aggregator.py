@@ -24,6 +24,7 @@ from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
     model_instance_metrics_sources,
 )
+from gpustack.utils.network import join_host_port
 from gpustack.worker.runtime_metrics_client import (
     Config as RunTimeMetricsClientConfig,
 )
@@ -263,7 +264,7 @@ class RuntimeMetricsAggregator:
                 versions[mi.id] = self._runtime_version_cache[key]
             else:
                 versions[mi.id] = mi.backend_version
-                api = f"{context.host}:{source.api_port}"
+                api = join_host_port(context.host, source.api_port)
                 pending.setdefault(mi.backend, {})[api] = (mi, key)
         # Probe each runtime concurrently within one shared batch deadline.
         probes = {api: runtime for runtime, items in pending.items() for api in items}
@@ -306,8 +307,8 @@ class RuntimeMetricsAggregator:
         if model_instance.role == "router":
             return model_instance.backend_version
 
-        api_endpoint = api_endpoint or (
-            f"{model_instance.worker_ip}:{_api_port(model_instance)}"
+        api_endpoint = api_endpoint or join_host_port(
+            model_instance.worker_ip, _api_port(model_instance)
         )
         if api_endpoint != endpoint:
             # Version APIs belong to the API listener, which can use a different
@@ -360,7 +361,7 @@ class RuntimeMetricsAggregator:
             for source in model_instance_metrics_sources(mi):
                 if source.worker_id != worker_id:
                     continue
-                endpoint = f"{self._worker.ip}:{source.metrics_port}"
+                endpoint = join_host_port(self._worker.ip, source.metrics_port)
                 if endpoint in conflicting:
                     continue
                 context = _RuntimeMetricsEndpoint(

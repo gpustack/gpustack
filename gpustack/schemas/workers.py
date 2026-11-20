@@ -26,7 +26,7 @@ from gpustack.schemas.common import (
 from typing import List
 from sqlalchemy.orm import declarative_base
 
-from gpustack.utils.network import is_offline
+from gpustack.utils.network import is_offline, join_host_port
 from .clusters import ClusterProvider, Cluster, WorkerPool
 
 if TYPE_CHECKING:
@@ -467,7 +467,7 @@ class WorkerBase(WorkerCreate):
 
         if self.unreachable:
             address = self.get_dial_address()
-            healthz_url = f"http://{address}:{self.port}/healthz"
+            healthz_url = f"http://{join_host_port(address, self.port)}/healthz"
             msg = (
                 "Server cannot access the "
                 f"worker's health check endpoint at {healthz_url}. "

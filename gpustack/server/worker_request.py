@@ -16,7 +16,7 @@ from typing import (
 import aiohttp
 
 from gpustack.schemas.workers import Worker
-from gpustack.utils.network import use_proxy_env_for_url
+from gpustack.utils.network import join_host_port, use_proxy_env_for_url
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ def _build_url(worker: Worker, path: str) -> str:
         if worker.advertise_address and not worker.get_proxy_address()
         else worker.ip
     )
-    return f"http://{hostname}:{worker.port}/{path.lstrip('/')}"
+    return f"http://{join_host_port(hostname, worker.port)}/{path.lstrip('/')}"
 
 
 def _convert_params(params: Optional[Dict]) -> Optional[Dict]:

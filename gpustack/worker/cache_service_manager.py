@@ -335,12 +335,14 @@ class CacheServiceManager:
             # configuration did not ask for resolves empty, so a flag
             # carrying it drops with its value. The .url form is what a
             # peer on another node would dial.
+            from gpustack.utils.network import join_host_port
+
             worker_ip = self._worker_ip_getter()
             for name in provider.declared_port_names(component):
                 value = ports.get(name)
                 params[f"ports.{name}"] = value
                 params[f"ports.{name}.url"] = (
-                    f"{worker_ip}:{value}" if value and worker_ip else None
+                    join_host_port(worker_ip, value) if value and worker_ip else None
                 )
             # The worker's own IP: a store advertises it to peers (the
             # P2P handshake publishes it as local_hostname), where the

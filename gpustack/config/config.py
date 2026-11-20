@@ -59,6 +59,9 @@ from gpustack.ssl_context import make_ssl_context
 from gpustack.utils.certificates import read_server_ca_bundle
 from gpustack.utils.network import (
     get_first_non_loopback_ip,
+    join_host_port,
+    loopback_host,
+    resolve_bind_host,
     use_proxy_env_for_url,
 )
 from gpustack.utils.file import (
@@ -229,7 +232,7 @@ class Config(WorkerConfig, BaseSettings):
     """
 
     # Server options
-    # Deprecated, as we using docker image to run the server, host is not used.
+    # Optional bind address override for server/worker listeners; defaults to dual-stack wildcard when unset.
     host: Optional[str] = None
     # The port and tls_port are used in gateway configuration.
     port: Optional[int] = 80
@@ -1019,12 +1022,14 @@ class Config(WorkerConfig, BaseSettings):
         if self.gateway_plugin_server_url is None:
             # for embedded gateway model, higress will fetch plugins from gpustack server
             # for disabled gateway model, gateway_plugin_server_url is not used, so it doesn't matter if it's set or not.
-            address = "127.0.0.1"
+            address = loopback_host()
             if self.gateway_mode == GatewayModeEnum.incluster:
                 address = get_first_non_loopback_ip()
             elif self.gateway_mode == GatewayModeEnum.external:
                 address = self.get_advertise_address()
-            self.gateway_plugin_server_url = f"http://{address}:{self.get_api_port()}"
+            self.gateway_plugin_server_url = (
+                f"http://{join_host_port(address, self.get_api_port())}"
+            )
         else:
             if self.gateway_mode == GatewayModeEnum.embedded:
                 raise Exception(
@@ -1134,11 +1139,12 @@ class Config(WorkerConfig, BaseSettings):
 
     def get_server_url(self) -> str:
         # returns server if not None else returns embedded server url
-        return (
-            self.server_url or f"http://127.0.0.1:{self.api_port}"
-            if self.api_port
-            else "http://127.0.0.1"
-        )
+        if self.server_url:
+            return self.server_url
+        loopback = loopback_host()
+        if self.api_port:
+            return f"http://{join_host_port(loopback, self.api_port)}"
+        return f"http://{join_host_port(loopback, 80)}"
 
     def get_api_port(self, embedded_worker: bool = False) -> int:
         if embedded_worker:
@@ -1196,11 +1202,16 @@ class Config(WorkerConfig, BaseSettings):
     def get_proxy_port(self) -> int:
         return self.proxy_port
 
-    def get_proxy_listen_address(self, default: str = "0.0.0.0") -> str:
-        return "127.0.0.1" if self.gateway_mode == GatewayModeEnum.embedded else default
+    def get_proxy_listen_address(self, default: Optional[str] = None) -> Optional[str]:
+        if self.gateway_mode == GatewayModeEnum.embedded:
+            return loopback_host()
+        if default is not None:
+            return default
+        return resolve_bind_host(self.host)
 
     def get_proxy_url(self) -> Optional[str]:
-        return f"http://{self.get_proxy_listen_address(self.get_advertise_address())}:{self.get_proxy_port()}"
+        address = self.get_proxy_listen_address(self.get_advertise_address())
+        return f"http://{join_host_port(address, self.get_proxy_port())}"
 
     def get_derived_gateway_token(self) -> str:
         return self._derive_gateway_token

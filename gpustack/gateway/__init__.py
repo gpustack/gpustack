@@ -130,6 +130,8 @@ def wait_for_apiserver_ready(cfg: Config, timeout: int = 60, interval: int = 5):
 
 
 def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
+    from gpustack.utils.network import join_host_port, loopback_host
+
     registry_type = "dns"
     domain = f"{cfg.service_discovery_name}.{cfg.get_namespace()}.svc"
     mcp_port = cfg.get_api_port()
@@ -140,8 +142,8 @@ def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
         if cfg.gateway_mode == GatewayModeEnum.external:
             address = cfg.get_advertise_address()
         elif cfg.gateway_mode == GatewayModeEnum.embedded:
-            address = "127.0.0.1"
-        domain = f"{address}:{port}"
+            address = loopback_host()
+        domain = join_host_port(address, port)
 
     mcp_registry_name = (
         "gpustack"

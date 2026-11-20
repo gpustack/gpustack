@@ -27,28 +27,162 @@ def normalize_route_path(path: str) -> str:
     return path
 
 
-def get_first_non_loopback_ip(expected_ifname: Optional[str] = None) -> str:
+def strip_host_brackets(host: str) -> str:
+    """Strip surrounding RFC 3986 square brackets from an IPv6 literal."""
+    if host and host.startswith("[") and host.endswith("]"):
+        return host[1:-1]
+    return host
+
+
+def _strip_ipv6_zone(address: str) -> str:
+    """Strip a ``%ifname`` scope identifier from an IPv6 literal."""
+    if ":" in address and "%" in address:
+        return address.split("%", 1)[0]
+    return address
+
+
+def format_url_host(host: str) -> str:
+    """Format ``host`` for the authority component of an RFC 3986 URL.
+
+    Bare IPv6 literals are wrapped in ``[...]`` with any ``%ifname`` scope
+    suffix removed. IPv4 literals, DNS names, and already-bracketed IPv6
+    literals are returned unchanged.
     """
-    Get the first non-loopback IPv4 address of the machine.
+    if not host:
+        return host
+    if host.startswith("[") and host.endswith("]"):
+        return f"[{_strip_ipv6_zone(host[1:-1])}]"
+    bare = _strip_ipv6_zone(host)
+    if ":" in bare:
+        return f"[{bare}]"
+    return bare
+
+
+def join_host_port(host: str, port: Union[int, str]) -> str:
+    """Combine ``host`` and ``port`` into ``host:port`` or ``[ipv6]:port``."""
+    return f"{format_url_host(host)}:{port}"
+
+
+def host_cidr(ip_str: Optional[str]) -> Optional[str]:
+    """Return a single-host CIDR (``/32`` for IPv4, ``/128`` for IPv6)."""
+    if not ip_str:
+        return None
+    cleaned = _strip_ipv6_zone(strip_host_brackets(ip_str))
+    try:
+        ip = ipaddress.ip_address(cleaned)
+    except ValueError:
+        return None
+    return f"{ip}/{ip.max_prefixlen}"
+
+
+def _can_bind_ephemeral(family: socket.AddressFamily, host: str) -> bool:
+    """Return True if ``host`` can bind an ephemeral TCP port on ``family``."""
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as s:
+            if family == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
+                s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            s.bind((host, 0))
+        return True
+    except OSError:
+        return False
+
+
+def loopback_host() -> str:
+    """Return a bindable loopback literal, preferring ``127.0.0.1`` over ``::1``."""
+    if _can_bind_ephemeral(socket.AF_INET, "127.0.0.1"):
+        return "127.0.0.1"
+    if _can_bind_ephemeral(socket.AF_INET6, "::1"):
+        return "::1"
+    return "127.0.0.1"
+
+
+def resolve_bind_host(configured_host: Optional[str] = None) -> Optional[str]:
+    """Resolve the ``host`` argument for ``uvicorn.Config`` / ``asyncio.start_server``.
+
+    When ``configured_host`` is omitted, returning ``None`` instructs
+    ``asyncio.BaseEventLoop.create_server`` to bind both ``0.0.0.0`` and ``[::]``
+    (with ``IPV6_V6ONLY=1``). If only one address family can bind wildcard
+    sockets on the current kernel, that family's wildcard literal is returned
+    explicitly so listener startup does not fail on the disabled stack.
+    """
+    if configured_host:
+        return _strip_ipv6_zone(strip_host_brackets(configured_host))
+    v4_ok = _can_bind_ephemeral(socket.AF_INET, "0.0.0.0")
+    v6_ok = _can_bind_ephemeral(socket.AF_INET6, "::")
+    if v4_ok and v6_ok:
+        return None
+    if v4_ok:
+        return "0.0.0.0"
+    if v6_ok:
+        return "::"
+    return None
+
+
+def format_bind_address(host: Optional[str], port: Union[int, str]) -> str:
+    """Format a listener ``(host, port)`` pair for human-readable log output."""
+    if host is None:
+        return f"0.0.0.0:{port} and [::]:{port}"
+    return join_host_port(host, port)
+
+
+def _is_usable_unicast(
+    ip: Union[ipaddress.IPv4Address, ipaddress.IPv6Address],
+) -> bool:
+    return not (
+        ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast
+    )
+
+
+def _usable_iface_ip(
+    addr,
+) -> Optional[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]]:
+    try:
+        if addr.family == socket.AF_INET:
+            ip = ipaddress.IPv4Address(addr.address)
+        elif addr.family == socket.AF_INET6:
+            ip = ipaddress.IPv6Address(_strip_ipv6_zone(addr.address))
+        else:
+            return None
+    except ValueError:
+        return None
+    return ip if _is_usable_unicast(ip) else None
+
+
+def get_first_non_loopback_ip(expected_ifname: Optional[str] = None) -> str:
+    """Get the first non-loopback address of the machine, preferring IPv4 over IPv6.
+
+    Args:
+        expected_ifname: Optional interface name to restrict the scan to.
 
     Returns:
-        The IPv4 address as a string.
+        The detected IPv4 or IPv6 address as a bare string without scope ID.
     """
+    ipv6_global: Optional[str] = None
+    ipv6_fallback: Optional[str] = None
 
-    # Fallback to scanning all interfaces
     for name, addrs in psutil.net_if_addrs().items():
         if expected_ifname is not None and name != expected_ifname:
             continue
         for addr in addrs:
-            if addr.family == socket.AF_INET and not addr.address.startswith(
-                ("127.", "169.254.")
-            ):
-                return addr.address
+            ip = _usable_iface_ip(addr)
+            if ip is None:
+                continue
+            if ip.version == 4:
+                return str(ip)
+            if ip.is_global and ipv6_global is None:
+                ipv6_global = str(ip)
+            elif ipv6_fallback is None:
+                ipv6_fallback = str(ip)
+
+    selected = ipv6_global or ipv6_fallback
+    if selected is not None:
+        return selected
+
     if expected_ifname is not None:
         raise Exception(
-            f"No non-loopback IPv4 address found on interface {expected_ifname}."
+            f"No non-loopback IP address found on interface {expected_ifname}."
         )
-    raise Exception("No non-loopback IPv4 address found.")
+    raise Exception("No non-loopback IP address found.")
 
 
 def is_ipaddress(ip_str: str) -> bool:
@@ -58,6 +192,8 @@ def is_ipaddress(ip_str: str) -> bool:
     Returns:
         True if valid IP address, False otherwise.
     """
+    if not ip_str:
+        return False
     try:
         ipaddress.ip_address(ip_str)
         return True
@@ -146,7 +282,7 @@ def egress_disallowed_address(host: str, allowlist: List[str]) -> Optional[str]:
 
 def _get_ifname_by_local_ip(
     ip_address: str,
-    address_family: socket.AddressFamily = socket.AF_INET,
+    address_family: Optional[socket.AddressFamily] = None,
 ) -> Optional[str]:
     """
     Given an IP address, return the interface name if it exists and is not loopback/link-local.
@@ -154,38 +290,83 @@ def _get_ifname_by_local_ip(
     Returns:
         The interface name as a string, or None if not found.
     """
-
+    if not ip_address:
+        return None
     try:
-        ip = ipaddress.ip_address(ip_address)
+        ip = ipaddress.ip_address(_strip_ipv6_zone(strip_host_brackets(ip_address)))
     except ValueError:
         return None
-    if ip.is_loopback or ip.is_link_local:
+    if not _is_usable_unicast(ip):
+        return None
+
+    inferred_family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+    if address_family is not None and address_family != inferred_family:
         return None
 
     for ifname, addrs in psutil.net_if_addrs().items():
         for addr in addrs:
-            if addr.family == address_family and addr.address == ip_address:
+            if addr.family != inferred_family:
+                continue
+            try:
+                iface_ip = ipaddress.ip_address(_strip_ipv6_zone(addr.address))
+            except ValueError:
+                continue
+            if iface_ip == ip:
                 return ifname
 
     return None
 
 
+def _build_routing_probe_cases(
+    target: str,
+    address_family: Optional[socket.AddressFamily],
+) -> List[Tuple[socket.AddressFamily, str]]:
+    try:
+        ip = ipaddress.ip_address(_strip_ipv6_zone(strip_host_brackets(target)))
+        af = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+        if address_family is not None and address_family != af:
+            return []
+        canary = "2001:4860:4860::8888" if af == socket.AF_INET6 else "8.8.8.8"
+        return [(af, str(ip)), (af, canary)]
+    except ValueError:
+        pass
+
+    if address_family is not None:
+        canary = (
+            "2001:4860:4860::8888" if address_family == socket.AF_INET6 else "8.8.8.8"
+        )
+        return [(address_family, target), (address_family, canary)]
+
+    cases: List[Tuple[socket.AddressFamily, str]] = []
+    with contextlib.suppress(OSError, UnicodeError):
+        for af, _, _, _, sockaddr in socket.getaddrinfo(
+            target, 1, type=socket.SOCK_DGRAM
+        ):
+            if af in (socket.AF_INET, socket.AF_INET6):
+                cases.append((af, _strip_ipv6_zone(sockaddr[0])))
+    cases.append((socket.AF_INET, "8.8.8.8"))
+    cases.append((socket.AF_INET6, "2001:4860:4860::8888"))
+    return cases
+
+
 def get_ifname_by_ip_hostname(
-    ip_address_hostname: str,
-    address_family: socket.AddressFamily = socket.AF_INET,
+    ip_address_hostname: Optional[str],
+    address_family: Optional[socket.AddressFamily] = None,
 ) -> Optional[str]:
     """
-    Get the interface name by IP address using psutil.
+    Get the interface name by IP address or hostname using psutil.
 
     Args:
         ip_address_hostname:
             The IP address or hostname to look for. If a hostname is provided, it will be resolved to an IP address.
         address_family:
-            The address family (default is socket.AF_INET).
+            Optional address family restriction; inferred automatically when omitted.
 
     Returns:
         The interface name associated with the given IP address or hostname.
     """
+    if not ip_address_hostname:
+        return None
 
     local_ifname = _get_ifname_by_local_ip(
         ip_address_hostname, address_family=address_family
@@ -193,15 +374,7 @@ def get_ifname_by_ip_hostname(
     if local_ifname is not None:
         return local_ifname
 
-    cases: List[Tuple[socket.AddressFamily, str]] = [
-        (address_family, ip_address_hostname),
-    ]
-    if address_family == socket.AF_INET:
-        cases.append((socket.AF_INET, "8.8.8.8"))
-    if address_family == socket.AF_INET6:
-        cases.append((socket.AF_INET6, "2001:4860:4860::8888"))
-
-    for af, test_ip in cases:
+    for af, test_ip in _build_routing_probe_cases(ip_address_hostname, address_family):
         with contextlib.suppress(Exception):
             with socket.socket(af, socket.SOCK_DGRAM) as s:
                 # the port is arbitrary since we won't actually send any data
@@ -365,6 +538,11 @@ def get_free_band(
     )
 
 
+def _host_socket_family(host: str) -> socket.AddressFamily:
+    bare = _strip_ipv6_zone(strip_host_brackets(host))
+    return socket.AF_INET6 if ":" in bare else socket.AF_INET
+
+
 def _bind_probe(port: int, host: str) -> Optional[bool]:
     """Try to bind `host:port`.
 
@@ -388,9 +566,13 @@ def _bind_probe(port: int, host: str) -> Optional[bool]:
     tight enough for TIME_WAIT to matter, widen the range -- do not loosen the
     probe.
     """
+    bare = _strip_ipv6_zone(strip_host_brackets(host))
+    family = _host_socket_family(bare)
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind((host, port))
+        with socket.socket(family, socket.SOCK_STREAM) as s:
+            if family == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
+                s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            s.bind((bare, port))
         return True
     except OSError as e:
         if e.errno in (errno.EADDRINUSE, errno.EACCES, errno.EPERM):
@@ -411,11 +593,11 @@ def is_port_reusable(port: int) -> bool:
     process that just exited, e.g. after a container recreate with
     --network host), yet those services rebind such a port fine.
 
-    GPUStack services bind a mix of addresses (0.0.0.0 for the
-    gateway-facing ones, 127.0.0.1 for the embedded apiserver and
-    PostgreSQL), so every address is probed and all must bind: a reuse
-    bind against the *same* address as a live listener still fails with
-    EADDRINUSE on both Linux and macOS, keeping TIME_WAIT residue
+    GPUStack services bind a mix of addresses (dual-stack wildcards for the
+    gateway-facing ones, loopback for the embedded apiserver and
+    PostgreSQL), so every address is probed and all supported stacks must
+    bind: a reuse bind against the *same* address as a live listener still
+    fails with EADDRINUSE on both Linux and macOS, keeping TIME_WAIT residue
     distinguishable from a running instance of any of the services. A
     reuse bind against a *different* address can coexist with a live
     listener (on Linux only when the listener itself set SO_REUSEADDR,
@@ -438,14 +620,45 @@ def is_port_reusable(port: int) -> bool:
     """
     if sys.platform == "win32":
         return False
-    for probe_host in ("0.0.0.0", "127.0.0.1"):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                s.bind((probe_host, port))
-        except OSError:
-            return False
-    return True
+    probed_any = False
+    for family, probe_hosts in (
+        (socket.AF_INET, ("0.0.0.0", "127.0.0.1")),
+        (socket.AF_INET6, ("::", "::1")),
+    ):
+        for probe_host in probe_hosts:
+            try:
+                with socket.socket(family, socket.SOCK_STREAM) as s:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    if family == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
+                        s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                    s.bind((probe_host, port))
+                probed_any = True
+            except OSError as e:
+                if e.errno in (
+                    errno.EAFNOSUPPORT,
+                    errno.EPROTONOSUPPORT,
+                    errno.EADDRNOTAVAIL,
+                ):
+                    continue
+                return False
+    return probed_any
+
+
+def _connect_probe_listening(port: int, host: str) -> bool:
+    """Return True if a TCP listener accepts a connection on ``host:port``."""
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    for af, socktype, proto, _, sockaddr in infos:
+        with contextlib.suppress(Exception):
+            with socket.socket(af, socktype, proto) as s:
+                s.settimeout(0.5)
+                if s.connect_ex(sockaddr) == 0:
+                    return True
+    return False
 
 
 def is_port_available(port: int, host: str = "127.0.0.1") -> bool:
@@ -460,14 +673,14 @@ def is_port_available(port: int, host: str = "127.0.0.1") -> bool:
     instance stuck forever in `starting` rather than a clean allocation
     failure.
 
-    Both 0.0.0.0 and `host` are probed: a bind of 0.0.0.0:p fails if anything
-    holds p on any address, and probing `host` too covers the case where
-    0.0.0.0 could not be probed at all.
+    Both wildcards (`0.0.0.0`, `::`) and `host` are probed: a wildcard bind
+    fails if anything holds `port` on any address in that family, and probing
+    `host` too covers environments where wildcard binds are restricted.
 
     **`host` has to be an address of the machine this runs on.** The answer is
     reached by binding, and binding only ever sees this machine -- the connect
     probe below is a fallback for when no bind was conclusive, and a local
-    bind of 0.0.0.0 is always conclusive, so it never runs for a remote
+    wildcard bind is always conclusive, so it never runs for a remote
     address. Every caller today passes the worker's own ip from the worker
     itself, which is why this holds; a caller that asked about another host
     would be told True for a port that host is listening on.
@@ -477,10 +690,10 @@ def is_port_available(port: int, host: str = "127.0.0.1") -> bool:
     Returns:
         True if the port is available, False otherwise.
     """
-
-    probe_hosts = ["0.0.0.0"]
-    if host and host not in probe_hosts:
-        probe_hosts.append(host)
+    bare_host = _strip_ipv6_zone(strip_host_brackets(host)) if host else ""
+    probe_hosts = ["0.0.0.0", "::"]
+    if bare_host and bare_host not in probe_hosts:
+        probe_hosts.append(bare_host)
 
     conclusive = False
     for probe_host in probe_hosts:
@@ -498,15 +711,8 @@ def is_port_available(port: int, host: str = "127.0.0.1") -> bool:
     # Every bind probe was inconclusive (no local address to bind, a
     # sandboxed netns). Fall back to the connect probe: weaker, but better
     # than declaring the port free on no evidence.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.settimeout(0.5)
-            result = s.connect_ex((host, port))
-            if result == 0:
-                # Someone is listening, port is not available
-                return False
-        except Exception:
-            pass
+    if _connect_probe_listening(port, bare_host):
+        return False
 
     return True
 
@@ -586,7 +792,9 @@ def check_registry_reachable(address: str) -> bool:
 
 
 @lru_cache(maxsize=1)
-def _get_no_proxy_cidrs() -> Tuple[ipaddress.IPv4Network, ...]:
+def _get_no_proxy_cidrs() -> (
+    Tuple[Union[ipaddress.IPv4Network, ipaddress.IPv6Network], ...]
+):
     """
     Parse NO_PROXY environment variable to get a list of CIDR networks.
     """
@@ -595,14 +803,14 @@ def _get_no_proxy_cidrs() -> Tuple[ipaddress.IPv4Network, ...]:
         return ()
     cidrs = []
     for entry in no_proxy.split(","):
-        entry = entry.strip()
+        entry = _strip_ipv6_zone(strip_host_brackets(entry.strip()))
         if not entry:
             continue
         try:
-            net = ipaddress.IPv4Network(entry, strict=False)
+            net = ipaddress.ip_network(entry, strict=False)
             cidrs.append(net)
         except ValueError:
-            # Ignore non-CIDR entries (including domain names, plain IPs, etc.)
+            # Ignore non-CIDR entries (including domain names)
             pass
     return tuple(cidrs)
 
@@ -638,14 +846,14 @@ def use_proxy_env_for_url(url: str) -> bool:
             return True
 
         try:
-            ip = ipaddress.ip_address(host)
+            ip = ipaddress.ip_address(_strip_ipv6_zone(host))
         except ValueError:
             # It's a domain name -> defer to standard NO_PROXY logic (no CIDR support)
             return True
 
         # Check against user-defined CIDRs in NO_PROXY
         for net in _get_no_proxy_cidrs():
-            if ip in net:
+            if ip.version == net.version and ip in net:
                 # Host is in a NO_PROXY CIDR -> bypass proxy
                 return False
 

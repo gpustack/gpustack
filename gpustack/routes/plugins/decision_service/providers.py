@@ -241,6 +241,8 @@ def decision_model_entry(
     def _cluster_name(registry) -> str:
         return f"outbound|{registry.port}||{registry.get_service_name()}"
 
+    from gpustack.utils.network import join_host_port
+
     first_instance, first_address, _ = resolved[0]
     # The served model name is the natural decision-engine alias for a
     # local engine (vLLM/SGLang accept any name and ignore the
@@ -248,7 +250,7 @@ def decision_model_entry(
     entry: Dict[str, Any] = {
         "id": gateway_utils.model_ai_proxy_provider_id(model.id),
         "type": "systemone",
-        "endpoint": f"http://{first_address}:{first_instance.port}",
+        "endpoint": f"http://{join_host_port(first_address, first_instance.port)}",
         "model": model.name,
         "clusters": [_cluster_name(registry) for _, _, registry in resolved],
         # The worker proxy behind a shared entrypoint (WORKER/TUNNEL proxy

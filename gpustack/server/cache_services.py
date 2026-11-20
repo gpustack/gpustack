@@ -24,6 +24,7 @@ from gpustack.schemas.models import (
 from gpustack.schemas.pd_modes import PDCacheServiceRole
 from gpustack.schemas.workers import Worker
 from gpustack.utils.command import flatten_to_argv
+from gpustack.utils.network import join_host_port
 from gpustack.utils.version import version_in_range
 from gpustack.server.cache_provider_catalog import (
     get_cache_provider,
@@ -319,7 +320,7 @@ async def resolve_instance_cache_config(
         "master_server_address": (
             attach_address
             or (
-                f"{endpoint.host}:{endpoint.port}"
+                join_host_port(endpoint.host, endpoint.port)
                 if endpoint.host and endpoint.port
                 else endpoint.url
             )

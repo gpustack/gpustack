@@ -20,12 +20,37 @@ from dataclasses import dataclass
 from functools import partial
 from fastapi import HTTPException
 from typing import Optional, Dict, Callable, Coroutine, Any, Tuple, TypeAlias
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from .connection_manager import BaseConnectionManager
 from .connection import AsyncIOConnection, tunnel, IOConnection
 
 logger = logging.getLogger(__name__)
+
+
+def _format_host(host: str) -> str:
+    if not host:
+        return host
+    if host.startswith("[") and host.endswith("]"):
+        return host
+    return f"[{host}]" if ":" in host else host
+
+
+def _join_host_port(host: str, port: int) -> str:
+    return f"{_format_host(host)}:{port}"
+
+
+def _split_authority(
+    authority: str, default_port: Optional[int] = None
+) -> Tuple[Optional[str], Optional[int]]:
+    """Parse ``host[:port]`` or ``[ipv6][:port]`` into ``(bare_host, port)``."""
+    if not authority:
+        return None, default_port
+    candidate = authority
+    if candidate.count(":") > 1 and not candidate.startswith("["):
+        candidate = f"[{candidate}]"
+    parsed = urlsplit(f"//{candidate}")
+    return parsed.hostname, parsed.port if parsed.port is not None else default_port
 
 
 @dataclass(frozen=True)
@@ -100,20 +125,18 @@ async def _handle_connect(
     """Handle CONNECT request for HTTPS tunnel"""
     logger.debug(f"[Proxy] CONNECT target: {target}")
 
-    # Parse host and port
-    if ":" in target:
-        host, port_str = target.rsplit(":", 1)
-        try:
-            port = int(port_str)
-        except ValueError:
-            await client_connection.send_error(400, "Invalid port")
-            return
-    else:
-        host = target
-        port = 443
-
     try:
-        target_url = f"tcp://{host}:{port}"
+        host, port = _split_authority(target, default_port=443)
+    except ValueError:
+        await client_connection.send_error(400, "Invalid port")
+        return
+    if not host or port is None:
+        await client_connection.send_error(400, "Invalid target")
+        return
+
+    host_port = _join_host_port(host, port)
+    try:
+        target_url = f"tcp://{host_port}"
         logger.debug(
             f"[Proxy] Connecting to {target_url} with manager: {connection_manager}"
         )
@@ -122,9 +145,7 @@ async def _handle_connect(
         )
         logger.debug(f"[Proxy] Connection established: {connection}")
     except Exception as e:
-        logger.exception(
-            f"[Proxy] Error connecting to target {host}:{port}, error: {e}"
-        )
+        logger.exception(f"[Proxy] Error connecting to target {host_port}, error: {e}")
         await client_connection.send_error(502, str(e))
         return
 
@@ -245,22 +266,21 @@ async def _handle_http(
         await client_connection.send_error(400, "Invalid URI")
         return
 
-    logger.debug(f"[Proxy] {method} {uri} -> {host}:{port}")
+    host_port = _join_host_port(host, port)
+    logger.debug(f"[Proxy] {method} {uri} -> {host_port}")
 
     # Filter hop-by-hop headers
     filtered_headers: list[tuple[str, str]] = _filter_headers(headers)
-    host_value = f"{host}:{port}" if port != 80 else host
+    host_value = host_port if port != 80 else _format_host(host)
     filtered_headers.append(('host', host_value))
 
     try:
-        target_url = f"tcp://{host}:{port}"
+        target_url = f"tcp://{host_port}"
         connection = await asyncio.wait_for(
             connection_manager.connect(target_url), timeout=30
         )
     except Exception as e:
-        logger.exception(
-            f"[Proxy] Error connecting to target {host}:{port}, error: {e}"
-        )
+        logger.exception(f"[Proxy] Error connecting to target {host_port}, error: {e}")
         await client_connection.send_error(502, str(e))
         return
 
@@ -620,7 +640,7 @@ class HTTPSProxyServer:
 
     def __init__(
         self,
-        host: str,
+        host: Optional[str],
         port: int,
         connection_manager_getter: ConnectionManagerGetter,
         authenticator: Optional[HeaderAuthenticator] = None,
@@ -640,7 +660,12 @@ class HTTPSProxyServer:
         self.server = await asyncio.start_server(
             self._handle_client, self.host, self.port
         )
-        logger.debug(f"[Proxy] Server started on {self.host}:{self.port}")
+        listen_display = (
+            f"0.0.0.0:{self.port} and [::]:{self.port}"
+            if self.host is None
+            else _join_host_port(self.host, self.port)
+        )
+        logger.debug(f"[Proxy] Server started on {listen_display}")
 
         async with self.server:
             await self.server.serve_forever()
@@ -660,8 +685,11 @@ class HTTPSProxyServer:
     ) -> Optional[str]:
         """Extract target IP/hostname from request"""
         if method == "CONNECT":
-            # CONNECT target is the host:port (e.g., "example.com:443")
-            return uri.split(":")[0] if ":" in uri else uri
+            try:
+                host, _ = _split_authority(uri)
+            except ValueError:
+                return None
+            return host
         elif self.header_router:
             target_ip, _ = (
                 resolved_target
@@ -676,7 +704,11 @@ class HTTPSProxyServer:
         if parsed.hostname:
             return parsed.hostname
         # Fallback to Host header
-        return headers.get("host", "").split(":")[0] or None
+        try:
+            host, _ = _split_authority(headers.get("host", ""))
+        except ValueError:
+            return None
+        return host
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

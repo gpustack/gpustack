@@ -29,6 +29,7 @@ from gpustack.schemas.benchmark import (
 from gpustack.utils.command import find_bool_parameter, sanitize_args
 from gpustack.utils.config import apply_registry_override_to_image
 from gpustack.utils.envs import filter_env_vars, sanitize_env
+from gpustack.utils.network import format_url_host, join_host_port
 from gpustack_runtime.logging import setup_logging as setup_runtime_logging
 from gpustack_runtime import envs as runtime_envs
 from gpustack_runtime.deployer import ContainerFile, ContainerMount
@@ -195,7 +196,11 @@ class BenchmarkRunner:
 
             self._benchmark_dir = self._config.benchmark_dir
             self._model_path = local_snapshot.resolved_path
-            self._model_endpoint = f"http://{instance_snapshot.worker_ip}:{instance_snapshot.ports[0] if instance_snapshot.ports else ''}"
+            self._model_endpoint = (
+                f"http://{join_host_port(instance_snapshot.worker_ip, instance_snapshot.ports[0])}"
+                if instance_snapshot.ports
+                else f"http://{format_url_host(instance_snapshot.worker_ip)}:"
+            )
             self._model_backend_parameters = instance_snapshot.backend_parameters
             self._model_name = instance_snapshot.model_name
             # `route` mode aims at the deployment instead of the member: the

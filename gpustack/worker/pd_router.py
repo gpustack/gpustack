@@ -244,7 +244,13 @@ def _peer_scope(peer: PeerAddress) -> Dict[str, object]:
     meaning the *router's* band of that name, and for a two-prefill group there
     is no single right answer there at all — each prefill has its own.
     """
-    scope: Dict[str, object] = {"peer.ip": peer.ip, "peer.port": peer.port}
+    from gpustack.utils.network import format_url_host, join_host_port
+
+    scope: Dict[str, object] = {
+        "peer.ip": format_url_host(peer.ip),
+        "peer.port": peer.port,
+        "peer.url": f"http://{join_host_port(peer.ip, peer.port)}",
+    }
     for name, base in (peer.ports or {}).items():
         scope[f"peer.ports.{name}"] = base
     return scope

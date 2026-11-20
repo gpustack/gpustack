@@ -39,7 +39,7 @@ class ClientSet:
         # bundle. Loopback HTTPS keeps the existing "skip verification" behavior.
         verify = make_ssl_context()
         parsed_url = urlparse(base_url)
-        if parsed_url.hostname == "127.0.0.1" and parsed_url.scheme == "https":
+        if parsed_url.hostname in ("127.0.0.1", "::1") and parsed_url.scheme == "https":
             verify = False
 
         use_proxy_env = use_proxy_env_for_url(base_url)
