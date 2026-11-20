@@ -151,7 +151,7 @@ helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart 
   --set 'worker.gpuVendors={nvidia}'
 ```
 
-支持的 `worker.gpuVendors` 值：`nvidia`、`mthreads`、`amd`、`ascend`、`hygon`、`metax`、`iluvatar`、`cambricon`、`thead`。
+支持的 `worker.gpuVendors` 值：`nvidia`、`mthreads`、`amd`、`ascend`、`hygon`、`metax`、`iluvatar`、`cambricon`、`thead`。填写其他名称（例如拼写错误）会导致渲染失败，并列出受支持的值。
 
 !!! note
 

@@ -155,7 +155,7 @@ helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart 
   --set 'worker.gpuVendors={nvidia}'
 ```
 
-Desteklenen `worker.gpuVendors` değerleri: `nvidia`, `mthreads`, `amd`, `ascend`, `hygon`, `metax`, `iluvatar`, `cambricon`, `thead`.
+Desteklenen `worker.gpuVendors` değerleri: `nvidia`, `mthreads`, `amd`, `ascend`, `hygon`, `metax`, `iluvatar`, `cambricon`, `thead`. Başka herhangi bir ad (örneğin yazım hatası) oluşturmanın başarısız olmasına neden olur ve desteklenen değerler listelenir.
 
 !!! note
 
