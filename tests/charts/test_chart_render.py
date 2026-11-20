@@ -394,6 +394,36 @@ class TestCPUWorkerDisabled:
         # message alone.
         assert "nvidia" in error
 
+    def test_every_listed_vendor_valid_renders_one_daemonset_each(self):
+        docs = render(
+            "--set",
+            "worker.enabled=true",
+            "--set",
+            "worker.gpuVendors={nvidia,amd}",
+        )
+        assert {"gpustack-worker-nvidia", "gpustack-worker-amd"} <= names(
+            docs, "DaemonSet"
+        )
+
+    @pytest.mark.parametrize(
+        "vendors", ["{nvidiaa}", "{nvidia,amdd}", "{nvidia,bogus,amd}"]
+    )
+    def test_refuses_a_misspelled_vendor_even_with_the_cpu_daemonset_on(self, vendors):
+        # The CPU DaemonSet keeps the release installable, so without this guard
+        # the dropped vendor's DaemonSet is just silently absent.
+        error = render_error(
+            "--set",
+            "worker.enabled=true",
+            "--set",
+            f"worker.gpuVendors={vendors}",
+        )
+        bad = next(v for v in ("nvidiaa", "amdd", "bogus") if v in vendors)
+        assert f"unsupported GPU vendor(s) in worker.gpuVendors: {bad}" in error
+        assert "amd, ascend, cambricon" in error
+
+    def test_ignores_gpu_vendors_when_the_worker_is_off(self):
+        render("--set", "worker.gpuVendors={bogus}")
+
     def test_an_unset_value_keeps_the_cpu_daemonset(self):
         # Helm drops a key set to null, and plain truthiness would read that
         # `nil` as false — deleting the CPU workers from a cluster that only
