@@ -316,10 +316,9 @@ class MessageServerHandler:
 
     async def connect_to_peer(self, host: str, port: int, future: asyncio.Future):
         """Connect to a peer server"""
-        formatted_host = (
-            f"[{host}]" if ":" in host and not host.startswith("[") else host
-        )
-        peer_key = f"{formatted_host}:{port}"
+        from .address import join_host_port
+
+        peer_key = join_host_port(host, port)
         try:
             ws_uri = f"ws://{peer_key}{default_connect_path}"
             logger.debug(f"[Server] Connecting to peer: {ws_uri}")

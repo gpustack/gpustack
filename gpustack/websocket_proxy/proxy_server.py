@@ -20,37 +20,17 @@ from dataclasses import dataclass
 from functools import partial
 from fastapi import HTTPException
 from typing import Optional, Dict, Callable, Coroutine, Any, Tuple, TypeAlias
-from urllib.parse import urlparse, urlsplit
+from urllib.parse import urlparse
 
+from .address import (
+    format_host as _format_host,
+    join_host_port as _join_host_port,
+    split_authority as _split_authority,
+)
 from .connection_manager import BaseConnectionManager
 from .connection import AsyncIOConnection, tunnel, IOConnection
 
 logger = logging.getLogger(__name__)
-
-
-def _format_host(host: str) -> str:
-    if not host:
-        return host
-    if host.startswith("[") and host.endswith("]"):
-        return host
-    return f"[{host}]" if ":" in host else host
-
-
-def _join_host_port(host: str, port: int) -> str:
-    return f"{_format_host(host)}:{port}"
-
-
-def _split_authority(
-    authority: str, default_port: Optional[int] = None
-) -> Tuple[Optional[str], Optional[int]]:
-    """Parse ``host[:port]`` or ``[ipv6][:port]`` into ``(bare_host, port)``."""
-    if not authority:
-        return None, default_port
-    candidate = authority
-    if candidate.count(":") > 1 and not candidate.startswith("["):
-        candidate = f"[{candidate}]"
-    parsed = urlsplit(f"//{candidate}")
-    return parsed.hostname, parsed.port if parsed.port is not None else default_port
 
 
 @dataclass(frozen=True)

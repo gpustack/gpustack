@@ -785,14 +785,16 @@ class Server:
         async def wait_and_start_after_healthy():
             # Wait for the API to be healthy before starting the rest of the processes,
             # so that they can rely on the API being available when they start.
-            configured = self._config.host
+            configured = (
+                resolve_bind_host(self._config.host) if self._config.host else None
+            )
             if (
                 self._config.gateway_mode == GatewayModeEnum.embedded
                 or not configured
                 or configured == "0.0.0.0"
             ):
                 probe_host = loopback_host()
-            elif configured in ("::", "[::]"):
+            elif configured == "::":
                 probe_host = "::1"
             else:
                 probe_host = configured

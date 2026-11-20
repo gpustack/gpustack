@@ -803,11 +803,14 @@ def _get_no_proxy_cidrs() -> (
         return ()
     cidrs = []
     for entry in no_proxy.split(","):
-        entry = _strip_ipv6_zone(strip_host_brackets(entry.strip()))
-        if not entry:
+        raw = entry.strip()
+        if not raw:
             continue
+        addr_part, *prefix = raw.split("/", 1)
+        addr_part = _strip_ipv6_zone(strip_host_brackets(addr_part))
+        normalized = f"{addr_part}/{prefix[0]}" if prefix else addr_part
         try:
-            net = ipaddress.ip_network(entry, strict=False)
+            net = ipaddress.ip_network(normalized, strict=False)
             cidrs.append(net)
         except ValueError:
             # Ignore non-CIDR entries (including domain names)

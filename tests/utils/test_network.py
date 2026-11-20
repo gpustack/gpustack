@@ -219,9 +219,10 @@ class TestGetIfnameByIPHostname:
 
 def test_use_proxy_env_for_url_supports_mixed_ipv4_and_ipv6_no_proxy(monkeypatch):
     _get_no_proxy_cidrs.cache_clear()
-    monkeypatch.setenv("NO_PROXY", "10.0.0.0/8,fd00::/8,localhost")
+    monkeypatch.setenv("NO_PROXY", "10.0.0.0/8,[fd00::]/8,fe80::%eth0/64,localhost")
     try:
         assert use_proxy_env_for_url("http://[fd00::1234]:10150/healthz") is False
+        assert use_proxy_env_for_url("http://[fe80::abcd]:10150/healthz") is False
         assert use_proxy_env_for_url("http://[240b:8168::1]:10150/healthz") is True
         assert use_proxy_env_for_url("http://10.1.2.3:10150/healthz") is False
         assert use_proxy_env_for_url("http://203.0.113.5:10150/healthz") is True
@@ -382,4 +383,43 @@ class TestInternalIPv6URLCallers:
                 "GET", "/healthz", {"host": "[240b:8168:10:4::64]:10150"}
             )
             == "240b:8168:10:4::64"
+        )
+
+    @pytest.mark.asyncio
+    async def test_remote_connection_manager_brackets_ipv6_connect_target(
+        self, monkeypatch
+    ):
+        from gpustack.websocket_proxy import connection_manager as cm_mod
+
+        captured = {}
+
+        class _FakeReader:
+            async def read(self, _n: int) -> bytes:
+                return b"HTTP/1.1 200 Connection Established\r\n\r\n"
+
+        class _FakeWriter:
+            def write(self, data: bytes) -> None:
+                captured["request"] = data.decode("utf-8")
+
+            async def drain(self) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+            async def wait_closed(self) -> None:
+                return None
+
+        async def _fake_open_connection(host: str, port: int):
+            captured["peer"] = (host, port)
+            return _FakeReader(), _FakeWriter()
+
+        monkeypatch.setattr(cm_mod.asyncio, "open_connection", _fake_open_connection)
+        mgr = cm_mod.RemoteConnectionManager("[240b:8168:10:4::1]", 30079)
+        await mgr.connect("tcp://[240b:8168:10:4::64]:10150")
+
+        assert captured["peer"] == ("240b:8168:10:4::1", 30079)
+        assert captured["request"] == (
+            "CONNECT [240b:8168:10:4::64]:10150 HTTP/1.1\r\n"
+            "Host: [240b:8168:10:4::64]:10150\r\n\r\n"
         )
