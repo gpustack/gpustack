@@ -1137,6 +1137,147 @@ model_sets:
     - mit
   release_date: "2026-08-26"
   specs:
+    # BW1100 single-node TP=8; Song Xiaowen's 2026-11-11 optimized recipe.
+    # Preload the image archive and tag the loaded image as
+    # localhost/yk/glm53flash:20261111-opt on each eligible worker.
+    # Archive: https://modelscope.cn/datasets/test2026lv/HG-images/resolve/master/sxw/sglang0.5.18-kylinv10-dtk2604-rc4-py3.10-v2-20261111-opt.tar.gz
+    # Use the supplied /workspace/runtime/glm53f runtime and matching NUMA topology.
+    - mode: Hygon-BW1100-TP8
+      quantization: FP8
+      gpu_filters:
+        vendor: hygon
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-5.3-Flash
+      backend: SGLang
+      image_name: localhost/yk/glm53flash:20261111-opt
+      distributed_inference_across_workers: false
+      gpu_selector:
+        gpus_per_replica: 8
+      backend_parameters:
+      - --trust-remote-code
+      - --tp-size=8
+      - --random-seed=755140107
+      - --mem-fraction-static=0.82
+      - --context-length=1048576
+      - --reasoning-parser=glm45
+      - --tool-call-parser=glm47
+      - --linear-attn-prefill-backend=flashkda
+      - --chunked-prefill-size=16384
+      - --max-prefill-tokens=32768
+      - --max-total-tokens=2600000
+      - --disable-radix-cache
+      - --dist-timeout=10000
+      - --watchdog-timeout=3600
+      - --speculative-algorithm=EAGLE
+      - --speculative-num-steps=3
+      - --speculative-eagle-topk=1
+      - --speculative-num-draft-tokens=4
+      - --max-running-requests=128
+      - --numa-node
+      - '3'
+      - '1'
+      - '1'
+      - '0'
+      - '7'
+      - '5'
+      - '5'
+      - '4'
+      - --cuda-graph-bs-decode
+      - '1'
+      - '2'
+      - '4'
+      - '8'
+      - '16'
+      - '32'
+      - '64'
+      - '128'
+      - --max-mamba-cache-size=128
+      - --attention-backend=dsa
+      - --dsa-prefill-backend=flashmla_sparse
+      - --dsa-decode-backend=flashmla_sparse
+      - --page-size=64
+      - --speculative-adaptive
+      - --speculative-adaptive-config=/workspace/runtime/glm53f/config/adaptive-policy-feedback-v2.json
+      env:
+        GLM53F_RUNTIME_ROOT: /workspace/runtime/glm53f
+        PYTHONPATH: /workspace/runtime/glm53f/bootstrap:/workspace/runtime/glm53f/overlay
+        SGLANG_TORCH_PROFILER_DIR: /workspace/tmp/glm53f-runtime/profiles
+        SGLANG_HCU_FP8_PAD_SMALL_M: '1'
+        NCCL_MIN_NCHANNELS: '16'
+        NCCL_MAX_NCHANNELS: '16'
+        USE_HCU_CUSTOM_ALLREDUCE: '1'
+        ALLREDUCE_STREAM_WITH_COMPUTE: '1'
+        HIP_KERNEL_EVENT_SYSTENFENCE: '1'
+        SGLANG_CHUNKED_PREFIX_CACHE_THRESHOLD: '0'
+        GLIBC_TUNABLES: glibc.rtld.optional_static_tls=0x40000
+        HIP_KERNEL_BATCH_CEILING: '100'
+        GPU_FORCE_BLIT_COPY_SIZE: '16'
+        HSA_KERNARG_POOL_SIZE: '8388608'
+        ROC_AQL_QUEUE_SIZE: '131072'
+        SGLANG_USE_LIGHTOP: '1'
+        W8A8_SUPPORT_METHODS: '3'
+        SGLANG_KVALLOC_KERNEL: '1'
+        SGLANG_CREATE_EXTEND_AFTER_DECODE_SPEC_INFO: '1'
+        SGLANG_ASSIGN_EXTEND_CACHE_LOCS: '1'
+        SGLANG_ASSIGN_REQ_TO_TOKEN_POOL: '1'
+        SGLANG_GET_LAST_LOC: '1'
+        SGLANG_CREATE_FLASHMLA_KV_INDICES_TRITON: '1'
+        SGLANG_CREATE_CHUNKED_PREFIX_CACHE_KV_INDICES: '1'
+        HIP_GRAPH_ACCUMULATE_DISPATCH: '1'
+        HIP_GRAPH_USE_CMD_CACHE: '0'
+        SGLANG_DSA_FUSE_TOPK: '1'
+        SGLANG_ENABLE_WAR_BARRIER: '1'
+        SGLANG_FORCE_COARSE_WAR_BARRIER: '1'
+        SGLANG_ROCM_USE_AITER_MOE: '0'
+        SGLANG_OPT_SWIGLU_CLAMP_FUSION: '1'
+        SGLANG_OPT_DEEPGEMM_HC_PRENORM: '0'
+        SGLANG_DEEPGEMM_PDL: '0'
+        SGLANG_USE_CAUSAL_CONV1D: '1'
+        SGLANG_USE_AITER_LINEAR_ATTN: '1'
+        SGLANG_OPT_USE_TILELANG_MHC_PRE: '1'
+        SGLANG_OPT_USE_TILELANG_MHC_POST: '1'
+        SGLANG_MOE_CONFIG_DIR: /workspace/runtime/glm53f/config/moe-config
+        GLM53F_OPT_MHC: '1'
+        GLM53F_OPT_GROUP_QUANT: '1'
+        SGLANG_KDA_USE_HCU_ADAPTIVE: '0'
+        GLM53F_ENABLE_DSA_MTP_INDEX_SHARE: '0'
+        SGLANG_OPT_USE_TOPK_V2: '0'
+        GLM53F_HCU_FUSED_DSA_METADATA: '1'
+        GLM53F_SHARE_DSA_PAGES: '1'
+        GLM53F_KDA_PREFILL_ROUTE: native
+        GLM53F_EAGER_RCCL_INIT: '1'
+        NCCL_SOCKET_IFNAME: lo
+        NCCL_SOCKET_FAMILY: AF_INET
+        NCCL_DEBUG: INFO
+        NCCL_DEBUG_SUBSYS: INIT,ENV
+        OPENBLAS_NUM_THREADS: '1'
+        GLM53F_CONTEXT_SPEC_POLICY: /workspace/runtime/glm53f/config/context-policy-feedback.json
+        HF_HUB_OFFLINE: '1'
+        TRANSFORMERS_OFFLINE: '1'
+        GLM53F_PRUNE_INITIAL_GRAPHS: '1'
+        GLM53F_FILE_SPAWN: '1'
+        GLM53F_SPAWN_TMP: /workspace/tmp/glm53f-runtime/spawn-ipc
+        NCCL_P2P_DISABLE: '0'
+        GLOO_SOCKET_IFNAME: lo
+        GLM53F_BALANCED_SPEC_CONFIG: /workspace/runtime/glm53f/config/balanced-spec.json
+        GLM53F_DIAGNOSTIC_DIR: /workspace/tmp/glm53f-runtime/diagnostics
+        GLM53F_SPEC_FEEDBACK: '1'
+        GLM53F_SYNC_VERIFY_TOKENS: '1'
+        GLM53F_NGRAM_FALLBACK: '1'
+        SGLANG_SPEC_SKIP_ZERO_STEP_DRAFT_EXTEND: '0'
+        GLM53F_PACK_VERIFY_SYNC: '1'
+        GLM53F_NUMERICAL_PROBE: '0'
+        GLM53F_PREFILL_STREAM_SCOPE: '1'
+        GLM53F_PREFILL_TRACE: '0'
+        GLM53F_DIAGNOSTIC_EXTENSION: '0'
+        GLM53F_ASYNC_NATIVE_WARMUP: '1'
+        GLM53F_AUDIT_DRAFT_SYNC: '0'
+        GLM53F_AUDIT_LOOKUP: '0'
+        GLM53F_AUDIT_DIR: /workspace/tmp/glm53f-runtime/audit
+        GLM53F_SPEC_MODE: converged
+        GLM53F_GATE_PROFILE: '6'
+        GLM53F_POLICY_DIR: /workspace/runtime/glm53f/config/policies
+        GLM53F_FIXED_STEP: '3'
     - mode: standard
       quantization: FP8
       gpu_filters:
