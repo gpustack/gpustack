@@ -197,13 +197,31 @@ def _row_is_source_managed(backend: InferenceBackend) -> bool:
     ``reconcile_backend`` writes only Platform community rows (source
     COMMUNITY, no owner). On every other row — an Org's seeded copy, a row a
     source dropped and downgraded — the sync never reconciles the marked
-    entries, so the source-collision protections must not freeze them there:
-    the row's owner edits and removes them like any other version, with the
-    in-use guard deciding what may go.
+    entries, so they are the owner's data: a payload edit lands under the
+    stored marker, and a stale copy is retired by deleting the row (an Org
+    row deleted falls back to the Platform row). Omitting one from a payload
+    is not a removal — the merge preserves it like on a managed row, so a
+    client sending only its own versions never deletes catalog versions.
     """
     return (
         backend.backend_source == BackendSourceEnum.COMMUNITY
         and backend.owner_principal_id is None
+    )
+
+
+def _row_validates_version_suffix(backend: InferenceBackend) -> bool:
+    """Whether this row's version names are held to the ``-custom`` suffix
+    rule.
+
+    CUSTOM rows — including ones a source downgraded — are not: the rule
+    would reject every stored version their source gave them, and every
+    version on such a row is ordinary user data. Shared by the routes'
+    validation branch and the payload sanitizer, so the drop-vs-keep rule
+    for untrusted markers cannot drift from the check that justifies it.
+    """
+    return not (
+        backend.backend_source == BackendSourceEnum.CUSTOM
+        or (backend.backend_source is None and not backend.is_built_in)
     )
 
 
@@ -1473,21 +1491,19 @@ async def update_inference_backend(  # noqa: C901
             )
 
     # Validate version names for custom backends before updating
-    if backend.backend_source == BackendSourceEnum.CUSTOM or (
-        backend.backend_source is None and not backend.is_built_in
-    ):
+    if _row_validates_version_suffix(backend):
+        validate_custom_suffix(
+            None,
+            backend_in.version_configs if payload_has_versions else None,
+            source_owned_versions=_source_owned_version_keys(backend),
+        )
+    else:
         # A row a source downgraded to custom keeps the source's name, which
         # carries no ``-custom`` suffix: requiring one would reject every write
         # to the row until a source adopts it back. The name itself is checked
         # on create, and cannot be changed above, so nothing is left unguarded.
         if backend.source_name is None:
             validate_custom_suffix(backend_in.backend_name, None)
-    else:
-        validate_custom_suffix(
-            None,
-            backend_in.version_configs if payload_has_versions else None,
-            source_owned_versions=_source_owned_version_keys(backend),
-        )
 
     try:
         # Use a dict for changes to prevent version_config serialization errors and None field overrides issues.
@@ -1778,19 +1794,17 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             )
 
         # Validate version names based on backend source
-        if backend.backend_source == BackendSourceEnum.CUSTOM or (
-            backend.backend_source is None and not backend.is_built_in
-        ):
-            # Same exemption as the JSON update route: a downgraded row's name
-            # comes from the source and carries no ``-custom`` suffix.
-            if backend.source_name is None:
-                validate_custom_suffix(yaml_data['backend_name'], None)
-        else:
+        if _row_validates_version_suffix(backend):
             validate_custom_suffix(
                 None,
                 yaml_data.get('version_configs') if yaml_has_versions else None,
                 source_owned_versions=_source_owned_version_keys(backend),
             )
+        else:
+            # Same exemption as the JSON update route: a downgraded row's name
+            # comes from the source and carries no ``-custom`` suffix.
+            if backend.source_name is None:
+                validate_custom_suffix(yaml_data['backend_name'], None)
 
         if yaml_has_versions:
             # Source-owned versions survive the write on rows the catalog sync
@@ -1846,18 +1860,17 @@ async def _validate_version_removal(
     """
     Check if any versions are being removed and validate they're not in use.
     """
-    # Get current versions (empty dict if none). On a row the catalog sync
-    # manages, source-owned versions are excluded: the merge preserves them,
-    # so they can never actually disappear here. On any other row the marked
-    # entries are the owner's data — the sync never reconciles them — and
-    # omitting one from the payload is a removal like any other, which is
-    # what keeps such rows fixable when the catalog moves on.
+    # Get current versions (empty dict if none). Source-owned versions are
+    # excluded on every row: the merge preserves the ones the payload leaves
+    # out, so they can never actually disappear here and the in-use guard
+    # has nothing to protect. Retiring a stale copy happens by deleting the
+    # row, not through this check.
     current_versions = {}
     if backend.version_configs and backend.version_configs.root:
         current_versions = {
             v: config
             for v, config in backend.version_configs.root.items()
-            if not (_is_source_owned(config) and _row_is_source_managed(backend))
+            if not _is_source_owned(config)
         }
 
     # Get new versions (empty dict if none)
@@ -1902,10 +1915,13 @@ def _sanitize_untrusted_marker_entries(
       add carrying one would vanish behind a 200;
     - a marker on an unknown key without the suffix: echoed catalog data (a
       runner version from the list response, a version the source removed
-      between the client's GET and PUT) or pure forgery. The suffix rule
-      rejects such a key as user data regardless, so dropping it hides
-      nothing the client could legitimately write and keeps the echo round
-      trip idempotent.
+      between the client's GET and PUT) or pure forgery. On a row the
+      ``-custom`` suffix rule applies to, dropping it hides nothing the
+      client could legitimately write and keeps the echo round trip
+      idempotent. On a CUSTOM row — including one a source downgraded — the
+      suffix rule never runs, so the entry is writable user data there: the
+      marker is cleared and the entry kept, the same treatment its
+      ``-custom``-suffixed shape gets.
     """
     if not version_configs or not version_configs.root:
         return
@@ -1921,6 +1937,12 @@ def _sanitize_untrusted_marker_entries(
         elif isinstance(version, str) and version.endswith("-custom"):
             config.built_in_frameworks = None
             kept[version] = config
+        elif not _row_validates_version_suffix(backend):
+            # The suffix rule never runs on this row, so its justification
+            # for dropping does not hold either: keep the entry as the user
+            # data its name is free to be, marker stripped.
+            config.built_in_frameworks = None
+            kept[version] = config
     version_configs.root = kept
 
 
@@ -1931,45 +1953,47 @@ def _merge_source_owned_versions(
     """
     Merge source-owned versions with the payload's user-defined versions.
 
-    New entries whose key matches a stored source-owned version are dropped:
-    the request payload carries no trusted built_in_frameworks marker, so
-    letting such an entry through would overwrite the stored entry with a
-    framework-less copy and leave models pinned to that version
-    unschedulable. Source versions are owned by the catalog
-    (``_is_source_owned``); this API only manages user-defined '-custom'
-    versions.
+    Source-owned versions are the stored entries carrying a
+    ``built_in_frameworks`` marker (``_is_source_owned``). Entries the
+    payload leaves out are preserved on every row — a client sending only
+    its own versions (an echo round trip, or the /list contract of sending
+    just ``*-custom`` ones) must never read as deleting catalog versions.
 
-    The stored entries are preserved only on rows the catalog sync manages
-    (``_row_is_source_managed``): there the sync keeps re-materializing them,
-    so dropping or editing them here could never stick and would only hide
-    the catalog's state. On any other row the marked entries are the owner's
-    data — the sync never reconciles them — and the payload manages them
-    like any other version, with the removal guard deciding what may go.
+    What differs by row is who owns a collision's content:
+
+    - on rows the catalog sync manages (``_row_is_source_managed``), the
+      sync keeps re-materializing the stored entries, so a payload edit is
+      ignored rather than frozen in behind its untrusted marker;
+    - on any other row (an Org's seeded copy, a row a source downgraded)
+      the sync never reconciles the entries, so the payload's content
+      lands — under the stored marker, pinned by
+      ``_sanitize_untrusted_marker_entries`` — letting the owner fix a
+      stale copy. Retiring one is a row deletion, not a PUT omission.
 
     Returns:
         VersionConfigDict: Merged version configurations with source-owned versions preserved
     """
-    # Extract source-owned versions from current backend
-    built_in_versions = {}
-    if (
-        _row_is_source_managed(backend)
-        and backend.version_configs
-        and backend.version_configs.root
-    ):
-        built_in_versions = {
-            k: v for k, v in backend.version_configs.root.items() if _is_source_owned(v)
-        }
+    stored = backend.version_configs.root if backend.version_configs else {}
+    stored_marked = {k: v for k, v in stored.items() if _is_source_owned(v)}
+    managed = _row_is_source_managed(backend)
 
     if not new_version_configs or not new_version_configs.root:
-        return VersionConfigDict(root=built_in_versions)
+        return VersionConfigDict(root=stored_marked)
 
-    # Merge: source-owned versions + user-defined versions. A collision key
-    # keeps the stored source-owned entry (see docstring).
-    user_versions = {
-        k: v for k, v in new_version_configs.root.items() if k not in built_in_versions
+    # Merge: the source-owned entries the payload leaves out + the payload.
+    # A collision key takes the stored entry on a sync-managed row (the sync
+    # owns the content) and the payload's otherwise (the owner does).
+    merged: Dict[str, VersionConfig] = {
+        version: config
+        for version, config in stored_marked.items()
+        if version not in new_version_configs.root
     }
-    built_in_versions.update(user_versions)
-    new_version_configs.root = built_in_versions
+    for version, config in new_version_configs.root.items():
+        if managed and version in stored_marked:
+            merged[version] = stored_marked[version]
+        else:
+            merged[version] = config
+    new_version_configs.root = merged
     return new_version_configs
 
 
@@ -1983,11 +2007,11 @@ def _layer_payload_over_inherited(
     Org row to remove — the payload adds or overrides versions, it does not
     replace them. Every inherited entry therefore stands (dropping the ones
     the payload does not echo would undo the inheritance this row exists
-    for), and a payload entry colliding with an inherited source-owned
-    version keeps the inherited entry: the payload's marker is untrusted,
-    and letting a framework-less copy land would leave models pinned to that
-    version unschedulable. Collisions with inherited user-defined versions
-    take the payload — the org is claiming its own copy.
+    for), and the payload takes every key it names: the sanitizer has
+    already pinned the stored marker onto entries landing on inherited
+    source-owned versions, so an override edits the org's copy without
+    touching the framework information models schedule on — the same rule
+    every later write on this row applies.
     """
     final = {
         version: config.model_copy(deep=True)
@@ -1997,10 +2021,7 @@ def _layer_payload_over_inherited(
     }
     if not new_version_configs or not new_version_configs.root:
         return VersionConfigDict(root=final)
-    for version, config in new_version_configs.root.items():
-        stored = final.get(version)
-        if stored is None or not _is_source_owned(stored):
-            final[version] = config
+    final.update(new_version_configs.root)
     return VersionConfigDict(root=final)
 
 
