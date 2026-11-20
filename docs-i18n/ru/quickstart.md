@@ -64,13 +64,17 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 5. Выполните шаги в `Add Worker`. Команда Docker на шаге `Run command` уже содержит токен кластера для регистрации рабочего узла. В примере ниже вместо токена указано `your_cluster_registration_token`.
 
+!!! note "Разделяйте данные Server и Worker"
+
+    Если Server и Worker работают на одном хосте, используйте разные тома данных. В примерах для Server сохраняется `gpustack-data`, а для Worker используется `gpustack-worker-data`. Перед запуском команды Worker, созданной в UI, на хосте Server проверьте имя тома. Эти имена предназначены для новых развёртываний; изменение имени подключаемого тома не переносит существующие данные.
+
 ```bash
 sudo docker run -d --name gpustack-worker \
       --restart=unless-stopped \
       --privileged \
       --network=host \
       --volume /var/run/docker.sock:/var/run/docker.sock \
-      --volume gpustack-data:/var/lib/gpustack \
+      --volume gpustack-worker-data:/var/lib/gpustack \
       --runtime nvidia \
       gpustack/gpustack \
       --server-url http://your_gpustack_server_url \

@@ -60,13 +60,17 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 5. 按照 `Add Worker` 的步骤配置节点。`Run command` 中的 Docker 命令已包含用于注册 Worker 的集群注册令牌。下方示例用 `your_cluster_registration_token` 作为占位符。
 
+!!! note "隔离 Server 与 Worker 数据"
+
+    Server 和 Worker 部署在同一主机时，应使用不同的数据卷。示例为 Server 保留 `gpustack-data`，为 Worker 使用 `gpustack-worker-data`。在 Server 主机上执行 UI 生成的 Worker 命令前，请核对其中的卷名。这些卷名用于新部署；更改挂载卷名不会迁移现有数据。
+
 ```bash
 sudo docker run -d --name gpustack-worker \
       --restart=unless-stopped \
       --privileged \
       --network=host \
       --volume /var/run/docker.sock:/var/run/docker.sock \
-      --volume gpustack-data:/var/lib/gpustack \
+      --volume gpustack-worker-data:/var/lib/gpustack \
       --runtime nvidia \
       gpustack/gpustack \
       --server-url http://your_gpustack_server_url \

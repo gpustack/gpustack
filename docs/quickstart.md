@@ -60,13 +60,17 @@ Open your browser and navigate to `http://your_host_ip` to access the GPUStack U
 
 5. Follow the `Add Worker` steps. The Docker command in `Run command` includes the cluster registration token used to register the worker. The example below uses `your_cluster_registration_token` as a placeholder.
 
+!!! note "Separate server and worker data"
+
+    When the server and worker share a host, use different data volumes. The examples keep `gpustack-data` for the server and use `gpustack-worker-data` for the worker. Check the volume name in the UI-generated worker command before running it on the server host. These names are for new deployments; changing a mount name does not migrate existing data.
+
 ```bash
 sudo docker run -d --name gpustack-worker \
       --restart=unless-stopped \
       --privileged \
       --network=host \
       --volume /var/run/docker.sock:/var/run/docker.sock \
-      --volume gpustack-data:/var/lib/gpustack \
+      --volume gpustack-worker-data:/var/lib/gpustack \
       --runtime nvidia \
       gpustack/gpustack \
       --server-url http://your_gpustack_server_url \
