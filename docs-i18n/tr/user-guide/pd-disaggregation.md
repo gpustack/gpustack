@@ -30,27 +30,47 @@ Tek bir GPU veya istemleri ve nesilleri kısa olan bir iş yükü, onsuz genelli
 
 ### Rollere özel bağımsız arka uçlar { #independent-role-backends }
 
-Dağıtımın arka ucu, sürümü, imajı ve çalıştırma komutu üç rolün de varsayılanlarıdır. Her rolün **Backend** listesinde başlangıçta **Dağıtım ayarlarını devral** seçilir; yanında geçerli arka uç ve sürüm veya imaj gösterilir. Bu seçenek seçiliyken dağıtım ayarlarındaki değişiklikler role uygulanmaya devam eder. Dağıtım komutu çıkarım motorları için varsayılandır; Router komutu aşağıdaki kurallarla ayrıca çözümlenir.
+Prefill, Decode ve Router farklı arka uçlar, sürümler ve imajlar kullanabilir.
+**Dağıtım varsayılanları**, dağıtım formunun üst kısmındaki arka uç ayarlarıdır.
 
-Prefill, Decode veya Router için belirli bir arka uç seçerek rolü bağımsız yapılandırın. Dağıtımla aynı arka ucu seçmek geçerli başlatma ayarlarını kopyalar; farklı bir arka uç seçmek onun varsayılanlarını kullanır. Üç rol de dağıtımla aynı arka uç listesini ve alanları sunar:
+**Ayarları devralma veya bir rolü ayrı yapılandırma**
 
-- Yapılandırılmış runner imajını kullanmak için arka uç ve sürüm seçin. **Auto**, sürümü dağıtım sürümünden bağımsız seçer.
-- İmaj belirtmek için **Custom** seçin. P/D rolleri komut da gerektirir. Yerleşik PD modundaki Router komutu boş bırakabilir; GPUStack, P/D hazır olduğunda üretir. İmajın tag veya digest değeri sürümü belirler.
-- Özel imajları destekleyen yerleşik arka uçlar, imajı geçersiz kılma ve isteğe bağlı çalıştırma komutu alanlarını sunmaya devam eder.
+- Dağıtımın arka ucunu, sürümünü ve imajını kullanmak için **Dağıtım ayarlarını devral** seçeneğini koruyun.
+- Bir rolü ayrı yapılandırmak için o rolün ayarlarından bir arka uç seçin. Rolün arka ucu, sürümü, imajı ve komutu artık ayrı bir ayar kümesi oluşturur. Dağıtım varsayılanlarında sonradan yapılan değişiklikler bu kümeyi değiştirmez.
 
-Router için dağıtımın arka ucunu seçmek imajı ve sürümü kopyalar; komutu seçilen arka uç tanımı veya PD şeması sağlar. Üst çıkarım komutu hiçbir PD modunda kopyalanmaz. Bağımsız arka ucu yeniden seçmek girilmiş Router komutunu korur.
+Örneğin, Prefill ve Decode vLLM kullanmaya devam ederken Router, yönlendirme için kaydettiğiniz bir arka ucu kullanabilir.
 
-Bağımsız rol, ilk değerler dağıtımla aynı olsa bile dağıtım varsayılanları değiştiğinde seçimini korur. **Dağıtım ayarlarını devral** seçeneğini yeniden seçmek rolün arka uç geçersiz kılmalarını temizler ve devralmayı geri getirir. Parametreler, ortam, kaynaklar ve zamanlama kendi mevcut kurallarını korur.
+**Hangi ayar önceliklidir?**
 
-API'de null olmayan `roles[].backend`, `backend`, `backend_version`, `image_name` ve `run_command` alanlarından oluşan bağımsız bir grup seçer. Null sürüm Auto anlamına gelir; null imaj ve komut, arka ucun ürettiği ayarları kullanır. Dağıtım varsayılanlarını devralmak için dört alanı da null yapın. `backend` alanını null bırakan mevcut kısmi API geçersiz kılmaları, belirtilmeyen alanları ayrı ayrı devralmaya devam eder.
+Bir rol için arka uç seçtikten sonra aşağıdaki kurallar uygulanır. Öncelik listelerinde kullanılabilir ilk değer esas alınır.
 
-Seçilen arka uç ve sürüm Router imajını sağlar. Komut önceliği: Router rolünün açık komutu, seçilen sürümün komutu, arka uç varsayılan komutu ve PD şeması komutu. Yerleşik arka uçlar dahil hepsi aynı kurala uyar. Yalnızca imajı değiştirmek şema komutunu korur. Eş başvurusu olmayan komutlar elle yönetilir; eşlere başvuran şablonlar Router yeniden başlatılarak güncellenir. `custom` PD modunda konektörleri de kullanıcı yapılandırır.
+| Ayar | Kural |
+| --- | --- |
+| Sürüm | Rol için seçilen sürüm kullanılır. **Auto**, bu rolün arka ucunun bir sürüm seçmesini sağlar; dağıtımın sürümünü kullanmaz. |
+| İmaj | Rol için girilen imaj → arka uç/sürüm yapılandırmasındaki imaj → uyumlu GPUStack runner imajı. Girdiğiniz imajı kendi tag veya digest değeri tanımlar. |
+| Prefill / Decode komutu | Rol için girilen komut önceliklidir. Girilmemişse GPUStack, seçilen çıkarım arka ucunun normal başlatma davranışını kullanır. |
 
-Farklı imaj ve sürümler uyumlu konektör protokolleri ve KV düzenleri uygulamalıdır. Yerleşik PD tarifleri P/D motor uyumluluğunu doğrular. Router, P/D motor kısıtlamaları uygulanmadan aynı arka uç seçeneklerini kullanır.
+Doğrudan bir imaj belirtmek için **Custom** seçin. Prefill ve Decode için bir çalıştırma komutu da gerekir. Router, aşağıdaki komut önceliğini kullanır.
 
-Katalog bağlantı argümanları ve ayarlanabilir varsayılanlar yalnızca PD şeması komutu kullanılırken gösterilir.
+**Router komut önceliği**
 
-Yönlendiricinin yapısı gereği tek kopyası vardır; ikinci kopya önek önbelleğini bölüp gruba iki adres vereceğinden kopya sayısı ayarlanmaz.
+GPUStack kaynakları aşağıdaki sırayla kontrol eder ve kullanılabilir ilk komutu kullanır:
+
+1. Router rolü için girilen çalıştırma komutu.
+2. Router için seçilen sürümün yapılandırmasında tanımlanan çalıştırma komutu.
+3. Router için seçilen arka ucun varsayılan çalıştırma komutu.
+4. PD tarifinin ürettiği Router komutu.
+
+Bu sıradaki ikinci ve üçüncü maddeler, Router rolünün kendisi için seçilen arka uçtan gelir. Yerleşik, topluluk tarafından sağlanan ve kullanıcı tarafından kaydedilen arka uçlarda aynı sıra geçerlidir. Yalnızca Router imajını değiştirmek bu komut önceliğini korur. Bu kaynakların hiçbiri bir komut sağlamıyorsa dağıtım kaydedilemez.
+
+**Arka uç parametreleri ve ortam değişkenleri**
+
+Bunlar arka uç, sürüm, imaj ve komuttan ayrı yapılandırılır:
+
+- **Parametreler:** Prefill veya Decode rolünün kendi listesi dağıtımın listesinin yerini alır. Router kendi parametre listesini kullanır ve bunu Router komutuna ekler. Bir arka uç seçildiğinde varsayılan parametreleri forma doldurulur; başlangıçta hangi parametrelerin aktarılacağını rolün kaydedilmiş listesi belirler.
+- **Ortam değişkenleri:** rolün kendi değişken haritası, dağıtımın haritasının tamamının yerini alır. Prefill ve Decode için forma getirilen arka uç varsayılanları, rolün kaydedilmiş yapılandırmasının bir parçası olur. Router, varsayılanları başlangıçta da yükler; aynı adlı değişkenler için öncelik şöyledir: rolün değerleri (rolün kendi haritası yoksa dağıtımın değerleri) → seçilen arka uç sürümü → arka uç varsayılanları → geçerli olduğu durumlarda PD tarifinin varsayılanları.
+
+Prefill ve Decode rollerinin kullandığı arka uçlar ve sürümler, seçilen PD tarifinin gereksinimlerini karşılamalıdır. Sağladığınız her imaj gerekli başlatma programını içermeli ve eşleşen konektör protokolünü desteklemelidir.
 
 ### Router çalışma zamanı komut şablonları { #runtime-router-command-arguments }
 
