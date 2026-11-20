@@ -683,3 +683,125 @@ async def test_port_admission_filters_candidates_before_the_score_chain(
     _, messages = await _run(model, role)
     assert order == ['ports', 'score']
     assert 'port shortage' in messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cpu_offloading', [False, True])
+@pytest.mark.parametrize('framework', ['cpu', 'cuda'])
+@pytest.mark.parametrize('gpu_full', [False, True])
+@pytest.mark.parametrize('manual_gpu', [False, True])
+async def test_custom_cpu_framework_controls_resource_selection(
+    harness, config, monkeypatch, cpu_offloading, framework, gpu_full, manual_gpu
+):
+    from gpustack.policies.base import Allocated
+    from gpustack.policies.candidate_selectors.custom_backend_resource_fit_selector import (
+        CustomBackendResourceFitSelector,
+    )
+    from gpustack.policies.worker_filters import backend_framework_filter
+    from gpustack.schemas.inference_backend import (
+        InferenceBackend,
+        VersionConfig,
+        VersionConfigDict,
+    )
+    from tests.fixtures.workers.fixtures import linux_nvidia_1_4090_24gx1
+    from gpustack.schemas.models import GPUSelector
+
+    gib = 1024**3
+    worker = linux_nvidia_1_4090_24gx1()
+    worker.status.memory.total = 64 * gib
+    worker.system_reserved.ram = 0
+    model = _model(
+        backend='custom-engine',
+        backend_version='selected',
+        cpu_offloading=cpu_offloading,
+        owner_principal_id=42,
+        env={'GPUSTACK_MODEL_RAM_CLAIM': str(4 * gib)},
+        gpu_selector=(
+            GPUSelector(gpu_ids=[f'{worker.name}:cuda:0']) if manual_gpu else None
+        ),
+    )
+    backends = [
+        InferenceBackend(
+            backend_name='custom-engine',
+            owner_principal_id=owner,
+            version_configs={
+                'selected': VersionConfig(
+                    image_name='test:runtime',
+                    custom_framework=value,
+                )
+            },
+        )
+        for owner, value in [(None, 'cuda'), (42, framework), (99, 'cuda')]
+    ]
+
+    for backend in backends:
+        backend.version_configs = VersionConfigDict(root=backend.version_configs)
+
+    async def filter_framework_only(chain, workers):
+        filters = harness.filters_seen[-1]
+        framework_filter = next(
+            f for f in filters if isinstance(f, scheduler.BackendFrameworkFilter)
+        )
+        return await framework_filter.filter(workers)
+
+    monkeypatch.setattr(scheduler.WorkerFilterChain, 'filter', filter_framework_only)
+    monkeypatch.setattr(
+        scheduler, 'CustomBackendResourceFitSelector', CustomBackendResourceFitSelector
+    )
+    monkeypatch.setattr(
+        scheduler,
+        'pick_highest_score_candidate',
+        lambda candidates: candidates[0] if candidates else None,
+    )
+    reservations = (
+        {
+            worker.id: Allocated(
+                ram=0, vram={0: worker.status.gpu_devices[0].memory.total}
+            )
+        }
+        if gpu_full
+        else {}
+    )
+    with (
+        patch.object(backend_framework_filter, 'async_session'),
+        patch.object(InferenceBackend, 'all', AsyncMock(return_value=backends)),
+        patch.object(
+            backend_framework_filter.RunnerOverrideEntry,
+            'all',
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.custom_backend_resource_fit_selector.estimate_model_vram',
+            AsyncMock(return_value=3 * gib),
+        ) as estimate,
+    ):
+        candidate, messages = await scheduler.find_candidate(
+            None,
+            config,
+            model,
+            [worker],
+            [],
+            resource_view=ResourceView([], reservations=reservations),
+        )
+    if framework == 'cpu':
+        estimate.assert_not_awaited()
+        if manual_gpu:
+            assert candidate is None
+            assert any(
+                'Manual GPU selection is not supported for a CPU inference backend'
+                in message
+                for message in messages
+            )
+            return
+        assert candidate is not None
+        assert candidate.gpu_type is None
+        assert candidate.gpu_indexes is None
+        assert candidate.computed_resource_claim.vram == {}
+        assert candidate.computed_resource_claim.ram == 4 * gib
+    else:
+        estimate.assert_awaited_once()
+        if not gpu_full or manual_gpu:
+            assert candidate.gpu_type == 'cuda'
+            assert candidate.gpu_indexes == [0]
+        else:
+            assert (candidate is not None) == cpu_offloading
