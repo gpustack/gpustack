@@ -48,7 +48,7 @@ from gpustack.schemas.principals import (  # noqa: F401  re-exports
     Principal,
     PrincipalType,
 )
-from gpustack.security import PASSWORD_SPECIAL_CHARACTERS
+from gpustack.security import PASSWORD_MIN_LENGTH, PASSWORD_SPECIAL_CHARACTERS
 
 # ``User`` aliases the unified :class:`Principal` so that code which
 # constructs / queries the user-shaped surface continues to work
@@ -69,6 +69,10 @@ default_cluster_principal_name = f"{system_name_prefix}-1"
 
 
 def _validate_password(value: str) -> str:
+    if len(value) < PASSWORD_MIN_LENGTH:
+        raise ValueError(
+            f'Password must be at least {PASSWORD_MIN_LENGTH} characters long'
+        )
     if not re.search(r'[A-Z]', value):
         raise ValueError('Password must contain at least one uppercase letter')
     if not re.search(r'[a-z]', value):

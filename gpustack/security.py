@@ -51,6 +51,11 @@ _GENERATED_SECRET_KEY_RE = re.compile(f"^[0-9a-f]{{{GENERATED_SECRET_KEY_BYTES *
 # the validator would reject turns that command into a 422.
 PASSWORD_SPECIAL_CHARACTERS = "!@#$%^&*_+."
 
+# The shortest password the API accepts, matching the lower bound of the UI's
+# check above. There is no matching maximum: argon2 hashes the whole string, and
+# NIST SP 800-63B asks for long passwords to be accepted.
+PASSWORD_MIN_LENGTH = 6
+
 
 def _as_text(value: Union[str, bytes]) -> str:
     return value.decode() if isinstance(value, bytes) else value
