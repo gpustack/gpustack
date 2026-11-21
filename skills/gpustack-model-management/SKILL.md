@@ -10,9 +10,10 @@ Manage model deployments on a GPUStack server with its REST API: inspect the clu
 OpenAI-compatible route, recover it when an instance fails, and delete it. Everything here is plain
 HTTP, so any agent that can run `curl` can use it.
 
-Tested against GPUStack v2.3.0. Endpoint details and payloads: [`references/api.md`](references/api.md).
-Behavior that surprises agents: [`references/gotchas.md`](references/gotchas.md). Using this skill from
-OpenClaw: [`references/openclaw.md`](references/openclaw.md).
+Written for GPUStack v2.3.1 (workflows tested live on v2.3.0). Endpoint details and payloads:
+[`references/api.md`](references/api.md). Behavior that surprises agents:
+[`references/gotchas.md`](references/gotchas.md). Using this skill from OpenClaw:
+[`references/openclaw.md`](references/openclaw.md).
 
 ## Setup
 
@@ -156,24 +157,48 @@ gs -X PUT "$GPUSTACK_URL/v2/models/ID" -d @model.json
   partial body, include `backend` and `distributed_inference_across_workers` explicitly.
 - A change to how the model runs (`run_command`, `backend_parameters`, `env`, image) is saved but does
   not touch running instances. Restart the model (section 5) to apply it.
+- If the model has `scaling_schedule.enabled: true`, the schedule owns `replicas`. Changing `replicas`
+  without sending the schedule returns `400 Disable scheduled scaling before manually changing replicas.`,
+  and when the schedule is sent, the submitted `replicas` is replaced by the schedule's value. Always send
+  the **whole** `scaling_schedule` object from the GET, changing only the field you mean to: a partial
+  object such as `{"paused": true}` replaces the stored schedule, disabling it and dropping its rules.
+  - Stop or resume: set `paused` to `true` (replicas go to `0`) or `false` (replicas go to the schedule's
+    current value, not to what they were before the pause).
+  - Scale by hand: set `enabled` to `false` and the new `replicas` in the same PUT.
 
 **Confirm:** the number of `running` instances equals `replicas`. A stopped model has no instances and
 its model row shows `state: pending`; that is normal. The PUT response still shows the old `state`.
 
 A model with `roles` (for example prefill/decode disaggregation) is different: its `replicas` is only an
 on/off switch (`0` or `1`), each role's count is `roles[].replicas`, and you scale by changing those.
-Confirm with the model's `role_status`, where every role's `ready` should equal its `desired`.
+
+- **Confirm a start or scale:** in the model's `role_status`, every role's `ready` equals its `desired`,
+  **and** the model's `state` is `running`. Roles can all be ready while the router is still waiting for
+  them to register; the model stays `partial` until it can serve traffic.
+- **Confirm a stop:** no instances remain for the model. Do not wait for `ready == desired` here: after a
+  stop each role's `ready` is `0` while `desired` still reflects `roles[].replicas`.
 
 ## 5. Restart and recover
 
 - Restart every replica: note the current instance ids, then
-  `gs -X POST "$GPUSTACK_URL/v2/models/ID/restart"`. The response lists the replaced instances by name in
-  `deleted_instances`; the instance list is briefly empty, then new instances appear.
-  **Confirm:** instances with new ids reach `running`.
-  - With no instances to restart it returns `200` with `restarted: false`.
-  - While a restart is still bringing the model up, another restart returns `409`; wait for `running`.
+  `gs -X POST "$GPUSTACK_URL/v2/models/ID/restart"`. An accepted restart returns `202` with
+  `completed: false` and an `observe_url` (`/v2/models/ID`) to poll. For an ordinary model,
+  `deleted_instances` names the replaced instances and new ones appear shortly. For a model with `roles`,
+  `deleted_instances` is empty and the old instances stay, draining, until their workloads stop.
+  **Confirm:** poll `observe_url` until `restarting_since` is empty, then check that the number of
+  `running` instances with new ids equals `replicas` (for a model with `roles`, every role's `ready` equals
+  its `desired` in `role_status`). `restarting_since` clears as soon as the model is `running`, which can
+  mean only one replica is ready.
+  **Stop polling** if the model's `state` is `error` or a new instance is in `error`: `restarting_since`
+  stays set after a failed restart. Read the instance's `state_message` and log instead.
+  - With no instances to restart it returns `200` with `restarted: false` and `completed: true`.
+  - While the previous restart is still in flight (up to about 15 minutes, or until a role model's old
+    workloads finish stopping), another restart returns `409`. Restarting a model that is being deleted
+    also returns `409`.
 - Replace one replica: `gs -X DELETE "$GPUSTACK_URL/v2/model-instances/INSTANCE_ID"`; GPUStack creates a
-  new one to keep `replicas`.
+  new one to keep `replicas`. For an instance of a model with `roles` this returns `202` and the
+  replacement appears only after the old workload stops; if the model's configuration changed since the
+  group started (the model shows `stale: true`), it returns `400` and you restart the model instead.
 - Read why an instance failed: its `state_message`, and
   `gs "$GPUSTACK_URL/v2/model-instances/INSTANCE_ID/logs?tail=200"`. The log is text (served as
   `application/octet-stream`); `tail` limits the backend container's lines, and GPUStack's own
@@ -200,14 +225,16 @@ organization creates it in the platform organization, so for a model owned by an
 To change which models a route serves:
 
 1. List its current targets: `gs "$GPUSTACK_URL/v2/model-route-targets?route_id=ROUTE_ID"`. The route
-   itself only reports a count.
+   itself only reports a count. The list is paged (100 per page by default): read every page, up to
+   `pagination.totalPage`, before building the new list, or targets on later pages are deleted.
 2. PUT the route with `name` and the complete `targets` list. Keep each existing target by sending its
    `id` (`{"id": 13, "model_id": 11}`). An entry without `id` creates a new target, and any existing target
    you leave out is deleted. Weights on one route must be all zero or all positive.
 3. **Confirm:** list the targets again and check they match.
 
-`POST /v2/model-routes/ROUTE_ID/add-targets` also replaces the whole target set, despite its name. Write
-responses for routes in v2.3.0 can show `ready_targets` counts that are a few seconds old.
+`POST /v2/model-routes/ROUTE_ID/add-targets` also replaces the whole target set, despite its name. A new
+or changed model target starts `unavailable` and becomes `active` once its model is running, so
+`ready_targets` in a write response can read low until then.
 
 **Confirm a new route:** it appears in `gs "$GPUSTACK_URL/v2/model-routes"` with the expected `targets`
 count. Once a target model is running, it is also listed by `/v1/models` (as `<org>/<route>` for a
@@ -235,23 +262,31 @@ curl -sS -H "Authorization: Bearer ${GPUSTACK_INFERENCE_KEY:-$GPUSTACK_API_KEY}"
 gs -X DELETE "$GPUSTACK_URL/v2/models/ID"
 ```
 
+An ordinary model is deleted at once (`200`, `null` body). A model with `roles` that still has instances
+returns `202`: its row stays, with `deleted_at` set and `replicas: 0`, until the old workloads stop, and
+`GET /v2/models/ID` returns `404` once the delete has finished.
+
 This removes the model's instances and route targets. The route created by `enable_model_route` (the one
 whose `created_model_id` is this model) is removed too, unless other targets still use it. A route you
-created yourself has no `created_model_id` and stays behind with no targets; delete it with
-`gs -X DELETE "$GPUSTACK_URL/v2/model-routes/ROUTE_ID"`.
+created yourself has no `created_model_id` and is kept. It may still serve other models, so once
+`GET /v2/models/ID` returns `404` (the deleted model's target is removed only then), list its
+targets (`gs "$GPUSTACK_URL/v2/model-route-targets?route_id=ROUTE_ID"`, every page) and delete the route
+with `gs -X DELETE "$GPUSTACK_URL/v2/model-routes/ROUTE_ID"` only if none remain.
 
-**Confirm:** no instances remain for the model, `/v1/models` no longer lists it, and a request to its
-route name returns `404` or `503`. Requests can still be served for a few seconds after the delete, so
-retry before concluding the delete failed.
+**Confirm:** `GET /v2/models/ID` returns `404` and no instances remain for the model. A route that only
+served this model is no longer listed by `/v1/models`, and a request to it returns `404` or `503`. A
+shared route stays listed and keeps answering from its remaining targets. Requests can still reach the
+deleted model for a few seconds, so retry before concluding the delete failed.
 
 ## Hard rules
 
-- Verify after every change, using the **Confirm** step for that workflow. A `200` only means the request
-  was accepted.
+- Verify after every change, using the **Confirm** step for that workflow. A `200` or `202` only means the
+  request was accepted.
 - Judge a model by its instances, not by its model row.
 - Always send `cluster_id` on create. Prefer GET → edit → PUT of the whole model over a partial PUT.
 - Restart after changing how a model runs; a PUT alone does not apply it.
 - Make one change at a time when recovering, and confirm it before the next.
-- Never change a route's targets without listing them first and sending back the ones to keep with their
-  `id`.
+- Never change a route's targets without listing all of them first (every page) and sending back the ones
+  to keep with their `id`.
+- Never delete a route that still has targets serving other models.
 - Do not put `--port`, `--api-key` or `--served-model-name` in `backend_parameters`.
