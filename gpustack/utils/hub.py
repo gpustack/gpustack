@@ -1,23 +1,28 @@
+import hashlib
 import json
 import logging
 import gzip
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Iterable, List, Optional, Any, Tuple
 from pathlib import Path
 import fnmatch
 from threading import Lock
 from functools import cache
+import httpx2
 from huggingface_hub import HfFileSystem
 from huggingface_hub.utils import validate_repo_id
 
 from modelscope.hub.api import HubApi
+from modelscope.hub.file_download import get_file_download_url
 from modelscope.hub.snapshot_download import (
     snapshot_download as modelscope_snapshot_download,
 )
 from transformers import PretrainedConfig
 from huggingface_hub import HfApi
 from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
+import requests
 from requests.exceptions import HTTPError
 
 from gpustack.config.config import get_global_config
@@ -35,6 +40,7 @@ from gpustack.utils import model_config
 logger = logging.getLogger(__name__)
 
 LIST_REPO_CACHE_DIR = "repo-skeleton"
+SAFETENSORS_TENSORS_CACHE_DIR = "safetensors-tensors"
 
 
 # Configuration inspection only downloads JSON metadata, including versioned configs.
@@ -418,6 +424,90 @@ def sum_weight_file_sizes(files: Iterable[Tuple[str, int]]) -> int:
         for name, size in sizes.items()
         if not (has_safetensors and name.endswith(".bin"))
     )
+
+
+def _read_range(model: Model, token: Optional[str], name: str, start: int, end: int):
+    if model.source == SourceEnum.HUGGING_FACE:
+        # Without a read-ahead cache only the requested range is fetched.
+        return HfFileSystem(token=token).cat_file(
+            f"{model.huggingface_repo_id}/{name}", start, end, cache_type="none"
+        )
+    if model.source == SourceEnum.MODEL_SCOPE:
+        url = get_file_download_url(model.model_scope_model_id, name, "master")
+        with requests.get(
+            url,
+            headers={"Range": f"bytes={start}-{end - 1}"},
+            cookies=HubApi().get_cookies(),
+            timeout=15,
+            stream=True,
+        ) as response:
+            response.raise_for_status()
+            # A full response would download the whole weight file.
+            if response.status_code != 206:
+                raise ValueError(f"Range requests are not supported for {name}")
+            return response.raw.read(end - start, decode_content=True)
+    with open(os.path.join(model.local_path, name), "rb") as f:
+        f.seek(start)
+        return f.read(end - start)
+
+
+def _read_safetensors_tensors(
+    model: Model, token: Optional[str], name: str, marker: str
+) -> Dict[str, Dict[str, Any]]:
+    # A little-endian u64 header length precedes the JSON header.
+    # https://github.com/huggingface/safetensors#format
+    length = int.from_bytes(_read_range(model, token, name, 0, 8), "little")
+    if not 0 < length <= 100 * 1024**2:
+        raise ValueError(f"Invalid safetensors header in {name}")
+    header = json.loads(_read_range(model, token, name, 8, 8 + length))
+    if not isinstance(header, dict):
+        raise ValueError(f"Invalid safetensors header in {name}")
+    return {
+        tensor: {"dtype": info["dtype"], "data_offsets": info["data_offsets"]}
+        for tensor, info in header.items()
+        if tensor != "__metadata__" and marker in f".{tensor}"
+    }
+
+
+def read_safetensors_tensors(
+    model: Model, marker: str, token: Optional[str] = None
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Read the dtype and data_offsets of root weight tensors whose names, prefixed
+    with a dot, contain marker. Only safetensors headers are read, concurrently,
+    see sum_weight_file_sizes for which files count. Remote results are cached
+    by the file listing. Raises ValueError or OSError if a header is unreadable.
+    """
+    try:
+        if model.source == SourceEnum.LOCAL_PATH:
+            files = [(name, 0) for name in os.listdir(model.local_path or "")]
+        else:
+            repo_id = model.huggingface_repo_id or model.model_scope_model_id
+            files = [
+                (file.get("name", ""), file.get("size", 0))
+                for file in list_repo(repo_id, model.source, token, root_dir_only=True)
+            ]
+            listing = hashlib.sha256(json.dumps(sorted(files)).encode()).hexdigest()
+            cache_key = f"{model.source}:{repo_id}:{marker}:{listing}"
+            cached, is_succ = load_cache(SAFETENSORS_TENSORS_CACHE_DIR, cache_key)
+            if is_succ:
+                return json.loads(cached)
+        names = sorted(n for n, _ in files if n.endswith(".safetensors"))
+        if any(name != "consolidated.safetensors" for name in names):
+            names = [name for name in names if name != "consolidated.safetensors"]
+        tensors = {}
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            for result in executor.map(
+                lambda name: _read_safetensors_tensors(model, token, name, marker),
+                names,
+            ):
+                tensors.update(result)
+    except httpx2.TransportError as e:
+        # Hub transport errors are not OSError, unlike its HTTP errors.
+        raise ConnectionError(f"Cannot read safetensors headers: {e}") from e
+    if model.source != SourceEnum.LOCAL_PATH:
+        save_cache(SAFETENSORS_TENSORS_CACHE_DIR, cache_key, json.dumps(tensors))
+    return tensors
 
 
 def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:

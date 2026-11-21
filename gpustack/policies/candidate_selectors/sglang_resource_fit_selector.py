@@ -6,7 +6,7 @@ from transformers.utils import strtobool
 
 from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack.policies.resource_view import ResourceView
-from gpustack.policies.lookup_table import estimate_offloaded_lookup_bytes
+from gpustack.policies.lookup_table import estimate_offloaded_lookup_bytes_from_weights
 from gpustack.policies.candidate_selectors.base_candidate_selector import (
     EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
     EVENT_ACTION_AUTO_SINGLE_GPU,
@@ -328,8 +328,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             )
         else:
             self.cal_mem_fraction_static(workers)
-            self._offloaded_ram = estimate_offloaded_lookup_bytes(
-                self._model, self._pretrained_config
+            self._offloaded_ram = await estimate_offloaded_lookup_bytes_from_weights(
+                self._model, self._pretrained_config, self._config.huggingface_token
             )
             estimate_kwargs = (
                 {"offloaded_weights": self._offloaded_ram}

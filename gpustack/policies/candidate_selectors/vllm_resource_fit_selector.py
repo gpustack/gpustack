@@ -6,7 +6,7 @@ from math import ceil
 import re
 from typing import Dict, List, Optional, Tuple
 from gpustack.policies.resource_view import ResourceView
-from gpustack.policies.lookup_table import estimate_offloaded_lookup_bytes
+from gpustack.policies.lookup_table import estimate_offloaded_lookup_bytes_from_weights
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
@@ -311,8 +311,8 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         # Initialize model parameters.
         await self._init_model_parameters(workers)
 
-        offloaded_weights = estimate_offloaded_lookup_bytes(
-            self._model, self._pretrained_config
+        offloaded_weights = await estimate_offloaded_lookup_bytes_from_weights(
+            self._model, self._pretrained_config, self._config.huggingface_token
         )
         estimate_kwargs = (
             {"offloaded_weights": offloaded_weights} if offloaded_weights else {}
