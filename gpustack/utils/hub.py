@@ -445,7 +445,10 @@ def _read_range(model: Model, token: Optional[str], name: str, start: int, end: 
             # A full response would download the whole weight file.
             if response.status_code != 206:
                 raise ValueError(f"Range requests are not supported for {name}")
-            return response.raw.read(end - start, decode_content=True)
+            data = response.raw.read(end - start, decode_content=True)
+            if len(data) != end - start:
+                raise ValueError(f"Short read of {name}")
+            return data
     with open(os.path.join(model.local_path, name), "rb") as f:
         f.seek(start)
         return f.read(end - start)
