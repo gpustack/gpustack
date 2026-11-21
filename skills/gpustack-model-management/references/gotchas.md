@@ -1,6 +1,6 @@
 # Gotchas
 
-Behavior that commonly trips up agents driving GPUStack v2.3.0 through its API.
+Behavior that commonly trips up agents driving GPUStack v2.3.1 through its API.
 
 ## A server without a worker has no cluster
 
@@ -25,8 +25,9 @@ to list the clusters the organization owns.
 The response to a PUT still shows the model's previous `state`, and the model row reports `running` as
 soon as one replica is ready. Decide whether a deploy, scale or restart worked from
 `/v2/model-instances?model_id=ID`: the number of instances in `running` should equal `replicas`. For a
-model with `roles`, `replicas` is only an on/off switch; check `role_status` instead, where each role's
-`ready` should equal its `desired`.
+model with `roles`, `replicas` is only an on/off switch: after a start or scale, check that each role's
+`ready` equals its `desired` in `role_status` and that the model's `state` is `running`; after a stop,
+check that no instances remain.
 
 ## A partial PUT can change `distributed_inference_across_workers`
 
@@ -41,6 +42,15 @@ or send `distributed_inference_across_workers` explicitly.
 Changing `run_command`, `backend_parameters`, `env` or the image saves the new configuration, but running
 instances keep the old one. `POST /v2/models/{id}/restart` applies it.
 
+## A scaling schedule owns `replicas`
+
+With `scaling_schedule.enabled: true`, changing `replicas` alone returns
+`400 Disable scheduled scaling before manually changing replicas.`, and a PUT that includes the schedule
+has its `replicas` replaced by the schedule's current value. A sent `scaling_schedule` replaces the
+stored one, and its fields default to disabled with no rules, so send the whole object from GET with
+only `paused` or `enabled` changed: `paused: true` to stop the model, or `enabled: false` with new
+`replicas` to scale by hand.
+
 ## A stopped model shows `pending`
 
 With `replicas: 0` the model row reports `state: pending` and there are no instances. That is the stopped
@@ -51,15 +61,17 @@ state, not a stuck deploy.
 Both `PUT /v2/model-routes/{id}` with `targets` and `POST /v2/model-routes/{id}/add-targets` make the list
 you send the route's complete target set. Existing targets you leave out are deleted, and an entry without
 an `id` creates a new target even for a model that is already on the route. `add-targets` takes a bare
-JSON list (`[{"model_id": 1}]`, not `{"targets": [...]}`). List the current targets first and send back
-the ones to keep with their `id`.
+JSON list (`[{"model_id": 1}]`, not `{"targets": [...]}`). List the current targets first, reading every
+page of `/v2/model-route-targets` (100 per page by default), and send back the ones to keep with their
+`id`.
 
 ## Routes you create outlive the model
 
 Deleting a model removes the route created by `enable_model_route` (its `created_model_id` is the model's
 id) unless other targets still use it. A route created with `POST /v2/model-routes` has no
-`created_model_id` key at all, stays with no targets, and answers `503 No running instances available`.
-Delete it explicitly.
+`created_model_id` key at all and is kept. If it served only this model it is left with no targets and
+answers `503 No running instances available`; delete it explicitly. If other targets remain it keeps
+serving them, so check its targets before deleting it.
 
 ## Deletes reach the gateway a few seconds late
 
@@ -72,12 +84,11 @@ A running model without a route answers `404 Model not found` on `/v1`. Add a ro
 `POST /v2/model-routes`; there is no need to recreate the model. A route created this way has empty
 `categories`, unlike one created by `enable_model_route`.
 
-## Invalid route names fail at create
+## The model name must be a valid route name
 
-With `enable_model_route: true`, the model name must be a valid route name: it starts with a letter,
-ends with a letter or digit, and contains only letters, digits, `_`, `-`, `.` and `:`. In v2.3.0 an
-invalid one, such as a purely numeric name, returns `500 Failed to create model` instead of a validation
-error.
+With `enable_model_route: true`, the model name is also the route name: it starts with a letter, ends
+with a letter or digit, and contains only letters, digits, `_`, `-`, `.` and `:`. An invalid one, such as
+a purely numeric name, is rejected with `422` before the model is created.
 
 ## Custom backends report their own model name
 

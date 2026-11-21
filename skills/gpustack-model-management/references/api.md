@@ -1,6 +1,6 @@
 # GPUStack model management API reference
 
-Endpoints used by the `gpustack-model-management` skill, as of GPUStack v2.3.0. All paths are relative to
+Endpoints used by the `gpustack-model-management` skill, as of GPUStack v2.3.1. All paths are relative to
 the server URL. Every request needs `Authorization: Bearer <api key>` (or `X-API-Key: <api key>`).
 
 - `/v2` calls need a key with `management` (or `*`) scope; `/v1` calls need `inference` (or `*`).
@@ -16,11 +16,11 @@ List endpoints accept `page`, `perPage` (default 100) and `sort_by`, and return
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/v2/clusters` | Filters: `name`, `search`, `mine=true` (only clusters the caller's organization owns, i.e. the ones it can deploy to). Fields: `id`, `name`, `state`, `workers`, `ready_workers`, `gpus`, `models`. |
+| GET | `/v2/clusters` | Filters: `name`, `search`, `mine=true` (only clusters the caller's organization owns, i.e. the ones it can deploy to; empty unless the caller is an organization owner or platform admin). Fields: `id`, `name`, `state`, `workers`, `ready_workers`, `gpus`, `models`. |
 | GET | `/v2/clusters/{id}` | |
 | POST | `/v2/clusters` | Required: `name`. `provider` defaults to `Docker`. |
 | GET | `/v2/clusters/{id}/registration-token` | Token for registering a worker. |
-| GET | `/v2/workers` | Filters: `cluster_id`, `name`, `search`. `state`: `ready`, `not_ready`, `unreachable`, `pending`, `provisioning`, `initializing`, `deleting`, `error`, `maintenance`; `state_message` explains a non-ready state. |
+| GET | `/v2/workers` | Filters: `cluster_id`, `name`, `search`, `label=key=value` (repeatable; the same key ORs, different keys AND). `state`: `ready`, `not_ready`, `unreachable`, `pending`, `provisioning`, `initializing`, `deleting`, `error`, `maintenance`; `state_message` explains a non-ready state. |
 | GET | `/v2/workers/{id}` | |
 
 ## Models
@@ -30,13 +30,15 @@ List endpoints accept `page`, `perPage` (default 100) and `sort_by`, and return
 | GET | `/v2/models` | Filters: `state`, `search`, `categories`, `cluster_id`, `backend`. |
 | GET | `/v2/models/{id}` | |
 | POST | `/v2/models` | Create. See fields below. `409` if the name is taken. |
-| PUT | `/v2/models/{id}` | Update. `name` and `source` are required. Fields left out are mostly kept, but `distributed_inference_across_workers` is recomputed unless sent. No PATCH. |
-| DELETE | `/v2/models/{id}` | Removes instances and route targets, and the auto-created route unless other targets use it. Returns `200` with a `null` body. |
-| POST | `/v2/models/{id}/restart` | Replaces every instance. Returns `{"restarted", "deleted_instances": [names], "message", ...}`; `restarted: false` when there are no instances; `409` while a previous restart is still bringing the model up. |
+| PUT | `/v2/models/{id}` | Update. `name` and `source` are required. Fields left out are mostly kept, but `distributed_inference_across_workers` is recomputed unless sent. With `scaling_schedule` enabled, `replicas` follows the schedule (see SKILL.md section 4). No PATCH. |
+| DELETE | `/v2/models/{id}` | Removes instances and route targets, and the auto-created route unless other targets use it. Returns `200` with a `null` body, or `202` for a model with `roles` that still has instances, while its workloads stop (the row keeps `deleted_at` set until then; `GET` returns `404` when done). |
+| POST | `/v2/models/{id}/restart` | Replaces every instance. Returns `202` with `{"accepted", "completed": false, "phase", "observe_url", "restarted", "deleted_instances": [names], "message", ...}`; poll `observe_url` until the model's `restarting_since` is empty (it stays set if the restart fails; watch for `error`). `200` with `restarted: false`, `completed: true` when there are no instances. `409` while the previous restart is in flight (up to about 15 minutes) or the model is being deleted. |
 | GET | `/v2/models/{id}/instances` | Same rows as `/v2/model-instances?model_id={id}`. |
 
 Model `state`: `pending` (also the stopped state, with `replicas: 0`), `partial`, `running`, `error`.
-`running` means at least one replica is ready. The create response has `state: null`. Use instance states
+`running` means at least one replica is ready; for a model with `roles`, that the group can serve. A
+model with `roles` reports per-role `desired` and `ready` counts in `role_status`, and its `replicas` is a
+`0`/`1` switch. The create response has `state: null`. Use instance states
 to decide whether a change took effect.
 
 ### Create fields
@@ -51,15 +53,16 @@ to decide whether a change took effect.
 | `replicas` | no | Default `1`; `0` creates the model stopped. |
 | `backend` | no | `vLLM`, `SGLang`, `MindIE`, `VoxBox`, `Custom`, or any other backend enabled on the server (`GET /v2/inference-backends`). |
 | `backend_version` | no | Not together with `image_name` on built-in backends. |
-| `backend_parameters` | no | List of strings. Built-in backends reject `--port`, `--api-key`, `--served-model-name`. |
+| `backend_parameters` | no | List of strings. Built-in backends reject `--port`, `--api-key`, `--served-model-name`, and validate vLLM data-parallel/load-balancer and SGLang `--policy`/`--attn-dp-size` flags. |
 | `image_name`, `run_command` | no | For `Custom`. `run_command` placeholders: `{{model_path}}`, `{{port}}`, `{{model_name}}`, `{{worker_ip}}`, `{{gpu_count}}`, `{{gpu_ids}}`. |
-| `categories` | no | `llm`, `embedding`, `image`, `reranker`, `speech_to_text`, `text_to_speech`, `unknown`. |
+| `categories` | no | `llm`, `embedding`, `image`, `reranker`, `speech_to_text`, `text_to_speech`, `decision`, `unknown`. Other values are rejected (`422` on create, `400` on update). |
 | `enable_model_route` | no | Create a route named after the model. |
 | `worker_selector` | no | Map of worker labels, e.g. `{"gpu": "a100"}`. |
 | `env` | no | Map of environment variables for the backend container. |
 | `cpu_offloading` | no | Allow CPU memory; needed for CPU-only inference with a Custom backend. |
 | `distributed_inference_across_workers` | no | Defaults to `true` for vLLM, SGLang and MindIE, `false` otherwise. |
 | `restart_on_error` | no | Default `true`. |
+| `scaling_schedule` | no | `{"enabled", "paused", "baseline_replicas", "rules": [{"start_cron", "duration_seconds", "replicas"}]}`. While enabled, the schedule sets `replicas`. On update, a sent object replaces the stored one; send it whole. |
 
 ## Model instances
 
@@ -68,7 +71,7 @@ to decide whether a change took effect.
 | GET | `/v2/model-instances` | Filters: `model_id`, `worker_id`, `cluster_id`, `state`, `search`. |
 | GET | `/v2/model-instances/{id}` | |
 | GET | `/v2/model-instances/{id}/logs` | Text, served as `application/octet-stream`. GPUStack's provisioning lines, then the backend container log; `tail=N` limits the container part. |
-| DELETE | `/v2/model-instances/{id}` | A replacement is created to keep `replicas`. |
+| DELETE | `/v2/model-instances/{id}` | A replacement is created to keep `replicas`. `202` for an instance of a model with `roles` (replaced once its workload stops); `400` if the model's configuration changed since the group started (`stale: true`), in which case restart the model. |
 
 Instance `state`: `pending`, `analyzing`, `scheduled`, `initializing`, `downloading`, `starting`,
 `running`, `error`, `unreachable`. Fast deployments skip some states. Also `state_message`, `worker_name`,
@@ -95,14 +98,15 @@ A spec is almost a create body: drop `quantization`, `mode`, `gpu_filters` and `
 | PUT | `/v2/model-routes/{id}` | `name` required. Sending `targets` makes that list the complete set: entries with an `id` keep that target, entries without one create a target, unlisted targets are deleted. |
 | DELETE | `/v2/model-routes/{id}` | |
 | POST | `/v2/model-routes/{id}/add-targets` | Body is a bare JSON list of targets. Replaces the whole set, like PUT. |
-| GET | `/v2/model-route-targets` | Filter with `route_id`. Fields: `id`, `route_id`, `model_id`, `state` (`active` when serving), `weight`. |
+| GET | `/v2/model-route-targets` | Paged; read every page. Filter with `route_id`. Fields: `id`, `route_id`, `model_id`, `state` (`active` when serving), `weight`. |
 | GET / POST | `/v2/model-routes/{id}/access` | Who may call the route: `{"access_policy": ..., "principals": [...]}`; `principals` replaces all grants. |
 | GET | `/v2/my-models` | Routes visible to the caller. |
 
 A target has exactly one of `model_id` or `provider_id`. `weight` defaults to `0` (the target created by
 `enable_model_route` for a single replica gets `100`); weights on one route must be all positive or all
 zero. Route names match `^[A-Za-z](?:[A-Za-z0-9_\-.:]*[A-Za-z0-9])?$` and are unique per organization.
-In v2.3.0, route write responses can report `ready_targets` a few seconds out of date (fixed on main).
+A new or changed model target starts `unavailable` and becomes `active` once its model is running, so
+`ready_targets` in a route write response can read low until then.
 
 ## OpenAI-compatible API
 
